@@ -213,6 +213,11 @@ _WORDS_SQL = ("SELECT " + _WORD_INDEX_SQL.format(index="value_cells_words", step
 # ``TraverseTools.cell_span`` on Postgres: the word rows' numbers ((src << 20) | field,
 # migration 0010) of the family's value sources, every version: the span of every cell
 # of theirs (SQLite's spans the family's cells' rowids).
+# ``PgStoreReader.family_cell_span``: the exact span's time limit, and the span of every
+# value cell (a superset of any family's) read by the key index past it
+CELL_SPAN_EXACT_MS = 8000
+WHOLE_SPAN_SQL = ("SELECT (SELECT MIN(src) FROM ontology.value_sources) << 20, "
+                  "((SELECT MAX(src) FROM ontology.value_sources) << 20) | 1048575")
 CELL_SPAN_SQL = (
     "SELECT MIN(s.src) << 20, (MAX(s.src) << 20) | 1048575 FROM objects o "
     "JOIN object_versions v ON v.object_id = o.object_id "
@@ -244,16 +249,18 @@ _LINK_END = ("MAX(CASE WHEN l.superseded_at IS NULL THEN '~' "
 _ODD_TEXT = r"""text ~ '["\\\x01-\x1f]'"""
 # each part's latest end per (name, markings, gated) read by the workers that read it
 # each part's latest end per (name, markings, gated) read by the workers that read it
-def link_slice_sql(ranged: bool = False, owned: bool = False, typed: bool = False) -> str:
+def link_slice_sql(ranged: bool = False, owned: bool = False, typed: bool = False,
+                   c: str = ' COLLATE "C"') -> str:
     """``LINK_SLICE_SQL``; ``ranged``: of the links whose id lies in
-    [``%(lo)s``, ``%(hi)s``) alone (either end NULL: open), byte order (``COLLATE "C"``,
-    the order of ``link_rows_by_id``), so a full read splits into parts read side by
+    [``%(lo)s``, ``%(hi)s``) alone (either end NULL: open), byte order (``c``: the
+    collation that is, ``ontology.pg_byte_order.key_collate``; by the key index), so a
+    full read splits into parts read side by
     side (``ontology_tools_traverse._read_pg_facts_parallel``); ``owned``: of the links
     from or to the objects ``%(owned)s`` alone, by their indexes (a delta layer's
     objects, ``ontology_tools_traverse.catch_up_pg_facts``)."""
     part = ("" if not ranged else
-            " AND (%(lo)s::text IS NULL OR l.link_id COLLATE \"C\" >= %(lo)s) "
-            "AND (%(hi)s::text IS NULL OR l.link_id COLLATE \"C\" < %(hi)s)")
+            f" AND (%(lo)s::text IS NULL OR l.link_id{c} >= %(lo)s) "
+            f"AND (%(hi)s::text IS NULL OR l.link_id{c} < %(hi)s)")
     rows, lead = "ontology.link_rows", ""
     if typed:
         # one link type's rows by its index (``link_rows_by_type``): a host reading the
@@ -363,8 +370,18 @@ _CANDIDATE_CHUNKS = (
 #   is a few thousand rows; a value is first tested by a substring check of its plain
 #   terms, 0.6 us a row, before its words are cut, 9 us).
 # A window that holds too few matches doubles the next one.
+# A window's key range is a bitmap of the value cells' key index (``value_cells_pkey``,
+# ~10 cells a source), so a value window costs its range's cells, read again with every
+# window, beside the word's postings: 7.5-35 s a window on the served store (2026-11-13,
+# a 24,000-match customer name: 5 windows, 101 s), while the word's whole match read 0.2 s
+# (20,000 matches), 0.4-0.6 s (50,000-100,000), 2.4-7.4 s (450,000-540,000). So a value
+# word estimated to match up to ``WHOLE_VALUE_MATCHES`` is read in one window; and a read
+# of named properties' cells only (``fields``: a name pass), where few matches pass and
+# a page reads every window anyway, is read in one window unless it is walked.
 WINDOW_MATCHES = 600       # the matches a window is sized to hold
 WHOLE_MATCHES = 20_000     # a word estimated to match no more is read in one window
+WHOLE_VALUE_MATCHES = 100_000   # the same for the value cells (above)
+KEPT_MATCHES = 20_000      # a window of no more matches is kept for the next page
 KEPT_WINDOWS = 8           # windows read kept per data version (the next page's)
 # a window is walked when walking it costs less than the index's postings (per row,
 # relative to one posting decoded): ``matches ** 2 > batch * rows * WALK_COST``
@@ -566,8 +583,9 @@ class WordWindows:
         # the windows' grid is fixed by the estimate (a window twice the one before), so
         # the next page reads the same window again (kept: ``self.kept``) and skips those
         # before its ``after`` unread
-        width = span if matches <= WHOLE_MATCHES and not walk else \
-            max(int(span * want / matches), 1)
+        one = not walk and (matches <= WHOLE_MATCHES or value and (
+            matches <= WHOLE_VALUE_MATCHES or fields is not None))
+        width = span if one else max(int(span * want / matches), 1)
         rank, indexed = facts["rank"], facts["indexed"]
         allowed = None if kinds is None else frozenset(kinds)
         field_list = None if fields is None else sorted(fields)
@@ -591,7 +609,7 @@ class WordWindows:
                     else:
                         got = sorted((chunk, chunk) for (chunk,) in got)
                     kept = facts["kept"]
-                    if len(got) <= WHOLE_MATCHES:
+                    if len(got) <= KEPT_MATCHES:
                         try:
                             while len(kept) >= KEPT_WINDOWS:
                                 kept.pop(next(iter(kept)))
@@ -853,6 +871,38 @@ class PgStoreReader(StoreReader):
         """``TraverseTools.cell_span``'s query when the word index is read here."""
         return CELL_SPAN_SQL if self.words_loaded() else None
 
+    def family_cell_span(self, family: str) -> tuple[int, int] | None:
+        """``TraverseTools.cell_span`` of ``family`` on Postgres: ``CELL_SPAN_SQL`` within
+        ``CELL_SPAN_EXACT_MS`` (or the thread's SQL deadline, when sooner); past it, every
+        value cell's span (``WHOLE_SPAN_SQL``, two key index probes). A span only narrows
+        a word search that applies the reader's audiences itself, so a wider one reads
+        more rows and never fewer: the bulk family (mail: every version of millions of
+        objects joined) ran past 5 minutes under load on 2026-11-13, 110 s of one Ask.
+        None when the family holds no cell."""
+        from operating import call_limits
+        params = {"family": family, "low": family + ":", "high": family + chr(ord(":") + 1)}
+        limit = CELL_SPAN_EXACT_MS / 1000
+        left = call_limits.seconds_left()
+        if left is not None:
+            limit = min(limit, left)
+        with self.lock, self.conn._lock:
+            pg = self.conn._pg
+            (before,) = pg.execute("SHOW statement_timeout").fetchone()
+            pg.execute(f"SET statement_timeout = {max(1, int(limit * 1000))}")
+            try:
+                row = self.conn.execute(CELL_SPAN_SQL, params).fetchone()
+            except sqlite3.OperationalError as error:
+                if "interrupted" not in str(error):
+                    raise
+                pg.execute("SET statement_timeout = 0")
+                row = self.conn.execute(WHOLE_SPAN_SQL).fetchone()
+            finally:
+                try:
+                    pg.execute(f"SET statement_timeout = '{before}'")
+                except Exception:  # noqa: BLE001 - a lost session is opened anew with its own
+                    pass
+        return None if row is None or row[0] is None else (int(row[0]), int(row[1]))
+
     def link_odd(self) -> list[str] | None:
         """The links one of whose evidence slots is an odd text (``LINK_ODD_SQL``), read
         the generic way inside the native link slice; None: more than ``LINK_ODD_CAP``,
@@ -919,8 +969,11 @@ class PgStoreReader(StoreReader):
                     params["owned"] = list(objects)
                 if name is not None:
                     params["name"] = name
+                from ontology.pg_byte_order import key_collate
                 cur.execute(link_slice_sql(key_range is not None, objects is not None,
-                                           name is not None and objects is None), params)
+                                           name is not None and objects is None,
+                                           key_collate(cur) if key_range is not None
+                                           else ' COLLATE "C"'), params)
                 return cur.fetchall()
 
     def text_matches(self, scope: Any, words: str, typed_properties: Sequence[str] | None,

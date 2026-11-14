@@ -11,6 +11,8 @@ import json
 import os
 from pathlib import Path
 import sqlite3
+import threading
+import time
 from typing import Any, Iterable, Mapping, Optional, Sequence
 
 from . import models as m
@@ -126,6 +128,29 @@ def _record_key(key: Any) -> str:
     return json.dumps(list(key) if isinstance(key, (list, tuple)) else key, sort_keys=True)
 
 
+# The pending documents' records as decided (``documents_pending``), per layer file: kept
+# this long at most, so a mailbox or OneDrive the capture's directory newly places (which
+# the key does not name) is decided again within it; a change of the exclusion itself or
+# of the layer (the exclusion's fingerprint: its IDs, file and config) is a new key at once.
+PENDING_MEMO_SECONDS = 120.0
+_PENDING_MEMO: dict[tuple, tuple[float, Any]] = {}
+_PENDING_LOCK = threading.Lock()
+
+
+def _pending_memo(key: tuple) -> Any:
+    with _PENDING_LOCK:
+        got = _PENDING_MEMO.get(key)
+    if got is None or time.monotonic() - got[0] > PENDING_MEMO_SECONDS:
+        return None
+    return got[1]
+
+
+def _pending_keep(key: tuple, value: Any) -> None:
+    with _PENDING_LOCK:
+        _PENDING_MEMO.clear()   # one layer is served at a time
+        _PENDING_MEMO[key] = (time.monotonic(), value)
+
+
 def documents_pending(store: Path, digest: Optional[str], handles: Iterable[str] = (), *,
                       state_dir: Optional[Path] = None,
                       environ: Optional[Mapping[str, str]] = None
@@ -150,22 +175,38 @@ def documents_pending(store: Path, digest: Optional[str], handles: Iterable[str]
     if not isinstance(counts, Mapping) or not isinstance(counts.get("pending"), int) \
             or counts["pending"] <= 0:
         return None
+    env = os.environ if environ is None else environ
     try:
-        conn = sqlite3.connect(f"file:{pointer['store']}?mode=ro", uri=True, timeout=1)
-        try:
-            row = conn.execute("SELECT value FROM store_meta WHERE key = "
-                               "'documents_pending'").fetchone()
-        finally:
-            conn.close()
-        records = (json.loads(row[0]) or {}).get("records") if row else {}
-        records = {source: [k for k in keys or ()] for source, keys in (records or {}).items()
-                   if isinstance(source, str)}
-    except (sqlite3.Error, ValueError, TypeError, AttributeError, KeyError):
+        layer = Path(pointer["store"])
+        held = layer.stat()
+        # the layer file as it stands, the served generation, the people exclusion and
+        # where its directory is read: every screen's freshness asks, and the layer's
+        # list (tens of thousands of keys) took seconds to read and key each time
+        from integrations.people_exclusion import PeopleExclusion
+        memo_key = (str(layer), held.st_mtime_ns, held.st_size, held.st_ino, digest,
+                    str(state_dir), PeopleExclusion.from_env(env).fingerprint())
+    except (OSError, TypeError, KeyError, ValueError):
         return None
-    withheld = excluded_records(records, state_dir,
-                                os.environ if environ is None else environ)
-    kept = {(source, _record_key(key)) for source, keys in records.items() for key in keys
-            if (source, _record_key(key)) not in withheld}
+    found = _pending_memo(memo_key)
+    if found is None:
+        try:
+            conn = sqlite3.connect(f"file:{layer}?mode=ro", uri=True, timeout=1)
+            try:
+                row = conn.execute("SELECT value FROM store_meta WHERE key = "
+                                   "'documents_pending'").fetchone()
+            finally:
+                conn.close()
+            records = (json.loads(row[0]) or {}).get("records") if row else {}
+            records = {source: [k for k in keys or ()]
+                       for source, keys in (records or {}).items() if isinstance(source, str)}
+        except (sqlite3.Error, ValueError, TypeError, AttributeError, KeyError):
+            return None
+        withheld = excluded_records(records, state_dir, env)
+        found = (frozenset((source, _record_key(key)) for source, keys in records.items()
+                           for key in keys
+                           if (source, _record_key(key)) not in withheld), bool(withheld))
+        _pending_keep(memo_key, found)
+    kept, withheld = found
     if withheld and not kept:
         return None   # all of it is the excluded people's: nothing is said
     this = None

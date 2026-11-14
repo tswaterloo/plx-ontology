@@ -50,6 +50,7 @@ from operating.chunking.projection import Counts, open_ro, withheld_messages
 from . import config
 from . import store as st
 from .shards import PERSON_KINDS, WRITE_BATCH, _exclusion, _Tally, produce
+from operating.chunking.pg_source import PG_PROJECTION
 
 CURSOR_NAME = Path("search") / "follow.json"
 
@@ -317,27 +318,35 @@ def _free_gb(path: Path) -> float:
 GENERATION_CURSOR = Path("search") / "generation.json"
 
 
-def history_window(args: argparse.Namespace, store: Path, since: str, until: str,
+def history_window(args: argparse.Namespace, store: Path | str, since: str, until: str,
                    values: dict[str, str]) -> dict[str, Any]:
     """Mail (and its attachments) sent in [since, until): chunked in parallel and written,
     nothing deleted (an older window of the history; its vectors follow in the backfill's
-    order, newest first)."""
+    order, newest first). ``store``: the SQLite generation, or ``pg_source.PG_PROJECTION``
+    (the Postgres ontology). ``--history-shards`` splits the window into more parts than
+    ``--chunk-workers`` processes (each part one read of the mail fields, its documents
+    alone in memory); a part not begun under ``--min-free-gb`` leaves the window not done
+    (``stopped``), read again whole next time."""
     from concurrent.futures import ProcessPoolExecutor
     import multiprocessing as mp
     from .shards import chunk_shard
     started = time.monotonic()
     n = max(1, args.chunk_workers)
+    shards = max(n, getattr(args, "history_shards", 0) or n)
     job = {"state": str(args.state), "projection": str(store), "kinds": ["attachment", "mail"],
            "limit": None, "values": values, "dry": False,
            "dsn": values.get("PLX_PG_DSN") or config.DEFAULT_DSN,
-           "window_since": since, "window_until": until}
+           "window_since": since, "window_until": until,
+           "min_free_gb": getattr(args, "min_free_gb", None)}
     with ProcessPoolExecutor(n, mp_context=mp.get_context("spawn")) as pool:
-        parts = list(pool.map(chunk_shard, [(job, i, n) for i in range(n)]))
-    return {"since": since, "until": until,
+        parts = list(pool.map(chunk_shard, [(job, i, shards) for i in range(shards)]))
+    stopped = sorted({p.stopped for p in parts if getattr(p, "stopped", None)})
+    return {"since": since, "until": until, "shards": shards,
             "chunks": sum(len(p.seen) - len(p.outside) for p in parts),
             "inserted": sum(p.written[0] for p in parts),
             "updated": sum(p.written[1] for p in parts),
-            "seconds": round(time.monotonic() - started, 1)}
+            "seconds": round(time.monotonic() - started, 1),
+            **({"stopped": stopped[0]} if stopped else {})}
 
 
 def chunk_code() -> str | None:
@@ -370,13 +379,21 @@ def generation_follow(args: argparse.Namespace, state: Path, now_served: dict[st
             # history are chunked again; a chunk of the same text keeps its embedding
             # (``content_sha``), so only the chunks the change affects are embedded again
             cursor = {k: v for k, v in cursor.items() if k not in ("digest", "history_until")}
+        source: Path | str = now_served["store"]
         if not Path(now_served["store"]).is_file():
             # the SQLite generation retired (Postgres the only store, ``PLX_ONTOLOGY_PG=
             # only``): no generation is read again here; its chunks stay as indexed, and
-            # the delta layers still follow (``layers_follow``)
+            # the delta layers still follow (``layers_follow``). The mail history is read
+            # from the Postgres ontology instead (``pg_source``).
             report["generation_pass"] = {"skipped": "generation_retired"}
-            return
-        if cursor.get("digest") != now_served["digest"]:
+            from operating.pg.ontology_reader import pg_only
+            if not pg_only(os.environ):
+                return
+            source = PG_PROJECTION
+            if cursor.get("code") != code:   # the history read by this code from here on
+                cursor = dict(cursor, code=code)
+                save_cursor(path, cursor)
+        elif cursor.get("digest") != now_served["digest"]:
             if args.min_free_gb and _free_gb(state) < args.min_free_gb:
                 report["generation_pass"] = {"skipped": "disk_below_min_free"}
                 return
@@ -402,7 +419,9 @@ def generation_follow(args: argparse.Namespace, state: Path, now_served: dict[st
                 return
             since = max(floor, until - dt.timedelta(days=args.history_days))
             report["history"].append(history_window(
-                args, now_served["store"], since.isoformat(), until.isoformat(), values))
+                args, source, since.isoformat(), until.isoformat(), values))
+            if report["history"][-1].get("stopped"):
+                return   # not done: read again whole next time
             until = since
             cursor["history_until"] = until.isoformat()
             save_cursor(path, cursor)
@@ -539,6 +558,9 @@ def parser() -> argparse.ArgumentParser:
                    help="after the generation pass, index older mail N days at a time, "
                         "newest first, down to --history-floor (0: no history)")
     p.add_argument("--history-floor", default="2015-01-01")
+    p.add_argument("--history-shards", type=int, default=0,
+                   help="parts each history window is read in (default --chunk-workers): "
+                        "more parts, less of the window in memory at once")
     p.add_argument("--layer-seconds", type=float, default=0.0,
                    help="start no new delta layer after this long (0: all of them)")
     p.add_argument("--chunk-workers", type=int, default=max(1, cores // 2))

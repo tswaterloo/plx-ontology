@@ -46,6 +46,19 @@ NOT_DECLARED = {
     # init() applies; declared_schema versions SQLite stores (a Postgres change is a
     # migration of that database), as operating/pg/migrate.py's
     "operating/jobq/events.py", "operating/jobq/queue.py",
+    # Postgres partitions of ontology.link_rows built beside the served ones (no SQLite store)
+    "operating/pg/link_partitions.py", "scripts/rehearse_link_partitions.py",
+    # GA-F3's one-time history collapse: Postgres DDL (its sightings, handle map and batch
+    # plan in the ontology schema, kept for a resumable run), not a SQLite store
+    "operating/pg/f3_collapse.py",
+    # the per-box SharePoint lookup (GA-F10): a cache file named by a digest of its own DDL
+    # and writers (``case_tools_host._lookup_code``), so a schema change is a new file and
+    # the old one is pruned; nothing is ever migrated in place, so no step is declared
+    "operating/case_tools_host.py",
+    # the mail store's pack of small body blobs (GA-F16): one table versioned by the file's
+    # user_version (another version is refused, never altered), kept in integrations, which
+    # may not import operating.declared_schema (tools/layer_contract.py)
+    "integrations/blob_pack.py",
 }
 
 

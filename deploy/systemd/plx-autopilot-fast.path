@@ -1,0 +1,13 @@
+# Starts plx-autopilot-fast.service when a capture stores a new Teams or mail message
+# (integrations.capture_store.signal_new touches <store>.new). A signal while a cycle runs
+# starts no second one: the cycle reads on while versions wait, and the timer covers the rest.
+[Unit]
+Description=Run the autopilot fast feed when a capture stores a message
+
+[Path]
+PathChanged=/data/plx-state/teams-capture/capture.db.new
+PathChanged=/data/plx-state/mail-capture/capture.db.new
+Unit=plx-autopilot-fast.service
+
+[Install]
+WantedBy=paths.target

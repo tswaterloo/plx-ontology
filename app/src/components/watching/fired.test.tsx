@@ -17,4 +17,11 @@ describe("what fired: each item with its next step", () => {
     render(<FiredKind f={{ kind: "late_po", label: "Late PO", on: true, count: 1, fresh: 0, top: [item({ next_action: undefined, yours: false, first_seen: null })], rest: [] }} />);
     expect(screen.queryByTestId("fired-next")).toBeNull();
   });
+
+  it("says a late order's date as a day, not an ISO stamp", () => {
+    render(<FiredKind f={{ kind: "late_po", label: "Late PO", on: true, count: 1, fresh: 0, top: [item({ summary: "An open purchase order needed by 2026-10-24 has no supplier confirmation" })], rest: [] }} />);
+    expect(screen.getByText("Needed by 24 Oct; no supplier date.")).toBeInTheDocument();
+    expect(document.body.textContent).not.toContain("2026-10-24");
+    expect(document.body.innerHTML).not.toContain("2026-10-24");
+  });
 });

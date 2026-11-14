@@ -35,6 +35,8 @@ from typing import Any, Iterable, Mapping, Optional, Sequence
 import zipfile
 from xml.etree import ElementTree
 
+from operating.msg_reader import CFB_MAGIC
+
 MAX_FILES = 5
 MAX_BYTES = 8 * 1024 * 1024
 MAX_IMAGE_BYTES = 5 * 1024 * 1024
@@ -111,7 +113,7 @@ def kind_of(data: bytes) -> tuple[Optional[str], Optional[str]]:
         return "image", "image/webp"
     if data.startswith(b"PK\x03\x04"):
         return "spreadsheet", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-    if data.startswith(b"\xd0\xcf\x11\xe0"):
+    if data.startswith(CFB_MAGIC[:4]):
         return None, None     # an old binary Office file (.xls, .doc): not read
     try:
         text = data.decode("utf-8-sig")

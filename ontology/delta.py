@@ -129,6 +129,13 @@ DOCUMENT_SECONDS = 120.0
 # its closure every cycle, 3.2 h for 24 new changes, while the reading budget read a few
 # thousand files.
 HELD_BATCH = 2000
+# Over a Postgres base a cycle follows at most this many open records (its new changes
+# and held ones taken back), those open longest first; the rest stay open for the next
+# cycles (``PLX_DELTA_MAX_FOLLOWED``; 0: no cap). 11-13: a 213,931-record catch-up was one
+# cycle (667k objects owned, 4 h projecting, 18.8 GB peak) killed by the unit's timeout
+# after it published; a 2,107-record cycle the same night peaked at 3.4 GB anonymous
+# memory (14 workers' baseline) and projected in 3 min.
+MAX_FOLLOWED = 20_000
 HELD_BATCH_MIN = 250
 HELD_BATCH_MAX = 20000
 DOCUMENT_LIMIT = 60.0
@@ -551,6 +558,17 @@ class State:
         for source, key in rows:
             out.setdefault(source, []).append(_tuple(json.loads(key)))
         return {s: sorted(v, key=_order) for s, v in out.items()}
+
+    def oldest_open(self, count: int, sources: Iterable[str]) -> dict[str, set[str]]:
+        """source -> the JSON keys of the ``count`` open records of ``sources`` open
+        longest (``seen_at``, then source and key: the same records while none changes)."""
+        out: dict[str, set[str]] = {}
+        for source, key in self.conn.execute(
+                "SELECT source, key FROM changed WHERE closed = ? AND source IN (SELECT value "
+                "FROM json_each(?)) ORDER BY seen_at, source, key LIMIT ?",
+                (OPEN, json.dumps(sorted(sources)), int(count))):
+            out.setdefault(source, set()).add(key)
+        return out
 
     def hold(self, held: Mapping[str, Mapping[Any, Iterable[str]]],
              projected: Mapping[str, Iterable[Any]]) -> None:
@@ -1843,6 +1861,9 @@ def build_delta(state_dir: Path, mirror: Path, delta_dir: Path, *, tenant: str =
                 fresh[source] = sorted(set(fresh.get(source, ())) | {_tuple(k) for k in keys}, key=_order)
         if report.get("mail_skipped"):
             fresh["graph_mail"] = []
+        if base.postgres and not force_changed and not compact_only:
+            # a backlog is followed a part a cycle, oldest first; the rest stays open
+            fresh = cap_followed(state, fresh, environ, report)
         report["followed"] = {s: len(v) for s, v in fresh.items()}
         if not force_changed and not compact_only:
             short = preflight(sum(report["followed"].values()), delta_dir, environ)
@@ -2526,6 +2547,41 @@ def take_held(state: State, environ: Mapping[str, str], report: dict[str, Any], 
     taken = state.take(count, sources)
     report["held_queue"] = {"batch": batch, "taken": sum(len(v) for v in taken.values())}
     return taken
+
+
+def cycle_cap(environ: Mapping[str, str]) -> int:
+    """The most open records a cycle over a Postgres base follows (``MAX_FOLLOWED``,
+    ``PLX_DELTA_MAX_FOLLOWED``); 0: no cap (``0`` or less). A value that is no number is
+    the default, never no cap."""
+    raw = environ.get("PLX_DELTA_MAX_FOLLOWED")
+    if raw is None or not raw.strip():
+        return MAX_FOLLOWED
+    try:
+        return max(int(float(raw)), 0)
+    except (ValueError, OverflowError):
+        return MAX_FOLLOWED
+
+
+def cap_followed(state: State, fresh: Mapping[str, list[Any]], environ: Mapping[str, str],
+                 report: dict[str, Any]) -> dict[str, list[Any]]:
+    """``fresh`` (source -> open records to follow) cut to the cycle's cap
+    (:func:`cycle_cap`): the ones open longest first (:meth:`State.oldest_open`, the
+    order a resumed cycle reads them in again). The rest stay open, untouched, for the
+    next cycles: a catch-up is several layers, each published and applied before the next
+    one's closure reads the base (11-13: 213,931 records in one cycle, 667k objects, 4 h of
+    projection, an 18.8 GB peak, killed after it). ``report["deferred"]``: per source,
+    the records left open."""
+    cap = cycle_cap(environ)
+    total = sum(len(v) for v in fresh.values())
+    report["followed_cap"] = cap
+    if not cap or total <= cap:
+        return dict(fresh)
+    chosen = state.oldest_open(cap, [s for s, keys in fresh.items() if keys])
+    out = {s: [k for k in keys if json.dumps(k) in chosen.get(s, ())]
+           for s, keys in fresh.items()}
+    report["deferred"] = {s: len(fresh[s]) - len(out[s]) for s in fresh
+                          if len(fresh[s]) != len(out[s])}
+    return out
 
 
 def adapt_held_batch(state: State, environ: Mapping[str, str],
@@ -3278,7 +3334,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                         "started_at", "layer", "changed", "new_changes", "records", "owned",
                         "projected", "seconds", "mail_skipped", "closure", "postgres",
                         "documents", "swept", "status", "resumed", "resumed_since",
-                        "preflight")}
+                        "preflight", "followed", "deferred", "held_queue")}
                     line["command"] = args.command
                     if report.get("status") == "preflight_refused":   # the unit fails: seen
                         line["error"] = "preflight_refused: " + json.dumps(

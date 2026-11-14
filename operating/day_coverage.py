@@ -443,8 +443,9 @@ def measure(st: Any, people: Any, *, role: str, replay_dir: Path, since: datetim
                 events[eid] = json.loads(body)
     finally:
         queue.close()
-    last = rp.data_end(st, ap._iso(until + config["horizon"]))
-    a_until = ap._iso(min(until + config["horizon"], last))
+    closes = rp.answer_end(until, config["horizon"])
+    last = rp.data_end(st, ap._iso(closes))
+    a_until = ap._iso(min(closes, last))
     actions: list[dict[str, Any]] = []
     for provider in config["providers"]:
         actions += [{**a, "system": "mail" if a["kind"] == "mail_sent" else

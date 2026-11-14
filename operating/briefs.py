@@ -993,8 +993,7 @@ def talking_points(sections: list[dict[str, Any]]) -> dict[str, Any]:
             if key in ("money", "threads"):
                 break   # one point each
     return _section_done("talking_points", "Suggested talking points", points,
-                         note="Drawn from the lines below, each with its citations; no model "
-                              "call.")
+                         note="Drawn from the lines below, each with its sources.")
 
 
 def _section_done(key: str, title: str, rows: list[dict[str, Any]], *,
@@ -1521,7 +1520,8 @@ class WeeklyArchive:
         import sqlite3
         self.path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
         conn = sqlite3.connect(self.path, timeout=5)
-        os.chmod(self.path, 0o600)
+        from operating.file_modes import keep_private
+        keep_private(self.path, 0o600)
         _schemas.apply(conn, _BRIEFS)
         return conn
 

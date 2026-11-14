@@ -38,6 +38,7 @@ from . import autopilot_receivables as ar
 WORKFLOWS = ("invoice_entry", "shipment_posting", "cash_application")
 AFTER_DAYS = {"invoice_entry": 14, "shipment_posting": 7, "cash_application": 30}
 CENT = Decimal("0.01")
+HANDLER_SECONDS = 60
 
 
 def _lines_of(work: Mapping[str, Any]) -> Counter:
@@ -171,12 +172,16 @@ def score_day(st: Any, people: Any, registry: Mapping[str, Any], workflow: str,
         if workflow == "cash_application" else finder(st, registry, day)
     total: Counter = Counter(events=len(events))
     for event in events:
-        ctx = ap.Ctx(st, day, time.monotonic() + 60, ())
-        work = handler(ctx, event)
+        # the handler runs under a per-item budget (an entry it cannot prepare in time is
+        # not prepared); the judge reads what was entered, unbudgeted
+        try:
+            work = handler(ap.Ctx(st, day, time.monotonic() + HANDLER_SECONDS, ()), event)
+        except ap.HandlerTimeout:
+            work = {"skip": "handler_timeout"}
         if work.get("skip"):
             total["skip:" + work["skip"]] += 1
             continue
-        total.update(judge(ctx, event, work, day))
+        total.update(judge(ap.Ctx(st, day, float("inf"), ()), event, work, day))
     return {"workflow": workflow, "day": day.isoformat(), "counts": dict(total)}
 
 

@@ -14,6 +14,8 @@ WorkingDirectory=@PLX_CURRENT@/app
 Environment=NODE_ENV=production
 Environment=NEXT_TELEMETRY_DISABLED=1
 Environment=PATH=/data/tools/node/bin:/usr/bin:/bin
+# names its Postgres sessions after the unit (ARCH T2: pg_stat_activity, slow-query log)
+Environment=PGAPPNAME=%N
 # Loopback only: Caddy is the only way in.
 ExecStart=/data/tools/node/bin/node node_modules/next/dist/bin/next start -p 3000 -H 127.0.0.1
 Restart=on-failure

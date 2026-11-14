@@ -4,7 +4,7 @@ import { ChevronRight, Paperclip } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { getSource } from "@/lib/api";
 import { cn } from "@/lib/cn";
-import { plainError } from "@/lib/errors";
+import { ApiError, plainError } from "@/lib/errors";
 import { fieldLabel, fieldValue, formatDateTime, recordKind, SYSTEM_LABEL } from "@/lib/format";
 import type { SourceView } from "@/lib/types";
 import { curatedFields } from "./source-chip";
@@ -496,12 +496,15 @@ export function SourceLoader({
   const [view, setView] = useState<SourceView | null>(null);
   const [text, setText] = useState("");
   const [error, setError] = useState<string | null>(null);
+  // a source that isn't there (or isn't the reader's) is said plainly, not as a failure
+  const [missing, setMissing] = useState(false);
   const [more, setMore] = useState(false);
   const seen = useRef(onView);
   seen.current = onView;
   const load = useCallback(() => {
     const c = new AbortController();
     setError(null);
+    setMissing(false);
     setView(null);
     getSource(handle, 0, c.signal)
       .then((v) => {
@@ -509,7 +512,11 @@ export function SourceLoader({
         setText(v.text ?? "");
         seen.current?.(v);
       })
-      .catch((e) => !c.signal.aborted && setError(plainError(e)));
+      .catch((e) => {
+        if (c.signal.aborted) return;
+        setMissing(e instanceof ApiError && e.status === 404);
+        setError(plainError(e));
+      });
     return () => c.abort();
   }, [handle]);
   useEffect(() => load(), [load]);
@@ -534,7 +541,13 @@ export function SourceLoader({
     return (
       <div className={pad}>
         <H className="sr-only" id={titleId}>Source</H>
-        <ErrorNotice message={error} onRetry={load} />
+        {missing ? (
+          <p className="text-[13px] text-muted" data-testid="source-missing">
+            This source isn't here, or you don't have access to it. The link may be old.
+          </p>
+        ) : (
+          <ErrorNotice message={error} onRetry={load} />
+        )}
       </div>
     );
   }

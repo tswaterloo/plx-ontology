@@ -1,4 +1,4 @@
-"""Small HTTPS-only GET transport shared by read-only integrations."""
+"""Small GET transport shared by read-only integrations (HTTPS sources; loopback for this machine's own API)."""
 
 from __future__ import annotations
 
@@ -110,3 +110,23 @@ def get_json(url: str, headers: Mapping[str, str], *, max_bytes: int = 4_000_000
         raise _http_error(exc) from None
     except Exception as exc:
         raise SourceUnavailable(f"read-only source GET failed: {type(exc).__name__}") from None
+
+
+LOOPBACK_HOSTS = ("127.0.0.1", "localhost", "::1")
+
+
+def get_local_json(url: str, *, max_bytes: int = 65536, timeout_seconds: float = 10) -> Any:
+    """One GET of this machine's own API (http or https on a loopback host only, no
+    credentials in the URL), never following a redirect; anything else is refused."""
+    parts = urlsplit(url)
+    if (parts.scheme not in ("http", "https") or parts.hostname not in LOOPBACK_HOSTS
+            or parts.username or parts.password or parts.fragment):
+        raise ValueError("local URL must be a loopback http(s) address")
+    if not isinstance(max_bytes, int) or not 1 <= max_bytes <= 4_000_000:
+        raise ValueError("local response bound must be 1 byte..4 MB")
+    request = Request(url, headers={"Accept": "application/json"}, method="GET")
+    with build_opener(_NoRedirect()).open(request, timeout=timeout_seconds) as response:
+        raw = response.read(max_bytes + 1)
+    if len(raw) > max_bytes:
+        raise SourceUnavailable("local response exceeds configured bound")
+    return json.loads(raw)

@@ -10,6 +10,7 @@ It reads no source and writes nothing; it ends at end of input. Not a CLI for pe
 
 from __future__ import annotations
 
+import contextlib
 import json
 import struct
 import sys
@@ -32,6 +33,7 @@ def _read_exact(stream: BinaryIO, size: int) -> bytes | None:
 
 def serve(source: BinaryIO, sink: BinaryIO) -> None:
     from integrations.capture_mail import extract_attachment
+    from integrations.document_understanding import ocr_limits
 
     while True:
         head = _read_exact(source, HEADER.size)
@@ -44,9 +46,14 @@ def serve(source: BinaryIO, sink: BinaryIO) -> None:
             return
         request = json.loads(header)
         try:
-            status, text, readings = extract_attachment(
-                content, request["attachment"], request["defer_ocr"], request["defer_all"],
-                readings=request.get("readings", True), image_ocr=request.get("image_ocr"))
+            # ``ocr_limits`` [pages, dpi]: page-capped OCR (``document_understanding
+            # .ocr_limits``; the attachment fast path); a bad value is this reading's failure.
+            limits = request.get("ocr_limits")
+            with (ocr_limits(*limits) if limits is not None else contextlib.nullcontext()):
+                status, text, readings = extract_attachment(
+                    content, request["attachment"], request["defer_ocr"],
+                    request["defer_all"], readings=request.get("readings", True),
+                    image_ocr=request.get("image_ocr"))
         except Exception:  # noqa: BLE001 - an extractor defect is this reading's status
             status, text, readings = "failed", None, None
         answer = json.dumps([status, text, readings], ensure_ascii=False).encode("utf-8")

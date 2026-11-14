@@ -32,19 +32,24 @@ OID = "11111111-2222-4333-8444-555555555555"
 EXCLUDED = "excluded.person@plx.example"
 
 
-class Guard:
-    """A people exclusion naming one object id and one address (``unavailable`` set: the
-    list is not loaded)."""
-    unavailable = None
+# The tenant's directory as the mail capture records it: each colleague's address and
+# object id (the excluded person's too), so the domain is known and these are decided.
+PEOPLE = {EXCLUDED: OID, **{f"{name}@plx.example": f"{i:08d}-2222-4333-8444-555555555555"
+                            for i, name in enumerate(("ana", "colleague", "colleague2",
+                                                      "vince"), start=20)}}
 
-    def is_excluded(self, value):
-        return str(value).lower() in (OID, EXCLUDED)
 
-    def decides(self, address):
-        return address.endswith("@plx.example")
-
-    def known_domains(self):
-        return {"plx.example"}
+def Guard(also=(), unavailable=False):
+    """The real people exclusion (``PeopleExclusion``) naming ``OID`` and ``also`` (object
+    ids or the directory's addresses), with the directory attached; ``unavailable``: the
+    list not loaded. Never a stand-in: a fake guard's answers hid what the real one does
+    with an address it cannot decide (CT-T-06)."""
+    from integrations.people_exclusion import PeopleExclusion
+    if unavailable:
+        return PeopleExclusion(unavailable="excluded_people_oids_absent")
+    guard = PeopleExclusion([OID, *(PEOPLE.get(v, v) for v in also)])
+    guard.attach_directory([(oid, address, []) for address, oid in PEOPLE.items()])
+    return guard
 
 
 def client_for(backend, principal):
@@ -99,6 +104,9 @@ class WorkLogApi(unittest.TestCase):
         self.assertEqual(self.log(self.ben, record="PO-90412")["total"], 0)
         self.assertEqual(self.ana.get("/api/work-log", params={"everyone": True}).status_code,
                          403)
+        # /api/me tells the page who may ask for everyone's, by the same decision
+        self.assertEqual((self.ana.get("/api/me").json()["owner"],
+                          self.owner.get("/api/me").json()["owner"]), (False, True))
         every = self.log(self.owner, everyone=True)
         self.assertEqual(every["total"], 4)
         self.assertFalse(any(e["mine"] for e in every["events"]))
@@ -194,18 +202,64 @@ class WorkLogApi(unittest.TestCase):
 
     def test_the_exclusion_fails_closed_when_writing_and_reading(self):
         ask(self.ana, "where is PO 90412, is it late")
-        self.guard.unavailable = "excluded_people_oids_absent"
+        self.guard = Guard(unavailable=True)
         ask(self.ana, "which orders are late")          # not written
         page = self.log(self.ana)
         self.assertEqual((page["total"], page["events"]), (None, []))
         answer = ask(self.ana, "what did I ask today")
         self.assertEqual(answer["outcome"], "refused")
-        self.guard.unavailable = None
+        self.guard = Guard()
         self.assertEqual(self.log(self.ana)["total"], 1)
         # an excluded person's own work is never written
         excluded = client_for(self.backend, f"staff:{OID}")
         ask(excluded, "where is PO 90412, is it late")
         self.assertEqual(self.log(self.owner, everyone=True)["total"], 1)
+
+    def test_a_signed_in_reader_is_logged_under_the_exclusion_the_api_loads(self):
+        """The guard the API builds (``load_exclusion``: object ids alone) decides no
+        address. A signed-in reader (object id and address, as an Entra sign-in carries)
+        was shut out for their undecidable address, so nobody's work was logged; the
+        object id now decides: their work is logged, the excluded person's never is, and
+        a session with an address alone stays out (fail closed). CT-T-06."""
+        import dataclasses
+        import os
+        from operating.pg.permissions import load_exclusion
+        with mock.patch.dict(os.environ, {"PLX_EXCLUDED_PEOPLE_OIDS": OID}):
+            os.environ.pop("PLX_EXCLUDED_PEOPLE_FILE", None)
+            self.guard = load_exclusion()
+        self.assertEqual(repr(self.guard), "PeopleExclusion(ids_only, 1 ids)")
+
+        def signed_in(principal, oid, email):
+            session = dataclasses.replace(fixture_identity("plx", [principal])(),
+                                          subject_oid=oid, email=email,
+                                          identities=frozenset({oid} if oid else ()))
+            app = create_app(self.backend, DevAuth(lambda: session, mode="mock"),
+                             secure_cookie=False)
+            client = TestClient(app, base_url="http://testserver")
+            self.assertEqual(client.post("/api/auth/dev-login", json={}).status_code, 200)
+            return client
+        dee = signed_in("staff:dee", "77777777-2222-4333-8444-555555555555", "dee@plx.example")
+        gone = signed_in("staff:gone", OID, EXCLUDED)
+        bare = signed_in("staff:bare", None, "bare@plx.example")
+        for client in (dee, gone, bare):
+            ask(client, "where is PO 90412, is it late")
+        self.assertEqual(self.log(dee)["total"], 1)
+        everyone = self.log(self.owner, everyone=True)
+        self.assertEqual(everyone["total"], 1, everyone)
+        self.assertNotIn(EXCLUDED, json.dumps(everyone))
+
+    def test_saving_a_record_whose_id_is_outside_the_thread_grammar_is_kept(self):
+        """A projected record's id (``{"id":"..."}``) or a friendly path's ref with a
+        space was refused (422) and the Save lost; it is kept with its record."""
+        for object_id in ('PurchaseOrder:portal.app_purchase_order:{"id":"po-1"}',
+                          "Ridgeway Labels"):
+            sent = self.ana.post("/api/work-log/saved", json={
+                "saved": True, "kind": "object", "label": "PO 1", "object_type": "Supplier",
+                "object_id": object_id})
+            self.assertEqual(sent.status_code, 200, sent.text)
+        events = self.log(self.ana, kind="save")["events"]
+        self.assertEqual(len(events), 2, events)
+        self.assertIn('{\\"id\\":\\"po-1\\"}', json.dumps(events))
 
     def test_ask_about_my_own_work_answers_from_my_log_only(self):
         ask(self.ana, "where is PO 90412, is it late")
@@ -417,8 +471,7 @@ class Loops(unittest.TestCase):
         self.send(["colleague@plx.example"], card="card-2")
         self.assertEqual(self.store.events(reader="plx:staff:ana")[1], 1)
         # the colleague is excluded later: their row is hidden from then on
-        self.guard.is_excluded = lambda value: str(value).lower() in (
-            OID, EXCLUDED, "colleague@plx.example")
+        self.guard = Guard(also=["colleague@plx.example"])
         self.assertEqual(self.store.events(reader="plx:staff:ana")[1], 0)
 
     def test_the_log_is_append_only_and_refuses_unknown_events(self):
@@ -445,10 +498,14 @@ class TimeSaved(unittest.TestCase):
         self.store = wl.WorkLog(None, guard=lambda: self.guard, clock=lambda: self.now)
 
     def reader(self, who):
+        """A signed-in reader: their address and the object id their sign-in carries
+        (the exclusion decides a reader by it; the address alone is undecidable)."""
+        import uuid
         return type("R", (), {"key": f"plx:staff:{who}", "display_name": who.title(),
                               "email": f"{who}@plx.example",
                               "session": type("S", (), {"identities": frozenset(),
-                                                        "subject_oid": None})()})()
+                                                        "subject_oid": str(uuid.uuid5(
+                                                            uuid.NAMESPACE_DNS, who))})()})()
 
     def put(self, who, kind, verb, item="i1", at=None, sent=True, people=(), outcome=None):
         """``outcome``: the status Notes records on an action or write event."""
@@ -652,13 +709,11 @@ class TimeSaved(unittest.TestCase):
                 self.assertNotIn("all", [k for k, _ in reads])
                 self.assertTrue(reads and max(size for _, size in reads) <= 4, reads)
         # a row excluded after it was logged is skipped by the batched read too
-        self.guard.is_excluded = lambda value: str(value).lower() in (
-            OID, EXCLUDED, "colleague@plx.example")
+        self.guard = Guard(also=["colleague@plx.example"])
         self.put("ana", "action", "sent", "late", outcome="sent",
                  people=["colleague2@plx.example"])
         before = self.store.events(reader="plx:staff:ana")[1]
-        self.guard.is_excluded = lambda value: str(value).lower() in (
-            OID, EXCLUDED, "colleague2@plx.example")
+        self.guard = Guard(also=["colleague2@plx.example"])
         self.assertEqual(self.store.events(reader="plx:staff:ana")[1], before - 1)
 
     def test_an_answer_too_large_to_keep_keeps_its_drafts_and_says_so(self):
@@ -714,11 +769,10 @@ class TimeSaved(unittest.TestCase):
         # a row naming a person excluded later is no longer counted; no list, nothing
         self.put("ana", "action", "sent", "cx", people=["colleague@plx.example"], outcome="sent")
         before = wl.time_saved(self.store, reader="plx:staff:ana")["people"][0]
-        self.guard.is_excluded = lambda value: str(value).lower() in (
-            OID, EXCLUDED, "colleague@plx.example")
+        self.guard = Guard(also=["colleague@plx.example"])
         after = wl.time_saved(self.store, reader="plx:staff:ana")["people"][0]
         self.assertEqual(before["weeks"][-1]["minutes"] - after["weeks"][-1]["minutes"], 6)
-        self.guard.unavailable = "not loaded"
+        self.guard = Guard(unavailable=True)
         self.assertIsNone(wl.time_saved(self.store, reader="plx:staff:ana"))
 
     def test_a_reader_sees_their_own_and_only_the_owner_everyones(self):
@@ -741,7 +795,7 @@ class TimeSaved(unittest.TestCase):
         every = owner.get("/api/time-saved", params={"everyone": True}).json()
         self.assertEqual([p["mine"] for p in every["people"]], [False])   # Ana alone
         self.assertEqual(ana.get("/api/time-saved", params={"weeks": 13}).status_code, 422)
-        self.guard.unavailable = "not loaded"
+        self.guard = Guard(unavailable=True)
         closed = ana.get("/api/time-saved").json()
         self.assertEqual((closed["available"], closed["people"]), (False, []))
 
@@ -1028,11 +1082,11 @@ class UsageReview(unittest.TestCase):
 
     def test_fails_closed_on_the_exclusion_and_withholds_pay_and_hr_text(self):
         ask(self.ana, "Is SIN 130 692 544 on file for the new hire?")
-        self.guard.unavailable = "not loaded"
+        self.guard = Guard(unavailable=True)
         self.assertEqual(self.review(), {"withheld": "people exclusion not loaded"})
         with mock.patch("sys.stdout"):
             self.assertEqual(ur.main(["--state-dir", str(self.state)]), 3)
-        self.guard.unavailable = None
+        self.guard = Guard()
         texts = json.dumps(self.review()["answers"])
         self.assertNotIn("130 692 544", texts)
         self.assertIn(ur.WITHHELD_PAY_HR, texts)
@@ -1045,7 +1099,7 @@ class UsageReview(unittest.TestCase):
             kind="note", verb="noted", title="x", thread="record:note/general",
             source="feedback")
         self.assertEqual(self.review()["people"].get("X"), {"note": 1})
-        self.guard.is_excluded = lambda v: str(v).lower() in (OID, EXCLUDED, later)
+        self.guard = Guard(also=[later])
         self.assertEqual(self.review()["people"].get("X"), None)
 
 

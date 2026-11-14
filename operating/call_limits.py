@@ -170,6 +170,33 @@ def sql_deadline(at: float | None) -> Iterator[None]:
         _SQL_DEADLINE.reset(token)
 
 
+# A whole-table fact read on Postgres (``TraverseTools._store_cached``) is not cut at the
+# SQL deadline by default: a page's read that outran its request goes on, and the facts
+# it reads serve the background read that keeps the page. Inside ``facts_cut`` it is cut
+# there (``PgCompatConnection.deadline_bounded``): for a step that would rather report
+# "not checked" than wait out a whole-table read (a briefing's involvement checks, 4 s,
+# held 4 minutes by one cold link-slice read while the facts were not kept).
+_FACTS_CUT: ContextVar[bool] = ContextVar("plx_facts_cut", default=False)
+
+
+def facts_cut_now() -> bool:
+    """True inside ``facts_cut``: a Postgres fact read ends at the SQL deadline."""
+    return _FACTS_CUT.get()
+
+
+@contextmanager
+def facts_cut(at: float) -> Iterator[None]:
+    """``sql_deadline(at)``, with the whole-table fact reads on Postgres cut at it too
+    (``facts_cut_now``): a cut read raises ``sqlite3.OperationalError("interrupted")``
+    and keeps nothing; the caller must count what it could not read."""
+    token = _FACTS_CUT.set(True)
+    try:
+        with sql_deadline(at):
+            yield
+    finally:
+        _FACTS_CUT.reset(token)
+
+
 @contextmanager
 def bounded(limit: float | None) -> Iterator[None]:
     """Run the block under ``limit`` seconds: ``ToolTimedOut`` at the limit (at once when

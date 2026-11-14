@@ -9,7 +9,8 @@
   "grace_seconds": 120
  },
  "portal": {
-  "budget_seconds": 1500
+  "budget_seconds": 1500,
+  "full_below_rows": 70000
  },
  "bc": {
   "entity_sets": [

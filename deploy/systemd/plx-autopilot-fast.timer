@@ -1,0 +1,10 @@
+[Unit]
+Description=PLX autopilot fast feed 1 minute after the last start ended
+
+[Timer]
+OnBootSec=10min
+OnUnitInactiveSec=1min
+AccuracySec=10s
+
+[Install]
+WantedBy=timers.target

@@ -370,6 +370,14 @@ SELECT ver, object_id, relation, island, l1_handle, recorded_at AS old_start,
        count(*) OVER (PARTITION BY object_id, relation, island) AS n
   FROM s WINDOW i AS (PARTITION BY object_id, relation, island ORDER BY recorded_at, ver)"""
 
+# ``ontology.project.event_id_of`` of an event row ``e`` as a version of ``p.object_id``
+# yields it (a date event: ``part`` is its time path, ``field_path`` less the record's
+# prefix ``row.``, ``key.`` or ``rows.<n>.``)
+EVENT_ID_SQL = (
+    "'E:' || left(encode(sha256(convert_to(e.event_type || '|' || e.l1_handle || '|' || "
+    r"p.object_id || '|' || regexp_replace(e.field_path, '^(row|key|rows\.[0-9]+)\.', ''), "
+    "'UTF8')), 'hex'), 40)")
+
 OBJ_STEPS = (
     ("sql", "DELETE FROM f3_vp WHERE n = 1"),
     ("sql", "CREATE INDEX ON f3_vp (ver)"),
@@ -393,14 +401,14 @@ OBJ_STEPS = (
      "AND i.l1_handle = p.l1_handle AND i.recorded_at = p.old_start", "recorded_at = p.start"),
     # events read off a version's values, of that object (not capture-observed changes,
     # which cite the capture that first held the value: the run's first, as before; nor
-    # another object's event citing the same handle, whose versions may not be folded)
+    # another object's event citing the same handle, whose versions may not be folded).
+    # The object's own: its id is the one the projector gives a version of that object
+    # (``ontology.project.event_id_of``: type, handle, object, time path), whatever other
+    # objects it names through a link (``ItemLedgerEntry.posted``'s item): those fold too
     ("sql", "CREATE TEMP TABLE f3_ev ON COMMIT DROP AS SELECT e.event_id, p.from_end, "
      "p.start FROM ontology.events e JOIN f3_vp p ON e.l1_handle = p.l1_handle "
-     "AND e.recorded_at = p.old_start WHERE e.time_basis <> 'capture_observed' AND EXISTS ("
-     "SELECT 1 FROM ontology.event_objects eo WHERE eo.event_id = e.event_id "
-     "AND eo.object_id = p.object_id) AND NOT EXISTS (SELECT 1 FROM "
-     "ontology.event_objects eo WHERE eo.event_id = e.event_id "
-     "AND eo.object_id <> p.object_id)"),
+     "AND e.recorded_at = p.old_start WHERE e.time_basis <> 'capture_observed' "
+     "AND e.event_id = " + EVENT_ID_SQL),
     ("delete", "event_objects", "o", "f3_ev x", "x.from_end > 1 AND o.event_id = x.event_id"),
     ("delete", "events", "e", "f3_ev x", "x.from_end > 1 AND e.event_id = x.event_id"),
     ("update", "events", "e", "f3_ev x", "x.from_end = 1 AND e.event_id = x.event_id",

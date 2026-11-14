@@ -323,15 +323,23 @@ class FakeIndex:
     def scope(self, policy, actor):
         return {r[4] for r in self.rows if policy.may_read(actor, r[4])}
 
+    @staticmethod
+    def _units(scope):
+        # understand() hands an index the reader's scope wrapped with its item check
+        # (qu.with_item_check); no row here is of an item-gated source
+        return getattr(scope, "scope", scope)
+
     def _row(self, r, matched):
         return qu.EntityRow(r[0], r[0], r[1], r[2], qu.fold(r[2]), tuple(r[3]), matched, 1.0)
 
     def by_identifier(self, forms, scope, types=None):
+        scope = self._units(scope)
         hits = [r for r in self.rows if set(r[3]) & {f.upper() for f in forms}]
         return ([self._row(r, next(a for a in r[3] if a in {f.upper() for f in forms}))
                  for r in hits if r[4] in scope], {r[0] for r in hits if r[4] not in scope})
 
     def near_identifier(self, forms, scope, types=None):
+        scope = self._units(scope)
         return [self._row(r, a) for r in self.rows if r[4] in scope for a in r[3]
                 if any(qu.near_id(f, a) for f in forms)]
 

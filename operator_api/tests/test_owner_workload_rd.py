@@ -215,6 +215,27 @@ class Owner(unittest.TestCase):
         # the owner as a plain reader is not even shown to themselves
         self.assertEqual(self.team(OWNER).json()["people"], [])
 
+    def test_a_snapshot_only_in_the_state_directory_is_read_with_the_same_exclusions(self):
+        # the nightly unit writes <state>/team-activity.json; a host that never named the
+        # file read nothing and showed "not counted yet" beside a fresh snapshot
+        state = self.dir / "state"
+        state.mkdir()
+        (self.dir / ta.SNAPSHOT_FILE).rename(state / ta.SNAPSHOT_FILE)
+        self.backend.owner = True
+        self.assertEqual(self.team(OWNER).json()["state"], "not_built")
+        self.backend.state_dir = str(state)
+        found = self.team(OWNER)
+        self.assertEqual((found.json()["state"], self.listed(found)),
+                         ("ready", [NAMES[ME], NAMES[B], NAMES[C]]))
+        for gone in (OWNER, EXCLUDED):
+            self.assertNotIn(NAMES[gone], found.text)
+        self.backend.owner = False
+        self.assertEqual(self.listed(self.team()), [NAMES[ME]])
+        # the data directory's own file still wins over the state directory's
+        self.snapshot([ME])
+        self.backend.owner = True
+        self.assertEqual(self.listed(self.team(OWNER)), [NAMES[ME]])
+
     def test_the_owner_is_hidden_from_every_reader_with_no_setting(self):
         """PLX_TEAM_HIDDEN_PEOPLE unset: an ordinary reader's own row names no owner in
         'works with', and a drill-down lists no item that names the owner (WEB review)."""

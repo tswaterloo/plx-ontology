@@ -1,5 +1,6 @@
 "use client";
 
+import { useReaderWords } from "@/components/view-as";
 import Link from "next/link";
 import { useState } from "react";
 import { CardActions } from "@/components/card-actions";
@@ -13,10 +14,11 @@ import type { ActionResult, ReplyLine, ReplyTriage } from "@/lib/types";
 export function ReplyList({ triage }: { triage: ReplyTriage }) {
   const [states, setStates] = useState<Record<string, ActionResult>>({});
   const lines = triage.lines ?? [];
+  const w = useReaderWords();
   return (
     <div className="space-y-4" data-testid="reply-triage">
-      <p className="text-[12px] text-muted">{plural(triage.total, "message")} waiting on your reply, from your own mailbox and chats.</p>
-      {lines.length === 0 && <EmptyState title="Nothing is waiting on your reply." />}
+      <p className="text-[12px] text-muted">{plural(triage.total, "message")} waiting on {w.your} reply, from {w.your === "your" ? "your own" : w.your} mailbox and chats.</p>
+      {lines.length === 0 && <EmptyState title={`Nothing is waiting on ${w.your} reply.`} />}
       <ul className="space-y-3">
         {lines.map((line: ReplyLine) => (
           <li key={line.id} className="space-y-1 rounded-lg border border-border p-3 text-[13px]" data-testid="reply-line">

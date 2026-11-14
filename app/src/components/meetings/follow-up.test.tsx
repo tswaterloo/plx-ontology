@@ -1,7 +1,15 @@
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { describe, expect, it } from "vitest";
-import { groupActions, MeetingFollowUpView, MyActionItemsView, statusText, type Action, type FollowUp } from "./follow-up";
+import { describe, expect, it, vi } from "vitest";
+import { ApiError } from "@/lib/errors";
+
+const api = vi.hoisted(() => ({ fail: null as unknown }));
+vi.mock("@/lib/api", async (orig) => ({
+  ...(await orig<typeof import("@/lib/api")>()),
+  getMeetingFollowUp: () => Promise.reject(api.fail),
+}));
+
+import { groupActions, MeetingFollowUpPanel, MeetingFollowUpView, MyActionItemsView, statusText, type Action, type FollowUp } from "./follow-up";
 
 const cite = (t: string) => [`transcript://granola/m1@abc#t=${t}`];
 const actions: Action[] = [
@@ -41,7 +49,7 @@ describe("meeting follow-up", () => {
     // the row and the "open by meeting" rail both link the meeting
     const links = screen.getAllByText("Ops weekly").map((e) => e.closest("a")?.getAttribute("href"));
     expect(links).toEqual(["/meetings/m1", "/meetings/m1"]);
-    expect(statusText(actions[0])).toBe("Overdue, due 2099-01-02");
+    expect(statusText(actions[0])).toBe("Overdue, due 2 Jan 2099");
     expect(statusText(actions[2])).toBe("Done: purchase order created");
   });
 
@@ -87,5 +95,18 @@ describe("meeting follow-up", () => {
     await user.keyboard(" ");
     expect(toggle).toHaveAttribute("aria-expanded", "false");
     expect(screen.queryByTestId("action-item-detail")).toBeNull();
+  });
+
+  it("a meeting that isn't the reader's is said plainly with the way back; a failure still offers a retry", async () => {
+    api.fail = new ApiError(404, "not_found");
+    const { unmount } = render(<MeetingFollowUpPanel meetingId="m-gone" />);
+    expect(await screen.findByTestId("follow-up-missing")).toHaveTextContent("this meeting isn't one you attended");
+    expect(screen.getByRole("link", { name: "Your meeting follow-ups" })).toHaveAttribute("href", "/meetings?view=follow-ups");
+    expect(screen.queryByRole("alert")).toBeNull();
+    unmount();
+    api.fail = new ApiError(500, "internal");
+    render(<MeetingFollowUpPanel meetingId="m-flaky" />);
+    await screen.findByRole("alert");
+    expect(screen.getByRole("button", { name: "Try again" })).toBeInTheDocument();
   });
 });

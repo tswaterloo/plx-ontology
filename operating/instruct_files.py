@@ -39,6 +39,7 @@ import threading
 from typing import Any, Callable, Mapping, Optional
 from xml.sax.saxutils import escape
 import zipfile
+from operating.file_modes import keep_private
 
 KINDS = ("docx", "xlsx", "pdf")
 MEDIA = {"docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
@@ -308,7 +309,7 @@ class UploadDesk:
         self._files: dict[str, bytes] = {}
         if directory is not None:
             (directory / "files").mkdir(parents=True, exist_ok=True, mode=0o700)
-            os.chmod(directory, 0o700)
+            keep_private(directory, 0o700)
 
     @classmethod
     def for_state_dir(cls, state_dir: Any) -> "UploadDesk":

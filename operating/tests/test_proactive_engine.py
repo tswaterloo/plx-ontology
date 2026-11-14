@@ -1196,6 +1196,91 @@ class InboxTest(Engine):
         self.assertEqual(pooled["gaps"], [])   # the unread card: no finding (the run's
         # ``Budget.pooled`` marks the rule truncated for it)
 
+    def test_a_value_many_documents_state_is_one_gap_per_record_and_closed_orders_drop(self):
+        """11-13 judging: ``missing_in_record`` raised one order up to 4 times (once per
+        assembly packet stating its date) and 13 of 15 on closed orders. One gap per
+        (attested records, field), the newest document's; the order rides on the
+        follow-up, so the active-population filter drops a closed one, counted."""
+        for n in (1, 10, 60):
+            with self.subTest(n=n):
+                packets = [f"AssemblyOrderPacket:fx:{i}" for i in range(n * 3)]
+                order_of = {p: f"SalesOrder:fx:o{i // 3}" for i, p in enumerate(packets)}
+
+                class St:
+                    class conn:
+                        @staticmethod
+                        def execute(_sql, _params):
+                            return [(p,) for p in packets]
+
+                    @staticmethod
+                    def versions(handles):
+                        return [{"l1_handle": h, "object_id": h.split("#", 1)[1],
+                                 "markings": "[]"} for h in handles]
+
+                    @staticmethod
+                    def judging(_name):
+                        return None
+
+                def call(_tool, arguments):
+                    packet = arguments["object_id"]
+                    record = order_of[packet]
+                    return {"object": {"object_id": packet,
+                                       "object_type": "AssemblyOrderPacket"},
+                            "conflicts": [],
+                            "leads": [{"kind": "missing_in_record",
+                                       "subject": "SalesOrder.required_date",
+                                       "values": [
+                                           {"value": "2026-10-01",
+                                            "citation": {"l1_handle": f"doc#{packet}"}},
+                                           {"value": None,
+                                            "citation": {"l1_handle": f"rec#{record}"}}]}]}
+                with mock.patch.object(pe.pg, "_roster",
+                                       lambda: ([("AssemblyOrderPacket", "f")], None)):
+                    result = pe._card_rules(St, AS_OF, call, len(packets))
+                gaps = result["gaps"]
+                self.assertEqual(len(gaps), n)
+                self.assertEqual(result["counts"]["repeats_merged"], 2 * n)
+                self.assertEqual(sorted(g["follow_up"][pe._ATTESTS] for g in gaps),
+                                 sorted(set(order_of.values())))
+                # never the inbox's one-item-per-order key: a late item of that order is
+                # neither displaced nor folded by the note
+                self.assertFalse([g for g in gaps if pe._ORDER in g["follow_up"]])
+                # the newest document (read first) is the one kept
+                self.assertEqual({g["object_id"] for g in gaps}, set(packets[::3]))
+                closed = {f"SalesOrder:fx:o{i}": "closed" for i in range(0, n, 2)}
+                results = {"card_rules": result}
+                pe._drop_inactive_orders(St, results, AS_OF, inactive=lambda: closed)
+                left = {g["follow_up"][pe._ATTESTS] for g in results["card_rules"]["gaps"]}
+                self.assertEqual(left, set(order_of.values()) - set(closed))
+                self.assertEqual(results["card_rules"]["not_evaluated"]["closed_order"],
+                                 len(closed))
+
+    def test_a_missing_field_note_on_an_order_never_displaces_its_late_item(self):
+        """The note carried the order on the inbox's one-item-per-
+        order key, so a low note could replace or fold that order's late item. Both show."""
+        w = World()
+        late = po(w, "Pending", "2026-10-01")
+        packet = w.obj("AssemblyOrderPacket", {"required_date": "2026-10-01"})
+        n, p = (int(o.rsplit(":", 1)[1]) for o in (late, packet))
+
+        def card_rules(st, *_a, **_k):
+            gap = pe._gap("missing_in_record", "card_rules", packet,
+                          "AssemblyOrderPacket", "k", summary="A captured document states",
+                          missing="Confirm", why="w", priority="medium",
+                          about=("AssemblyOrderPacket", ""),
+                          groups=[[(handle(p), packet, "[]")], [(handle(n), late, "[]")]])
+            gap["follow_up"][pe._ATTESTS] = late
+            return pe._result([gap])
+        with mock.patch.object(pe, "_card_rules", card_rules):
+            self.run_engine(w, call=lambda *_a: {},
+                            only=["late_or_unconfirmed_po", "card_rules"])
+        shown = self.read()["gaps"]
+        kinds = sorted(g["kind"] for g in shown)
+        self.assertEqual(len(kinds), 2, kinds)
+        self.assertIn("missing_in_record", kinds)
+        self.assertTrue({"late_po", "unconfirmed_po"} & set(kinds), kinds)
+        self.assertTrue(all(pe._ATTESTS not in g["follow_up"] for g in shown))
+
     def test_cardinality_no_gap_lost_or_duplicated_within_the_budget(self):
         for n in (1, 10, 60):
             with self.subTest(n=n):

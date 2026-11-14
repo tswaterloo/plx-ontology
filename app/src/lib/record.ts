@@ -216,7 +216,7 @@ function systemOf(s: Source): string {
 function usefulSummary(obj: ObjectPage, counterpart?: string): string | null {
   const s = readable(obj.summary).trim();
   if (!s) return null;
-  const t = typeLabel(obj.type).toLowerCase();
+  const t = (obj.type_label || typeLabel(obj.type)).toLowerCase();
   if (s.toLowerCase() === t || s === obj.type || s === obj.label) return null;
   if (counterpart && s.startsWith(counterpart)) return null;
   if (/no supplier confirmation|not established/i.test(s)) return null;
@@ -272,7 +272,11 @@ function supplierHead(obj: ObjectPage, f: Map<string, RecordFact>): RecordHead {
 function latestMessage(obj: ObjectPage): { at: string; label: string; source: Source } | null {
   const msgs = (obj.linked ?? []).filter((l) => (l.kind === "email" || l.kind === "teams") && l.at);
   msgs.sort((a, b) => (b.at ?? "").localeCompare(a.at ?? ""));
-  return msgs[0] ? { at: msgs[0].at!, label: threadSubject(msgs[0].label), source: msgs[0].source } : null;
+  if (msgs[0]) return { at: msgs[0].at!, label: threadSubject(msgs[0].label), source: msgs[0].source };
+  // the quick read can arrive with undated documents only: the dated mail in its activity
+  // still answers (a page never says "None found" beside mail it lists)
+  const mail = (obj.timeline ?? []).filter((e) => (e.system === "Email" || e.system === "Teams") && e.at && e.source).sort((a, b) => (b.at ?? "").localeCompare(a.at ?? ""))[0];
+  return mail ? { at: mail.at!, label: threadSubject(mail.title.replace(/^Email\s+/, "").replace(/\s+(?:received|sent)$/, "")), source: mail.source! } : null;
 }
 
 function customerHead(obj: ObjectPage, f: Map<string, RecordFact>): RecordHead {
@@ -394,26 +398,43 @@ export function factValue(value: string): string {
 /** Row keys a person never reads: surrogate ids and sync stamps ("Ord uniq", "Row version"). */
 const INTERNAL_FACT = /(?:^|_)(?:\w*uniq|guid|row_?version|etag|system_id|last_modified_date_time)$/i;
 
+/** The fact holding a record's own number, by type ("Shipment number" on a shipment). */
+const OWN_NUMBER: Record<string, string[]> = { Shipment: ["shipment_number"], SalesInvoice: ["invoice_number"], CreditMemo: ["credit_memo_number"] };
+
 /** Every other type: its status sentence, its facts as key facts. */
 function genericHead(obj: ObjectPage, f: Map<string, RecordFact>): RecordHead {
   // a record with no name of its own arrives labelled by its internal id ("SalesOrderLine:bc.…:{"id":…}"):
   // it is called by its kind and the record it belongs to, never by the id
   const parent = (obj.related ?? []).find((r) => /Order$/.test(r.type) && !/Line$/.test(r.type));
   const internal = /:\{|^[A-Za-z]+:[a-z]+\./.test(obj.label);
-  const name = internal ? `${parent ? `${recordLabel(parent.type, parent.label)}, ` : ""}${typeLabel(obj.type).toLowerCase()}` : recordLabel(obj.type, obj.label);
+  const named = internal ? `${parent ? `${recordLabel(parent.type, parent.label)}, ` : ""}${(obj.type_label || typeLabel(obj.type)).toLowerCase()}` : recordLabel(obj.type, obj.label);
+  // a shipment labelled "OR1000154433, shipment" has a number of its own: that is its name,
+  // the order it ships stays in the label's place below
+  const ownNo = OWN_NUMBER[obj.type] ? get(f, ...OWN_NUMBER[obj.type]) : undefined;
+  const name = ownNo && !named.includes(ownNo) ? ownNo : named;
   const s = obj.status && !/not_established|^read$/.test(obj.status.state) ? { status: recordState(obj.status.state), label: shortState(obj.status.state) } : null;
   return {
     title: name.charAt(0).toUpperCase() + name.slice(1),
-    subline: usefulSummary(obj),
+    subline: name !== named ? named : usefulSummary(obj),
     lead: fallbackLead(obj),
     badges: s && s.label ? [s] : [],
     stats: [],
     keyFacts: [...f.values()]
       .filter((x) => x.label.toLowerCase() !== "name" && !INTERNAL_FACT.test(x.key) && !/\buniq\b/i.test(x.label))
+      // the same value under a second name ("Lot text" beside "Lot number") is said once
+      .filter((x, i, all) => all.findIndex((y) => factValue(y.value) === factValue(x.value) && aliasLabels(y.label, x.label)) === i)
       .slice(0, 6)
       .map((x) => ({ label: x.label, value: factValue(x.value), source: x.source })),
     askLabel: name,
   };
+}
+
+/** Two names of one identifier ("Lot number" and "Lot text"): the same words but a last one that only says it is a name, number or code. */
+function aliasLabels(a: string, b: string): boolean {
+  if (a === b) return true;
+  const ID = /^(?:text|number|no|code|name|id|ref|reference)$/i;
+  const wa = a.toLowerCase().split(/\s+/), wb = b.toLowerCase().split(/\s+/);
+  return wa.length === wb.length && wa.length > 1 && wa.slice(0, -1).join(" ") === wb.slice(0, -1).join(" ") && ID.test(wa[wa.length - 1]) && ID.test(wb[wb.length - 1]);
 }
 
 function shortState(state: string): string {
@@ -445,9 +466,13 @@ export interface Thread {
 }
 
 /** Messages and documents grouped by thread subject, latest first; a generic "Email message" stays its own row. */
+/** A mail's inline picture ("image006.png", "Outlook-abc.png"): a signature logo, not a document. */
+export const INLINE_IMAGE = /^(?:image\d{3}|Outlook-[\w-]+)\.(?:png|jpe?g|gif|bmp)$/i;
+
 export function groupLinked(items: LinkedItem[]): Thread[] {
   const map = new Map<string, Thread>();
   for (const l of items) {
+    if (l.kind !== "email" && l.kind !== "teams" && INLINE_IMAGE.test(l.label.trim())) continue;
     const subject = threadSubject(l.label) || l.label;
     const key = `${l.kind}|${subject.toLowerCase()}`;
     const t = map.get(key) ?? { subject, count: 0, latest: null, kind: l.kind, items: [] };
@@ -475,6 +500,8 @@ const EVENT_VERB: Record<string, string> = { required: "due", posted: "posted", 
 export function activityTitle(title: string, count: number): string {
   // "Bc invoiced: …" (a system's code in sentence case) says the system as it is written
   title = title.replace(/^bc\b/i, "BC");
+  // "Email RE: Eucarol inquiry received" beside its Mail chip: "RE: Eucarol inquiry received"
+  title = title.replace(/^(?:Email|Teams message)\s+(?=\S.*\s(?:received|sent)$)/, "");
   const m = /^([A-Za-z ]+):\s*(.+)$/.exec(title.trim());
   const verb = m ? EVENT_VERB[m[1].trim().toLowerCase()] : undefined;
   if (!m || !verb) return count > 1 ? `${m?.[1] ?? readable(title)} ×${count}` : readable(title);
@@ -535,7 +562,7 @@ export type LinkPlace = "fulfilment" | "linked";
  * names (a purchase order's supplier), not listed again. Any link kind declared later lands in
  * one of the two with no page code of its own.
  */
-export function linkSections(obj: Pick<ObjectPage, "type" | "links">, shownInHeader?: string | null): Record<LinkPlace, { group: LinkGroup; heading: string; records: LinkRef[] }[]> {
+export function linkSections(obj: Pick<ObjectPage, "type" | "links">, shownInHeader?: string | null): Record<LinkPlace, { group: LinkGroup; heading: string; records: (LinkRef & { times?: number })[] }[]> {
   const groups = (obj.links ?? []).filter((g) => {
     if (g.role === "customer" && obj.type === "SalesOrder") return false;
     if (obj.type === "Customer" && g.type === "SalesOrder") return false;
@@ -544,17 +571,26 @@ export function linkSections(obj: Pick<ObjectPage, "type" | "links">, shownInHea
   });
   const sameType = new Map<string, number>();
   for (const g of groups) sameType.set(g.type, (sameType.get(g.type) ?? 0) + 1);
-  const out: Record<LinkPlace, { group: LinkGroup; heading: string; records: LinkRef[] }[]> = { fulfilment: [], linked: [] };
+  const out: Record<LinkPlace, { group: LinkGroup; heading: string; records: (LinkRef & { times?: number })[] }[]> = { fulfilment: [], linked: [] };
   for (const g of groups) {
-    const tl = typeLabel(g.type);
+    const tl = g.type_label || typeLabel(g.type);
     const records = (g.records ?? []).filter((r) => {
       if (r.object_id === shownInHeader) return false;
       const l = r.label.trim().toLowerCase();
       return l !== tl.toLowerCase() && l.replace(/\s+/g, "") !== r.type.toLowerCase() && !/^(?:(?:PO|order|sales order|invoice|shipment|credit memo) line|Receipt|Aged (?:payable|receivable))$/i.test(r.label.trim());
     });
     if (records.length === 0) continue;
+    // rows of one document all carry its number ("IN1000180804" five times): one row, ×5
+    // only a raw table's rows (named by type_label): two curated records sharing a name stay apart
+    const once = new Map<string, LinkRef & { times?: number }>();
+    for (const r of records) {
+      const k = g.type_label ? `${r.label.trim().toLowerCase()}|${r.possible ? 1 : 0}|${r.tier ?? ""}` : r.object_id;
+      const seen = once.get(k);
+      if (seen) seen.times = (seen.times ?? 1) + 1;
+      else once.set(k, { ...r });
+    }
     const heading = g.role === "same_record" ? g.words : (sameType.get(g.type) ?? 0) > 1 ? `${tl} · ${g.words.toLowerCase()}` : tl;
-    out[g.role === "fulfilment" ? "fulfilment" : "linked"].push({ group: g, heading, records });
+    out[g.role === "fulfilment" ? "fulfilment" : "linked"].push({ group: g, heading, records: [...once.values()] });
   }
   return out;
 }

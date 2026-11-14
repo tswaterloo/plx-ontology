@@ -1,5 +1,6 @@
 "use client";
 
+import { useReaderWords } from "@/components/view-as";
 import { AlertPlaybookPanel } from "./alert-playbook";
 import { ChevronRight } from "lucide-react";
 import Link from "next/link";
@@ -306,6 +307,7 @@ function Group({ group, top, view, loadItems, byId }: { group: BriefingGroup; to
 
 /** Why the briefing has fewer items than it might: unchecked kinds, other teams, places you can't open. */
 export function BriefingCounts({ briefing, compact: _compact = false }: { briefing: Briefing; compact?: boolean }) {
+  const w = useReaderWords();
   const groups = briefing.groups ?? [];
   const unchecked = (briefing.checks ?? []).filter((c) => c.status !== "complete");
   const lines = unchecked.map((c) => <p key={c.check}>{c.words[0].toUpperCase() + c.words.slice(1)}.</p>);
@@ -336,7 +338,7 @@ export function BriefingCounts({ briefing, compact: _compact = false }: { briefi
           {n} more for your team {n === 1 ? "is" : "are"} in places you can&apos;t open.
         </p>
       ))}
-      {briefing.routing_basis === "no_department_on_record" && <p>No department on record for you, so nothing is routed to you.</p>}
+      {briefing.routing_basis === "no_department_on_record" && <p>No department on record for {w.you}, so nothing is routed to {w.you}.</p>}
     </div>
   );
 }
@@ -380,6 +382,7 @@ export function BriefingCard({
   latePos?: LatePo[];
   onRetry?: () => void;
 }) {
+  const w = useReaderWords();
   const [view, setView] = useState<BriefingView>(first.since_visit ? "since_visit" : "all");
   const [briefing, setBriefing] = useState<Briefing>(first);
   const [tab, setTab] = useState<string>("all");
@@ -471,7 +474,7 @@ export function BriefingCard({
           </div>
         </div>
         {items.length === 0 && shownGroups.every((g) => g.count === 0) ? (
-          <p className="px-5 py-10 text-[13px] text-muted">{sinceVisit ? "Nothing new since your last visit." : "Nothing open for you."}</p>
+          <p className="px-5 py-10 text-[13px] text-muted">{sinceVisit ? `Nothing new since ${w.your} last visit.` : `Nothing open for ${w.you}.`}</p>
         ) : (
           <div data-testid="briefing-groups">
             {shownGroups.filter(hasTop).map((g) => (

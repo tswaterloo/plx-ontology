@@ -27,7 +27,7 @@ function itemsText(items: Record<string, number> | undefined): string {
 }
 
 const weekLabel = (iso: string) =>
-  new Date(`${iso}T12:00:00Z`).toLocaleDateString("en-US", { month: "short", day: "numeric", timeZone: "UTC" });
+  new Date(`${iso}T12:00:00Z`).toLocaleDateString("en-GB", { day: "numeric", month: "short", timeZone: "UTC" }).replace("Sept", "Sep");
 
 /** Four thin weekly bars, the current week last and in the accent. */
 function Weeks({ p, weeks, max }: { p: TimeSavedPerson; weeks: string[]; max: number }) {

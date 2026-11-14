@@ -202,8 +202,14 @@ class ProjectionChunker:
             # superset of the groups kept below), not every text field of the layer once
             # per slice (a 700k-object layer was 35 full reads in Python for 0 chunks)
             + ("" if objects is None else " WHERE f.version_handle IN (SELECT version_handle "
-               "FROM text_fields WHERE object_id IN (SELECT value FROM json_each(?)))"),
-            () if objects is None else (_json_ids(objects),))
+               "FROM text_fields WHERE object_id IN (SELECT value FROM json_each(?)))")
+            # only the kinds asked are read (the mail history reads mail and attachments,
+            # not every text field of the store); an unknown kind is still counted below
+            # when every kind is read
+            + ("" if wanted is None else (" WHERE" if objects is None else " AND")
+               + " f.document_kind IN (SELECT value FROM json_each(?))"),
+            (() if objects is None else (_json_ids(objects),))
+            + (() if wanted is None else (json.dumps(sorted(wanted)),)))
         groups: dict[tuple[str, str], list[_Field]] = defaultdict(list)
         for row in rows:
             if wanted is not None and row["document_kind"] not in wanted:
@@ -214,7 +220,12 @@ class ProjectionChunker:
                 continue
             if shard is not None and (
                     shard[0] != 0 if row["document_kind"] == "teams_message"
-                    else zlib.crc32(str(row["version_handle"] or "").encode("utf-8")) % shard[1]
+                    # by the message an attachment belongs to (the handle before "#"), so
+                    # its window is decided with its message's in the same part; keyed on
+                    # its own handle, every history window re-read nearly every
+                    # attachment whatever its date
+                    else zlib.crc32(str(row["version_handle"] or "").split("#", 1)[0]
+                                    .encode("utf-8")) % shard[1]
                     != shard[0]):
                 continue
             if row["version_markings"] is None or row["superseded_at"] is not None:

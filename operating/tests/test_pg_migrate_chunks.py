@@ -155,8 +155,10 @@ class ChunkedUnitsTests(unittest.TestCase):
         self.assertEqual(set(out["vacuum"]), set(migrate_chunks.VACUUMED), out["vacuum"])
         with psycopg.connect(self.other) as pg:
             for table in migrate_chunks.VACUUMED:
+                # its leaves: the table itself, or a partitioned one's partitions (0017)
                 pages, visible = pg.execute(
-                    "SELECT relpages, relallvisible FROM pg_class WHERE oid = %s::regclass",
+                    "SELECT sum(relpages), sum(relallvisible) FROM pg_class WHERE oid IN "
+                    "(SELECT relid FROM pg_partition_tree(%s::regclass) WHERE isleaf)",
                     (f"ontology.{table}",)).fetchone()
                 self.assertEqual(visible, pages, table)
         again = migrate_chunks.apply_chunked(layer, self.other)

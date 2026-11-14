@@ -446,7 +446,7 @@ export default function LatePage() {
                 <div className="max-w-[880px] px-6 pt-6 pb-12 sm:px-8 sm:pt-7">
                   {overview("all") ||
                     (ready ? (
-                      <p className="text-[13px] text-muted">No late POs.</p>
+                      <p className="text-[13px] text-muted">Nothing to sum up: no PO is late.</p>
                     ) : error ? (
                       <p className="text-[13px] text-muted">The overview waits until the list can be read.</p>
                     ) : (

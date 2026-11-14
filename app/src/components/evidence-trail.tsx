@@ -130,7 +130,7 @@ function Step({ step, group, last }: { step: TrailStep; group?: TrailStep[]; las
     </time>
   ) : null;
   return (
-    <li className={cn("relative grid grid-cols-[40px_minmax(0,1fr)] gap-x-2", !last && "pb-3.5")} data-testid="trail-step" data-kind={step.kind}>
+    <li className={cn("relative grid grid-cols-[54px_minmax(0,1fr)] gap-x-2", !last && "pb-3.5")} data-testid="trail-step" data-kind={step.kind}>
       {!last && <span className="absolute top-[22px] bottom-[3px] left-[0.5px] w-px bg-border-strong" aria-hidden />}
       <SystemCode system={step.source?.system} size={18} className="mt-[2px]" />
       <div className="min-w-0">

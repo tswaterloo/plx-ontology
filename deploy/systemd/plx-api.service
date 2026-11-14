@@ -12,6 +12,8 @@ After=network-online.target postgresql.service
 Wants=network-online.target
 
 [Service]
+# names its Postgres sessions after the unit (ARCH T2)
+Environment=PGAPPNAME=%N
 Type=simple
 User=plx-workbench
 Group=plx-workbench

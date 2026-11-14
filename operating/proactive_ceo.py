@@ -276,7 +276,39 @@ def customer_demand_drop(st: Any, as_of: date, *, gap: Callable, cites: Callable
         if held:
             floor[currency] = Decimal(median(held))
     requires = absence(list(DEMAND_ABSENCE_TYPES))
-    names = _names(st, CUSTOMER, {k for k, _c in series}, root)
+    # party -> its orders dated in the recent window, any tie counted (an order tied to
+    # two customers is each one's: either may own it)
+    # (each as the parts a skip resting on it read: every record of the order at its
+    # finance marking, and the tie at its own markings)
+    recent_orders: dict[str, set[tuple[str, str]]] = defaultdict(set)
+    for verdict in (*judged, *unclassed):
+        if recent(verdict):
+            for link in (l for m in verdict.group for l in ties.get(m, ())):
+                recent_orders[root.get(link["to_object"], link["to_object"])].update(
+                    {*((m, FINANCE) for m in verdict.group),
+                     (link["from_object"], link["markings"])})
+    names = _names(st, CUSTOMER, {k for k, _c in series} | set(recent_orders), root)
+    # a customer ordering in more than one currency is not judged: one currency's series
+    # may fall because orders moved to the other, and no rate converts them (11-13 judging:
+    # a USD "drop" of a customer whose recent orders were all CAD)
+    currencies: dict[str, set[str]] = defaultdict(set)
+    for k, c in series:
+        currencies[k].add(c)
+    # nor one sharing its stated name with another source's customer cluster that ordered
+    # in the recent window and no identity link joins: either location may own the orders
+    # (11-13 judging: 3 of 15 drops had a same-name Sage customer with a recent order)
+    by_name: dict[str, set[str]] = defaultdict(set)
+    for k, row in names.items():
+        said = " ".join(str(row.get("value") or "").lower().split())
+        if said:
+            by_name[said].add(k)
+    # (a same name within one source table is two customers that source keeps apart)
+    system = {k: po_status.binding_of(str(row.get("object_id") or ""))
+              for k, row in names.items()}
+    same_name_of = {k: {o for o in held if system[o] != system[k]}
+                    for held in by_name.values() if len(held) > 1 for k in held}
+    same_name_active = {k for k, others in same_name_of.items()
+                        if any(recent_orders.get(o) for o in others)}
     gaps = []
     counts: Counter = Counter()
     span = Decimal(DEMAND_RECENT_DAYS) / Decimal(DEMAND_BASELINE_DAYS)
@@ -289,11 +321,21 @@ def customer_demand_drop(st: Any, as_of: date, *, gap: Callable, cites: Callable
             counts["below_floor"] += 1
             continue
         if customer in unknown_value or customer in twin_active \
-                or customer in unknown_status:
+                or customer in unknown_status or len(currencies[customer]) > 1 \
+                or customer in same_name_active:
             skipped.note("customer_order_value_unknown" if customer in unknown_value
                          else "customer_order_status_unknown" if customer in unknown_status
-                         else "customer_twin_unsettled", [customer],
-                         [(o[0], FINANCE) for o in got])
+                         else "customer_twin_unsettled" if customer in twin_active
+                         else "customer_currencies_mixed" if len(currencies[customer]) > 1
+                         else "customer_same_name_unlinked", [customer],
+                         [(o[0], FINANCE) for o in got]
+                         # the other same-name customers' recent orders are the cause
+                         + [part for k in sorted(same_name_of.get(customer, ()))
+                            if customer in same_name_active
+                            for part in sorted(recent_orders.get(k, ()))]
+                         + [(names[k].get("object_id"), names[k].get("markings"))
+                            for k in sorted(same_name_of.get(customer, ()))
+                            if customer in same_name_active])
             continue
         stale = sorted({o[5] for o in got
                         if (as_of - newest[o[5]]).days > SOURCE_CURRENT_DAYS})

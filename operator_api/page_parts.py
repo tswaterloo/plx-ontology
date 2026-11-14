@@ -836,15 +836,15 @@ def order_state(backend: Any, view: Any, oid: str) -> Optional[m.Fact]:
     if not handles:
         return None
     order = so.order_status(states)
-    words = {so.CLOSED: "closed (shipped, invoiced, completed or cancelled in at least one of "
-                        "its records)",
-             so.OPEN: "open in every record that states a status",
-             so.DRAFT: "a draft, not yet placed",
-             so.UNKNOWN: "not decided: a record's status is missing or not one the rules "
-                         "read"}[order.cls]
     copies = len(states)
-    return m.Fact(text=f"Order state across its {copies} record{'' if copies == 1 else 's'}: "
-                       f"{words}",
+    words = {so.CLOSED: "Closed (shipped, invoiced, completed or cancelled" + (
+                 ")" if copies == 1 else f" in at least one of its {copies} records)"),
+             so.OPEN: "Open" + ("" if copies == 1 else
+                                f" (each of its {copies} records that states a status says so)"),
+             so.DRAFT: "Draft, not yet placed",
+             so.UNKNOWN: "Not known (a record's status is missing or not one the rules "
+                         "read)"}[order.cls]
+    return m.Fact(text=f"Order state: {words}",
                   sources=[backend._source(view, h) for h in dict.fromkeys(
                       closing if order.cls == so.CLOSED and closing else handles)][:4],
                   check="read_from_record")
@@ -963,6 +963,19 @@ def _schema_links() -> dict[str, tuple[str, str, str, str]]:
             for k, v in links.items() if isinstance(v, Mapping)}
 
 
+def raw_type_label(kind: str) -> str | None:
+    """A raw Portal, FileMaker or Sage type's declared business name (``RelSageArIbh`` ->
+    ``AR invoice entry``), else None: the page never shows a table code as a heading."""
+    from ontology.raw_business import label_of
+    try:
+        label = label_of(kind)
+    except Exception:  # noqa: BLE001 - an unreadable declaration names nothing
+        return None
+    # "Portal silver supplier": the data layer's name is no business word
+    label = re.sub(r"\s+", " ", re.sub(r"\bsilver\b", "", label or "", flags=re.I)).strip()
+    return label[:80] if label else None
+
+
 def link_words(name: str) -> str:
     """'sales_invoices' -> 'Sales invoices'; a known name its own words."""
     if name in _LINK_WORDS:
@@ -1079,7 +1092,8 @@ def link_groups(backend: "WorkspaceBackend", view: Any, oid: str, around: Mappin
                 else "customer" if other_type == "Customer" and direction == "forward"
                 else "fulfilment" if other_type in FULFILMENT_TYPES else "related")
         out.append(m.LinkGroup(link_type=link_type[:120], direction=direction, name=name[:80],
-                               words=link_words(name)[:80], type=other_type[:80], role=role,
+                               words=link_words(name)[:80], type=other_type[:80],
+                               type_label=raw_type_label(other_type), role=role,
                                count=count, possible=n_leads, records=records))
     return out
 

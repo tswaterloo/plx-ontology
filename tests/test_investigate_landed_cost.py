@@ -313,10 +313,11 @@ class ProjectedTests(unittest.TestCase):
                     if c["args"]["shippingCost"] == 1710]
         line_a = computed["landed_cost_line_1"]
         per_unit = lc.js_string(golden["result"]["freightPerUnit"])
-        self.assertTrue(any(s.startswith("freight total: freight * qty") and
-                            f"freight={per_unit} USD/ea" in s for s in line_a["steps"]),
+        # (internal operand names since BIZ-001 6dff512d2f; the label names the cost)
+        self.assertTrue(any(s.startswith("freight total: cost * qty") and
+                            f"cost={per_unit} USD/ea" in s for s in line_a["steps"]),
                         line_a["steps"])
-        self.assertIn("goods total: goods * qty [goods=0.802 USD/ea, qty=12500 ea] = 10025 USD",
+        self.assertIn("goods total: cost * qty [cost=0.802 USD/ea, qty=12500 ea] = 10025 USD",
                       line_a["steps"])
         self.assertIn("duty: UNKNOWN (DUTY_RATE_SOURCE_ABSENT: see the gaps)", line_a["steps"])
         self.assertIn("duty: UNKNOWN (HS_CODE_NOT_CITED: see the gaps)",
@@ -406,7 +407,7 @@ class ProjectedTests(unittest.TestCase):
         full = self.pages("PO100905")
         self.assertNotIn("po_lines_incomplete", full[0]["answerability"]["reasons"])
         self.assertEqual(len(self.freight_steps(full)), 4)
-        self.assertTrue(all("freight=7.5 USD/ea" in s for s in self.freight_steps(full)))
+        self.assertTrue(all("cost=7.5 USD/ea" in s for s in self.freight_steps(full)))
         # A cut that leaves part of the line set read (1 to 3 of 4 lines priced).
         for budget in (8, 6):
             self.assertEqual(self.freight_steps(self.pages("PO100905", step_budget=budget)),
@@ -473,7 +474,7 @@ class ProjectedTests(unittest.TestCase):
                     self.assertFalse([e for e in page["answer"]
                                       if e.get("object_type") == "PurchaseOrderLine"])
                 for line in lines:
-                    self.assertTrue(any(f"freight={freight} USD/ea" in s for s in line["steps"]),
+                    self.assertTrue(any(f"cost={freight} USD/ea" in s for s in line["steps"]),
                                     line["steps"])
                     for name in line["inputs"]:  # every input is on the same page, cited
                         self.assertIn("citation", names[name], name)
@@ -539,7 +540,7 @@ class ProjectedTests(unittest.TestCase):
         # A reader holding l5 sees the line, and the freight is allocated over all four.
         self.assertIn(hidden, json.dumps(holder))
         self.assertEqual(len(self.freight_steps(holder)), 4)
-        self.assertTrue(all("freight=7.5 USD/ea" in s for s in self.freight_steps(holder)))
+        self.assertTrue(all("cost=7.5 USD/ea" in s for s in self.freight_steps(holder)))
 
     def test_source_currency_text_never_reaches_workbench_prose(self):
         """R6: an instruction-shaped currency on a PO record (or its twin) is named by its
@@ -1313,7 +1314,7 @@ class ForwarderQuoteTests(unittest.TestCase):
         line = _entries(result, "computed")["landed_cost_line_1"]
         # The Portal's allocation of the 500 USD estimate, rounded as allocatePoFreightPerUnit
         # rounds it (4 places).
-        self.assertIn("freight total: freight * qty [freight=0.4167 USD/ea, qty=1200 ea] = "
+        self.assertIn("freight total: cost * qty [cost=0.4167 USD/ea, qty=1200 ea] = "
                       "500.04 USD", line["steps"])
         self.assertEqual(line["steps"][-1], lc.FREIGHT_LABELS["estimate"])
         self.assertIn("hs_code_not_cited", result["answerability"]["reasons"])

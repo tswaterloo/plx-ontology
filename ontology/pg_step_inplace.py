@@ -229,10 +229,13 @@ def _link_rows(conn: sqlite3.Connection) -> Iterable[list[dict[str, Any]]]:
         yield [dict(r) for r in batch]
 
 
-def _range_where(owned: Sequence[Mapping[str, Any]]) -> tuple[str, list[Any]]:
+def _range_where(owned: Sequence[Mapping[str, Any]], c: str = ' COLLATE "C"'
+                 ) -> tuple[str, list[Any]]:
+    """The links of the ``owned`` id ranges (byte order; ``c``: the collation that is,
+    ``ontology.pg_byte_order.key_collate``)."""
     parts, params = [], []
     for o in owned:
-        parts.append("(link_id COLLATE \"C\" >= %s AND link_id COLLATE \"C\" < %s AND "
+        parts.append(f"(link_id{c} >= %s AND link_id{c} < %s AND "
                      "(%s::text[] IS NULL OR EXISTS (SELECT 1 FROM unnest(%s::text[]) f "
                      "WHERE starts_with(from_object, f))))")
         params += [o["prefix"], o["end"], o["from"], o["from"]]
@@ -300,13 +303,15 @@ def build_layer(the_plan: Mapping[str, Any], new: Any, steps: Mapping[str, Any],
             om._apply_units(cur, Path(unit_layer), unit, unit_report)
             report["unit_apply"] = {"seconds": round(time.monotonic() - t, 3)}
         cur.execute("SAVEPOINT after_units")
-        where, params = _range_where(owned)
+        from ontology.pg_byte_order import key_collate
+        collate = key_collate(cur)
+        where, params = _range_where(owned, collate)
         cur.execute(f"DELETE FROM ontology.link_rows WHERE {where}", params)
         report["input"] = {"links_rederived": cur.rowcount}
         cur.execute("CREATE TEMP TABLE held_links ON COMMIT DROP AS SELECT * FROM "
                     "ontology.link_rows WHERE FALSE")
         for o in held:
-            w, p = _range_where([o])
+            w, p = _range_where([o], collate)
             cur.execute(f"WITH moved AS (DELETE FROM ontology.link_rows WHERE {w} "
                         "RETURNING *) INSERT INTO held_links SELECT * FROM moved", p)
         report["input"]["links_held"] = cur.execute(
@@ -347,7 +352,7 @@ def build_layer(the_plan: Mapping[str, Any], new: Any, steps: Mapping[str, Any],
                     finally:
                         local.abort()
                 for o in (o for o in held if sm.step_of(o["prefix"], specs) == name):
-                    w, p = _range_where([o])
+                    w, p = _range_where([o], collate)
                     cur.execute(f"INSERT INTO ontology.link_rows SELECT * FROM held_links "
                                 f"WHERE {w}", p)
             t = time.monotonic()
@@ -491,15 +496,17 @@ class Overlay:
         ``staged_before`` (a step name): the steps before it staged their links
         (``operating.pg.step_staging``): the served links they replaced or removed left out
         and their staged links shown, read in place (no ``run_rows`` copy)."""
+        from ontology.pg_byte_order import key_collate
+        c = key_collate(self.pg._pg)
         parts, params = [], []
         for o in hidden:
             if o.get("objects"):
-                parts.append("(l.link_id COLLATE \"C\" >= %s AND l.link_id COLLATE \"C\" < %s "
+                parts.append(f"(l.link_id{c} >= %s AND l.link_id{c} < %s "
                              "AND EXISTS (SELECT 1 FROM pg_temp.scope_docs s "
                              "WHERE s.object_id = l.from_object))")
                 params += [o["prefix"], o["end"]]
                 continue
-            parts.append("(l.link_id COLLATE \"C\" >= %s AND l.link_id COLLATE \"C\" < %s "
+            parts.append(f"(l.link_id{c} >= %s AND l.link_id{c} < %s "
                          "AND (%s::text[] IS NULL OR EXISTS (SELECT 1 FROM unnest(%s::text[]) "
                          "f WHERE starts_with(l.from_object, f))))")
             params += [o["prefix"], o["end"], o["from"], o["from"]]

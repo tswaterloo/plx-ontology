@@ -177,9 +177,15 @@ class DeployFilesTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             env = Path(tmp, "deploy.env")
             env.write_text("PLX_USER=someone\nPLX_HOME=/srv/someone\nPLX_RELEASES=/srv/rel\n")
+            # systemd-analyze --user needs the user's runtime directory, which a system
+            # service (the nightly suite) is not given: name the user's own when it exists
+            runtime = {} if os.environ.get("XDG_RUNTIME_DIR") or not Path(
+                f"/run/user/{os.getuid()}").is_dir() else {
+                "XDG_RUNTIME_DIR": f"/run/user/{os.getuid()}"}
             run = subprocess.run(["bash", str(DEPLOY / "ops" / "install_keep_fresh.sh"),
                                   "--dry-run"], capture_output=True, text=True,
-                                 env={**os.environ, "PLX_DEPLOY_ENV": str(env), "HOME": tmp})
+                                 env={**os.environ, **runtime, "PLX_DEPLOY_ENV": str(env),
+                                      "HOME": tmp})
             self.assertEqual(run.returncode, 0, run.stderr)
             self.assertIn("nothing installed", run.stdout)
             self.assertFalse(Path(tmp, ".config", "systemd").exists())
@@ -285,6 +291,47 @@ class RoleWalkTest(unittest.TestCase):
         self.walk = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(self.walk)
 
+    def test_an_expired_session_signs_in_again_and_the_route_is_walked(self) -> None:
+        """A walk on a busy host outlives its 30-minute ticket: a 401 signs the client in
+        again once and repeats the route, so later routes are walked, not read as 401."""
+        import http.server
+        import threading
+        state = {"session": False, "logins": 0}
+
+        class Handler(http.server.BaseHTTPRequestHandler):
+            def log_message(self, *a: object) -> None:
+                pass
+
+            def _send(self, code: int) -> None:
+                self.send_response(code)
+                self.send_header("Content-Type", "application/json")
+                self.end_headers()
+                self.wfile.write(b"{}")
+
+            def do_GET(self) -> None:
+                self._send(200 if state["session"] else 401)
+
+            def do_POST(self) -> None:
+                self.rfile.read(int(self.headers.get("Content-Length") or 0))
+                state["logins"] += 1
+                state["session"] = True
+                self._send(200)
+
+        server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        try:
+            client = self.walk.Client(f"http://127.0.0.1:{server.server_address[1]}")
+            self.assertEqual(client.call("/api/home")[0], 401)          # no re-login wired
+            client.relogin = lambda: client.call("/api/auth/dev-login", {"ticket": "t"})[0] == 200
+            self.assertEqual(client.call("/api/home")[0], 200)
+            self.assertEqual(state["logins"], 1)
+            state["session"] = False                                     # expired; refused again
+            client.relogin = lambda: False
+            self.assertEqual(client.call("/api/home")[0], 401)
+        finally:
+            server.shutdown()
+            server.server_close()
+
     def test_denials_become_grants_and_file_refusals_name_the_path(self) -> None:
         log = ('2026-11-13 05:24:18.270 UTC [1] x@plx ERROR:  permission denied for table '
                'query_stats\n... ERROR:  permission denied for sequence search.x_id_seq\n'
@@ -335,11 +382,25 @@ class RoleWalkTest(unittest.TestCase):
             self.assertEqual(len(users), 2)
             added = users[-1]
             self.assertEqual((added["accessLevel"], added["role"], added["departmentIds"]),
-                             ("L1", "USER", ["d1"]))
+                             ("L1", "STAFF", ["d1"]))
             self.assertEqual(added["entraObjectId"], claims["entraObjectId"])
             self.assertTrue(claims["email"].endswith("@example.com"))
             full = json.loads(Path(host.parent, "employee_policy.json").read_text())["full_read"]
             self.assertNotIn(claims["entraObjectId"], [g["object_id"] for g in full])
+
+    def test_the_walk_proves_every_write_the_role_grants(self) -> None:
+        """Each table the role file lets the API write is written by the walk's rolled-back
+        write check, and the walk's synthetic reader carries a Portal role the access layer
+        knows (an unknown role refuses the mint: the non-owner walk never ran)."""
+        sql = (DEPLOY / "pg" / "plx_api_role.sql").read_text()
+        granted = set(re.findall(r"GRANT (?:INSERT|UPDATE|DELETE)[A-Z, ]* ON ([a-z_.]+) TO", sql))
+        self.assertTrue(granted)
+        writes = " ".join(self.walk.WRITES)
+        for table in granted:
+            self.assertIn(table, writes)
+        self.assertIn("temp_file_limit", writes)
+        from operating.employee_permissions_portal import EMPLOYEE_ROLES
+        self.assertIn("STAFF", EMPLOYEE_ROLES)
 
     def test_the_walk_refuses_the_live_api_and_a_missing_exclusion(self) -> None:
         for argv in (["--port", "8780"], ["--api-url", "http://127.0.0.1:8780"]):
@@ -502,6 +563,103 @@ class ReleaseTest(unittest.TestCase):
             self.assertIn("not reused", checked.stderr)
             self.assertEqual(run("build", "HEAD", "--no-app", "--no-schema-check")
                              .stdout.strip().splitlines()[-1], rid)
+
+
+    def test_in_postgres_mode_the_build_gates_on_the_release_s_own_postgres_check(self) -> None:
+        """DI-02: with PLX_ONTOLOGY_PG=only the SQLite generation is not served; the release's
+        own `operating.pg.ontology_migrate check` must say ok (Postgres holds its schema and
+        step code), else nothing is built. A stale SQLite store is not read."""
+        import sys
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp, "repo")
+            Path(repo, "operating", "pg").mkdir(parents=True)
+            git = ["git", "-C", str(repo), "-c", "user.name=t", "-c", "user.email=t@example.com"]
+            subprocess.run(["git", "init", "-q", str(repo)], check=True)
+            check = Path(repo, "operating", "pg", "ontology_migrate.py")
+            for name in ("operating/__init__.py", "operating/pg/__init__.py"):
+                Path(repo, name).write_text("")
+            for ok in ("False", "True"):
+                check.write_text("import json, os\n"
+                                 "assert os.environ.get('PLX_PG_DSN') == 'postgresql:///t'\n"
+                                 f"print(json.dumps({{'ok': {ok}, 'reason': 'step_code_differs',"
+                                 " 'code': 'c', 'served': 's'}))\n")
+                subprocess.run([*git, "add", "-A"], check=True)
+                subprocess.run([*git, "commit", "-qm", ok], check=True)
+            state = Path(tmp, "state")
+            Path(state, "projection").mkdir(parents=True)
+            Path(state, "projection", "ontology.sqlite").write_bytes(b"stale, not served")
+            venv = Path(tmp, "venv", "bin")
+            venv.mkdir(parents=True)
+            Path(venv, "python3").symlink_to(sys.executable)
+            env = {k: v for k, v in os.environ.items() if not k.startswith("PLX_")}
+            env.update({"PLX_DEPLOY_ENV": "/nonexistent", "PLX_REPO": str(repo),
+                        "PLX_RELEASES": f"{tmp}/rel", "PLX_STATE": str(state),
+                        "PLX_RELEASE_OWNER": "", "PLX_VENV": str(Path(tmp, "venv")),
+                        "PLX_CONFIG": f"{tmp}/cfg", "PLX_ONTOLOGY_PG": "only",
+                        "PLX_PG_DSN": "postgresql:///t"})
+            tool = str(DEPLOY / "release" / "plx-release")
+
+            def run(*args: str) -> subprocess.CompletedProcess:
+                return subprocess.run([tool, *args], env=env, text=True, capture_output=True)
+
+            refused = run("build", "HEAD~1", "--no-app")
+            self.assertNotEqual(refused.returncode, 0)
+            self.assertIn("step_code_differs", refused.stderr)
+            self.assertFalse(any(Path(tmp, "rel").glob("[0-9a-f]*")))
+            built = run("build", "HEAD", "--no-app")
+            self.assertEqual(built.returncode, 0, built.stderr)
+            rid = built.stdout.strip().splitlines()[-1]
+            meta = json.loads(Path(tmp, "rel", rid, "RELEASE.json").read_text())
+            self.assertTrue(meta["profile"]["schema_checked"])
+            self.assertEqual(run("build", "HEAD", "--no-app").stdout.strip().splitlines()[-1],
+                             rid)                                   # reused: still ok
+            env.pop("PLX_PG_DSN")
+            no_dsn = run("build", "HEAD~1", "--no-app")
+            self.assertNotEqual(no_dsn.returncode, 0)
+            self.assertIn("no PLX_PG_DSN", no_dsn.stderr)
+
+
+class ReleaseRestart(unittest.TestCase):
+    """plx-release restart: an API stopped while unused is no failed deploy, but one the new
+    release crashes (activating or failed after the restart) is, so the deploy rolls back."""
+
+    def restart(self, before: str, after: str, health: str) -> subprocess.CompletedProcess:
+        with tempfile.TemporaryDirectory() as tmp:
+            stubs = Path(tmp, "bin"); stubs.mkdir()
+            state = Path(tmp, "api-state"); state.write_text(before)
+            scripts = {
+                "systemctl": (f'case "$1" in is-active) [ "$(cat {state})" = active ];;\n'
+                              f'  try-restart) if [ "$(cat {state})" = active ]; then echo {after} > {state}; fi;;\n'
+                              '  *) true;; esac'),
+                "sudo": 'exec "$@"',
+                "curl": f'printf {health}',
+                "sleep": "true",
+            }
+            for name, body in scripts.items():
+                f = Path(stubs, name); f.write_text("#!/bin/sh\n" + body + "\n"); f.chmod(0o755)
+            env = {k: v for k, v in os.environ.items() if not k.startswith("PLX_")}
+            env.update({"PATH": f"{stubs}:{env.get('PATH', '/usr/bin:/bin')}",
+                        "PLX_DEPLOY_ENV": "/nonexistent", "PLX_RELEASES": f"{tmp}/rel",
+                        "PLX_API_URL": "http://127.0.0.1:1", "PLX_RELEASE_OWNER": ""})
+            Path(tmp, "rel").mkdir()
+            return subprocess.run([str(DEPLOY / "release" / "plx-release"), "restart"],
+                                  env=env, text=True, capture_output=True, timeout=120)
+
+    def test_a_stopped_api_is_not_a_failed_deploy(self) -> None:
+        got = self.restart("inactive", "inactive", "000")
+        self.assertEqual(got.returncode, 0, got.stderr)
+        self.assertIn("api stopped", got.stdout)
+
+    def test_an_api_the_release_crashes_fails_the_restart(self) -> None:
+        for after in ("activating", "failed"):
+            got = self.restart("active", after, "000")
+            self.assertNotEqual(got.returncode, 0, after)
+            self.assertIn("not healthy", got.stderr)
+
+    def test_a_healthy_restart_passes(self) -> None:
+        got = self.restart("active", "active", "200")
+        self.assertEqual(got.returncode, 0, got.stderr)
+        self.assertIn("api=200", got.stdout)
 
 
 if __name__ == "__main__":

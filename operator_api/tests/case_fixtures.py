@@ -1,7 +1,6 @@
 """Fixture world of the case console: SYNTHETIC data over injected transports only.
 
-``python3 -m operator_api.tests.case_fixtures --fixture --seed-fixtures`` (the case console
-with this world as its ``fixtures``) writes, into a new state directory, the cases this module investigates through the real MCP case tools:
+``python3 -m operator_api.tests.case_fixtures seed DIR`` writes, into a new state directory, the cases this module investigates through the real MCP case tools:
 
 * the six AO packet cases (AO-26005B, -26005C, -26005E, -26006C, -26007D, -26013C)
   over the AO-26005B rows of the live trace (``operating/tests/test_ao_26005b_case.py``;
@@ -342,5 +341,24 @@ if __name__ == "__main__":
     # ``--scripted-ask``: Ask and the objective box run ``scripted_ask``, not Claude Code.
     scripted = "--scripted-ask" in sys.argv
     argv = [arg for arg in sys.argv[1:] if arg != "--scripted-ask"]
-    raise SystemExit(case_console.main(argv, fixtures=case_fixtures,
-                                       planner=case_fixtures.scripted_ask if scripted else None))
+    planner = case_fixtures.scripted_ask if scripted else None
+    if argv[:1] == ["seed"] and len(argv) == 2:
+        # Seed a new state directory and stop (served next with ``serve``).
+        written = case_fixtures.seed(argv[1])
+        print(f"Seeded {len(written['aos']) + 1} fixture cases "
+              f"({case_fixtures.EVIDENCE_LABEL}, not real PLX data)")
+        from pathlib import Path
+        from operating import proactive_engine
+        from operator_api.workspace import object_workspace
+        store = Path(argv[1]) / case_console.ONTOLOGY_FILE
+        report = object_workspace.project_mirror(Path(argv[1]), store)
+        print(f"Projected {report['counts'].get('objects', 0)} objects into {store}")
+        found = proactive_engine.after_build(store)
+        print(f"Proactive engine: {found['state']}, {found.get('gaps_found', 0)} gaps")
+        raise SystemExit(0)
+    if argv[:1] == ["serve"]:
+        # The app API (``python3 -m operator_api serve`` flags) over this fixture world:
+        # the console's own listener is retired, the app is the one front end.
+        from operator_api import server
+        raise SystemExit(server.main(argv[1:], fixtures=case_fixtures, planner=planner))
+    raise SystemExit(case_console.main(argv, fixtures=case_fixtures, planner=planner))

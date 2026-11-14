@@ -652,6 +652,39 @@
       }
      ],
      "unique_target": true
+    },
+    {
+     "kind": "fk",
+     "tier_ceiling": "corroborated",
+     "from_binding": "graph_mail.notice_references",
+     "to_binding": "portal.sage_oe_shipment_header",
+     "pairs": [
+      {
+       "from": "tracking_number",
+       "to": "shiptrack",
+       "compare": "identifier",
+       "identifier_kind": "tracking_number"
+      }
+     ],
+     "where": [
+      {
+       "path": "identifier_kind",
+       "op": "eq",
+       "value": "tracking_number"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "workbench_code",
+       "path": "ontology/project.py"
+      },
+      {
+       "kind": "workbench_code",
+       "path": "ontology/schema/generated/meta/portal_catalog.json",
+       "note": "sage.oe_shipment_header.shiptrack: the carrier tracking number Sage keeps on a shipment (the Portal's own app_shipment.tracking_number is empty on every row). Links 11-13: 4,254 notice references name exactly one Sage shipment; the notice arrived -3..60 days from the ship date for 97% of them against 10% of shuffled pairs."
+      }
+     ],
+     "unique_target": true
     }
    ]
   },
@@ -729,7 +762,7 @@
    "name": "for_sales_order",
    "reverse_name": "notice_references",
    "cardinality": "N:1",
-   "description": "The sales order whose number a notice's free reference carries (a lead: the sender's reference field holds any number).",
+   "description": "The sales order whose number a notice's free reference carries: a lead on a Portal order number (the sender's reference field holds any number); corroborated when it names exactly one Sage order (the number a shipper's notice carries as its reference, cross-checked on the notice date against the order date).",
    "bindings": [
     {
      "kind": "fk",
@@ -755,6 +788,39 @@
       {
        "kind": "workbench_code",
        "path": "ontology/project.py"
+      }
+     ],
+     "unique_target": true
+    },
+    {
+     "kind": "fk",
+     "tier_ceiling": "corroborated",
+     "from_binding": "graph_mail.notice_references",
+     "to_binding": "portal.sage_oe_order_header",
+     "pairs": [
+      {
+       "from": "reference",
+       "to": "ordnumber",
+       "compare": "identifier",
+       "identifier_kind": "so_number"
+      }
+     ],
+     "where": [
+      {
+       "path": "identifier_kind",
+       "op": "eq",
+       "value": "reference"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "workbench_code",
+       "path": "ontology/project.py"
+      },
+      {
+       "kind": "workbench_code",
+       "path": "ontology/schema/generated/meta/portal_catalog.json",
+       "note": "sage.oe_order_header.ordnumber: the Sage order number a shipper's notice carries as its reference (the Portal's app_sales_order holds almost none of them). Links 11-13: 2,565 notice references name exactly one Sage order; the notice arrived -3..120 days from the order date for 99% of them against 10% of shuffled pairs."
       }
      ],
      "unique_target": true

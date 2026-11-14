@@ -24,7 +24,7 @@ function lagText(seconds: number | null | undefined): string {
 }
 
 const pctText = (p: number | null | undefined) => (p == null ? "—" : `${p.toFixed(1)}%`);
-const dayText = (iso: string) => new Date(iso).toLocaleDateString("en-US", { month: "short", day: "numeric", timeZone: "America/New_York" });
+const dayText = (iso: string) => new Date(iso).toLocaleDateString("en-GB", { day: "numeric", month: "short", timeZone: "America/New_York" }).replace("Sept", "Sep");
 
 /** "person:vince@x" -> "Vince"; a role by its label. */
 function whoOf(row: AutopilotWorkflowRow): string {

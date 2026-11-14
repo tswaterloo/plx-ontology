@@ -588,6 +588,43 @@ class CountAskedWithRowsTests(unittest.TestCase):
                 self.assertTrue(bound["passed"], bound["failures"])
                 self.assertEqual(checked(bound)[0]["bound"], "exact")
 
+    def test_a_count_past_the_citation_cap_leaves_the_walk_s_set_whole(self):
+        """11-13 (held graph walk): a query counting 66 orders cited its first 50; the
+        cap's gap marked the walk's own set incomplete, so the next plx.aggregate of it was
+        "at least" and the answer said "at least 50". The cap cites fewer members and loses
+        none; a gap that does lose members still marks the set."""
+        from operating import ontology_query as oq
+        for size, gaps, marked in (
+                (60, [{"state": "unknown", "reason": "citations_capped",
+                       "subject": "members"}], False),
+                (60, [{"state": "unknown", "reason": "scan_cap", "subject": "x"}], True),
+                (10, [], False)):
+            with self.subTest(size=size, gaps=gaps):
+                handles = [receipt(index)[0] for index in range(size)]
+                marks = []
+
+                def call(name, arguments, actor, handles=handles, gaps=gaps):
+                    if name == "plx.around":
+                        return {"set": "set:reach0001", "hops": [{
+                            "link_type": "Shipment.shipped_to", "direction": "forward",
+                            "count": size, "tiers": {"verified": size}}], "gaps": []}
+                    return {"groups": [{"key": {}, "value": str(size), "inputs": 0,
+                                        "markings": [], "members_cited": handles[:50]}],
+                            "partial": False, "gaps": list(gaps), "meta": {},
+                            "completeness": {"complete": True, "truncated": False,
+                                             "returned": 1, "total": 1}}
+
+                backend = oq.TableBackend(call, lambda actor, ids: "set:new00001", None)
+                backend.set_incomplete = lambda actor, handle: marks.append(handle)
+                out = oq.QueryTool(backend).call({
+                    "from": {"object_id": "SalesOrder:x:1"},
+                    "traverse": [{"link_type": "Shipment.shipped_to",
+                                  "direction": "forward"}],
+                    "measures": [{"op": "count"}]}, "actor")
+                self.assertNotIn("error", out)
+                self.assertEqual(out["results"][0]["groups"][0]["value"], str(size))
+                self.assertEqual(bool(marks), marked, marks)
+
     def test_a_partial_or_withheld_count_asked_with_rows_stays_a_lower_bound(self):
         rows = dict(receipt(index) for index in range(3))
         handles = list(rows)

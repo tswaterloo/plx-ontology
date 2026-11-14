@@ -274,10 +274,12 @@ def _apply_steps(cur: Any, layer: Path, record: Mapping[str, Any],
     out = report["steps"]
     t = time.monotonic()
     deleted = 0
+    from ontology.pg_byte_order import key_collate
+    c = key_collate(cur)
     for o in record["owned"]:
-        # a range of the link id's binary order: the ``link_rows_by_id`` index (0009)
-        cur.execute("DELETE FROM ontology.link_rows WHERE link_id COLLATE \"C\" >= %s AND "
-                    "link_id COLLATE \"C\" < %s AND (%s::text[] IS NULL OR EXISTS (SELECT 1 "
+        # a range of the link id's byte order: the key index (``byte_order``)
+        cur.execute(f"DELETE FROM ontology.link_rows WHERE link_id{c} >= %s AND "
+                    f"link_id{c} < %s AND (%s::text[] IS NULL OR EXISTS (SELECT 1 "
                     "FROM unnest(%s::text[]) f WHERE starts_with(from_object, f)))",
                     (o["prefix"], o["end"], o["from"], o["from"]))
         deleted += cur.rowcount
@@ -359,12 +361,14 @@ def _apply_step_values(cur: Any, layer: Path, owned: Sequence[Mapping[str, Any]]
     from ontology.step_migrate import VALUE_PARSER
     deleted = 0
     cur.execute("CREATE TEMP TABLE step_srcs (src bigint PRIMARY KEY) ON COMMIT DROP")
+    from ontology.pg_byte_order import key_collate
+    c = key_collate(cur)
     for o in owned:
         cur.execute(
             "INSERT INTO step_srcs SELECT DISTINCT s.src FROM ontology.object_versions v "
             "JOIN ontology.value_sources s ON s.ver = v.ver JOIN ontology.value_cells c "
             "ON c.src = s.src JOIN ontology.value_kinds k ON k.kind = c.kind WHERE "
-            "v.object_id COLLATE \"C\" >= %s AND v.object_id COLLATE \"C\" < %s AND "
+            f"v.object_id{c} >= %s AND v.object_id{c} < %s AND "
             "s.binding_id = %s AND k.parser = %s ON CONFLICT DO NOTHING",
             (o["prefix"], o["end"], o["binding"], VALUE_PARSER))
         cur.execute(

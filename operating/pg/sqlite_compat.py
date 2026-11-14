@@ -91,6 +91,13 @@ INT_COLUMNS = frozenset({"rowid", "ver", "src", "field_id", "chunk_id", "layout"
 # its members read in Python (``_members``), else by the very SQL function (``_FALLBACK``).
 LIST_SUFFIX = {False: "__list_text", True: "__list_int"}
 _PLACEHOLDER = re.compile(r"%%|%s|%\(([A-Za-z_][A-Za-z0-9_]*)\)s")
+# A parameter tested alone for NULL (``? IS NULL`` / ``:name IS NOT NULL``) has no type the
+# server can infer, so preparing the statement fails (IndeterminateDatatype) and is retried
+# bound client side: every connection logged the error and the whole statement once per
+# text, ~2,900 errors a day in the server log on root (GA-F17). Such a statement is bound
+# client side from the start.
+_UNTYPED_NULL = re.compile(r"(?<![\w.])(%s|%\([A-Za-z_][A-Za-z0-9_]*\)s)\s+IS\s+(NOT\s+)?NULL\b",
+                           re.IGNORECASE)
 _LISTED_AS = {"::text[]) AS u(value)": False, "::bigint[]) AS u(value)": True}
 # A text IN list this long (JSON characters) is kept on the connection and read from there
 # (``PgCompatConnection._kept_lists``): bound as constants, every statement was planned
@@ -1210,9 +1217,11 @@ class PgCompatConnection:
 
     def _cursor(self, text: str) -> Any:
         """A server-side cursor (the statement prepared once, its plan reused) unless the
-        statement was seen to need client-side binding (``_run``)."""
+        statement needs client-side binding: a parameter tested alone for NULL
+        (``? IS NULL``: Postgres cannot type it, GA-F17), or one seen to need it
+        (``_run``)."""
         import psycopg
-        if text in self._client_only:
+        if text in self._client_only or _UNTYPED_NULL.search(text):
             return psycopg.ClientCursor(self._conn)
         return psycopg.Cursor(self._conn)
 

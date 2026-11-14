@@ -127,6 +127,48 @@ class CeoSignals(Engine):
         # each order's value and date, and the customer's name
         self.assertEqual(len(gap["citations"]), 5 + 1)
 
+    def test_a_drop_another_currency_or_a_same_named_customer_may_explain_is_not_said(self):
+        # 11-13 judging: a USD "drop" of a customer whose recent orders were all CAD, and
+        # drops of a Portal customer whose same-named Sage customer ordered that month
+        w = World()
+        moved, _orders = dropping(w)
+        for i in range(3):
+            order(w, moved, placed=day(5 + i), total="5000", currency="USD")
+        twin_named = customer(w, "SYNTH Twin Name")
+        for i in range(4):
+            order(w, twin_named, placed=day(100 + 60 * i))
+        order(w, twin_named, placed=day(10), total="100")
+        sage = w.obj("Customer", {"name": "synth  twin name"}, audience="api:customers",
+                     binding="sage.customers")
+        sage_order = order(w, sage, placed=day(12), binding="sage.oe_orders",
+                           audience="api:sage")
+        # tied to a second customer too, so the Sage order is in no customer's series
+        # (live: the same-name customer's order counted as customer_ambiguous)
+        w.link("SalesOrder.ordered_by", sage_order,
+               w.obj("Customer", {"name": "SYNTH Third"}, audience="api:customers",
+                     binding="sage.customers"))
+        alone = customer(w, "SYNTH Alone")         # no same name elsewhere: still said
+        for i in range(4):
+            order(w, alone, placed=day(100 + 60 * i))
+        order(w, alone, placed=day(10), total="100")
+        same_table = customer(w, "SYNTH Alone")    # same table, same name: apart
+        order(w, same_table, placed=day(11))
+        summary = self.run_rules(w)
+        self.assertEqual([g["object_id"] for g in self.kinds(ceo.DEMAND)], [alone])
+        self.assertEqual(summary["not_evaluated"][ceo.DEMAND],
+                         {"customer_currencies_mixed": 1, "customer_same_name_unlinked": 1,
+                          "customer_ambiguous": 1})
+        # the Sage customer's order is part of the skip's cause: a reader who may not read
+        # it is not told of that skip (nor of its order)
+        rules = {r["rule"]: r for r in self.read(
+            may_read=lambda key: key != "api:sage")["rules"]}
+        self.assertNotIn("customer_same_name_unlinked",
+                         rules[ceo.DEMAND].get("not_evaluated_by_reason") or {})
+        # and one who may read everything is told of it
+        rules = {r["rule"]: r for r in self.read()["rules"]}
+        self.assertEqual(
+            rules[ceo.DEMAND]["not_evaluated_by_reason"]["customer_same_name_unlinked"], 1)
+
     def test_a_source_whose_capture_ended_is_not_a_customer_that_stopped(self):
         w = World()
         who = customer(w)
@@ -236,11 +278,13 @@ class CeoSignals(Engine):
         w = World()
         who = customer(w)
         open_late = order(w, who, placed=day(60), required=day(18))       # open, no shipment
-        shipped_late = order(w, who, placed=day(61), required=day(14))
+        # (a shipment closes an order only when its own status is closed too: an order still
+        # open beside a shipment is partly fulfilled, unknown, since BIZ-005)
+        shipped_late = order(w, who, placed=day(61), required=day(14), status="Closed")
         ship(w, shipped_late, day(10))                                    # 4 days after
-        on_time = order(w, who, placed=day(62), required=day(9))
+        on_time = order(w, who, placed=day(62), required=day(9), status="Closed")
         ship(w, on_time, day(11))
-        before = order(w, who, placed=day(90), required=day(48))
+        before = order(w, who, placed=day(90), required=day(48), status="Closed")
         ship(w, before, day(46))                                          # 2 days after
         order(w, who, placed=day(63), required=(AS_OF + timedelta(days=5)).isoformat())
         once = customer(w, "SYNTH Once")

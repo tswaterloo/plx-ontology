@@ -488,7 +488,7 @@ function SourceRow({ source, n, owner }: { source: Source; n: number; owner?: st
       <button
         type="button"
         onClick={() => setOpen(true)}
-        className="group grid h-8 w-full grid-cols-[14px_40px_minmax(0,1fr)] items-center gap-x-2 rounded-[3px] px-2 text-left text-[13px] hover:bg-hover cursor-pointer"
+        className="group grid h-8 w-full grid-cols-[14px_54px_minmax(0,1fr)] items-center gap-x-2 rounded-[3px] px-2 text-left text-[13px] hover:bg-hover cursor-pointer"
         aria-label={`Source ${n}: ${sys}, ${owner ? `${owner}, ` : ""}${name}`}
         title={[sys, owner, what, read].filter(Boolean).join(" · ")}
         data-testid="answer-source"

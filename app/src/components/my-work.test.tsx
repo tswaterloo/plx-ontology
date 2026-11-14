@@ -25,7 +25,7 @@ const apItem = (id: string, workflow: string) => ({
 const area = (liveFlow: string | null): AutopilotArea => ({
   owner: false, switches: { global_off: false, master_switch: true, autopilot_off: false, workflows_off: [] }, people: [], roles: [], notes: [],
   items: [apItem("ap_1", "customer_order_intake"), apItem("ap_3", "supplier_eta_receiving")],
-  workflows: liveFlow ? [{ role: "r", person: "me", workflow: liveFlow, dev: null, fresh: { judged: 16, matched: 15, percent: 93.8 }, n: 16, state: "live", on: true, live_flag: true, missing: [], last_run: null, scored_at: null, open_items: 1 }] : [],
+  workflows: liveFlow ? [{ role: "r", person: "me", workflow: liveFlow, dev: null, fresh: { judged: 16, matched: 15, percent: 93.8 }, n: 16, state: "live", on: true, switched_on: 1, missing: [], last_run: null, scored_at: null, open_items: 1 }] : [],
 });
 
 beforeEach(() => Object.values(api).forEach((f) => f.mockReset()));

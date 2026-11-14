@@ -59,6 +59,7 @@ from pathlib import Path
 from typing import Any, Callable, Mapping, Optional, Sequence
 from operating import declared_schema as _schemas
 from operating.declared_schema import feedback as _FEEDBACK
+from operating.file_modes import keep_private
 
 KINDS = ("answer", "alert", "page", "record", "list", "ui", "general")
 STATUSES = ("new", "accepted", "fixed", "wont_fix")
@@ -101,11 +102,42 @@ _ADDRESS = re.compile(r"\b[A-Za-z0-9._%+'-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b")
 WITHHELD = "[withheld]"
 
 
+# The mail capture's state directory (``attach_capture_directory``, set as the API
+# starts) and the guard last made with its directory: (the list's guard, made at, guard).
+_CAPTURE: dict[str, Any] = {}
+_CAPTURE_LOCK = threading.Lock()
+DIRECTORY_TTL = 300.0   # seconds a directory read is kept (the capture records it daily)
+
+
+def attach_capture_directory(state_dir: Any) -> None:
+    """Decide addresses by what the mail capture under ``state_dir`` recorded (its
+    mailboxes' directory and last tenant listing: ``people_exclusion.with_directory``),
+    so a colleague's address is decided and an outsider's (outside the tenant's domains)
+    kept; without it every address is withheld. None: no directory."""
+    with _CAPTURE_LOCK:
+        _CAPTURE.clear()
+        if state_dir:
+            _CAPTURE["dir"] = state_dir
+
+
 def exclusion() -> Any:
-    """The people exclusion as the read paths load it (never raises; may be unavailable)."""
+    """The people exclusion as the read paths load it, with the mail capture's directory
+    attached when the API named one (never raises; may be unavailable)."""
     try:
+        import time
+        from integrations.people_exclusion import with_directory
         from operating.pg.permissions import load_exclusion
-        return load_exclusion()
+        guard = load_exclusion()
+        with _CAPTURE_LOCK:
+            state_dir, made = _CAPTURE.get("dir"), _CAPTURE.get("made")
+            if state_dir is None:
+                return guard
+            now = time.monotonic()
+            if made is not None and made[0] is guard and now - made[1] < DIRECTORY_TTL:
+                return made[2]
+            attached = with_directory(guard, state_dir)
+            _CAPTURE["made"] = (guard, now, attached)
+            return attached
     except Exception:  # noqa: BLE001 - no guard: everything it would decide is withheld
         return None
 
@@ -117,15 +149,74 @@ def _excluded_id(guard: Any, oid: str) -> bool:
         return True
 
 
+_ANGLED = re.compile(r"<\s*([^<>\s]+@[^<>\s]+)\s*>")
+
+
+def _address_forms(address: str) -> list[str]:
+    """The forms one address is decided by: the address inside ``Name <...>`` and, for a
+    plus address (``bstn+orders@``, delivered to ``bstn@``), the mailbox it reaches."""
+    plain = str(address).strip().lower()
+    angled = _ANGLED.search(plain)
+    plain = angled.group(1) if angled else plain
+    local, at, domain = plain.rpartition("@")
+    forms = [plain]
+    if at and "+" in local.lstrip("+"):
+        forms.append(local.split("+", 1)[0] + "@" + domain)
+    return forms
+
+
 def _excluded_address(guard: Any, address: str) -> bool:
+    """Whether ``address`` is (or cannot be told from) an excluded person's: any of its
+    forms (``_address_forms``) excluded counts."""
+    return any(_one_address_excluded(guard, form) for form in _address_forms(address))
+
+
+def _one_address_excluded(guard: Any, address: str) -> bool:
     try:
         if guard is None or guard.unavailable:
             return True
         if guard.decides(address):
             return bool(guard.is_excluded(address))
-        return address.rsplit("@", 1)[1].lower() in set(guard.known_domains())
+        # undecided: outside the tenant's known mail domains it is no tenant person's; a
+        # guard that knows none (the object ids alone, as the API loads it with no
+        # directory attached) cannot tell a colleague's address from an outsider's, so
+        # it is withheld (an excluded person's address was shown before: CT-T-06)
+        domains = set(guard.known_domains())
+        return not domains or address.rsplit("@", 1)[1].lower() in domains
     except Exception:  # noqa: BLE001 - undecidable: withheld
         return True
+
+
+def person_excluded(guard: Any, values: Any) -> bool:
+    """Whether the signed-in person these identities name (their object id, addresses,
+    principal keys) is excluded, or cannot be told apart from one (fail closed). An
+    object id decides; an address is consulted where the guard decides it, and one it
+    cannot decide counts as excluded only when no object id identifies the person (a
+    guard of object ids alone decides no address: a signed-in reader is then decided by
+    their object id, never shut out for their address)."""
+    if guard is None or getattr(guard, "unavailable", "absent"):
+        return True
+    oids: set[str] = set()
+    addresses: set[str] = set()
+    for value in values:
+        tail = str(value).strip().lower().rsplit(":", 1)[-1]
+        if _UUID.fullmatch(tail):
+            oids.add(tail)
+        elif _ADDRESS.fullmatch(tail):
+            addresses.add(tail)
+    if any(_excluded_id(guard, oid) for oid in oids):
+        return True
+    for address in addresses:
+        try:
+            if guard.decides(address):
+                if guard.is_excluded(address):
+                    return True
+                continue
+        except Exception:  # noqa: BLE001 - undecidable
+            pass
+        if not oids and _excluded_address(guard, address):
+            return True
+    return False
 
 
 def clean(text: Any, guard: Any, limit: int = MAX_TEXT) -> Optional[str]:
@@ -206,17 +297,17 @@ class FeedbackStore:
                                          isolation_level=None)
         else:
             self.directory.mkdir(parents=True, exist_ok=True, mode=0o700)
-            os.chmod(self.directory, 0o700)   # an existing folder too
+            keep_private(self.directory, 0o700)   # an existing folder too
             path = self.directory / "feedback.sqlite"
             os.close(os.open(path, os.O_RDWR | os.O_CREAT, 0o600))
-            os.chmod(path, 0o600)
+            keep_private(path, 0o600)
             self._conn = sqlite3.connect(str(path), timeout=30,
                                          check_same_thread=False, isolation_level=None)
             self._conn.execute("PRAGMA journal_mode = WAL")
             for side in ("-wal", "-shm"):   # SQLite gives them the file's mode; made sure
                 extra = path.with_name(path.name + side)
                 if extra.exists():
-                    os.chmod(extra, 0o600)
+                    keep_private(extra, 0o600)
         self._conn.row_factory = sqlite3.Row
         _schemas.apply(self._conn, _FEEDBACK)
 
@@ -457,19 +548,9 @@ def start_nightly(store: FeedbackStore, stop: Optional[threading.Event] = None,
 def reader_excluded(reader: Any, guard: Any) -> bool:
     """Whether the reader is an excluded person (or undecidable: fail closed)."""
     session = reader.session
-    ids = {str(v).lower() for v in (*getattr(session, "identities", ()),
-                                     *getattr(session, "principals", ()))}
-    if reader.email:
-        ids.add(reader.email.lower())
-    if guard is None or getattr(guard, "unavailable", None):
-        return True
-    for value in ids:
-        tail = value.rsplit(":", 1)[-1]
-        if _UUID.fullmatch(tail) and _excluded_id(guard, tail):
-            return True
-        if _ADDRESS.fullmatch(tail) and _excluded_address(guard, tail):
-            return True
-    return False
+    ids = [*getattr(session, "identities", ()), *getattr(session, "principals", ()),
+           getattr(session, "subject_oid", None), reader.email]
+    return person_excluded(guard, [v for v in ids if v])
 
 
 def _who(reader: Any, guard: Any) -> dict[str, Any]:

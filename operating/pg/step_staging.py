@@ -158,18 +158,20 @@ def _served(cur: Any, scope: Mapping[str, Any], narrow: bool
             ) -> dict[str, tuple[int, int | None]]:
     """The served links of ``scope`` (``prefix``/``end``/``from``, or ``objects``: the ids
     they are from), link id -> (row hash, narrowed hash)."""
+    from ontology.pg_byte_order import key_collate
     from operating.pg.migrate_chunks import _served_links
     out: dict[str, tuple[int, int | None]] = {}
+    c = key_collate(cur)
     if scope.get("objects") is not None:
         objects = sorted(scope["objects"])
         for k in range(0, len(objects), _OBJECT_BATCH):
-            for row in _served_links(cur, "l.from_object = ANY(%s::text[]) AND l.link_id "
-                                     "COLLATE \"C\" >= %s AND l.link_id COLLATE \"C\" < %s",
+            for row in _served_links(cur, f"l.from_object = ANY(%s::text[]) AND l.link_id"
+                                     f"{c} >= %s AND l.link_id{c} < %s",
                                      [objects[k:k + _OBJECT_BATCH], scope["prefix"],
                                       scope["end"]]):
                 out[row[0]] = _hashes(row, narrow)
         return out
-    for row in _served_links(cur, "l.link_id COLLATE \"C\" >= %s AND l.link_id COLLATE \"C\" "
+    for row in _served_links(cur, f"l.link_id{c} >= %s AND l.link_id{c} "
                              "< %s AND (%s::text[] IS NULL OR EXISTS (SELECT 1 FROM "
                              "unnest(%s::text[]) f WHERE starts_with(l.from_object, f)))",
                              [scope["prefix"], scope["end"], scope["from"], scope["from"]]):

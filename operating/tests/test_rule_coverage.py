@@ -11,6 +11,7 @@ import random
 import sqlite3
 import tempfile
 import time
+from typing import Any
 import unittest
 from unittest import mock
 from contextlib import closing
@@ -289,6 +290,48 @@ class RuleCoverageTest(unittest.TestCase):
         with closing(_open(inbox, store)) as conn:
             self.assertEqual(_new(conn, _params("finance"))[0], {"rule_a": 1})
             self.assertEqual(_new(conn, _params("owner"))[0], {"rule_a": 2})
+
+    def test_an_emptied_wal_keeps_the_table_and_readers_at_once_build_it_once(self) -> None:
+        """A WAL another reader opened and reset (empty: no frame, a new time) is the same
+        inbox: the kept table stands; a WAL holding frames is not. Page reads asking at
+        once for a table not kept build it once and all read that one, exact."""
+        import threading
+        import time as _time
+        inbox, store = _inbox(Path(self.tmp.name), *_mixed(3))
+        with closing(_open(inbox, store)) as conn:
+            key = pe._coverage_key(conn, _params("owner"))
+            wal = Path(str(inbox) + "-wal")
+            wal.write_bytes(b"")
+            os.utime(wal, ns=(1, _time.time_ns() + 10**9))
+            self.assertEqual(pe._coverage_key(conn, _params("owner")), key)
+            os.utime(inbox, ns=(1, _time.time_ns() + 2 * 10**9))
+            self.assertNotEqual(pe._coverage_key(conn, _params("owner")), key)
+            key = pe._coverage_key(conn, _params("owner"))
+            wal.write_bytes(b"\0" * 32)   # frames written since
+            self.assertNotEqual(pe._coverage_key(conn, _params("owner")), key)
+            wal.unlink()
+            expected = {r: _old(conn, _params(r)) for r in READERS}
+        built: list[int] = []
+        real = pe._built_table
+
+        def counted(*args: Any) -> Any:
+            built.append(1)
+            _time.sleep(0.3)   # long enough for every reader to ask meanwhile
+            return real(*args)
+        got: dict[str, Any] = {}
+
+        def ask(reader: str) -> None:
+            with closing(_open(inbox, store)) as own:
+                got[reader] = _new(own, _params(reader))
+        with mock.patch.object(pe, "_built_table", side_effect=counted):
+            threads = [threading.Thread(target=ask, args=(r,)) for r in READERS]
+            for t in threads:
+                t.start()
+            for t in threads:
+                t.join(30)
+        self.assertEqual(len(built), 1)
+        self.assertEqual(got, expected)
+        self.assertFalse(pe._tables_building)
 
     def test_an_in_memory_store_without_a_change_stamp_is_never_kept(self) -> None:
         inbox, store = _inbox(Path(self.tmp.name), [("rule_a", 1, "o", "[]", 1)],

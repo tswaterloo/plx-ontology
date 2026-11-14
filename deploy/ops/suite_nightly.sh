@@ -14,7 +14,8 @@ wt=${PLX_SUITE_TREE:-$PLX_SCRATCH/wt/suite-nightly}
 ref=${PLX_SUITE_REF:-origin/main}
 mkdir -p "$out"
 git -C "$PLX_REPO" fetch -q origin
-if [ ! -e "$wt/.git" ]; then git -C "$PLX_REPO" worktree add -q --detach "$wt" "$ref"; fi
+# -f: a tree deleted by a cleanup but still registered is re-added, not refused
+if [ ! -e "$wt/.git" ]; then git -C "$PLX_REPO" worktree add -f -q --detach "$wt" "$ref"; fi
 git -C "$wt" checkout -qf --detach "$ref"
 git -C "$wt" clean -qfdx -e app/node_modules
 stamp=$(date -u +%Y%m%dT%H%M%SZ)

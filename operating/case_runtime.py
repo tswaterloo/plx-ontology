@@ -447,17 +447,24 @@ class CaseRuntime:
         self.mail_scope = MailScope.builtin() if mail_scope is None else mail_scope
         # The people exclusion every captured mail and Teams record is served under, re-read
         # at serve time (``ontology_tools_evidence.people_excluded``: unavailable withholds
-        # them all). Default: the guard ``PLX_EXCLUDED_PEOPLE_OIDS``/``_FILE`` name.
-        if people_exclusion is None:
-            from integrations.people_exclusion import PeopleExclusion
-            people_exclusion = PeopleExclusion.from_env(os.environ)
+        # them all). Default: the guard ``PLX_EXCLUDED_PEOPLE_OIDS``/``_FILE`` name, re-read
+        # when the list file changes (or every few minutes: ``ReloadingExclusion``), so a
+        # person excluded while the API runs is withheld at once on every route; a
+        # runtime kept a snapshot of the list it started with before, so record pages and
+        # Ask kept serving mail the person sent while search no longer did (CT-T-06).
         # Addresses and OneDrive owners decided offline by the mail capture's directory
         # (``people_exclusion.with_directory``: one the directory does not map stays
         # undecided); a bound guard decides them itself.
-        from integrations.people_exclusion import with_directory
-        self.people_exclusion = with_directory(people_exclusion, state_dir)
+        from integrations.people_exclusion import ReloadingExclusion, with_directory
+        if people_exclusion is None:
+            self._exclusion_source: Any = ReloadingExclusion.from_env(os.environ,
+                                                                      state_dir=state_dir)
+            self._people_exclusion: Any = None
+        else:
+            self.people_exclusion = with_directory(people_exclusion, state_dir)
         if self.mail_scope.all_directory:
-            self.mail_scope.attach_people(people_exclusion)
+            self.mail_scope.attach_people(self._exclusion_source
+                                          if people_exclusion is None else people_exclusion)
         self._address_exclusion: Any = _UNBOUND
         self._address_lock = threading.Lock()
         # (mailbox, message, attachment, message changeKey) -> attachment metadata
@@ -975,6 +982,18 @@ class CaseRuntime:
             return "excluded_people_oids_absent"
         return guard.unavailable
 
+    @property
+    def people_exclusion(self) -> Any:
+        """The people exclusion now: the list as last re-read (``ReloadingExclusion``),
+        or the guard this runtime was given."""
+        source = getattr(self, "_exclusion_source", None)
+        return source.current() if source is not None else self._people_exclusion
+
+    @people_exclusion.setter
+    def people_exclusion(self, guard: Any) -> None:
+        self._exclusion_source = None
+        self._people_exclusion = guard
+
     def address_exclusion(self) -> Any:
         """The people guard able to say whether an address is an excluded person's: the
         runtime's own when bound, else a copy of it bound once per runtime through the
@@ -990,7 +1009,10 @@ class CaseRuntime:
         if guard.bound:
             return guard
         with self._address_lock:
-            if self._address_exclusion is _UNBOUND:
+            # bound again when the list changed (a person excluded since: the copy bound
+            # before does not name them)
+            listed = guard.fingerprint()
+            if self._address_exclusion is _UNBOUND or self._address_exclusion[0] != listed:
                 api, bound = getattr(self.live, "graph_api", None), None
                 if api is not None:
                     bound = copy.copy(guard)
@@ -998,9 +1020,9 @@ class CaseRuntime:
                         bound.bind(api)
                     except Exception:  # noqa: BLE001 - no listing: addresses stay undecided
                         bound = None
-                self._address_exclusion = (bound if bound is not None and bound.bound
+                self._address_exclusion = (listed, bound if bound is not None and bound.bound
                                            and not bound.unavailable else None)
-            return self._address_exclusion
+            return self._address_exclusion[1]
 
     def _holds_mail_capture(self, directory: Path | None = None) -> bool:
         from integrations.capture_mail import store_exists

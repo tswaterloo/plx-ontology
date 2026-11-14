@@ -73,6 +73,11 @@ DEFAULT_TARGETS: dict[str, float] = {
     "delta_last_cycle_minutes": 15,
     "delta_cycle_runtime_minutes": 30,
     "capture_minutes": 360,
+    # minutes since a capture last made progress (owner 11-13: mail and Teams within
+    # 30 min, Portal within 1 h), whatever its runs report: ``capture_progress_checks``
+    "capture_progress_mail_minutes": 30,
+    "capture_progress_teams_minutes": 30,
+    "capture_progress_portal_minutes": 60,
     "capture_failed_runs": 2,      # runs in a row a capture source may fail
     "capture_undecided_list_hours": 24,   # an address withheld as undecided this long
     "ingest_start_failures": 3,
@@ -621,6 +626,17 @@ def config_keys_check(state: Path) -> Optional[Check]:
                   ", ".join(warned[:8]))
 
 
+# a capture source in a reader's words; an unknown one keeps its id with spaces
+CAPTURE_WORDS = {"mc": "MC", "bc": "Business Central", "portal": "Portal",
+                 "sharepoint": "SharePoint", "sharepoint_lists": "SharePoint lists",
+                 "teams": "Teams", "mail": "mail", "meetings": "meetings", "sage": "Sage",
+                 "filemaker": "FileMaker"}
+
+
+def capture_words(name: str) -> str:
+    return CAPTURE_WORDS.get(name) or name.replace("_", " ")
+
+
 def capture_alarm(report: Mapping[str, Any]) -> Optional[dict[str, Any]]:
     """The Home health line from a ``collect`` report: the capture sources past twice their
     normal interval and a start loop, or None when captures are healthy."""
@@ -643,8 +659,10 @@ def capture_alarm(report: Mapping[str, Any]) -> Optional[dict[str, Any]]:
         parts.append("capture service not running")
     if names:
         hours = round(max(ages) / 60) if ages else None
-        parts.append("captures not refreshed: " + ", ".join(names)
-                     + (f" (oldest {hours} h)" if hours is not None else ""))
+        oldest = (None if hours is None else f"{hours} h" if hours < 48
+                  else f"{round(hours / 24)} days")
+        parts.append("captures not refreshed: " + ", ".join(capture_words(n) for n in names)
+                     + (f" (oldest {oldest})" if oldest else ""))
     if loop is not None:
         parts.append("capture service keeps failing to start")
     if ignored is not None:
@@ -694,6 +712,47 @@ def pg_check(state: Path, now: datetime, t: Mapping[str, float],
     return _check("pg_follow", len(behind), bound, stalled or far, "layers", detail)
 
 
+# The store's own record of a capture's last progress, one indexed read each: the mail
+# folder a run last walked, the Teams unit a run last touched, the Portal relation capture
+# last finished. A run that captures and then dies in its closing report still counts;
+# a capture that stopped walking does not, within the bound (named capture:<source>:progress,
+# paged with the other capture: checks).
+PROGRESS_READS = {
+    "mail": ("mail-capture/capture.db", "SELECT max(last_run_at) FROM folders"),
+    "teams": ("teams-capture/capture.db", "SELECT max(updated_at) FROM runs"),
+    "portal": ("case-runtime/source-mirror.sqlite",
+               "SELECT finished_at FROM capture WHERE capture_id = "
+               "(SELECT max(capture_id) FROM capture WHERE finished_at IS NOT NULL)"),
+}
+
+
+def capture_progress_checks(state: Path, now: datetime, t: Mapping[str, float]
+                            ) -> list[Check]:
+    """``capture:<source>:progress`` for mail, Teams and Portal: minutes since the
+    capture store last recorded progress, against ``capture_progress_<source>_minutes``.
+    A store that is missing or unreadable is unknown (never fine)."""
+    out = []
+    for source, (rel, sql) in PROGRESS_READS.items():
+        bound = t.get(f"capture_progress_{source}_minutes")
+        if not bound:
+            continue
+        stamp = None
+        path = state / rel
+        if path.is_file():
+            try:
+                conn = _ro(path)
+                try:
+                    row = conn.execute(sql).fetchone()
+                    stamp = row[0] if row else None
+                finally:
+                    conn.close()
+            except sqlite3.Error:
+                stamp = None
+        out.append(_age_check(f"capture:{source}:progress", now, stamp, float(bound),
+                              "no progress record readable"))
+    return out
+
+
 def _age_check(name: str, now: datetime, stamp: Any, bound: float, missing: str) -> Check:
     age = _minutes(now, _parse(stamp))
     if stamp is None:
@@ -723,6 +782,7 @@ def collect(state_dir: Any, *, now: Optional[datetime] = None,
     checks: list[Check] = []
     checks += delta_checks(state, now, t)
     checks += capture_checks(state, now, t)
+    checks += capture_progress_checks(state, now, t)
     checks += capture_run_checks(state, now, t)
     checks += source_checks(state, now, t)
     for extra in (start_check(state, t), service_check(state, now),

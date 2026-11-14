@@ -897,6 +897,78 @@ def check_request(method: str, url: str, *, body: Mapping[str, str] | None = Non
     raise ReadOnlyGuardError(f"method {method} refused; read-only")
 
 
+# Graph JSON batching (attachment fast path): one POST to
+# ``/v1.0/$batch`` carrying up to 20 inner requests, allowed only when EVERY inner request
+# is a GET that ``check_request`` itself would send (closed grammar, action-token
+# denylist, Teams URLs) with no body, no ``dependsOn`` and only the immutable-id
+# ``Prefer`` header. Checked before I/O (``check_batch_request``) and again, independently,
+# inside the sender (``_refuse_non_read_send``). Any other shape is refused.
+GRAPH_BATCH_PATH = "/v1.0/$batch"
+GRAPH_BATCH_URL = f"https://{GRAPH_HOST}{GRAPH_BATCH_PATH}"
+MAX_BATCH_REQUESTS = 20
+_BATCH_ID = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
+BATCH_HEADER_VALUES: Mapping[str, frozenset[str]] = {
+    "Prefer": frozenset({'IdType="ImmutableId"'})}
+
+
+def check_batch_body(body: Any, *, environ: Mapping[str, str] | None = None
+                     ) -> list[dict[str, Any]]:
+    """The inner requests of a Graph ``$batch`` body (bytes of JSON), each one a GET
+    ``check_request`` accepts; ``ReadOnlyGuardError`` for anything else, before I/O."""
+    if not isinstance(body, (bytes, bytearray)) or len(body) > 200_000:
+        raise ReadOnlyGuardError("batch body invalid")
+    def unique(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+        # A repeated key (``"method":"POST","method":"GET"``) reads differently to
+        # parsers that keep the first value: refused at every level.
+        keys = [key for key, _ in pairs]
+        if len(keys) != len(set(keys)):
+            raise ReadOnlyGuardError("batch body repeats a key")
+        return dict(pairs)
+
+    try:
+        parsed = json.loads(bytes(body).decode("utf-8"), object_pairs_hook=unique)
+    except (UnicodeDecodeError, ValueError):
+        raise ReadOnlyGuardError("batch body is not JSON") from None
+    if not isinstance(parsed, dict) or set(parsed) != {"requests"}:
+        raise ReadOnlyGuardError("batch body must hold only requests")
+    requests = parsed["requests"]
+    if not isinstance(requests, list) or not 1 <= len(requests) <= MAX_BATCH_REQUESTS:
+        raise ReadOnlyGuardError("batch holds 1..20 requests")
+    seen: set[str] = set()
+    for inner in requests:
+        if not isinstance(inner, dict) or not {"id", "method", "url"} <= set(inner) \
+                or not set(inner) <= {"id", "method", "url", "headers"}:
+            raise ReadOnlyGuardError("batch request shape refused (no body or dependsOn)")
+        if inner["method"] != "GET":
+            raise ReadOnlyGuardError("batch: every inner request must be a GET")
+        ident, url = inner["id"], inner["url"]
+        if not isinstance(ident, str) or _BATCH_ID.fullmatch(ident) is None or ident in seen:
+            raise ReadOnlyGuardError("batch request id invalid or repeated")
+        seen.add(ident)
+        if not isinstance(url, str) or not url.startswith("/") or url.startswith("//"):
+            raise ReadOnlyGuardError("batch request url must be a relative Graph path")
+        headers = inner.get("headers", {})
+        if not isinstance(headers, dict) or any(
+                not isinstance(value, str) or value not in BATCH_HEADER_VALUES.get(key, ())
+                for key, value in headers.items()):
+            raise ReadOnlyGuardError("batch request header refused")
+        # The same check as a direct GET of the absolute v1.0 URL.
+        check_request("GET", f"https://{GRAPH_HOST}/v1.0{url}", environ=environ)
+    return requests
+
+
+def check_batch_request(url: Any, body: Any, *, environ: Mapping[str, str] | None = None
+                        ) -> list[dict[str, Any]]:
+    """A whole ``$batch`` POST: the exact batch URL (no query) and a GET-only body."""
+    if url != GRAPH_BATCH_URL:
+        raise ReadOnlyGuardError("batch url must be exactly the Graph v1.0 $batch url")
+    for teams in _teams_urls(os.environ if environ is None else environ):
+        teams_host = (urlsplit(teams.strip()).hostname or "").lower()
+        if teams_host == GRAPH_HOST:
+            raise ReadOnlyGuardError("MC_GO_LIVE_TEAMS_* URLs are never called")
+    return check_batch_body(body, environ=environ)
+
+
 def sharepoint_host_from_env(environ: Mapping[str, str] | None = None) -> str | None:
     """The one download host: the host part of a composite ``SHAREPOINT_SITE_ID``."""
     env = os.environ if environ is None else environ
@@ -1160,6 +1232,11 @@ def _refuse_non_read_send(method: str, url: str, body: bytes | None) -> None:
                 and form["grant_type"] == ["client_credentials"]
                 and form["scope"][0] in ALLOWED_SCOPES):
             return
+    if method == "POST" and host == GRAPH_HOST and parts.path == GRAPH_BATCH_PATH \
+            and not parts.query:
+        # A Graph $batch of GETs only (``check_batch_body``), re-checked here.
+        check_batch_body(body)
+        return
     if method == "POST" and host == LWA_HOST and parts.path == LWA_TOKEN_PATH \
             and not parts.query:
         try:
@@ -1403,6 +1480,20 @@ class GuardedTransport:
                                                    max_bytes)
         if op is not None and status < 400:
             self.operations_read.add(op)
+        return status, response_headers, raw
+
+    def batch(self, url: str, headers: Mapping[str, str], body: bytes, *,
+              max_bytes: int = MAX_ATTACHMENT_RESPONSE_BYTES
+              ) -> tuple[int, Mapping[str, str], bytes]:
+        """One Graph ``$batch`` POST whose inner requests are all GETs
+        (``check_batch_request``, before I/O; the sender re-checks the body)."""
+        inner = check_batch_request(url, body, environ=self._environ)
+        if not isinstance(max_bytes, int) or not 1 <= max_bytes <= MAX_ATTACHMENT_RESPONSE_BYTES:
+            raise ValueError("response bound invalid")
+        sent = {**dict(headers), "Content-Type": "application/json"}
+        status, response_headers, raw = self._send("POST", url, sent, bytes(body), max_bytes)
+        with self._count_lock:
+            self.gets_sent += len(inner)   # each inner request is a GET
         return status, response_headers, raw
 
     @property
@@ -1908,6 +1999,83 @@ class SourceApi:
             return _decimal_json(raw, exact_integers=self._exact_integers)
         except ValueError:
             raise SourceUnavailable(f"{self.source} GET returned non-JSON") from None
+
+    def get_batch(self, requests: Sequence[tuple[str, str, Mapping[str, str] | None]], *,
+                  max_bytes: int = MAX_ATTACHMENT_RESPONSE_BYTES
+                  ) -> dict[str, tuple[int, Mapping[str, str], Any]]:
+        """Up to 20 Graph GETs in one ``$batch`` POST (``requests``: ``(id, absolute v1.0
+        GET url, headers)``), each checked as a GET before any I/O. Returns each id's
+        ``(status, headers, JSON body)``; an inner 429 is the caller's to retry (its
+        ``Retry-After`` in the headers). The whole POST is retried like a GET on a
+        transport failure or 429/502/503/504 (it changes nothing)."""
+        if self.source != "graph":
+            raise ReadOnlyGuardError("only Graph takes a $batch")
+        prefix = f"https://{GRAPH_HOST}/v1.0"
+        inner = []
+        for ident, url, headers in requests:
+            if not isinstance(url, str) or not url.startswith(prefix + "/"):
+                raise ReadOnlyGuardError("batch request url must be a Graph v1.0 url")
+            entry: dict[str, Any] = {"id": ident, "method": "GET", "url": url[len(prefix):]}
+            if headers:
+                entry["headers"] = dict(headers)
+            inner.append(entry)
+        body = json.dumps({"requests": inner}, separators=(",", ":")).encode()
+        # Before the token request: a refused batch causes no I/O at all.
+        check_batch_request(GRAPH_BATCH_URL, body, environ=self._transport._environ)
+        sent = {"Accept": "application/json",
+                "Authorization": "Bearer " + self._tokens.bearer()}
+        if self._retry is not None:
+            self._retry.hold()
+            self._retry.request()
+        attempt = 0
+        while True:
+            try:
+                status, response_headers, raw = self._transport.batch(
+                    GRAPH_BATCH_URL, sent, body, max_bytes=max_bytes)
+            except SourceUnavailable as exc:
+                if (not is_transport_failure(exc) or self._retry is None
+                        or not self._retry.may_retry(attempt)):
+                    raise
+                self._retry.pause(attempt)
+                attempt += 1
+                continue
+            if (status in RETRY_STATUSES and self._retry is not None
+                    and self._retry.may_retry(attempt, response_headers)):
+                self._retry.pause(attempt, response_headers)
+                attempt += 1
+                continue
+            break
+        if status != 200:
+            error = _http_failure(SourceUnavailable(f"graph $batch returned HTTP {status}"),
+                                  status, raw)
+            lowered = {str(k).lower(): v for k, v in (response_headers or {}).items()}
+            error.retry_after_seconds = (self._retry or BoundedBackoff()).retry_after(
+                lowered.get("retry-after"))
+            raise error
+        try:
+            parsed = _decimal_json(raw, exact_integers=self._exact_integers)
+        except ValueError:
+            raise SourceUnavailable("graph $batch returned non-JSON") from None
+        responses = parsed.get("responses") if isinstance(parsed, Mapping) else None
+        if not isinstance(responses, list):
+            raise SourceUnavailable("graph $batch response lacks responses")
+        wanted = {entry["id"] for entry in inner}
+        found: dict[str, tuple[int, Mapping[str, str], Any]] = {}
+        for item in responses:
+            if not isinstance(item, Mapping) or item.get("id") not in wanted \
+                    or item["id"] in found:
+                raise SourceUnavailable("graph $batch response names another request")
+            code = item.get("status")
+            if isinstance(code, Decimal):
+                code = int(code)
+            if isinstance(code, bool) or not isinstance(code, int):
+                raise SourceUnavailable("graph $batch response status invalid")
+            headers = item.get("headers") if isinstance(item.get("headers"), Mapping) else {}
+            found[item["id"]] = (code, {str(k).lower(): str(v) for k, v in headers.items()},
+                                 item.get("body"))
+        if set(found) != wanted:
+            raise SourceUnavailable("graph $batch response lacks a request")
+        return found
 
     def get_document(self, url: str, *, max_bytes: int = MAX_RESPONSE_BYTES) -> bytes:
         """The bytes of one document (``DOCUMENT_OPERATIONS``: BC ``$metadata``, CSDL XML;

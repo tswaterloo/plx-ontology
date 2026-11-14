@@ -173,7 +173,8 @@ describe("source page", () => {
     params.field = [];
     getSource.mockImplementation(async () => { throw new ApiError(404, "not_found"); });
     render(<SourcePage />);
-    expect(await screen.findByRole("alert")).toHaveTextContent("Couldn't find that, or you don't have access to it.");
+    expect(await screen.findByTestId("source-missing")).toHaveTextContent("This source isn't here, or you don't have access to it.");
+    expect(screen.queryByRole("alert")).toBeNull();
     expect(screen.getByRole("heading", { level: 1 })).toHaveTextContent("Source");
     expect(screen.queryByRole("button", { name: "Try again" })).toBeNull();
     expect(screen.queryByPlaceholderText("Ask about this document")).toBeNull();

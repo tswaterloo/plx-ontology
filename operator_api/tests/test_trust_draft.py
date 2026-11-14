@@ -481,7 +481,7 @@ class Scorecard(unittest.TestCase):
                 self.assertEqual(today["prepared"], n)
                 self.assertEqual(today["accepted"] + today["edited"] + today["rejected"], n)
                 self.assertEqual((days[1]["prepared"], days[2]["prepared"]), (1, 0))
-        self.guard.unavailable = "not loaded"
+        self.guard = Guard(unavailable=True)
         self.assertIsNone(wl.autopilot_days(self.store, reader="plx:staff:ana"))
 
     def test_the_route_is_the_readers_own(self):
@@ -498,7 +498,7 @@ class Scorecard(unittest.TestCase):
         self.assertEqual(sum(d["prepared"] for d in sam["days"]), 0)
         self.assertEqual(ana.get("/api/work-log/autopilot-days",
                                  params={"days": 61}).status_code, 422)
-        self.guard.unavailable = "not loaded"
+        self.guard = Guard(unavailable=True)
         self.assertEqual(ana.get("/api/work-log/autopilot-days").json(),
                          {"available": False, "days": []})
 
@@ -684,3 +684,39 @@ class FollowReadsTheLayers(Fixture):
         on_time.parent.mkdir()
         follow(on_time, False, window=ids)
         self.assertEqual(events(on_time), 2)
+
+
+class TrustReadsTheServedArea(unittest.TestCase):
+    """11-13: warm Trust took 2.5-12.5 s, reading the whole autopilot area again on every
+    visit. It reads the autopilot page's served copy; one served stale (the queue or a
+    switch moved since) is read again, so Trust never shows an older workflow state."""
+
+    def build(self, served):
+        from types import SimpleNamespace
+        from operator_api import trust
+        calls = []
+        row = lambda name: SimpleNamespace(workflow=name)   # noqa: E731
+        backend = SimpleNamespace(
+            state_dir=None, freshness=lambda: m.Freshness(),
+            autopilot_area=served if callable(served) else (
+                lambda who: calls.append("served") or served),
+            _area_read=lambda who: calls.append("fresh") or SimpleNamespace(
+                workflows=[row("fresh")]))
+        with mock.patch.object(trust, "lines", lambda *a: []), \
+                mock.patch.object(trust.m, "TrustPage", lambda **k: k):
+            page = trust.build(backend, object(), environ={})
+        return [w.workflow for w in page["autopilot"]], calls
+
+    def test_a_current_served_area_is_read_once_and_a_stale_one_again(self):
+        from types import SimpleNamespace
+        current = SimpleNamespace(workflows=[SimpleNamespace(workflow="kept")],
+                                  stale_since=None)
+        self.assertEqual(self.build(current), (["kept"], ["served"]))
+        stale = SimpleNamespace(workflows=[SimpleNamespace(workflow="kept")],
+                                stale_since="2026-11-13T15:00:00Z")
+        self.assertEqual(self.build(stale), (["fresh"], ["served", "fresh"]))
+
+    def test_a_served_area_that_is_busy_is_read_here(self):
+        def busy(who):
+            raise TimeoutError("workbench_busy")
+        self.assertEqual(self.build(busy), (["fresh"], ["fresh"]))

@@ -197,6 +197,11 @@ WORDS = ("value_words", "chunk_words")
 # 0010's ``value_words``), built as the ``value_words`` step (Postgres 17 builds it on one
 # core: ~15 s per 600k cells measured under load). Its function is always ``ontology``'s,
 # so the index moves with its table when a generation loaded beside is swapped in.
+# The GIN indexes the schema declares on a deferred table (0010): what a live fill builds
+# when the table holds none (a failed build's invalid index was dropped by hand), so the
+# fill never records the table loaded without its word index.
+DECLARED_GIN = {"chunk_words": ("CREATE INDEX chunk_words_words ON ontology.chunk_words "
+                                "USING gin (words)",)}
 WORD_INDEX = ("CREATE INDEX IF NOT EXISTS value_cells_words ON {schema}.value_cells "
               "USING gin (ontology.sq_words(value)) WHERE value_num IS NULL "
               "AND value IS NOT NULL")
@@ -432,7 +437,7 @@ def _drop_indexes(cur: Any, name: str, *, live: bool = False) -> list[str]:
             cur.execute("SELECT indexname, indexdef FROM pg_indexes WHERE schemaname = %s "
                         "AND tablename = %s AND indexdef LIKE '%% USING gin %%'",
                         (SCHEMA, name))
-            kept = [d for _i, d in cur.fetchall()]
+            kept = [d for _i, d in cur.fetchall()] or list(DECLARED_GIN.get(name, ()))
             _put(cur, f"indexes:{name}", kept)
         if any(not str(d).startswith("CREATE ") for d in kept):
             # kept by a full load that dropped the key too: not a live fill's to finish
@@ -454,7 +459,10 @@ def _drop_indexes(cur: Any, name: str, *, live: bool = False) -> list[str]:
         owned = {c[0] for c in constraints}
         statements = [f"ALTER TABLE {SCHEMA}.{name} ADD CONSTRAINT {c} {d}"
                       for c, d in constraints]
-        statements += [d for i, d in cur.fetchall() if i not in owned]
+        # a partitioned table's index reads ``ON ONLY`` (its own, no partition's); made
+        # again over the parent it must build every partition's too
+        statements += [d.replace(" ON ONLY ", " ON ", 1) for i, d in cur.fetchall()
+                       if i not in owned]
         _put(cur, f"indexes:{name}", statements)
     cur.execute("SELECT conname FROM pg_constraint WHERE conrelid = %s::regclass "
                 "AND contype IN ('p', 'u')", (f"{SCHEMA}.{name}",))
@@ -478,9 +486,15 @@ def _index_name(statement: str) -> str:
     return words[at].rsplit(".", 1)[-1]
 
 
-def _rebuild_live(cur: Any, statements: Sequence[str]) -> None:
+def _rebuild_live(cur: Any, statements: Sequence[str], *, locked: bool = False) -> None:
     """Build a live fill's dropped indexes CONCURRENTLY (readers and layers go on); an
-    invalid one a stopped build left is dropped first, else IF NOT EXISTS would keep it."""
+    invalid one a stopped build left is dropped first, else IF NOT EXISTS would keep it.
+
+    ``locked``: a plain build instead, under the table's SHARE lock (readers go on, a
+    layer's writes to the table wait for it). A concurrent build's validation sorts one
+    entry per indexed word and row into temp files (a full ``chunk_words`` needs ~100 GB,
+    past ``temp_file_limit`` and the free disk: it failed so on 11-13); a plain build
+    sorts nothing to disk."""
     for statement in statements:
         index = _index_name(statement)
         cur.execute("SELECT i.indisvalid FROM pg_index i JOIN pg_class c ON c.oid = "
@@ -491,6 +505,9 @@ def _rebuild_live(cur: Any, statements: Sequence[str]) -> None:
             continue
         if row is not None:
             cur.execute(f"DROP INDEX CONCURRENTLY IF EXISTS {SCHEMA}.{index}")
+        if locked:
+            cur.execute(statement)
+            continue
         cur.execute(statement.replace("CREATE INDEX ", "CREATE INDEX CONCURRENTLY ", 1)
                     .replace("CREATE UNIQUE INDEX ", "CREATE UNIQUE INDEX CONCURRENTLY ", 1))
 
@@ -620,8 +637,8 @@ def _settings(cur: Any) -> None:
         cur.execute(f"SET {key} = '{value}'")
 
 
-def _word_index(path: str, dsn: str, started: float, *, live: bool = False
-                ) -> dict[str, Any]:
+def _word_index(path: str, dsn: str, started: float, *, live: bool = False,
+                locked: bool = False) -> dict[str, Any]:
     """The ``value_words`` step: the generation's packed sources (``packed_sources``: a
     source holding a packed record, whose values SQLite never word-indexes) and the value
     cells' word index, built when missing (a value_cells load rebuilds it with the table's
@@ -660,7 +677,7 @@ def _word_index(path: str, dsn: str, started: float, *, live: bool = False
             finally:
                 cur.execute(_UNLOCK)
             _settings(cur)
-            _rebuild_live(cur, [WORD_INDEX.format(schema=SCHEMA)])
+            _rebuild_live(cur, [WORD_INDEX.format(schema=SCHEMA)], locked=locked)
         elif not held:
             _settings(cur)
             cur.execute(WORD_INDEX.format(schema=SCHEMA))
@@ -680,7 +697,7 @@ def _word_index(path: str, dsn: str, started: float, *, live: bool = False
 def load(path: str | Path, dsn: str, *, tables: Sequence[str] = ORDER, workers: int = 4,
          replace: bool = False, log: Any = sys.stderr, min_free: int = 0,
          deferred: Sequence[str] = (), state_dir: str | Path | None = None,
-         steps_digest: str | None = None) -> dict[str, Any]:
+         steps_digest: str | None = None, locked_index: bool = False) -> dict[str, Any]:
     """Load ``tables`` of the generation store at ``path`` into ``ontology.*`` (module
     docstring); returns rows and seconds per table. ``deferred``: tables left out for now
     (recorded in ``generation``; readers read them from the SQLite generation until a
@@ -688,7 +705,8 @@ def load(path: str | Path, dsn: str, *, tables: Sequence[str] = ORDER, workers: 
     directory whose next build's room the load keeps free (``build_floor``).
     ``steps_digest``: the build steps' code that built a generation that does not record it
     (``store_meta`` ``steps_digest``; without either the deploy check refuses until
-    ``seed-steps``)."""
+    ``seed-steps``). ``locked_index``: a live fill builds its word indexes plainly, under
+    the table's lock, not CONCURRENTLY (``_rebuild_live``)."""
     import psycopg
 
     path = str(path)
@@ -760,7 +778,8 @@ def load(path: str | Path, dsn: str, *, tables: Sequence[str] = ORDER, workers: 
         table = TABLES[name]
         started = time.monotonic()
         if name == "value_words":
-            report[name] = _word_index(path, dsn, started, live=name in fills)
+            report[name] = _word_index(path, dsn, started, live=name in fills,
+                                       locked=locked_index)
             print(f"ontology_load {name} {json.dumps(report[name])}", file=log, flush=True)
             continue
         with psycopg.connect(dsn, autocommit=True) as pg, pg.cursor() as cur:
@@ -815,7 +834,7 @@ def load(path: str | Path, dsn: str, *, tables: Sequence[str] = ORDER, workers: 
                     words_added = _complete_words(cur)
                 if name in _ORPHANS:
                     orphans = _sweep_orphans(cur, name, _ranges_top(path, table))
-                _rebuild_live(cur, statements)
+                _rebuild_live(cur, statements, locked=locked_index)
             else:
                 for statement in statements:
                     cur.execute(statement)
@@ -870,6 +889,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--tables", nargs="*", default=list(ORDER))
     parser.add_argument("--replace", action="store_true")
     parser.add_argument("--min-free-gb", type=float, default=0.0)
+    parser.add_argument("--locked-index", action="store_true",
+                        help="a live fill builds its word indexes under the table's lock "
+                             "(layers' writes to it wait), not CONCURRENTLY")
     parser.add_argument("--no-build-reserve", action="store_true",
                         help="keep only --min-free-gb, not the next projection build's room")
     parser.add_argument("--defer", nargs="*", default=[], choices=DEFERRABLE)
@@ -890,6 +912,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             steps = steps_digest(args.steps_ref)
         load(args.store, dsn, tables=args.tables, workers=args.workers,
              replace=args.replace, min_free=int(args.min_free_gb * 1024 ** 3),
+             locked_index=args.locked_index,
              deferred=args.defer,
              state_dir=None if args.no_build_reserve else state_of(args.store),
              steps_digest=steps)

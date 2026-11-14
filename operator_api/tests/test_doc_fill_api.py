@@ -37,6 +37,16 @@ class FillWorld(World):
                                       open_url="/object/PurchaseOrder/PurchaseOrder:90412")
 
 
+    def form_sources(self, reader, fields, *, message, words, named):
+        """Ana opens the email the form came in: its thread says the terms (and,
+        when ``excluded_value``, names a person kept out)."""
+        if message != MAIL or reader.session.subject_oid != ANA[1]:
+            return [], [], None
+        said = ti.EXCLUDED if self.excluded_value else "CIF"
+        return [df.Fact("Said.field:incoterms", said, df.Citation(MAIL, "Incoterms", MAIL),
+                        tier=1)], [], None
+
+
 class DocFillApi(ti.InstructApi):
     def setUp(self):
         super().setUp()
@@ -105,6 +115,25 @@ class DocFillApi(ti.InstructApi):
         # an attachment that is no form: the Ask goes on as an instruction (the model)
         self.ask(self.ana, "fill this form for PO 90412", form=b"plain words", name="a.txt")
         self.assertEqual(len(self.model.prompts), 1)
+
+    def test_with_no_record_named_the_forms_own_thread_answers_cited(self):
+        out = self.ask(self.ana, "fill this in", {"kind": "email", "handle": MAIL})
+        self.assertEqual(out.status_code, 200, out.text)
+        fill = out.json()["fills"][0]
+        got = {f["label"]: f for f in fill["fields"]}
+        self.assertEqual((got["Incoterms"]["status"], got["Incoterms"]["after"],
+                          got["Incoterms"]["citation"]["source"]),
+                         ("filled", "CIF", MAIL))
+        self.assertEqual(got["PO Number"]["status"], "no_fact")
+        self.assertEqual(fill["record"]["type"], "Request")
+        self.assertIn("its thread", out.json()["answer"]["direct_answer"])
+        # Ben cannot read that email: nothing to fill from, so he is asked for the record
+        self.assertNotEqual(self.ask(self.ben, "fill this in",
+                                     {"kind": "email", "handle": MAIL}).status_code, 200)
+        # a thread value naming a person kept out never enters the file
+        self.backend.excluded_value = True
+        out = self.ask(self.ana, "fill this in", {"kind": "email", "handle": MAIL})
+        self.assertNotEqual(out.status_code, 200)
 
     def test_beside_its_sharepoint_original_it_is_an_upload_approved_as_a_dry_run(self):
         """The copy goes beside the SharePoint file it came from as a new file the reader

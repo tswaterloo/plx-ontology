@@ -59,14 +59,16 @@ class Registry(unittest.TestCase):
         self.assertFalse(ak.home("chase_escalating"))
 
     def test_the_design_decisions_hold(self):
-        for name in ("needs_my_reply", "po_late", "lot_on_hold", "label_change"):
+        for name in ("needs_my_reply", "po_late", "lot_on_hold"):
             self.assertTrue(ak.home(name), name)
         for name in ("duplicate_party_candidate", "key_field_missing"):
             self.assertTrue(ak.default_on(name) and not ak.home(name), name)
         for name in ("customer_order_late", "po_undated", "approval_waiting",
                      "chase_escalating", "watcher_attention", "lot_near_expiry",
                      "commitment_due", "priority_order_unfilled",
-                     "labour_overtime_spike"):
+                     "labour_overtime_spike",
+                     # 0/17 on 11-13 fresh judging: off until re-judged (registry rule)
+                     "label_change"):
             self.assertFalse(ak.default_on(name), name)
         self.assertEqual(ak.kind_of("teams_unanswered_ask"), "reply_owed")
         self.assertEqual(ak.kind_of("duplicate_supplier_payment"), "duplicate_payable")

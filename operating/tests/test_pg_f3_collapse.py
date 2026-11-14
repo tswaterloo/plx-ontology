@@ -66,6 +66,7 @@ class F3CollapseTests(unittest.TestCase):
         with psycopg.connect(self.dsn, autocommit=True) as pg:
             migrate(pg)
         self.ver = 0
+        self.eid = {}   # version -> its event's id
         undo = tempfile.TemporaryDirectory()
         self.addCleanup(undo.cleanup)
         self.undo = undo.name
@@ -77,11 +78,14 @@ class F3CollapseTests(unittest.TestCase):
             return cur.fetchall() if cur.description else None
 
     def version(self, obj, handle, start, end, sighting, relation="portal_api:r",
-                value="v", event_basis="source_recorded"):
-        """One object version with one value, one identifier and one event, and its
-        sighting (None: its relation declares no stamps)."""
+                value="v", event_basis="source_recorded", also=()):
+        """One object version with one value, one identifier and one event (its id the
+        projector's, ``event_id_of``; ``also``: other objects it names, as a qualifier
+        reached through a link does), and its sighting (None: no stamps declared)."""
+        from ontology.project import event_id_of
         self.ver += 1
         v = self.ver
+        self.eid[v] = event_id_of("E", handle, obj, "f")
         self.sql("INSERT INTO ontology.object_versions VALUES (%s,%s,%s,'d','l','m',%s,%s)",
                  (v, obj, handle, start, end))
         self.sql("INSERT INTO ontology.value_sources (src, ver, binding_id, digest, lineage, "
@@ -93,9 +97,12 @@ class F3CollapseTests(unittest.TestCase):
                  "'m',%s,%s)", (f"n{v}", obj, handle, start, end))
         self.sql("INSERT INTO ontology.events (event_id, event_type, time_basis, l1_handle, "
                  "field_path, digest, lineage, markings, recorded_at, superseded_at) VALUES "
-                 "(%s,'E',%s,%s,'f','d','l','m',%s,%s)",
-                 (f"e{v}", event_basis, handle, start, end))
-        self.sql("INSERT INTO ontology.event_objects VALUES (%s, %s, 'q')", (f"e{v}", obj))
+                 "(%s,'E',%s,%s,'row.f','d','l','m',%s,%s)",
+                 (self.eid[v], event_basis, handle, start, end))
+        self.sql("INSERT INTO ontology.event_objects VALUES (%s, %s, 'q')", (self.eid[v], obj))
+        for other in also:
+            self.sql("INSERT INTO ontology.event_objects VALUES (%s, %s, 'item')",
+                     (self.eid[v], other))
         if sighting is not None:
             self.sql("CREATE TABLE IF NOT EXISTS ontology.f3_sightings (handle text "
                      "PRIMARY KEY, relation text NOT NULL, sighting text NOT NULL)")
@@ -171,17 +178,17 @@ class F3CollapseTests(unittest.TestCase):
         self.assertIn(("h2", t(0)), ids)
         self.assertFalse({"h0", "h1"} & {h for h, _ in ids})
         events = self.table("events", "event_id, l1_handle, recorded_at, time_basis")
-        self.assertIn((f"e{a[2]}", "h2", t(0), "source_recorded"), events)
-        self.assertFalse({f"e{a[0]}", f"e{a[1]}"} & {e[0] for e in events})
+        self.assertIn((self.eid[a[2]], "h2", t(0), "source_recorded"), events)
+        self.assertFalse({self.eid[a[0]], self.eid[a[1]]} & {e[0] for e in events})
         # a capture-observed change event keeps citing the capture that first held it
-        self.assertIn((f"e{cap}", "c0", t(0), "capture_observed"), events)
+        self.assertIn((self.eid[cap], "c0", t(0), "capture_observed"), events)
         self.assertEqual({r[0] for r in self.table("event_objects", "event_id")},
                          {e[0] for e in events})
         # rows of the objects left alone are unchanged
         for name, rows in before.items():
             now = self.table(name)
             untouched = [r for r in rows if not ({"h0", "h1", "h2", "c0", "c1"} & set(map(
-                str, r))) and r[0] not in (a[0], a[1], a[2], cap, cap + 1, f"e{cap + 1}")]
+                str, r))) and r[0] not in (a[0], a[1], a[2], cap, cap + 1, self.eid[cap + 1])]
             for row in untouched:
                 if name in ("object_versions", "value_sources") and row[1] in (a[2], cap + 1):
                     continue
@@ -192,6 +199,41 @@ class F3CollapseTests(unittest.TestCase):
         self.sql("DELETE FROM ontology.load_state WHERE name LIKE 'f3:%%'")
         self.assertEqual(self.run_f3()["totals"].get("versions_deleted", 0), 0)   # re-run
         self.assertEqual(self.table("object_versions"), again)
+
+    def test_an_event_naming_a_linked_object_folds_with_its_own_objects_versions(self):
+        """Rehearsal 3 (11-13): ``ItemLedgerEntry.posted`` names the entry and its item
+        (Product, through a link); F3 left such events on the dropped versions while a
+        build folds them, so 4 events and 3 objects' event rows differed. An event is the
+        version's object's own by its id (``event_id_of``), whatever else it names;
+        another object's event citing the same handle stays as it is."""
+        a = [self.version("A:1", f"h{i}", t(i), t(i + 1), "s1", also=("P:1",))
+             for i in range(3)]
+        self.version("A:1", "h3", t(3), None, "s2", also=("P:1",))
+        # B:1's event read off A:1's record (same handle), naming A:1 too: never A:1's
+        from ontology.project import event_id_of
+        foreign = event_id_of("E", "h0", "B:1", "f")
+        self.sql("INSERT INTO ontology.events (event_id, event_type, time_basis, l1_handle, "
+                 "field_path, digest, lineage, markings, recorded_at, superseded_at) VALUES "
+                 "(%s,'E','source_recorded','h0','row.f','d','l','m',%s,%s)",
+                 (foreign, t(0), t(1)))
+        self.sql("INSERT INTO ontology.event_objects VALUES (%s,'B:1','q'), (%s,'A:1','x')",
+                 (foreign, foreign))
+        before = self.dump()
+        self.run_f3()
+        events = self.table("events", "event_id, l1_handle, recorded_at, superseded_at")
+        self.assertIn((self.eid[a[2]], "h2", t(0), t(3)), events)
+        self.assertFalse({self.eid[a[0]], self.eid[a[1]]} & {e[0] for e in events})
+        objects = self.table("event_objects", "event_id, object_id, qualifier")
+        self.assertIn((self.eid[a[2]], "P:1", "item"), objects)
+        self.assertIn((self.eid[a[2]], "A:1", "q"), objects)
+        self.assertFalse({self.eid[a[0]], self.eid[a[1]]} & {o[0] for o in objects})
+        self.assertIn((foreign, "h0", t(0), t(1)), events)
+        self.assertEqual(sorted(r for r in objects if r[0] == foreign),
+                         [(foreign, "A:1", "x"), (foreign, "B:1", "q")])
+        # the undo puts every row back
+        from operating.pg import f3_collapse
+        f3_collapse.undo(self.dsn, self.undo, log=io.StringIO())
+        self.assertEqual(self.dump(), before)
 
     def test_a_links_per_pair_rows_fold_into_one_row_per_stretch(self):
         for n in (1, 10, 60):

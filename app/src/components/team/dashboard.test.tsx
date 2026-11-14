@@ -1,7 +1,11 @@
 import { fireEvent, render, screen, within } from "@testing-library/react";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import type { TeamPerson, TeamView } from "@/lib/types";
 import { TeamDashboard, busiest, minutes } from "./dashboard";
+
+vi.mock("@/lib/api", () => ({
+  getTeamPerson: vi.fn(async (key: string) => ({ person: person(key, "Avery Lindqvist"), items: [], withheld: 0, truncated: false, timeline: [], partners: [] })),
+}));
 
 const hours = Array.from({ length: 24 }, (_, h) => (h === 9 ? 30 : h === 14 ? 20 : h === 10 ? 12 : 0));
 
@@ -65,8 +69,29 @@ describe("Team dashboard", () => {
     expect(screen.getByTestId("team-not-ready").textContent).toMatch(/every night/);
   });
 
+  it("says a role under the name only when it is not the team already shown", () => {
+    render(<TeamDashboard data={view} />);
+    const [avery, bea] = ["Avery Lindqvist", "Bea Okafor"].map((n) => screen.getAllByTestId("team-row").find((r) => r.textContent?.includes(n))!);
+    expect(within(avery).queryByTestId("team-roles")).toBeNull();
+    expect(within(bea).getByTestId("team-roles")).toHaveTextContent(/^Receivables$/);
+  });
+
   it("formats reply times and busiest hours", () => {
     expect([minutes(0.2), minutes(45), minutes(200), minutes(3000), minutes(null)]).toEqual(["1m", "45m", "3.3h", "2.1d", ""]);
     expect(busiest(hours)).toBe("9a, 10a, 2p");
+  });
+
+  it("the person sheet labels the busiest-hours chart under its own bars", async () => {
+    render(<TeamDashboard data={view} />);
+    fireEvent.click(screen.getAllByTestId("team-row")[0]);
+    const chart = await screen.findByTestId("team-hours");
+    const bars = chart.querySelectorAll("rect");
+    const labels = [...chart.querySelectorAll("text")];
+    expect(labels.map((t) => t.textContent)).toEqual(["12a", "6a", "12p", "6p", "11p"]);
+    expect(screen.getByTestId("team-person")).toHaveTextContent("Busiest: 9a, 10a, 2p");
+    for (const [i, h] of [[1, 6], [2, 12], [3, 18]]) {
+      const bar = bars[h];
+      expect(Number(labels[i].getAttribute("x"))).toBe(Number(bar.getAttribute("x")) + Number(bar.getAttribute("width")) / 2);
+    }
   });
 });

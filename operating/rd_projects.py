@@ -342,22 +342,24 @@ def status_draft(project: Mapping[str, Any], today: date) -> dict[str, Any]:
     """A status update to the customer, worded from the project's kind, state and dates only
     (never a message's text, price, quantity, name or the thread's subject); a draft: nothing
     is sent (the card's preview and confirm are the only way out)."""
+    from . import copy_gate as cg
     word = KIND_WORD.get(project.get("kind"), "request")
-    last = project.get("last_on") or "recently"
+    last = project.get("last_on")
+    # "Wed 12 Nov", never an ISO date in a customer's mail
+    on = f" on {cg.say_date(last, today)}" if last else ""
     if project.get("status") == "waiting_on_us":
-        line = ("We are working on it and will come back to you by "
-                f"{it._next_business_day(today).isoformat()}.")
+        body = (f"Following up on your {word}: we're still working on it and will be back to "
+                f"you by {cg.say_date(it._next_business_day(today), today)}.")
     elif project.get("status") == "waiting_on_customer":
-        line = ("We are waiting for your reply on our last message and will go on as soon "
-                "as we have it.")
+        body = (f"Following up on your {word}: we haven't heard back since our last message"
+                f"{on}. Once we have your reply we'll carry on.")
     else:
-        line = "Please tell us if there is anything you need from us."
+        body = f"Following up on your {word}. Is there anything you still need from us?"
     to = project.get("contact")
     return {"channel": "email",
             "to": [{"address": to}] if isinstance(to, str) and "@" in to else [],
-            "subject": f"Status of your {word}",
-            "body": (f"Hello,\n\nA quick update on your {word}: our last activity on it was "
-                     f"{last}. {line}\n\nBest regards"),
+            "subject": f"Your {word}",
+            "body": f"Hello,\n\n{body}\n\nBest regards",
             "status": "draft_not_sent", "sent": False}
 
 

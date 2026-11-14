@@ -9,7 +9,7 @@ import { getHome, getLateList, getOpsAlarms, getOpsHealth, type OpsAlarms, type 
 import { DesktopBridge } from "./desktop-bridge";
 import { CommandPaletteProvider, useCommandPalette } from "./command-palette";
 import { FeedbackButton, FeedbackProvider, useFeedbackDialog } from "./feedback-dialog";
-import { plainServerNote, SYSTEM_LABEL } from "@/lib/format";
+import { eastern, opsHeadline, plainServerNote, SYSTEM_LABEL } from "@/lib/format";
 import { cn } from "@/lib/cn";
 import { stashPending } from "@/lib/pending";
 import { useShortcut } from "@/lib/platform";
@@ -359,7 +359,7 @@ export function OpsStatus({ every = 60_000 }: { every?: number }) {
       >
         <TriangleAlert className="size-[14px] shrink-0 text-fg" strokeWidth={2} aria-hidden />
         <span className="min-w-0 text-[12px] leading-4 max-xl:hidden">
-          <span className="block text-fg">Ops: {breached.length} behind</span>
+          <span className="block text-fg">{breached.length} ops target{breached.length === 1 ? "" : "s"} missed</span>
           <span className="block truncate text-faint">{breached.map((c) => opsLabel(c.name)).join(", ")}</span>
         </span>
       </Menu.Trigger>
@@ -377,16 +377,7 @@ export function OpsStatus({ every = 60_000 }: { every?: number }) {
   );
 }
 
-/** "12:36 PM ET" today, "Nov 9, 12:36 PM ET" before: the owner reads times in Eastern. */
-export function eastern(iso?: string | null, now = new Date()): string {
-  const d = iso ? new Date(iso) : null;
-  if (!d || Number.isNaN(d.getTime())) return "";
-  const tz = "America/New_York";
-  const time = d.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit", timeZone: tz });
-  const day = (x: Date) => x.toLocaleDateString("en-CA", { timeZone: tz });
-  if (day(d) === day(now)) return `${time} ET`;
-  return `${d.toLocaleDateString("en-US", { month: "short", day: "numeric", timeZone: tz })}, ${time} ET`;
-}
+export { eastern };
 
 /** The red alarm line across the top of every page, the only place alarms reach anyone (no
  * paging): open reliability incidents (a stopped refresh, a failed or
@@ -436,7 +427,7 @@ export function OpsAlarmBanner({ every = 60_000, className }: { every?: number; 
   if (open.length === 0 && seen.running && !unavailable) return null;
   // one line: each problem by its headline (the server's line up to its first "; "), the
   // detail in the tooltip and on the Reliability page, so the count and "N more" stay in view
-  const headline = (line: string) => line.split("; ")[0];
+  const headline = opsHeadline;
   const base = open.length > 0
     ? `${open.length} reliability problem${open.length === 1 ? "" : "s"}: ${open.slice(0, 2).map((i) => headline(i.line)).join(" · ")}${open.length > 2 ? ` · ${open.length - 2} more` : ""}`
     : seen.running
@@ -680,7 +671,10 @@ function AccountMenuContent({ name, email, onViewAs }: { name: string; email?: s
           Give feedback
         </Menu.Item>
         <Menu.Item onSelect={() => router.push("/feedback")} className="flex cursor-pointer items-center rounded-sm px-2 py-1.5 text-row outline-none data-[highlighted]:bg-hover">
-          Feedback
+          Feedback list
+        </Menu.Item>
+        <Menu.Item onSelect={() => router.push("/help")} className="flex cursor-pointer items-center rounded-sm px-2 py-1.5 text-row outline-none data-[highlighted]:bg-hover" data-testid="help-open">
+          Help for your first week
         </Menu.Item>
         {onViewAs && (
           <Menu.Item onSelect={onViewAs} className="flex cursor-pointer items-center rounded-sm px-2 py-1.5 text-row outline-none data-[highlighted]:bg-hover" data-testid="view-as-open">
@@ -822,7 +816,7 @@ function MobileTitleBar() {
 }
 
 /** Pages that draw their own Toolbar; the shell adds no phone title bar over them.*/
-export const TOOLBAR_PAGES: string[] = ["/late", "/meetings", "/team", "/ask", "/po", "/ao", "/so", "/customer", "/supplier", "/object", "/source", "/activity", "/feedback", "/watching", "/my-work", "/rd-projects", "/autopilot", "/ops", "/trust", "/work-log"];
+export const TOOLBAR_PAGES: string[] = ["/late", "/meetings", "/team", "/ask", "/po", "/ao", "/so", "/customer", "/supplier", "/object", "/source", "/activity", "/feedback", "/watching", "/my-work", "/rd-projects", "/autopilot", "/ops", "/trust", "/work-log", "/help"];
 
 function ShellSkeleton() {
   return (
@@ -851,7 +845,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           Skip to content
         </a>
         <Sidebar />
-        <main id="main" className="flex min-w-0 flex-1 flex-col overflow-y-auto max-lg:[&>*:not([data-own-scroll])]:basis-auto max-lg:[&>*:not([data-own-scroll])]:shrink-0 pb-[calc(52px+env(safe-area-inset-bottom))] lg:pb-0" data-app-main>
+        <main id="main" className="relative flex min-w-0 flex-1 flex-col overflow-y-auto max-lg:[&>*:not([data-own-scroll])]:basis-auto max-lg:[&>*:not([data-own-scroll])]:shrink-0 pb-[calc(52px+env(safe-area-inset-bottom))] lg:pb-0" data-app-main>
           <MobileTitleBar />
           <ViewAsBar />
           <OpsAlarmBanner />

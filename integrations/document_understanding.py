@@ -32,6 +32,7 @@ categorical grade.
 from __future__ import annotations
 
 import contextlib
+import contextvars
 from dataclasses import dataclass, field, replace
 from datetime import datetime
 from decimal import Decimal
@@ -147,9 +148,10 @@ class ExtractedDocument:
         if self.sheets:
             attrs["extraction"]["sheets"] = [dict(sheet) for sheet in self.sheets]
         if self.skipped_pages is not None:
+            cap, limit = skipped_cap(self.skipped_pages[0])
             attrs["extraction"]["skipped_by_cap"] = {
                 "first_page": self.skipped_pages[0], "last_page": self.skipped_pages[1],
-                "cap": "pages", "limit": MAX_PAGES}
+                "cap": cap, "limit": limit}
         if parent_id:
             attrs["parent_id"] = parent_id
         return attrs
@@ -767,6 +769,44 @@ def _macos_pdf_text(content: bytes, *, max_pages: int | None = None,
 
 _PORTABLE_OCR_TOOLS = ("pdfinfo", "pdftotext", "pdftoppm", "tesseract")
 MAX_OCR_PAGES = 40  # the same image-page bound as the macOS helper
+
+# Page-capped OCR (the attachment fast path, ``integrations.attach_fetch read``): at most
+# ``pages`` image-only pages are OCR-read, rendered at at most ``dpi``, recognised with the
+# LSTM engine alone (``--oem 1``), and the orientation pass runs only on a page whose
+# reading is not confident. The reading then ends before the first image-only page past
+# the cap: that page and every one after it are the reading's ``skipped_pages``, recorded
+# with the cap ``ocr_pages`` (:func:`skipped_cap`), never dropped; a later full reading
+# (no limits: ``attach_fetch read --full-ocr --recap``, applied by ingest) reads them.
+# Off (None) unless a caller sets it (:func:`ocr_limits`).
+OCR_PAGE_CAP = "ocr_pages"
+FAST_OCR_PAGES = 2
+FAST_OCR_DPI = 150
+_OCR_LIMITS: contextvars.ContextVar[tuple[int, int] | None] = contextvars.ContextVar(
+    "plx_ocr_limits", default=None)
+# The orientation pass of a capped reading runs when the page's words are fewer than this
+# or their mean confidence is below ``_CONFIDENT_MEAN``.
+_CONFIDENT_WORDS, _CONFIDENT_MEAN = 12, 70.0
+
+
+@contextlib.contextmanager
+def ocr_limits(pages: int, dpi: int) -> Iterator[None]:
+    """Page-capped, lower-resolution OCR for the readings made inside this block."""
+    if isinstance(pages, bool) or not isinstance(pages, int) or not 1 <= pages <= MAX_OCR_PAGES:
+        raise ValueError("ocr_limits_pages_invalid")
+    if isinstance(dpi, bool) or not isinstance(dpi, int) or not 100 <= dpi <= 300:
+        raise ValueError("ocr_limits_dpi_invalid")
+    token = _OCR_LIMITS.set((pages, dpi))
+    try:
+        yield
+    finally:
+        _OCR_LIMITS.reset(token)
+
+
+def skipped_cap(first_page: int) -> tuple[str, int]:
+    """(cap, limit) of a reading's skipped page range starting at ``first_page``: past
+    ``MAX_PAGES`` the page bound (``pages``), else the page-capped OCR (``ocr_pages``,
+    :data:`FAST_OCR_PAGES`)."""
+    return ("pages", MAX_PAGES) if first_page > MAX_PAGES else (OCR_PAGE_CAP, FAST_OCR_PAGES)
 _MAX_PAGE_POINTS = 20_000  # the macOS helper's page-size bound
 _PAGE_RETRY_CAUSES = ("render_exit", "recognize_exit", "tool_signal")
 _MAX_RENDER_PIXELS = 3_300  # longest rendered side: letter at 300 dpi
@@ -814,13 +854,16 @@ def local_image_text(content: bytes, *, timeout: float = 60.0) -> str:
     env = {key: value for key, value in os.environ.items()
            if key in {"PATH", "LANG", "LC_ALL", "TESSDATA_PREFIX", "HOME", "TMPDIR"}}
     env["OMP_THREAD_LIMIT"] = "1"
+    limits = _OCR_LIMITS.get()
+    if limits is not None:   # page-capped OCR: a large image read at the capped size
+        content = _downscaled(content, _MAX_RENDER_PIXELS * limits[1] // 300)
     with child_process.private_directory("plx-image-ocr-") as directory:
         path = Path(directory) / "image"
         path.write_bytes(content)
         path.chmod(0o600)
         try:
-            command = [tool, str(path), "stdout", "--psm", "3",
-                       "-c", "preserve_interword_spaces=1"]
+            command = [tool, str(path), "stdout", *(["--oem", "1"] if limits else []),
+                       "--psm", "3", "-c", "preserve_interword_spaces=1"]
             limiter = shutil.which("prlimit")
             if limiter is not None:   # a memory cap: a huge image fails, never the host
                 command = [limiter, f"--as={IMAGE_OCR_MEMORY_BYTES}", "--", *command]
@@ -830,6 +873,22 @@ def local_image_text(content: bytes, *, timeout: float = 60.0) -> str:
     if result.returncode != 0 or len(result.stdout) > 1_000_000:
         raise ValidationError("local_image_ocr_failed")
     return result.stdout.decode("utf-8", "replace").strip()
+
+
+def _downscaled(content: bytes, longest: int) -> bytes:
+    """``content`` as a greyscale PNG whose longest side is at most ``longest`` pixels
+    when it is larger and Pillow reads it, else the bytes unchanged."""
+    try:
+        from PIL import Image
+        with Image.open(io.BytesIO(content)) as image:
+            if max(image.size) <= longest:
+                return content
+            image.thumbnail((longest, longest))
+            out = io.BytesIO()
+            image.convert("L").save(out, "PNG")
+            return out.getvalue()
+    except Exception:  # noqa: BLE001 - unreadable here: tesseract reads (or refuses) it
+        return content
 
 
 def _only_line(output: str, pattern: str) -> re.Match[str]:
@@ -1217,6 +1276,8 @@ def _portable_pdf_text(content: bytes, *, ocr: bool = True, max_pages: int | Non
         raise ValidationError("local_pdf_ocr_unavailable")
     env = _tool_env()
     deadline = time.monotonic() + _OCR_DEADLINE_SECONDS
+    limits = _OCR_LIMITS.get() if ocr else None
+    engine = ["--oem", "1"] if limits is not None else []
 
     def run(command: list[str], *, opening: bool = False) -> str:
         remaining = deadline - time.monotonic()
@@ -1253,7 +1314,11 @@ def _portable_pdf_text(content: bytes, *, ocr: bool = True, max_pages: int | Non
         return int(said[0]) if len(said) == 1 and said[0] in ("90", "180", "270") else 0
 
     def words(image: Path) -> str:
-        return run([tools["tesseract"], str(image), "stdout", "--psm", "3", "tsv"])
+        return run([tools["tesseract"], str(image), "stdout", *engine, "--psm", "3", "tsv"])
+
+    def confident(tsv: str) -> bool:
+        found = [w[5] for w in _tsv_words(tsv)]
+        return len(found) >= _CONFIDENT_WORDS and sum(found) / len(found) >= _CONFIDENT_MEAN
 
     with child_process.private_directory("plx-pdf-ocr-") as directory:
         path = Path(directory) / "source.pdf"
@@ -1278,7 +1343,9 @@ def _portable_pdf_text(content: bytes, *, ocr: bool = True, max_pages: int | Non
             # column gaps stay two or more spaces and a cell under its header.
             # A layout page keeps its first line's indent (it is that line's column)
             # and ends in the mark line that says so.
-            tsv, degrees = words(rendered), turn(rendered)
+            tsv = words(rendered)
+            # Capped: the orientation pass only for a page that did not read confidently.
+            degrees = 0 if limits is not None and confident(tsv) else turn(rendered)
             if degrees:   # the same render as raw greyscale, turned upright
                 run([tools["pdftoppm"], "-q", "-cropbox", "-r", str(dpi), "-gray",
                      "-singlefile", "-f", number, "-l", number, str(path), str(image)])
@@ -1342,7 +1409,8 @@ def _portable_pdf_text(content: bytes, *, ocr: bool = True, max_pages: int | Non
         if whole is not None and (len(layers) != total + 1 or layers[-1].strip()):
             layers = [(layer_pass("-f", str(index), "-l", str(index)) or "").replace("\f", "")
                       for index in range(1, total + 1)]
-        if ocr and sum(not layer.strip() for layer in layers[:total]) > MAX_OCR_PAGES:
+        if ocr and limits is None and \
+                sum(not layer.strip() for layer in layers[:total]) > MAX_OCR_PAGES:
             raise OcrFailed("image_page_bound")
         parts: list[str] = []
         pages: list[dict[str, int]] = []
@@ -1352,10 +1420,16 @@ def _portable_pdf_text(content: bytes, *, ocr: bool = True, max_pages: int | Non
             number = str(index)
             page_text = layers[index - 1]
             if ocr and not page_text.strip():
+                if limits is not None and len(ocr_pages) >= limits[0]:
+                    # The OCR page cap: this page and the rest are skipped_pages.
+                    if parts:
+                        parts.pop()   # the separator after the last page read
+                    break
                 width, height = sizes[index]
                 if not 0 < max(width, height) <= _MAX_PAGE_POINTS or min(width, height) <= 0:
                     raise OcrFailed("page_bound")
-                dpi = max(1, min(300, int(_MAX_RENDER_PIXELS * 72 / max(width, height))))
+                dpi = max(1, min(300 if limits is None else limits[1],
+                                 int(_MAX_RENDER_PIXELS * 72 / max(width, height))))
                 try:
                     page_text = ocr_page(index, dpi, sizes[index])
                 except OcrFailed as error:

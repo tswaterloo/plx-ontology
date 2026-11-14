@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { useState } from "react";
 import { CardActions } from "@/components/card-actions";
-import { plural } from "@/lib/format";
+import { formatDate, plural } from "@/lib/format";
 import type { ActionResult, RdBoard, RdProject } from "@/lib/types";
 
 const KIND: Record<string, string> = {
@@ -41,26 +41,29 @@ export function RdBoardView({ board }: { board: RdBoard }) {
           <li key={p.id} className="space-y-1 rounded-lg border border-border p-3 text-[13px]" data-testid="rd-project">
             <div>
               <span className="font-medium">{KIND[p.kind] ?? p.kind}</span>
+              {!p.customer && p.party && <span className="text-muted"> · {p.party.replace(/^@/, "")}</span>}
               {p.idle && <span className="ml-2 rounded bg-hover px-1 text-[11px]" data-testid="rd-idle">Idle</span>}
             </div>
             <div className="text-muted">
-              {STATUS[p.status] ?? p.status} · last activity {p.last_on ?? "unknown"} ({plural(p.days, "business day")} ago)
-              {p.waiting_on ? ` · waiting on ${p.waiting_on === "us" ? "us" : "the customer"}` : ""}
-              {p.owner_is_you ? " · you own it" : p.owner ? " · owner on record" : " · no owner on record"}
+              {STATUS[p.status] ?? p.status}
+              {p.waiting_on && !(STATUS[p.status] ?? "").startsWith("Waiting on") ? ` · waiting on ${p.waiting_on === "us" ? "us" : "the customer"}` : ""}
+              {" · "}
+              {p.last_on ? `last activity ${formatDate(p.last_on, { short: true })} (${plural(p.days, "business day")} ago)` : "no activity dated"}
+              {p.owner_is_you ? " · yours" : p.owner ? " · someone else owns it" : " · no owner"}
             </div>
             {p.customer ? (
               <Link className="font-medium hover:underline" href={`/object/${encodeURIComponent(p.customer.split(":")[0])}/${encodeURIComponent(p.customer)}`}>
                 Open the customer
               </Link>
             ) : (
-              <span className="text-muted">Party {p.party ?? "not identified"} (customer not linked)</span>
+              !p.party && <span className="text-muted">The other company is not identified.</span>
             )}
             <ul className="list-disc pl-5 text-muted">
               {(p.lines ?? []).map((l) => (
                 <li key={l.id}>{l.subject || "(no subject)"} · {STATUS[l.state] ?? l.state} · {plural(l.messages_n, "message")}</li>
               ))}
             </ul>
-            {p.draft && <pre className="whitespace-pre-wrap rounded bg-hover p-2 text-[12px]">{p.draft.body}</pre>}
+            {p.draft && <p className="whitespace-pre-wrap rounded bg-hover p-2 text-[12px]" data-testid="rd-draft">{p.draft.body}</p>}
             {p.card_id && (
               <CardActions
                 card={{ id: p.card_id, subject: { label: p.draft?.subject ?? "Project status" }, actions: p.offers }}

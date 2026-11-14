@@ -495,6 +495,23 @@ _CONSTRAINT_MESSAGES = (("unique constraint failed", "constraint_unique"),
                         ("check constraint failed", "constraint_check"))
 
 
+NEW_SIGNAL = ".new"   # beside a capture store: touched when it stores a new message
+
+
+def signal_new(store: str | Path) -> None:
+    """Touch ``<store>.new`` (its text: the time, nothing of the message): a capture just
+    stored a new person-to-person message version, and the autopilot's fast feed
+    (``operating.autopilot_fast``, started by a systemd path unit on this file) reads it
+    from the store at once instead of after the next delta cycle. Best effort: a signal
+    that cannot be written loses nothing (the fast feed's timer and the regular feed
+    still read the store), so it never fails the capture."""
+    try:
+        Path(f"{store}{NEW_SIGNAL}").write_text(
+            datetime.now(timezone.utc).isoformat(timespec="seconds"), encoding="utf-8")
+    except OSError:
+        pass
+
+
 def sqlite_code(exc: BaseException) -> str:
     """A SQLite error as a short code (``disk_full``, ``locked``, ``io_error``, ...; a
     constraint by its kind, ``constraint_unique``, ``constraint_not_null``, ...;
@@ -802,6 +819,7 @@ class CaptureStore:
         self._check_binding()
         now = self._now()
         counts = {"records": 0, "new_versions": 0, "unchanged": 0}
+        messages = False   # a new version of a person-to-person message (Teams)
         with self._write():
             run = self._open_run(run_id)
             kind = source_kind(run["kind"])
@@ -856,6 +874,7 @@ class CaptureStore:
                                      (inserted.lastrowid, current["capture_id"]))
                     self._retain(kind.name, path_text, run["unit"], now)
                 counts["new_versions"] += 1
+                messages = messages or record.lineage == "mail"
             self._db.executemany("INSERT OR IGNORE INTO run_marks VALUES (?, ?)",
                                  [(run_id, str(mark)) for mark in marks])
             self._db.execute(
@@ -865,6 +884,8 @@ class CaptureStore:
                 "WHERE run_id = ?",
                 (cursor, counts["records"], counts["new_versions"], int(withheld),
                  int(dropped), now, run_id))
+        if messages:
+            signal_new(self.path)
         return counts
 
     def _retain(self, kind_name: str, path_text: str, unit: str, now: str) -> None:

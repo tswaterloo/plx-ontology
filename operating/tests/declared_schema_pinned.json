@@ -356,6 +356,12 @@
    ],
    [
     "index",
+    "messages_truncated_lists",
+    "messages",
+    "CREATE INDEX messages_truncated_lists ON messages(mailbox_id, folder_id) WHERE superseded_at IS NULL AND attachments_status IN ('truncated', 'truncated_capped')"
+   ],
+   [
+    "index",
     "text_versions_by_text",
     "attachment_text_versions",
     "CREATE INDEX text_versions_by_text ON attachment_text_versions(text_sha256)"
@@ -935,6 +941,44 @@
     "labour_week",
     "labour_week",
     "CREATE TABLE labour_week (\n    department TEXT NOT NULL, week TEXT NOT NULL, run TEXT NOT NULL DEFAULT '',\n    hours TEXT NOT NULL, overtime_hours TEXT, overtime_basis TEXT, headcount_days INTEGER,\n    week_basis TEXT NOT NULL, markings TEXT NOT NULL CHECK (markings = '[\"hr\"]'),\n    sources TEXT NOT NULL CHECK (json_valid(sources)),\n    PRIMARY KEY (department, week, run))"
+   ]
+  ],
+  "learning": [
+   [
+    "index",
+    "lessons_who",
+    "lessons",
+    "CREATE INDEX lessons_who ON lessons (scope, who)"
+   ],
+   [
+    "index",
+    "signals_person",
+    "signals",
+    "CREATE INDEX signals_person ON signals (person, at)"
+   ],
+   [
+    "table",
+    "forgotten",
+    "forgotten",
+    "CREATE TABLE forgotten (who TEXT NOT NULL, kind TEXT NOT NULL,\n  key TEXT NOT NULL, at TEXT NOT NULL, PRIMARY KEY (who, kind, key))"
+   ],
+   [
+    "table",
+    "lessons",
+    "lessons",
+    "CREATE TABLE lessons (lesson_id TEXT PRIMARY KEY, scope TEXT NOT NULL,\n  who TEXT NOT NULL, kind TEXT NOT NULL, key TEXT NOT NULL, value TEXT NOT NULL,\n  text TEXT NOT NULL, confidence REAL NOT NULL, weight REAL NOT NULL, total REAL NOT NULL,\n  seen INTEGER NOT NULL, first_at TEXT NOT NULL, last_at TEXT NOT NULL,\n  evidence TEXT NOT NULL)"
+   ],
+   [
+    "table",
+    "runs",
+    "runs",
+    "CREATE TABLE runs (at TEXT PRIMARY KEY, summary TEXT NOT NULL)"
+   ],
+   [
+    "table",
+    "signals",
+    "signals",
+    "CREATE TABLE signals (ref TEXT PRIMARY KEY, kind TEXT NOT NULL,\n  person TEXT NOT NULL, at TEXT NOT NULL, data TEXT NOT NULL)"
    ]
   ],
   "mention_cache": [

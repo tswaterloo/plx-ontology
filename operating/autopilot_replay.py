@@ -19,7 +19,8 @@ people only when it passed (``autopilot.gate_from``: 90% or better on 15 or more
   approvals they decided, task events they acted on, and every store event naming them as
   its actor (per-person system activity in BC, the Portal, Sage and FileMaker plugs in
   there, or as a ``plugins`` provider).
-* **Match**: an item matches when its owner, after the event and within ``horizon_hours``,
+* **Match**: an item matches when its owner, after the event and within ``horizon_hours``
+  (working time: Monday-to-Friday hours on the business calendar, ``answer_end``),
   acted on the same conversation or touched one of the records the item is about (a mail
   to the same contact about something else is no match). An item whose horizon passes the end of the data is
   ``unjudged`` (never counted either way). Precision = matched / judged, per workflow;
@@ -104,6 +105,28 @@ def load_config(path: Path | str | None = None) -> dict[str, Any]:
     return {"horizon": timedelta(hours=hours),
             "feed_lag": {k: timedelta(minutes=v) for k, v in lag.items()},
             "providers": [PROVIDERS[p] for p in raw.get("providers") or ()] + plugins}
+
+
+def answer_end(at: datetime, horizon: timedelta) -> datetime:
+    """When the answer window of a trigger at ``at`` closes: ``horizon`` of Monday-to-Friday
+    time on the business's calendar (``time_window``'s zone) later; Saturday and Sunday do not
+    count, so a Friday afternoon's message has the same window as a Monday's (measured on DEV
+    days 2026-10-06..11-03: the person's Teams items of Monday and Tuesday were all answered
+    within 72 h, a Thursday's one in five only after the weekend)."""
+    from zoneinfo import ZoneInfo
+    from operating.time_window import BUSINESS_TZ
+    zone = ZoneInfo(BUSINESS_TZ)
+    left, t = horizon, at.astimezone(timezone.utc)
+    while left > timedelta(0):
+        local = t.astimezone(zone)
+        midnight = datetime.combine(local.date() + timedelta(days=1), datetime.min.time(),
+                                    tzinfo=zone).astimezone(timezone.utc)
+        if local.weekday() < 5:
+            if midnight - t >= left:
+                return t + left
+            left -= midnight - t
+        t = midnight
+    return t
 
 
 # ----------------------------------------------------------------------------- members
@@ -443,6 +466,11 @@ SCORING_RULES = (
      "since": "2026-11-11",
      "note": "the rest of a Teams reply typed as several messages counts as anticipated "
              "with its matched first message (BURST); precision unchanged"},
+    {"id": "answer_window_working_days", "workflow": "*", "measure": "precision",
+     "since": "2026-11-13",
+     "note": "the answer window is horizon_hours of Monday-to-Friday time (answer_end): an "
+             "item answered after a weekend within the window matches; a result "
+             "names horizon_hours, counted as working hours"},
 )
 
 
@@ -481,7 +509,8 @@ def score(items: Sequence[Mapping[str, Any]], events: Mapping[str, Mapping[str, 
     and how many an item anticipated. ``window_items``: only the items whose trigger is in
     [since, until) (a split of the window: dev or held-out days). ``source_end``
     (``source_ends``): an item on a record of such a source is judged only when its horizon
-    ends by that source's last event too (else unjudged: its answer may not be captured)."""
+    ends by that source's last event too (else unjudged: its answer may not be captured).
+    The answer window is ``horizon`` of working time (``answer_end``)."""
     by_person: dict[str, list[tuple[datetime, Mapping[str, Any]]]] = defaultdict(list)
     for a in actions:
         at = ap._instant(a.get("at"))
@@ -506,14 +535,15 @@ def score(items: Sequence[Mapping[str, Any]], events: Mapping[str, Mapping[str, 
         source = SOURCE_OF.get(str(event.get("object_type") or ""))
         if source_end and source in source_end:
             end = min(end, source_end[source])
-        if at is None or at + horizon > end or flow in by_records:
+        close = answer_end(at, horizon) if at is not None else None
+        if close is None or close > end or flow in by_records:
             c["unjudged"] += 1
             continue
         c["judged"] += 1
         keys = item_keys(item, event)
         # a due-day item (a recurring update): only that day's mail answers it
-        until_at = at + (timedelta(hours=float(event["match_hours"]))
-                         if event.get("match_hours") else horizon)
+        until_at = at + timedelta(hours=float(event["match_hours"])) \
+            if event.get("match_hours") else close
         hit = None
         for when, a in by_person.get(item["owner"], ()):
             if when <= at or when > until_at:
@@ -857,7 +887,8 @@ def replay(st: Any, people: Any, *, role: str, out: Path, since: datetime, until
                                                only_owners=who)
                 progress.finish(key, summary)
             day = nxt
-        last = end or data_end(st, ap._iso(until + config["horizon"]))
+        closes = answer_end(until, config["horizon"])
+        last = end or data_end(st, ap._iso(closes))
         items = queue.items(sorted(who), ("open", "done", "settled", "dismissed"))
         ev_ids = sorted({i["event_id"] for i in items})
         events = {}
@@ -867,7 +898,7 @@ def replay(st: Any, people: Any, *, role: str, out: Path, since: datetime, until
                     "json_each(?))", (json.dumps(ev_ids[start:start + 500]),)):
                 events[eid] = json.loads(body)
         actions: list[dict[str, Any]] = []
-        a_until = ap._iso(min(until + config["horizon"], last))
+        a_until = ap._iso(min(closes, last))
         for provider in config["providers"]:
             actions += provider(st, people, who, ap._iso(since), a_until)
         anticipated: set[int] = set()
@@ -983,8 +1014,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         try:
             ends = {"data_end": ap._iso(data_end(st, ap._iso(datetime.now(timezone.utc))))}
             if a.until:
-                ends["judged_to"] = ap._iso(data_end(st, ap._iso(
-                    ap._instant(a.until) + config["horizon"])))
+                ends["judged_to"] = ap._iso(data_end(st, ap._iso(answer_end(
+                    ap._instant(a.until), config["horizon"]))))
             print(json.dumps({**ends, **ap.store_source(st)}))
         finally:
             st.close()

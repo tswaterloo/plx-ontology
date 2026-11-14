@@ -1240,6 +1240,40 @@ class ProseTests(unittest.TestCase):
             with self.subTest(glued=text):
                 self.assertIn(("outcome", "claim_unstructured", value), outcome(text, glued))
         self.assertEqual(outcome("L9 and Q9 did.", glued), [])
+        # A year the question names, in any form it writes it ("2024-2026", or a run of
+        # two-digit years in a question about years), is the period restated (11-13: a
+        # reply naming 2025 for "24, 25, 26" lost its sentence, so replies wrote "last
+        # year"). A year it does not name, a year inside a date or code, and numbers that
+        # merely look like a run of years stay figures.
+        for question in ("Trend in released batches - 24, 25, 26",
+                         "How many orders each year (2024-2026)?",
+                         "orders per year 24-26"):
+            with self.subTest(years=question):
+                self.assertEqual(outcome("2024: 1509, 2025: 1509, 2026: 1509.", question), [])
+                self.assertIn(("outcome", "claim_unstructured", "2023"),
+                              outcome("2023: 1509.", question))
+                self.assertIn(("outcome", "claim_unstructured", "12"),
+                              outcome("2025: 12.", question))
+        for question in ("Orders between 2024 and 2026?", "Sales 24 to 26 by year?",
+                         "Batches released FY25 and FY26?"):
+            with self.subTest(years=question):
+                self.assertEqual(outcome("2025: 1509.", question), [])
+        # a restated range is the period too; a year read as a quantity stays a figure
+        self.assertEqual(outcome("2024-2026: 1509.", "Orders each year 2024-2026?"), [])
+        self.assertIn(("outcome", "claim_unstructured", "2025"),
+                      outcome("2025 orders, 1509 planned.", "Orders in 2025?"))
+        for question in ("lines 24-26 of PO-12?", "qty 12, 13 by year?", "ship 24, 26?",
+                         "Orders over 2025 units?", "Top 2025 rows?", "PO-2025 status?"):
+            with self.subTest(no_years=question):
+                self.assertIn(("outcome", "claim_unstructured", "2025"),
+                              outcome("2025 planned 1509.", question))
+        self.assertEqual(claim_checks.asked_tokens_blanked(
+            "2025: 6, PO-2025, 1,2025 and 2025-03-01.", "batches 24, 25, 26 by year"),
+            "    : 6, PO-2025, 1,2025 and 2025-03-01.")
+        # a year inside a text claim's value stays: the claim covers its text whole
+        self.assertEqual(claim_checks.asked_tokens_blanked(
+            "Plan for 2025 kickoff. 2025: 6.", "Plans in 2025?", ["Plan for 2025 kickoff."]),
+            "Plan for 2025 kickoff.     : 6.")
         # a token inside a text claim's value stays: the claim covers its text whole
         self.assertEqual(claim_checks.asked_tokens_blanked(
             "Send it for Q9 by 9/30. Q9 too.", asked, ["Send it for Q9 by 9/30."]),

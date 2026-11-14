@@ -6,7 +6,7 @@
 // never left out, so a thin record reads as thin rather than as finished.
 
 import Link from "next/link";
-import { formatDate, objectHref } from "@/lib/format";
+import { formatDate, objectHref, plural } from "@/lib/format";
 import type { ObjectPage } from "@/lib/types";
 
 /** The types whose pages carry their own design (figures, steps, orders, margin). */
@@ -31,7 +31,10 @@ export function answersOf(obj: ObjectPage): Answer[] {
   const linked = obj.linked ?? [];
   const last = latest(obj);
   const proposal = (obj.proposals ?? [])[0];
-  const relatedWords = [...related.slice(0, 3).map((r) => r.label), ...linked.slice(0, Math.max(0, 3 - related.length)).map((l) => l.label)];
+  // each name once, never the record's own (a Sage invoice's rows all carry its number)
+  const own = obj.label.trim().toLowerCase();
+  const names = [...new Set([...related.map((r) => r.label.trim()), ...linked.map((l) => l.label.trim())])].filter((n) => n && n.toLowerCase() !== own);
+  const relatedWords = names.slice(0, 3);
   const linkCount = related.length + linked.length;
   const ask = `/ask?${new URLSearchParams({ q: `What should I know about ${obj.label}?` }).toString()}`;
   return [
@@ -42,7 +45,7 @@ export function answersOf(obj: ObjectPage): Answer[] {
     },
     {
       q: "Linked to",
-      a: linkCount ? `${relatedWords.join(", ")}${linkCount > relatedWords.length ? ` and ${linkCount - relatedWords.length} more` : ""}` : "Nothing linked yet; explore the links below",
+      a: linkCount === 0 ? "Nothing linked yet; explore the links below" : relatedWords.length === 0 ? plural(linkCount, "linked record") : `${relatedWords.join(", ")}${names.length > relatedWords.length ? ` and ${names.length - relatedWords.length} more` : ""}`,
       href: related.length === 1 ? objectHref(related[0].type, related[0].object_id) : undefined,
       empty: linkCount === 0,
     },

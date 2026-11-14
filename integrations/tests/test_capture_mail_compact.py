@@ -682,6 +682,105 @@ class DeferredAttachmentsTests(CompactCase):
         self.assertEqual((counts["disk_low"], counts["selected"], counts["remaining"]),
                          (1, 0, 3))
 
+    def run_cli(self, *extra, environ=None):
+        import argparse
+        parser = argparse.ArgumentParser()
+        capture_mail.add_cli_arguments(parser)
+        audience = Path(self.tmp.name) / "capture-audience.json"
+        audience.write_text(json.dumps({
+            "schema": "plx-live-source-audience/v1", "tenant": "plx",
+            "audiences": {f"mail:{tm.UPN_A}": ["svc:mail-capture"],
+                          f"mail:{tm.UPN_B}": ["svc:mail-capture"]},
+            "classifications": {"mail:*": "restricted"}}))
+        args = parser.parse_args(["--state-dir", str(self.state), "--live-audience",
+                                  str(audience), "--runs", "1", "--extract-workers", "0",
+                                  "--ocr-workers", "0", *extra])
+        # As on the live store: the OCR backlog is at its bound, so the capture's own
+        # repair round leaves the deferred rows alone and only the pass reads them.
+        with mock.patch.object(capture_mail.CaptureScope, "from_file",
+                               return_value=tm.SCOPE), \
+                mock.patch.object(MailCaptureStore, "pending_ocr_bytes",
+                                  return_value=capture_mail.MAX_PENDING_OCR_BYTES):
+            return capture_mail.run_cli(args, environ=environ or tm.ENV, sender=self.graph)
+
+    def test_continuous_ingest_reads_the_deferred_rows_inside_the_mail_capture(self):
+        # The host holds the cycle lock for its whole run, so the stand-alone command
+        # never ran under it (2026-11-13: 221,842 deferred PDFs): the capture's own
+        # process reads them after its runs, through the same guarded reader.
+        self.store.close()
+        report = self.run_cli("--deferred-attachments-seconds", "60",
+                              "--deferred-min-free-gb", "0", "--deferred-workers", "4")
+        self.store = MailCaptureStore(self.state, clock=tm.Clock())
+        done = report["after_capture"]["deferred_attachments"]
+        # text layers read now; the scan's OCR put off with its bytes (backlog full)
+        self.assertEqual((done["selected"], done["captured"], done["text_layer"],
+                          done["ocr_deferred"], done["remaining"]), (3, 3, 2, 1, 0), done)
+        self.assertEqual(self.rows(), {"ATT-1": ("captured", "extracted"),
+                                       "ATT-2": ("captured", ct.OCR_DEFERRED),
+                                       "ATT-3": ("captured", "extracted")})
+        # Without the setting the capture reads none and says nothing of it.
+        self.store.close()
+        self.assertNotIn("after_capture", self.run_cli())
+        self.store = MailCaptureStore(self.state, clock=tm.Clock())
+
+    def test_the_backlog_passes_keep_the_exclusion_and_refuse_bad_settings_first(self):
+        import argparse
+        # The image pass never reads a mailbox the exclusion withholds now (B's rows
+        # still stored here).
+        excluding_b = {**tm.ENV, "PLX_EXCLUDED_PEOPLE_OIDS": tm.BOX_B}
+        only_images = argparse.Namespace(deferred_attachments_seconds=None,
+                                         image_ocr_seconds=60, image_ocr_workers=1)
+        with mock.patch("integrations.document_understanding.local_image_ocr_available",
+                        return_value=True), \
+                mock.patch.object(capture_mail, "image_ocr_pass",
+                                  return_value={"images": 0}) as images:
+            out = capture_mail.after_capture(self.store, self.reader_with(excluding_b),
+                                             tm.CAPTURE, only_images)
+        self.assertEqual(out, {"image_ocr": {"images": 0}})
+        excluded = images.call_args.kwargs["excluded"]
+        self.assertTrue(excluded(tm.BOX_B) and excluded(tm.BOX_B.upper()))
+        self.assertFalse(excluded(tm.BOX_A))
+        self.store.close()
+        before = len(self.graph.calls)
+        for bad in (("--deferred-attachments-seconds", "0"), ("--image-ocr-seconds", "-1"),
+                    ("--deferred-attachments-seconds", "nan"), ("--deferred-workers", "17"),
+                    ("--deferred-extract-workers", "0"), ("--image-ocr-workers", "0")):
+            with self.assertRaises(ValueError, msg=bad):
+                self.run_cli(*bad)
+        self.assertEqual(len(self.graph.calls), before)   # refused before any request
+        # A mailbox the exclusion names is never read by the deferred pass either.
+        report = self.run_cli("--deferred-attachments-seconds", "60",
+                              "--deferred-min-free-gb", "0", environ=excluding_b)
+        self.store = MailCaptureStore(self.state, clock=tm.Clock())
+        done = report["after_capture"]["deferred_attachments"]
+        self.assertEqual((done["selected"], done["captured"]), (2, 2), done)
+        # mailbox B's message is the exclusion's: never read (the capture withholds it
+        # and the pass skips it), and no attachment of it is requested
+        self.assertNotEqual(self.rows().get("ATT-3", ("gone",))[0], "captured")
+        self.assertFalse([c for c in self.graph.calls[before:] if "/attachments/" in c[1]
+                          and (tm.BOX_B in c[1].lower() or tm.UPN_B in c[1].lower())])
+        # An exclusion that cannot say which mailboxes it withholds reads no image.
+        reader = mock.Mock()
+        reader.prepare_people.side_effect = capture_mail.ExclusionUnavailable(
+            "excluded_people_unresolved")
+        args = argparse.Namespace(deferred_attachments_seconds=None, image_ocr_seconds=60,
+                                  image_ocr_workers=1)
+        with mock.patch.object(capture_mail, "image_ocr_pass") as never:
+            out = capture_mail.after_capture(self.store, reader, tm.CAPTURE, args)
+        self.assertEqual(out, {"image_ocr": {"error": "people_exclusion_unavailable"}})
+        never.assert_not_called()
+        # A pass that breaks is that pass's failure (its type only), never the capture's.
+        args = argparse.Namespace(deferred_attachments_seconds=60, image_ocr_seconds=None,
+                                  deferred_workers=4, deferred_extract_workers=None,
+                                  extract_workers=0, deferred_min_free_gb=0)
+        with mock.patch.object(capture_mail, "deferred_attachments_pass",
+                               side_effect=RuntimeError("secret subject")), \
+                self.assertLogs("integrations.capture_mail", "WARNING") as logged:
+            out = capture_mail.after_capture(self.store, reader, tm.CAPTURE, args)
+        self.assertEqual(out, {"deferred_attachments": {"error": "pass_failed",
+                                                        "failed_kind": "RuntimeError"}})
+        self.assertNotIn("secret subject", "\n".join(logged.output))
+
     def test_the_cli_dry_run_counts_under_the_cycle_lock(self):
         audience = Path(self.tmp.name) / "audience.json"
         audience.write_text(json.dumps({

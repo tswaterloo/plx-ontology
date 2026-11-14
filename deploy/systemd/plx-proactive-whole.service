@@ -14,6 +14,8 @@ Group=@PLX_GROUP@
 WorkingDirectory=@PLX_CURRENT@
 EnvironmentFile=-@PLX_HOME@/.config/plx/proactive.env
 Environment=PATH=/data/venv/bin:/usr/local/bin:/usr/bin:/bin
+# names its Postgres sessions after the unit (ARCH T2: pg_stat_activity, slow-query log)
+Environment=PGAPPNAME=%N
 # the tool-call rules on a pool of 3 workers whatever the host's free memory reads at the
 # start (without it a loaded host sizes the pool to one, no pool: the margins, the orders at
 # risk and the cards are then read only up to their per-run bounds); 6 GB engine + 3 x 2.5 GB

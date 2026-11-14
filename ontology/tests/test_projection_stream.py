@@ -102,7 +102,11 @@ class SyntheticWorldTests(unittest.TestCase):
             caps = [w.get("because") for w in json.loads(why_not) if w.get("feature") == "tier_cap"]
             self.assertNotIn("free_text_compare_is_not_a_stored_key", caps, link_type)
             key = (link_type, from_object.split(":")[1], to_object.split(":")[1], kind)
-            if not json.loads(why_not) and len(ceilings[key]) == 1:
+            # a property_conflict (two same-record copies' values differ: recorded beside
+            # the link with the authority that decides, never a cap) leaves it uncontested;
+            # since migration-next a Customer's name is read from Portal and FileMaker both
+            contested = [w for w in json.loads(why_not) if w.get("feature") != "property_conflict"]
+            if not contested and len(ceilings[key]) == 1:
                 self.assertEqual(tier, next(iter(ceilings[key])), key)
                 seen.add(key)
         for key in (("Customer.same_record_as", "portal.app_customer", "portal.fm_customer",

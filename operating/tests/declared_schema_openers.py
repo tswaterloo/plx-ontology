@@ -173,6 +173,13 @@ def _memo(d: Path) -> Path:
     return d / "mm.sqlite"
 
 
+def _learning(d: Path) -> Path:
+    from operating.learning import Ledger
+    ledger = Ledger(d / "learning")
+    ledger.close()
+    return d / "learning" / "learning.sqlite"
+
+
 def _mention_cache(d: Path) -> Path:
     from ontology.mention_cache import ExtractionCache
     c = ExtractionCache(d / "me.sqlite", "0" * 16)
@@ -254,7 +261,7 @@ OPENERS: dict[str, Callable[[Path], Path]] = {
     "watchlists": _watchlists, "feedback": _feedback, "work_log": _work_log, "page_store": _page_store,
     "page_counts": _page_counts, "captured_text": _captured_text,
     "kept_members": _kept_members, "document_fields": _kept_fields,
-    "mention_memo": _memo, "mention_cache": _mention_cache, "briefs": _briefs, "autopilot_replay": _replay_progress,
+    "mention_memo": _memo, "mention_cache": _mention_cache, "learning": _learning, "briefs": _briefs, "autopilot_replay": _replay_progress,
     "autopilot_queue": _autopilot, "delta_state": _delta, "delta_held": _delta_held, "project_objects": _project_objects,
     "session_replay": _replay_guard, "session_journal": _journal,
     "confirmation_forms": _confirmation_forms, "kind_confirmation": _kind_confirmation,

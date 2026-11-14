@@ -532,12 +532,12 @@
    "kind": "weekly_trends",
    "label": "Customer ordering much less",
    "precision": {
-    "value": 0.067,
+    "value": 0.667,
     "checked": 15,
-    "on": "2026-11-10",
-    "source": "/data/scratch/alert-precision-1110.md",
-    "note": "1/15 before 67b7720073 (9 zeroed Sage order totals, 5 orders on an unsettled twin); re-run after the fix finds 0: re-judge when items appear",
-    "commit": "67b7720073"
+    "correct": 10,
+    "on": "2026-11-13",
+    "source": "/data/scratch/alerts-fresh-judged-1112.tsv r1116: 10/15 right, 5 unknown (3 same-name customer of another source ordered in the window; 2 counts not reconciled: recent orders in another currency)",
+    "note": "Re-judge after it lands"
    },
    "actionable": false,
    "default": "off",
@@ -1482,15 +1482,16 @@
    "kind": "label_change",
    "label": "Label or artwork change",
    "precision": {
-    "value": 1.0,
-    "checked": 15,
-    "on": "2026-11-08",
-    "source": "OVERNIGHT-LOG L790: 0/15 false positives over 19 alerts (label_change_stale and label_change_unapproved, now one briefing type)",
-    "commit": "a75690cc08"
+    "value": 0.0,
+    "checked": 17,
+    "correct": 0,
+    "on": "2026-11-13",
+    "source": "/data/scratch/alerts-fresh-judged-1112.tsv r1116: 0/17 label_change_stale right (7 wrong: not a label request or already printed; 10 unknown: no item or customer named)",
+    "note": "Re-judge 15 fresh items from a served run after it lands before switching on"
    },
    "actionable": true,
-   "default": "on",
-   "home": true,
+   "default": "off",
+   "home": false,
    "roles": [
     "ARTWORK",
     "QA",

@@ -145,11 +145,12 @@ describe("InstructionPart", () => {
       original: "Questionnaire.xlsx",
       kind: "xlsx" as const,
       record: { object_id: "PurchaseOrder:90412", type: "PurchaseOrder", label: "PO 90412", open_url: "/object/PurchaseOrder/x" },
-      counts: { filled: 1, kept: 0, person_only: 1, unknown_field: 0, no_fact: 0, ambiguous: 1 },
+      counts: { filled: 1, kept: 0, person_only: 1, unknown_field: 0, no_fact: 0, ambiguous: 1, suggested: 1 },
       fields: [
         { label: "PO Number", before: "", after: "90412", status: "filled" as const, reason: "", citation: cite },
         { label: "Carrier", before: "", after: "", status: "ambiguous" as const, reason: "2 different values", citation: null },
         { label: "Signature", before: "", after: "", status: "person_only" as const, reason: "", citation: null },
+        { label: "Incoterms", before: "", after: "FOB", status: "suggested" as const, reason: "suggested; check it", citation: { ...cite, record: "Earlier version", field: "B4" } },
       ],
       notes: [],
       digest_before: "a",
@@ -163,10 +164,13 @@ describe("InstructionPart", () => {
     replies = [{ ...PREVIEW, upload_id: "up_2", name: fill.name }];
     render(<InstructionPart part={{ ...DRAFTED, writes: [], documents: [], fills: [fill] }} answerId="f1" onInstruct={vi.fn()} />);
     const rows = screen.getByTestId("fill-fields").querySelectorAll("tbody tr");
-    expect([...rows].map((r) => r.getAttribute("data-status"))).toEqual(["filled", "ambiguous", "person_only"]);
+    expect([...rows].map((r) => r.getAttribute("data-status"))).toEqual(["filled", "ambiguous", "person_only", "suggested"]);
     expect(rows[0].textContent).toContain("90412");
     expect(screen.getByRole("link", { name: "PurchaseOrder:90412 · po_number" }).getAttribute("href")).toBe("/source?handle=bc");
     expect(rows[1].textContent).toContain("The records disagree");
+    // a suggested value shows with its source and is marked for checking
+    expect(rows[3].textContent).toContain("FOB");
+    expect(screen.getByRole("link", { name: "Suggested, check: Earlier version · B4" })).toBeTruthy();
     // saving is the upload's own preview and confirm: nothing approved from the review
     await act(async () => fireEvent.click(screen.getByRole("button", { name: "Preview upload" })));
     expect(calls("/api/instruct/uploads/up_2")).toHaveLength(1);

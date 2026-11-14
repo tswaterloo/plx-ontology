@@ -171,7 +171,9 @@ def find_roots(objective: str, find: Callable[[dict[str, Any]], Mapping[str, Any
     ambiguous: list[dict[str, Any]] = []
     unfound: list[dict[str, Any]] = []
     seen: set[tuple[str, str]] = set()
-    for mention in find_identifiers(objective):
+    mentions = list(find_identifiers(objective))
+    ends = sorted(m.end for m in mentions if isinstance(getattr(m, "end", None), int))
+    for mention in mentions:
         key = (mention.kind, mention.normalized or mention.text)
         if key in seen:
             continue
@@ -192,8 +194,12 @@ def find_roots(objective: str, find: Callable[[dict[str, Any]], Mapping[str, Any
                       for c in result.get("candidates") or []
                       if (c.get("object") or {}).get("object_id")]
         status = result.get("status")
+        picked = (named_system_pick(objective, mention, candidates, ends)
+                  if status in ("found", "ambiguous") and len(candidates) > 1 else None)
         if status == "found" and len(candidates) == 1:
             roots.append({**named, **candidates[0], "found_by": "identifier"})
+        elif picked is not None:
+            roots.append({**named, **picked, "found_by": "identifier_system"})
         elif status in ("found", "ambiguous") and candidates:
             ambiguous.append({**named, "candidates": candidates[:MAX_CANDIDATES],
                               "more_candidates": max(0, len(candidates) - MAX_CANDIDATES),
@@ -207,6 +213,11 @@ def find_roots(objective: str, find: Callable[[dict[str, Any]], Mapping[str, Any
                             "gaps": gaps[:5]})
     resolved = resolve_entities(objective, find)
     entities = resolved or []
+    for item in list(ambiguous):
+        root = one_record(item, entities)
+        if root is not None:
+            ambiguous.remove(item)
+            roots.append(root)
     named = {r["object_id"] for r in roots} | {c["object_id"] for a in ambiguous
                                                for c in a["candidates"]}
     for entity in entities:
@@ -225,6 +236,65 @@ def find_roots(objective: str, find: Callable[[dict[str, Any]], Mapping[str, Any
     # None when the lookup failed: a failed lookup is not one that found nothing
     return {"roots": roots, "ambiguous": ambiguous, "unfound": unfound,
             "entities": None if resolved is None else entities}
+
+
+# How far before an identifier a system word still qualifies it ("the FileMaker AO
+# AO-21116A", "the Portal batch BC-23053C"): the few words just before its label.
+QUALIFIER_WORDS = 4
+# deep_investigation.SYSTEM_WORDS names -> ontology_tools_aggregate.record_system codes
+_SYSTEM_CODES = {"Portal": "portal", "Business Central": "bc", "FileMaker": "filemaker",
+                 "Sage": "sage", "Mission Control": "mc"}
+
+
+def named_system_pick(objective: str, mention: Any,
+                      candidates: Sequence[Mapping[str, Any]],
+                      ends: Sequence[int] = ()) -> dict[str, Any] | None:
+    """The one candidate of the system the words just before ``mention`` name ("the
+    FileMaker batch BC-23121C" names FileMaker's record, not its Portal twin); None when
+    no single system is named there or not exactly one candidate is of it. A system named
+    elsewhere in the question ("... the same record as a batch in FileMaker") does not
+    qualify this identifier, and neither does one that qualifies an earlier identifier
+    (``ends``: where the question's identifiers end; "the Portal PO PO-1 with PO-2" names
+    no system for PO-2)."""
+    from .deep_investigation import systems_named
+    from .ontology_tools_aggregate import record_system
+
+    end = getattr(mention, "label_start", None)
+    if not isinstance(end, int):
+        end = getattr(mention, "start", None)
+    if not isinstance(end, int) or end <= 0:
+        return None
+    floor = max((e for e in ends if e <= end), default=0)
+    before = re.split(r"[.;:!?\n]", objective[floor:end])[-1]
+    window = " ".join(before.split()[-QUALIFIER_WORDS:])
+    named = {_SYSTEM_CODES.get(name) for name in systems_named(window)}
+    if len(named) != 1 or None in named:
+        return None
+    system = next(iter(named))
+    of_system = [c for c in candidates
+                 if record_system(str(c.get("object_id") or "")) == system]
+    return dict(of_system[0]) if len(of_system) == 1 else None
+
+
+def one_record(item: Mapping[str, Any], entities: Sequence[Mapping[str, Any]]
+               ) -> dict[str, Any] | None:
+    """An ambiguous identifier whose candidates the resolver matched as ONE thing (a
+    Portal record and its FileMaker twin, ``status`` match for each) is one root with the
+    others as ``same_as``, never a "which did you mean" between the same record's copies.
+    None when any candidate is outside one such entity, or more were found than listed."""
+    ids = [c.get("object_id") for c in item.get("candidates") or ()]
+    if len(ids) < 2 or item.get("more_candidates") or not all(isinstance(i, str) for i in ids):
+        return None
+    for entity in entities:
+        matched = [r["object_id"] for r in entity.get("records") or ()
+                   if r.get("status") == "match"]
+        if entity.get("status") == "match" and set(ids) <= set(matched):
+            first = next(c for c in item["candidates"] if c["object_id"] == ids[0])
+            return {"mention": item["mention"], "kind": item.get("kind"),
+                    "object_id": ids[0], "object_type": first.get("object_type"),
+                    "found_by": "identifier_same_record", "same_as": ids[1:],
+                    "confidence": entity.get("confidence")}
+    return None
 
 
 def resolve_entities(objective: str, find: Callable[[dict[str, Any]], Mapping[str, Any]]

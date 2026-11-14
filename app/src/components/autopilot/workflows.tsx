@@ -8,7 +8,7 @@ import { ErrorNotice, LoadProblem } from "@/components/ui/notice";
 import { Sheet } from "@/components/ui/sheet";
 import { Pending } from "@/components/ui/skeleton";
 import { getAutopilotWorkflow, setAutopilotMode } from "@/lib/api";
-import { MODES, type Filters, type Mode, countdownParts, countdownText, filterWorkflows, modesFor, rowMode, rowPassed, rowRole, rowStateShown, workflowLabel } from "@/lib/autopilot";
+import { MODES, type Filters, type Mode, countdownParts, countdownText, filterWorkflows, modesFor, rowMode, rowRole, rowStateShown, workflowLabel } from "@/lib/autopilot";
 import { cn } from "@/lib/cn";
 import { noticeKind, plainError } from "@/lib/errors";
 import { ago, formatDateTime, plural } from "@/lib/format";
@@ -36,14 +36,10 @@ export function ModeControl({
   const [confirm, setConfirm] = useState<Mode | null>(null);
   const who = rowRole(area, row);
   const why = (m: Mode) =>
-    m === "auto" || m === "watch"
-      ? rowPassed(row)
-        ? "Arrives with the workflow builder"
-        : "Opens after its gate passes"
-      : "Arrives with the workflow builder";
+    m === "auto" || m === "watch" ? "Each person turns this on for themselves on their Autopilot page" : "Arrives with the workflow builder";
   return (
     <div className="flex flex-col items-start gap-1">
-      <div role="radiogroup" aria-label={`${workflowLabel(row.workflow)} mode for ${who}`} className="inline-flex h-7 rounded-[4px] ring-1 ring-border">
+      <div role="radiogroup" aria-label={`${workflowLabel(row.workflow)} mode for ${who}`} className="inline-flex h-7 rounded-[4px] ring-1 ring-border max-sm:h-10">
         {MODES.map(({ mode: m, label, words }) => {
           const on = m === mode;
           const ok = allowed.has(m) && !area.switches.global_off;

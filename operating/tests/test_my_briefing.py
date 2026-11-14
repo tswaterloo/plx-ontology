@@ -242,6 +242,43 @@ class MyBriefingTest(unittest.TestCase):
             self.assertEqual(ids[:len(yours)], [i["object_id"] for i in yours])
             self.assertLessEqual(len([c for c in h.asked if c[0] == "plx.object"]), 50)
 
+    def test_a_check_the_store_could_not_read_is_not_checked_never_not_yours(self):
+        """A check whose read failed (the store could not be read: a fact read cut at the
+        budget, or a raise) leaves its record not checked and the briefing partly
+        checked, never "not yours"; a reason read before the failure still makes it the
+        reader's. Every check runs inside ``facts_cut`` at the budget, so a cold
+        whole-table fact read cannot hold the briefing past it."""
+        from operating import call_limits
+        h, gaps = world()
+        h.add("PurchaseOrder:9", {"buyer": ADDRESS[ANN]})
+        h.link("PurchaseOrder.ordered_from", "PurchaseOrder:9", "Supplier:1")
+        gaps["po9"] = gap("late_po", "PurchaseOrder:9", days=9)
+        cut: list[tuple[bool, float]] = []
+
+        def flaky(name: str, args: dict, actor: str) -> dict:
+            left = call_limits.seconds_left()
+            cut.append((call_limits.facts_cut_now(), 99.0 if left is None else left))
+            root = args.get("object_id") or args.get("from")
+            if name == "plx.around" and root == "PurchaseOrder:2":
+                raise RuntimeError("store gone")
+            if name == "plx.around" and root in ("PurchaseOrder:1", "PurchaseOrder:9"):
+                return {"error": {"code": "store_unavailable"}}
+            return h(name, args, actor)
+        who = identity(ANN)
+        found = bf.build(inbox(*gaps.values()), routing=PROC, hidden={}, last_visit=None,
+                         enabled=("eta_slipped", "customer_order_late"),
+                         involved=lambda ids: inv.derive(flaky, ANN, SCHEMA, who, ids))
+        involvement = found["involvement"]
+        self.assertEqual(involvement["not_checked"], 2)   # PO 1 and PO 2: unread, no reason
+        self.assertFalse(involvement["complete"])
+        self.assertEqual(involvement["checked"] + involvement["not_checked"],
+                         len({a[1] for a in h.asked if a[0] == "plx.object"}))
+        yours = {i["object_id"] for i in found["items"] if i["yours"]}
+        self.assertIn("PurchaseOrder:9", yours)            # named, read before the failure
+        self.assertIn("PurchaseOrder:3", yours)
+        self.assertTrue(cut and all(c and left <= inv.BUDGET_SECONDS for c, left in cut))
+        self.assertFalse(call_limits.facts_cut_now())      # only inside the checks
+
 
 if __name__ == "__main__":
     unittest.main()

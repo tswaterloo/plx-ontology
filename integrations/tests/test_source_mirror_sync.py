@@ -185,6 +185,50 @@ class FullSyncTests(SyncTestCase):
                  if run["outcome"] == "captured"}
         self.assertEqual(modes, {"full_traversal"})
 
+    def test_sync_without_coverage_captures_the_same_and_never_counts(self):
+        """Live 11-13: the host ingest's Portal child spent its timeout on the coverage
+        counts (whole reads of a 69 GB mirror after the capture) that its summary never
+        reads. ``coverage=False`` captures exactly as before and counts nothing."""
+        for index in range(3):
+            generated_relation(self.fake, f"public.gen_rel_{index:02d}", index * 5 + 1)
+        mirror = self.mirror(page_size=4)
+        with patch.object(SourceMirror, "_coverage",
+                          side_effect=AssertionError("coverage counted")):
+            report = mirror.sync(OPS, coverage=False)
+        self.assertIsNone(report["coverage"])
+        runs = {run["relation"]: run["outcome"] for run in report["runs"]}
+        served = [name for name, entry in self.fake.catalog.items() if entry["key"]]
+        self.assertEqual(set(runs), set(served))
+        self.assertEqual(set(runs.values()), {"captured"})
+        # what it captured is what a counted sync reports
+        by_name = {item["relation"]: item for item in mirror.coverage(OPS)["relations"]}
+        for name in served:
+            self.assertEqual(by_name[name]["rows_current"], len(self.fake.tables[name]), name)
+            self.assertTrue(by_name[name]["complete"], name)
+        # nothing visible: the early return counts nothing either
+        outsider = mirror.sync(OUTSIDER, coverage=False)
+        self.assertEqual((outsider["runs"], outsider["coverage"]), ([], None))
+        # the CLI flag the host ingest passes reaches the sync
+        from integrations import source_mirror as module
+        seen = []
+
+        class Stub:
+            def __init__(self, *args, **kwargs): pass
+            def __enter__(self): return self
+            def __exit__(self, *exc): return False
+            def sync(self, actor, **kwargs):
+                seen.append(kwargs["coverage"])
+                return {"runs": [], "coverage": None}
+
+        with patch.object(module, "SourceMirror", Stub), \
+                patch.object(module, "_build_client", lambda *a: None), \
+                contextlib.redirect_stdout(io.StringIO()):
+            for extra in (["--no-coverage"], []):
+                self.assertEqual(module.main(["--db", str(self.path), "--audience", "/a.json",
+                                              "--principal", "staff:operations",
+                                              "sync", *extra]), 0)
+        self.assertEqual(seen, [False, True])
+
     def test_sync_resumes_from_the_last_committed_page_after_a_failure(self):
         generated_relation(self.fake, "public.big", 10)
         mirror = self.mirror(page_size=3)
@@ -610,6 +654,30 @@ class AbsenceTests(SyncTestCase):
         self.assertEqual(runs["public.assembly_order"]["absence_scan"]["keys_missing"], 1)
         # A full traversal already sees absence; no scan is added after it.
         self.assertNotIn("absence_scan", runs["public.customer"])
+
+    def test_a_small_relation_is_read_whole_every_sync_and_a_large_one_incrementally(self):
+        """GA-F12: ``full_below_rows`` reads a mirrored relation of at most so many rows
+        whole each sync (its removals show at once); a larger one stays incremental, and
+        a bad bound fails before any request."""
+        generated_relation(self.fake, "public.small", 5)
+        generated_relation(self.fake, "public.large", 12)
+        mirror = self.mirror()
+        names = ["public.small", "public.large"]
+        mirror.sync(OPS, relations=names)
+        self.fake.tables["public.small"] = self.fake.tables["public.small"][1:]
+        self.fake.tables["public.large"] = self.fake.tables["public.large"][1:]
+        self.clock.advance(60)
+        result = mirror.sync(OPS, relations=names, full_below_rows=10)
+        runs = {run["relation"]: run for run in result["runs"]}
+        self.assertEqual((runs["public.small"]["mode"], runs["public.large"]["mode"]),
+                         ("full_traversal", "incremental"))
+        self.assertEqual((result["full_below_rows"], result["read_whole"]), (10, 1))
+        small = self.by_id(mirror.rows(OPS, "public.small", max_staleness=3600))
+        large = self.by_id(mirror.rows(OPS, "public.large", max_staleness=3600))
+        self.assertEqual((len(small), len(large)), (4, 12))   # since cannot see removals
+        for bad in (0, -1, True, 1.5, "10"):
+            with self.subTest(bad=bad), self.assertRaises(MirrorError):
+                mirror.sync(OPS, relations=names, full_below_rows=bad)
 
     def test_interrupted_scan_resumes_and_marks_nothing_until_complete(self):
         generated_relation(self.fake, "public.big", 9)

@@ -99,6 +99,10 @@ _ORDER = "_stage_order"
 # row stored packed would otherwise keep them beside the layer's plain text (the table's
 # check refuses both)
 _UNPACK = {"link_rows": ("reason_id", "evidence_id", "ek", "slots")}
+# A table whose primary key is wider than a row's identity: partitioned ``link_rows``
+# (``operating.pg.link_partitions``) is keyed (link_id, link_type), a link id still names
+# one row. Unpartitioned, its key is the identity and nothing changes.
+_IDENTITY = {"link_rows": ("link_id",)}
 
 
 def _primary_key(cur: Any, table: str, keys: dict[str, list[str]] | None) -> list[str]:
@@ -151,10 +155,22 @@ def _copy(cur: Any, table: str, columns: Sequence[str], rows: Any, *,
             copy.write_row(tuple(_clean(v) for v in row))
             count += 1
     on = ", ".join(key)
+    # the row's identity: narrower than the primary key on a partitioned table, whose key
+    # must hold the partition key (``link_rows``: one link id, one row, of any type)
+    ident = [c for c in _IDENTITY.get(table, key) if c in key]
+    one = ", ".join(ident)
+    if ident != key:
+        # a served row of the same identity under another key (a link id now of another
+        # type) is replaced by the layer's, as the narrower key's conflict did
+        cur.execute(f"DELETE FROM ontology.{table} t USING (SELECT DISTINCT ON ({one}) {on} "
+                    f"FROM {stage} ORDER BY {one}, {_ORDER} DESC) s WHERE "
+                    + " AND ".join(f"t.{c} = s.{c}" for c in ident) + " AND ("
+                    + " OR ".join(f"t.{c} IS DISTINCT FROM s.{c}" for c in key if c not in ident)
+                    + ")")
     sets = ", ".join([f"{c} = excluded.{c}" for c in columns if c not in key]
                      + [f"{c} = DEFAULT" for c in _UNPACK.get(table, ()) if c not in columns])
-    cur.execute(f"INSERT INTO ontology.{table} ({cols}) SELECT DISTINCT ON ({on}) {cols} "
-                f"FROM {stage} ORDER BY {on}, {_ORDER} DESC ON CONFLICT ({on}) "
+    cur.execute(f"INSERT INTO ontology.{table} ({cols}) SELECT DISTINCT ON ({one}) {cols} "
+                f"FROM {stage} ORDER BY {one}, {_ORDER} DESC ON CONFLICT ({on}) "
                 f"{'DO UPDATE SET ' + sets if sets else 'DO NOTHING'}")
     cur.execute(f"TRUNCATE {stage}")
     return count
@@ -1020,9 +1036,11 @@ def _links_staged(conn: sqlite3.Connection, cur: Any, ids: str, name: str
     step = _link_step(_meta(conn, "content_digest"), name)
     _ensure_stage(cur, s)
     # a layer applied again under this generation (its record removed): its earlier bits
-    # describe rows it is about to compare again, so they go
+    # describe rows it is about to compare again, so they go, and the transaction that
+    # wrote them with them (this apply records its own below)
     for table in _BITS:
         cur.execute(f"DELETE FROM {s}.{table} WHERE step = %s", (step,))
+    cur.execute(f"DELETE FROM {s}.meta WHERE key = %s", (f"xmin:{step}",))
     excluded = _whole_steps.pg_excluded()
     cols = ", ".join(store_ddl.LINK_COLUMNS)
     owned = json.loads(ids)
@@ -1138,9 +1156,13 @@ def _keep_facts(dsn: str, report: dict[str, Any], text_store: Path | None = None
     host then reads them on its first request, minutes, so it is never silent."""
     try:
         from operating import ontology_tools_traverse
-        kept = ontology_tools_traverse.prime_pg_facts(
-            dsn, text_store=text_store if text_store and text_store.is_file() else None,
-            log=log)
+        from operating.pg import ontology_reader
+        # Postgres the only store (``PLX_ONTOLOGY_PG=only``): no SQLite generation is
+        # read, even while its file is still on disk (an open one holds the retired
+        # generation's inode, so it could never be deleted)
+        if ontology_reader.pg_only() or not (text_store and text_store.is_file()):
+            text_store = None
+        kept = ontology_tools_traverse.prime_pg_facts(dsn, text_store=text_store, log=log)
         report.pop("facts_error", None)
     except Exception as exc:  # noqa: BLE001 - reported: the cycle itself is done
         kept = False
@@ -1249,9 +1271,11 @@ def follow(state_dir: str | Path, dsn: str, *, reload: bool = True, workers: int
     projection = Path(state_dir) / "projection"
     served = projection / "ontology.sqlite"
     from operating.pg import ontology_reader
-    if ontology_reader.pg_only() and not served.is_file():
-        # Postgres the only store, its SQLite generation retired: the generation is the
-        # one Postgres holds (nothing to load), and only the delta layers follow
+    only = ontology_reader.pg_only()
+    if only:
+        # Postgres the only store: the generation is the one Postgres holds (nothing to
+        # load), and only the delta layers follow. The SQLite generation is never opened,
+        # even while its file is still on disk before it is retired
         with psycopg.connect(dsn, **FOLLOW_LIMITS) as pg:
             row = pg.execute("SELECT value->>'content_digest' FROM ontology.load_state "
                              "WHERE name = 'generation'").fetchone()
@@ -1277,7 +1301,7 @@ def follow(state_dir: str | Path, dsn: str, *, reload: bool = True, workers: int
     if report["held"] != digest or not needed <= done:
         if not reload:
             return {**report, "state": "generation_differs"}
-        if not served.is_file():   # retired: nothing to load from, never a partial store
+        if only or not served.is_file():   # none read (retired): never a partial store
             return {**report, "state": "not_whole_and_no_generation"}
         # the generation as a file of its own (the served path is swapped at a publish)
         source = served.resolve()

@@ -46,4 +46,16 @@ describe("my replies and label changes", () => {
     expect(screen.getByText(/Waiting on us/, { selector: "div" })).toBeTruthy();
     expect(screen.getByText(/Nothing is sent until you confirm it/)).toBeTruthy();
   });
+
+  it("says the status once, the date in words and the unlinked party in the title", () => {
+    const board: RdBoard = { as_of: "2026-11-08", idle_after_days: 5, total: 1, idle: 0, sent: 0, writes: 0, projects: [
+      { id: "p2", customer: null, party: "@lab.example", kind: "coa", status: "waiting_on_customer", last_on: "2026-08-17", days: 64,
+        idle: false, owner: "oid-1", owner_is_you: false, waiting_on: "customer", items: [], lines: [], citations: [], draft, offers: [] }] };
+    render(<RdBoardView board={board} />);
+    const line = screen.getByText(/Waiting on the customer/, { selector: "div" }).textContent ?? "";
+    expect(line.match(/waiting on the customer/gi)).toHaveLength(1);
+    expect(line).toContain("17 Aug");
+    expect(line).not.toMatch(/\d{4}-\d{2}-\d{2}/);
+    expect(screen.getByText(/lab\.example/).textContent).not.toContain("@");
+  });
 });

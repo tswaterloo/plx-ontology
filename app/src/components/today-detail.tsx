@@ -198,7 +198,7 @@ function Trail({ steps, verdict }: { steps: TrailStep[]; verdict?: string | null
       {verdict && <p className="mb-3 text-[13px] leading-5">{readable(verdict)}</p>}
       <ol className="relative">
         {shown.map((s, i) => (
-          <li key={i} className="relative grid grid-cols-[40px_minmax(0,1fr)_auto] gap-x-2 pb-4 last:pb-0">
+          <li key={i} className="relative grid grid-cols-[54px_minmax(0,1fr)_auto] gap-x-2 pb-4 last:pb-0">
             {i < shown.length - 1 && <span className="absolute top-[20px] bottom-[2px] left-[0.5px] w-px bg-border-strong" aria-hidden />}
             <SystemCode system={s.source?.system} size={18} className="mt-px" />
             <div className="min-w-0">

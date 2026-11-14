@@ -29,6 +29,7 @@ import time
 from typing import Any, Iterator, Optional
 from operating import declared_schema as _schemas
 from operating.declared_schema import page_store as _PAGE_STORE
+from operating.file_modes import keep_private
 
 LOG = logging.getLogger("operator_api.page_store")
 FILE = "page-cache.sqlite"
@@ -144,7 +145,7 @@ class PageStore:
         if conn is None:
             self.directory.mkdir(parents=True, exist_ok=True)
             try:
-                os.chmod(self.directory, 0o700)
+                keep_private(self.directory, 0o700)
             except OSError:
                 pass
             os.close(os.open(self.path, os.O_RDWR | os.O_CREAT, 0o600))

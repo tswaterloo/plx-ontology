@@ -516,6 +516,12 @@ class QueueTests(unittest.TestCase):
         from datetime import datetime, timedelta, timezone
         later = datetime.now(timezone.utc) + timedelta(seconds=js.STALE_S + 5)
         self.assertFalse(js.read_snapshot(self.state, now=later)["fresh"])
+        # a check that took ``now`` just before the worker wrote (11-13: a false page)
+        earlier = datetime.now(timezone.utc) - timedelta(seconds=js.CLOCK_SKEW_S - 5)
+        self.assertTrue(js.read_snapshot(self.state, now=earlier)["fresh"])
+        self.assertEqual(js.read_snapshot(self.state, now=earlier)["age_s"], 0)
+        long_before = datetime.now(timezone.utc) - timedelta(seconds=js.CLOCK_SKEW_S + 60)
+        self.assertFalse(js.read_snapshot(self.state, now=long_before)["fresh"])
         self.assertEqual(js.read_snapshot(Path(tempfile.mkdtemp()))["configured"], False)
 
 

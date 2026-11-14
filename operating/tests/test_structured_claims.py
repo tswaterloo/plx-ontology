@@ -1138,6 +1138,30 @@ class TextCheckEnforcedTests(unittest.TestCase):
         out, _error = agent_session.parse_answer(gated)
         return out
 
+    def test_a_name_only_memory_returned_is_never_stated_as_read(self):
+        """An identifier the reader's memory (``plx.memory``) recalled is what was said
+        before, never this session's evidence: the final reply drops the sentence stating
+        it, as it does with no memory at all; a source tool returning it backs it."""
+        from operating import agent_session
+        status = {"id": "s", "value": "Shipped", "citation": self.A, "field": "row.status"}
+        text = "The order was shipped. It ships under lot LT-88213."
+        result = self.decide([status], text)
+        answer = {"format": "plx-eval-answer/v1", "answerability": "answerable",
+                  "text": text, "values": [], "gaps": []}
+        gate = {"type": "tool_call", "name": "plx.case_get",
+                "arguments": {"answer": {"claims": [status], "text": text}}, "result": result}
+
+        def reply(*more):
+            gated, _ = agent_session.gate_final_reply(
+                "```json\n" + json.dumps(answer) + "\n```", [*more, gate])
+            return agent_session.parse_answer(gated)[0]["text"]
+        recalled = {"type": "tool_call", "name": "plx.memory", "arguments": {"query": "lot"},
+                    "result": {"ok": True, "items": [{"text": "Shipped under lot LT-88213."}]}}
+        read = {**recalled, "name": "plx.find"}
+        self.assertNotIn("LT-88213", reply())
+        self.assertNotIn("LT-88213", reply(recalled))
+        self.assertIn("LT-88213", reply(read))
+
     def test_the_final_reply_keeps_a_lower_bound_count_a_minimum(self):
         """GATE-004 end to end: the Ask's final reply never says an exact count the gate
         established only as a minimum; written as the minimum, it stands."""

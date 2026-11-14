@@ -228,11 +228,11 @@ def _linked(call: Call, oid: str, among: str) -> list[str]:
 _NUMBERS = re.compile(r"\d+(?:[.,]\d+)*")
 
 
-# a period's dates (an ISO date, a year, a day of a named month): the reading itself, not
+# a period's dates (an ISO date, a year or a span of years, a day of a named month): the reading itself, not
 # a record's figure, so an assumption may state them
 _MONTH = (r"(?:january|february|march|april|may|june|july|august|september|october|"
           r"november|december|jan|feb|mar|apr|jun|jul|aug|sept|sep|oct|nov|dec)\b\.?")
-_DATES = re.compile(r"\b(?:\d{4}-\d{2}-\d{2}|(?:in|year|fy|from|since|until)\s+(?:19|20)\d{2}\b(?!-)|q[1-4](?:\s+(?:19|20)\d{2})?\b|(?:19|20)\d{2}(?=\s+(?:q[1-4]|year))|\d{1,2}\s+" + _MONTH + r"(?:\s+(?:19|20)\d{2})?|"
+_DATES = re.compile(r"\b(?:(?:from|between)\s+(?:19|20)\d{2}\s+(?:to|through|thru|until|and)\s+(?:19|20)\d{2}\b(?!-)|\d{4}-\d{2}-\d{2}|(?:in|year|fy|from|since|until)\s+(?:19|20)\d{2}\b(?!-)|q[1-4](?:\s+(?:19|20)\d{2})?\b|(?:19|20)\d{2}(?=\s+(?:q[1-4]|year))|\d{1,2}\s+" + _MONTH + r"(?:\s+(?:19|20)\d{2})?|"
                     + _MONTH + r"\s+\d{1,2}(?:,?\s+(?:19|20)\d{2})?\b|" + _MONTH + r"\s+(?:19|20)\d{2}\b)",
                     re.I)
 

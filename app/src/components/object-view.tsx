@@ -89,10 +89,10 @@ function Frame({ crumb, actions, main, inspector }: { crumb: ReactNode; actions?
 }
 
 /** "Purchase order › PO 106001", in the toolbar's quiet size. */
-function Crumb({ type, title }: { type: string; title?: string | null }) {
+function Crumb({ type, title, typeName }: { type: string; title?: string | null; typeName?: string | null }) {
   return (
     <span className="text-[13px] font-normal tracking-normal">
-      <span className={cn("text-muted", title && "max-sm:hidden")}>{typeLabel(type)}</span>
+      <span className={cn("text-muted", title && "max-sm:hidden")}>{typeName || typeLabel(type)}</span>
       {title && (
         <>
           <span className="px-1.5 text-faint max-sm:hidden" aria-hidden>
@@ -108,7 +108,7 @@ function Crumb({ type, title }: { type: string; title?: string | null }) {
 /** The page's shape while it gathers: the header from the link's label at once, then a step line. */
 function ObjectSkeleton({ type, label }: { type: string; label?: string | null }) {
   const t = useElapsed(true);
-  const step = t < 8 ? "Reading Business Central" : t < 20 ? "Searching mail and files" : "Linking receipts and emails";
+  const step = t < 8 ? "Reading its systems" : t < 20 ? "Searching mail and files" : "Linking receipts and emails";
   return (
     <Frame
       crumb={<Crumb type={type} title={label} />}
@@ -132,7 +132,7 @@ function ObjectSkeleton({ type, label }: { type: string; label?: string | null }
             ))}
           </div>
           <Bars n={4} className="max-w-xl" />
-          {t >= 20 && <p className="text-[12px] text-muted">Records with a lot of mail take up to a minute.</p>}
+          {t >= 20 && <p className="text-[12px] text-muted" data-testid="record-slow">{t < 60 ? "Records with a lot of mail take up to a minute." : "Taking longer than usual. Still reading."}</p>}
         </div>
       }
       inspector={
@@ -419,12 +419,12 @@ function ThreadRow({ t }: { t: Thread }) {
 
 function Linked({ items }: { items: LinkedItem[] }) {
   const [all, setAll] = useState(false);
-  if (items.length === 0) return null;
   const threads = groupLinked(items);
+  if (threads.length === 0) return null;
   const shown = all ? threads : threads.slice(0, 8);
   return (
     <section data-testid="linked">
-      <SectionTitle aside={threads.length > 8 ? <MoreButton onClick={() => setAll((v) => !v)} expanded={all}>{all ? "Fewer" : `All ${threads.length}`}</MoreButton> : <span className="text-[12px] text-muted">{items.length}</span>}>
+      <SectionTitle aside={threads.length > 8 ? <MoreButton onClick={() => setAll((v) => !v)} expanded={all}>{all ? "Fewer" : `All ${threads.length}`}</MoreButton> : <span className="text-[12px] text-muted">{threads.reduce((n, t) => n + t.count, 0)}</span>}>
         Messages and documents
       </SectionTitle>
       <ul className="-mx-3 grid gap-x-4 2xl:grid-cols-2">
@@ -516,7 +516,7 @@ function RelatedCard({ refs }: { refs: ObjectRef[] }) {
   );
 }
 
-type LinkSection = { group: LinkGroup; heading: string; records: LinkRef[] };
+type LinkSection = { group: LinkGroup; heading: string; records: (LinkRef & { times?: number })[] };
 
 /** "Suggested" beside a link read from a reference (a mail naming the order), not a key. */
 function TierNote({ tier, possible }: { tier?: string | null; possible?: boolean }) {
@@ -529,10 +529,10 @@ function TierNote({ tier, possible }: { tier?: string | null; possible?: boolean
 function LinkGroupRows({ s, max, evidence }: { s: LinkSection; max: number; evidence: boolean }) {
   // solid records are counted; possibly related ones (lead links) are said apart, never counted
   const shown = s.records.slice(0, max);
-  const solidShown = shown.filter((r) => !r.possible).length;
-  const count = Math.max(s.group.count ?? 0, s.records.filter((r) => !r.possible).length);
+  const solidShown = shown.filter((r) => !r.possible).reduce((n, r) => n + (r.times ?? 1), 0);
+  const count = Math.max(s.group.count ?? 0, s.records.filter((r) => !r.possible).reduce((n, r) => n + (r.times ?? 1), 0));
   const moreSolid = count - solidShown;
-  const morePossible = Math.max(0, (s.group.possible ?? 0) - (shown.length - solidShown));
+  const morePossible = Math.max(0, (s.group.possible ?? 0) - shown.filter((r) => r.possible).reduce((n, r) => n + (r.times ?? 1), 0));
   return (
     <div data-testid={`link-group-${s.group.link_type}`}>
       <p className="mb-0.5 text-[12px] text-muted">
@@ -542,7 +542,7 @@ function LinkGroupRows({ s, max, evidence }: { s: LinkSection; max: number; evid
       <ul className="-mx-2">
         {shown.map((r) => (
           <li key={r.object_id}>
-            <LinkRow href={refHref(r)} aside={<TierNote tier={r.tier} possible={r.possible} />}>
+            <LinkRow href={refHref(r)} aside={(r.times ?? 1) > 1 ? <span className="text-[12px] text-muted">×{r.times}</span> : <TierNote tier={r.tier} possible={r.possible} />}>
               {recordLabel(r.type, readable(r.label))}
             </LinkRow>
             {evidence && (r.evidence ?? []).length > 0 && (
@@ -1125,7 +1125,8 @@ export function ObjectView({ type, id, missing }: { type: string; id: string; mi
   const generic = !isPo && !isParty && !isAo && !isSalesOrder;
   // a minor record (an order line, a product) shows its numbers as figures, the rest as details
   const numeric = (v: string) => /^-?\$?[\d,]+(?:\.\d+)?(?:\s[A-Z]{3})?$/.test(v.trim());
-  const factFigures = generic ? head.keyFacts.filter((k) => k.value && numeric(k.value)).slice(0, 5) : [];
+  // a rate, a count or a number field is a detail, never the page's headline figure ("Exchange rate 1")
+  const factFigures = generic ? head.keyFacts.filter((k) => k.value && numeric(k.value) && !/\b(?:rate|count|number|no)\b/i.test(k.label)).slice(0, 5) : [];
   const facts = head.keyFacts.filter((k) => k.value && !factFigures.includes(k));
   const trail = obj.trail?.trails?.[0];
   const trailPending = pending.has("trail");
@@ -1339,7 +1340,7 @@ export function ObjectView({ type, id, missing }: { type: string; id: string; mi
   if (tab === "history")
     return (
       <Frame
-        crumb={<Crumb type={obj.type} title={head.title} />}
+        crumb={<Crumb type={obj.type} typeName={obj.type_label} title={head.title} />}
         actions={actions}
         main={
           <>
@@ -1466,7 +1467,7 @@ export function ObjectView({ type, id, missing }: { type: string; id: string; mi
     </>
   );
 
-  return <Frame crumb={<Crumb type={obj.type} title={head.title} />} actions={actions} main={main} inspector={inspector} />;
+  return <Frame crumb={<Crumb type={obj.type} typeName={obj.type_label} title={head.title} />} actions={actions} main={main} inspector={inspector} />;
 }
 
 /** "2505" -> "2,505"; anything that is not a bare number as given. */

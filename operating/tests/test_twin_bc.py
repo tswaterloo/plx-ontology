@@ -248,7 +248,10 @@ class EtagAndFailClosedTests(BcTwinTestCase):
                 world.bc.seed(company_id, entity_set, record)
             self.assertTrue(caught.exception.code.startswith(code), caught.exception.code)
         # The action path takes a BC twin write only to a declared, typed, writable field.
-        for field, value, code in (("purchaser", "Someone", "effect_field_role_undeclared"),
+        # (purchaser has a declared role since the schema read it as purchaser_code, so an
+        # invented value for it is refused as untraced; shipToName still declares none)
+        for field, value, code in (("shipToName", "Someone", "effect_field_role_undeclared"),
+                                   ("purchaser", "Someone", "injection_untraced_parameter"),
                                    (VERSION_FIELD, 5, "effect_field_read_only"),
                                    ("id", other, "effect_field_read_only"),
                                    ("status", "Released", "effect_field_read_only"),

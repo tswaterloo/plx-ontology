@@ -1,0 +1,20 @@
+{
+  "schema": "plx-doc-style-kinds/v1",
+  "comment": "Which sent files are forms a person fills, by file name (operating/doc_fill_copies.py), first match wins. Card authorizations, bank and payment forms, time sheets and safety data sheets are left out on purpose (card numbers, money, pay data, sent as-is), and a system-made certificate of analysis is not a hand-filled form. Nothing here names a party or a person.",
+  "kinds": [
+    {"kind": "skip", "name": "\\b(bc )?ao certificate of analysis|certificate of analysis finished product|credit card auth|\\bcc auth|card authori[sz]ation|time ?sheet|temp hours|\\beft form|\\bach form|direct deposit|banking info|bank letter|void cheque|\\bm?sds\\b|safety data sheet"},
+    {"kind": "coa", "name": "certificate of analysis|\\bcoa\\b|\\bc of a\\b|\\bcofa\\b"},
+    {"kind": "chain_of_custody", "name": "chain of custody|\\bcoc form"},
+    {"kind": "credit_application", "name": "credit ?app|credit reference|trade reference|account application"},
+    {"kind": "supplier_setup_form", "name": "(vendor|supplier) ?(set ?up|information|info|registration|form|profile|onboarding|application)|new (vendor|supplier)|form supplier|supplier form"},
+    {"kind": "customer_setup_form", "name": "customer ?(set ?up|information|info|profile|form)|new (customer|account) form"},
+    {"kind": "questionnaire", "name": "questionnaire|survey|self ?assessment|\\bsaq\\b|due diligence"},
+    {"kind": "packing_slip", "name": "packing (slip|list)"},
+    {"kind": "bill_of_lading", "name": "\\bbol\\b|bill of lading|\\bb ?l\\b"},
+    {"kind": "customs_commercial_invoice", "name": "commercial invoice|pro ?forma|customs|certificate of origin|\\busmca\\b|\\bcusma\\b|\\bnafta\\b|\\bb13\\b|\\bcbsa\\b|\\bcci\\b"},
+    {"kind": "spec_sheet", "name": "spec(ification)? ?sheet|specification|\\btds\\b|technical data|product information form|\\bpif\\b"},
+    {"kind": "approval_form", "name": "approval form|formula approval|label approval|art(work)? approval|proof approval"},
+    {"kind": "tax_certificate", "name": "resale cert|tax exempt|exemption cert|\\bw ?9\\b|\\bw ?8|\\bgst\\b form"},
+    {"kind": "sample_or_order_form", "name": "sample request|order form|request form"}
+  ]
+}

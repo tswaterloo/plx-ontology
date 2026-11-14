@@ -82,7 +82,9 @@ FAKE = textwrap.dedent("""
         os.remove(mine)
     if mode == "slow":   # holds the cycle until the test drops <state>/release
         open(os.path.join(store, "started"), "w").close()
-        deadline = time.time() + 30
+        # bounded, but past every wait of the tests that release it (a loaded host
+        # took over 30 s, so the source ended on its own before the test released it)
+        deadline = time.time() + 300
         while not os.path.exists(os.path.join(state, "release")) and time.time() < deadline:
             time.sleep(0.05)
     if mode in ("busy", "long"):   # marks itself running for one or three seconds
@@ -699,7 +701,7 @@ class ConcurrentIngestTest(unittest.TestCase):
             config, capture_sources=table), environ=self.env if env is None else env,
             disk_free=ROOMY)
 
-    def until(self, condition, what: str, seconds: float = 30) -> None:
+    def until(self, condition, what: str, seconds: float = 120) -> None:
         deadline = time.monotonic() + seconds
         while not condition():
             self.assertLess(time.monotonic(), deadline, what)
@@ -1289,6 +1291,17 @@ class BuildExclusionTest(unittest.TestCase):
         self.assertEqual(scheduler.exclusive(), set(forever.SOURCES))
         self.assertIn(str(forever.portal_mirror(self.state).resolve()),
                       {str(p.resolve()) for p in host.build_reads()})
+        # Builds off (the host the delta cycle serves): no build, so no capture is held
+        # for one; the Teams capture waited 2 hours for SharePoint's run (2026-11-13).
+        table = fake_table(self.script, "mirror", writes={
+            "mirror": lambda state: (forever.portal_mirror(state),)})
+        for builds, held in (("off", set()), ("on", {"mirror"})):
+            built = self.host(self.config({"mirror": {}}, ingest={
+                "mode": forever.MODE, "grace_seconds": 1, "builds": builds}), table)
+            self.assertEqual(forever.Continuous(
+                table, {"mirror": {}}, self.state, self.env, grace=1, parallel=1,
+                refresh=print, should_stop=lambda: "x",
+                build_reads=built.build_reads).exclusive(), held, builds)
 
     def test_the_host_checkpoints_the_waited_store_and_reports_the_wait(self) -> None:
         from integrations.capture_store import wal_bytes
@@ -1517,6 +1530,73 @@ class LiveCycleRepairTest(unittest.TestCase):
         with self.assertRaises(forever.IngestError):
             forever.section_options(forever.SOURCES["bc"], {}, self.state, {})
 
+    def test_mail_backlog_passes_ride_the_mail_child_and_lengthen_its_time_limit(self) -> None:
+        # Under continuous ingest the host holds the cycle lock for its whole run, so the
+        # deferred-attachment and image-OCR backlogs are read by the mail child itself
+        # (2026-11-13: 221,842 deferred PDFs, the stand-alone commands never ran).
+        spec = forever.SOURCES["mail"]
+        audience = str(ROOT / "examples" / "ingest_all.capture-audience.json")
+        options = forever.section_options(spec, {
+            "budget_seconds": 600, "deferred_attachments_seconds": 1800,
+            "deferred_workers": 16, "deferred_extract_workers": 4,
+            "deferred_min_free_gb": 30, "image_ocr_seconds": 300,
+            "image_ocr_workers": 8}, self.state, {"live_audience": audience})
+        argv = spec.argv(self.state, options)
+        for flag, value in (("--deferred-attachments-seconds", "1800"),
+                            ("--deferred-workers", "16"), ("--deferred-extract-workers", "4"),
+                            ("--deferred-min-free-gb", "30"),
+                            ("--image-ocr-seconds", "300"), ("--image-ocr-workers", "8")):
+            self.assertEqual(argv[argv.index(flag) + 1], value, flag)
+        plain = spec.argv(self.state, {"live_audience": audience})
+        self.assertFalse([a for a in plain if "deferred" in a or "image-ocr" in a])
+        self.assertNotIn("--deferred-attachments-seconds", forever.SOURCES["sharepoint"].argv(
+            self.state, {**options, "live_audience": audience}))
+        # A bad value is refused when the config loads, never by every mail child.
+        floor = forever.section_options(spec, {"deferred_min_free_gb": 0.5}, self.state,
+                                        {"live_audience": audience})
+        self.assertIn("--deferred-min-free-gb", spec.argv(self.state, floor))
+        for bad in ({"deferred_workers": 17}, {"image_ocr_workers": 0},
+                    {"deferred_min_free_gb": -1}, {"deferred_min_free_gb": True},
+                    {"deferred_attachments_seconds": 0}, {"deferred_workers": True},
+                    {"image_ocr_seconds": "60"}):
+            with self.assertRaises(forever.IngestError, msg=bad):
+                forever.section_options(spec, bad, self.state, {"live_audience": audience})
+        # The child's limit is its budget, the passes' seconds and the tail of work in
+        # flight (one reading's time) plus the grace.
+        self.state.mkdir(parents=True, exist_ok=True)
+        script = self.state / "slow_child.py"
+        script.write_text("import time\ntime.sleep(6)\nprint('{}')\n", encoding="utf-8")
+        slow = SourceSpec("mail", "fake-source", lambda state, opts: [sys.executable,
+                                                                      str(script)],
+                          summarize_mail, dict(spec.fields))
+        env = {"PATH": os.environ.get("PATH", "")}
+        cut = forever.run_source(slow, {"budget_seconds": 1}, self.state, env, grace=0.5)
+        self.assertEqual(cut.get("error_code"), "child_timeout")
+        with mock.patch.object(forever, "AFTER_CAPTURE_TAIL_SECONDS", 0):
+            kept = forever.run_source(slow, {"budget_seconds": 1, "image_ocr_seconds": 4,
+                                             "deferred_attachments_seconds": 4}, self.state,
+                                      env, grace=0.5)
+            self.assertNotEqual(kept.get("error_code"), "child_timeout", kept)
+            short = forever.run_source(slow, {"budget_seconds": 1,
+                                              "deferred_attachments_seconds": 0.5},
+                                       self.state, env, grace=0.5)
+            self.assertEqual(short.get("error_code"), "child_timeout")
+        with mock.patch.object(forever, "AFTER_CAPTURE_TAIL_SECONDS", 8):
+            tail = forever.run_source(slow, {"budget_seconds": 1,
+                                             "deferred_attachments_seconds": 0.5},
+                                      self.state, env, grace=0.5)
+            self.assertNotEqual(tail.get("error_code"), "child_timeout", tail)
+        # each pass set has its own tail
+        with mock.patch.object(forever, "AFTER_CAPTURE_TAIL_SECONDS", 4.3):
+            one = forever.run_source(slow, {"budget_seconds": 1,
+                                            "deferred_attachments_seconds": 0.1},
+                                     self.state, env, grace=0.2)
+            self.assertEqual(one.get("error_code"), "child_timeout")
+            both = forever.run_source(slow, {"budget_seconds": 1, "image_ocr_seconds": 0.1,
+                                             "deferred_attachments_seconds": 0.1},
+                                      self.state, env, grace=0.2)
+            self.assertNotEqual(both.get("error_code"), "child_timeout", both)
+
     def test_named_originals_is_a_flag_the_sharepoint_child_gets_only_when_true(self) -> None:
         spec = forever.SOURCES["sharepoint"]
         base = {"live_audience": "/a.json"}
@@ -1627,6 +1707,11 @@ class LiveCycleRepairTest(unittest.TestCase):
             argv = forever.SOURCES["portal"].argv(Path(state), config.sources["portal"])
         self.assertIn("sync", argv)
         self.assertNotIn("--relation", argv)
+        # the summary reads the runs only: the child never spends its timeout counting
+        self.assertIn("--no-coverage", argv[argv.index("sync"):])
+        # GA-F12: every relation of up to 70,000 rows (the manufacturing and assembly
+        # orders, their lines and statuses among them) is read whole each cycle
+        self.assertEqual(argv[argv.index("--full-below-rows") + 1], "70000")
         scope = json.loads(Path(config.sources["mail"]["scope"]).read_text())
         self.assertTrue(scope["all_mailboxes"]["enabled"])
         # SharePoint (business rule everything, 2026-10-27): every document library of every

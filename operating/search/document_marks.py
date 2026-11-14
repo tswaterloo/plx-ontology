@@ -110,6 +110,7 @@ class _Marked:
 
     def __init__(self) -> None:
         self.lock = threading.Lock()
+        self.loading = threading.Lock()
         self.kept: dict[str, tuple[float, Any]] = {}
         self.refreshing: set[str] = set()
         self.split_of: Any = None
@@ -156,7 +157,13 @@ class _Marked:
                                      name="plx-document-marks").start()
                 if hit[1] is not None:
                     return hit[1]
-        return self._load(dsn)
+        with self.loading:   # one first read per process: the pages asking at once share it
+            with self.lock:
+                hit = self.kept.get(dsn)
+            if hit is not None and (hit[1] is not None
+                                    or time.monotonic() - hit[0] < RETRY_S):
+                return hit[1]
+            return self._load(dsn)
 
     def withheld(self, got: Any, held: frozenset[str]
                  ) -> tuple[frozenset[str], frozenset[str]]:

@@ -488,9 +488,11 @@ def first_name(address: str, display: str | None = None) -> str | None:
 
 def draft(to: str, subject: str, parts: Sequence[str], facts: Mapping[str, Any], *,
           in_reply_to: str | None = None, display: str | None = None,
-          today: date | None = None) -> dict[str, Any] | None:
+          today: date | None = None, others: Mapping[str, Any] | None = None
+          ) -> dict[str, Any] | None:
     """A drafted message in the company voice through the copy gate; None when its first
-    sentence does not pass (no draft beats a wrong one)."""
+    sentence does not pass (no draft beats a wrong one). ``others``: a reply's other
+    recipients (the message's ``reply_all``), kept on its To and Cc lines after ``to``."""
     from . import copy_gate as cg
     name = first_name(to, display)
     lead = [f"Hi {name},"] if name else []
@@ -503,7 +505,13 @@ def draft(to: str, subject: str, parts: Sequence[str], facts: Mapping[str, Any],
         body = body.replace(lead[0] + "\n", lead[0] + "\n\n", 1)
     if subject and not re.match(r"^\s*re\s*:", subject, re.I) and in_reply_to:
         subject = "RE: " + subject
-    return {"channel": "email", "to": [{"address": to}], "subject": subject[:200],
+    more = [a for a in (others or {}).get("to") or () if isinstance(a, str) and "@" in a
+            and a.lower() != to.lower()]
+    copied = [a for a in (others or {}).get("cc") or () if isinstance(a, str) and "@" in a
+              and a.lower() != to.lower() and a not in more]
+    return {"channel": "email", "to": [{"address": a} for a in [to, *more]],
+            **({"cc": [{"address": a} for a in copied]} if copied else {}),
+            "subject": subject[:200],
             "body": body, "in_reply_to": in_reply_to, "copy_check": {
                 "ok": check.get("ok"), "findings": len(check.get("findings") or ())}}
 
@@ -544,7 +552,8 @@ def h_order_entry(ctx: Any, event: Mapping[str, Any]) -> dict[str, Any]:
             f"Thanks, PO {facts['po']} is entered as our order {f['order_number']}.",
             f"It can ship {say(atp['date'], ctx.as_of)}." if atp["date"] else
             "We'll confirm the ship date shortly."],
-            facts, in_reply_to=event["object_id"], today=ctx.as_of)
+            facts, in_reply_to=event["object_id"], today=ctx.as_of,
+            others=event.get("reply_all"))
         return {"summary": f"PO {facts['po']} is already entered as order "
                            f"{f['order_number']}.", "order": f, "draft": msg,
                 "availability": atp,
@@ -663,7 +672,8 @@ def h_order_entry(ctx: Any, event: Mapping[str, Any]) -> dict[str, Any]:
                      "We'll confirm the ship date shortly.")
         out["draft"] = draft(event.get("sender") or "", subject, parts,
                              {**facts, "ship_day": say(ship, ctx.as_of) if ship else None},
-                             in_reply_to=event["object_id"], today=ctx.as_of)
+                             in_reply_to=event["object_id"], today=ctx.as_of,
+                             others=event.get("reply_all"))
     return out
 
 
@@ -1127,7 +1137,8 @@ def h_desk(ctx: Any, event: Mapping[str, Any]) -> dict[str, Any]:
         if not lines:
             return {"skip": "named_orders_state_nothing"}
         msg = draft(event.get("sender") or "", subject, lines, facts,
-                    in_reply_to=event["object_id"], today=ctx.as_of)
+                    in_reply_to=event["object_id"], today=ctx.as_of,
+                    others=event.get("reply_all"))
         if msg is None:
             return {"skip": "draft_failed_copy_gate"}
         out.update(kind="answer", summary=f"Answer drafted: {' '.join(lines)[:140]}",
@@ -1167,7 +1178,8 @@ def h_reply_prep(ctx: Any, event: Mapping[str, Any]) -> dict[str, Any]:
         "gaps": [] if lines else ["no_record_states_the_answer"]}
     if lines and event.get("channel") == "mail":
         msg = draft(event.get("sender") or "", subject, lines, facts,
-                    in_reply_to=event["object_id"], today=ctx.as_of)
+                    in_reply_to=event["object_id"], today=ctx.as_of,
+                    others=event.get("reply_all"))
         if msg is not None:
             out["draft"] = msg
     elif lines and event.get("channel") == "teams":

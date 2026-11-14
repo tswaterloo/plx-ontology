@@ -3262,6 +3262,8 @@ class StoreStatus:
         from operating.host import state_capture_paths
 
         if meta is None:
+            meta = _pg_only_meta(self.store_path)
+        if meta is None:
             reader = _open_store(self.store_path)
             try:
                 meta = reader.meta()
@@ -3415,6 +3417,25 @@ def _source_state(described: Mapping[str, Any], generation: Any,
                    if last(now.get(relation)) != last(then.get(relation)))
     state = {"state": "stale", "newer_relations": newer[:20]} if newer else {"state": "current"}
     return {**state, "generation": generation}
+
+
+STATUS_META_KEYS = ("built_at", "content_digest", "l1_generations", "source_freshness",
+                    "schema_digest")
+
+
+def _pg_only_meta(store_path: Path) -> dict[str, str] | None:
+    """With Postgres the only store (``PLX_ONTOLOGY_PG=only``) and no SQLite generation at
+    ``store_path`` (the last one was deleted 11-13), the served generation's ``store_meta``
+    as Postgres holds it; None when a file is there or Postgres is not the only store (the
+    file is read as before). Postgres not whole raises: nothing is served from it."""
+    from operating.pg import ontology_reader
+
+    if not ontology_reader.pg_only() or Path(store_path).is_file():
+        return None
+    found = ontology_reader.store_meta(STATUS_META_KEYS)
+    if not found:
+        raise ValueError("Postgres is the only store and holds no store_meta")
+    return dict(found)
 
 
 def _file_signature(path: Path) -> tuple[Any, Any]:

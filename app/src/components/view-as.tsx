@@ -12,6 +12,17 @@ export function useViewingAs(): ViewingAs | null {
   return useSyncExternalStore(onViewingAs, viewingAs, () => null);
 }
 
+/**
+ * Words for the reader the screens are about: "you"/"your" for the owner's own view, the
+ * person's name while viewing as them ("Nothing is waiting on Vince", never "on you").
+ */
+export function useReaderWords(): { you: string; your: string; You: string; Your: string } {
+  const v = useViewingAs();
+  if (!v) return { you: "you", your: "your", You: "You", Your: "Your" };
+  const own = /s$/i.test(v.name) ? `${v.name}'` : `${v.name}'s`;
+  return { you: v.name, your: own, You: v.name, Your: own };
+}
+
 /** Start or stop viewing (each audited), then reload so every screen reads again as the new reader. */
 async function switchTo(v: ViewingAs | null) {
   const was = viewingAs();

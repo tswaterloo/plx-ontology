@@ -1,5 +1,6 @@
 "use client";
 
+import { useReaderWords } from "@/components/view-as";
 import { ChevronLeft, ChevronRight, X } from "lucide-react";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
@@ -13,6 +14,7 @@ import { lateEdge, lateFigure, OpenRing } from "@/components/ui/glyphs";
 import { LoadProblem, StaleNote } from "@/components/ui/notice";
 import { NeedsMe } from "@/components/needs-me";
 import { DataNotes } from "@/components/data-notes";
+import { SignedInFirstWeek } from "@/components/first-week";
 import { isPutAway } from "@/lib/actions";
 import { useStaleRefresh } from "@/lib/stale-refresh";
 import { getActionStates, getReplies, getBriefing, getBriefingItems, getSuggestions, markBriefingSeen } from "@/lib/api";
@@ -64,10 +66,11 @@ function verbOf(g: { type: string; rows: QueueRow[] }): string {
  * list.
  */
 function PreparedWork({ items }: { items: { id: string; title: string; href: string }[] }) {
+  const w = useReaderWords();
   if (items.length === 0) return null;
   return (
-    <section aria-label="Prepared for you" className="px-5 pt-3" data-testid="prepared-work">
-      <h2 className="text-[12px] font-medium text-muted">Prepared for you</h2>
+    <section aria-label={`Prepared for ${w.you}`} className="px-5 pt-3" data-testid="prepared-work">
+      <h2 className="text-[12px] font-medium text-muted">Prepared for {w.you}</h2>
       <ul className="mt-1 space-y-1">
         {items.map((i) => (
           <li key={i.id}>
@@ -202,6 +205,7 @@ function ListSkeleton() {
 }
 
 function Today() {
+  const w = useReaderWords();
   const router = useRouter();
   const params = useSearchParams();
   const desktop = useDesktop();
@@ -446,10 +450,11 @@ function Today() {
       )}
 
       <StaleNote since={home?.stale_since ?? briefing?.stale_since} className="px-5 py-1.5" />
-      <div ref={listRef} className="min-h-0 flex-1 overflow-y-auto pb-4" data-testid="needs-you" {...(!briefing || !suggestionsRead ? { "data-pending": "" } : {})}>
+      <div ref={listRef} className="min-h-0 flex-1 overflow-y-auto pb-4" data-testid="needs-you" {...((!briefing && !briefingError && !error) || !suggestionsRead ? { "data-pending": "" } : {})}>
+        <SignedInFirstWeek />
         {morning && (
           <div className="border-b border-border px-5 py-3" data-testid="your-morning">
-            <h2 className="text-[13px] font-semibold">Your morning</h2>
+            <h2 className="text-[13px] font-semibold">{w.Your} morning</h2>
             <p className="mt-0.5 text-[12px] text-muted">{morning.line}</p>
             {morning.items.map((i) => (
               <Link key={i.id} href={i.open_url} className="mt-2 block text-[13px] hover:underline" data-testid="your-morning-item">
@@ -481,7 +486,10 @@ function Today() {
             ) : briefing && briefing.status !== "read" ? (
               <p data-testid="briefing-unavailable">{briefing.status === "not_configured" ? "The briefing hasn't run on this server." : "Couldn't load the briefing. Try again in a few minutes."}</p>
             ) : (
-              <p className="text-fg">Nothing needs action.</p>
+              <>
+                <p className="text-fg">Nothing needs action.</p>
+                <p className="mt-0.5">Late POs, alerts and prepared replies show here as they come in.</p>
+              </>
             )}
           </div>
         ) : (
@@ -560,7 +568,7 @@ function Today() {
           ) : (
             <div className="flex flex-1 flex-col">
               <div className="h-[52px] shrink-0 border-b border-border" />
-              <div className="flex flex-1 items-center justify-center text-[13px] text-faint">{loading ? "" : "Nothing selected"}</div>
+              <div className="flex flex-1 items-center justify-center text-[13px] text-faint">{loading || error ? "" : visible.length ? "Choose an item on the left to open it here." : "To look up any record, use Search or ask at the top left."}</div>
             </div>
           )}
         </div>

@@ -79,8 +79,12 @@ class FakeSender:
     """Routes by URL path (Graph/BC) or host+path (downloads); records every call."""
 
     def __init__(self, routes: dict[str, Any] | None = None,
-                 directory: dict[str, dict] | None = None) -> None:
+                 directory: dict[str, dict] | None = None,
+                 groups: list[dict] | None = None) -> None:
         self.routes = routes if routes is not None else {}
+        # The tenant's groups (``GET /groups``, one complete page); None: unrouted (404), so
+        # the people guard decides no address no listed user holds (it may be a list).
+        self.groups = groups
         # Graph resolves /users/{upn|id} case-insensitively to one directory object.
         self.directory = dict(DIRECTORY if directory is None else directory)
         self.calls: list[tuple[str, str, dict, bytes | None]] = []
@@ -98,6 +102,9 @@ class FakeSender:
             # The tenant listing the people guard binds from (one page, every user).
             unique = {u["id"]: u for u in self.directory.values() if u.get("id")}
             return j(200, {"value": list(unique.values())})
+        if path == "/v1.0/groups" and parts.hostname == "graph.microsoft.com" \
+                and self.groups is not None and path not in self.routes:
+            return j(200, {"value": list(self.groups)})
         user = re.fullmatch(r"/v1\.0/users/([^/]+)", path)
         if user and parts.hostname == "graph.microsoft.com":
             found = self.directory.get(user[1].lower())

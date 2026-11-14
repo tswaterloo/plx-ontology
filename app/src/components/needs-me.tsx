@@ -11,7 +11,7 @@ import { useEffect, useState } from "react";
 import { getApprovals, getAutopilot, getMe, getOpsAlarms, getWrites, type OpsAlarms } from "@/lib/api";
 import { systemLabel } from "@/lib/autopilot";
 import { cn } from "@/lib/cn";
-import { ago, formatDateTime, objectHref, plural } from "@/lib/format";
+import { ago, formatDateTime, objectHref, opsHeadline, plural } from "@/lib/format";
 import type { ApprovalsQueue, AutopilotArea, Me, WriteIntentView } from "@/lib/types";
 
 export type NeedKind = "decide" | "approve" | "blocked";
@@ -82,7 +82,7 @@ export function needsOf(s: NeedsSources, now = new Date()): { needs: Need[]; unr
   } else unread.push("the approvals queue");
   // the alarms are the owner's and the Team readers' only; a refusal there is not a gap for anyone else
   if (s.alarms) {
-    for (const o of s.alarms.open) needs.push({ key: `o:${o.key}`, kind: "blocked", title: o.line, detail: `Open since ${ago(o.opened_at, now).replace(/ ago$/, "")}`, href: "/ops", rank: stamp(o.opened_at) });
+    for (const o of s.alarms.open) needs.push({ key: `o:${o.key}`, kind: "blocked", title: opsHeadline(o.line), detail: `Open since ${ago(o.opened_at, now).replace(/ ago$/, "")}`, href: "/ops", rank: stamp(o.opened_at) });
   }
   const order: NeedKind[] = ["decide", "approve", "blocked"];
   needs.sort((a, b) => order.indexOf(a.kind) - order.indexOf(b.kind) || a.rank - b.rank);
@@ -99,9 +99,11 @@ export function NeedsMeList({ sources }: { sources: NeedsSources }) {
     <section className="border-b border-border px-5 py-3" aria-label="Needs you" data-testid="needs-me">
       <h2 className="flex items-baseline gap-2 text-[13px] font-semibold">
         Needs you
-        <span className="text-[12px] font-normal text-muted" data-testid="needs-me-counts">
-          {kinds.map(([k, list]) => `${list.length} to ${k === "blocked" ? "unblock" : k}`).join(" · ")}
-        </span>
+        {needs.length > 0 && (
+          <span className="text-[12px] font-normal text-muted" data-testid="needs-me-counts">
+            {kinds.map(([k, list]) => `${list.length} to ${k === "blocked" ? "unblock" : k}`).join(" · ")}
+          </span>
+        )}
       </h2>
       {needs.length === 0 && unread.length === 0 && <p className="mt-1 text-[12px] text-muted">No decision, approval or blocked item waits on you.</p>}
       {kinds.map(([k, list]) =>

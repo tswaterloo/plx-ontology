@@ -102,7 +102,7 @@ correction beside it in ``review``; the claim gate leaves it ``unverified``
 (``person_reviewed``): the cited record does not state the person's value. A ``compute``
 item hands the entries the plan produced (by evidence name) and the reached edges to its
 engine (``engines``: name -> ``{check, run}``, by default the ``PLAN_ENGINES`` of
-``operating.landed_cost``, ``operating.order_margin``, ``operating.decision_evidence``,
+``operating.landed_cost_plan``, ``operating.order_margin``, ``operating.decision_evidence``,
 ``operating.commercial_chain`` and ``operating.item_lineage``), which re-reads
 every citation for the actor and returns ``computed`` entries (the value, the names of the
 entries it used, the arithmetic step by step and a digest; null while any input is unknown)
@@ -518,7 +518,7 @@ def default_engines() -> dict[str, Mapping[str, Callable[..., Any]]]:
     from .decision_evidence import PLAN_ENGINES as DECISIONS
     from .impact_chain import PLAN_ENGINES as IMPACT
     from .item_lineage import PLAN_ENGINES as LINEAGE
-    from .landed_cost import PLAN_ENGINES as LANDED
+    from .landed_cost_plan import PLAN_ENGINES as LANDED
     from .lot_impact import PLAN_ENGINES as LOT
     from .order_margin import PLAN_ENGINES as MARGIN
     from .people_graph import PLAN_ENGINES as PEOPLE

@@ -68,6 +68,9 @@ class Case(unittest.TestCase):
     def run_engine(self, world: World, *, call=None, at: datetime = MOMENT,
                    **options) -> dict:
         world.build(self.store)
+        # a test not about cadence runs every rule (the margin rules run at most every 12
+        # hours since 58c6d6c499; test_proactive_engine's helper does the same)
+        options.setdefault("cadence", {})
         return pe.run(self.store, self.inbox, AS_OF, call=call, clock=lambda: at,
                       people=options.pop("people", people()), **options)
 
@@ -1302,7 +1305,9 @@ class DetectorTest(Case):
                 mock.patch.object(pe, "_orders_at_risk", nothing), \
                 mock.patch.object(pe, "_card_rules", nothing):
             summary = pe.run(self.store, self.inbox, AS_OF, call=call, clock=lambda: MOMENT,
-                             budget=pe.Budget(90, monotonic=lambda: now[0]),
+                             # (a pass long enough that the scan's share of what is left is its whole
+                             # 35 s window: shares are by weight since AL-04, 58c6d6c499)
+                             budget=pe.Budget(1000, monotonic=lambda: now[0]),
                              detector_seconds={"vendor_terms_unapplied": 35})
         detectors = summary["detectors"]
         # its own window for the mail scan: two of three orders read, both findings kept
@@ -1667,8 +1672,9 @@ class BriefingTest(Case):
         for n in range(6):   # six expired quotes: gaps of a kind that is no event
             w.obj("ForwarderQuote", {"valid_until": f"2026-01-0{n + 1}"})
         self.run_engine(w)
-        self.assertEqual(len([g for g in self.read()["gaps"] if g["kind"] == "expired_quote"]),
-                         6)
+        # (expired_quote is a kind the alert registry does not show yet: read as found)
+        self.assertEqual(len([g for g in self.read(include_off=True)["gaps"]
+                              if g["kind"] == "expired_quote"]), 6)
         with mock.patch.object(bf, "MAX_READ", 5):
             out = self.brief(EVERYTHING)
         self.assertEqual(out["count"], 5)

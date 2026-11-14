@@ -7417,7 +7417,7 @@
                       },
                       "description": "Group key per group_by property; a string key is source text and is enveloped."
                     },
-                    "key_dimensions": {"type": "object", "maxProperties": 2, "description": "Per group_by property holding an amount or a quantity: the currency and unit its key value is in (a key of 10 CAD and one of 10 USD are two groups).", "additionalProperties": {"type": "object", "additionalProperties": false, "properties": {"currency": {"type": "string", "pattern": "^[A-Z]{3}$"}, "unit": {"type": "string", "maxLength": 40}}}},
+                    "key_dimensions": {"type": "object", "maxProperties": 2, "description": "Per group_by property holding an amount or a quantity: the currency and unit its key value is in (a key of 10 CAD and one of 10 USD are two groups).", "additionalProperties": {"type": "object", "additionalProperties": false, "properties": {"currency": {"type": "string", "pattern": "^[A-Z]{3}$"}, "unit": {"$ref": "#/$defs/unit"}}}},
                     "value": {
                       "type": [
                         "string",
@@ -7549,7 +7549,7 @@
                   "partial_subtotal": {"type": "string", "pattern": "^-?[0-9]+(?:\\.[0-9]+)?$", "description": "What the groups read add to when a group holds no value, another dimension's groups exist or the answer is partial: never the total, and a lower bound only with at_least."},
                   "at_least": {"type": "boolean", "description": "true only for a count's partial_subtotal (counts are never negative); a sum may hold negative values (a credit memo), so its partial_subtotal is no bound."},
                   "currency": {"type": "string", "pattern": "^[A-Z]{3}$"},
-                  "unit": {"type": "string", "maxLength": 40},
+                  "unit": {"$ref": "#/$defs/unit"},
                   "quantity_role": {"type": "string", "enum": ["accepted", "actual", "committed", "damaged", "delivered", "filled", "inspected", "invoiced", "manufactured", "ordered", "planned", "produced", "received", "rejected", "retained", "returned", "shipped"]},
                   "by_dimension": {
                     "type": "array",
@@ -7561,7 +7561,7 @@
                       "required": ["with_value", "lowest", "highest"],
                       "properties": {
                         "currency": {"type": "string", "pattern": "^[A-Z]{3}$"},
-                        "unit": {"type": "string", "maxLength": 40},
+                        "unit": {"$ref": "#/$defs/unit"},
                         "quantity_role": {"type": "string", "enum": ["accepted", "actual", "committed", "damaged", "delivered", "filled", "inspected", "invoiced", "manufactured", "ordered", "planned", "produced", "received", "rejected", "retained", "returned", "shipped"]},
                         "with_value": {"type": "integer", "minimum": 1},
                         "lowest": {"type": "string", "pattern": "^-?[0-9]+(?:\\.[0-9]+)?$"},

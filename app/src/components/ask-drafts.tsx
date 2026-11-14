@@ -7,7 +7,87 @@
 
 import { useState } from "react";
 import { CardActions } from "./card-actions";
+import { Button } from "./ui/button";
+import type { Preset } from "@/lib/actions";
 import type { ActionResult, Answer, AskDraft } from "@/lib/types";
+
+type Picks = { one: Record<number, string>; any: Record<string, boolean>; ask: Record<string, boolean> };
+
+/** The draft's open questions as one tap each: who a recipient is (pick one), who else
+ * goes on it (any), and a record the draft could not state (ask the recipient in the
+ * message instead). The picks go into the send preview, where the desk checks them. */
+function Questions({ d, picks, setPicks }: { d: AskDraft; picks: Picks; setPicks: (p: Picks) => void }) {
+  const rq = d.recipient_questions ?? [];
+  const fq = d.record_questions ?? [];
+  if (!rq.length && !fq.length) return null;
+  const key = (field: string, a: string) => `${field}:${a}`;
+  return (
+    <div className="space-y-2" data-testid="draft-questions">
+      {rq.map((q, i) => (
+        <div key={i} className="space-y-1">
+          <p className="text-[12px] leading-4 text-muted">{q.label}</p>
+          <div className="flex flex-wrap gap-1.5">
+            {(q.candidates ?? []).map((a) => {
+              const on = q.pick === "one" ? picks.one[i] === a : !!picks.any[key(q.field, a)];
+              return (
+                <Button
+                  key={a}
+                  size="sm"
+                  variant={on ? "secondary" : "outline"}
+                  className="h-7 rounded-md px-2 text-[12px] font-normal"
+                  aria-pressed={on}
+                  data-testid="draft-pick"
+                  onClick={() =>
+                    q.pick === "one"
+                      ? setPicks({ ...picks, one: { ...picks.one, [i]: on ? "" : a } })
+                      : setPicks({ ...picks, any: { ...picks.any, [key(q.field, a)]: !on } })
+                  }
+                >
+                  {a}
+                </Button>
+              );
+            })}
+          </div>
+        </div>
+      ))}
+      {fq.map((q) => {
+        const on = !!picks.ask[q.record];
+        return (
+          <div key={q.record} className="flex flex-wrap items-center gap-x-2 gap-y-1">
+            <p className="min-w-0 text-[12px] leading-4 text-muted">{q.note}</p>
+            <Button
+              size="sm"
+              variant={on ? "secondary" : "outline"}
+              className="h-7 rounded-md px-2 text-[12px] font-normal"
+              aria-pressed={on}
+              data-testid="draft-ask-recipient"
+              onClick={() => setPicks({ ...picks, ask: { ...picks.ask, [q.record]: !on } })}
+            >
+              {on ? "Asked in the email" : "Ask them in the email"}
+            </Button>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+/** The picks as the send preview's preset. */
+export function presetOf(d: AskDraft, picks: Picks): Preset {
+  const rq = d.recipient_questions ?? [];
+  const to: string[] = [];
+  const cc: string[] = [];
+  rq.forEach((q, i) => {
+    if (q.pick === "one" && picks.one[i]) (q.field === "cc" ? cc : to).push(picks.one[i]);
+  });
+  for (const [k, on] of Object.entries(picks.any)) {
+    if (!on) continue;
+    const [field, ...rest] = k.split(":");
+    (field === "cc" ? cc : to).push(rest.join(":"));
+  }
+  const append = (d.record_questions ?? []).filter((q) => picks.ask[q.record]).map((q) => q.ask_line);
+  return { to, cc, append };
+}
 
 const KIND: Record<AskDraft["kind"], string> = {
   email: "Draft email",
@@ -18,6 +98,7 @@ const KIND: Record<AskDraft["kind"], string> = {
 
 function Draft({ d }: { d: AskDraft }) {
   const [done, setDone] = useState<ActionResult | null>(null);
+  const [picks, setPicks] = useState<Picks>({ one: {}, any: {}, ask: {} });
   return (
     <li className="space-y-2.5 rounded-xl bg-bg px-4 py-3.5 shadow-lift" data-testid="ask-draft">
       <p className="text-[12px] leading-4 font-medium text-muted">{KIND[d.kind]}</p>
@@ -39,7 +120,14 @@ function Draft({ d }: { d: AskDraft }) {
           {m}
         </p>
       ))}
-      <CardActions card={{ id: d.id, subject: { label: d.title }, actions: d.actions }} onDone={setDone} state={done} />
+      {(d.to || (d.also_to ?? []).length > 0 || (d.cc ?? []).length > 0) && (
+        <p className="text-[12px] leading-4 text-muted" data-testid="draft-recipients">
+          To {[d.to, ...(d.also_to ?? [])].filter(Boolean).join(", ")}
+          {(d.cc ?? []).length > 0 && `; Cc ${(d.cc ?? []).join(", ")}`}
+        </p>
+      )}
+      <Questions d={d} picks={picks} setPicks={setPicks} />
+      <CardActions card={{ id: d.id, subject: { label: d.title }, actions: d.actions }} onDone={setDone} state={done} preset={presetOf(d, picks)} />
       {done && <p className="text-[12px] leading-4 text-muted">{done.text}</p>}
     </li>
   );

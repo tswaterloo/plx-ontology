@@ -60,6 +60,14 @@ def _ids_and_handles(value, out):
     return out
 
 
+def _seen(result):
+    """A tool result as the planner is shown it: a result over the loop's observation
+    bound comes packed (``agent_loop._packed``: its entries under ``shown``, the rest
+    named in ``omitted``), as a fixture card can be once it holds more than the bound."""
+    return result.get("shown", result) if isinstance(result, dict) and \
+        "omitted" in result else result
+
+
 def _leaves(value, out):
     """Every string leaf of a tool result (what a planner could restate)."""
     if isinstance(value, dict):
@@ -506,6 +514,55 @@ class ObjectWorkspaceHttpTest(unittest.TestCase):
                 grant(sessions[0])
             self.assertEqual(policy_now.call_count, before + 4)
 
+    def test_a_kept_policy_outlives_capture_commits_that_change_no_grant(self):
+        """A mail capture commits every few seconds (messages, folder cursors): a policy
+        kept for the session stays while the mailboxes it is decided from (identities,
+        owner ACL, recorded resources) are unchanged, and is decided again at once when a
+        mailbox's recorded ACL changes or a mailbox is added."""
+        from integrations.capture_mail import MailCaptureStore
+        from integrations.live_source_guard import LiveSourceAudience
+        from operating.case_runtime import LiveReaders
+        from operating.case_tools_host import CaptureCaseHostTools
+
+        mail_dir = self.tmp / "kept-policy-mail"
+        runtime = CaseRuntime(self.state, client=None,
+                              audience=self.state / case_fixtures.MIRROR_AUDIENCE_FILE,
+                              tenant="plx", mail_capture_dir=mail_dir,
+                              live=LiveReaders(LiveSourceAudience(
+                                  {"mail:*": sorted(OPS)}, tenant="plx")))
+        self.addCleanup(runtime.close)
+        store = MailCaptureStore(mail_dir)
+        self.addCleanup(store.db.close)
+        identity = {"object_id": "mbx-1", "upn": "ops@plx.example", "identities": ["mbx-1"],
+                    "resources": ["mail:mbx-1"], "source_acl": ["ops"]}
+        store.record_mailbox(identity)
+        access = objects.host_access(runtime, self.store, Actor("plx", OPS),
+                                     mail_capture_dir=mail_dir)
+        self.addCleanup(access.close)
+        session = session_identity.fixture_session("plx", OPS,
+                                                   channel=session_identity.CHANNEL_CONSOLE)
+        decided = mock.patch.object(CaptureCaseHostTools, "policy_now", autospec=True,
+                                    side_effect=CaptureCaseHostTools.policy_now)
+
+        def grant():
+            access.bind(session)
+            with access.request():
+                return access.grant()[0]("api:public.app_purchase_order")
+        with decided as policy_now:
+            self.assertTrue(grant())
+            self.assertEqual(policy_now.call_count, 1)
+            for n in range(3):   # commits that change no grant: the policy is kept
+                store.save_folder("mbx-1", "inbox", status=f"read-{n}")
+                store.record_mailbox(identity)   # a capture run re-checks the identity
+                self.assertTrue(grant())
+            self.assertEqual(policy_now.call_count, 1)
+            store.record_mailbox({**identity, "source_acl": ["someone-else"]})
+            grant()
+            self.assertEqual(policy_now.call_count, 2)   # the recorded ACL changed
+            store.record_mailbox({**identity, "object_id": "mbx-2", "identities": ["mbx-2"]})
+            grant()
+            self.assertEqual(policy_now.call_count, 3)   # a mailbox added
+
     def test_store_status_is_shown_and_a_foreign_store_is_refused(self):
         request = self.serve(OPS)
         po = self.find_one(request, case_fixtures.PO_NUMBER, "PurchaseOrder")
@@ -939,7 +996,7 @@ class ObjectWorkspaceHttpTest(unittest.TestCase):
             # with the value its record holds, once with a number it does not hold, once
             # stating no value, once citing an invented handle.
             asked.append(request)
-            card = request["transcript"][0]["observations"][0]["result"]
+            card = _seen(request["transcript"][0]["observations"][0]["result"])
             handle = card["values"][0]["citation"]["l1_handle"]
             cell = {"citation": handle, "field": "row.po_number"}
             return {"action": "answer", "unknowns": ["the confirmed ship date"],
@@ -1079,7 +1136,7 @@ class ObjectWorkspaceHttpTest(unittest.TestCase):
                     {"tool": "plx.read", "arguments": {"citation": line}},
                     {"tool": "plx.around", "arguments": {"from": po, "path": [
                         {"link_type": hop["link_type"], "direction": hop["direction"]}]}}]}, None
-            card, read, around = (o["result"] for step in request["transcript"]
+            card, read, around = (_seen(o["result"]) for step in request["transcript"]
                                   for o in step["observations"])
             observed.append(read.get("status"))
             stated.append(_leaves([read.get("fields"), read.get("content"),

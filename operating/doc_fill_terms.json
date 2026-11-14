@@ -1,6 +1,6 @@
 {
   "schema": "plx-doc-fill-terms/v1",
-  "note": "Which form labels the fill engine (operating/doc_fill.py) fills, and from which ontology properties. A label is matched only when its normalized text equals one listed here; every other label is left blank and flagged. A field names the properties it may be read from; two different values among them leave it blank (ambiguous). Party contact details (an unqualified 'company name', 'address', 'phone', 'email') are not listed: a form usually asks for the filler's own company there, which no record holds. 'person_only' labels are never filled (a signature, who signs, the day it is signed). Nothing here names a record, a party or a person.",
+  "note": "Which form labels the fill engine (operating/doc_fill.py) fills, and from which ontology properties. A label is matched only when its normalized text equals one listed here; every other label is left blank and flagged. A field names the properties it may be read from; two different values among them leave it blank (ambiguous). Party contact details (an unqualified 'company name', 'address', 'phone', 'email') are not listed: a form usually asks for the filler's own company there, which no record holds. 'not_from_mail' fields are never filled from mail: an item, a quantity or a weight differs from line to line, and a company's name is worded differently in mail than on a form (a legal suffix, a short form). 'person_only' labels are never filled (a signature, who signs, the day it is signed). 'words' spells out a label's shortened words ('#' is 'number'): two labels that read the same after it, plurals aside, mean the same thing, so a value written under one in mail or an earlier copy answers the other; they are general abbreviations, never one form's list. Nothing here names a record, a party or a person.",
   "hops": {
     "PurchaseOrder": [["PurchaseOrder.ordered_from", "forward", "Supplier"]],
     "PurchaseOrderLine": [["PurchaseOrderLine.line_of", "forward", "PurchaseOrder"],
@@ -23,6 +23,17 @@
                   "printed name", "print name", "title", "position", "date signed",
                   "signature date", "date", "today's date", "todays date", "initials",
                   "approved by", "prepared by", "completed by", "checked by", "verified by"],
+  "not_from_mail": ["product_code", "product_name", "hs_code", "unit_of_measure",
+               "ordered_quantity", "shipped_quantity", "net_weight", "gross_weight",
+               "fill_weight", "units_per_case", "customer_name", "supplier_name",
+               "manufacturer_name"],
+  "words": {"#": "number", "no": "number", "num": "number", "nbr": "number",
+            "qty": "quantity", "desc": "description", "descr": "description",
+            "tel": "phone", "telephone": "phone", "addr": "address", "acct": "account",
+            "ref": "reference", "wt": "weight", "pkg": "package", "pkgs": "packages",
+            "pcs": "pieces", "attn": "attention", "amt": "amount", "dept": "department",
+            "mfg": "manufacture", "mfr": "manufacturer", "e-mail": "email",
+            "cust": "customer", "prod": "product"},
   "fields": [
     {"field": "po_number",
      "labels": ["po", "po number", "po no", "po num", "po#", "po #", "p o", "p o number",

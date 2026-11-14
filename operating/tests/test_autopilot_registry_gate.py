@@ -1,5 +1,5 @@
 """Every autopilot in the registry defaults to not live: no entry carries a live switch,
-and with no owner flag or master switch the write gate reports dry_run."""
+and with no person's own switch the write gate reports dry_run (the master switch on)."""
 import json
 import tempfile
 import unittest
@@ -21,18 +21,17 @@ class RegistryDefaultsTests(unittest.TestCase):
                              a["id"])
             self.assertNotIn("dry_run", a)
 
-    def test_every_workflow_is_dry_run_without_flags(self):
+    def test_every_workflow_is_dry_run_without_the_persons_switch(self):
         reg = json.loads(REGISTRY.read_text(encoding="utf-8"))
-        with tempfile.TemporaryDirectory() as d:
-            self.assertEqual(w.live_flags({}, Path(d)), set())
-            for a in reg["autopilots"]:
-                for passed in (True, False):
-                    gate = type("G", (), {"roles_for": lambda s, o, wf, r, p=passed:
-                                          ["buyer"] if p else []})()
-                    rows = [{"event": "gate_passed", "role": "buyer", "workflow": a["id"]},
-                            {"event": "owner_notified", "role": "buyer", "workflow": a["id"]}]
-                    mode, _ = w.write_state(gate, rows, {}, Path(d), "o", a["id"], ["buyer"])
-                    self.assertEqual(mode, "dry_run", a["id"])
+        for a in reg["autopilots"]:
+            for passed in (True, False):
+                gate = type("G", (), {"roles_for": lambda s, o, wf, r, p=passed:
+                                      ["buyer"] if p else []})()
+                rows = [{"event": "gate_passed", "role": "buyer", "workflow": a["id"]},
+                        {"event": "owner_notified", "role": "buyer", "workflow": a["id"]}]
+                mode, _ = w.write_state(gate, rows, {w.MASTER_ENV: "1"}, "o", a["id"],
+                                        ["buyer"])
+                self.assertEqual(mode, "dry_run", a["id"])
 
 
 if __name__ == "__main__":

@@ -1,6 +1,6 @@
 // The autopilot area's words and views: labels for roles, systems, workflows and states,
 // and the filter/split over prepared items (pure, so the views are tested without a page).
-import type { AutopilotActionResult, AutopilotArea, AutopilotCountdown, AutopilotItem, AutopilotWorkflowRow } from "./types";
+import type { AutopilotActionResult, AutopilotArea, AutopilotCountdown, AutopilotItem, AutopilotOptIn, AutopilotScoreBar, AutopilotWorkflowRow } from "./types";
 import type { Status } from "./status";
 
 const ROLE: Record<string, string> = {
@@ -45,11 +45,11 @@ export const workflowLabel = (workflow: string) => humanize(workflow);
 export function stateShown(state: AutopilotWorkflowRow["state"], owner: boolean): { status: Status; label: string } {
   switch (state) {
     case "live":
-      return { status: "ok", label: "Live" };
+      return { status: "ok", label: "On" };
     case "live_held":
-      return { status: "risk", label: "Live, held by host switch" };
-    case "passed_awaiting_owner":
-      return { status: "new", label: owner ? "Passed, awaiting you" : "Passed, awaiting owner" };
+      return { status: "risk", label: "On, held by host switch" };
+    case "passed":
+      return { status: "new", label: owner ? "Passed, nobody has it on" : "Passed, not on" };
     case "off":
       return { status: "late", label: "Switched off" };
     default:
@@ -186,24 +186,51 @@ export const MODES: { mode: Mode; label: string; words: string }[] = [
   { mode: "watch", label: "Watch", words: "Acts by itself and shows what it did, with undo. Only after its gate passed." },
 ];
 
-/** A row's mode as the switches set it: off, auto (the role's live flag), else draft. */
+/** A row's mode: off (the owner stopped it), auto (someone it acts for switched it on for
+ * themselves), else draft. */
 export function rowMode(row: AutopilotWorkflowRow): Mode {
   if (!row.on) return "off";
-  return row.live_flag ? "auto" : "draft";
+  return (row.switched_on ?? 0) > 0 ? "auto" : "draft";
 }
 
 /** Whether a row's held-out gate passed (it may go Auto, or Watch where the server has it). */
 export const rowPassed = (row: AutopilotWorkflowRow) => row.state !== "dry_run" && row.state !== "off" && row.fresh != null;
 
-/** The modes a row may be set to: off and draft always; auto and watch after its gate;
- * suggest and watch only where the server has the builder. */
-export function modesFor(row: AutopilotWorkflowRow, builder: boolean): Set<Mode> {
+/** The modes the owner may set on a row: off and draft; suggest where the server has the
+ * builder. Never auto or watch: those act for a person, and only that person switches them
+ * on (the Autopilot page's own switches). */
+export function modesFor(_row: AutopilotWorkflowRow, builder: boolean): Set<Mode> {
   const out = new Set<Mode>(["off", "draft"]);
-  const passed = rowPassed(row);
-  if (passed) out.add("auto");
   if (builder) out.add("suggest");
-  if (builder && passed) out.add("watch");
   return out;
+}
+
+// ---- a person's own switches ----------------------------------------------------------
+
+const num = (n: number) => n.toLocaleString("en-CA");
+const pctOf = (p: number) => `${p % 1 === 0 ? p.toFixed(0) : p}%`;
+
+/** A workflow's score against its bar, in one line: "Eligible: 1,243 of 1,292 past items
+ * matched what you did (96.2%). It needs 90% on at least 15." */
+export function optInScore(o: Pick<AutopilotOptIn, "eligible" | "score">): string {
+  const s = o.score;
+  if (!s) return o.eligible ? "Eligible." : "Not eligible: no score on record.";
+  const got = `${num(s.matched)} of ${num(s.judged)} past items matched what you did${s.percent == null ? "" : ` (${s.percent.toFixed(1)}%)`}`;
+  return `${o.eligible ? "Eligible" : "Not eligible"}: ${got}. It needs ${pctOf(s.need_percent)} on at least ${num(s.need_judged)}.`;
+}
+
+/** Why an opt-in was switched off by itself, in plain words. */
+export function suspendedWords(reason: string, score: AutopilotScoreBar | null | undefined, when: string): string {
+  const need = score ? `${pctOf(score.need_percent)} on at least ${num(score.need_judged)} items` : "its bar";
+  const why =
+    reason === "below_bar" && score?.percent != null
+      ? `its score fell to ${score.percent.toFixed(1)}% on ${num(score.judged)} items, under the ${need} it needs`
+      : reason === "too_few" && score
+        ? `only ${num(score.judged)} items are checked now, and it needs ${need}`
+        : reason === "no_score"
+          ? "its score is no longer on record"
+          : "it no longer passes its check";
+  return `Turned off by itself${when ? ` on ${when}` : ""}: ${why}. Turn it on again once it passes.`;
 }
 
 /** "in 40 min", "in 3 h", "2 h overdue", "3 days overdue". */

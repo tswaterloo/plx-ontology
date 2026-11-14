@@ -119,3 +119,24 @@ export function outcomeUnknown(state: ActionResult | null | undefined): boolean 
 export function isPutAway(state: ActionResult | null | undefined): boolean {
   return !!state && (state.status === "done" || state.status === "dismissed" || state.status === "snoozed");
 }
+
+/** What the person picked on a draft before opening its send preview: recipients for To
+ * and Cc, and lines that ask the recipient what the draft could not state. */
+export type Preset = { to?: string[]; cc?: string[]; append?: string[] };
+
+export function hasPreset(p: Preset): boolean {
+  return !!((p.to ?? []).length || (p.cc ?? []).length || (p.append ?? []).length);
+}
+
+/** The preview's payload with the picks in: each address once (To before Cc), each line
+ * once at the end of the body. */
+export function withPreset(payload: ActionPayload, p: Preset): ActionPayload {
+  const norm = (a: string) => a.trim().toLowerCase();
+  const to = [...(payload.to ?? [])];
+  for (const a of p.to ?? []) if (!to.some((x) => norm(x) === norm(a))) to.push(a);
+  const cc = [...(payload.cc ?? [])].filter((x) => !to.some((t) => norm(t) === norm(x)));
+  for (const a of p.cc ?? []) if (!to.some((x) => norm(x) === norm(a)) && !cc.some((x) => norm(x) === norm(a))) cc.push(a);
+  let body = payload.body ?? "";
+  for (const line of p.append ?? []) if (!body.includes(line)) body = body.replace(/\s*$/, "") + (body.trim() ? "\n\n" : "") + line;
+  return { ...payload, to, cc, body };
+}

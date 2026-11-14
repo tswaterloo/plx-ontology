@@ -7,9 +7,9 @@ workflow table: nothing here reads a business system. A workflow's trigger, cond
 actions are its registered autopilots' (``operating/autopilot_registry.json``) through
 ``operating/workflows.json``'s ``autopilot_workflow`` table.
 
-Modes on this server: off, draft and auto (with approval) are the existing switches
-(``autopilot_workflow``: the per-workflow off switch and the per-role live flag after the
-fresh gate). Suggest and watch, a kept drafted workflow and a replay of a draft are the
+Modes on this server: off and draft are the owner's per-workflow stop switch
+(``autopilot_workflow``). Auto is never set here: each person switches a workflow on for
+themselves once it passed its gate for them (``autopilot_area.autopilot_opt_in``). Suggest and watch, a kept drafted workflow and a replay of a draft are the
 workflow builder's; until it lands they are refused with 409, never faked.
 """
 
@@ -26,9 +26,12 @@ from . import models as m
 from .auth import Reader
 from .errors import UserFacing
 
-SERVER_MODES: tuple[str, ...] = ("off", "draft", "auto")
-NOT_BUILT = ("The workflow builder is not on this server yet: {what}. Off, Draft and Auto "
-             "with approval work through the existing switches.")
+# the modes the owner sets here; Auto is each person's own switch (``autopilot_opt_in``)
+SERVER_MODES: tuple[str, ...] = ("off", "draft")
+NOT_BUILT = ("The workflow builder is not on this server yet: {what}. Off and Draft work "
+             "through the existing switches.")
+OWN_SWITCH = ("Auto is each person's own switch: they turn it on for themselves on the "
+              "Autopilot page. Nobody can turn it on for them.")
 
 TRIGGER_WORDS = {
     "message.received": "A new email or Teams message arrives",
@@ -67,7 +70,8 @@ ACTION_WORDS = {
     "task_prepare": "Prepare the task's first step", "ledger_answer": "Answer from the ledger",
     "qc_impact": "Show the QC hold's impact", "reply_prep": "Draft the reply",
     "meeting_followup": "Draft the follow-ups and action items", "question_prepare":
-    "Prepare the answer",
+    "Prepare the answer to an agent's question", "rd_status_update": "Draft the R&D "
+    "project's status update to the customer",
 }
 
 
@@ -105,11 +109,11 @@ def steps_of(spec: Mapping[str, Any]) -> tuple[m.AutopilotStep, list[m.Autopilot
 
 
 def mode_of(rows: list[m.AutopilotWorkflowRow]) -> str:
-    """A workflow's mode from its rows: off when switched off, auto when any role's live
-    flag is on, else draft."""
+    """A workflow's mode from its rows: off when switched off, auto when someone it acts
+    for switched it on for themselves (as far as the reader may count), else draft."""
     if not rows or not all(r.on for r in rows):
         return "off"
-    return "auto" if any(r.live_flag for r in rows) else "draft"
+    return "auto" if any(r.switched_on for r in rows) else "draft"
 
 
 class AutopilotStudioMixin:
@@ -158,7 +162,7 @@ class AutopilotStudioMixin:
         scores = fresh or dev
         judged = sum(s.judged for s in scores)
         matched = sum(s.matched for s in scores)
-        passed = any(r.state in ("passed_awaiting_owner", "live_held", "live") for r in rows)
+        passed = any(r.state in ("passed", "live_held", "live") for r in rows)
         pct = round(matched * 100 / judged, 1) if judged else None
         history: list[m.AutopilotAuditRow] = []
         if area.owner:
@@ -227,27 +231,19 @@ class AutopilotStudioMixin:
 
     def autopilot_set_mode(self, reader: Reader, workflow: str, body: m.AutopilotModeRequest
                            ) -> m.AutopilotWorkflowDetail:
-        """Off, draft and auto through the existing owner-only switches (auto only after the
-        fresh gate passed for the role); suggest and watch are refused until the builder."""
+        """Off and draft through the owner-only stop switch (draft: back on, acting for
+        nobody). Auto is never set here, for anyone: each person switches a workflow on for
+        themselves on the Autopilot page (``autopilot_opt_in``). Suggest and watch are
+        refused until the builder."""
+        if not self._apa_is_owner(reader):  # type: ignore[attr-defined]
+            raise UserFacing("forbidden", "Only the owner changes a workflow's mode.", 403)
+        if body.mode == "auto":
+            raise UserFacing("action_refused", OWN_SWITCH, 409)
         if body.mode not in SERVER_MODES:
-            if not self._apa_is_owner(reader):  # type: ignore[attr-defined]
-                raise UserFacing("forbidden", "Only the owner changes a workflow's mode.", 403)
             raise UserFacing("action_refused", NOT_BUILT.format(
                 what=f"{body.mode.capitalize()} mode is not available"), 409)
-        if body.mode == "off":
-            self.autopilot_workflow(reader, workflow, m.AutopilotWorkflowSwitch(on=False))  # type: ignore[attr-defined]
-        else:
-            role = body.role
-            if not role:
-                rows = [r for r in self._area_read(reader).workflows  # type: ignore[attr-defined]
-                        if r.workflow == workflow]
-                if len(rows) != 1:
-                    raise UserFacing("bad_request", "Say which role's mode changes.", 422)
-                role = rows[0].role
-            # the live flag first: a refused auto (gate not passed) changes nothing
-            self.autopilot_workflow(reader, workflow, m.AutopilotWorkflowSwitch(  # type: ignore[attr-defined]
-                live=body.mode == "auto", role=role))
-            self.autopilot_workflow(reader, workflow, m.AutopilotWorkflowSwitch(on=True))  # type: ignore[attr-defined]
+        self.autopilot_workflow(reader, workflow, m.AutopilotWorkflowSwitch(  # type: ignore[attr-defined]
+            on=body.mode != "off"))
         return self.autopilot_workflow_detail(reader, workflow)
 
     def autopilot_draft(self, reader: Reader, body: m.AutopilotWorkflowDraft

@@ -209,17 +209,17 @@ export function SchedulesView({ filterWorkflow }: { filterWorkflow: (workflow: s
   return (
     <ul className="divide-y divide-border" data-testid="autopilot-schedules">
       {rows.map((s) => (
-        <li key={s.id} className="grid grid-cols-[minmax(0,1.4fr)_minmax(0,1.6fr)_8rem_4rem] items-baseline gap-4 px-3 py-2 text-[13px]">
-          <span className="min-w-0">
+        <li key={s.id} className="grid grid-cols-[minmax(0,1.4fr)_minmax(0,1.6fr)_8rem_4rem] items-baseline gap-4 px-3 py-2 text-[13px] max-sm:grid-cols-[minmax(0,1fr)_auto] max-sm:gap-x-3 max-sm:gap-y-1">
+          <span className="min-w-0 max-sm:row-start-1">
             <span className="block truncate font-medium">{s.label}</span>
             <span className="block truncate text-[12px] text-muted">{workflowLabel(s.workflow)}</span>
           </span>
-          <span className="min-w-0 text-[12px]">
+          <span className="min-w-0 text-[12px] max-sm:col-start-1 max-sm:row-start-2">
             <span className="block">{s.cadence}</span>
             <span className="block truncate text-muted">{s.checks}</span>
           </span>
-          <span className="text-[12px] text-muted">{s.last_run ? `ran ${ago(s.last_run)}` : "not run yet"}</span>
-          <span className={cn("text-right text-[12px]", s.on ? "text-fg" : "text-faint")}>{s.on ? "On" : "Off"}</span>
+          <span className="text-[12px] text-muted max-sm:col-start-2 max-sm:row-start-2 max-sm:text-right">{s.last_run ? `ran ${ago(s.last_run)}` : "not run yet"}</span>
+          <span className={cn("text-right text-[12px] max-sm:col-start-2 max-sm:row-start-1", s.on ? "text-fg" : "text-faint")}>{s.on ? "On" : "Off"}</span>
         </li>
       ))}
     </ul>

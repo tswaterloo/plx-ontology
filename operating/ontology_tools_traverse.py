@@ -848,22 +848,42 @@ class TraverseTools:
         self.store.remember_audience_keys(facts["audience_keys"])
         return True
 
-    def _store_cached(self, key: Any, read: Callable[[], Any]) -> Any:
+    def _store_cached(self, key: Any, read: Callable[[], Any], *, wait: bool = True) -> Any:
         """``read()``, kept on the store's reader until the store changes: a commit on
         another connection (``PRAGMA data_version``) or a write on this one
         (``total_changes``), so every table over one open reader shares it. Only facts
         that hold for every reader are kept (each call applies its reader's grants to
         them), and only those whose read scans a whole table: no index leads with an
-        audience key or a link type, so reading them per call grew with the store."""
-        facts = self._current_facts(key)
+        audience key or a link type, so reading them per call grew with the store.
+        ``wait`` False: a fact an index reads at once is read here, never waited for from
+        a background read of the store state's facts."""
+        facts = self._current_facts(key, wait=wait)
         if key not in facts:
             tick = time.perf_counter()
-            facts[key] = read()
+            facts[key] = self._cut_read(read)
             _metered("store", ".".join(key) if isinstance(key, tuple) else key,
                      time.perf_counter() - tick)
         return facts[key]
 
-    def _current_facts(self, key: Any) -> dict[Any, Any]:
+    def _cut_read(self, read: Callable[[], Any]) -> Any:
+        """``read()``; on Postgres inside ``call_limits.facts_cut`` ended at the SQL
+        deadline (a cancelled statement raises ``sqlite3.OperationalError("interrupted")``,
+        which a call answers ``store_unavailable``, and nothing is kept)."""
+        from . import call_limits
+        bounded = getattr(self.store.conn, "deadline_bounded", None)
+        if bounded is None or not call_limits.facts_cut_now():
+            return read()
+        try:
+            with bounded():
+                return read()
+        except sqlite3.Error:
+            raise
+        except Exception as exc:  # noqa: BLE001 - only a cancelled statement is a cut
+            if type(exc).__name__ == "QueryCanceled":
+                raise sqlite3.OperationalError("interrupted") from exc
+            raise
+
+    def _current_facts(self, key: Any, *, wait: bool = True) -> dict[Any, Any]:
         """The facts kept for the store state this reader sees now (``_store_cached``),
         reading none itself: on Postgres, after a delta layer moved the data version, the
         new version's facts once one process of the host has folded them from the
@@ -891,14 +911,14 @@ class TraverseTools:
                 self.prime_lazily(families)
                 facts = self.store.facts
         pending = getattr(self, "_pending", None)
-        if key not in facts[1] and pending is not None:
+        if key not in facts[1] and pending is not None and wait:
             # facts being read in the background (``prime_lazily``): wait for them
             (path, identity), families, done = pending
             postgres = getattr(conn, "_pg", None) is not None
             # one wait per read: a call after one that waited it out only looks
             # Event.wait: False only when it timed out
             ready = done.wait(0 if getattr(self, "_waited", None) is done
-                              else _pg_request_wait(path) if postgres
+                              else _pg_request_wait(path, deadline=True) if postgres
                               else BACKGROUND_WAIT_SECONDS) is not False
             if postgres and not ready:
                 self._waited = done
@@ -918,7 +938,7 @@ class TraverseTools:
                 if again is not None:
                     (path, identity), families, done = again
                     if done.wait(0 if getattr(self, "_waited", None) is done
-                                 else _pg_request_wait(path)) is False:
+                                 else _pg_request_wait(path, deadline=True)) is False:
                         self._waited = done
                     else:
                         self._pending = None
@@ -1032,9 +1052,12 @@ class TraverseTools:
         return lap
 
     def _audience_keys(self) -> tuple[str, ...]:
-        """Every audience key the store's objects carry."""
+        """Every audience key the store's objects carry. On Postgres an index read (0.05
+        s), never a wait for a new store state's facts read in the background (64 s of
+        one customer margin, 2026-11-13)."""
         return self._store_cached("audience_keys",
-                                  lambda: tuple(self.store.audience_keys()))
+                                  lambda: tuple(self.store.audience_keys()),
+                                  wait=not getattr(self.store.conn, "postgres", False))
 
     def set_links(self, root: str, actor: Any) -> frozenset[str] | None:
         """The link types walked to reach a root's records: none for one object id, the
@@ -1574,13 +1597,16 @@ class TraverseTools:
         lap("hops")
         undecided: set[str] = set()
         if filters and final:
+            unfiltered = list(final)
             passing, undecided = self._filter_objects(scope, final, filters)
             final = sorted(passing)
             if undecided:
                 gaps.extend(_filter_gaps(hops[-1][3], undecided))
             # A property only some sources record leaves the other sources' records
-            # out of the match: the listing is then not every member, never an exact count.
-            gaps.extend(self.base.unsourced_filter_gaps(hops[-1][3], filters))
+            # out of the match: the listing is then not every member, never an exact count
+            # (asked of the sources the walked records come from).
+            gaps.extend(self.base.unsourced_filter_gaps(hops[-1][3], filters,
+                                                        members=unfiltered))
         # Some of what this path reaches may be hidden from this reader (a marking it
         # lacks, an audience it may not read, an item it may not open): what it sees is
         # then not the whole answer. Decided on the reader's grants over the path's link
@@ -1795,6 +1821,15 @@ class TraverseTools:
         ``items`` False: the item gate is not decided here (its caller decided it on the
         rows it reached); audiences and markings still are."""
         object_types = set(object_types)
+        if not items and self._reads_every_unit(scope):
+            # Nothing a type's audiences or markings say can hide a row from a reader who
+            # reads every audience key the store holds and every marking set a row can
+            # carry (``store_ddl.MARKING_SETS``: the column's CHECK, the delta layers'
+            # DDL, and ``markings_text`` in Postgres's in-place migrations), and its
+            # caller decided the item gate: the per-type facts are never read (after a
+            # delta layer, a minute and more a big link type, 112 s of one customer
+            # margin's identity check on 2026-11-13).
+            return False
         audiences = self._audiences()
         if not all(self.policy.may_read(scope.actor, key)
                    for name in object_types for key in audiences.get(name, ())):
@@ -1851,8 +1886,22 @@ class TraverseTools:
                 cache[key] = (now + SLICE_GATE_SECONDS, failed)
         return failed
 
+    def _reads_every_unit(self, scope: _Scope) -> bool:
+        """Whether ``scope``'s reader holds every marking set and may read every audience
+        key of the store's objects as the store holds them now (``_slice_trimmed``)."""
+        if not set(store_ddl.MARKING_SETS) <= set(scope.marking_sets):
+            return False
+        readable = set(scope.audience_keys)   # the keys the policy lets it read
+        return all(key in readable for key in self._audience_keys())
+
     def _audiences(self) -> dict[str, tuple[str, ...]]:
-        """Object type -> the audience keys its objects carry, once per store state."""
+        """Object type -> the audience keys its objects carry, once per store state. On
+        Postgres the type and audience index read (``StoreReader.type_audience_keys``,
+        0.2 s; the scan took 10 s), never a wait for a new store state's facts read in
+        the background (32-64 s of one customer margin, 2026-11-13)."""
+        if getattr(self.store.conn, "postgres", False):
+            return self._store_cached("audiences", lambda: _grouped(
+                self.store.type_audience_keys()), wait=False)
         return self._store_cached("audiences", lambda: _grouped(self.store.conn.execute(
             "SELECT object_type, audience_key FROM objects GROUP BY 1, 2")))
 
@@ -1981,7 +2030,11 @@ class TraverseTools:
         the same rows of that family: no cell of it lies outside its span. One read per
         store state, for every reader."""
         def read() -> tuple[int, int] | None:
-            # the word index's own rowids (Postgres: its word rows', ``PgStoreReader``)
+            # the word index's own rowids (Postgres: its word rows', ``PgStoreReader``,
+            # bounded there: ``family_cell_span``)
+            bounded = getattr(self.store, "family_cell_span", None)
+            if bounded is not None and getattr(self.store, "cell_span_sql", None):
+                return bounded(family)
             sql = getattr(self.store, "cell_span_sql", None) or _CELL_SPAN_SQL
             row = self.store.word_conn.execute(
                 sql, {"family": family, "low": family + ":",
@@ -3413,21 +3466,30 @@ LAZY_MIN_BYTES = 256 * 1024 * 1024
 # reads the one it needs itself.
 BACKGROUND_WAIT_SECONDS = 1800
 # How long a call on Postgres waits for the facts being kept for its version (a fold over
-# the layers since: seconds) before it reads the ones it needs itself.
-PG_REQUEST_WAIT_SECONDS = 30
+# the layers since: seconds) before it reads the ones it needs itself. A fold that is not
+# done by then is a whole read (a load state written that is no layer's): on 2026-11-13
+# every customer margin Ask waited the whole 30 s twice, then read its slices anyway.
+PG_REQUEST_WAIT_SECONDS = 8
 
 
-def _pg_request_wait(marker: str | Path) -> float:
+def _pg_request_wait(marker: str | Path, *, deadline: bool = False) -> float:
     """How long a Postgres call waits for its version's facts: ``PG_REQUEST_WAIT_SECONDS``
     when facts of an earlier version are kept for this database (the background folds
     them over the layers since: seconds), else none: with nothing kept the background
     reads them in full (half an hour and more), so the wait only delayed the call that
     reads its own slices after it (an Ask's first call paid 30 s on every new host
-    process, 2026-11-13)."""
+    process, 2026-11-13). ``deadline``: at most the time left before the thread's SQL
+    deadline (a briefing's 4 s involvement checks each waited the whole 30 s)."""
     try:
-        return PG_REQUEST_WAIT_SECONDS if facts_path(marker).exists() else 0.0
+        wait = PG_REQUEST_WAIT_SECONDS if facts_path(marker).exists() else 0.0
     except OSError:
-        return PG_REQUEST_WAIT_SECONDS
+        wait = PG_REQUEST_WAIT_SECONDS
+    if deadline:   # ``deadline``: never past the thread's SQL deadline (``sql_deadline``)
+        from .call_limits import seconds_left
+        left = seconds_left()
+        if left is not None:
+            wait = max(0.0, min(wait, left))
+    return wait
 
 
 _BACKGROUND: dict[str, threading.Event] = {}
@@ -3913,6 +3975,11 @@ def prime_pg_facts(dsn: str, cell_families: Sequence[str] | None = None, *,
 # Below this many workers (``PLX_FACTS_WORKERS``, default the CPUs / 2) the full read runs
 # its parts one after another; each worker is one Postgres connection on the snapshot.
 FACTS_PARTS_PER_WORKER = 3
+# A part of a whole read holds at most about this many of a table's rows, however few the
+# workers: each statement's temporary files are bounded by ``FACTS_TEMP_LIMIT``, and live
+# (2026-11-13) twelve parts of the 80M link rows (6.6M each) hashed past it after two
+# hours of reading, so nothing was kept.
+FACTS_ROWS_PER_PART = 1_000_000
 
 
 def keep_pg_facts(dsn: str, cell_families: Sequence[str] | None = None, *,
@@ -4090,9 +4157,15 @@ _RANGE_KEYS = {"object": ("object_versions", "object_id", "ov.object_id"),
 
 def _pg_key_bounds(cur: Any, kind: str, pieces: int) -> list[str | None]:
     """[None, k1, ..., None]: keys cutting ``kind``'s rows into about ``pieces`` ranges,
-    from the planner's histogram of the key (no scan), in byte order; [None, None] (one
-    range) when there is none."""
+    and into at least one range per ``FACTS_ROWS_PER_PART`` rows the planner counts in the
+    table (up to the histogram's bounds), from the planner's statistics (no scan), in byte
+    order; [None, None] (one range) when there are none."""
     table, column, _ = _RANGE_KEYS[kind]
+    cur.execute("SELECT reltuples FROM pg_class WHERE oid = %s::regclass",
+                (f"ontology.{table}",))
+    counted = cur.fetchone()
+    rows = int(counted[0]) if counted and counted[0] and counted[0] > 0 else 0
+    pieces = max(pieces, -(-rows // FACTS_ROWS_PER_PART))
     cur.execute("SELECT b FROM pg_stats, unnest(histogram_bounds::text::text[]) b "
                 "WHERE schemaname = 'ontology' AND tablename = %s AND attname = %s "
                 "ORDER BY b COLLATE \"C\"", (table, column))
@@ -4104,29 +4177,69 @@ def _pg_key_bounds(cur: Any, kind: str, pieces: int) -> list[str | None]:
     return [None, *bounds[step::step][:pieces - 1], None]
 
 
+# How many times a part of a whole read that spilled past the temp limit is halved again.
+FACTS_SPLIT_DEPTH = 4
+
+
+def _over_temp_limit(exc: BaseException) -> bool:
+    """``exc`` (or what caused it) is Postgres refusing a statement's temporary files past
+    ``temp_file_limit`` (SQLSTATE 53400)."""
+    seen: set[int] = set()
+    while exc is not None and id(exc) not in seen:
+        seen.add(id(exc))
+        if getattr(exc, "sqlstate", None) == "53400":
+            return True
+        exc = exc.__cause__ or exc.__context__
+    return False
+
+
+def _pg_middle_key(store: Any, kind: str, lo: str | None, hi: str | None,
+                   c: str = ' COLLATE "C"') -> str | None:
+    """The key halving ``kind``'s rows in [lo, hi) (byte order; ``c``: the collation that
+    is, ``ontology.pg_byte_order.key_collate``), read off the key's index in the reader's
+    snapshot; None when the range holds fewer than two rows."""
+    table, column, _ = _RANGE_KEYS[kind]
+    where = " AND ".join([f"{column}{c} >= %(lo)s"] * (lo is not None)
+                         + [f"{column}{c} < %(hi)s"] * (hi is not None)) or "TRUE"
+    params = {"lo": lo, "hi": hi}
+    with store.conn._lock, store.conn._pg.cursor() as cur:
+        cur.execute(f"SELECT count(*) FROM ontology.{table} WHERE {where}", params)
+        rows = cur.fetchone()[0]
+        if rows < 2:
+            return None
+        cur.execute(f"SELECT {column} FROM ontology.{table} WHERE {where} "
+                    f"ORDER BY {column}{c} OFFSET %(half)s LIMIT 1",
+                    {**params, "half": rows // 2})
+        found = cur.fetchone()
+    middle = found[0] if found else None
+    return middle if middle is not None and middle != lo else None
+
+
 def _range_slices(tools: "TraverseTools", kind: str, lo: str | None, hi: str | None,
-                  odd: Sequence[str] | None
+                  odd: Sequence[str] | None, c: str = ' COLLATE "C"'
                   ) -> dict[str, tuple[dict[str, str], dict[str, str] | None]]:
-    """``_slices(kind)`` of the rows whose key lies in [lo, hi) (byte order)."""
+    """``_slices(kind)`` of the rows whose key lies in [lo, hi) (byte order; ``c``: the
+    collation that is, ``ontology.pg_byte_order.key_collate``)."""
     native = getattr(tools.store, "slice_rows", None)
     if kind == "link" and native is not None and odd is not None:
         return _folded_slices(native(kind, sorted(GATED_SCHEMES), key_range=(lo, hi), odd=odd))
     column = _RANGE_KEYS[kind][2]
     where = " AND ".join(
-        [f"{column} COLLATE \"C\" >= :lo"] * (lo is not None)
-        + [f"{column} COLLATE \"C\" < :hi"] * (hi is not None)) or "1 = 1"
+        [f"{column}{c} >= :lo"] * (lo is not None)
+        + [f"{column}{c} < :hi"] * (hi is not None)) or "1 = 1"
     return tools._grouped_slices(f"{_SLICE_ROWS[kind]} WHERE {where}",
                                  {k: v for k, v in (("lo", lo), ("hi", hi)) if v is not None})
 
 
-def _range_event_types(tools: "TraverseTools", lo: str | None, hi: str | None
+def _range_event_types(tools: "TraverseTools", lo: str | None, hi: str | None,
+                       c: str = ' COLLATE "C"'
                        ) -> tuple[dict[str, set[str]], dict[str, set[str]]]:
-    """``_event_type_maps`` of the events whose id lies in [lo, hi) (byte order): each
-    event's objects found by their keys (nested, by index), never a hash of every object,
-    which spilled gigabytes to temp files per read."""
+    """``_event_type_maps`` of the events whose id lies in [lo, hi) (byte order; ``c`` as
+    ``_range_slices``): each event's objects found by their keys (nested, by index), never
+    a hash of every object, which spilled gigabytes to temp files per read."""
     where = " AND ".join(
-        ["e.event_id COLLATE \"C\" >= %(lo)s"] * (lo is not None)
-        + ["e.event_id COLLATE \"C\" < %(hi)s"] * (hi is not None)) or "TRUE"
+        [f"e.event_id{c} >= %(lo)s"] * (lo is not None)
+        + [f"e.event_id{c} < %(hi)s"] * (hi is not None)) or "TRUE"
     by_object: dict[str, set[str]] = {}
     by_event: dict[str, set[str]] = {}
     conn = tools.store.conn
@@ -4234,6 +4347,8 @@ def _read_pg_facts_parallel(dsn: str, families: Sequence[str], *,
                 raise FactsNotKept("the store's identity (data version) cannot be read")
             bounds = {kind: _pg_key_bounds(cur, kind, count * FACTS_PARTS_PER_WORKER)
                       for kind in _SLICE_ROWS}
+            from ontology.pg_byte_order import key_collate
+            collate = key_collate(cur)
         odd = leader.link_odd()
         # the slices and the event types are read a key range at a time (one statement
         # over a whole table hashed or sorted gigabytes into temp files)
@@ -4260,15 +4375,33 @@ def _read_pg_facts_parallel(dsn: str, families: Sequence[str], *,
                     reader, ontology_tools.ReadPolicy("facts", {})))
             return tools
 
+        def ranged(tools: "TraverseTools", key: Any, lo: str | None, hi: str | None,
+                   depth: int = 0) -> Any:
+            kind = "event" if key == "event_types" else key[1]
+            try:
+                if key == "event_types":
+                    return _range_event_types(tools, lo, hi, collate)
+                return _range_slices(tools, kind, lo, hi, odd, collate)
+            except Exception as exc:
+                # a part whose hashes spilled past the temp limit is read again as its
+                # two halves (rows are not spread evenly over the histogram's ranges)
+                if depth >= FACTS_SPLIT_DEPTH or not _over_temp_limit(exc):
+                    raise
+                middle = _pg_middle_key(tools.store, kind, lo, hi, collate)
+                if middle is None:
+                    raise
+                halves = [ranged(tools, key, lo, middle, depth + 1),
+                          ranged(tools, key, middle, hi, depth + 1)]
+                return _union_event_types(halves) if key == "event_types" \
+                    else _union_slices(halves)
+
         def run(task: tuple[Any, Any]) -> Any:
             key, span = task
             tools = tools_here()
             with tools.store.lock:
                 if span is None:
                     return _fact_value(tools, key)
-                if key == "event_types":
-                    return _range_event_types(tools, span[0], span[1])
-                return _range_slices(tools, key[1], span[0], span[1], odd)
+                return ranged(tools, key, span[0], span[1])
 
         with futures.ThreadPoolExecutor(max_workers=count,
                                         thread_name_prefix="plx-facts") as pool:

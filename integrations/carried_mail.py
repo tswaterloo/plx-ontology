@@ -366,6 +366,7 @@ def _blob_head(blobs: Any, digest: str, size: int = 4096) -> bytes | None:
     """The first bytes of a stored blob (its bytes form, else its compressed form), or
     None when neither is held."""
     import zlib
+    from integrations import blob_pack
     from integrations.captured_text import COMPRESSED_SUFFIX, blob_path
     try:
         with open(blob_path(blobs, digest), "rb") as handle:
@@ -373,7 +374,7 @@ def _blob_head(blobs: Any, digest: str, size: int = 4096) -> bytes | None:
     except OSError:
         pass
     try:
-        with open(blob_path(blobs, digest, COMPRESSED_SUFFIX), "rb") as handle:
+        with blob_pack.open_blob(blobs, digest, COMPRESSED_SUFFIX) as handle:
             return zlib.decompressobj().decompress(handle.read(size), size)
     except (OSError, zlib.error):
         return None

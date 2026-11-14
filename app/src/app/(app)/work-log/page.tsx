@@ -3,14 +3,16 @@
 import { Search } from "lucide-react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { Suspense, useCallback, useEffect, useMemo, useState } from "react";
+import { useAuth } from "@/components/auth";
 import { LoadProblem } from "@/components/ui/notice";
-import { SlowNote } from "@/components/ui/skeleton";
+import { Pending } from "@/components/ui/skeleton";
 import { Toolbar, ToolbarButton } from "@/components/ui/toolbar";
 import { AutopilotScorecardPanel } from "@/components/autopilot-scorecard";
 import { TimeSavedPanel } from "@/components/time-saved";
 import { KIND_LABEL, WorkLogRow } from "@/components/work-log";
 import { getWorkLog, type WorkLogFilters } from "@/lib/api";
 import { cn } from "@/lib/cn";
+import { useViewingAs } from "@/components/view-as";
 import { plainError } from "@/lib/errors";
 import type { WorkLogEvent, WorkLogKind, WorkLogPage } from "@/lib/types";
 
@@ -50,19 +52,15 @@ function WorkLog() {
   const [query, setQuery] = useState(q);
   const [kind, setKind] = useState<WorkLogKind | undefined>(undefined);
   const [everyone, setEveryone] = useState(false);
-  const [owner, setOwner] = useState(false);
+  // the owner may read everyone's log: /api/me says so (the server still decides each read),
+  // so no other reader's page asks for everyone's and is refused; /api/me stays the owner's
+  // while they view as someone, and that person's page offers no Everyone either
+  const { state } = useAuth();
+  const viewing = useViewingAs();
+  const owner = state.status === "signed-in" && state.me.owner === true && !viewing;
   const main = useLog({ q: query || undefined, kind, record, everyone, limit: 200 });
   const waiting = useLog({ waiting: true, limit: 20 });
   const pinned = useLog({ pinned: true, limit: 20 });
-
-  // the owner may read everyone's log (the server decides; anyone else is refused)
-  useEffect(() => {
-    const c = new AbortController();
-    getWorkLog({ everyone: true, limit: 1 }, c.signal)
-      .then(() => setOwner(true))
-      .catch(() => setOwner(false));
-    return () => c.abort();
-  }, []);
 
   const refresh = useCallback(() => {
     main.load();
@@ -115,7 +113,8 @@ function WorkLog() {
         }
         className="bg-list"
       />
-      <form
+      {/* a closed log has no counts and nothing to search: no figures that read as zero */}
+      {!closedLog && <form
         className="flex flex-wrap items-center gap-2 px-6 pt-3"
         role="search"
         onSubmit={(ev) => {
@@ -146,7 +145,7 @@ function WorkLog() {
             On one record only: show all
           </button>
         )}
-      </form>
+      </form>}
 
       {closedLog ? (
         <p className="px-6 py-10 text-[13px] text-muted">Your work log can&apos;t be shown right now: the list of people kept out of the Workbench isn&apos;t loaded, so nothing is shown or kept until it is.</p>
@@ -155,7 +154,7 @@ function WorkLog() {
           <LoadProblem message={main.error} onRetry={main.load} />
         </div>
       ) : !main.page ? (
-        <SlowNote className="px-6 pt-3" />
+        <Pending label="Reading your work log" className="px-6 pt-3" />
       ) : (
         <div className="pb-8" data-testid="work-log">
           {!record && !query && !kind && <TimeSavedPanel everyone={everyone} />}

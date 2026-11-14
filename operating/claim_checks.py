@@ -3895,18 +3895,81 @@ def asked_tokens_blanked(text: str, question: Any, keep: Iterable[Any] = ()) -> 
     even when the question holds it."""
     if not isinstance(question, str) or not question or not text:
         return text
+    kept = [(found.start(), found.end()) for value in keep
+            if isinstance(value, str) and value
+            for found in re.finditer(re.escape(value), text)]
+
+    def free(match: re.Match) -> bool:
+        return not any(start <= match.start() and match.end() <= end for start, end in kept)
+    years = _asked_years(question)
+    if years:
+        # A year the question names is the period it asks about, restated: the answer
+        # names it as a year (2025, "2024-2026"), never a figure it asserts (11-13: "24,
+        # 25, 26" asked, a reply naming 2025 lost its sentence, so replies said "last
+        # year"). A year read as a quantity ("2025 orders") stays a figure.
+        text = _YEAR_RANGE.sub(lambda match: " " * len(match.group(0))
+                               if free(match) and int(match.group(1)) in years
+                               and int(match.group(2)) in years else match.group(0), text)
+        text = _ALONE_YEAR.sub(lambda match: " " * len(match.group(0))
+                               if free(match) and int(match.group(0)) in years
+                               else match.group(0), text)
     asked = {token.casefold() for token in _WHOLE_TOKEN.findall(question)
              if any(char.isalpha() for char in token)
              and any(char.isdigit() for char in token) and not _glued_quantity(token)}
     if not asked:
         return text
-    kept = [(found.start(), found.end()) for value in keep
-            if isinstance(value, str) and value
-            for found in re.finditer(re.escape(value), text)]
     return _WHOLE_TOKEN.sub(lambda match: " " * len(match.group(0))
                             if match.group(0).casefold() in asked and not any(
                                 start <= match.start() and match.end() <= end
                                 for start, end in kept) else match.group(0), text)
+
+
+# A four-digit year standing alone in a text: never part of a date, code or number, and
+# never read as a quantity (a word right after it: "2025 orders").
+_ALONE_YEAR = re.compile(r"(?<![\w.,/:-])20[1-3]\d(?![\w]|[.,/:-]\d|\s+[A-Za-z])")
+# Two years written as a range ("2024-2026", "2024 to 2026").
+_YEAR_RANGE = re.compile(r"(?<![\w.,/:-])(20[1-3]\d)\s*(?:-|–|to|through)\s*(20[1-3]\d)"
+                         r"(?![\w]|[.,/:-]\d)")
+# The years a question names: four digits standing alone ("2024-2026" or "between 2024
+# and 2026" is every year of the range), or a run of two-digit numbers counting up by one
+# ("24, 25, 26", "24-26", "24 to 26") in a question about years.
+_QUESTION_YEAR = re.compile(r"(?<![\w.,/-])(20[1-3]\d)(?:\s*(?:-|–|\bto\b|\bthrough\b|"
+                            r"\buntil\b|\band\b)\s*(20[1-3]\d))?(?![\w]|[.,/]\d)")
+_SHORT_YEAR_RUN = re.compile(r"(?<![\w.,/-])(\d{2})((?:\s*(?:,|-|–|\band\b|&|\bto\b|"
+                             r"\bthrough\b)\s*\d{2}(?![\w.,/]\d|\d))+)")
+_QUANTITY_BEFORE = re.compile(r"\b(?:over|under|above|below|than|top|first|exceeding|"
+                              r"least|most|qty|quantity|of)\s*$", re.I)
+_YEAR_CUE = re.compile(r"\b(?:years?|yearly|annual(?:ly)?|trend(?:s|ing)?|yoy|ytd|fy)\b",
+                       re.I)
+
+
+def _asked_years(question: str) -> set[int]:
+    """The years ``question`` names (``_QUESTION_YEAR``; ``_SHORT_YEAR_RUN`` of 15..39 in
+    a question with a year word, ``_YEAR_CUE``)."""
+    out: set[int] = {2000 + int(match.group("y")[-2:]) for pattern in _SHORT_YEARS[:2]
+                     for match in pattern.finditer(question)
+                     if 10 <= int(match.group("y")[-2:]) <= 39}   # '25, FY25, FY2025
+    for match in _QUESTION_YEAR.finditer(question):
+        if _QUANTITY_BEFORE.search(question[:match.start()]):
+            continue   # "over 2025", "top 2025": a quantity, no year
+        first = int(match.group(1))
+        last = int(match.group(2)) if match.group(2) else first
+        if first <= last <= first + 20:
+            out.update(range(first, last + 1))
+        else:
+            out.update({first, last})
+    if not _YEAR_CUE.search(question):
+        return out   # two-digit numbers are years only in a question about years
+    for match in _SHORT_YEAR_RUN.finditer(question):
+        run = [int(match.group(1))] + [int(n) for n in re.findall(r"\d{2}", match.group(2))]
+        if not all(15 <= year <= 39 for year in run):
+            continue
+        dashed = len(run) == 2 and re.search(r"-|–|to|through", match.group(2)) is not None
+        if dashed and run[0] < run[1] <= run[0] + 20:
+            out.update(2000 + year for year in range(run[0], run[1] + 1))
+        elif len(run) >= 2 and all(b == a + 1 for a, b in zip(run, run[1:])):
+            out.update(2000 + year for year in run)
+    return out
 
 
 def label_numbers(label: str) -> list[Decimal]:

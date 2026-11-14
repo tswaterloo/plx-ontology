@@ -931,7 +931,8 @@ class LivePartTests(unittest.TestCase):
         # The loop keeps the claims (its reads resolved); the workspace withholds the cited
         # records (the two decide apart): neither shows them, the eval scores none of them.
         withhold = mock.patch.object(objects.HostAccess, "_decide", staticmethod(
-            lambda handle, gated, policy, gate: {"state": "withheld", "reason": "test"}))
+            lambda handle, gated, policy, gate, keyed=None: {"state": "withheld",
+                                                          "reason": "test"}))
         with withhold:
             claims, answer = both(ran[0][0])
             self.assertEqual((claims["shown"], claims["withheld"], answer["values"],

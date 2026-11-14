@@ -74,9 +74,15 @@ def captures():
     return _Portal([
         *_two("public.assembly_order", {"id": 7}, fm_ao,
               dict(fm_ao, status="Realized", audittimestampmodified="2099-01-16T00:00:00Z")),
-        # the ETL restamps the migration copy: only updated_at moves
+        # the ETL restamps the migration copy: only updated_at moves, a declared stamp
+        # (ontology/schema/stamps.json), so the projector folds it into one version
         *_two("public.app_manufacturing_order", {"id": "fm-mo-7"}, mo_fm,
               dict(mo_fm, updated_at="2099-01-16T00:00:00")),
+        # FileMaker rewrites only its audit stamp, which stamps.json does not declare: a
+        # second version whose only moved value is a write stamp (restamped, counted)
+        *_two("public.assembly_order", {"id": 8}, dict(fm_ao, id=8, nameamo_c="AO-26083D"),
+              dict(fm_ao, id=8, nameamo_c="AO-26083D",
+                   audittimestampmodified="2099-01-16T00:00:00Z")),
         ("public.assembly_order_item", {"id": 70},
          {"id": 70, "idassem": 7, "idpack": 3, "qty_c": "500"}, T1, None),
         ("public.packaging", {"id": 3}, {"id": 3, "namepack": "Bottle"}, T1, None),
@@ -206,6 +212,15 @@ class ChangesTests(unittest.TestCase):
         self.assertIn(("source_write_time", "fm_modified_at"),
                       {(s["stamp"], s["value"]["property"]) for s in fm["source_stamps"]})
         self.assertNotIn(MO_FM, listed)
+        # a declared stamp-only rewrite is a sighting: one version, nothing to count;
+        # an undeclared one is a second version, counted as restamped and never listed
+        restamped = object_id_of("AssemblyOrder", "portal.fm_assembly_order", {"id": 8})
+        with sqlite3.connect(str(STORE)) as conn:
+            versions = dict(conn.execute(
+                "SELECT object_id, count(*) FROM object_versions WHERE object_id IN (?, ?)"
+                " GROUP BY object_id", (MO_FM, restamped)).fetchall())
+        self.assertEqual(versions, {MO_FM: 1, restamped: 2})
+        self.assertNotIn(restamped, listed)
         self.assertEqual(out["by_type"]["AssemblyOrder"]["restamped"], 1)
         self.assertEqual({PO, SO} & set(listed), {PO, SO})
 

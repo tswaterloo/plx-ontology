@@ -5,6 +5,7 @@ import os
 import queue
 import re
 import shlex
+import socket
 import subprocess
 import sys
 import tempfile
@@ -12,6 +13,7 @@ import threading
 import time
 import unittest
 import unittest.mock
+import urllib.error
 import urllib.request
 from pathlib import Path
 
@@ -22,7 +24,7 @@ ROOT = Path(__file__).resolve().parents[1]
 TRY_IT = ROOT / "devloop" / "TRY-IT.md"
 LIVE_CHECKS = ROOT / "devloop" / "live-checks"
 LIVE_BRANCH_RESULTS = ("results/latest.json", "results/daily/latest.json")
-CONSOLE_URL_SECONDS = 120
+CONSOLE_URL_SECONDS = 600   # seed (153 s at load ~50) and the API start; slower under load
 STATE_LINE = 'STATE="$(mktemp -d)"'
 NOT_A_CHECK = re.compile(r"^plx\.|\.(json|py|md|sqlite)$")  # MCP tool names, file names
 
@@ -160,15 +162,24 @@ class TryItTest(unittest.TestCase):
             if module.endswith("case_fixtures"):  # flags its entry strips before argparse
                 src = (ROOT / "operator_api/tests/case_fixtures.py").read_text(encoding="utf-8")
                 accepted |= set(re.findall(r'"(--[a-z-]+)" in sys\.argv', src))
+            serve_help = subprocess.run([sys.executable, "-m", "operator_api", "serve", "--help"],
+                                        cwd=ROOT, capture_output=True, text=True,
+                                        timeout=120).stdout
             for command in re.findall(rf"python3 -m {re.escape(module)} ([^\n|]*)", text):
+                known = accepted
+                if module.endswith("case_fixtures") and command.startswith("serve "):
+                    known = set(re.findall(r"--[a-z][a-z-]*", serve_help)) | {"--scripted-ask"}
                 for flag in re.findall(r"(?<![\w-])--[a-z][a-z-]*", command.split(" | ")[0]):
-                    self.assertIn(flag, accepted, f"{module} {flag}")
+                    self.assertIn(flag, known, f"{module} {flag}")
 
     def test_every_command_runs(self):
         found = blocks()
         mcp_blocks = 0
         with tempfile.TemporaryDirectory() as tmp:
             env = keyless_env(TMPDIR=tmp, PYTHONDONTWRITEBYTECODE="1")
+            # steps 1-4 run offline over the fixture's SQLite store, as in a fresh
+            # container: a Postgres-only reader setting (the landing's) refuses it
+            env.pop("PLX_ONTOLOGY_PG", None)
             state = {}
             for block in found:
                 if "operator_api.workspace.case_console" in block or "operator_api.tests.case_fixtures" in block:
@@ -280,9 +291,15 @@ class TryItTest(unittest.TestCase):
 
     def _console(self, block, env, state):
         # Start the server on a free port, probe the printed URL once, stop it.
+        # The last command serves: exec'd unbuffered on a free port (the app API prints
+        # the address it was given, so port 0 would print an unusable one).
         head, rest = block.split("\n", 1)
         self.assertNotIn("--port", rest)
-        rest = rest.replace("python3 -m", "exec python3 -u -m", 1) + " --port 0"
+        with socket.socket() as probe:
+            probe.bind(("127.0.0.1", 0))
+            port = probe.getsockname()[1]
+        before, _, last = rest.rpartition("python3 -m")
+        rest = before + "exec python3 -u -m" + last + f" --port {port}"
         p = subprocess.Popen(["sh", "-ec", head + "\necho DIR=$DIR\n" + rest], cwd=ROOT,
                              env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                              text=True)
@@ -302,12 +319,25 @@ class TryItTest(unittest.TestCase):
                 seen.append(line)
                 if line.startswith("DIR="):
                     state["DIR"] = line.strip()[4:]
-                m = re.search(r"https?://\S+", line)
+                m = re.search(r"https?://[^\s\"]+", line)
                 if m:
                     url = m.group(0).rstrip(".,")
             self.assertNotRegex(url, r":8765/")
-            with urllib.request.urlopen(url, timeout=30) as resp:
-                self.assertEqual(resp.status, 200)
+            # the address is printed as the listener starts: retry until it accepts
+            for attempt in range(60):
+                try:
+                    with urllib.request.urlopen(url.rstrip("/") + "/api/health",
+                                                timeout=30) as resp:
+                        self.assertEqual(resp.status, 200)
+                    break
+                except ConnectionRefusedError:
+                    pass
+                except urllib.error.URLError as error:
+                    if not isinstance(error.reason, ConnectionRefusedError):
+                        raise
+                time.sleep(1)
+            else:
+                self.fail(f"nothing listens at {url}")
         finally:
             p.terminate()
             try:

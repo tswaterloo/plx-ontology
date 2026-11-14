@@ -77,6 +77,34 @@ describe("brief view", () => {
     expect(screen.getByTestId("brief").textContent).not.toMatch(/5 Jan 2099 · read/);
   });
 
+  it("folds sections read in full with nothing in them into one line, keeping every held-back one", () => {
+    render(
+      <BriefView
+        brief={brief({
+          sections: [
+            { key: "points", title: "Suggested talking points", state: "empty", rows: [], more: 0, figures: [], note: "Drawn from the lines below." },
+            { key: "late", title: "Late items and alerts", state: "shown", rows: [], more: 0, figures: [] },
+            { key: "cash", title: "Cash", state: "finance_marked", rows: [], more: 0, figures: [], note: "Finance-marked: shown only to readers who hold finance." },
+            { key: "quality", title: "Quality issues", state: "empty", rows: [], more: 0, figures: [] },
+            { key: "notes", title: "Last meeting", state: "shown", more: 0, figures: [], rows: [{ label: "Action item", detail: "Send the proposal", sources: [] }] },
+          ],
+        })}
+      />,
+    );
+    expect(screen.getByTestId("brief-quiet")).toHaveTextContent("Nothing you may read under Late items and alerts or Quality issues.");
+    expect(screen.queryByTestId("brief-section-late")).toBeNull();
+    // a section with a note of its own keeps its heading and the note
+    expect(screen.getByTestId("brief-section-points")).toHaveTextContent("Drawn from the lines below.");
+    expect(screen.getByTestId("brief-section-cash")).toHaveTextContent(/Finance-marked/);
+    expect(screen.getByTestId("brief-section-notes")).toHaveTextContent("Send the proposal");
+  });
+
+  it("says a brief with nothing at all in one line", () => {
+    render(<BriefView brief={brief({ sections: [{ key: "late", title: "Late items", state: "empty", rows: [], more: 0, figures: [] }] })} />);
+    expect(screen.getByTestId("brief-quiet")).toHaveTextContent("Nothing you may read under Late items.");
+    expect(screen.queryByTestId("brief-section-late")).toBeNull();
+  });
+
   it("words percents, money and the week picker's Mondays", () => {
     expect(figureText({ value: "92.5", unit: "percent", currency: null })).toBe("92.5%");
     expect(deltaText({ delta: "-2.5", previous: "95.0", unit: "percent", currency: null })).toBe("-2.5 pts vs 95.0% the week before");

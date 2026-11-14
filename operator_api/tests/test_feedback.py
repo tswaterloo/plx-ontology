@@ -36,18 +36,28 @@ def asked(client: TestClient, question: str = "where is PO 90412, is it late") -
     return json.loads(last.split("data: ", 1)[1])["answer_id"]
 
 
-class Guard:
-    """A people exclusion naming one object id and one address."""
-    unavailable = None
+OTHER = "66666666-7777-4888-8999-aaaaaaaaaaaa"   # a colleague nobody excludes
 
-    def is_excluded(self, value):
-        return value.lower() in (OID, "excluded.person@plx.example")
 
-    def decides(self, address):
-        return address.endswith("@plx.example")
+def Guard(excluded=(OID,)):
+    """The real people exclusion (``PeopleExclusion``) naming ``excluded``, with a captured
+    directory attached as the mail capture records it: the excluded person's and a
+    colleague's addresses, so the tenant's domain is known (never a stand-in guard: one
+    whose answers differ from the real one's hid a shown address, CT-T-06)."""
+    from integrations.people_exclusion import PeopleExclusion
+    guard = PeopleExclusion(list(excluded))
+    guard.attach_directory([(OID, "excluded.person@plx.example", []),
+                            (OTHER, "ok.person@plx.example", [])])
+    return guard
 
-    def known_domains(self):
-        return {"plx.example"}
+
+def ids_only(excluded=(OID,)):
+    """The exclusion exactly as the API loads it (``operating.pg.permissions
+    .load_exclusion``: the object ids of ``PLX_EXCLUDED_PEOPLE_OIDS``, no directory)."""
+    from operating.pg.permissions import load_exclusion
+    with mock.patch.dict(os.environ, {"PLX_EXCLUDED_PEOPLE_OIDS": ",".join(excluded)}):
+        os.environ.pop("PLX_EXCLUDED_PEOPLE_FILE", None)
+        return load_exclusion()
 
 
 class Grants(dict):
@@ -270,9 +280,8 @@ class FeedbackLoop(unittest.TestCase):
         every reader (the owner's whole read included) and in the nightly digest; a writer
         excluded since is "a colleague"; no list: withheld (fail closed)."""
 
-        class Nobody(Guard):
-            def is_excluded(self, value):
-                return False
+        def Nobody():   # the list names someone else when the notes are written
+            return Guard(excluded=(OTHER,))
         later = client_for(self.backend, f"staff:{OID}")   # a writer keyed by their object id
         said = f"ask excluded.person@plx.example ({OID}) about PO 90412"
         with mock.patch.object(fb, "exclusion", Nobody):
@@ -328,9 +337,45 @@ class NeverStored(unittest.TestCase):
                          "graph-mail://ok.person@plx.example/m/1")
         self.assertEqual(fb.clean_handle("bc://plx/purchaseOrders/90412", Guard()),
                          "bc://plx/purchaseOrders/90412")
+        # an address of the tenant's domain no directory holds: undecided, withheld
+        self.assertNotIn("new.hire", fb.clean("ask new.hire@plx.example", Guard()))
         # no usable exclusion: every address and object id is withheld (fail closed)
         self.assertNotIn("@", fb.clean("ok.person@plx.example", None))
         self.assertIsNone(fb.clean_handle(f"graph-mail://{OID}/messages/AAMk", None))
+
+    def test_the_exclusion_as_the_api_loads_it_withholds_every_address_it_cannot_decide(self):
+        """The guard the API builds (object ids alone) decides no address: an excluded
+        person's address in a note was kept as an outsider's (CT-T-06). Every address is
+        now withheld under it; object ids are decided as before."""
+        guard = ids_only()
+        out = fb.clean(f"mail excluded.person@plx.example ({OID}), or {OTHER}; "
+                       "vendor@supplier.example", guard)
+        self.assertNotIn("excluded.person", out)
+        self.assertNotIn("supplier.example", out)   # undecidable: withheld too
+        self.assertNotIn(OID, out)
+        self.assertIn(OTHER, out)
+        self.assertIsNone(fb.clean_handle(
+            "graph-mail://excluded.person%40plx.example/messages/AAMk", guard))
+
+    def test_a_signed_in_reader_is_decided_by_their_object_id(self):
+        """Under the API's guard (object ids alone) a reader's address is undecidable: a
+        reader is named when their object id is not excluded, never when it is, and one
+        with an address alone is "a colleague" (fail closed)."""
+        def reader(oid, email):
+            session = mock.Mock(identities=(), principals=("staff:x",), subject_oid=oid)
+            return mock.Mock(session=session, email=email, key="staff:x")
+        guard = ids_only()
+        self.assertFalse(fb.reader_excluded(reader(OTHER, "ok.person@plx.example"), guard))
+        self.assertTrue(fb.reader_excluded(reader(OID, "excluded.person@plx.example"), guard))
+        self.assertTrue(fb.reader_excluded(reader(None, "ok.person@plx.example"), guard))
+        # with the directory: an address that maps to the excluded id excludes, whatever
+        # object id the session carries
+        self.assertTrue(fb.reader_excluded(reader(OTHER, "excluded.person@plx.example"),
+                                           Guard()))
+        self.assertFalse(fb.reader_excluded(reader(None, "ok.person@plx.example"), Guard()))
+        for broken in (None, ids_only(excluded=("not-an-id",))):
+            self.assertTrue(fb.reader_excluded(reader(OTHER, "ok.person@plx.example"),
+                                               broken))
 
     def test_the_product_never_imports_eval_code(self):
         source = Path(fb.__file__).read_text("utf-8")

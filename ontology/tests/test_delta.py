@@ -30,6 +30,19 @@ from ontology.tests.test_projection import (AUDIENCE, BASE, CATALOG, KEY, OPS, T
                                             FakeWorkbench, compiled_schema, normalizer)
 
 
+# Two build workers: the cycles keep the parallel layer projection without a
+# many-core host spawning its CPUs less two (up to 12) processes on every cycle.
+WORKERS = 2
+
+
+def _workers(options: dict) -> int | None:
+    """The cycle's worker count: one a test asks for, else PLX_BUILD_WORKERS when a test
+    sets it (``None`` lets the build read it), else ``WORKERS``."""
+    if "workers" in options:
+        return options.pop("workers")
+    return None if os.environ.get("PLX_BUILD_WORKERS") else WORKERS
+
+
 class DeltaCase(unittest.TestCase):
     """A captured fixture Portal mirror, its full builds and delta cycles over them."""
 
@@ -63,6 +76,7 @@ class DeltaCase(unittest.TestCase):
     def cycle(self, base, **options):
         return delta.build_delta(self.state, self.mirror_path, self.root / "delta",
                                  base_path=base, schema=self.schema, normalizer=normalizer,
+                                 workers=_workers(options),
                                  environ={}, **options)
 
     def owned(self, store):
@@ -321,6 +335,7 @@ class DeltaDocumentTests(DeltaCase):
     def cycle(self, base, environ=None, **options):
         return delta.build_delta(self.state, self.mirror_path, self.root / "delta",
                                  base_path=base, schema=self.schema, normalizer=normalizer,
+                                 workers=_workers(options),
                                  environ=environ or {}, **options)
 
     def test_a_file_without_time_is_pending_and_its_record_follows_a_layer_later(self):
@@ -522,6 +537,7 @@ class DeltaMailDocumentTests(DeltaCase):
     def cycle(self, base, environ=None, **options):
         return delta.build_delta(self.state, self.mirror_path, self.root / "delta",
                                  base_path=base, schema=self.schema, normalizer=normalizer,
+                                 workers=_workers(options),
                                  environ={**self.environ, **(environ or {})}, **options)
 
     def test_a_mailbox_the_guard_cannot_decide_after_the_closure_is_left_out_not_fatal(self):
@@ -685,6 +701,44 @@ class HeldQueueTests(unittest.TestCase):
                 self.assertEqual(self.state.pending_files({}, {}), 0)
                 self.assertEqual(self.state.changed("graph_mail", done_only=True),
                                  sorted(tuples, key=delta._order))
+
+    def test_an_open_backlog_past_the_cycle_cap_drains_oldest_first_none_lost(self):
+        # 11-13: a 213,931-record catch-up was one cycle. Over a Postgres base a cycle
+        # follows at most the cap, the records open longest first, across sources; a
+        # change arriving meanwhile waits behind the backlog; none lost or followed twice.
+        for n in (1, 10, 60):
+            with self.subTest(n=n):
+                self.state.reset("d")
+                mail = [("inbox", f"m{i:03d}") for i in range(n)]
+                portal = [("r", f"p{i:03d}") for i in range(n)]
+                self.state.add("graph_mail", mail)
+                self.state.add("portal_api", portal)
+                seen: list = []
+                cycles = 0
+                late = ("r", "zz-late")
+                while self.state.open_count():
+                    fresh = {s: self.state.changed(s, open_only=True) for s in delta.SOURCES}
+                    report: dict = {}
+                    part = delta.cap_followed(self.state, fresh,
+                                              {"PLX_DELTA_MAX_FOLLOWED": "7"}, report)
+                    got = [(s, k) for s, keys in part.items() for k in keys]
+                    total = sum(map(len, fresh.values()))
+                    self.assertEqual(len(got), min(7, total))
+                    self.assertEqual(sum(report.get("deferred", {}).values()),
+                                     total - len(got))
+                    if cycles == 0 and late not in seen:
+                        time.sleep(0.002)
+                        self.state.add("portal_api", [late])   # arrives during the drain
+                    seen.extend(got)
+                    self.state.close_over({}, part)
+                    cycles += 1
+                expected = [("graph_mail", k) for k in mail] + [("portal_api", k)
+                                                                for k in portal]
+                self.assertEqual(sorted(seen), sorted(expected + [("portal_api", late)]))
+                self.assertEqual(len(seen), len(set(seen)))
+                self.assertEqual(seen[-1], ("portal_api", late))   # newest last
+                first = min(7, 2 * n)   # the late change came after the first cut
+                self.assertEqual(cycles, 1 + -(-(2 * n + 1 - first) // 7))
 
     def test_a_record_held_again_goes_to_the_back_and_a_change_reopens_it(self):
         keys = [("inbox", "a"), ("inbox", "b"), ("inbox", "c")]

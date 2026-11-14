@@ -9,7 +9,7 @@ import type { AutopilotScorecard, AutopilotScoreDay, AutopilotWorkflowRow } from
 const dayLabel = (iso: string, today: string) =>
   iso === today
     ? "Today"
-    : new Date(`${iso}T12:00:00Z`).toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric", timeZone: "UTC" });
+    : new Date(`${iso}T12:00:00Z`).toLocaleDateString("en-GB", { weekday: "short", day: "numeric", month: "short", timeZone: "UTC" }).replace("Sept", "Sep");
 
 const COLS: { key: keyof Omit<AutopilotScoreDay, "day">; label: string }[] = [
   { key: "prepared", label: "Prepared" },

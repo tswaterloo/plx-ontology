@@ -76,6 +76,7 @@ from __future__ import annotations
 
 import argparse
 import ast
+import bisect
 from dataclasses import dataclass, replace
 import datetime as dt
 import fnmatch
@@ -308,7 +309,10 @@ def _matches(text: str, deny: Denylist) -> list[tuple[str, str]]:
     return deny.matched[text]
 
 
-def _docstrings(tree: ast.AST) -> set[int]:
+@functools.lru_cache(maxsize=None)
+def _docstrings(tree: ast.AST) -> frozenset[int]:
+    """ids of the docstring constants in ``tree`` (cached: the trees come from
+    ``_parse``'s cache and both scans ask)."""
     found = set()
     for node in ast.walk(tree):
         if isinstance(node, (ast.Module, ast.ClassDef, ast.FunctionDef,
@@ -317,7 +321,7 @@ def _docstrings(tree: ast.AST) -> set[int]:
             if isinstance(first, ast.Expr) and isinstance(first.value, ast.Constant) \
                     and isinstance(first.value.value, str):
                 found.add(id(first.value))
-    return found
+    return frozenset(found)
 
 
 Finding = tuple[str, int, str, str, str]  # (path, line, rule, entry key, shown)
@@ -354,12 +358,13 @@ class _JsonScanner:
     def __init__(self, text: str):
         self.text = text
         self.scalars: list[tuple[int, str]] = []
+        self._newlines = [match.start() for match in re.finditer("\n", text)]
 
     def _ws(self, pos: int) -> int:
         return self._SPACE.match(self.text, pos).end()
 
     def _line(self, pos: int) -> int:
-        return self.text.count("\n", 0, pos) + 1
+        return bisect.bisect_left(self._newlines, pos) + 1  # newlines before pos, + 1
 
     def value(self, pos: int, record: bool) -> int:
         pos = self._ws(pos)

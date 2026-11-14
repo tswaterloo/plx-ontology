@@ -246,7 +246,8 @@ def fact_text(text: str, claim: Mapping[str, Any]) -> str:
 SYSTEM_PREFIXES = {"bc": "BC", "portal": "Portal", "fm": "FileMaker", "sage": "Sage"}
 # Short words a field name spells in capitals.
 ACRONYMS = {"po": "PO", "so": "SO", "ao": "AO", "eta": "ETA", "uom": "UOM", "gl": "GL",
-            "sku": "SKU", "id": "ID", "url": "URL", "coa": "COA", "upc": "UPC"}
+            "sku": "SKU", "id": "ID", "url": "URL", "coa": "COA", "upc": "UPC", "qc": "QC",
+            "qa": "QA", "gst": "GST", "hst": "HST", "mo": "MO", "sds": "SDS", "tds": "TDS"}
 # Fields that are keys, hashes or plumbing, never business facts.
 INTERNAL_FIELD = re.compile(
     r"(?:^|[._])(?:id|uuid|guid|etag|sha256|content_sha256|digest|change_key|row_version|"

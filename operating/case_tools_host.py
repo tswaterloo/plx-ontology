@@ -109,7 +109,7 @@ never pinned), so the merged read shows nothing the generic read would withhold.
   (identifiers parsed by the one grammar, each mention cited by page; a lookup by
   identifier over every captured file the reader may see gives the files and pages
   naming it. The lookup reads the text the capture stored, through an index of it kept
-  beside the store for every later process (``file_index``), and never extracts or
+  beside the store and shared by every process (``lookup_path``), and never extracts or
   OCR-reads at query time: a file without stored text, or whose scanned pages were left
   for a later OCR pass, is a ``text_not_read`` gap. The host gates and re-reads only a
   file whose text names the identifier, or one unsearched (a capped PDF whose pages read
@@ -715,15 +715,17 @@ class PagedRead:
 _DATE = re.compile(r"^[0-9]{4}-[0-9]{2}-[0-9]{2}(?:T[0-9]{2}:[0-9]{2}(?::[0-9]{2}"
                    r"(?:\.[0-9]{1,6})?)?(?:Z|[+-][0-9]{2}:[0-9]{2}))?$")
 _ROW_FIELD = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
-# Bounds of the identifier lookup plx.documents reads captured SharePoint text through
+# Bound of the identifier lookup plx.documents reads captured SharePoint text through
 # (CaptureCaseHostTools._identifier_lookup): the current captured files it reads (the
-# store's own read-back bound) and the (identifier, file, page) entries it holds. Past
-# either the lookup is cut and an answer from it says so (scan_cap).
+# store's own read-back bound). Past it the lookup is cut and an answer from it says so
+# (scan_cap). It holds no entries (they are queried from the shared lookup file); a
+# question reads at most ``LOOKUP_MATCHES`` files whose text names its identifiers (in
+# listing order), and past it the answer is cut the same way.
 LOOKUP_FILES = 100_000
+LOOKUP_MATCHES = 2_000
 # Unsearched captured files (text not searched) gated to be counted per plx.documents call;
 # past it the counts are lower bounds (``_captured_documents``).
 UNSEARCHED_GATE = 100
-LOOKUP_ENTRIES = 200_000
 # A query word a captured file's name or folder path must hold to be listed by name
 # (``_name_terms``): letters or digits, this long at least.
 NAME_TERM_MIN = 2
@@ -1134,17 +1136,56 @@ class CaptureCaseHostTools(CaseHostTools):
         base = super().policy_inputs(actor)
         if base is None:
             return None
+        values, objects = base
+        return values + (*self._capture_grant_stamps(), self._policy_doubts), objects
+
+    def _capture_grant_stamps(self) -> tuple[Any, Any]:
+        """(mail, SharePoint): what ``policy_now`` decides from each capture store, as it
+        stands now: the mail capture's mailbox rows (``_MAILBOX_ROWS``: identities, owner
+        ACL, recorded resources, directory listing; every column ``audience_check``,
+        ``visible_mailboxes`` and the exclusion read of a mailbox) and the SharePoint
+        capture's drives (``_drives``: the only thing its audience check reads of the
+        store). Not the store files' state: a capture commits every few seconds, so a kept
+        policy never outlived one and every request decided it again (2-60 s of each page
+        and Ask under load, 2026-11-13). A store ``policy_now`` does not open (none there,
+        no live audience) grants nothing from it; one that cannot be read so is stamped
+        by its file state, as before."""
         from integrations import capture_mail, capture_sharepoint
         from .ontology_host import _file_stamp
         mail = sharepoint = None
         if self.mail_capture_dir is not None:
             mail = _file_stamp(Path(self.mail_capture_dir).expanduser()
                                / capture_mail.STORE_DIR / capture_mail.DB_FILE)
+            try:
+                opened = self._mail()
+                if opened is None:   # no store or no audience: no mail unit is granted
+                    mail = ("none",)
+                else:
+                    with opened[0] as store:
+                        cursor = store.db.execute(capture_mail._MAILBOX_ROWS)
+                        names = [column[0] for column in cursor.description]
+                        rows = cursor.fetchall()
+                    # every column but when the identity was last checked (each capture
+                    # run rewrites it; no grant reads it)
+                    kept = [i for i, name in enumerate(names) if name != "identity_checked_at"]
+                    mail = ("mailboxes", hashlib.sha256(json.dumps(
+                        [[row[i] for i in kept] for row in rows], default=str).encode()
+                    ).hexdigest())
+            except Exception:  # noqa: BLE001 - unreadable: the file state, as before
+                pass
         if self.sharepoint_capture_dir is not None:
             sharepoint = _file_stamp(Path(self.sharepoint_capture_dir).expanduser()
                                      / capture_sharepoint.STORE_DIR / capture_sharepoint.DB_FILE)
-        values, objects = base
-        return values + (mail, sharepoint, self._policy_doubts), objects
+            try:
+                store = self._sharepoint()
+                if store is None:   # no store: no SharePoint unit is granted
+                    sharepoint = ("none",)
+                else:
+                    sharepoint = ("drives", tuple(row[0] for row in store.db.execute(
+                        "SELECT DISTINCT drive_id FROM items ORDER BY drive_id")))
+            except Exception:  # noqa: BLE001 - unreadable: the file state, as before
+                pass
+        return mail, sharepoint
 
     def policy_now(self, actor: Any) -> ReadPolicy:
         policy = super().policy_now(actor)
@@ -2628,10 +2669,11 @@ class CaptureCaseHostTools(CaseHostTools):
         documents = list(result["documents"])
         listed = {doc["citation"]: at for at, doc in enumerate(documents)}
         whole_mentions = held_mentions()
-        pages: dict[int, set[int | None]] = {}
-        for key in wanted:
-            for at, page in lookup.entries.get(key, ()):
-                pages.setdefault(at, set()).add(page)
+        pages = lookup.found(wanted)
+        # Past the match bound the lookup's answer is cut (scan_cap), never an absence.
+        matches_cut = len(pages) > LOOKUP_MATCHES
+        if matches_cut:
+            pages = {at: pages[at] for at in sorted(pages)[:LOOKUP_MATCHES]}
         matching: list[tuple[str, dict[str, Any]]] = []
         for at in sorted(pages):
             handle = lookup.handles[at]
@@ -2652,9 +2694,8 @@ class CaptureCaseHostTools(CaseHostTools):
         texted = {handle for handle, _document in matching}
         matching.extend(sorted(
             ((handle, self._named(handle, name, path, modified))
-             for handle, name, path, modified, tokens in lookup.names
-             if handle not in listed and handle not in texted
-             and _names_terms(tokens, terms)),
+             for handle, name, path, modified in lookup.named(terms)
+             if handle not in listed and handle not in texted),
             key=lambda pair: str(pair[1]["date"] or ""), reverse=True))
         found_handles = {handle for handle, _document in matching}
         # No match on the pages read is never absence from the pages not read.
@@ -2707,7 +2748,8 @@ class CaptureCaseHostTools(CaseHostTools):
                 warming += 1
             else:
                 capped.append(skipped_gap(handle, why))
-        if not found and not lookup.truncated and not over_cap and not over_bound \
+        if not found and not lookup.truncated and not matches_cut and not over_cap \
+                and not over_bound \
                 and not capped and not over_budget and not not_read and not text_unread \
                 and not ungated and not unchecked and not warming:
             return dict(result, documents=documents) if cited else result
@@ -2715,7 +2757,7 @@ class CaptureCaseHostTools(CaseHostTools):
         gaps = [g for g in result["gaps"] if not (found and g["reason"] == "no_match")]
         searched = dict(result["searched"])
         searched["scopes"] = [*searched.get("scopes", []), "capture:sharepoint"][:16]
-        cut = len(found) > room or lookup.truncated or ungated
+        cut = len(found) > room or lookup.truncated or ungated or matches_cut
         more = "+" if unchecked else ""
         if cut:
             gaps.append(_gap("unknown", "scan_cap", "capture:sharepoint",
@@ -2805,20 +2847,20 @@ class CaptureCaseHostTools(CaseHostTools):
     def _identifier_lookup(self, store: Any, gated: Any, audience: Any
                            ) -> "_IdentifierLookup":
         """Every current captured file this reader may see (``store.index``), looked up in
-        the store's identifier index (:func:`file_index`: per file, the identifiers its
+        the store's shared lookup file (:func:`_current_lookup`: per file, the identifiers its
         stored text names by page under the one grammar, ``mn.file_text_fields`` and
         ``mn.extract``, as :meth:`_mentioning` reads it, and why its text was not searched
         whole). Nothing is extracted or OCR-read here: a file without stored text is
         unsearched (``text_not_read``), never read at query time. Reused while the
         reader, the audience and the capture store are unchanged (SQLite
         ``data_version``: another connection's commit makes a new one); one is held at a
-        time. Bounded by ``LOOKUP_FILES`` files and ``LOOKUP_ENTRIES`` entries (a cut
-        lookup is ``truncated``)."""
+        time, and only when its every listed file's kept entry is current. Bounded by
+        ``LOOKUP_FILES`` files (a cut lookup is ``truncated``)."""
         version = store.db.execute("PRAGMA data_version").fetchone()[0]
         held = self._lookup
         same = (held is not None and held.reader == gated and held.audience is audience
                 and held.store is store)
-        if same and held.version == version:
+        if same and held.version == version and held.generation_current():
             return held   # no commit since
         # A commit: the lookup is the same while this reader's visible files (the
         # index's state) and the store's versions and their content (``content_stamp``)
@@ -2827,57 +2869,39 @@ class CaptureCaseHostTools(CaseHostTools):
         index = store.index(gated, audience, limit=LOOKUP_FILES)
         stamp = getattr(store, "content_stamp", None)
         state = (index.get("state"), stamp() if callable(stamp) else version)
-        if same and index.get("state") is not None and held.state == state:
+        if same and index.get("state") is not None and held.state == state \
+                and held.generation_current():
             held.version = version
             return held
         lookup = _IdentifierLookup(store, gated, audience, state)
         lookup.version = version
-        _STALE.hit = False
-        files = file_index(store) if index["items"] else {}
-        names = file_names(store) if index["items"] else {}
-        stale = bool(_STALE.hit)
-        _STALE.hit = False
-        before = held.seen if held is not None and held.reader == gated \
-            and held.audience is audience and held.store is store else {}
-        lookup.truncated, held_entries = index["truncated"], 0
-        for item in index["items"]:
-            handle = item["l1_handle"]
-            if handle in names:
-                lookup.names.append((handle, *names[handle]))
-            entry = files.get(handle)
-            stamp_now = (item.get("content_sha256"), item.get("recorded_at"))
-            if stale and (entry is None or before.get(handle) != stamp_now):
-                # Served from the previous snapshot while the new one is read: this file
-                # is new or changed since, so its text is not searched yet.
-                lookup.unsearched.append((len(lookup.handles), STALE_INDEX))
-                lookup.handles.append(handle)
-                continue
-            if entry is None:
-                continue   # no longer current: the index read the store after the listing
-            lookup.seen[handle] = stamp_now
-            named, why = entry["named"], entry["why"]
-            if named is None:
-                if why is not None:
-                    lookup.unsearched.append((len(lookup.handles), why))
-                    lookup.handles.append(handle)
-                continue
-            if held_entries + len(named) > LOOKUP_ENTRIES:
-                lookup.truncated = True   # a file is held whole or not at all
-                break
-            at, held_entries = len(lookup.handles), held_entries + len(named)
-            lookup.handles.append(handle)
-            for kind, normalized, page in named:
-                lookup.entries.setdefault((kind, normalized), []).append((at, page))
-            skipped = (extraction_skipped({"skipped_by_cap": entry["skipped"]})
-                       if entry["skipped"] is not None else None)
-            # One gap per file: a page-capped file names its pages not read (the more
-            # specific gap), also when its scanned pages wait for OCR too.
-            if skipped is not None:
-                lookup.unsearched.append((at, skipped))
-            elif why is not None:
-                lookup.unsearched.append((at, why))   # scanned pages left for OCR
-        if not stale:
-            self._lookup = lookup   # a lookup from a stale snapshot is never kept
+        lookup.truncated = index["truncated"]
+        current = True
+        if index["items"]:
+            shared, current = _current_lookup(store)
+            lookup.shared, lookup.generation = shared, shared.generation()
+            lookup.handles = [item["l1_handle"] for item in index["items"]]
+            lookup.positions = {handle: at for at, handle in enumerate(lookup.handles)}
+            for at, stale, why, skipped, searched in _visible_exceptions(
+                    shared, index["items"]):
+                if stale:
+                    # Added or changed since the lookup file was last brought up (another
+                    # process is bringing it up now): its text is not searched yet.
+                    lookup.unsearched.append((at, STALE_INDEX))
+                    lookup.not_current.add(at)
+                    current = False
+                elif not searched:
+                    if why is not None:
+                        lookup.unsearched.append((at, why))
+                elif skipped is not None:
+                    # One gap per file: a page-capped file names its pages not read (the
+                    # more specific gap), also when its scanned pages wait for OCR too.
+                    lookup.unsearched.append(
+                        (at, extraction_skipped({"skipped_by_cap": skipped})))
+                elif why is not None:
+                    lookup.unsearched.append((at, why))   # scanned pages left for OCR
+        if current:
+            self._lookup = lookup   # a lookup that is not current is never kept
         else:
             lookup.version = None
         return lookup
@@ -2931,86 +2955,173 @@ class CaptureCaseHostTools(CaseHostTools):
 
 class _IdentifierLookup:
     """One reader's identifier lookup over the captured SharePoint files
-    (``CaptureCaseHostTools._identifier_lookup``): ``handles`` in the store's order,
-    ``entries`` (identifier kind, normalized) -> [(position in ``handles``, page or None)],
-    ``unsearched`` [(position, "cap" | "not_read" | "bound" | the pages not read)]."""
+    (``CaptureCaseHostTools._identifier_lookup``): ``handles``, the files the store lists
+    for the reader in its order (``positions``: handle -> position), ``unsearched``
+    [(position, "cap" | "not_read" | "bound" | text_not_read | index_warming | the pages
+    not read)], ``not_current`` the positions whose kept entry is not current. What a
+    file's text or name names is read from the store's shared lookup file (``shared``)
+    when asked (``found``, ``named``): nothing reader-independent is held here."""
 
     def __init__(self, store: Any, reader: Any, audience: Any, state: Any) -> None:
         # ``state``: the reader's visible files and the store's content it was made from;
         # ``version``: the store's commit counter it was last found current at.
         self.store, self.reader, self.audience, self.state = store, reader, audience, state
         self.version: Any = None
+        self.shared: _SharedLookup | None = None
         self.handles: list[str] = []
-        self.entries: dict[tuple[str, str], list[tuple[int, int | None]]] = {}
+        self.positions: dict[str, int] = {}
         self.unsearched: list[tuple[int, Any]] = []
-        # (handle, name, path, last modified, the name's and path's words) per file listed.
-        self.names: list[tuple[str, Any, Any, Any, frozenset[str]]] = []
+        self.not_current: set[int] = set()
         self.truncated = False
-        self.seen: dict[str, tuple[Any, Any]] = {}   # handle -> (content hash, recorded at)
+        self.generation: str | None = None
+
+    def generation_current(self) -> bool:
+        """Whether the shared lookup file this lookup was made from still holds that
+        build (not made anew since: a broken or foreign file replaced, another store)."""
+        return self.shared is None or (self.generation is not None
+                                       and self.shared.generation() == self.generation)
+
+    def found(self, wanted: Iterable[tuple[str, str]]) -> dict[int, set[int | None]]:
+        """position -> the pages (None: an unpaged file) of each listed file whose kept
+        entry is current and whose stored text names one of ``wanted``."""
+        pages: dict[int, set[int | None]] = {}
+        if self.shared is None or not wanted:
+            return pages
+        for handle, page in _named_by(self.shared, wanted):
+            at = self.positions.get(handle)
+            if at is not None and at not in self.not_current:
+                pages.setdefault(at, set()).add(page)
+        return pages
+
+    def named(self, terms: Sequence[str]) -> list[tuple[str, Any, Any, Any]]:
+        """(handle, name, folder path, last modified) of each listed file whose name's
+        and folder path's words hold every term (``_named_files``), in listing order."""
+        if self.shared is None or not terms:
+            return []
+        found = [(self.positions[row[0]], row) for row in _named_files(self.shared, terms)
+                 if row[0] in self.positions]
+        return [row for _at, row in sorted(found, key=lambda pair: pair[0])]
 
 
 # ---------------------------------------------------------------- the identifier index
-# What each current captured SharePoint file's stored text names, for every reader's
-# lookup (``CaptureCaseHostTools._identifier_lookup``). Reader-independent: a reader's lookup takes the
-# entries of the files ``store.index`` lists for it. Each entry is keyed by the file
+# What each current captured SharePoint file's stored text names, and its name and folder
+# path words, for every reader's lookup (``CaptureCaseHostTools._identifier_lookup``). Reader-independent: a reader's
+# lookup takes the files ``store.index`` lists for it. Each entry is keyed by the file
 # version's identity (its MIME type, name, content and text status and SHA-256s: what
-# its stored text and its paging are read from) and the whole index by a digest of the
-# code that makes it (``_index_code``), so an entry is never used for other text or
-# another grammar. It is kept beside the store (owner-only, written whole or not at all)
-# for every later process: a new MCP session reads it instead of the captured text, and
-# only the files captured since are read (from their stored text) and added.
+# its stored text and its paging are read from) and the whole lookup by a digest of the
+# code that makes it (``_lookup_code``), so an entry is never used for other text or
+# another grammar.
+#
+#GA-F10 (2026-11-13): it is one SQLite file per capture store and code version, kept
+# beside the store (owner-only) and shared by every process on the box: one process at a
+# time brings it up to the store's state (an exclusive ``flock`` on ``<file>.lock``),
+# reading only the versions added or changed since; every host queries it by key. Each
+# host used to hold its own copy of every current file's names and index as Python
+# dicts (~0.95 GB per host on 224k files, measured 2026-11-13); the file's pages are now
+# the kernel's page cache, shared by all hosts.
 INDEX_FORMAT = "plx-identifier-index/v1"
+# The JSON index older code kept (one per code version): read once to seed a new lookup
+# file of the same index code (no stored text is read again), then pruned as stale.
 INDEX_FILE = ".identifier-index.json"
 INDEX_MAX_BYTES = 256 << 20
+# The JSON file facts older code kept: never read, pruned as stale.
+LEGACY_FACTS_FILE = ".file-facts.json"
+LOOKUP_FILE = ".sharepoint-lookup.sqlite"
+LOOKUP_FORMAT = "plx-sharepoint-lookup/v1"
 # Why a file's text is not searched whole (``_IdentifierLookup.unsearched``).
 TEXT_NOT_READ = "text_not_read"
 STALE_INDEX = "index_warming"
 _UNSEARCHED = ("cap", "not_read", "bound", TEXT_NOT_READ)
 _INDEX_ROWS_SQL = ("SELECT l1_handle, record, content_status, content_sha256, text_status, "
                    "text_sha256 FROM items WHERE superseded_at IS NULL")
-# The same versions' states alone (their records are read once: ``_version_facts``).
+# The same versions' states alone (their records are read once: ``_read_facts``).
 _INDEX_STATE_SQL = ("SELECT version_id, l1_handle, content_status, content_sha256, "
-                    "text_status, text_sha256 FROM items WHERE superseded_at IS NULL")
-_INDEXES: dict[str, tuple[str, dict[str, dict[str, Any]]]] = {}   # per index file
-_INDEXES_LOCK = threading.Lock()
-# version id -> (its content and text state, its ``_state_key``), per index file.
-_STATE_KEYS: dict[str, dict[int, tuple[tuple, str]]] = {}
+                    "text_status, text_sha256, recorded_at FROM items "
+                    "WHERE superseded_at IS NULL")
+# ``files``: every current version (its record's facts, read once per version, and its
+# content and text state with that state's entry key); ``entries`` and ``named``: what
+# the stored text of each entry key names, by page; ``tokens``: the name's and folder
+# path's words per version (``_name_tokens``).
+_LOOKUP_SCHEMA = (
+    "CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT)",
+    "CREATE TABLE IF NOT EXISTS files (vid INTEGER PRIMARY KEY, handle TEXT NOT NULL UNIQUE,"
+    " name TEXT, path TEXT, modified TEXT, mime TEXT, cs TEXT, csha TEXT, ts TEXT,"
+    " tsha TEXT, rec TEXT, key TEXT)",
+    "CREATE INDEX IF NOT EXISTS files_key ON files (key)",
+    "CREATE TABLE IF NOT EXISTS entries (key TEXT PRIMARY KEY, searched INTEGER NOT NULL,"
+    " why TEXT, skipped TEXT)",
+    "CREATE TABLE IF NOT EXISTS named (key TEXT NOT NULL, kind TEXT NOT NULL,"
+    " normalized TEXT NOT NULL, page INTEGER, at INTEGER NOT NULL)",
+    "CREATE INDEX IF NOT EXISTS named_value ON named (kind, normalized)",
+    "CREATE INDEX IF NOT EXISTS named_key ON named (key)",
+    "CREATE TABLE IF NOT EXISTS tokens (token TEXT NOT NULL, vid INTEGER NOT NULL,"
+    " PRIMARY KEY (token, vid)) WITHOUT ROWID",
+)
+# Versions whose records are read per statement, and files whose stored text is read per
+# statement.
+_FACTS_CHUNK = 5000
+_ENTRY_CHUNK = 500
 
 
-# A kept index of another code version is removed once it has not been written for this
-# long (a process still running that version rewrites its own at least every
-# ``PERSIST_EVERY`` seconds).
+# A kept file of another code version (or one older code kept) is removed once it has not
+# been written for this long (a process running that code brings its own up to date at
+# least every ``WARM_EVERY_SECONDS`` while the capture changes).
 INDEX_OTHER_VERSION_STALE = 6 * 3600.0
 
 
 def identifier_index_path(store_root: str | Path, code: str | None = None) -> Path:
-    """Where the identifier index of the SharePoint capture under ``store_root`` (the
-    store's own directory, ``SharePointCaptureStore.root``) is kept: beside its database,
-    named by the code version that makes it (``_index_code``), so processes running
-    different code never overwrite each other's file and rebuild it in turn."""
+    """Where older code kept the JSON identifier index of the SharePoint capture under
+    ``store_root`` for index code ``code`` (``_index_code``): a new lookup file of the
+    same code is seeded from it."""
     code = _index_code() if code is None else code
     stem, suffix = INDEX_FILE.rsplit(".", 1)
     return Path(store_root) / (INDEX_FILE if code is None else f"{stem}-{code[:16]}.{suffix}")
 
 
+def lookup_path(store_root: str | Path, code: str | None = None) -> Path:
+    """Where the shared lookup file of the SharePoint capture under ``store_root`` (the
+    store's own directory, ``SharePointCaptureStore.root``) is kept: beside its database,
+    named by the code version that makes it (``_lookup_code``), so processes running
+    different code never write each other's file."""
+    code = _lookup_code() if code is None else code
+    stem, suffix = LOOKUP_FILE.rsplit(".", 1)
+    return Path(store_root) / f"{stem}-{(code or 'none')[:16]}.{suffix}"
+
+
+_KEPT_SHAPES = (re.compile(r"\.identifier-index(?:-[0-9a-f]{16})?\.json"),
+                re.compile(r"\.file-facts\.json"),
+                re.compile(r"\.\.(?:identifier-index(?:-[0-9a-f]{16})?|file-facts)\.json"
+                           r"\.[0-9a-f]{8}\.tmp"),
+                re.compile(r"\.sharepoint-lookup-[0-9a-f]{16}\.sqlite"))
+
+
 def _prune_indexes(path: Path, *, now: float | None = None) -> None:
-    """Remove the kept indexes beside ``path`` of other code versions (and the unversioned
-    file older code kept) that nobody has written for ``INDEX_OTHER_VERSION_STALE``."""
+    """Remove the kept files beside ``path`` (this code's lookup file) that nobody has
+    written for ``INDEX_OTHER_VERSION_STALE``: other code versions' lookup files (with
+    their write-ahead log, shared memory and lock files), the JSON index and file facts
+    older code kept, and their unfinished temporary files. ``path``'s own are kept."""
     now = time.time() if now is None else now
-    stem, suffix = INDEX_FILE.rsplit(".", 1)
     try:
-        for other in path.parent.iterdir():
-            name = other.name
-            if other == path or not (name == INDEX_FILE or (
-                    name.startswith(stem + "-") and name.endswith("." + suffix))):
-                continue
+        found = list(path.parent.iterdir())
+    except OSError:
+        return
+    for other in found:
+        name = other.name
+        if other == path or not any(shape.fullmatch(name) for shape in _KEPT_SHAPES):
+            continue
+        group = [other] + ([Path(f"{other}{s}") for s in ("-wal", "-shm", ".lock")]
+                           if name.endswith(".sqlite") else [])
+        try:
+            newest = max(p.stat().st_mtime for p in group if p.exists())
+        except (OSError, ValueError):
+            continue
+        if now - newest <= INDEX_OTHER_VERSION_STALE:
+            continue
+        for item in group:
             try:
-                if now - other.stat().st_mtime > INDEX_OTHER_VERSION_STALE:
-                    other.unlink()
+                item.unlink()
             except OSError:
                 pass
-    except OSError:
-        pass
 
 
 def _index_row(row: Mapping[str, Any]) -> dict[str, Any]:
@@ -3131,6 +3242,7 @@ def _index_code() -> str | None:
     return hashlib.sha256("\x00".join(parts).encode("utf-8")).hexdigest()
 
 
+
 def _load_index(path: Path, code: str) -> dict[str, dict[str, Any]] | None:
     """The entries kept in ``path`` by this code, else None (absent, foreign, too
     large, malformed: nothing of it is used)."""
@@ -3149,120 +3261,534 @@ def _load_index(path: Path, code: str) -> dict[str, dict[str, Any]] | None:
     return files
 
 
-def _save_index(path: Path, code: str, files: Mapping[str, Any]) -> None:
-    """Keep ``files`` in ``path``, owner-only, written whole or not at all (a temporary
-    file renamed over it); a directory this process may not write keeps nothing."""
-    files = dict(files)
-    _persist(path, lambda: json.dumps({"format": INDEX_FORMAT, "code": code, "files": files},
-                                      sort_keys=True, separators=(",", ":")))
-    _prune_indexes(path)
+
+def _read_facts(record: Any, path: Any) -> tuple[Any, Any, Any, frozenset[str], Any]:
+    """(name, folder path, last modified, name-and-path words, MIME type) of a version from
+    its record and path: what the lookup keeps of it (read once per version)."""
+    from integrations.captured_text import file_type
+    record = record if isinstance(record, dict) else {}
+    name, modified = record.get("name"), record.get("last_modified")
+    return (name if isinstance(name, str) else None, path if isinstance(path, str) else None,
+            modified if isinstance(modified, str) else None, _name_tokens(name, path),
+            file_type(record)[0])
 
 
-# The kept files (identifier index, file facts) only spare a new process reading the
-# capture again: one older than the capture is still right (each entry is checked
-# against the store; what it lacks is read). So a process writes one when it has none,
-# else at most every ``PERSIST_EVERY`` seconds and on its own writer thread: a capture
-# commit no longer has the reader holding the snapshot lock rewrite tens of MB.
-PERSIST_EVERY = 600.0
-# A temporary file of a write that never finished (a process ended while writing) is
-# removed by the next writer once it is this old.
-PERSIST_TMP_STALE = 3600.0
-_PERSIST_DUE: dict[str, tuple[float, Callable[[], str]]] = {}
-_PERSIST_LAST: dict[str, float] = {}
-_PERSIST_LOCK = threading.Condition()
-_PERSIST_WRITER: list[threading.Thread] = []
+@functools.lru_cache(maxsize=1)
+def _facts_code() -> str | None:
+    import inspect
+    from integrations import captured_text
+    try:
+        parts = [inspect.getsource(_name_tokens), _NAME_TOKEN.pattern, _NAME_PART.pattern,
+                 inspect.getsource(captured_text.file_type),
+                 inspect.getsource(captured_text._mime), inspect.getsource(_read_facts)]
+    except (OSError, TypeError, AttributeError):
+        return None
+    return hashlib.sha256("\x00".join(parts).encode("utf-8")).hexdigest()
 
 
-def _persist(path: Path, text: Callable[[], str]) -> None:
-    """Keep ``text()`` in ``path``: now when ``path`` does not exist yet, else on the
-    writer thread once ``PERSIST_EVERY`` passed since this process last wrote it (the
-    latest text asked by then is written; earlier ones are dropped)."""
-    key = str(path)
-    if not path.exists():
-        _write_kept(path, text())
-        with _PERSIST_LOCK:
-            _PERSIST_LAST[key] = time.monotonic()
-            _PERSIST_DUE.pop(key, None)
-        return
-    with _PERSIST_LOCK:
-        due = _PERSIST_LAST.get(key, time.monotonic() - PERSIST_EVERY) + PERSIST_EVERY
-        _PERSIST_DUE[key] = (due, text)
-        if not _PERSIST_WRITER or not _PERSIST_WRITER[0].is_alive():
-            _PERSIST_WRITER[:] = [threading.Thread(target=_persist_loop, daemon=True,
-                                                   name="sharepoint-kept-writer")]
-            _PERSIST_WRITER[0].start()
-        _PERSIST_LOCK.notify_all()
+@functools.lru_cache(maxsize=1)
+def _lookup_code() -> str | None:
+    """A digest of everything a lookup file holds is made by: its format and tables, the
+    index code (``_index_code``), the facts code (``_facts_code``) and the code writing
+    it (the state read, its keys, the bring-up); None when one
+    cannot be read (each process then keeps a private lookup of its own)."""
+    import inspect
+    index, facts = _index_code(), _facts_code()
+    if index is None or facts is None:
+        return None
+    try:
+        writers = [inspect.getsource(item) for item in (
+            _state_key, _store_stamp, _sync_lookup, _sync_files, _sync_entries)]
+    except (OSError, TypeError):
+        return None
+    return hashlib.sha256("\x00".join(
+        (LOOKUP_FORMAT, *_LOOKUP_SCHEMA, _INDEX_STATE_SQL, index, facts, *writers)
+    ).encode("utf-8")).hexdigest()
 
 
-def _persist_loop() -> None:
-    while True:
-        with _PERSIST_LOCK:
-            while not _PERSIST_DUE:
-                _PERSIST_LOCK.wait()
-            key, (due, text) = min(_PERSIST_DUE.items(), key=lambda item: item[1][0])
-            wait = due - time.monotonic()
-            if wait > 0:
-                _PERSIST_LOCK.wait(wait)
-                continue
-            del _PERSIST_DUE[key]
-            _PERSIST_LAST[key] = time.monotonic()
+def _store_inode(store: Any) -> int | None:
+    try:
+        return Path(getattr(store, "path")).stat().st_ino
+    except (OSError, TypeError):
+        return None
+
+
+def _store_stamp(store: Any) -> str:
+    """The store state a lookup is current for, as text: the store's version and content
+    state (``SharePointCaptureStore.content_stamp``: every current version, its record and
+    its captured content and text, which is all the lookup reads), so a capture seeing its
+    files again (a ``last_seen_at`` write every few seconds) keeps it; else the database
+    file's state (any commit). Either with the database file's inode."""
+    from .ontology_host import _file_stamp
+    inode = _store_inode(store)   # a store made anew is another store
+    stamp = getattr(store, "content_stamp", None)
+    if callable(stamp):
         try:
-            _write_kept(Path(key), text())
-        except Exception:  # noqa: BLE001 - a kept file not written is read again later
+            return json.dumps(["content", inode, stamp()], default=str)
+        except Exception:  # noqa: BLE001 - unreadable: the file's state decides
             pass
+    return json.dumps(["file", inode, _file_stamp(getattr(store, "path", None))], default=str)
 
 
-def flush_kept() -> None:
-    """Write every kept file now that waits for its turn (tests, a process ending)."""
-    with _PERSIST_LOCK:
-        due = list(_PERSIST_DUE.items())
-        _PERSIST_DUE.clear()
-        for key, _ in due:
-            _PERSIST_LAST[key] = time.monotonic()
-    for key, (_due, text) in due:
-        _write_kept(Path(key), text())
+class _SharedLookup:
+    """The lookup file of one capture store in this process: thread-local read
+    connections (never writing), and the one writer (``sync``) under the file's lock."""
+
+    def __init__(self, path: Path, code: str | None, private: bool = False) -> None:
+        self.path, self.code, self.private = path, code, private
+        self.lock_path = Path(f"{path}.lock")
+        self._local = threading.local()
+
+    def _make(self) -> None:
+        """The file and its lock file, owner-only, made when absent."""
+        for target in (self.path, self.lock_path):
+            os.close(os.open(target, os.O_RDWR | os.O_CREAT, 0o600))
+
+    def reader(self) -> sqlite3.Connection:
+        """This thread's read connection (``query_only``: it never writes the file), opened
+        again when the file was made anew since (``_sync_lookup`` replacing a broken one)."""
+        self._make()
+        inode = os.stat(self.path).st_ino
+        held = getattr(self._local, "conn", None)
+        if held is not None and held[1] == inode:
+            return held[0]
+        if held is not None:
+            held[0].close()
+        conn = sqlite3.connect(self.path, timeout=30, check_same_thread=False)
+        conn.execute("PRAGMA query_only = 1")
+        self._local.conn = (conn, inode)
+        return conn
+
+    def stamp(self) -> str | None:
+        """The store state this file was last brought up to (None: never, or not this
+        code's file)."""
+        try:
+            kept = dict(self.reader().execute(
+                "SELECT key, value FROM meta WHERE key IN ('format', 'code', 'stamp')"))
+        except sqlite3.Error:
+            return None
+        if kept.get("format") != LOOKUP_FORMAT or kept.get("code") != (self.code or ""):
+            return None
+        return kept.get("stamp")
+
+    def generation(self) -> str | None:
+        """The build of the file (made anew when its tables are reset), or None."""
+        try:
+            row = self.reader().execute(
+                "SELECT value FROM meta WHERE key = 'generation'").fetchone()
+        except sqlite3.Error:
+            return None
+        return None if row is None else row[0]
+
+    @contextmanager
+    def locked(self, wait: bool | float) -> Iterator[bool]:
+        """Hold the file's write lock (across processes and threads: one descriptor per
+        holder); yields False when another holder has it and ``wait`` is false, or still
+        has it after ``wait`` seconds (True: wait as long as it takes)."""
+        import fcntl
+        self._make()
+        fd = os.open(self.lock_path, os.O_RDWR | os.O_CREAT, 0o600)
+        try:
+            if wait is True:
+                fcntl.flock(fd, fcntl.LOCK_EX)
+            else:
+                until = time.monotonic() + float(wait or 0)
+                while True:
+                    try:
+                        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                        break
+                    except BlockingIOError:
+                        if time.monotonic() >= until:
+                            yield False
+                            return
+                        time.sleep(0.2)
+            yield True
+        finally:
+            os.close(fd)   # releases the lock
+
+    def sync(self, store: Any, *, wait: bool | float) -> bool:
+        """Bring the file up to ``store``'s state (``_sync_lookup``). False when another
+        process or thread is bringing it up now (``locked``'s ``wait``)."""
+        with self.locked(wait) as held:
+            if not held:
+                return False
+            _sync_lookup(store, self)
+            return True
 
 
-def _write_kept(path: Path, text: str) -> None:
-    """``text`` in ``path``, owner-only, whole or not at all (a temporary file renamed
-    over it); none over ``INDEX_MAX_BYTES`` or into a directory this process may not
-    write. Temporary files of writes that never finished are removed first."""
-    import os
+# How long a question waits for another process's first build of the lookup file.
+FIRST_BUILD_WAIT_SECONDS = 60.0
+_LOOKUPS: dict[tuple[str, str | None, bool], _SharedLookup] = {}
+_LOOKUPS_LOCK = threading.Lock()
+_PRIVATE_DIRS: list[str] = []
+
+
+def _private_lookup(store: Any) -> _SharedLookup:
+    """A lookup file of this process alone (in a private temporary directory removed at
+    exit): for a store without a directory, code whose sources cannot be read, or a
+    shared file this process cannot write."""
+    import atexit
+    import shutil
+    import tempfile
+    key = (str(getattr(store, "path", "") or id(store)), None, True)
+    with _LOOKUPS_LOCK:
+        held = _LOOKUPS.get(key)
+        if held is None:
+            directory = tempfile.mkdtemp(prefix="plx-sharepoint-lookup-")
+            if not _PRIVATE_DIRS:
+                atexit.register(lambda: [shutil.rmtree(d, ignore_errors=True)
+                                         for d in _PRIVATE_DIRS])
+            _PRIVATE_DIRS.append(directory)
+            held = _LOOKUPS[key] = _SharedLookup(Path(directory) / LOOKUP_FILE, None,
+                                                 private=True)
+        return held
+
+
+def _shared_lookup(store: Any) -> _SharedLookup:
+    """The lookup file of ``store`` for this code: beside the store, shared by every
+    process (``lookup_path``), else this process's own (``_private_lookup``)."""
+    root, code = getattr(store, "root", None), _lookup_code()
+    if not isinstance(root, (str, Path)) or code is None or not Path(root).is_dir():
+        return _private_lookup(store)
+    path = lookup_path(root, code)
+    key = (str(path), code, False)
+    with _LOOKUPS_LOCK:
+        held = _LOOKUPS.get(key)
+        if held is None:
+            held = _LOOKUPS[key] = _SharedLookup(path, code)
+        return held
+
+
+def _current_lookup(store: Any) -> tuple[_SharedLookup, bool]:
+    """(lookup, current) for a question: the store's lookup file brought up to its state
+    now, or, while another holder brings it up, as last committed (``current`` False: a
+    file added or changed since is not searched yet, ``STALE_INDEX``). A file never
+    brought up is waited for. A shared file this process cannot read or write is
+    replaced by a private one (read anew from the stored text)."""
+    lookup = _shared_lookup(store)
+    try:
+        return lookup, _bring_up(store, lookup)
+    except (sqlite3.Error, OSError):
+        if lookup.private:
+            raise
+    private = _private_lookup(store)
+    return private, _bring_up(store, private)
+
+
+def _bring_up(store: Any, lookup: _SharedLookup) -> bool:
+    stamp = _store_stamp(store)
+    kept = lookup.stamp()
+    if kept == stamp:
+        return True
+    # A file never brought up is waited for, at most FIRST_BUILD_WAIT_SECONDS: past it the
+    # question's listed files are all not searched yet (``STALE_INDEX``).
+    if lookup.sync(store, wait=FIRST_BUILD_WAIT_SECONDS if kept is None else False):
+        return lookup.stamp() == stamp
+    return False
+
+
+def _sync_lookup(store: Any, lookup: _SharedLookup) -> None:
+    """Bring ``lookup``'s file up to ``store``'s current files (under its lock): the
+    versions no longer current are dropped, each new version's record is read once
+    (``_read_facts``), each version whose content or text state changed is keyed again
+    (``_state_key``), and each entry key no file has yet is read from the stored text
+    (``_file_entry``; from the JSON index older code of the same index code kept, when
+    it holds it). One transaction: a reader sees the file as it was before or after the
+    whole bring-up, never a file keyed anew without its entry. The store state recorded
+    is the one read first: one read meanwhile is a newer state the next bring-up reads."""
     import secrets
-    if len(text) > INDEX_MAX_BYTES:
-        return
-    _remove_stale_temps(path)
-    tmp = path.with_name(f".{path.name}.{secrets.token_hex(4)}.tmp")
+    stamp, inode = _store_stamp(store), _store_inode(store)
+    conn = _lookup_writer(lookup)
+    conn.isolation_level = None   # the transaction is this function's own
     try:
-        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-        with os.fdopen(fd, "w", encoding="utf-8") as handle:
-            handle.write(text)
-        os.replace(tmp, path)
-    except OSError:
+        kept = dict(conn.execute("SELECT key, value FROM meta"))
+        if kept.get("stamp") == stamp and kept.get("inode") == str(inode) \
+                and kept.get("format") == LOOKUP_FORMAT and kept.get("code") == (lookup.code or ""):
+            return
+        conn.execute("BEGIN IMMEDIATE")
         try:
-            tmp.unlink()
-        except OSError:
-            pass
+            if kept.get("inode") != str(inode) or kept.get("format") != LOOKUP_FORMAT \
+                    or kept.get("code") != (lookup.code or ""):
+                # another store made anew, or a file another code wrote: nothing kept is
+                # used (a version id or entry key of another store names another file); a
+                # new generation tells every held lookup its file was made anew
+                for table in ("meta", "files", "entries", "named", "tokens"):
+                    conn.execute(f"DELETE FROM {table}")
+                conn.executemany("INSERT INTO meta VALUES (?, ?)", (
+                    ("format", LOOKUP_FORMAT), ("code", lookup.code or ""),
+                    ("inode", str(inode)), ("generation", secrets.token_hex(8))))
+            _sync_files(store, conn)
+            _sync_entries(store, conn, lookup)
+            conn.execute("DELETE FROM entries WHERE key NOT IN (SELECT key FROM files "
+                         "WHERE key IS NOT NULL)")
+            conn.execute("DELETE FROM named WHERE key NOT IN (SELECT key FROM entries)")
+            conn.execute("INSERT OR REPLACE INTO meta VALUES ('stamp', ?)", (stamp,))
+            conn.execute("COMMIT")
+        except BaseException:
+            if conn.in_transaction:   # SQLite may have rolled it back itself (I/O)
+                conn.execute("ROLLBACK")
+            raise
+    finally:
+        conn.close()
+    if not lookup.private:
+        _prune_indexes(lookup.path)
 
 
-def _remove_stale_temps(path: Path) -> None:
-    """Remove ``path``'s own temporary files (``.<name>.<8 hex>.tmp``) older than
-    ``PERSIST_TMP_STALE``: a write that ended with its process. A newer one may be
-    another process's write in progress and is left."""
-    shape = re.compile(r"\." + re.escape(path.name) + r"\.[0-9a-f]{8}\.tmp")
-    try:
-        found = list(path.parent.iterdir())
-    except OSError:
-        return
-    now = time.time()
-    for entry in found:
-        if not shape.fullmatch(entry.name):
-            continue
+def _lookup_writer(lookup: _SharedLookup) -> sqlite3.Connection:
+    """A write connection to ``lookup``'s file (under its lock) with its tables; a file
+    that is not a readable lookup database is made anew (nothing of it is used)."""
+    for attempt in (0, 1):
+        lookup._make()
+        conn = sqlite3.connect(lookup.path, timeout=60)
         try:
-            if now - entry.lstat().st_mtime > PERSIST_TMP_STALE and entry.is_file():
-                entry.unlink()
-        except OSError:
-            pass
+            conn.execute("PRAGMA journal_mode = WAL")
+            conn.execute("PRAGMA synchronous = NORMAL")
+            for ddl in _LOOKUP_SCHEMA:
+                conn.execute(ddl)
+            conn.execute("SELECT key, value FROM meta LIMIT 1").fetchall()
+            return conn
+        except sqlite3.DatabaseError as exc:
+            conn.close()
+            if attempt or isinstance(exc, sqlite3.OperationalError):
+                raise   # locked, I/O, unopenable: the file is left as it is
+            for item in (lookup.path, Path(f"{lookup.path}-wal"), Path(f"{lookup.path}-shm")):
+                try:
+                    item.unlink()
+                except FileNotFoundError:
+                    pass
+    raise AssertionError("unreachable")
+
+
+def _sync_files(store: Any, conn: sqlite3.Connection) -> None:
+    """The store's current versions into ``files`` (in the caller's transaction)."""
+    conn.execute("CREATE TEMP TABLE IF NOT EXISTS cur (vid INTEGER PRIMARY KEY, handle TEXT,"
+                 " cs TEXT, csha TEXT, ts TEXT, tsha TEXT, rec TEXT)")
+    conn.execute("DELETE FROM temp.cur")
+    cursor = store.db.execute(_INDEX_STATE_SQL)
+    while True:
+        rows = cursor.fetchmany(_FACTS_CHUNK)
+        if not rows:
+            break
+        conn.executemany("INSERT OR REPLACE INTO temp.cur VALUES (?,?,?,?,?,?,?)",
+                         [tuple(row) for row in rows])
+    # Gone, or the id now names another version (a store made anew): its facts go.
+    conn.execute("DELETE FROM tokens WHERE vid IN (SELECT f.vid FROM files f LEFT JOIN "
+                 "temp.cur c ON c.vid = f.vid WHERE c.vid IS NULL OR c.handle IS NOT f.handle)")
+    conn.execute("DELETE FROM files WHERE vid IN (SELECT f.vid FROM files f LEFT JOIN "
+                 "temp.cur c ON c.vid = f.vid WHERE c.vid IS NULL OR c.handle IS NOT f.handle)")
+    new = [row[0] for row in conn.execute(
+        "SELECT vid FROM temp.cur WHERE vid NOT IN (SELECT vid FROM files) ORDER BY vid")]
+    for at in range(0, len(new), _FACTS_CHUNK):
+        chunk = new[at:at + _FACTS_CHUNK]
+        files, tokens = [], []
+        for row in store.db.execute(
+                "SELECT version_id, path, record, l1_handle FROM items WHERE version_id IN "
+                "(SELECT value FROM json_each(?))", (json.dumps(chunk),)):
+            try:
+                record = json.loads(row["record"])
+            except (TypeError, ValueError):
+                record = {}
+            name, path, modified, words, mime = _read_facts(record, row["path"])
+            files.append((row["version_id"], row["l1_handle"], name, path, modified, mime))
+            tokens.extend((word, row["version_id"]) for word in words)
+        conn.executemany("INSERT OR REPLACE INTO files (vid, handle, name, path, modified, "
+                         "mime) VALUES (?,?,?,?,?,?)", files)
+        conn.executemany("INSERT OR IGNORE INTO tokens VALUES (?, ?)", tokens)
+    # Each version whose state is new or changed is keyed by its state now.
+    changed = conn.execute(
+        "SELECT c.vid, c.cs, c.csha, c.ts, c.tsha, c.rec, f.name, f.mime FROM temp.cur c "
+        "JOIN files f ON f.vid = c.vid WHERE f.key IS NULL OR f.cs IS NOT c.cs OR "
+        "f.csha IS NOT c.csha OR f.ts IS NOT c.ts OR f.tsha IS NOT c.tsha "
+        "OR f.rec IS NOT c.rec").fetchall()
+    conn.executemany(
+        "UPDATE files SET cs = ?, csha = ?, ts = ?, tsha = ?, rec = ?, key = ? WHERE vid = ?",
+        [(cs, csha, ts, tsha, rec, _state_key(
+            (name, None, None, None, mime),
+            {"content_status": cs, "content_sha256": csha, "text_status": ts,
+             "text_sha256": tsha}), vid)
+         for vid, cs, csha, ts, tsha, rec, name, mime in changed])
+    conn.execute("DELETE FROM temp.cur")
+
+
+def _sync_entries(store: Any, conn: sqlite3.Connection, lookup: _SharedLookup) -> None:
+    """An entry for every file key ``files`` holds without one (in the caller's
+    transaction), read per ``_ENTRY_CHUNK`` files: from older code's JSON index of the same index code when it holds
+    the key (checked as that code checked it: ``_load_index``), else from the stored
+    text as read now (the file's key is its state as read now, if it changed since)."""
+    missing = conn.execute(
+        "SELECT handle, key FROM files WHERE key NOT IN (SELECT key FROM entries) "
+        "ORDER BY vid").fetchall()
+    if not missing:
+        return
+    seeded: dict[str, Any] = {}
+    code = _index_code()
+    if not lookup.private and code is not None:
+        root = lookup.path.parent
+        seeded = _load_index(identifier_index_path(root, code), code) or {}
+    for at in range(0, len(missing), _ENTRY_CHUNK):
+        chunk = missing[at:at + _ENTRY_CHUNK]
+        made: dict[str, dict[str, Any]] = {}
+        rekeyed: list[tuple[str, str, str, str, str, str]] = []
+        unread = [handle for handle, key in chunk if key not in seeded]
+        rows = {}
+        if unread:
+            rows = {row["l1_handle"]: row for row in store.db.execute(
+                _INDEX_ROWS_SQL + " AND l1_handle IN (SELECT value FROM json_each(?))",
+                (json.dumps(unread),)).fetchall()}
+        for handle, key in chunk:
+            if key in seeded:
+                made.setdefault(key, seeded[key])
+                continue
+            row = rows.get(handle)
+            if row is None:
+                continue   # superseded since: the next bring-up drops it
+            entry_row = _index_row(row)
+            now_key = _file_key(entry_row)
+            if now_key != key:
+                rekeyed.append((row["content_status"], row["content_sha256"],
+                                row["text_status"], row["text_sha256"], now_key, handle))
+            if now_key not in made:
+                made[now_key] = _file_entry(store.blobs, handle, entry_row)
+        # A changed state keys the file anew; its version's ``rec`` is cleared, so a
+        # lookup made before the next bring-up takes it as not current.
+        conn.executemany("UPDATE files SET cs = ?, csha = ?, ts = ?, tsha = ?, key = ?, "
+                         "rec = NULL WHERE handle = ?", rekeyed)
+        for key, entry in made.items():
+            if conn.execute("SELECT 1 FROM entries WHERE key = ?", (key,)).fetchone():
+                continue
+            conn.execute("INSERT INTO entries VALUES (?, ?, ?, ?)", (
+                key, entry["named"] is not None, entry["why"],
+                None if entry["skipped"] is None else json.dumps(entry["skipped"])))
+            conn.executemany("INSERT INTO named VALUES (?, ?, ?, ?, ?)", [
+                (key, kind, normalized, page, at)
+                for at, (kind, normalized, page) in enumerate(entry["named"] or ())])
+
+
+def _made(conn: sqlite3.Connection) -> bool:
+    """Whether the lookup file has its tables (a file never brought up has none)."""
+    return conn.execute("SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND "
+                        "name IN ('files', 'entries', 'named', 'tokens')").fetchone()[0] == 4
+
+
+def _visible_exceptions(lookup: _SharedLookup, items: Sequence[Mapping[str, Any]]
+                        ) -> list[tuple[int, bool, Any, Any, bool]]:
+    """(position, not current, why, pages skipped, searched) of each listed file whose
+    lookup entry is not current (absent, or kept for another content hash or capture
+    time than the listing's: ``STALE_INDEX``) or whose text was not searched whole, in
+    listing order; every other listed file's entry is current and searched whole."""
+    if not _made(lookup.reader()):
+        return [(at, True, None, None, False) for at in range(len(items))]
+    rows = lookup.reader().execute(
+        "SELECT CAST(j.key AS INTEGER), (f.vid IS NULL OR e.key IS NULL OR "
+        "f.csha IS NOT json_extract(j.value, '$[1]') OR "
+        "f.rec IS NOT json_extract(j.value, '$[2]')) AS stale, e.why, e.skipped, e.searched "
+        "FROM json_each(?) j LEFT JOIN files f ON f.handle = json_extract(j.value, '$[0]') "
+        "LEFT JOIN entries e ON e.key = f.key "
+        "WHERE stale OR e.why IS NOT NULL OR e.skipped IS NOT NULL OR NOT e.searched "
+        "ORDER BY 1",
+        (json.dumps([[item.get("l1_handle"), item.get("content_sha256"),
+                      item.get("recorded_at")] for item in items]),)).fetchall()
+    return [(at, bool(stale), why, None if skipped is None else json.loads(skipped),
+             bool(searched)) for at, stale, why, skipped, searched in rows]
+
+
+def _named_by(lookup: _SharedLookup, wanted: Iterable[tuple[str, str]]
+              ) -> list[tuple[str, int | None]]:
+    """(handle, page) of each current file whose stored text names one of ``wanted``."""
+    conn = lookup.reader()
+    out: list[tuple[str, int | None]] = []
+    if not _made(conn):
+        return out
+    for kind, normalized in sorted(wanted):
+        out.extend(conn.execute(
+            "SELECT f.handle, n.page FROM named n JOIN files f ON f.key = n.key "
+            "WHERE n.kind = ? AND n.normalized = ?", (kind, str(normalized))))
+    return out
+
+
+def _named_files(lookup: _SharedLookup, terms: Sequence[str]
+                 ) -> list[tuple[str, Any, Any, Any]]:
+    """(handle, name, path, last modified) of each current file whose name's and folder
+    path's words hold every term: a term with a digit as a whole word (lot 240306 is not
+    1240306), a word as a word's start (spec: specification)."""
+    if not terms:
+        return []
+    conn = lookup.reader()
+    if not _made(conn):
+        return []
+    held: set[int] | None = None
+    for term in terms:
+        if any(c.isdigit() for c in term):
+            found = {row[0] for row in conn.execute(
+                "SELECT vid FROM tokens WHERE token = ?", (term,))}
+        else:
+            found = {row[0] for row in conn.execute(
+                "SELECT vid FROM tokens WHERE token >= ? AND token < ?",
+                (term, term + chr(0x10FFFF)))}
+        held = found if held is None else held & found
+        if not held:
+            return []
+    out: list[tuple[str, Any, Any, Any]] = []
+    vids = sorted(held or ())
+    for at in range(0, len(vids), _FACTS_CHUNK):
+        out.extend(conn.execute(
+            "SELECT handle, name, path, modified FROM files WHERE vid IN "
+            "(SELECT value FROM json_each(?))", (json.dumps(vids[at:at + _FACTS_CHUNK]),)))
+    return out
+
+
+# Background bring-ups of a SharePoint capture's lookup file: one thread per capture
+# directory and process, started with the host's tools, at start and again every
+# ``WARM_EVERY_SECONDS`` (a file already current is a stamp check), so no question pays
+# for the first read or a capture's new files. The file is shared: one process brings it
+# up while the others' threads wait for its lock, then find it current.
+WARM_EVERY_SECONDS = 30.0
+_WARMING: dict[str, threading.Thread] = {}
+_WARMING_LOCK = threading.Lock()
+
+
+def warm_sharepoint(capture_dir: str | Path, *, every: float | None = WARM_EVERY_SECONDS,
+                    stop: threading.Event | None = None) -> threading.Thread | None:
+    """Start (once per directory and process) the daemon thread bringing the lookup file of
+    the SharePoint capture under ``capture_dir`` up to the store's state now, then every
+    ``every`` seconds (None: once). Reader-independent and visibility-free: nothing it
+    keeps is shown to anyone; a reader's lookup still takes only the files the store lists
+    for that reader. Any failure ends the thread quietly (the question then brings it up
+    itself, as before). The thread, or None when the store does not exist or one already
+    runs."""
+    from integrations.capture_sharepoint import SharePointCaptureStore, store_exists
+    key = str(Path(capture_dir).expanduser())
+    if not store_exists(Path(key)):
+        return None
+
+    def run() -> None:
+        try:
+            store = SharePointCaptureStore.open_read_only(Path(key))
+            try:
+                while store_exists(Path(key)):   # a capture removed ends it
+                    lookup = _shared_lookup(store)
+                    if lookup.stamp() != _store_stamp(store):
+                        lookup.sync(store, wait=True)
+                    if every is None or (stop.wait(every) if stop is not None
+                                         else time.sleep(every)):
+                        return
+            finally:
+                close = getattr(store, "close", None)
+                if callable(close):
+                    close()
+        except Exception:  # noqa: BLE001 - a warm-up never fails a host
+            return
+        finally:
+            with _WARMING_LOCK:
+                if _WARMING.get(key) is threading.current_thread():
+                    _WARMING.pop(key, None)
+    with _WARMING_LOCK:
+        if key in _WARMING:
+            return None
+        thread = _WARMING[key] = threading.Thread(target=run, name="sharepoint-warm",
+                                                  daemon=True)
+    thread.start()
+    return thread
 
 
 def _name_terms(query: str) -> list[str]:
@@ -3288,350 +3814,6 @@ def _name_tokens(*texts: Any) -> frozenset[str]:
                 out.add(word)
                 out.update(_NAME_PART.findall(word))
     return frozenset(out)
-
-
-def _names_terms(tokens: frozenset[str], terms: Sequence[str]) -> bool:
-    """Whether a name's words hold every term: a term with a digit as a whole word (lot
-    240306 is not 1240306), a word as a word's start (spec: specification)."""
-    if not terms:
-        return False
-    for term in terms:
-        if any(c.isdigit() for c in term):
-            if term not in tokens:
-                return False
-        elif not any(token.startswith(term) for token in tokens):
-            return False
-    return True
-
-
-# Reader-independent reads of a SharePoint capture's every current file (``file_names``,
-# ``file_index``), kept per database file while its state (``_file_stamp``: the file and
-# its write-ahead log; any commit changes it) is unchanged: each reads and parses every
-# captured record (seconds, minutes under load), once per process and capture state
-# instead of once per reader session. Nothing reader-specific is kept here; one state per
-# file and kind.
-_SNAPSHOTS: dict[tuple[str, str], tuple[Any, Any]] = {}
-_SNAPSHOTS_LOCK = threading.Lock()
-# One read at a time per file and kind: sessions asking together wait for it, not each
-# making its own (several concurrent readers' sessions each parsed every record).
-_SNAPSHOT_READS: dict[tuple[str, str], threading.Lock] = {}
-# Set on the calling thread when a snapshot read returned the previous state while the
-# warm-up reads the new one (``_identifier_lookup`` then marks what changed unsearched and
-# keeps nothing).
-_STALE = threading.local()
-
-
-def _kept_snapshot(store: Any, kind: str, read: Callable[[], Any]) -> Any:
-    """``read()`` of ``store``, kept while the store's database file state is unchanged
-    (read before and after: a commit while it was read keeps nothing). A store with no
-    database file path is read every time."""
-    path = getattr(store, "path", None)
-    if not isinstance(path, (str, Path)):
-        return read()
-    key = (str(path), kind)
-    with _SNAPSHOTS_LOCK:
-        reading = _SNAPSHOT_READS.setdefault(key, threading.RLock())
-        held = _SNAPSHOTS.get(key)
-    if held is not None and not reading.acquire(blocking=False):
-        # Another thread (the warm-up) is reading the store's newer state now: the last
-        # snapshot read serves meanwhile, as it served a moment before that commit, rather
-        # than every question waiting seconds for the new one. Nothing here is shown as
-        # is: each reader's lookup takes only the files the store lists for it now.
-        _STALE.hit = True   # the caller must not treat this as the store's current state
-        return held[1]
-    if held is not None:
-        reading.release()
-    with reading:
-        before = _snapshot_state(store, path)
-        with _SNAPSHOTS_LOCK:
-            held = _SNAPSHOTS.get(key)
-        if held is not None and held[0] == before:
-            return held[1]
-        value = read()
-        if _snapshot_state(store, path) == before:
-            with _SNAPSHOTS_LOCK:
-                _SNAPSHOTS[key] = (before, value)
-        return value
-
-
-def _snapshot_lock(store: Any, kind: str) -> Any:
-    """The lock a ``kind`` snapshot of ``store`` is read under (``_kept_snapshot``)."""
-    with _SNAPSHOTS_LOCK:
-        return _SNAPSHOT_READS.setdefault((str(getattr(store, "path", "")), kind),
-                                          threading.RLock())
-
-
-def _snapshot_state(store: Any, path: Any) -> tuple:
-    """The state a reader-independent snapshot of ``store`` is kept under: the store's
-    version and content state (``SharePointCaptureStore.content_stamp``: every current
-    version, its record and its captured content and text, which is all ``file_names``
-    and ``file_index`` read), so a capture seeing its files again (a ``last_seen_at``
-    write every few seconds) keeps them; else the database file's state (any commit)."""
-    from .ontology_host import _file_stamp
-    stamp = getattr(store, "content_stamp", None)
-    if callable(stamp):
-        try:
-            return ("content", stamp())
-        except Exception:  # noqa: BLE001 - unreadable: the file's state decides
-            pass
-    return ("file", _file_stamp(path))
-
-
-# Background reads keeping a SharePoint capture's reader-independent snapshots
-# (``file_names``, ``file_index``) current: one thread per capture directory and
-# process, started with the host's tools, reading them at start and again after every
-# capture commit, so no question pays for the first read or a capture's new files.
-WARM_EVERY_SECONDS = 30.0
-_WARMING: dict[str, threading.Thread] = {}
-_WARMING_LOCK = threading.Lock()
-
-
-def warm_sharepoint(capture_dir: str | Path, *, every: float | None = WARM_EVERY_SECONDS,
-                    stop: threading.Event | None = None) -> threading.Thread | None:
-    """Start (once per directory and process) the daemon thread reading the SharePoint
-    capture under ``capture_dir``'s file names and identifier index now, then every
-    ``every`` seconds (None: once); a read of an unchanged store is a file-state check.
-    Reader-independent and visibility-free: nothing it keeps is shown to anyone; a
-    reader's lookup still takes only the files the store lists for that reader. Any
-    failure ends the thread quietly (the question then reads them itself, as before).
-    The thread, or None when the store does not exist or one already runs."""
-    from integrations.capture_sharepoint import SharePointCaptureStore, store_exists
-    key = str(Path(capture_dir).expanduser())
-    if not store_exists(Path(key)):
-        return None
-
-    def run() -> None:
-        try:
-            store = SharePointCaptureStore.open_read_only(Path(key))
-            try:
-                while True:
-                    # Both snapshots' read locks for the whole cycle: a question meanwhile
-                    # takes the last snapshots rather than reading one beside this read.
-                    locks = [_snapshot_lock(store, kind) for kind in ("names", "index")]
-                    for lock in locks:
-                        lock.acquire()
-                    try:
-                        file_names(store)
-                        file_index(store)
-                    finally:
-                        for lock in reversed(locks):
-                            lock.release()
-                    if every is None or (stop.wait(every) if stop is not None
-                                         else time.sleep(every)):
-                        return
-            finally:
-                close = getattr(store, "close", None)
-                if callable(close):
-                    close()
-        except Exception:  # noqa: BLE001 - a warm-up never fails a host
-            return
-        finally:
-            with _WARMING_LOCK:
-                if _WARMING.get(key) is threading.current_thread():
-                    _WARMING.pop(key, None)
-    with _WARMING_LOCK:
-        if key in _WARMING:
-            return None
-        thread = _WARMING[key] = threading.Thread(target=run, name="sharepoint-warm",
-                                                  daemon=True)
-    thread.start()
-    return thread
-
-
-def file_names(store: Any) -> dict[str, tuple[Any, Any, Any, frozenset[str]]]:
-    """Every current captured file version of ``store`` (by version handle) with its
-    name, folder path, last modified time and their words (:func:`_name_tokens`), for
-    every reader: no visibility is decided here (the reader's lookup takes the files the
-    store lists for it, and each listed file is gated). Kept per store state
-    (``_kept_snapshot``); the caller never changes it."""
-    return _kept_snapshot(store, "names", lambda: _file_names(store))
-
-
-# What each captured file version's record says, by store file and version id: a
-# version's ``record`` and ``path`` are written once (a capture's updates change only its
-# statuses, digests, permissions and dates), so a version read once is never parsed
-# again: a new snapshot after a capture commit parses only the versions added since.
-_VERSIONS: dict[str, dict[int, tuple[Any, ...]]] = {}
-_VERSIONS_LOCK = threading.Lock()
-
-
-# The same facts kept beside the store for the next process (each agent session runs its
-# own host: reading every record again took 5-20 s of the session's first read, which
-# waited for it). Each entry is bound to its version's L1 handle (the item and its eTag:
-# a store made anew, or a version renumbered, never lends a file another's name; checked
-# against the store on load) and the file to this code's reading of a record
-# (``_facts_code``: a digest of the functions that read it).
-FACTS_FILE = ".file-facts.json"
-
-
-@functools.lru_cache(maxsize=1)
-def _facts_code() -> str | None:
-    import inspect
-    from integrations import captured_text
-    try:
-        parts = [inspect.getsource(_name_tokens), _NAME_TOKEN.pattern, _NAME_PART.pattern,
-                 inspect.getsource(captured_text.file_type),
-                 inspect.getsource(captured_text._mime), inspect.getsource(_version_facts)]
-    except (OSError, TypeError, AttributeError):
-        return None
-    return hashlib.sha256("\x00".join(parts).encode("utf-8")).hexdigest()
-
-
-def _facts_path(store: Any) -> Path | None:
-    root = getattr(store, "root", None)
-    return Path(root) / FACTS_FILE if isinstance(root, (str, Path)) else None
-
-
-def _store_inode(store: Any) -> int | None:
-    try:
-        return Path(getattr(store, "path")).stat().st_ino
-    except (OSError, TypeError):
-        return None
-
-
-def _load_facts(store: Any) -> dict[int, tuple[Any, ...]]:
-    """The facts kept beside ``store`` by this code, each kept only while the store still
-    holds its version under the same L1 handle; else none."""
-    path, inode, code = _facts_path(store), _store_inode(store), _facts_code()
-    if path is None or inode is None or code is None:
-        return {}
-    try:
-        if path.stat().st_size > INDEX_MAX_BYTES:
-            return {}
-        kept = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, ValueError, UnicodeDecodeError):
-        return {}
-    if not isinstance(kept, dict) or kept.get("code") != code \
-            or kept.get("inode") != inode or not isinstance(kept.get("facts"), dict):
-        return {}
-    try:
-        handles = {row[0]: row[1] for row in store.db.execute(
-            "SELECT version_id, l1_handle FROM items")}
-    except Exception:  # noqa: BLE001 - unreadable now: nothing kept is used
-        return {}
-    out: dict[int, tuple[Any, ...]] = {}
-    for key, entry in kept["facts"].items():
-        if not (isinstance(entry, list) and len(entry) == 6 and isinstance(entry[3], list)
-                and key.isdigit()):
-            return {}
-        if handles.get(int(key)) == entry[5]:
-            out[int(key)] = (entry[0], entry[1], entry[2], frozenset(entry[3]), entry[4],
-                             entry[5])
-    return out
-
-
-def _save_facts(store: Any, facts: Mapping[int, tuple[Any, ...]]) -> None:
-    """Keep ``facts`` beside ``store``, owner-only, whole or not at all (as the index)."""
-    path, inode, code = _facts_path(store), _store_inode(store), _facts_code()
-    if path is None or inode is None or code is None:
-        return
-    _persist(path, lambda: json.dumps({"code": code, "inode": inode, "facts": {
-        str(v): [f[0], f[1], f[2], sorted(f[3]), f[4], f[5]] for v, f in facts.items()
-        if len(f) == 6}}, separators=(",", ":")))
-
-
-def _version_facts(store: Any, version_ids: Sequence[int]) -> dict[int, tuple[Any, ...]]:
-    """version id -> (name, path, last modified, name-and-path words, MIME type) of each
-    version, read from its record once per process and store file (from the facts kept
-    beside the store when this process has none yet; kept again when it read more)."""
-    with _VERSIONS_LOCK:
-        key = str(getattr(store, "path", ""))
-        fresh = key not in _VERSIONS
-        known = _VERSIONS.setdefault(key, {})
-    if fresh:
-        loaded = _load_facts(store)
-        with _VERSIONS_LOCK:
-            for version, facts in loaded.items():
-                known.setdefault(version, facts)
-    with _VERSIONS_LOCK:
-        missing = [v for v in version_ids if v not in known]
-    found: dict[int, tuple[Any, ...]] = {}
-    from integrations.captured_text import file_type
-    for at in range(0, len(missing), 5000):
-        for row in store.db.execute(
-                "SELECT version_id, path, record, l1_handle FROM items WHERE version_id IN "
-                "(SELECT value FROM json_each(?))", (json.dumps(missing[at:at + 5000]),)):
-            record = json.loads(row["record"])
-            record = record if isinstance(record, dict) else {}
-            name, modified = record.get("name"), record.get("last_modified")
-            found[row["version_id"]] = (name, row["path"], modified,
-                                        _name_tokens(name, row["path"]), file_type(record)[0],
-                                        row["l1_handle"])
-    with _VERSIONS_LOCK:
-        known.update(found)
-        out = {v: known[v] for v in version_ids if v in known}
-        kept = dict(known) if found else None
-    if kept is not None:
-        _save_facts(store, kept)
-    return out
-
-
-def _file_names(store: Any) -> dict[str, tuple[Any, Any, Any, frozenset[str]]]:
-    rows = store.db.execute("SELECT version_id, l1_handle FROM items "
-                            "WHERE superseded_at IS NULL").fetchall()
-    facts = _version_facts(store, [row["version_id"] for row in rows])
-    out: dict[str, tuple[Any, Any, Any, frozenset[str]]] = {}
-    for row in rows:
-        name, path, modified, tokens = facts[row["version_id"]][:4]
-        out[row["l1_handle"]] = (name, path, modified, tokens)
-    return out
-
-
-def file_index(store: Any) -> dict[str, dict[str, Any]]:
-    """Every current captured file version of ``store`` (by version handle) with its
-    identifier index entry (:func:`_file_entry`), for every reader: no visibility is
-    decided here, and a reader's lookup takes only the files the store lists for it.
-    Entries come from this process's copy, else the file kept beside the store, else
-    the file's stored text (then the index is kept again, holding the current files
-    only). Kept per store state (``_kept_snapshot``); the caller never changes it."""
-    return _kept_snapshot(store, "index", lambda: _file_index(store))
-
-
-def _file_index(store: Any) -> dict[str, dict[str, Any]]:
-    code = _index_code()
-    path = identifier_index_path(store.root, code)
-    current = store.db.execute(_INDEX_STATE_SQL).fetchall()
-    facts = _version_facts(store, [row["version_id"] for row in current])
-    # Each version's key, kept per store file while its state is the same (a capture
-    # adding a few versions keys only those, not every current file again).
-    with _INDEXES_LOCK:
-        known = _STATE_KEYS.setdefault(str(path), {})
-    keys, seen = {}, {}
-    for row in current:
-        state = (row["content_status"], row["content_sha256"], row["text_status"],
-                 row["text_sha256"])
-        kept = known.get(row["version_id"])
-        if kept is None or kept[0] != state:
-            kept = (state, _state_key(facts[row["version_id"]], row))
-        seen[row["version_id"]] = kept
-        keys[row["l1_handle"]] = kept[1]
-    with _INDEXES_LOCK:
-        _STATE_KEYS[str(path)] = seen
-        held = _INDEXES.get(str(path))
-    entries = held[1] if held is not None and code is not None and held[0] == code else None
-    if entries is None or not set(keys.values()) <= set(entries):
-        loaded = None if code is None else _load_index(path, code)
-        entries = {**(loaded or {}), **(entries or {})}
-    missing = {key: handle for handle, key in keys.items() if key not in entries}
-    if missing:
-        entries = dict(entries)
-        rows = {row["l1_handle"]: _index_row(row) for row in store.db.execute(
-            _INDEX_ROWS_SQL + " AND l1_handle IN (SELECT value FROM json_each(?))",
-            (json.dumps(sorted(missing.values())),)).fetchall()}
-        for handle in missing.values():
-            row = rows.get(handle)
-            if row is None:
-                keys.pop(handle)   # no longer current: superseded since its state was read
-                continue
-            key = keys[handle] = _file_key(row)   # its state as read now, if it changed
-            entries[key] = _file_entry(store.blobs, handle, row)
-        entries = {key: entries[key] for key in set(keys.values())}
-        if code is not None:
-            _save_index(path, code, entries)
-    if code is not None:
-        with _INDEXES_LOCK:
-            _INDEXES[str(path)] = (code, entries)
-    return {handle: entries[key] for handle, key in keys.items() if key in entries}
 
 
 class PageNotRead(CitationUnresolvable):

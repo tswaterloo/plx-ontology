@@ -43,6 +43,7 @@ approved. Reads only the store and delta layers; writes only its own queue file.
 Run::
 
     python3 -m operating.autopilot follow --store STORE --queue QUEUE
+    python3 -m operating.autopilot fast --state-dir STATE    # operating.autopilot_fast
     python3 -m operating.autopilot replay --store STORE --queue QUEUE --days 7 [--layer L]
 """
 
@@ -69,6 +70,7 @@ from operating.declared_schema import autopilot_queue as _AUTOPILOT_QUEUE
 
 SCHEMA = "plx-autopilot/v1"
 REGISTRY_FILE = Path(__file__).with_name("autopilot_registry.json")
+REPLAY_CONFIG_FILE = Path(__file__).with_name("autopilot_replay.json")
 KILL_ENV = "PLX_AUTOPILOT_OFF"
 KILL_FILE = "autopilot.off"
 ROLES_ENV = "PLX_AUTOPILOT_ROLES_FILE"
@@ -265,8 +267,10 @@ def matches(when: Mapping[str, Any], event: Mapping[str, Any]) -> bool:
             return False
         if key == "answers_sender":
             # [n, share]: the owner answered at least ``share`` of the sender's last
-            # messages, ``n`` or more of them known
-            n, answered = (list(event.get("sender_history") or ()) + [0, 0])[:2]
+            # messages, ``n`` or more of them known, each within the answer window the
+            # replay judges in (``sender_answered``: working hours, ``answer_window_hours``);
+            # an event read without it: no
+            n, answered = (list(event.get("sender_answered") or ()) + [0, 0])[:2]
             if not (isinstance(want, list) and len(want) == 2) or n < int(want[0]) or \
                     answered < float(want[1]) * n:
                 return False
@@ -300,6 +304,21 @@ def matches(when: Mapping[str, Any], event: Mapping[str, Any]) -> bool:
                 event.get("asks") and event.get("correspondent"))) != bool(want):
             return False
     return True
+
+
+def answer_window_hours() -> int | None:
+    """The answer window the replay judges an item in (``autopilot_replay.json``
+    ``horizon_hours``, working hours): the window ``answers_sender`` counts a person's
+    past answers in, so a rule asks of the past what the gate asks of the item. Unreadable
+    or out of range: None (``answers_sender`` then never passes: fail closed)."""
+    try:
+        raw = json.loads(REPLAY_CONFIG_FILE.read_text(encoding="utf-8"))
+        hours = raw.get("horizon_hours")
+    except (OSError, ValueError, AttributeError):
+        return None
+    if isinstance(hours, bool) or not isinstance(hours, int) or not 1 <= hours <= 24 * 14:
+        return None
+    return hours
 
 
 # ----------------------------------------------------------------------------- queue
@@ -408,13 +427,18 @@ class Queue:
                                      sorted(rows)).rowcount
 
     def reply_history(self, owner: str, sender: str, at: str, *,
-                      horizon_hours: int = REPLY_HOURS, days: int = 60) -> tuple[int, int]:
+                      horizon_hours: int = REPLY_HOURS, days: int = 60,
+                      working: bool = False) -> tuple[int, int]:
         """(messages from ``sender`` to ``owner`` whose answer window closed before ``at``,
         how many of them the owner answered in the thread within ``horizon_hours``): known
-        at ``at``, never later evidence."""
+        at ``at``, never later evidence. ``working``: the window is ``horizon_hours`` of
+        Monday-to-Friday time (``autopilot_replay.answer_end``, the replay's own window),
+        not clock hours."""
         start = _instant(at)
         if start is None or not sender:
             return 0, 0
+        if working:
+            return self._reply_history_working(owner, sender, start, horizon_hours, days)
         closed = _iso(start - timedelta(hours=horizon_hours))
         since = _iso(start - timedelta(days=days))
         row = self.conn.execute(
@@ -425,6 +449,29 @@ class Queue:
             (f"+{horizon_hours} hours", owner, _digest("party", sender.lower()), since, closed)
         ).fetchone()
         return int(row[0]), int(row[1])
+
+    def _reply_history_working(self, owner: str, sender: str, start: datetime,
+                               horizon_hours: int, days: int) -> tuple[int, int]:
+        from .autopilot_replay import answer_end
+        horizon = timedelta(hours=horizon_hours)
+        since = _iso(start - timedelta(days=days))
+        n = answered = 0
+        # each message with the owner's first message in its thread after it (one read)
+        for got, first in self.conn.execute(
+                "SELECT i.at, (SELECT MIN(s.at) FROM sent s WHERE s.owner = i.owner AND "
+                "s.thread = i.thread AND s.at > i.at) FROM inbound i WHERE i.owner = ? AND "
+                "i.counterpart = ? AND i.at >= ? AND i.at < ?",
+                (owner, _digest("party", sender.lower()), since, _iso(start))):
+            when = _instant(got)
+            if when is None:
+                continue
+            close = answer_end(when, horizon)
+            if close > start:
+                continue                    # its window is still open at ``at``
+            n += 1
+            reply = _instant(first) if first else None
+            answered += reply is not None and reply <= close
+        return n, answered
 
     def engagement(self, owner: str, conversation: str | None, sender: str, at: str,
                    *, contact_days: int = 60) -> dict[str, bool]:
@@ -855,13 +902,17 @@ def follow_ids(st: Any, store: Path, queue: Queue, registry: Mapping[str, Any],
 
 def discover(st: Any, ids: Iterable[str], registry: Mapping[str, Any], people: Any, *,
              landed_at: str | None = None, outbound: list | None = None,
-             now: datetime | None = None, feed_lag: Mapping[str, timedelta] | None = None
-             ) -> tuple[list[dict[str, Any]], Counter]:
+             now: datetime | None = None, feed_lag: Mapping[str, timedelta] | None = None,
+             base: Any = None) -> tuple[list[dict[str, Any]], Counter]:
     """Typed events of the changed records ``ids`` (module doc); ``outbound`` collects the
     mailbox owners' own sent messages (thread, recipients, time) for ``Queue.note_sent``.
     ``feed_lag`` (a replay of past days): per record type, how long after its time the live
     feed first holds it (the capture's cadence); a decision taken before then was already
-    taken when the feed saw the request, so no item could have been prepared for it."""
+    taken when the feed saw the request, so no item could have been prepared for it.
+    ``base``: the served store, when ``st`` is a scratch store of just-captured messages
+    (``operating.autopilot_fast``): a sender's side is read from its parties, and a message
+    the scratch store links to no record names its records by the identifiers in its words
+    (``identified``: the closure's mention links come only with the delta layer)."""
     sources = registry["sources"]
     typed = _types(st, ids)
     by_type: dict[str, list[str]] = defaultdict(list)
@@ -875,13 +926,23 @@ def discover(st: Any, ids: Iterable[str], registry: Mapping[str, Any], people: A
         kind = sources[otype]["event"]
         if otype == "Email":
             events += _mail_events(st, oids, typed, people, directory, addresses_of, domains,
-                                   skipped, outbound)
+                                   skipped, outbound, parties=base)
         elif otype in TEAMS_TYPES:
             events += _teams_events(st, oids, typed, people, directory, skipped, outbound,
                                     unaddressed=True)
         else:
             events += _record_events(st, otype, kind, oids, typed, sources[otype], skipped,
                                      now=now, lag=(feed_lag or {}).get(otype))
+    if base is not None:
+        ctx = Ctx(base, (now or datetime.now(timezone.utc)).date(), time.monotonic() + 60,
+                  domains)
+        for e in events:
+            if e.get("event_type") == "message.received" and not e.get("records"):
+                try:
+                    e["records"] = identified(ctx, str(e.get("subject") or ""),
+                                              str(e.get("text") or ""))
+                except HandlerTimeout:
+                    skipped["records_unread"] += 1
     for e in events:
         e["landed_at"] = landed_at
     return events, skipped
@@ -890,7 +951,8 @@ def discover(st: Any, ids: Iterable[str], registry: Mapping[str, Any], people: A
 def _mail_events(st: Any, oids: Sequence[str], typed: Mapping[str, tuple[str, str]],
                  people: Any, directory: Mapping[str, str],
                  addresses_of: Mapping[str, set[str]], domains: Sequence[str],
-                 skipped: Counter, outbound: list | None = None) -> list[dict[str, Any]]:
+                 skipped: Counter, outbound: list | None = None, parties: Any = None
+                 ) -> list[dict[str, Any]]:
     from . import inbox_triage as it
     from . import proactive_threads as pt
     out = []
@@ -930,7 +992,7 @@ def _mail_events(st: Any, oids: Sequence[str], typed: Mapping[str, tuple[str, st
         side = next((SIDE_LINKS[t] for t, _o in links if t in SIDE_LINKS), None)
         if side is None:
             side = "internal" if _internal(sender, domains) else \
-                _party_side(st, sender, domains)
+                _party_side(parties or st, sender, domains)
         records = sorted({o for _t, o in links if o.split(":", 1)[0] in BUSINESS})
         message_id = _v(row, "internet_message_id") or oid
         at = _v(row, "received_at") or _v(row, "sent_at")
@@ -945,6 +1007,7 @@ def _mail_events(st: Any, oids: Sequence[str], typed: Mapping[str, tuple[str, st
             "asks": bool(it.reply_ask(text) or it.direct_question(text)),
             "closing": closing(text),
             "addressed_other": addressed_other(text, mine, [*to, *cc]),
+            "reply_all": reply_all(sender, to, cc, mine),
             "cleared": cleared,
             "handles": [c["l1_handle"] for c in row.values() if c.get("l1_handle")][:3]})
     return out
@@ -1041,6 +1104,26 @@ def _teams_events(st: Any, oids: Sequence[str], typed: Mapping[str, tuple[str, s
                 "asks": bool(it.reply_ask(text) or it.direct_question(text)),
                 "closing": closing(text, chat=True), "handles": _handles_of(row)[:3]})
     return out
+
+
+# how many others a drafted reply keeps on its To and Cc lines (beyond them: the person adds
+# them; a reply that long is rare and is not a routine send either)
+REPLY_ALL_MAX = 10
+
+
+def reply_all(sender: str, to: Sequence[str], cc: Sequence[str], mine: Iterable[str]
+              ) -> dict[str, list[str]]:
+    """Who else a reply to this mail goes to, as people answer: the message's other To
+    recipients and its Cc, never the person's own addresses or the sender (who leads the
+    To line). Measured on DEV days 2026-10-13..27, five roles: the person's own reply had
+    the same To and Cc as the drafted one 4 times in 43 when a draft went to the sender
+    alone, 24 in 43 with the other recipients kept."""
+    own = {str(a).lower() for a in mine}
+    skip = own | {str(sender).lower()}
+    more = list(dict.fromkeys(str(a).lower() for a in to if str(a).lower() not in skip))
+    copied = list(dict.fromkeys(str(a).lower() for a in cc
+                                if str(a).lower() not in skip and str(a).lower() not in more))
+    return {"to": more[:REPLY_ALL_MAX], "cc": copied[:REPLY_ALL_MAX]}
 
 
 def _handles_of(row: Mapping[str, Any]) -> list[str]:
@@ -1723,7 +1806,15 @@ def _reply(event: Mapping[str, Any], lines: Sequence[str]) -> dict[str, Any]:
         subject = "RE: " + subject
     body = "\n".join([_greeting(event.get("sender") or ""), "", *lines, "",
                       "Best regards,"])
-    return {"channel": event.get("channel") or "email", "to": [{"address": event.get("sender")}],
+    sender = str(event.get("sender") or "")
+    others = event.get("reply_all") or {}
+    more = [a for a in others.get("to") or () if isinstance(a, str) and "@" in a
+            and a.lower() != sender.lower()]
+    copied = [a for a in others.get("cc") or () if isinstance(a, str) and "@" in a
+              and a.lower() != sender.lower() and a not in more]
+    return {"channel": event.get("channel") or "email",
+            "to": [{"address": a} for a in [event.get("sender"), *more]],
+            **({"cc": [{"address": a} for a in copied]} if copied else {}),
             "subject": subject[:200], "body": body, "in_reply_to": event.get("object_id")}
 
 
@@ -2371,7 +2462,8 @@ def run_cycle(st: Any, queue: Queue, ids: Iterable[str], *, people: Any,
               rate_by_event_hour: bool = False,
               feed_lag: Mapping[str, timedelta] | None = None,
               read_work_log: bool = False, event_queue: bool = False,
-              horizon: datetime | None = None) -> dict[str, Any]:
+              horizon: datetime | None = None, discover_store: Any = None,
+              due: bool = True) -> dict[str, Any]:
     """One cycle: type the changed records, store each event once, prepare the work of each
     new event every matching autopilot declares, settle items their evidence closed.
     ``only_owners``: prepare only for these people (a replay of one role); ``gate(owner,
@@ -2387,7 +2479,10 @@ def run_cycle(st: Any, queue: Queue, ids: Iterable[str], *, people: Any,
     ``PLX_AUTOPILOT_EVQ`` is on (``OrderedFeed``). Live only: the ``follow`` command alone
     passes it, so a replay or its catch-up never touches the live queue's order.
     ``horizon``: a message or meeting before it (or with no time) is not stored as an event
-    (live follow, ``FOLLOW_HORIZON``); a sender's history still counts it."""
+    (live follow, ``FOLLOW_HORIZON``); a sender's history still counts it.
+    ``discover_store``: the records ``ids`` are typed in this store instead (the fast feed's
+    scratch store of just-captured messages, ``discover`` ``base``); handled over ``st``.
+    ``due`` False: no due-date events this cycle (the fast feed; follow reads them)."""
     environ = os.environ if environ is None else environ
     registry = registry or load_registry()
     now = now or datetime.now(timezone.utc)
@@ -2405,8 +2500,10 @@ def run_cycle(st: Any, queue: Queue, ids: Iterable[str], *, people: Any,
         return _plain(summary)
     limits = registry["limits"]
     outbound: list[dict[str, Any]] = []
-    events, skipped = discover(st, ids, registry, people, landed_at=landed_at,
-                               outbound=outbound, now=now, feed_lag=feed_lag)
+    events, skipped = discover(discover_store or st, ids, registry, people,
+                               landed_at=landed_at, outbound=outbound, now=now,
+                               feed_lag=feed_lag,
+                               base=st if discover_store is not None else None)
     with queue.conn:
         summary["sent_noted"] = queue.note_sent(outbound)
         queue.note_routine(outbound)
@@ -2438,20 +2535,21 @@ def run_cycle(st: Any, queue: Queue, ids: Iterable[str], *, people: Any,
     roles = _roles(environ, queue.path.parent)
     stamp = _iso(now)
     rd_day = None
-    try:
-        from . import autopilot_work as aw
-        events += aw.po_due_events(st, registry, as_of, domains, directory, addresses_of)
-        events += aw.invoice_due_events(st, registry, as_of, domains, directory)
-        events += aw.routine_due_events(st, queue, registry, as_of, people)
-        # a project's state is read as it stood at the day's start: once a day is enough
-        # (its 90-day mail read is the slowest of these)
-        if queue.meta("rd_due_day") != as_of.isoformat():
-            events += aw.rd_due_events(st, registry, as_of, people)
-            rd_day = as_of.isoformat()
-        from . import autopilot_receivables as ar
-        events += ar.due_events(st, registry, as_of, people)
-    except sqlite3.Error:
-        summary["skipped"]["due_events_unreadable"] += 1
+    if due:
+        try:
+            from . import autopilot_work as aw
+            events += aw.po_due_events(st, registry, as_of, domains, directory, addresses_of)
+            events += aw.invoice_due_events(st, registry, as_of, domains, directory)
+            events += aw.routine_due_events(st, queue, registry, as_of, people)
+            # a project's state is read as it stood at the day's start: once a day is enough
+            # (its 90-day mail read is the slowest of these)
+            if queue.meta("rd_due_day") != as_of.isoformat():
+                events += aw.rd_due_events(st, registry, as_of, people)
+                rd_day = as_of.isoformat()
+            from . import autopilot_receivables as ar
+            events += ar.due_events(st, registry, as_of, people)
+        except sqlite3.Error:
+            summary["skipped"]["due_events_unreadable"] += 1
     with queue.conn:
         for e in events:
             summary["events_seen"] += 1
@@ -2468,6 +2566,9 @@ def run_cycle(st: Any, queue: Queue, ids: Iterable[str], *, people: Any,
             return _plain(summary)
     feed = ordered.events(int(limits["max_events_per_cycle"])) if ordered else \
         iter(queue.pending(int(limits["max_events_per_cycle"])))
+    answered_rule = any("answers_sender" in (a.get("when") or {})
+                        for a in registry.get("autopilots") or ())
+    window = answer_window_hours() if answered_rule else None
     while True:
         if time.monotonic() - started > limits["cycle_seconds"]:
             summary["status"] = "partial"      # the rest stay new: the next cycle goes on
@@ -2482,6 +2583,11 @@ def run_cycle(st: Any, queue: Queue, ids: Iterable[str], *, people: Any,
                                           str(event.get("sender") or ""), str(event["at"])))
             event["sender_history"] = list(queue.reply_history(
                 str(event["mailbox"]), str(event.get("sender") or ""), str(event["at"])))
+            # read only when a rule asks for it (``answers_sender``): one more history
+            # read per message otherwise spent on every mail
+            event["sender_answered"] = list(queue.reply_history(
+                str(event["mailbox"]), str(event.get("sender") or ""), str(event["at"]),
+                horizon_hours=window, working=True)) if window and answered_rule else [0, 0]
             event["own_posts"] = list(queue.own_posts(
                 str(event["mailbox"]), event.get("conversation_id"), str(event["at"])))
         state, reason = _process(st, queue, event, registry, people=people,
@@ -2708,6 +2814,17 @@ def _process(st: Any, queue: Queue, event: dict[str, Any], registry: Mapping[str
                 # live only (an explicit opt-in): a replay never reads the Workbench
                 summary["skipped"][f"{ap['id']}:answered_in_workbench"] += 1
                 continue
+            learned = _lessons(queue)
+            owner_roles = [r for r in roles if owner in _role_members(r, roles, directory)] \
+                if learned else []
+            left = _learned_call(learned.skip_reason, owner, owner_roles, ap["id"], event,
+                                 default=None) if learned else None
+            if left:
+                # the owner leaves items of this kind (or from this sender): a lesson with
+                # its evidence (``operating.learning``), never a guess
+                summary["skipped"][f"{ap['id']}:learned_left"] += 1
+                reasons.append("learned_left")
+                continue
             if not queue.rate_take(owner, hour, int(limits["per_owner_per_hour"])):
                 summary["skipped"][f"{ap['id']}:rate_limited"] += 1
                 deferred = True
@@ -2724,14 +2841,18 @@ def _process(st: Any, queue: Queue, event: dict[str, Any], registry: Mapping[str
                 reasons.append(prepared["error"])
                 failed.append(prepared["error"])
                 break
+            work = _learned_call(learned.apply_draft, prepared["work"], owner, owner_roles,
+                                 event=event, autopilot=ap["id"],
+                                 default=prepared["work"]) \
+                if learned else prepared["work"]
             due = now + timedelta(minutes=int(ap["due_minutes"]))
             landed = _instant(event.get("seen_at") or event.get("landed_at") or event.get("at"))
             with queue.conn:
                 queue.add_item({
                     "item_id": item_id, "event_id": event["event_id"], "autopilot": ap["id"],
                     "owner": owner, "title": f"{ap['label']}: "
-                    + str(prepared["work"].get("summary") or "")[:SUMMARY_CHARS],
-                    "body": {"happened": _happened(event), "prepared": prepared["work"],
+                    + str(work.get("summary") or "")[:SUMMARY_CHARS],
+                    "body": {"happened": _happened(event), "prepared": work,
                              "done_when": ap["done_when"], "label": ap["label"]},
                     "audiences": prepared["audiences"],
                     "markings": sorted(set(ap.get("markings") or ()) | prepared["markings"]),
@@ -2752,6 +2873,32 @@ def _process(st: Any, queue: Queue, event: dict[str, Any], registry: Mapping[str
     if deferred:
         return "deferred", "rate_limited"
     return "processed", ",".join(sorted(set(reasons))) or None
+
+
+def _lessons(queue: Queue) -> Any:
+    """The learned lessons for the live queue's owners (``operating.learning``; the live
+    queue is ``<state>/autopilot/autopilot.sqlite``, a replay's queue never takes any): the
+    ledger in ``PLX_LEARNING_DIR``, else ``<state>/learning``; none when off, absent,
+    unreadable or the people exclusion is unavailable."""
+    from . import learning
+    env = os.environ
+    if queue.path.parent.name != "autopilot":
+        return learning.Lessons(())     # a replay's own queue: never lessons (gate scores)
+    if env.get(learning.DIR_ENV):
+        return learning.Lessons.load(Path(env[learning.DIR_ENV]))
+    try:
+        return learning.Lessons.load(learning.ledger_dir(queue.path.parent.parent, env))
+    except Exception:  # noqa: BLE001 - an unreadable ledger: no lessons, the cycle runs
+        return learning.Lessons(())
+
+
+def _learned_call(fn: Callable[..., Any], *args: Any, default: Any, **kw: Any) -> Any:
+    """A lesson applied, or ``default`` when applying it fails: learning never stops a
+    cycle nor changes what is prepared on its own failure."""
+    try:
+        return fn(*args, **kw)
+    except Exception:  # noqa: BLE001 - the item is prepared as without lessons
+        return default
 
 
 def pay_or_hr(event: Mapping[str, Any]) -> bool:
@@ -3161,6 +3308,10 @@ def card_of(item: Mapping[str, Any]) -> dict[str, Any] | None:
             "subject": {"label": str(draft.get("subject") or item.get("title"))[:200]},
             "action": {"text": ""},
             "draft": {"channel": "email", "to": {"address": to[0], "source": cites[0]},
+                      # a reply's other recipients, as the person answers (``reply_all``):
+                      # each is checked again like any recipient when the card is previewed
+                      "also_to": to[1:], "cc": [t.get("address") for t in draft.get("cc") or ()
+                                                if isinstance(t, Mapping) and t.get("address")],
                       "subject": draft.get("subject"), "body": draft.get("body"), "facts": []},
             "teams_draft": None, "playbook": True}
 
@@ -3246,7 +3397,7 @@ def _utcnow() -> datetime:
 def main(argv: Sequence[str] | None = None) -> int:
     from . import proactive_engine as pe
     p = argparse.ArgumentParser(prog="python3 -m operating.autopilot")
-    p.add_argument("command", choices=("follow", "replay"))
+    p.add_argument("command", choices=("follow", "fast", "replay"))
     p.add_argument("--state-dir", default=None,
                    help="the served generation's store and <state>/autopilot/ queue")
     p.add_argument("--store", default=None)
@@ -3266,8 +3417,24 @@ def main(argv: Sequence[str] | None = None) -> int:
         a.queue = a.queue or str(state / "autopilot" / QUEUE_FILE)
     if not a.store or not a.queue:
         p.error("--state-dir, or --store and --queue, are required")
+    if a.command == "fast" and not a.state_dir:
+        p.error("fast reads the capture stores of --state-dir")
     registry = load_registry(a.registry)
     queue = Queue(a.queue)
+    if a.command == "fast":
+        from . import autopilot_fast
+        left = autopilot_fast.waiting(Path(a.state_dir), queue.meta(autopilot_fast.MARKS) or {})
+        if killed(queue, os.environ) or not any(m < n for _g, m, n in left.values()):
+            # nothing stored since the last cycle (its timer's usual start): no store opened
+            # (a first start sets the marks: a store's past is the regular feed's)
+            if left and not queue.meta(autopilot_fast.MARKS):
+                with queue.conn:
+                    queue.set_meta(autopilot_fast.MARKS,
+                                   {s: [g, n] for s, (g, _m, n) in left.items()})
+            queue.close()
+            print(json.dumps({"schema": SCHEMA, "feed": "fast",
+                              "status": "off" if killed(queue, os.environ) else "idle"}))
+            return 0
     store = Path(a.store)
     # the delta pointer sits beside the served projection (``host.projection_path``, as the
     # proactive pass reads it), not beside a generation's file
@@ -3294,7 +3461,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         # path's own gates. A replay never drafts: it would fill the shared queue with
         # a past window's items nobody passed.
         drafted = draft_owners(load_draft(), _people_maps(people)[0], people) \
-            if a.command == "follow" else {}
+            if a.command in ("follow", "fast") else {}
         gate = with_draft(gate, drafted)
         for oid, flows in drafted.items():
             passed = {**passed, oid: sorted(set(passed.get(oid) or ()) | flows)}
@@ -3302,7 +3469,12 @@ def main(argv: Sequence[str] | None = None) -> int:
             print(json.dumps({"schema": SCHEMA, "status": "off",
                               "reason": "no_workflow_passed_replay"}))
             return 0
-        if a.command == "follow":
+        if a.command == "fast":
+            from . import autopilot_fast
+            summary = autopilot_fast.run(Path(a.state_dir), st, queue, people, registry,
+                                         gate=gate, environ=os.environ, clock=_utcnow)
+            summary["workflows_on"] = {"owners": len(passed)}
+        elif a.command == "follow":
             now = _utcnow()
             ids, taken, read = follow_ids(st, layers_at, queue, registry, now)
             summary = run_cycle(st, queue, ids, people=people, registry=registry, gate=gate,

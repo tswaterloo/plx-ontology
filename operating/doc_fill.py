@@ -49,7 +49,10 @@ import zipfile
 TERMS_FILE = Path(__file__).with_name("doc_fill_terms.json")
 TERMS_SCHEMA = "plx-doc-fill-terms/v1"
 KINDS = ("docx", "xlsx", "pdf_form", "pdf_flat")
-STATUSES = ("filled", "kept", "person_only", "unknown_field", "no_fact", "ambiguous")
+# suggested: a value from a source that cannot be certain (a form's earlier versions in its
+# thread), shown with its citation for the person to check and never written into the file
+STATUSES = ("filled", "kept", "person_only", "unknown_field", "no_fact", "ambiguous",
+            "suggested")
 MAX_BYTES = 8 * 1024 * 1024
 MAX_UNZIPPED = 64 * 1024 * 1024
 MAX_FIELDS = 400
@@ -92,6 +95,13 @@ class Terms:
     fields: Mapping[str, tuple[str, tuple[str, ...]]]    # label -> (field, properties)
     person_only: frozenset[str]
     hops: Mapping[str, tuple[tuple[str, str, str], ...]]
+    # a label's word written short -> the word (``#`` -> ``number``, ``qty`` ->
+    # ``quantity``): two labels that read the same after it mean the same thing
+    words: Mapping[str, str] = field(default_factory=dict)
+    # fields mail never fills (``doc_gather.plan_form``): those that differ from one line of
+    # a document to the next (an item, a quantity, a weight; a message names one line at
+    # most) and company names (worded differently in mail than on a form)
+    not_from_mail: frozenset[str] = frozenset()
 
     def known(self, label: str) -> bool:
         key = normalize(label)
@@ -120,9 +130,15 @@ def load_terms(path: Optional[Path] = None) -> Terms:
             raise ValueError("a label is both person-only and filled")
         hops = {str(k): tuple((str(a), str(b), str(c)) for a, b, c in v)
                 for k, v in raw.get("hops", {}).items()}
-    except (OSError, ValueError, KeyError, TypeError) as error:
+        words = {str(k).lower(): str(v).lower() for k, v in raw.get("words", {}).items()}
+        if any(not k or " " in k or not v for k, v in words.items()):
+            raise ValueError("words")
+        not_from_mail = frozenset(str(x) for x in raw.get("not_from_mail", ()))
+        if not not_from_mail <= {name for name, _props in fields.values()}:
+            raise ValueError("not_from_mail")
+    except (OSError, ValueError, KeyError, TypeError, AttributeError) as error:
         raise FillRefused("terms_invalid") from error
-    return Terms(fields, person, hops)
+    return Terms(fields, person, hops, words, not_from_mail)
 
 
 # ---- facts -------------------------------------------------------------------------------
@@ -146,6 +162,8 @@ class Fact:
     value: str
     citation: Citation
     ambiguous: bool = False
+    # where it was read, nearest the form first (``doc_gather.TIERS``); 0: a record
+    tier: int = 0
 
 
 def format_value(value: Any) -> Optional[str]:
@@ -600,14 +618,16 @@ def _replace_blank(t: ET.Element, k: int, value: str) -> None:
 
 # -- xlsx
 
-def _col(letters: str) -> int:
+def column_number(letters: str) -> int:
+    """A spreadsheet column's number from its letters (``A`` 1, ``AA`` 27)."""
     n = 0
     for ch in letters:
         n = n * 26 + ord(ch) - 64
     return n
 
 
-def _letters(n: int) -> str:
+def column_letters(n: int) -> str:
+    """A spreadsheet column's letters from its number (:func:`column_number` reversed)."""
     out = ""
     while n:
         n, r = divmod(n - 1, 26)
@@ -673,16 +693,16 @@ class _Xlsx(_Doc):
                 text = v.text if v is not None and v.text else ""
             if not text and c.find(_S + "f") is not None:
                 text = "="              # a formula with no cached value is not a blank
-            cells[(int(m.group(2)), _col(m.group(1)))] = text
+            cells[(int(m.group(2)), column_number(m.group(1)))] = text
         merged: dict[tuple[int, int], int] = {}     # a merged label's last column
         for mc in root.iter(_S + "mergeCell"):
             a, _, b = (mc.get("ref") or "").partition(":")
             ma, mb = _CELL.match(a), _CELL.match(b)
             if ma and mb:
-                merged[(int(ma.group(2)), _col(ma.group(1)))] = _col(mb.group(1))
+                merged[(int(ma.group(2)), column_number(ma.group(1)))] = column_number(mb.group(1))
                 for r in range(int(ma.group(2)), int(mb.group(2)) + 1):
-                    for c in range(_col(ma.group(1)), _col(mb.group(1)) + 1):
-                        if (r, c) != (int(ma.group(2)), _col(ma.group(1))):
+                    for c in range(column_number(ma.group(1)), column_number(mb.group(1)) + 1):
+                        if (r, c) != (int(ma.group(2)), column_number(ma.group(1))):
                             merged.setdefault((r, c), -1)        # covered by a merge
         used: set[tuple[int, int]] = set()
         for (r, c), text in sorted(cells.items()):
@@ -707,7 +727,7 @@ class _Xlsx(_Doc):
              ) -> None:
         if len(self._fields) >= MAX_FIELDS:
             return
-        ref = f"{_letters(spot[1])}{spot[0]}"
+        ref = f"{column_letters(spot[1])}{spot[0]}"
         fid = f"xlsx:{sheet}!{ref}"
         self._fields.append(FormField(fid, " ".join(label.split()).rstrip(": ")[:MAX_LABEL],
                                       " ".join(current.split())))
@@ -728,7 +748,7 @@ def _put_cell(xml: bytes, ref: str, value: str) -> bytes:
     """The sheet XML with cell ``ref`` holding ``value`` as an inline string (its style
     kept when the cell exists)."""
     m = _CELL.match(ref)
-    row, col = int(m.group(2)), _col(m.group(1))
+    row, col = int(m.group(2)), column_number(m.group(1))
     text = escape(value).encode("utf-8")
 
     def cell(style: bytes) -> bytes:
@@ -763,7 +783,7 @@ def _put_cell(xml: bytes, ref: str, value: str) -> bytes:
         r = re.search(rb'\br="([A-Z]+)(\d+)"', c.group(0))
         if r is None:
             continue
-        here = _col(r.group(1).decode())
+        here = column_number(r.group(1).decode())
         if here == col:
             style = re.search(rb'\bs="\d+"', c.group(0))
             body = body[:c.start()] + cell(b" " + style.group(0) if style else b"") + \
@@ -928,15 +948,18 @@ class FillResult:
         return out
 
 
-def fill(data: bytes, facts: Sequence[Fact], terms: Terms, notes: Iterable[str] = ()
-         ) -> FillResult:
+def fill(data: bytes, facts: Sequence[Fact], terms: Terms, notes: Iterable[str] = (),
+         planner: Optional[Callable[[Sequence[FormField], Sequence[Fact], Terms],
+                                    list[Filled]]] = None) -> FillResult:
     """``data`` filled from ``facts``: a new file (the original bytes are not touched) and
-    every field's outcome. A document with no field is refused (``no_fields``)."""
+    every field's outcome, planned by ``planner`` (``plan``: records only;
+    ``doc_gather.plan_form``: every source). A document with no field is refused
+    (``no_fields``)."""
     doc = open_document(bytes(data), terms)
     fields = doc.fields()
     if not fields:
         raise FillRefused("no_fields")
-    planned = plan(fields, facts, terms)
+    planned = (planner or plan)(fields, facts, terms)
     values = {f.field_id: f.after for f in planned if f.status == "filled"}
     out = doc.write(values) if values else None
     return FillResult(doc.kind, tuple(planned), out, hashlib.sha256(data).hexdigest(),

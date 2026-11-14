@@ -907,6 +907,250 @@ class FixtureChunkerTests(unittest.TestCase):
         self.assertEqual(counts.skipped["people_exclusion:sender_undecided"], 1)
 
 
+class PgSourceParityTests(unittest.TestCase):
+    """The mail history read from the Postgres ontology (``pg_source.PgProjection``) once the
+    SQLite generation is retired: the same chunks, skips and withholding as the SQLite
+    projection it replaces, for the same rows (2026-11-13: the history read gen-11 only, so
+    it could not run once gen-11 was deleted)."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.path = Path(self.tmp.name) / "fx.sqlite"
+        self.fx = Fixture(self.path)
+
+    email = FixtureChunkerTests.email
+
+    def build(self):
+        box = "12345678-aaaa-bbbb-cccc-0000000000ef"
+        for oid, sent in (("Email:jun", "2026-06-04"), ("Email:nov", "2026-11-03"),
+                          ("Email:may", "2026-05-04")):
+            self.email(oid, box, f"A message of {sent} about the soap order and cartons.")
+            self.fx.conn.execute("UPDATE object_versions SET recorded_at = "
+                                 "'2026-11-04T00:00:00Z' WHERE object_id = ?", (oid,))
+            self.fx.conn.execute("INSERT INTO object_values VALUES (?, 'received_at', ?, "
+                                 "'[]', NULL, 'h', 'row.received_at', 'text')",
+                                 (oid, sent + "T10:00:00Z"))
+        handle = f"graph-mail://{box}/Email:jun@1#attachment=A1"
+        self.fx.obj("Attachment:A1", "Attachment", f"mail:{box}", handle=handle,
+                    kind="attachment", text={"row.content_text": (
+                        handle + "&page=1", "Certificate of analysis for lot 4471 of the June order: "
+                        "appearance clear, pH 9.8, moisture 0.4 percent, total plate count "
+                        "under 100 cfu per gram, passed against the agreed specification.")},
+                    values={"name": ("coa.pdf", "[]")})
+        self.fx.conn.execute("UPDATE object_versions SET recorded_at = "
+                             "'2026-11-04T00:00:00Z' WHERE object_id = 'Attachment:A1'")
+        self.fx.link("Attachment:A1", "Email:jun", "Attachment.attached_to")
+        novh = f"graph-mail://{box}/Email:nov@1#attachment=A3"
+        self.fx.obj("Attachment:A3", "Attachment", f"mail:{box}", handle=novh,
+                    kind="attachment", text={"row.content_text": (
+                        novh + "&page=1", "Packing list for the November carton order: 40 "
+                        "cartons of castile bars, 12 of glycerin, shipped on pallet 7 with "
+                        "the usual wrap and the corner boards the warehouse asked for.")})
+        self.fx.conn.execute("UPDATE object_versions SET recorded_at = "
+                             "'2026-11-04T00:00:00Z' WHERE object_id = 'Attachment:A3'")
+        self.fx.link("Attachment:A3", "Email:nov", "Attachment.attached_to")
+        # an excluded sender's mail and its attachment: withheld on both stores
+        self.email("Email:ex", box, "Excluded sender mail body, never chunked here.",
+                   sender="gone@example-plx.com")
+        self.fx.conn.execute("INSERT INTO object_values VALUES ('Email:ex', 'received_at', "
+                             "'2026-06-05T10:00:00Z', '[]', NULL, 'h', 'row.received_at', "
+                             "'text')")
+        exh = f"graph-mail://{box}/Email:ex@1#attachment=A2"
+        self.fx.obj("Attachment:A2", "Attachment", f"mail:{box}", handle=exh,
+                    kind="attachment", text={"row.content_text": (
+                        exh + "&page=1", "Attachment of the excluded sender's message.")})
+        self.fx.link("Attachment:A2", "Email:ex", "Attachment.attached_to")
+        self.fx.obj("Thread:3", "Thread", f"mail:{box}", values={"name": ("Cartons", "[]")},
+                    idents=[("petra_po", "PO5555", "primary", "[]")])
+        self.fx.link("Email:jun", "Thread:3", "Email.in_thread")
+        self.fx.done()
+
+    def copy_to_pg(self):
+        import psycopg
+        try:
+            name, dsn = scratch_db.create_db()
+        except Exception:  # noqa: BLE001
+            raise unittest.SkipTest("no Postgres for a scratch database")
+        self.addCleanup(scratch_db.drop_db, name)
+        src = sqlite3.connect(self.path)
+        self.addCleanup(src.close)
+        kinds = {"INTEGER": "bigint", "BLOB": "bytea"}
+        import re as _re
+        migrations = ROOT / "operating/pg/migrations"
+        ddl = ((migrations / "0008_ontology_read.sql").read_text()
+               + (migrations / "0011_ontology_word_order.sql").read_text())
+        functions = [_re.search(r"(?s)CREATE FUNCTION ontology\." + name + r"\(.*?\$\$;",
+                                ddl).group(0)
+                     for name in ("sq_julianday", "sq_json_each", "sq_json_array")]
+        with psycopg.connect(dsn) as pg:
+            pg.execute("CREATE SCHEMA ontology")
+            for function in functions:   # the read tools' SQLite-answer functions
+                pg.execute(function)
+            for (table,) in src.execute("SELECT name FROM sqlite_master WHERE type='table'"):
+                cols = [(c[1], kinds.get(c[2], "text"))
+                        for c in src.execute(f"PRAGMA table_info({table})")]
+                pg.execute(f"CREATE TABLE ontology.{table} ("
+                           + ", ".join(f"{n} {t}" for n, t in cols) + ")")
+                rows = src.execute(f"SELECT * FROM {table}").fetchall()
+                if rows:
+                    with pg.cursor() as cur:
+                        cur.executemany(f"INSERT INTO ontology.{table} VALUES ("
+                                        + ",".join(["%s"] * len(cols)) + ")", rows)
+        return dsn
+
+    def chunks(self, conn, **window):
+        counts = Counts()
+        got = list(ProjectionChunker(conn, exclusion(), counts).chunks(
+            window.pop("kinds", None), **window))
+        return sorted((c.chunk_id, c.object_id, c.header, c.body, c.audience_key)
+                      for c in got), dict(counts.skipped)
+
+    def test_the_postgres_ontology_chunks_the_history_as_the_sqlite_projection(self):
+        from operating.chunking.pg_source import PgProjection
+        self.build()
+        dsn = self.copy_to_pg()
+        lite = open_ro(self.path)
+        self.addCleanup(lite.close)
+        pg = PgProjection(dsn, itersize=2)   # several fetches per statement
+        self.addCleanup(pg.close)
+        for window in ({"since": "2026-05-10", "until": "2026-10-06"},
+                       {"since": "2026-10-06"}, {"kinds": ["mail"]},
+                       {"kinds": ["mail", "attachment"]}, {}):
+            want = self.chunks(lite, **dict(window))
+            got = self.chunks(pg, **dict(window))
+            self.assertEqual(got, want, window)
+        history, skipped = self.chunks(pg, since="2026-05-10", until="2026-10-06")
+        self.assertEqual({c[1] for c in history}, {"Email:jun", "Attachment:A1"}, skipped)
+        self.assertEqual(skipped.get("after_window"), 1)   # November, left to the window
+        # the excluded sender's message and attachment are withheld on Postgres too
+        _all, _ = self.chunks(pg)
+        self.assertFalse({"Email:ex", "Attachment:A2"} & {c[1] for c in _all})
+        # only the kinds asked are read
+        both, _ = self.chunks(pg, kinds=["mail", "attachment"])
+        mail, _ = self.chunks(pg, kinds=["mail"])
+        self.assertIn("Attachment:A1", {c[1] for c in both})
+        self.assertNotIn("Attachment:A1", {c[1] for c in mail})
+        self.assertIn("Email:jun", {c[1] for c in mail})
+
+    def test_a_sharded_history_window_reads_each_attachment_with_its_message(self):
+        # parts keyed on each attachment's own handle sent it to another part than its
+        # message, where its message's date was unknown: every window chunked nearly
+        # every attachment again, whatever its date
+        self.build()
+        lite = open_ro(self.path)
+        self.addCleanup(lite.close)
+        seen = []
+        for part in range(4):
+            got = ProjectionChunker(lite, exclusion(), Counts()).chunks(
+                None, shard=(part, 4), since="2026-05-10", until="2026-10-06")
+            seen += sorted({c.object_id for c in got})
+        self.assertEqual(sorted(seen), ["Attachment:A1", "Email:jun"])
+        everything = {c.object_id for c in ProjectionChunker(lite, exclusion(), Counts())
+                      .chunks(None)}
+        self.assertIn("Attachment:A3", everything)   # chunked outside a history window
+
+    def test_a_statement_it_cannot_translate_is_refused(self):
+        from operating.chunking import pg_source as ps
+        out = ps.translate("SELECT a FROM t WHERE b IN (SELECT value FROM json_each(?)) "
+                           "AND +property IN (?) AND julianday(c) > 0")
+        self.assertNotIn("+property", out)
+        self.assertIn("ontology.sq_julianday(c)", out)   # SQLite's answers, not epoch math
+        self.assertEqual(ps.bind(out, ('["x"]', "p")), ('["x"]', "p"))
+        self.assertEqual(ps.bind("a = ANY(%s::text[]) AND b = %s", ('["x", "y"]', 1)),
+                         (["x", "y"], 1))
+        for sql in ("SELECT * FROM json_each(t.x)", "PRAGMA table_info(t)",
+                    "EXPLAIN SELECT 1"):
+            with self.assertRaises(ps.UnsupportedStatement, msg=sql):
+                ps.translate(sql)
+        for params in (("x",), ('{"a": 1}', 2), ("[1, 2]", 2)):   # not one list per slot
+            with self.assertRaises(ps.UnsupportedStatement, msg=params):
+                ps.bind("a = ANY(%s::text[]) AND b = %s", params)
+
+    def test_version_times_rank_as_sqlite_ranks_them(self):
+        # the latest-markings union reads julianday: a millisecond tie, a time without
+        # an offset (UTC, never the session zone) and an unreadable time (NULL, never an
+        # error that stops the shard) answer as SQLite does
+        from operating.chunking.pg_source import PgProjection
+        times = ("2026-06-01T10:00:00.0001Z", "2026-06-01T10:00:00.0004Z",
+                 "2026-06-01T10:00:00", "not a time", "2026-06-01")
+        for n, t in enumerate(times):
+            self.fx.conn.execute("INSERT INTO object_versions VALUES (?,?,?,?,?,?,NULL)",
+                                 (f"O:{n}", f"fx://O:{n}@1", "d", "x", "[]", t))
+        self.fx.done()
+        dsn = self.copy_to_pg()
+        sql = ("SELECT object_id, julianday(recorded_at) AS t FROM object_versions WHERE "
+               "object_id IN (SELECT value FROM json_each(?)) ORDER BY object_id")
+        ids = json.dumps([f"O:{n}" for n in range(len(times))])
+        lite = open_ro(self.path)
+        self.addCleanup(lite.close)
+        pg = PgProjection(dsn)
+        self.addCleanup(pg.close)
+        want = [(r[0], r[1]) for r in lite.execute(sql, (ids,))]
+        got = [(r[0], r[1]) for r in pg.execute(sql, (ids,))]
+        self.assertEqual([w[0] for w in want], [g[0] for g in got])
+        for (oid, a), (_, b) in zip(want, got):
+            self.assertTrue(a == b if a is None or b is None else abs(a - b) < 1e-9,
+                            (oid, a, b))
+        self.assertEqual(got[0][1], got[1][1])   # the millisecond tie holds
+        self.assertIsNone(got[3][1])
+
+
+class FollowHistoryOnPostgresTests(unittest.TestCase):
+    """With the SQLite generation retired and Postgres the only store, the follower's mail
+    history reads the Postgres ontology, newest first, and resumes where it stopped."""
+
+    def run_follow(self, state, env, windows, stop_at=None):
+        from operating.embed import follow as fl
+        args = fl.parser().parse_args([
+            "--state", str(state), "--mode", "generation", "--window-days", "30",
+            "--history-days", "120", "--history-floor", "2025-06-01", "--embed-seconds", "0"])
+
+        def window(a, store, since, until, values):
+            windows.append((str(store), since, until))
+            return {"since": since, "until": until,
+                    **({"stopped": "disk_below_min_free"} if until == stop_at else {})}
+        with mock.patch.dict(os.environ, env, clear=False), \
+                mock.patch.object(fl, "_exclusion", return_value=exclusion()), \
+                mock.patch.object(fl.config, "settings", return_value={}), \
+                mock.patch.object(fl, "history_window", side_effect=window), \
+                mock.patch.object(fl, "chunk_code", return_value="code-1"):
+            return fl.follow(args)
+
+    def test_the_history_reads_postgres_once_the_generation_is_retired_and_resumes(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        state = Path(tmp.name)
+        (state / "projection").mkdir()
+        (state / "projection" / "CURRENT").write_text(json.dumps(
+            {"generation": "g1", "content_digest": "sha256:aaa"}))   # no store file
+        windows = []
+        # SQLite still the store named (not Postgres-only): nothing read
+        report = self.run_follow(state, {"PLX_ONTOLOGY_PG": "1"}, windows)
+        self.assertEqual((report["generation_pass"], windows),
+                         ({"skipped": "generation_retired"}, []))
+        only = {"PLX_ONTOLOGY_PG": "only"}
+        today = dt.date.today()
+        newest = today - dt.timedelta(days=30)
+        second = newest - dt.timedelta(days=120)
+        # stopped (disk) in the second window: the cursor keeps the first one done
+        self.run_follow(state, only, windows, stop_at=second.isoformat())
+        self.assertEqual([w[0] for w in windows], ["postgres", "postgres"])
+        self.assertEqual(windows[0][2], newest.isoformat())
+        cursor = json.loads((state / "search" / "generation.json").read_text())
+        self.assertEqual((cursor["history_until"], cursor["code"]),
+                         (second.isoformat(), "code-1"))
+        # the next run resumes at the stopped window and goes down to the floor
+        windows.clear()
+        self.run_follow(state, only, windows)
+        self.assertEqual(windows[0][2], second.isoformat())
+        self.assertEqual(windows[-1][1], "2025-06-01")
+        # done: a later run reads nothing again
+        windows.clear()
+        self.run_follow(state, only, windows)
+        self.assertEqual(windows, [])
+
+
 class DeltaRunningTests(unittest.TestCase):
     """PERF-16: the follower's embedding waits while a delta cycle holds its run lock,
     told from the kernel's lock table (never by taking the lock: a delta starting then

@@ -14,6 +14,7 @@ milliseconds are logged (``operator_api.latency``), never its query or body.
 
 from __future__ import annotations
 
+from contextlib import contextmanager
 from datetime import date, datetime, timezone
 import itertools
 import json
@@ -33,6 +34,7 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 from . import feedback as fb
 from . import view_as as va
 from . import work_log as wl
+from . import memory as mem
 from .ask_drafts import cited_handles
 from operating.instruct import route as route_of
 from operating.secret_text import mask_secrets, mask_secrets_in
@@ -65,6 +67,19 @@ MESSAGES = {
     "internal": "The Workbench server failed on this request. Try again; if it keeps happening, "
                 "quote incident {incident}.",
 }
+
+
+@contextmanager
+def first_partial() -> Iterator[None]:
+    """A Today list or a record's page asked for by the app: with no page kept for the
+    reader, answered ``reading`` after a moment rather than held for its whole first read
+    (``WorkspaceBackend._serving``); the app asks again."""
+    from .serving import FIRST_PARTIAL
+    token = FIRST_PARTIAL.set(True)
+    try:
+        yield
+    finally:
+        FIRST_PARTIAL.reset(token)
 
 
 def problem(code: str, status: int, **values: Any) -> JSONResponse:
@@ -209,6 +224,16 @@ def create_app(backend: Any, auth: Any, *, allowed_origins: frozenset[str] = fro
         backend.work_log = work     # the Ask drafts' cards read the reader's kept Asks
     mailbox = getattr(backend, "_mailbox", None) or (lambda who: who.email)
     notes = wl.Notes(work, mailbox, getattr(backend, "mail_conversation", None))
+    # Each person's memory (``operator_api.memory``, over the backend's Postgres; none
+    # without one): told what every path did, read by the Ask.
+    if getattr(backend, "memory", None) is None:
+        try:
+            backend.memory = mem.Memory.for_backend(backend)
+        except Exception as error:  # noqa: BLE001 - no memory: the app runs without it
+            logging.getLogger("operator_api.memory").warning(
+                "memory off: %s", type(error).__name__)
+            backend.memory = None
+    notes.memory = backend.memory
 
     # "View as <person>" (UI-07): who the owner may view as and the audit of every view.
     viewing = getattr(backend, "view_as", None) or va.ViewAs(audit=va.Audit(state_dir))
@@ -456,6 +481,7 @@ def create_app(backend: Any, auth: Any, *, allowed_origins: frozenset[str] = fro
     def me(who: Reader = Depends(reader)) -> m.Me:
         return backend.me(who).model_copy(update={"feedback_admin": fb.is_admin(who),
                                                   "ops_reader": ops_reader(who),
+                                                  "owner": is_owner(who),
                                                   "can_view_as": viewing.available
                                                   and is_owner(who)})
 
@@ -586,7 +612,8 @@ def create_app(backend: Any, auth: Any, *, allowed_origins: frozenset[str] = fro
     @app.get("/api/home", response_model=m.Home, tags=["home"],
              responses={401: {"model": m.ErrorResponse}})
     def home(who: Reader = Depends(reader)) -> m.Home:
-        return backend.home(who)
+        with first_partial():
+            return backend.home(who)
 
     @app.get("/api/late", response_model=m.LateList, tags=["home"],
              responses={401: {"model": m.ErrorResponse}, 422: {"model": m.ErrorResponse}})
@@ -594,7 +621,8 @@ def create_app(backend: Any, auth: Any, *, allowed_origins: frozenset[str] = fro
                   who: Reader = Depends(reader)) -> m.LateList:
         """Every late purchase order you may see, a page at a time, longest late first
         (Home shows the first ones: "show all")."""
-        return backend.late_list(who, offset=offset, limit=limit)
+        with first_partial():
+            return backend.late_list(who, offset=offset, limit=limit)
 
     @app.get("/api/briefing", response_model=m.Briefing, tags=["home"],
              responses={401: {"model": m.ErrorResponse}})
@@ -604,7 +632,8 @@ def create_app(backend: Any, auth: Any, *, allowed_origins: frozenset[str] = fro
         top ones each with why, a suggested next action and how we know, every other one
         counted in its type's group; each check's state; and a preview of the daily
         digest (never sent). ``view=since_visit``: only what is new since your last visit."""
-        return backend.briefing(who, since_visit=view == "since_visit")
+        with first_partial():
+            return backend.briefing(who, since_visit=view == "since_visit")
 
     @app.get("/api/briefing/items", response_model=m.BriefingItems, tags=["home"],
              responses={401: {"model": m.ErrorResponse}, 422: {"model": m.ErrorResponse}})
@@ -636,7 +665,8 @@ def create_app(backend: Any, auth: Any, *, allowed_origins: frozenset[str] = fro
         margin alerts, ranked by impact; each with how we know, confidence, what is missing,
         a draft message and the actions it offers (``/api/actions/*``: nothing is sent
         without your confirm)."""
-        return backend.suggestions(who)
+        with first_partial():
+            return backend.suggestions(who)
 
     @app.get("/api/approvals", response_model=m.ApprovalsQueue, tags=["actions"],
              responses={401: {"model": m.ErrorResponse}})
@@ -644,7 +674,8 @@ def create_app(backend: Any, auth: Any, *, allowed_origins: frozenset[str] = fro
         """Every pending approval on your alert list (mail asks with no answer from the
         approver, Mission Control approvals), by who it waits on and how long, each with a
         drafted nudge. Nothing is sent."""
-        return backend.approvals_queue(who)
+        with first_partial():
+            return backend.approvals_queue(who)
 
     @app.get("/api/alert-kinds", response_model=m.AlertKinds, tags=["briefing"],
              responses={401: {"model": m.ErrorResponse}})
@@ -660,7 +691,8 @@ def create_app(backend: Any, auth: Any, *, allowed_origins: frozenset[str] = fro
         """What needs your reply today: your own mail and one-to-one chats where someone
         asked you something you have not answered, heaviest first, each with a drafted
         reply. Only your own mailbox. Nothing is sent."""
-        return backend.reply_triage(who)
+        with first_partial():
+            return backend.reply_triage(who)
 
     @app.get("/api/my-work", response_model=m.MyWork, tags=["actions"],
              responses={401: {"model": m.ErrorResponse}})
@@ -712,7 +744,7 @@ def create_app(backend: Any, auth: Any, *, allowed_origins: frozenset[str] = fro
                          who: Reader = Depends(reader)) -> m.AutopilotItem:
         """Accept, edit, reject or snooze an item of your own. Accept runs it through the
         gated write path: a dry run (the decision recorded, nothing written) unless its
-        workflow passed the fresh gate and the owner switched it live."""
+        workflow passed the fresh gate for you and you switched it on for yourself."""
         item = backend.autopilot_decide(who, item_id, body)
         notes.autopilot_decided(who, item)
         return item
@@ -771,9 +803,39 @@ def create_app(backend: Any, auth: Any, *, allowed_origins: frozenset[str] = fro
                                            422: {"model": m.ErrorResponse}})
     def autopilot_workflow(workflow: str, body: m.AutopilotWorkflowSwitch,
                            who: Reader = Depends(reader)) -> m.AutopilotArea:
-        """Switch a workflow off or on, or a role's workflow live (only after its fresh
-        gate passed) or back to dry run. Owner only (403 for every other reader)."""
+        """Switch a workflow off for everyone, or back on. Owner only (403 for every other
+        reader). Nobody switches a workflow on to act for someone else: each person does
+        that for themselves (``/api/autopilot/opt-in``)."""
         return backend.autopilot_workflow(who, workflow, body)
+
+    @app.post("/api/autopilot/notices/ack", response_model=m.AutopilotArea, tags=["actions"],
+              responses={401: {"model": m.ErrorResponse}, 403: {"model": m.ErrorResponse},
+                         404: {"model": m.ErrorResponse}, 409: {"model": m.ErrorResponse},
+                         422: {"model": m.ErrorResponse}})
+    def autopilot_ack_notice(body: m.AutopilotNoticeAck,
+                             who: Reader = Depends(reader)) -> m.AutopilotArea:
+        """The owner acknowledges that a workflow passed its fresh gate for a role (told
+        once). Owner only (403 for every other reader); turns nothing on."""
+        return backend.autopilot_ack_notice(who, body)
+
+    @app.post("/api/autopilot/opt-in", response_model=m.AutopilotArea, tags=["actions"],
+              responses={401: {"model": m.ErrorResponse}, 403: {"model": m.ErrorResponse},
+                         404: {"model": m.ErrorResponse}, 409: {"model": m.ErrorResponse},
+                         422: {"model": m.ErrorResponse}})
+    def autopilot_opt_in(body: m.AutopilotOptInRequest,
+                         who: Reader = Depends(reader)) -> m.AutopilotArea:
+        """Switch one of your own workflows on (only while it passes its gate for you: 409
+        otherwise) or off. Always your own; recorded on the audit log. It acts only while
+        the host's master switch is on, and only on routine items."""
+        return backend.autopilot_opt_in(who, body)
+
+    @app.post("/api/autopilot/pause", response_model=m.AutopilotArea, tags=["actions"],
+              responses={401: {"model": m.ErrorResponse}, 403: {"model": m.ErrorResponse},
+                         409: {"model": m.ErrorResponse}})
+    def autopilot_pause(body: m.AutopilotPauseRequest,
+                        who: Reader = Depends(reader)) -> m.AutopilotArea:
+        """Pause (or resume) everything you switched on, at once. Your own only."""
+        return backend.autopilot_pause(who, body)
 
     @app.get("/api/autopilot/workflows/{workflow}", response_model=m.AutopilotWorkflowDetail,
              tags=["actions"], responses={401: {"model": m.ErrorResponse},
@@ -871,7 +933,8 @@ def create_app(backend: Any, auth: Any, *, allowed_origins: frozenset[str] = fro
         """R&D and sample projects per customer from the threads and records you may open:
         status, last activity, owner and who each waits on, with a drafted status update.
         Nothing is sent."""
-        return backend.rd_board(who)
+        with first_partial():
+            return backend.rd_board(who)
 
     @app.post("/api/workload/grants", response_model=m.WorkloadGrants, tags=["actions"],
               responses={401: {"model": m.ErrorResponse}, 403: {"model": m.ErrorResponse},
@@ -926,7 +989,8 @@ def create_app(backend: Any, auth: Any, *, allowed_origins: frozenset[str] = fro
     def upcoming_meetings(who: Reader = Depends(reader)) -> m.UpcomingMeetings:
         """Calendar events in the next 14 days you may read, soonest first, each with the
         link to its meeting prep brief."""
-        return backend.upcoming_meetings(who)
+        with first_partial():
+            return backend.upcoming_meetings(who)
 
     @app.get("/api/labour", response_model=m.LabourPage, tags=["briefs"],
              responses={401: {"model": m.ErrorResponse}})
@@ -1204,8 +1268,9 @@ def create_app(backend: Any, auth: Any, *, allowed_origins: frozenset[str] = fro
         if len(object_type) > 60 or len(object_id) > 700 or not object_id:
             return problem("invalid_request", 422)
         try:
-            page = (backend.object_page(who, object_type, object_id, quick=True) if quick
-                    else backend.object_page(who, object_type, object_id))
+            with first_partial():
+                page = (backend.object_page(who, object_type, object_id, quick=True)
+                        if quick else backend.object_page(who, object_type, object_id))
         except (KeyError, LookupError):
             return problem("not_found", 404)
         return JSONResponse(page.model_dump(mode="json"))
@@ -1430,6 +1495,39 @@ def create_app(backend: Any, auth: Any, *, allowed_origins: frozenset[str] = fro
                                    "source_id", "records", "people", "thread_name",
                                    "pinned", "case_id", "loop")})
 
+    @app.get("/api/memory", response_model=m.MemoryItems, tags=["work-log"],
+             responses={401: {"model": m.ErrorResponse}})
+    def memory_items(who: Reader = Depends(reader)) -> Response:
+        """What the Workbench remembers about you and uses in every answer: your standing
+        instructions, preferences, open commitments and facts, newest first. Only yours
+        (the owner too sees only their own)."""
+        store = getattr(backend, "memory", None)
+        if store is None or getattr(who.session, "view_as", False):
+            out = m.MemoryItems(items=[], available=False)
+        else:
+            try:
+                decide = getattr(backend, "_memory_decide", None)
+                rows = store.items(who, decide=decide(who, wait=True) if decide else None)
+                out = m.MemoryItems(available=store._reading(who) is not None, items=[
+                    m.MemoryItem(**{k: r[k] for k in m.MemoryItem.model_fields})
+                    for r in rows])
+            except Exception as error:  # noqa: BLE001 - unreadable now: said, never guessed
+                logging.getLogger("operator_api.memory").warning(
+                    "memory list failed: %s", type(error).__name__)
+                out = m.MemoryItems(items=[], available=False)
+        return JSONResponse(out.model_dump(mode="json"), headers={"Cache-Control": "no-store"})
+
+    @app.delete("/api/memory/{item_id}", response_model=m.MemoryForgotten, tags=["work-log"],
+                responses={401: {"model": m.ErrorResponse}, 404: {"model": m.ErrorResponse}})
+    def memory_forget(item_id: int = PathParam(ge=1), who: Reader = Depends(reader)) -> Response:
+        """Delete one thing the Workbench remembers about you; it is not used again. Only
+        your own (another person's reads as not found)."""
+        store = getattr(backend, "memory", None)
+        if store is None or getattr(who.session, "view_as", False) \
+                or not store.forget(who, item_id):
+            return problem("not_found", 404)
+        return JSONResponse(m.MemoryForgotten(forgotten=True).model_dump(mode="json"))
+
     @app.get("/api/work-log", response_model=m.WorkLogPage, tags=["work-log"],
              responses={401: {"model": m.ErrorResponse}, 403: {"model": m.ErrorResponse}})
     def work_log(q: Optional[str] = Query(None, max_length=200),
@@ -1559,7 +1657,10 @@ def create_app(backend: Any, auth: Any, *, allowed_origins: frozenset[str] = fro
         else:
             thread, records = "record:saved/question", []
         if not wl.valid_thread(thread):
-            return problem("invalid_request", 422)
+            # a record id outside the thread grammar (every projected id: ``{"id":...}``)
+            # is kept under one saved-records thread with its record attached, as notes
+            # and watches are; a 422 here lost every Save of a real record silently
+            thread = "record:saved/record"
         notes._put(who, kind="save", verb="saved" if body.saved else "unsaved",
                    title=body.label, thread=thread, source="saved", records=records)
         rows, total = work.events(reader=who.key, thread=thread, limit=1)

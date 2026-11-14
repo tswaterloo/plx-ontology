@@ -18,6 +18,7 @@ SNAPSHOT_DIR = "jobq"
 SNAPSHOT_FILE = "status.json"
 SCHEMA = "plx.jobq.status.v1"
 STALE_S = 120
+CLOCK_SKEW_S = 30
 _KEEP = {"running": ("id", "class", "kind", "unit", "label", "state", "mem_mb", "current_mb",
                      "running_s", "waited_s", "attempts", "preemptions"),
          "waiting": ("id", "class", "kind", "label", "priority", "mem_mb", "waiting_s",
@@ -65,7 +66,10 @@ def read_snapshot(state_dir: Any, now: datetime | None = None) -> dict[str, Any]
     except (OSError, ValueError, KeyError, TypeError):
         return {"configured": True, "fresh": False, "written_at": None}
     age = (now - written).total_seconds()
-    return {**body, "configured": True, "fresh": 0 <= age <= STALE_S, "age_s": int(age)}
+    # a snapshot written just after ``now`` was taken reads a few seconds in the future
+    # (11-13: a false "worker stopped" page); up to CLOCK_SKEW_S of that is fresh
+    return {**body, "configured": True, "fresh": -CLOCK_SKEW_S <= age <= STALE_S,
+            "age_s": max(0, int(age))}
 
 
 def _mb(value: Any) -> str:

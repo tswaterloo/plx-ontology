@@ -22,14 +22,16 @@ MIGRATIONS = sorted(p for p in (Path(__file__).resolve().parents[1] / "pg" / "mi
 
 
 def _new_schema():
-    """The fixture schema with one made-up property added to PurchaseOrderLine."""
+    """The fixture schema with one made-up property added to ReceiptAllocation: a type no
+    build step reads (a property of PurchaseOrderLine, read by supply_pegging since
+    migration-next, needs a step migration as well: refused step_input_changed)."""
     from ontology.tests.test_projection import DOMAIN, compiled_schema
     document = copy.deepcopy(DOMAIN)
-    line = next(t for t in document["object_types"] if t["id"] == "PurchaseOrderLine")
+    line = next(t for t in document["object_types"] if t["id"] == "ReceiptAllocation")
     line["properties"].append({
-        "name": "quantity_as_written", "value_type": "text",
-        "description": "The quantity as the source wrote it (migration probe).",
-        "sources": [{"binding": "t.gold_line", "path": "quantity", "parser": "trim"}]})
+        "name": "line_as_written", "value_type": "text",
+        "description": "The line reference as the source wrote it (migration probe).",
+        "sources": [{"binding": "t.receipt_line", "path": "line_id", "parser": "trim"}]})
     return compiled_schema(document)
 
 
@@ -80,9 +82,9 @@ class SchemaMigrationTests(unittest.TestCase):
         plan = diff(self.old, self.new)
         self.assertEqual(plan["refused"], [])
         self.assertEqual(plan["changes"]["types"],
-                         {"PurchaseOrderLine": {"properties": {"quantity_as_written": "added"}}})
+                         {"ReceiptAllocation": {"properties": {"line_as_written": "added"}}})
         affected = plan["units"]["affected"]
-        self.assertIn("b:t.gold_line", affected)
+        self.assertIn("b:t.receipt_line", affected)
         self.assertNotIn("b:t.supplier", affected)   # its slice is the same
         self.assertLess(len(affected), plan["units"]["total"])
 
@@ -133,7 +135,7 @@ class SchemaMigrationTests(unittest.TestCase):
         layer = self.layer(plan)            # the snapshot: captures at T1
         # cycles keep running meanwhile (old schema): one changes a line (in the
         # migration's scope) and an order
-        self.fixture.fake.set("public.app_purchase_order_line", "l1", quantity="7")
+        self.fixture.fake.set("public.app_receipt_line", "rl1", line_id="l2")
         self.fixture.fake.set("public.app_purchase_order", "po-a", status="RECEIVED")
         self.fixture.capture(T2)
         cycle = self.fixture.cycle(base)

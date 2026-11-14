@@ -113,7 +113,8 @@ DONE = re.compile(
     r"(?:is|are)\s+the\s+(?:updated|revised|corrected|new|amended|final)\b|\bsent\s+to\s+"
     r"(?:print|the\s+printer|press)\b|\b(?:change|update|revision|correction)s?\s+(?:is|are|"
     r"has\s+been|have\s+been)\s+(?:done|made|completed|uploaded)\b|\b(?:has|have)\s+been\s+"
-    r"(?:updated|revised|corrected|changed)\b", re.I)
+    r"(?:updated|revised|corrected|changed)\b|\b" + _ART + r"\s+(?:(?:were|was|have\s+been|has\s+"
+    r"been|are|is)\s+)?(?:printed|shipped|in\s+production)\b", re.I)
 
 
 def _match(sentence: str, rx: re.Pattern) -> bool:
@@ -287,6 +288,31 @@ def _links(st: Any, oids: Sequence[str]) -> dict[str, dict[str, list[str]]]:
     return out
 
 
+NAME_PROPS = ("name", "description")   # what an item or customer is called, as stored
+
+
+def _subject_names(st: Any, links: Mapping[str, Mapping[str, list[str]]]
+                   ) -> dict[str, Mapping[str, Any]]:
+    """Item or customer -> the row of its stated name (an item's ``name``, else its
+    ``description``; a customer's ``name``), read for the first item, else the first
+    customer, each request names; one read per object type."""
+    wanted: dict[str, set[str]] = defaultdict(set)
+    for linked in links.values():
+        items, customers = sorted(set(linked["items"])), sorted(set(linked["customers"]))
+        first = items[0] if items else customers[0] if customers else None
+        if first:
+            wanted[first.split(":", 1)[0]].add(first)
+    out: dict[str, Mapping[str, Any]] = {}
+    for object_type, objects in sorted(wanted.items()):
+        found = st.values((object_type,), NAME_PROPS, objects=sorted(objects))
+        for oid, entry in found.items():
+            row = next((r for prop in NAME_PROPS for r in entry["props"].get(prop, ())
+                        if str(r.get("value") or "").strip()), None)
+            if row is not None:
+                out[oid] = row
+    return out
+
+
 # --------------------------------------------------------------------------- the rule
 
 def label_changes(st: Any, as_of: date, *, gap: Callable, cites: Callable, result: Callable,
@@ -346,6 +372,9 @@ def label_changes(st: Any, as_of: date, *, gap: Callable, cites: Callable, resul
                     continue
             if not change_request(text):
                 continue
+            if channel == "mail" and done(subject):
+                counts["subject_says_done"] += 1
+                continue   # the thread's own subject says the labels were made or printed
             counts["requests"] += 1
             if not thread_ok.get(key, False):
                 skipped["participants_not_cleared"] += 1
@@ -360,6 +389,7 @@ def label_changes(st: Any, as_of: date, *, gap: Callable, cites: Callable, resul
                              "channel": channel, "subject": subject, "approved": approved,
                              "done": finished})
     links = _links(st, sorted({r["oid"] for r in asks}))
+    names = _subject_names(st, links)
     from . import label_revisions
     revisions = label_revisions.item_revisions(st, as_of, people) if asks else {}
     gaps = []
@@ -380,17 +410,23 @@ def label_changes(st: Any, as_of: date, *, gap: Callable, cites: Callable, resul
         state = ("done" if r["done"] or file_done else "approved" if approved_at
                  else "requested")
         waited = pt._business_days(r["at"].date(), as_of)
+        subject_id = items[0] if items else customers[0] if customers else None
+        name_row = names.get(subject_id) if subject_id else None
         if state == "done" and not approved_at:
             kind, priority = UNAPPROVED, "high"
-        elif state != "done" and waited >= STALE_BUSINESS_DAYS:
+        elif state != "done" and waited >= STALE_BUSINESS_DAYS and name_row is not None:
+            # stale only when the request names what it is about (its item, else its
+            # customer, by a stated name): 11-13 judging, 10 of 17 stale alerts named
+            # neither and could not be acted on
             kind, priority = STALE, "medium"
         else:
+            if state != "done" and waited >= STALE_BUSINESS_DAYS:
+                counts["stale_unnamed"] += 1
             kind, priority = TRACKED, "low"
         counts[kind] += 1
         counts[state] += 1
-        subject_id, subject_type = (items[0], items[0].split(":", 1)[0]) if items else (
-            (customers[0], customers[0].split(":", 1)[0]) if customers else (
-                r["oid"], r["oid"].split(":", 1)[0]))
+        subject_id = subject_id or r["oid"]
+        subject_type = subject_id.split(":", 1)[0]
         rows = pop["rows"] if r["channel"] == "mail" else pop["teams"]
         props = ("sent_at", "subject", "sender") if r["channel"] == "mail" else (
             "created_at", "from")
@@ -407,9 +443,14 @@ def label_changes(st: Any, as_of: date, *, gap: Callable, cites: Callable, resul
         what = {UNAPPROVED: "was changed with no approval recorded",
                 STALE: f"is not done after {count(waited, 'business day')}",
                 TRACKED: f"is {state}"}[kind]
-        summary = (f"A label or artwork change requested {say_date(r['at'].date())} "
+        named = str(name_row["value"]).strip() if name_row else ""
+        summary = (f"A label or artwork change"
+                   + (f" for {'item' if items else 'customer'} {named}" if named else "")
+                   + f" requested {say_date(r['at'].date())} "
                    f"({'mail' if r['channel'] == 'mail' else 'Teams'}) {what}"
                    + ("" if items else "; no item named"))
+        if name_row is not None:
+            groups.append(cites([name_row]))   # the name said is shown with its source
         made = gap(
             kind, RULE, subject_id, subject_type, f"label|{r['oid']}",
             summary=summary,
@@ -439,7 +480,8 @@ def label_changes(st: Any, as_of: date, *, gap: Callable, cites: Callable, resul
     out = result(gaps, not_evaluated=skipped)
     out["counts"] = {"threads": len(threads), **{k: counts[k] for k in (
         "requests", "requested", "approved", "done", UNAPPROVED, STALE, TRACKED,
-        "automated_or_forward", "mailing", "superseded_by_later_request")}}
+        "automated_or_forward", "mailing", "superseded_by_later_request", "stale_unnamed",
+        "subject_says_done")}}
     return out
 
 

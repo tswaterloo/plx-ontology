@@ -123,6 +123,16 @@ export function BriefSectionView({ section, repeat = false }: { section: BriefSe
   );
 }
 
+/** A section read in full with nothing in it and no note of its own: said in one line under the
+ * brief, not one "nothing here" each. A section with a note keeps its heading, so the note is never lost. */
+function quiet(s: BriefSection): boolean {
+  return (s.state === "empty" || s.state === "shown") && !(s.rows ?? []).length && !(s.figures ?? []).length && !s.more && !s.note;
+}
+
+function listWords(xs: string[]): string {
+  return xs.length < 2 ? xs.join("") : `${xs.slice(0, -1).join(", ")} or ${xs[xs.length - 1]}`;
+}
+
 /** Two sections in a row held back for one stated reason (unread, blocked, finance only). */
 function sameUnreadNote(prev: BriefSection | undefined, s: BriefSection): boolean {
   return !!prev && !!s.note && prev.note === s.note && (s.state === "unread" || s.state === "blocked" || s.state === "finance_marked") && prev.state === s.state;
@@ -187,10 +197,17 @@ export function BriefView({ brief, level = 1 }: { brief: Brief; eyebrow?: string
         </p>
       )}
       <div className="grid gap-4">
-        {brief.sections.map((s, i) => (
-          <BriefSectionView key={s.key} section={s} repeat={sameUnreadNote(brief.sections[i - 1], s)} />
-        ))}
+        {brief.sections.map((section, i) =>
+          quiet(section) ? null : (
+            <BriefSectionView key={section.key} section={section} repeat={sameUnreadNote(brief.sections[i - 1], section)} />
+          ),
+        )}
       </div>
+      {brief.sections.some(quiet) && (
+        <p className="text-[13px] text-muted" data-testid="brief-quiet">
+          Nothing you may read under {listWords(brief.sections.filter(quiet).map((s) => s.title))}.
+        </p>
+      )}
       <p className="text-[12px] text-muted">{brief.basis}</p>
     </div>
   );

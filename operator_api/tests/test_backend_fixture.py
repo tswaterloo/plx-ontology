@@ -1111,7 +1111,7 @@ class HomeFreshnessTest(unittest.TestCase):
         self.assertEqual(backend.freshness().as_of, "2026-10-31T05:00:00Z")
         # the ledger above holds failed captures, so the stale-capture alarm (judged at
         # the backend's clock) closes the label
-        alarm = "; captures not refreshed: mc, portal, sharepoint (oldest 2 h)"
+        alarm = "; captures not refreshed: MC, Portal, SharePoint (oldest 2 h)"
         self.assertEqual(backend.freshness().label,
                          "Data as of 31 Oct 2026 1:00 AM ET; Teams to 29 Oct" + alarm)
         # with hybrid search on, a source whose searchable text ends over a day before its
@@ -1332,6 +1332,18 @@ class LateWhileTheCheckReruns(unittest.TestCase):
                 next(got)
         except StopIteration as done:
             return done.value
+
+    def test_a_late_read_queued_past_its_limit_goes_to_the_agent_not_busy(self):
+        """CAP-L297 (11-13 W9: four asks at once): the late-list read queued behind other
+        readers' reads past READ_TIMEOUT_SECONDS refused the whole Ask busy at 65 s; it
+        now goes on to the agent path (None), as the at-risk and profit shortcuts do."""
+        fake, _ = self.backend([])
+
+        def queued(reader, job, timeout=None):
+            raise TimeoutError("workbench_busy")
+
+        fake.reads = SimpleNamespace(run=queued)
+        self.assertIsNone(self.ask(fake))
 
     def test_the_last_completed_result_answers_with_an_as_of_line(self):
         held = [self.gap(self.PO, "bc://x/purchaseOrders/p1@1", 30),

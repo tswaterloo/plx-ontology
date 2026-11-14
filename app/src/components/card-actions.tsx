@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import { confirmAction, previewAction } from "@/lib/api";
-import { confirmBlocked, confirmLabel, EDITABLE, edits, newIdempotencyKey, outcomeUnknown, sameEdits, splitAddresses } from "@/lib/actions";
+import { confirmBlocked, confirmLabel, EDITABLE, edits, hasPreset, newIdempotencyKey, outcomeUnknown, sameEdits, splitAddresses, withPreset, type Preset } from "@/lib/actions";
 import { plainError } from "@/lib/errors";
 import type { ActionKind, ActionPayload, ActionPreview, ActionResult, CardActionOffer, ProactiveSuggestion } from "@/lib/types";
 import { ChevronRight } from "lucide-react";
@@ -212,12 +212,14 @@ export function ActionDialog({
   onClose,
   onDone,
   state,
+  preset,
 }: {
   card: { id: string; subject: { label: string } };
   offer: CardActionOffer;
   onClose: () => void;
   onDone: (r: ActionResult) => void;
   state?: ActionResult | null;
+  preset?: Preset;
 }) {
   const mustCheckSent = outcomeUnknown(state);
   const [sentChecked, setSentChecked] = useState(false);
@@ -226,6 +228,8 @@ export function ActionDialog({
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [unknownOk, setUnknownOk] = useState(false);
+  // the person's picks are being put into the preview: nothing is confirmed before it shows
+  const [presetPending, setPresetPending] = useState(false);
   // why the last confirm failed: kept apart from preview errors, so the review that follows
   // a failed confirm cannot wipe it
   const [confirmError, setConfirmError] = useState<string | null>(null);
@@ -233,7 +237,7 @@ export function ActionDialog({
   const key = useRef(newIdempotencyKey());
   const sending = useRef(false);
 
-  const review = (payload?: ActionPayload) => {
+  const review = (payload?: ActionPayload): Promise<ActionPreview | null> => {
     setError(null);
     return previewAction({ card_id: card.id, kind: offer.kind, payload: payload ? edits(offer.kind, payload) : undefined }).then(
       (p) => {
@@ -244,17 +248,28 @@ export function ActionDialog({
         ackedDomains.current = domains;
         setPreview(p);
         setForm(p.payload);
+        return p;
       },
-      (e) => setError(plainError(e)),
+      (e) => {
+        setError(plainError(e));
+        return null;
+      },
     );
   };
   useEffect(() => {
-    void review();
+    // what the person picked on the draft (who it is for, who else, a question for the
+    // recipient) goes into the preview the desk checks, never past it
+    const picked = !!preset && hasPreset(preset);
+    setPresetPending(picked);
+    void review().then((p) => {
+      if (p && preset && picked) void review(withPreset(p.payload, preset)).finally(() => setPresetPending(false));
+      else setPresetPending(false);
+    });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [card.id, offer.kind]);
 
   const edited = !!preview && !sameEdits(offer.kind, form, preview.payload);
-  const blocked = confirmBlocked(preview, { edited, unknownConfirmed: unknownOk, busy, mustCheckSent, sentChecked });
+  const blocked = confirmBlocked(presetPending ? null : preview, { edited, unknownConfirmed: unknownOk, busy, mustCheckSent, sentChecked });
   const go = () => {
     if (!preview || blocked || sending.current) return;
     sending.current = true;
@@ -358,7 +373,17 @@ export function ActionDialog({
 }
 
 /** The card's action buttons; one opens its preview dialog. */
-export function CardActions({ card, onDone, state }: { card: { id: string; subject: { label: string }; actions?: CardActionOffer[] | null }; onDone: (r: ActionResult) => void; state?: ActionResult | null }) {
+export function CardActions({
+  card,
+  onDone,
+  state,
+  preset,
+}: {
+  card: { id: string; subject: { label: string }; actions?: CardActionOffer[] | null };
+  onDone: (r: ActionResult) => void;
+  state?: ActionResult | null;
+  preset?: Preset;
+}) {
   const [open, setOpen] = useState<CardActionOffer | null>(null);
   const offers = card.actions ?? [];
   if (!offers.length) return null;
@@ -381,6 +406,8 @@ export function CardActions({ card, onDone, state }: { card: { id: string; subje
           card={card}
           offer={open}
           state={state}
+          // a reply keeps its thread's recipients: only the lines asking about a record
+          preset={open.kind === "send_email" ? preset : open.kind === "reply_in_thread" && preset ? { append: preset.append } : undefined}
           onClose={() => setOpen(null)}
           onDone={(r) => {
             setOpen(null);

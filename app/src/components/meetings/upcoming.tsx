@@ -177,7 +177,7 @@ function AgendaRow({ m, now, onOpen }: { m: UpcomingMeeting; now: Date; onOpen: 
   return (
     <li
       className={cn(
-        "group relative grid cursor-pointer grid-cols-[92px_minmax(0,1fr)_auto] gap-x-4 border-b border-border py-2.5 pl-3 text-[13px] hover:bg-hover",
+        "group relative grid cursor-pointer grid-cols-[64px_minmax(0,1fr)] gap-x-3 sm:grid-cols-[92px_minmax(0,1fr)_auto] sm:gap-x-4 border-b border-border py-2.5 pl-3 text-[13px] hover:bg-hover",
         "before:absolute before:inset-y-2 before:left-0 before:w-[3px]",
         EDGE[when],
         when === "past" && "text-muted",
@@ -234,14 +234,14 @@ function AgendaRow({ m, now, onOpen }: { m: UpcomingMeeting; now: Date; onOpen: 
             {items.length > 0 && (
               <span className="inline-flex items-center gap-1 text-risk">
                 <ListChecks className="size-3.5" strokeWidth={1.8} aria-hidden />
-                <span className="num">{items.length}</span> open {plural(items.length, "action item").replace(/^\d+ /, "")} from earlier
+                <span><span className="num">{items.length}</span> open {plural(items.length, "action item").replace(/^\d+ /, "")} from earlier</span>
               </span>
             )}
           </p>
         )}
         {agenda.length > 0 && when !== "past" && <p className="line-clamp-1 max-w-[90ch] text-[12px] text-faint">{agenda.join(" · ")}</p>}
       </div>
-      <div className="flex items-start gap-1 pt-0.5" onClick={(ev) => ev.stopPropagation()}>
+      <div className="col-start-2 -ml-2 flex items-start gap-1 pt-0.5 sm:col-start-auto sm:ml-0" onClick={(ev) => ev.stopPropagation()}>
         {m.join_url && when !== "past" && (
           <a href={safeHref(m.join_url) ?? undefined} target="_blank" rel="noreferrer" className="inline-flex h-7 items-center gap-1 rounded-md px-2 text-[12px] font-medium text-accent hover:bg-hover">
             <Video className="size-3.5" strokeWidth={1.8} aria-hidden />
@@ -348,7 +348,7 @@ export function Week({ meetings, now, onOpen }: { meetings: UpcomingMeeting[]; n
           <ChevronLeft className="size-4" aria-hidden />
         </button>
         <span className="min-w-[11rem] text-center font-medium">
-          Week of {monday.toLocaleDateString("en-CA", { month: "short", day: "numeric" })}
+          Week of {monday.toLocaleDateString("en-GB", { day: "numeric", month: "short" }).replace("Sept", "Sep")}
         </span>
         <button type="button" aria-label="Later week" className="flex size-7 items-center justify-center rounded-md hover:bg-hover disabled:opacity-40 cursor-pointer" disabled={offset >= bounds.max} onClick={() => setOffset((o) => o + 1)}>
           <ChevronRight className="size-4" aria-hidden />

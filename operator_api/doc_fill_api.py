@@ -3,11 +3,16 @@ form for PO 1234" with the form attached, and the Autopilot page's form filler
 (``POST /api/doc-fill``).
 
 * **The record** is the page's own record, a record id, or the one record the words name
-  by an exact identifier match (``suggest``); none, or two, and nothing is filled (the
-  answer says to name it).
+  by an exact identifier match (``suggest``); two, and nothing is filled (the answer says
+  to name one). With none named, the form's own identifiers name it (``form_sources``).
 * **The facts** are the record's and its declared neighbours' property values as this
-  reader's own tools read them (``record_facts``: the read policy applies there). A value
-  that names a person the people exclusion keeps out never enters the file.
+  reader's own tools read them (``record_facts``: the read policy applies there), and
+  what the form's own thread writes when it came in an email, the records its identifiers
+  name exactly, and the reader's own earlier copies of the same form agree on
+  (``form_sources``, ``operating.doc_gather.form_facts``), planned nearest source first
+  (``doc_gather.plan_form``). With no record and nothing read, nothing is filled (the
+  answer says to name the record). A value that names a person the people exclusion
+  keeps out never enters the file.
 * **The result** is a new file kept for this reader only (``instruct_files.UploadDesk``:
   served to them, never to another reader), every blank listed with its outcome and source.
   When the form came from a SharePoint file the reader opened, the copy is prepared as an
@@ -28,6 +33,7 @@ from typing import Any, Iterable, Mapping, Optional
 from urllib.parse import quote
 
 from operating import doc_fill as df
+from operating import doc_gather as dg
 from operating import instruct_files as files
 
 from . import models as m
@@ -46,6 +52,7 @@ FILL_REFUSED = {
     "no_record": "Say which record the form is for, for example \"for PO 1234\".",
     "two_records": "Those words match more than one record. Say which one the form is for.",
     "records_unreadable": "The record could not be read in full, so nothing was filled.",
+    "copies_invalid": "Form filling is paused: the index of earlier forms could not be read.",
     "not_open": "That is not something you can open.",
     "people_exclusion_unavailable": "This is paused: the list of people whose data stays "
                                     "out is not loaded.",
@@ -99,8 +106,17 @@ class DocFillMixin:
         what was not read, and the record. KeyError: not a record they may read."""
         raise KeyError("object_not_found")
 
+    def form_sources(self, reader: Reader, fields: list[df.FormField], *,
+                     message: Optional[str], words: str, named: bool
+                     ) -> tuple[list[df.Fact], list[str], Optional[m.ObjectRef]]:
+        """Facts for the form from where its answers are, read as this reader
+        (``doc_gather.form_facts``: its thread when ``message`` is the email it came in,
+        the records its identifiers name unless the reader ``named`` one, their own
+        earlier copies of the form), notes, and the record its identifiers named."""
+        return [], [], None
+
     def _fill_record(self, reader: Reader, words: str, context: Mapping[str, Any]
-                     ) -> tuple[str, str]:
+                     ) -> Optional[tuple[str, str]]:
         if context.get("kind") == "record" and context.get("object_id"):
             return str(context.get("object_type") or ""), str(context["object_id"])
         words = str(words or "").strip()
@@ -123,7 +139,7 @@ class DocFillMixin:
                     found.update(exact)
                     break
         if not found:
-            raise _refuse("no_record")
+            return None
         if len(found) > 1:
             raise _refuse("two_records")
         object_id, object_type = next(iter(found.items()))
@@ -142,19 +158,42 @@ class DocFillMixin:
             df.detect(data)
         except df.FillRefused as refused:
             raise _refuse(refused.code) from None
-        object_type, object_id = self._fill_record(reader, record, context or {})
         try:
-            facts, notes, ref = self.record_facts(reader, object_type, object_id)
-        except (KeyError, LookupError, PermissionError):
-            raise _refuse("no_record") from None
+            fields = df.open_document(data, terms).fields()
         except df.FillRefused as refused:
             raise _refuse(refused.code) from None
+        named = self._fill_record(reader, record, context or {})
+        facts: list[df.Fact] = []
+        notes: list[str] = []
+        ref: Optional[m.ObjectRef] = None
+        if named is not None:
+            try:
+                facts, notes, ref = self.record_facts(reader, *named)
+            except (KeyError, LookupError, PermissionError):
+                raise _refuse("no_record") from None
+            except df.FillRefused as refused:
+                raise _refuse(refused.code) from None
+        # the form's own thread (when it came in an email), the records its identifiers
+        # name, the reader's earlier copies of it: read as the reader
+        message = next((h for h in (reply_to, str((context or {}).get("handle") or ""))
+                        if h and h.startswith("graph-mail://")), None)
+        try:
+            more, more_notes, found = self.form_sources(
+                reader, fields, message=message, words=record, named=named is not None)
+        except df.FillRefused as refused:
+            raise _refuse(refused.code) from None
+        facts, notes, ref = facts + more, notes + more_notes, ref or found
         # a value naming a person kept out (or a secret-looking string) is not used
         facts = [f for f in facts if clean(f.value, guard, len(f.value) + 1) == f.value]
+        if named is None and not facts:
+            raise _refuse("no_record")
         try:
-            result = df.fill(data, facts, terms, notes)
+            result = df.fill(data, facts, terms, notes, planner=dg.plan_form)
         except df.FillRefused as refused:
             raise _refuse(refused.code) from None
+        if ref is None:
+            ref = m.ObjectRef(object_id="", type="Request", label=(name or "the form")[:200],
+                              open_url="")
         kind = "pdf" if result.kind.startswith("pdf") else result.kind
         new_name = df.filled_name(name, result.kind)
         target = None
@@ -224,20 +263,32 @@ class DocFillMixin:
             source=handle if handle.startswith("sharepoint://") else None,
             reply_to=handle if handle.startswith("graph-mail://") else None)
         n = filled.counts
-        left = sum(v for k, v in n.items() if k not in ("filled", "kept"))
-        said = (f"Filled {n['filled']} of {len(filled.fields)} blanks in {filled.original} "
-                f"from {filled.record.label}." + (f" {left} left for you to fill." if left
-                                                  else "") +
+        left = sum(v for k, v in n.items() if k not in ("filled", "kept", "suggested"))
+        check = n.get("suggested", 0)
+        source = filled.record.label if filled.record.object_id else \
+            "its thread, the records it names and your earlier copies"
+        partial = "Partial (the search ran out of time). " if dg.PARTIAL in filled.notes \
+            else ""
+        said = (partial + f"Filled {n['filled']} of {len(filled.fields)} blanks in "
+                f"{filled.original} from {source}." + (f" {left} left for you to fill."
+                                                         if left else "") +
+                (f" {check} suggested from the form's earlier versions, not filled in: "
+                 "check each before you enter it." if check else "") +
                 " Check each one against its source before you save it.")
+        def whose(c: m.FillCitation) -> str:
+            return filled.record.label if c.record == filled.record.object_id \
+                else system_of(c.source)
         facts = [m.Fact(text=f"{f.label}: {f.after}", sources=[m.Source(
             system=system_of(f.citation.source), handle=f.citation.source,
-            label=f"{filled.record.label} {f.citation.field}"[:300],
+            label=f"{whose(f.citation)} {f.citation.field}"[:300],
             open_url=f.citation.open_url)])
             for f in filled.fields if f.status == "filled" and f.citation]
         return m.AnswerPayload(
             answer_id=secrets.token_hex(12), question=text, outcome="answered",
             direct_answer=said, facts=facts, hidden=m.Hidden(count=0),
-            freshness=m.Freshness(), subjects=[filled.record], conversation_id=conversation,
+            freshness=m.Freshness(),
+            subjects=[filled.record] if filled.record.object_id else [],
+            conversation_id=conversation,
             latency_ms=latency, drafts=[],
             instruction=m.InstructPart(status="drafted", text=text, fills=[filled],
                                        context=dict(context),

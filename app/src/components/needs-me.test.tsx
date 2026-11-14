@@ -68,9 +68,9 @@ describe("Needs you (owner)", () => {
     expect(screen.queryByText("No decision, approval or blocked item waits on you.")).toBeNull();
   });
 
-  it("says plainly when nothing waits, and shows the counts", () => {
+  it("says plainly when nothing waits, without a row of zero counts", () => {
     render(<NeedsMeList sources={{ me, autopilot: { ...area, items: [] }, writes: [], approvals: { ...approvals, groups: [] }, alarms: null }} />);
-    expect(screen.getByTestId("needs-me-counts")).toHaveTextContent("0 to decide · 0 to approve · 0 to unblock");
+    expect(screen.queryByTestId("needs-me-counts")).toBeNull();
     expect(screen.getByText("No decision, approval or blocked item waits on you.")).toBeInTheDocument();
   });
 
@@ -78,6 +78,7 @@ describe("Needs you (owner)", () => {
     const many = { ...area, items: Array.from({ length: 6 }, (_, i) => item(`i${i}`, i)) } as AutopilotArea;
     render(<NeedsMeList sources={{ ...all, autopilot: many }} />);
     const decide = screen.getByTestId("needs-me-decide");
+    expect(screen.getByTestId("needs-me-counts")).toHaveTextContent(/^6 to decide · \d+ to approve · \d+ to unblock$/);
     expect(within(decide).getAllByRole("listitem")).toHaveLength(4);
     within(decide).getByRole("button", { name: "2 more" }).click();
     await waitFor(() => expect(within(screen.getByTestId("needs-me-decide")).getAllByRole("listitem")).toHaveLength(6));

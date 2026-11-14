@@ -8,7 +8,9 @@
 #       Cut a release from <ref> of $PLX_REPO (read only: git archive, nothing checked out).
 #       --overlay takes <path> from <commit> instead (the held-back schema files while a
 #       generation on the old schema is served). The release's schema digest must equal the
-#       served projection's (store_meta schema_digest), else nothing is built. The app is
+#       served projection's (store_meta schema_digest; in Postgres mode, PLX_ONTOLOGY_PG=only,
+#       the release's own `operating.pg.ontology_migrate check` must say ok: Postgres holds
+#       its schema and step code), else nothing is built. The app is
 #       built inside the release; node_modules is hard-linked from the current release when
 #       app/package-lock.json is unchanged (else npm ci). Prints the release id.
 #   plx-release switch <id>     current -> <id>, previous -> the old current (atomic)
@@ -55,8 +57,39 @@ staging_root() {
 }
 current_id() { basename "$(readlink "$PLX_RELEASES/current" 2>/dev/null || echo none)"; }
 
+pg_only() {  # the ontology is served from Postgres (DI-02: PLX_ONTOLOGY_PG=only on every unit)
+  # (deploy/lib.sh: the caller's PLX_ONTOLOGY_PG, else the host's deploy.env)
+  case "${PLX_ONTOLOGY_PG:-}" in only|1|true|yes) return 0 ;; *) return 1 ;; esac
+}
+
+pg_dsn() {  # the API's DSN (never printed): the caller's, else the host env file's
+  [ -n "${PLX_PG_DSN:-}" ] && { echo "$PLX_PG_DSN"; return; }
+  sed -n "s/^PLX_PG_DSN=//p" "$PLX_CONFIG/plx.env" 2>/dev/null | tr -d "'\"" | head -1
+}
+
+# pg_gate <tree>: in Postgres mode the served schema and step code are what Postgres holds;
+# the tree's own check (operating.pg.ontology_migrate check, read only) must say ok
+pg_gate() {
+  local out dsn; dsn=$(pg_dsn)
+  [ -n "$dsn" ] || die "Postgres mode but no PLX_PG_DSN (caller or $PLX_CONFIG/plx.env): not built"
+  out=$(cd "$1" && PLX_PG_DSN="$dsn" env -u PLX_WORKBENCH_API_KEY timeout 300 \
+        "$PLX_VENV/bin/python3" -m operating.pg.ontology_migrate check 2>/dev/null | tail -1) || true
+  "$PLX_VENV/bin/python3" -c '
+import json, sys
+try:
+    out = json.loads(sys.argv[1])
+except ValueError:
+    sys.exit("the Postgres schema check printed no verdict")
+if out.get("ok") is not True:
+    why = out.get("reason") or "not ok"
+    sys.exit("Postgres holds another schema or step code (%s; code %s, served %s)"
+             % (why, out.get("code"), out.get("served")))
+print(out.get("served") or "")' "$out" || die "not built (--no-schema-check to build without the check)"
+}
+
 served_digest() {  # empty: no served projection; fails when one is there but unreadable
   local store="$PLX_STATE/projection/ontology.sqlite"
+  pg_only && return 0              # Postgres mode: the SQLite generation is not served
   [ -e "$store" ] || return 0
   "$PLX_VENV/bin/python3" - "$store" <<'PY'
 import sqlite3, sys
@@ -107,6 +140,7 @@ build() {
       had=$("$PLX_VENV/bin/python3" -c 'import json,sys; print(json.load(open(sys.argv[1])).get("schema_digest") or "")' "$dir/RELEASE.json") \
         || die "release $id: RELEASE.json could not be read"
       served=$(served_or_die)
+      if pg_only; then served=$(pg_gate "$dir"); fi
       if [ -n "$served" ] && [ "$had" != "$served" ]; then
         die "release $id has schema ${had:-unknown}, the served generation's is $served: not reused (--no-schema-check to reuse it)"
       fi
@@ -115,7 +149,7 @@ build() {
   fi
   local tmp; tmp="$(staging_root)/.build-$id-$$"
   rm -rf "$tmp"; mkdir -p "$tmp"
-  trap 'as_root rm -rf "$tmp"' EXIT
+  trap "as_root rm -rf '$tmp'" EXIT
   git -C "$PLX_REPO" archive "$sha" | tar -x -C "$tmp"
   for o in "${overlays[@]}"; do
     git -C "$PLX_REPO" archive "${o%%:*}" -- "${o#*:}" | tar -x -C "$tmp"
@@ -129,6 +163,7 @@ build() {
     fi
   fi
   [ "$schema_check" = 1 ] && want=$(served_or_die)
+  if [ "$schema_check" = 1 ] && pg_only; then want=$(pg_gate "$tmp"); got=${got:-$want}; fi
   if [ "$schema_check" = 1 ] && [ -n "$want" ] && [ "$got" != "$want" ]; then
     die "schema $got differs from the served generation's $want: not built (--overlay the served schema, or --no-schema-check)"
   fi
@@ -210,9 +245,18 @@ rollback() {
 restart() {
   local units=$LONG_RUNNING
   [ "${1:-}" = "--with-ingest" ] && units="$units plx-ingest"
+  # stopped while unused (it loads current on start) is read before the restart: after it, an
+  # API the new release crashes is "activating" or "failed", never a stopped one
+  local api_was_active=yes
+  systemctl is-active -q plx-api || api_was_active=no
   # shellcheck disable=SC2086
   sudo systemctl try-restart $units
   sudo systemctl reload-or-restart plx-caddy 2>/dev/null || true
+  if [ "$api_was_active" = no ]; then
+    log "restart ($units) api=stopped on $(current_id)"
+    echo "$(plx_now) restarted on $(current_id): api stopped (loads current when started)"
+    return 0
+  fi
   local code=000 i
   for i in $(seq 1 60); do
     code=$(curl -s -o /dev/null -w '%{http_code}' "$PLX_API_URL/api/health" || true)

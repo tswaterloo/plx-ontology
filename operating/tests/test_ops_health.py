@@ -81,6 +81,33 @@ class OpsHealthTest(unittest.TestCase):
         runtime = next(c for c in report["checks"] if c["name"] == "delta_cycle_runtime")
         self.assertEqual(runtime["value"], 45.0)
 
+    def test_capture_progress_reads_each_store_against_its_own_bound(self) -> None:
+        """Owner 11-13: mail and Teams page within 30 min of their capture stopping, Portal
+        within 1 h, whatever the runs report (a run that captured and died in its closing
+        report still made progress). Unreadable or missing: unknown, never fine."""
+        state = make_state(self.root)
+        _db(state / "mail-capture" / "capture.db",
+            "CREATE TABLE folders (folder_key TEXT, last_run_at TEXT)",
+            [("a", "2030-01-02T11:20:00Z"), ("b", "2030-01-02T11:31:00Z")],
+            "INSERT INTO folders VALUES (?, ?)")
+        _db(state / "case-runtime" / "source-mirror.sqlite",
+            "CREATE TABLE capture (capture_id INTEGER PRIMARY KEY, finished_at TEXT)",
+            [(1, "2030-01-02T10:00:00Z"), (2, "2030-01-02T10:40:00Z"), (3, None)],
+            "INSERT INTO capture VALUES (?, ?)")
+        report = ops_health.collect(state, now=NOW, environ={})
+        got = {c["name"]: (c["state"], c["value"]) for c in report["checks"]
+               if c["name"].endswith(":progress")}
+        # mail walked a folder 29 min ago: within 30; Portal finished a relation 80 min ago
+        self.assertEqual(got["capture:mail:progress"], ("ok", 29.0))
+        self.assertEqual(got["capture:teams:progress"], ("unknown", None))
+        self.assertEqual(got["capture:portal:progress"], ("breach", 80.0))
+        self.assertIn("capture:portal:progress", report["breaches"])
+        from operating import ops_alarms
+        self.assertEqual(ops_alarms.line({"name": "capture:mail:progress", "value": 45.0,
+                                          "target": 30, "unit": "min", "state": "breach",
+                                          "detail": ""}).split(" (")[0],
+                         "mail capture last made progress 45 min ago")
+
     def test_a_stale_since_source_is_a_breach_whatever_its_age(self) -> None:
         report = ops_health.collect(make_state(self.root, stale_since="2030-01-01T00:00Z"),
                                     now=NOW, environ={})
@@ -136,6 +163,19 @@ class HealthRouteTest(unittest.TestCase):
 class StaleCaptureAlarmTest(unittest.TestCase):
     """A capture source that has not succeeded for twice its normal turn is a breach and
     the Home health line names it; within twice its turn it is fine."""
+
+    def test_the_capture_line_names_sources_in_words_and_old_ages_in_days(self) -> None:
+        report = {"checks": [
+            {"name": "capture:portal", "state": "breach", "value": 600},
+            {"name": "capture:sharepoint_lists", "state": "breach", "value": 302 * 60},
+            {"name": "capture:new_thing", "state": "breach", "value": "n/a"},
+            {"name": "capture:mail", "state": "ok", "value": 5}]}
+        alarm = ops_health.capture_alarm(report)
+        self.assertEqual(alarm["stalled"], ["portal", "sharepoint_lists", "new_thing"])
+        self.assertEqual(alarm["line"], "captures not refreshed: Portal, SharePoint lists, "
+                                        "new thing (oldest 13 days)")
+        report["checks"][1]["value"] = 90
+        self.assertTrue(ops_health.capture_alarm(report)["line"].endswith("(oldest 10 h)"))
 
     def test_twice_the_normal_turn(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

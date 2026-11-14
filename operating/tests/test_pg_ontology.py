@@ -87,6 +87,58 @@ class OntologyLoadTests(unittest.TestCase):
         self.assertEqual(ontology_parity.parity(str(self.store), self.dsn,
                                                 sample=50)["differing"], [])
 
+    def test_type_audiences_and_family_spans_read_by_index_cover_the_whole_scan(self):
+        """Each type's audience keys read one index step per pair equal the scan of every
+        object, on SQLite and on Postgres; a family's value-cell span is the exact one
+        within its time limit, and past it every cell's span (a superset: the search it
+        narrows reads more rows, never fewer), the connection still usable."""
+        from unittest import mock
+        from operating.ontology_tools import StoreReader
+        from operating.pg import ontology_load, ontology_reader
+        ontology_load.load(self.store, self.dsn, workers=1, replace=True, log=io.StringIO())
+        scan = "SELECT object_type, audience_key FROM objects GROUP BY 1, 2"
+        lite = StoreReader.open(self.store)
+        pg = ontology_reader.PgStoreReader.open(self.dsn)
+        try:
+            with lite.lock:
+                pairs = {tuple(r) for r in lite.conn.execute(scan)}
+            self.assertTrue(len({t for t, _ in pairs}) > 1 and pairs)
+            import psycopg
+            for indexed in (False, True):   # the index is in no migration: both ways
+                if indexed:
+                    with psycopg.connect(self.dsn, autocommit=True) as conn:
+                        conn.execute("CREATE INDEX IF NOT EXISTS objects_by_type_audience "
+                                     "ON ontology.objects (object_type, audience_key)")
+                    pg.conn.total_changes += 1   # a new store state: read again
+                for reader in (lite, pg):
+                    with self.subTest(reader=type(reader).__name__, indexed=indexed):
+                        self.assertEqual(set(reader.type_audience_keys()), pairs)
+                        self.assertEqual(len(reader.type_audience_keys()), len(pairs))
+            families = sorted({key.split(":", 1)[0] for _, key in pairs})
+            with pg.lock:
+                whole = pg.conn.execute(ontology_reader.WHOLE_SPAN_SQL).fetchone()
+                exact = {f: pg.conn.execute(ontology_reader.CELL_SPAN_SQL, {
+                    "family": f, "low": f + ":", "high": f + ";"}).fetchone()
+                    for f in families}
+            for family in families:
+                want = exact[family]
+                self.assertEqual(pg.family_cell_span(family),
+                                 None if want[0] is None else tuple(want))
+            slow = ("SELECT MIN(x), MAX(x) FROM (SELECT pg_sleep(2) AS s, :family || :low "
+                    "|| :high AS t, 1 AS x) q")
+            with mock.patch.object(ontology_reader, "CELL_SPAN_SQL", slow), \
+                    mock.patch.object(ontology_reader, "CELL_SPAN_EXACT_MS", 200):
+                got = pg.family_cell_span(families[0])
+            self.assertEqual(got, tuple(whole))
+            for family in families:
+                if exact[family][0] is not None:
+                    self.assertTrue(got[0] <= exact[family][0]
+                                    and exact[family][1] <= got[1], family)
+            self.assertEqual(pg.conn.execute("SELECT 1").fetchone()[0], 1)
+        finally:
+            lite.conn.close()
+            pg.close()
+
     def test_audience_keys_and_bc_units_read_by_index_equal_the_whole_scan(self):
         """The store's audience keys (read one index step per key) and its BC capture
         units (named by those keys) are what a scan of every object gave, on SQLite and on
@@ -462,6 +514,58 @@ class OntologyLoadTests(unittest.TestCase):
             cur.execute("SELECT count(*) FROM ontology.chunk_words WHERE words @@ "
                         "to_tsquery('simple', '7731')")
             self.assertEqual(cur.fetchone()[0], 1)   # the kept page, renumbered, found once
+
+    def test_a_locked_fill_builds_the_word_indexes_beside_an_open_reader(self):
+        """``locked_index``: a live fill builds its word indexes plainly, under the table's
+        lock, which a reader's open transaction does not hold up (a CONCURRENTLY build
+        waits for every older snapshot, and its validation sort ran past temp_file_limit
+        on the full chunk_words); both indexes come out valid and Postgres is whole. (A word
+        index still present when the fill starts is dropped CONCURRENTLY, which does wait.)"""
+        from operating.pg import ontology_load, ontology_reader
+        import psycopg
+        import shutil
+        import threading
+        store = Path(self.tmp.name) / "locked.sqlite"
+        shutil.copyfile(self.store, store)
+        _add_document(store, ["Made-up locked page about crates 4417"])
+        ontology_load.load(store, self.dsn, workers=1, replace=True, log=io.StringIO(),
+                           deferred=("chunk_words", "value_words"))
+        self.assertIn("chunk_words", ontology_reader.whole(self.dsn) or "")
+        with psycopg.connect(self.dsn, autocommit=True) as pg:
+            # as after a CONCURRENTLY build that failed and its invalid index was dropped
+            pg.execute("DROP INDEX IF EXISTS ontology.chunk_words_words")
+            pg.execute("DROP INDEX IF EXISTS ontology.value_cells_words")
+        reader = psycopg.connect(self.dsn)   # a reader's transaction stays open throughout
+        out: dict = {}
+        try:
+            reader.execute("SELECT count(*) FROM ontology.chunk_words").fetchone()
+            reader.execute("SELECT count(*) FROM ontology.value_cells").fetchone()
+
+            def fill() -> None:
+                try:
+                    out["report"] = ontology_load.load(
+                        store, self.dsn, workers=1, tables=("chunk_words", "value_words"),
+                        locked_index=True, log=io.StringIO())
+                except BaseException as error:  # noqa: BLE001 - reported below
+                    out["error"] = error
+
+            worker = threading.Thread(target=fill, daemon=True)
+            worker.start()
+            worker.join(120)
+            held_up = worker.is_alive()
+        finally:
+            reader.close()   # a held-up build (the CONCURRENTLY one) goes on and ends
+        worker.join(120)
+        self.assertFalse(held_up, "the locked build waited for the open reader")
+        self.assertNotIn("error", out)
+        self.assertTrue(out["report"]["chunk_words"]["live"])
+        with psycopg.connect(self.dsn) as pg:
+            valid = dict(pg.execute(
+                "SELECT c.relname, i.indisvalid FROM pg_index i JOIN pg_class c ON "
+                "c.oid = i.indexrelid WHERE c.relname IN ('chunk_words_words', "
+                "'value_cells_words')").fetchall())
+        self.assertEqual(valid, {"chunk_words_words": True, "value_cells_words": True})
+        self.assertIsNone(ontology_reader.whole(self.dsn))
 
     def test_postgres_alone_serves_a_whole_ontology_or_refuses(self):
         """``PLX_ONTOLOGY_PG=only``: the reader reads Postgres with no SQLite generation,

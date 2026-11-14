@@ -62,18 +62,25 @@ CHAT_URL = ("https://teams.microsoft.com/l/message/19%3Aabc123def%40thread.v2/17
 
 
 class _Directory:
-    """The one complete ``GET /users`` listing the people guard binds from."""
+    """The one complete ``GET /users`` listing the people guard binds from, and its
+    ``GET /groups`` listing: a tenant with no distribution lists (one complete page)."""
 
     def __init__(self, oid=EXCLUDED_OID, upn=EXCLUDED_UPN):
         self.oid, self.upn = oid, upn
 
     def get_pages(self, url, **bounds):
+        if "/groups" in url:
+            return ([], {"complete": True})
         return ([{"id": self.oid, "userPrincipalName": self.upn}], {"complete": True})
 
 
 def bound_guard(oid=EXCLUDED_OID, upn=EXCLUDED_UPN) -> PeopleExclusion:
+    # Since bc-have (f7fc7e0530) a tenant address no listed user holds may be a list and
+    # stays undecided until a complete groups listing is read: read the (empty) one.
     guard = PeopleExclusion([oid])
-    guard.bind(_Directory(oid, upn))
+    directory = _Directory(oid, upn)
+    guard.bind(directory)
+    guard.list_groups(directory)
     return guard
 
 

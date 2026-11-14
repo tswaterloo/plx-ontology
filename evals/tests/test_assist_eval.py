@@ -7,6 +7,7 @@ import tempfile
 import unittest
 
 from evals import assist_eval
+from operating import assist
 
 
 def _mail(handle: str, body: str) -> dict:
@@ -40,6 +41,60 @@ class ScoreTest(unittest.TestCase):
         self.assertEqual(role["drafts_with_conflict"], 1)
         self.assertEqual(role["facts_wrong"]["k"], 1)
         self.assertEqual(role["usable"]["k"], 2)
+
+
+
+class RecipientsOutcomeTest(unittest.TestCase):
+    """Each recipient line is right (filled in, right), asked (left to a question,
+    nothing wrong filled in) or wrong (a wrong address filled in, or one silently
+    missing)."""
+
+    MAIL = {"to": ["a@x.com", "b@x.com"], "cc": ["c@plx.test"]}
+
+    def judge(self, draft, after=None):
+        return assist_eval.recipients_outcome(self.MAIL, draft, after)
+
+    def test_right_asked_wrong(self):
+        right = self.judge({"to": ["a@x.com", "b@x.com"], "cc": ["c@plx.test"]})
+        self.assertEqual((right["primary"], right["to"], right["cc"]),
+                         ("right", "right", "right"))
+        # b silently missing on To, c silently missing on Cc: wrong, though a is right
+        missing = self.judge({"to": ["a@x.com"], "cc": []})
+        self.assertEqual((missing["primary"], missing["to"], missing["cc"]),
+                         ("right", "wrong", "wrong"))
+        # asked about b and c: asked, with the real lines among the candidates
+        asked = self.judge({"to": ["a@x.com"], "cc": [], "ask": [
+            {"field": "to", "pick": "any", "candidates": ["b@x.com"]},
+            {"field": "cc", "pick": "any", "candidates": ["z@plx.test"]}]})
+        self.assertEqual((asked["to"], asked["to_hit"], asked["cc"], asked["cc_hit"]),
+                         ("asked", True, "asked", False))
+        # a wrong address filled in is wrong whatever else is asked
+        wrong = self.judge({"to": ["z@x.com"], "ask": [
+            {"field": "to", "pick": "one", "candidates": ["a@x.com"]}]})
+        self.assertEqual((wrong["primary"], wrong["to"]), ("wrong", "wrong"))
+        # nobody found and nothing offered: the draft says so, asked, never a hit
+        none = self.judge({"to": [], "unresolved": ["X"]})
+        self.assertEqual((none["primary"], none["primary_hit"]), ("asked", False))
+
+    def test_the_lines_after_the_pick_are_judged_to_at_best_asked(self):
+        draft = {"to": [], "ask": [{"field": "to", "pick": "one",
+                                    "candidates": ["a@x.com", "q@x.com"]}]}
+        after = {"to": ["a@x.com", "b@x.com"], "cc": ["c@plx.test"]}
+        got = self.judge(draft, after)
+        self.assertEqual((got["primary"], got["primary_hit"], got["to"], got["to_hit"],
+                          got["cc"]), ("asked", True, "asked", True, "right"))
+        got = self.judge(draft, {"to": ["a@x.com"], "cc": []})
+        self.assertEqual((got["to"], got["cc"]), ("wrong", "wrong"))
+        # a wrong Cc filled in before the pick stays wrong whatever the pick brings
+        got = self.judge(dict(draft, cc=["z@plx.test"]), after)
+        self.assertEqual(got["cc"], "wrong")
+
+    def test_a_block_that_is_not_an_object_says_nothing_found(self):
+        class Ran:
+            found = {}
+            agent_text = "x\n```json\n[1, 2]\n```"
+        self.assertIsNone(assist.found_of(Ran(), []))
+        self.assertEqual(assist.found_of(None, ["not_resolved"]), "none")
 
 
 if __name__ == "__main__":

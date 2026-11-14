@@ -33,7 +33,8 @@ re-export (``from integrations.http import Request``) cannot hide a non-GET call
 
 ALLOWED lists (path, qualified enclosing function) pairs verified by reading the code:
   integrations/live_source_guard.py urllib_sender  the one guarded sender: runs
-      after check_request (GET, or the OAuth client-credentials token POST).
+      after check_request (GET, or the OAuth client-credentials token POST), or
+      check_batch_request (a Graph $batch whose inner requests are all GETs).
   operating/messages_planner.py post_messages  the opt-in Messages API planner:
       one POST to
       https://api.anthropic.com/v1/messages (API_URL; any other url raises before the
@@ -73,6 +74,7 @@ allowlist matches path plus enclosing function; a nested ``def`` is flagged).
 from __future__ import annotations
 
 import ast
+import functools
 import json
 from pathlib import Path
 import sys
@@ -363,6 +365,14 @@ def scan_source(source: str, relative: str) -> set[tuple[str, str, str]]:
     return _scan(source, relative).findings
 
 
+@functools.lru_cache(maxsize=None)
+def _scanned(source: str, relative: str) -> tuple[frozenset, frozenset]:
+    """(findings, excused) of one module: cached by its exact text and path, so a process
+    that scans the tree again (the gate's tests do, three times) parses only what changed."""
+    scanner = _scan(source, relative)
+    return frozenset(scanner.findings), frozenset(scanner.excused)
+
+
 def scan_report(root: Path = ROOT) -> dict:
     """The scan of every non-test module under SCANNED: findings and the excused
     (path, function) pairs of ALLOWED, i.e. the allowlisted senders present."""
@@ -374,9 +384,10 @@ def scan_report(root: Path = ROOT) -> dict:
             relative = path.relative_to(root)
             if "tests" in relative.parts or "__pycache__" in relative.parts:
                 continue
-            scanner = _scan(path.read_text(encoding="utf-8"), relative.as_posix())
-            found |= scanner.findings
-            excused |= scanner.excused
+            findings, excused_here = _scanned(path.read_text(encoding="utf-8"),
+                                              relative.as_posix())
+            found |= findings
+            excused |= excused_here
             files += 1
     return {"findings": found, "excused": excused, "files": files}
 

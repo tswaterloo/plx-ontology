@@ -10,7 +10,7 @@ import { Pending } from "@/components/ui/skeleton";
 import { Toolbar } from "@/components/ui/toolbar";
 import { TeamDashboard } from "@/components/team/dashboard";
 import { getLabour, getTeam } from "@/lib/api";
-import { noticeKind, plainError } from "@/lib/errors";
+import { ApiError, noticeKind, plainError } from "@/lib/errors";
 import type { LabourPage, TeamView } from "@/lib/types";
 
 function useLoad<T>(load: (s: AbortSignal) => Promise<T>, on: boolean) {
@@ -71,7 +71,12 @@ export default function TeamPage() {
             <LabourView page={labour.data} />
           </section>
         )}
-        {labour.error ? <LoadProblem message={plainError(labour.error)} onRetry={labour.retry} /> : null}
+        {labour.error && !(labour.error instanceof ApiError && (labour.error.status === 403 || labour.error.status === 404)) ? (
+          <section aria-labelledby="labour-title" className="max-w-3xl space-y-3">
+            <h2 id="labour-title" className="text-[15px] font-semibold">Labour hours</h2>
+            <LoadProblem message={plainError(labour.error)} onRetry={labour.retry} />
+          </section>
+        ) : null}
       </div>
     </div>
   );

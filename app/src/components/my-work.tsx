@@ -1,5 +1,6 @@
 "use client";
 
+import { useReaderWords } from "@/components/view-as";
 import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
 import { CardActions } from "@/components/card-actions";
@@ -178,6 +179,7 @@ function Item({ item, area, state, onDone, now }: { item: MyWorkItem; area: Auto
 }
 
 export function MyWorkList({ work }: { work: MyWork }) {
+  const w = useReaderWords();
   const [states, setStates] = useState<Record<string, ActionResult>>({});
   const [area, setArea] = useState<AutopilotArea | null>(null);
   useEffect(() => {
@@ -215,7 +217,7 @@ export function MyWorkList({ work }: { work: MyWork }) {
           ))}
         </header>
         {items.length === 0 ? (
-          <p className="text-[13px] text-muted">Nothing is waiting on you.</p>
+          <p className="text-[13px] text-muted">Nothing is waiting on {w.you}.</p>
         ) : (
           groups.map((g) => (
             <section key={g.key} aria-label={g.label}>

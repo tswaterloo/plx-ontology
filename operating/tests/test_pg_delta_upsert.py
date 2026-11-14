@@ -145,3 +145,35 @@ class LayerRowsReplaceServedRowsTests(unittest.TestCase):
             with self.assertRaises(psycopg.errors.UniqueViolation):
                 ontology_delta._copy(cur, "packed_sources", ("src",), [src])
             pg.rollback()
+
+    def test_a_link_id_names_one_row_when_its_type_changes_on_the_partitioned_table(self):
+        """Partitioned by type (migration 0017) the key is (link_id, link_type); a layer's
+        row of a served id under another type still replaces it, and of one batch's rows
+        of one id the last wins, as the link id's own key did."""
+        import psycopg
+        from operating.pg import ontology_delta
+        with psycopg.connect(self.dsn) as pg, pg.cursor() as cur:
+            cur.execute("SELECT relkind FROM pg_class WHERE oid = 'ontology.link_rows'::regclass")
+            self.assertEqual(cur.fetchone()[0], "p")
+            cur.execute("SELECT * FROM ontology.link_rows LIMIT 1")
+            names = [d.name for d in cur.description]
+            row = dict(zip(names, cur.fetchone()))
+            cols = tuple(n for n in names if n != "row_no")
+            moved = tuple("Other.type" if c == "link_type" else row[c] for c in cols)
+            ontology_delta._copy(cur, "link_rows", cols, [moved])
+            cur.execute("SELECT link_type FROM ontology.link_rows WHERE link_id = %s",
+                        (row["link_id"],))
+            self.assertEqual(cur.fetchall(), [("Other.type",)])
+            third = tuple("Third.type" if c == "link_type" else
+                          ("last" if c == "tier" else row[c]) for c in cols)
+            ontology_delta._copy(cur, "link_rows", cols, [moved, third])
+            cur.execute("SELECT link_type, tier FROM ontology.link_rows WHERE link_id = %s",
+                        (row["link_id"],))
+            self.assertEqual(cur.fetchall(), [("Third.type", "last")])
+            # rows of other ids are untouched
+            cur.execute("SELECT count(*) FROM ontology.link_rows")
+            total = cur.fetchone()[0]
+            ontology_delta._copy(cur, "link_rows", cols, [third])
+            cur.execute("SELECT count(*) FROM ontology.link_rows")
+            self.assertEqual(cur.fetchone()[0], total)
+            pg.rollback()

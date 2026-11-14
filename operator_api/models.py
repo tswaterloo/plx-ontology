@@ -42,6 +42,13 @@ def _stale_since() -> Any:
         "reading it now: when that page was read (ISO). It is read again in the background."))
 
 
+def _reading() -> Any:
+    return Field(False, json_schema_extra=_optional, description=(
+        "True when this screen's first read for this reader is still going on: nothing of "
+        "it is shown yet (its lists are empty and its counts zero, never a finding); ask "
+        "again shortly for the page."))
+
+
 def _read_at() -> Any:
     return Field(None, json_schema_extra=_optional, description=(
         "Set when this page is the one read for this same reader a moment ago, served as "
@@ -102,6 +109,9 @@ class Me(_Model):
     can_view_as: bool = Field(False, json_schema_extra=_optional,
                               description="The owner-open reader on a server that can view "
                                           "as someone (/api/view-as/people).")
+    owner: bool = Field(False, json_schema_extra=_optional,
+                        description="The owner-open reader: may read everyone's work log "
+                                    "and time saved.")
     ops_reader: bool = Field(False, json_schema_extra=_optional,
                              description="The owner or a named Team reader "
                                          "(PLX_TEAM_VIEW_READERS): sees the reliability "
@@ -520,6 +530,26 @@ class DraftDetail(_Model):
     value: str
 
 
+class RecipientQuestion(_Model):
+    """A recipient the reader's own mail did not settle, put to them as one tap: ``pick``
+    one of the candidates (who the line means) or ``any`` (who else goes on it); every
+    candidate cleared by the people exclusion, best first."""
+    field: Literal["to", "cc"]
+    pick: Literal["one", "any"]
+    label: str
+    candidates: list[str] = Field(default_factory=list)
+
+
+class RecordQuestion(_Model):
+    """A record the line names that the draft could not state, put to the reader: its
+    note, and the sentence that asks the recipient instead (one tap adds it to the
+    message)."""
+    record: str
+    outcome: Literal["not_found", "unreadable", "not_looked_up"]
+    note: str
+    ask_line: str
+
+
 class AskDraft(_Model):
     """A draft the Ask wrote because the question asked for one: an email the person edits
     and sends from its preview with one explicit confirm (``/api/actions/preview`` and
@@ -541,6 +571,12 @@ class AskDraft(_Model):
         "The message in your own mailbox a reply goes to (its citation)."))
     to: Optional[str] = Field(None, json_schema_extra=_optional,
                               description="The address a reply is drafted to.")
+    also_to: list[str] = Field(default_factory=list, description="Others the reader's own "
+                               "mail settles on To (a new message).")
+    cc: list[str] = Field(default_factory=list, description="Who the reader's own mail "
+                          "settles on Cc (a new message).")
+    recipient_questions: list[RecipientQuestion] = Field(default_factory=list)
+    record_questions: list[RecordQuestion] = Field(default_factory=list)
     sent: Literal[False] = False
 
 
@@ -867,6 +903,7 @@ class LateList(_Model):
         description="Set when the server could not read this page in time and serves the "
                     "last page it read for this same reader: when that page was read "
                     "(ISO). It is refreshed in the background.")
+    reading: bool = _reading()
 
 
 class RecentQuestion(_Model):
@@ -887,6 +924,7 @@ class Home(_Model):
         description="Set when the server could not read this page in time and serves the "
                     "last page it read for this same reader instead: when that page was "
                     "read (ISO). It is refreshed in the background.")
+    reading: bool = _reading()
 
 
 # ---- object page -----------------------------------------------------------------------
@@ -1076,6 +1114,9 @@ class LinkGroup(_Model):
                                   "(the schema's name forward, reverse_name in reverse).")
     words: str = Field(description="The navigation name in plain words, e.g. 'Invoices'.")
     type: str = Field(description="The type of the records at the link's other end.")
+    type_label: Optional[str] = Field(None, json_schema_extra=_optional, description=(
+        "That type's business name where the schema declares one (a raw Portal, FileMaker "
+        "or Sage table, e.g. 'AR invoice entry'); absent for curated types."))
     role: Literal["customer", "fulfilment", "same_record", "related"] = Field(
         description="Where the page shows the group: the order's customer, its shipments "
                     "and invoices, the same record in another system, or other links.")
@@ -1243,6 +1284,9 @@ class PersonKnows(_Model):
 class ObjectPage(_Model):
     object_id: str
     type: str
+    type_label: Optional[str] = Field(None, json_schema_extra=_optional, description=(
+        "The type's business name where the schema declares one (a raw Portal, FileMaker "
+        "or Sage table, e.g. 'AR invoice entry'); absent for curated types."))
     label: str
     summary: str
     status: ObjectStatus
@@ -1294,6 +1338,7 @@ class ObjectPage(_Model):
         description="Set when the server could not read this page in time and serves the "
                     "last page it read for this same reader: when that page was read "
                     "(ISO). It is refreshed in the background.")
+    reading: bool = _reading()
 
 
 PAGE_SECTIONS = ("late", "people", "landed_cost", "trail", "margin", "knows")
@@ -1892,6 +1937,7 @@ class Briefing(_Model):
         "no_identity", description="Whether your involvement was checked for every item "
                                    "('partly_checked': some were not, they rank as not "
                                    "yours), or you have no identity on record.")
+    reading: bool = _reading()
 
 
 class BriefingEventType(_Model):
@@ -2424,6 +2470,7 @@ class ApprovalsQueue(_Model):
     writes: Literal[0]
     stale_since: Optional[str] = _stale_since()
     read_at: Optional[str] = _read_at()
+    reading: bool = _reading()
 
 
 class ReplyLine(_Model):
@@ -2459,6 +2506,7 @@ class ReplyTriage(_Model):
     writes: Literal[0]
     stale_since: Optional[str] = _stale_since()
     read_at: Optional[str] = _read_at()
+    reading: bool = _reading()
 
 
 class WorkloadTeam(_Model):
@@ -2545,6 +2593,7 @@ class RdBoard(_Model):
     writes: Literal[0]
     stale_since: Optional[str] = _stale_since()
     read_at: Optional[str] = _read_at()
+    reading: bool = _reading()
 
 
 class TeamPerson(_Model):
@@ -2770,6 +2819,7 @@ class Suggestions(_Model):
         description="Set when the server could not read this page in time and serves the "
                     "last page it read for this same reader: when that page was read "
                     "(ISO). It is refreshed in the background.")
+    reading: bool = _reading()
 
 
 # ---- briefs (operating/briefs.py): meeting prep and the weekly review ---------------------
@@ -2897,6 +2947,7 @@ class UpcomingMeetings(_Model):
     meetings: list[UpcomingMeeting]
     stale_since: Optional[str] = _stale_since()
     read_at: Optional[str] = _read_at()
+    reading: bool = _reading()
 
 
 # ---- approve-to-write (operating.write_intents) -------------------------------------------
@@ -2998,7 +3049,7 @@ class MyWork(_Model):
     read_at: Optional[str] = _read_at()
 
 
-AutopilotState = Literal["off", "dry_run", "passed_awaiting_owner", "live_held", "live"]
+AutopilotState = Literal["off", "dry_run", "passed", "live_held", "live"]
 AutopilotDecisionKind = Literal["accept", "edit", "reject", "snooze"]
 AutopilotItemState = Literal["waiting", "snoozed", "edited", "accepted", "rejected"]
 
@@ -3046,7 +3097,7 @@ class AutopilotCountdown(_Model):
 
 class AutopilotWorkflowRow(_Model):
     """One workflow of one role (a ``person:`` role is one person's whole day): its replay
-    scores, its write state and the owner's switches."""
+    scores, its write state and how many of its people switched it on."""
     role: str
     person: Optional[str] = Field(None, description="The person id of a person role.")
     workflow: str
@@ -3055,11 +3106,13 @@ class AutopilotWorkflowRow(_Model):
                                             "(the write gate's counts).")
     n: int = Field(description="Items judged: fresh when scored, else dev.")
     state: AutopilotState = Field(description="off: switched off; dry_run: gate not "
-                                  "passed; passed_awaiting_owner: passed, the owner has not "
-                                  "switched it on; live_held: switched on, held by the host's "
-                                  "master switch; live: performs through the write path.")
+                                  "passed; passed: passed, nobody it acts for switched it "
+                                  "on; live_held: someone switched it on, held by the host's "
+                                  "master switch; live: acts for whoever switched it on.")
     on: bool = Field(description="False when the owner switched this workflow off.")
-    live_flag: bool = Field(description="The owner switched this role's workflow live.")
+    switched_on: int = Field(0, json_schema_extra=_optional, description="People of this row who switched it on for "
+                             "themselves and have not paused (only yourself unless you are "
+                             "the owner or an admin).")
     missing: list[str] = Field(default_factory=list)
     last_run: Optional[str] = None
     scored_at: Optional[str] = None
@@ -3154,11 +3207,74 @@ class AutopilotSwitches(_Model):
     workflows_off: list[str] = Field(default_factory=list)
 
 
+class AutopilotScoreBar(_Model):
+    """A workflow's held-out score for one person against the gate's bar."""
+    judged: int
+    matched: int
+    percent: Optional[float] = None
+    need_judged: int
+    need_percent: float
+
+
+class AutopilotSuspension(_Model):
+    """Why a person's opt-in was switched off by itself: the workflow's score for them
+    no longer meets the bar (``below_bar``), too few items are judged (``too_few``), no
+    score is on record (``no_score``) or its gate was lost (``gate_lost``)."""
+    at: Optional[str] = None
+    reason: str
+    score: Optional[AutopilotScoreBar] = None
+
+
+class AutopilotOptIn(_Model):
+    """One of your workflows you may switch on for yourself: it passed its gate for you,
+    or you switched it on before and it was suspended. Off until you switch it on."""
+    workflow: str
+    eligible: bool = Field(description="It passes its gate for you now.")
+    on: bool = Field(description="You switched it on (and it was not suspended since).")
+    since: Optional[str] = Field(None, description="When you switched it on.")
+    score: Optional[AutopilotScoreBar] = None
+    suspended: Optional[AutopilotSuspension] = None
+
+
+class AutopilotOptInPerson(_Model):
+    """Someone who switched a workflow on for themselves (shown to the owner and admins,
+    who can see it but cannot switch it for them)."""
+    person: str
+    workflow: str
+    since: Optional[str] = None
+    paused: bool = False
+
+
+class AutopilotGateNotice(_Model):
+    """A workflow that passed its fresh gate for a role, which the owner has not yet been
+    told of (``operating.autopilot_write.notices``). Information only: it switches nothing
+    on; each person switches the workflow on for themselves."""
+    role: str
+    workflow: str
+    passed_at: str
+
+
+class AutopilotNoticeAck(_Model):
+    role: str = Field(min_length=1, max_length=200)
+    workflow: str = Field(min_length=1, max_length=200)
+
+
 class AutopilotArea(_Model):
     """The autopilot area: today's prepared items you may see, per workflow its scores and
-    state, and the switches (``owner``: you may change them)."""
+    state, the switches (``owner``: you may change them), and your own opt-ins."""
     owner: bool
+    gate_notices: Optional[list[AutopilotGateNotice]] = Field(
+        None, json_schema_extra=_optional, description="Owner only: each workflow's first "
+        "pass of its fresh gate the owner has not acknowledged yet, told once. Absent for "
+        "everyone else.")
     switches: AutopilotSwitches
+    my_opt_ins: list[AutopilotOptIn] = Field(default_factory=list, description="Your "
+                                              "workflows you may switch on for yourself.")
+    paused: bool = Field(False, json_schema_extra=_optional,
+                         description="You paused everything you switched on.")
+    switched_on: Optional[list[AutopilotOptInPerson]] = Field(
+        None, json_schema_extra=_optional, description="Owner and admins only: who switched "
+        "what on. Absent for everyone else.")
     people: list[AutopilotPerson] = Field(default_factory=list)
     roles: list[str] = Field(default_factory=list)
     items: list[AutopilotItem] = Field(default_factory=list)
@@ -3190,11 +3306,18 @@ class AutopilotSwitchRequest(_Model):
 
 
 class AutopilotWorkflowSwitch(_Model):
-    on: Optional[bool] = Field(None, description="false: the workflow is switched off "
-                               "(nothing is performed, not even a dry run).")
-    live: Optional[bool] = None
-    role: Optional[str] = Field(None, max_length=120, description="live: the role whose "
-                                "passed gate it goes live through.")
+    on: bool = Field(description="false: the workflow is switched off for everyone "
+                     "(nothing is performed, not even a dry run); true: back on. Switching "
+                     "it on never makes it act for anyone: each person does that.")
+
+
+class AutopilotOptInRequest(_Model):
+    workflow: str = Field(max_length=120)
+    on: bool = Field(strict=True, description="true: on for you; false: off.")
+
+
+class AutopilotPauseRequest(_Model):
+    paused: bool = Field(strict=True)
 
 
 class AutopilotAuditRow(_Model):
@@ -3527,6 +3650,30 @@ class WorkLogPage(_Model):
     all_readers: bool = False
 
 
+class MemoryItem(_Model):
+    """One thing the Workbench remembers about you (``operator_api.memory``): a standing
+    instruction, a preference, an open commitment or a fact, with where it came from."""
+    id: int
+    kind: Literal["fact", "preference", "instruction", "commitment", "summary"]
+    source: str = Field(description="What it was learned from: ask, clarify, autopilot, "
+                                    "learn, ...")
+    at: str
+    text: str
+    records: list[str] = Field(default_factory=list)
+    importance: float
+    confidence: float
+
+
+class MemoryItems(_Model):
+    items: list[MemoryItem]
+    available: bool = Field(description="False when memory is off (no store) or cannot be "
+                                        "read now (the people exclusion is not loaded).")
+
+
+class MemoryForgotten(_Model):
+    forgotten: bool
+
+
 class TrustFreshness(_Model):
     """One source system: the newest capture taken from it, the newest capture the served
     data holds, and the lag between them."""
@@ -3784,11 +3931,13 @@ class FillField(_Model):
     before: str
     after: str
     status: Literal["filled", "kept", "person_only", "unknown_field", "no_fact",
-                    "ambiguous"] = Field(description=(
+                    "ambiguous", "suggested"] = Field(description=(
                         "filled: from one value the records agree on (``citation``); kept: it "
                         "already held a value; person_only: a signature, signer or signing "
                         "date; unknown_field: no rule for the label; no_fact: no record read "
-                        "holds it; ambiguous: the records disagree. Only filled changes."))
+                        "holds it; ambiguous: the records disagree; suggested: a value from "
+                        "a source that cannot be certain (``after``, ``citation``) for the "
+                        "person to check, not written. Only filled changes."))
     reason: str = ""
     citation: Optional[FillCitation] = None
 

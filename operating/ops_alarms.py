@@ -295,7 +295,8 @@ def unit_checks(scope: str, units: Sequence[Mapping[str, str]], now: datetime,
                 and u.get("UnitFileState", "").startswith("enabled") \
                 and u.get("Type", "") in LONG_RUNNING_TYPES and uid not in reported:
             detail = ("enabled but not running"
-                      + (f" for {since:g} h" if since is not None else "")
+                      + ("" if since is None else " for under an hour" if since < 1
+                         else f" for {since:g} h")
                       + " (it exited cleanly, so nothing restarts it)"
                       if result in ("", "success") else
                       f"enabled but not running ({result})")
@@ -569,7 +570,9 @@ def line(check: Mapping[str, Any]) -> str:
                 "proactive_last_pass": "Proactive alerts last good pass",
                 "search_follow_last_pass": "Search follower last pass",
                 "delta_cycle_runtime": "Data refresh cycle running for"}.get(
-            name, f"{name.split(':', 1)[-1]} capture last refreshed"
+            name, f"{name.split(':')[1]} capture last made progress"
+            if name.startswith("capture:") and name.endswith(":progress") else
+            f"{name.split(':', 1)[-1]} capture last refreshed"
             if name.startswith("capture:") else name)
         tail = " ago" if not name.endswith("runtime") else ""
         return (f"{what} {_span(value)}{tail} (target {_span(check['target'])})"

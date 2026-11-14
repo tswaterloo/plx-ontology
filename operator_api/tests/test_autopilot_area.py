@@ -149,7 +149,6 @@ class AutopilotArea(unittest.TestCase):
         self.assertEqual(area["known_workflows"], sorted(wf.names()))
         for path, body in (("/api/autopilot/switches", {"global_off": True}),
                            (f"/api/autopilot/workflows/{FLOW}", {"on": False}),
-                           (f"/api/autopilot/workflows/{FLOW}", {"live": True, "role": ROLE}),
                            ("/api/autopilot/audit/k/undo", None)):
             self.assertEqual(sam.post(path, json=body).status_code, 403, path)
         self.assertEqual(sam.get("/api/autopilot/audit").status_code, 403)
@@ -162,6 +161,138 @@ class AutopilotArea(unittest.TestCase):
                                     json={"decision": "reject"}).status_code, 404)
         self.assertEqual(owner.post("/api/autopilot/items/ap_fin/decision",
                                     json={"decision": "reject"}).status_code, 404)
+        self.assertEqual(self.bc.calls, [])
+
+    def score_fresh(self, roles: dict) -> None:
+        """A fresh scorer run of ``roles`` (role -> (members, {workflow: (judged, matched)}))
+        admitted to the write gate, and the gate synced."""
+        run = self.state.parent / f"fresh-{len(list(self.state.parent.glob('fresh-*')))}"
+        run.mkdir(parents=True)
+        (run / ap.GATE_FILE).write_text(json.dumps({"schema": ap.GATE_SCHEMA, "roles": {
+            r: {"members": list(mem), "workflows": {f: {"judged": j, "matched": k}
+                                                     for f, (j, k) in flows.items()}}
+            for r, (mem, flows) in roles.items()}}))
+        for n, r in enumerate(roles):
+            (run / f"s{n}").mkdir()
+            (run / f"s{n}" / "result.json").write_text(json.dumps(
+                {"role": r, "status": "complete",
+                 "window": ["2026-11-06T07:00:00Z", "2026-11-10T07:00:00Z"]}))
+        rules = aw.load_rules()
+        aw.record_scores(run, self.state / aw.WRITE_GATE_FILE, rules)
+        aw.sync_gate(aw.Journal(self.state / aw.AUDIT_FILE),
+                     aw.WriteGate(self.state / aw.WRITE_GATE_FILE, rules),
+                     datetime.now(timezone.utc))
+
+    def test_each_person_switches_only_their_own_and_the_owner_sees_who(self) -> None:
+        """A person switches their own passed workflows on (off by
+        default), can pause everything, and the owner sees who is on but cannot switch it
+        on for them; every switch is on the audit log; an opt-in whose gate drops is
+        suspended with why."""
+        lee = ("lee@plx.example", "66666666-6666-4666-8666-666666666666")
+        lee_role, lee_flow = f"person:{lee[0]}", "supplier_eta_receiving"
+        self.score_fresh({ROLE: ([OWNER[1]], {FLOW: (16, 15)}),
+                          lee_role: ([lee[1]], {lee_flow: (40, 38)})})
+        owner, them = self.client(OWNER), self.client(lee)
+        mine = owner.get("/api/autopilot").json()
+        self.assertEqual([(o["workflow"], o["eligible"], o["on"]) for o in mine["my_opt_ins"]],
+                         [(FLOW, True, False)])                     # off by default
+        self.assertEqual(mine["my_opt_ins"][0]["score"], {
+            "judged": 16, "matched": 15, "percent": 93.8, "need_judged": 15,
+            "need_percent": 90.0})
+        self.assertEqual(mine["switched_on"], [])
+        theirs = them.get("/api/autopilot").json()
+        self.assertEqual([(o["workflow"], o["on"]) for o in theirs["my_opt_ins"]],
+                         [(lee_flow, False)])
+        self.assertIsNone(theirs.get("switched_on"))             # only the owner and admins
+        # the owner cannot switch it on for them: the request names no person, and their
+        # own workflow has not passed for the owner
+        self.assertEqual(owner.post("/api/autopilot/opt-in", json={
+            "workflow": lee_flow, "on": True, "person": lee[1]}).status_code, 422)
+        self.assertEqual(owner.post("/api/autopilot/opt-in", json={
+            "workflow": lee_flow, "on": True}).status_code, 409)
+        self.assertEqual(owner.put(f"/api/autopilot/workflows/{lee_flow}/mode",
+                                   json={"mode": "auto", "role": lee_role}).status_code, 409)
+        # anything unexpected fails closed: no row written
+        for body, code in (({"workflow": "a:b", "on": True}, 404),
+                           ({"workflow": "../x", "on": True}, 404),
+                           ({"workflow": "no_such_flow", "on": True}, 409),
+                           ({"workflow": FLOW, "on": "yes"}, 422),
+                           ({"workflow": FLOW}, 422)):
+            self.assertEqual(them.post("/api/autopilot/opt-in", json=body).status_code, code,
+                             body)
+        self.assertEqual(them.post("/api/autopilot/pause", json={"paused": 1}).status_code, 422)
+        nobody = self.client(("nobody@plx.example", None))
+        self.assertEqual(nobody.post("/api/autopilot/opt-in", json={
+            "workflow": FLOW, "on": True}).status_code, 403)
+        self.assertFalse(any(r.get("event") in aw.OPT_IN_EVENTS
+                             for r in aw.Journal(self.state / aw.AUDIT_FILE).rows()))
+        # they switch it on themselves, then pause everything
+        on = them.post("/api/autopilot/opt-in", json={"workflow": lee_flow, "on": True})
+        self.assertEqual(on.status_code, 200, on.text)
+        self.assertEqual([(o["workflow"], o["on"]) for o in on.json()["my_opt_ins"]],
+                         [(lee_flow, True)])
+        self.assertTrue(on.json()["my_opt_ins"][0]["since"])
+        self.assertEqual(them.post("/api/autopilot/pause", json={"paused": True}).status_code,
+                         200)
+        seen = owner.get("/api/autopilot").json()
+        self.assertEqual([(w["person"], w["workflow"], w["paused"]) for w in seen["switched_on"]],
+                         [(lee[1], lee_flow, True)])
+        self.assertEqual(seen["my_opt_ins"][0]["on"], False)       # the owner's own: still off
+        audit = owner.get("/api/autopilot/audit").json()["rows"]
+        self.assertEqual([(r["event"], r["status"], r["by"], r["workflow"]) for r in audit
+                          if r["event"] in aw.OPT_IN_EVENTS],
+                         [("opt_in_paused", "paused", lee[1], None),
+                          ("opt_in", "on", lee[1], lee_flow)])
+        self.assertTrue(all(r["at"] for r in audit if r["event"] in aw.OPT_IN_EVENTS))
+        # their score drops under the bar: suspended at the next read, saying why
+        self.score_fresh({lee_role: ([lee[1]], {lee_flow: (40, 30)})})
+        after = them.get("/api/autopilot").json()["my_opt_ins"]
+        self.assertEqual([(o["workflow"], o["eligible"], o["on"]) for o in after],
+                         [(lee_flow, False, False)])
+        self.assertEqual((after[0]["suspended"]["reason"], after[0]["suspended"]["score"]
+                          ["percent"]), ("below_bar", 75.0))
+        self.assertEqual(owner.get("/api/autopilot").json()["switched_on"], [])
+        held = next(r for r in owner.get("/api/autopilot/audit").json()["rows"]
+                    if r["event"] == "opt_in_suspended")
+        self.assertEqual((held["status"], held["by"], held["reasons"]),
+                         ("suspended", "autopilot", ["below_bar"]))
+        self.assertEqual(them.post("/api/autopilot/opt-in", json={
+            "workflow": lee_flow, "on": True}).status_code, 409)
+        self.assertEqual(self.bc.calls, [])
+
+    def test_the_owner_is_told_once_of_a_first_gate_pass_and_nobody_else_is(self) -> None:
+        """AP-22: a workflow's first fresh-gate pass reaches the owner's page as a notice
+        until they acknowledge it; it turns nothing on, nobody else sees or acks it, and a
+        later scoring that still passes never tells them again."""
+        owner, sam = self.client(OWNER), self.client(COLLEAGUE)
+        self.assertEqual(owner.get("/api/autopilot").json()["gate_notices"], [])
+        self.pass_fresh_gate()
+        area = owner.get("/api/autopilot").json()
+        self.assertEqual([(n["role"], n["workflow"]) for n in area["gate_notices"]],
+                         [(ROLE, FLOW)])
+        self.assertTrue(area["gate_notices"][0]["passed_at"])
+        row = next(w for w in area["workflows"] if w["role"] == ROLE)
+        self.assertEqual((row["state"], row["switched_on"]), ("passed", 0))  # nothing on
+        self.assertIsNone(sam.get("/api/autopilot").json().get("gate_notices"))
+        ack = {"role": ROLE, "workflow": FLOW}
+        self.assertEqual(sam.post("/api/autopilot/notices/ack", json=ack).status_code, 403)
+        self.assertEqual(owner.post("/api/autopilot/notices/ack",
+                                    json={"role": ROLE, "workflow": "ar_collections"}
+                                    ).status_code, 404)
+        self.assertEqual(owner.post("/api/autopilot/notices/ack", json={"role": ROLE}
+                                    ).status_code, 422)
+        got = owner.post("/api/autopilot/notices/ack", json=ack)
+        self.assertEqual(got.status_code, 200, got.text)
+        self.assertEqual(got.json()["gate_notices"], [])
+        row = next(w for w in got.json()["workflows"] if w["role"] == ROLE)
+        self.assertEqual(row["switched_on"], 0)
+        self.assertEqual(owner.post("/api/autopilot/notices/ack", json=ack).status_code, 404)
+        # scored again, still passing: told once only
+        self.score_fresh({ROLE: ([OWNER[1]], {FLOW: (16, 15)})})
+        self.assertEqual(owner.get("/api/autopilot").json()["gate_notices"], [])
+        events = [r["event"] for r in aw.Journal(self.state / aw.AUDIT_FILE).rows()
+                  if r.get("workflow") == FLOW and r.get("role") == ROLE]
+        self.assertEqual(events, ["gate_passed", "owner_notified"])
         self.assertEqual(self.bc.calls, [])
 
     def test_an_empty_page_says_no_workflow_passed_and_the_filter_offers_every_workflow(
@@ -230,17 +361,17 @@ class AutopilotArea(unittest.TestCase):
         area = owner.get("/api/autopilot").json()
         self.assertTrue(all(w["state"] == "off" for w in area["workflows"]))
 
-    def test_live_only_after_gate_and_owner_switch_then_undo_once(self) -> None:
+    def test_live_only_after_gate_and_the_persons_own_switch_then_undo_once(self) -> None:
         owner = self.client(OWNER)
-        live = {"live": True, "role": ROLE}
-        refused = owner.post(f"/api/autopilot/workflows/{FLOW}", json=live)
+        live = {"workflow": FLOW, "on": True}
+        refused = owner.post("/api/autopilot/opt-in", json=live)
         self.assertEqual(refused.status_code, 409)      # not passed: stays a dry run
         self.pass_fresh_gate()
         row = next(w for w in owner.get("/api/autopilot").json()["workflows"]
                    if w["role"] == ROLE)
         self.assertEqual((row["state"], row["fresh"]["percent"], row["n"]),
-                         ("passed_awaiting_owner", 93.8, 16))
-        row = next(w for w in owner.post(f"/api/autopilot/workflows/{FLOW}", json=live)
+                         ("passed", 93.8, 16))
+        row = next(w for w in owner.post("/api/autopilot/opt-in", json=live)
                    .json()["workflows"] if w["role"] == ROLE)
         self.assertEqual(row["state"], "live_held")    # the host's master switch is off
         self.backend.writes_environ = {**ENV, aw.MASTER_ENV: "1"}
@@ -270,7 +401,7 @@ class AutopilotArea(unittest.TestCase):
         self.assertEqual(owner.post(f"/api/autopilot/audit/{done['key']}/undo").status_code, 409)
         self.assertEqual(len(self.bc.calls), 2)
         # back to dry run: a second accept is never written again
-        owner.post(f"/api/autopilot/workflows/{FLOW}", json={"live": False, "role": ROLE})
+        owner.post("/api/autopilot/opt-in", json={"workflow": FLOW, "on": False})
         owner.post("/api/autopilot/items/ap_own/decision", json={"decision": "accept"})
         self.assertEqual(len(self.bc.calls), 2)
 
@@ -413,7 +544,7 @@ class AutopilotArea(unittest.TestCase):
         self.addCleanup(patcher.stop)
         owner = self.client(OWNER)
         self.pass_fresh_gate()
-        owner.post(f"/api/autopilot/workflows/{FLOW}", json={"live": True, "role": ROLE})
+        owner.post("/api/autopilot/opt-in", json={"workflow": FLOW, "on": True})
         self.backend.writes_environ = {**ENV, aw.MASTER_ENV: "1"}
         owner.post(f"/api/autopilot/workflows/{FLOW}", json={"on": True})
 

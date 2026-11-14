@@ -2,8 +2,9 @@
 
 import Link from "next/link";
 import { useMemo } from "react";
+import { shortSummary } from "@/components/briefing";
 import { cn } from "@/lib/cn";
-import { formatDateTime, objectHref, recordLabel, safeHref, typeLabel } from "@/lib/format";
+import { formatDateTime, objectHref, readable, recordLabel, safeHref, typeLabel } from "@/lib/format";
 import type { AlertKinds, Briefing, BriefingItem, WatchAlert } from "@/lib/types";
 import { TypeItems } from "./alert-kinds";
 
@@ -49,9 +50,9 @@ function ItemRow({ it }: { it: BriefingItem }) {
       <Link href={href} className="truncate font-medium hover:underline max-sm:col-start-2">
         {recordLabel(it.object_type, it.subject_label)}
       </Link>
-      <span className="truncate text-muted max-sm:col-span-2 max-sm:col-start-2 max-sm:row-start-2 max-sm:line-clamp-2 max-sm:whitespace-normal" title={it.summary}>
+      <span className="truncate text-muted max-sm:col-span-2 max-sm:col-start-2 max-sm:row-start-2 max-sm:line-clamp-2 max-sm:whitespace-normal" title={readable(it.summary)}>
         {it.counterpart ? <span className="text-fg">{it.counterpart} · </span> : null}
-        {it.summary}
+        {shortSummary(it.summary)}
       </span>
       <span className={cn("num shrink-0 text-[12px] max-sm:col-start-3 max-sm:row-start-1", it.days != null && it.days > 0 ? "text-late" : "text-muted")}>{it.days != null ? `${it.days} d` : ""}</span>
       {it.new_since_visit && <span className="sr-only">new</span>}
@@ -101,7 +102,7 @@ export function AlertFeed({ alerts }: { alerts: WatchAlert[] }) {
   const days = useMemo(() => {
     const out = new Map<string, WatchAlert[]>();
     for (const a of alerts) {
-      const d = new Date(a.at).toLocaleDateString("en-CA", { weekday: "long", month: "short", day: "numeric", timeZone: "America/Toronto" });
+      const d = new Date(a.at).toLocaleDateString("en-GB", { weekday: "long", day: "numeric", month: "short", timeZone: "America/Toronto" }).replace("Sept", "Sep");
       out.set(d, [...(out.get(d) ?? []), a]);
     }
     return [...out.entries()];

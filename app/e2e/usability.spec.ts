@@ -11,9 +11,10 @@ import path from "node:path";
 const shots = process.env.USABILITY_SHOTS || path.join(__dirname, "screenshots", "usability");
 
 // a control that went away fails its read in seconds instead of waiting for the test timeout
-test.use({ actionTimeout: 4_000 });
+// (10 s: at load ~120 a starved page takes several seconds to answer a ready control)
+test.use({ actionTimeout: 10_000 });
 
-const PAGES = [
+const ALL_PAGES = [
   "/",
   "/my-work",
   "/late",
@@ -28,7 +29,18 @@ const PAGES = [
   "/ask",
   "/object/PurchaseOrder/PurchaseOrder%3Ademo%3A90412",
   "/source?handle=bc%3A%2F%2Fdemo%2FpurchaseOrders%2F90412",
+  // the friendly record paths, the work log, trust and a prep brief (every app page but
+  // sign-in, which runs before, and a meeting's follow-up, which the mock keeps none of)
+  "/po/90412",
+  "/supplier/Ridgeway%20Labels",
+  "/customer/Glow%20Botanicals",
+  "/ao/AO-7712",
+  "/work-log",
+  "/trust",
+  "/meetings/brief/Supplier/Supplier%3Ademo%3Amaple-leaf",
 ];
+// USABILITY_PAGES (comma-separated paths): walk only those, to look again at one page
+const PAGES = process.env.USABILITY_PAGES ? ALL_PAGES.filter((p) => process.env.USABILITY_PAGES!.split(",").includes(p)) : ALL_PAGES;
 
 /** Controls the pass never presses: anything that sends, confirms, approves, writes or signs out. */
 const NEVER = /\b(send|sent|confirm|approve|accept|execute|perform|undo|switch|stop|pause|resume|go live|sign out|log ?out|delete|remove|reject|snooze|dismiss|mark|save note|submit|prepare the entry)\b/i;
@@ -37,9 +49,11 @@ const NEVER = /\b(send|sent|confirm|approve|accept|execute|perform|undo|switch|s
 const ACTING = /\/api\/(actions\/(confirm|preview)|writes(\/[^/]+\/(approve|execute|preview))?$|autopilot\/(items\/[^/]+\/decision|switches|workflows\/[^/]+|audit\/[^/]+\/undo)|meetings\/follow-up\/|my-work\/[^/]+\/write|feedback\/[^/]+\/status)/;
 
 /** Reads that fail by design and that the page turns into words: the mock reader is not the
- * owner (Reliability says it has no access) and the mock keeps no meeting follow-ups (the tab
- * says so). Anything else that fails is a fault. */
-const HANDLED = [/ GET \/api\/ops\/status 403$/, / GET \/api\/meetings\/action-items 404$/];
+ * owner (Reliability says it has no access; Trust is not its page) and the mock keeps no meeting
+ * follow-ups (the tab says so). Anything else that fails is a fault. */
+const HANDLED = [/ GET \/api\/ops\/status 403$/, / GET \/api\/meetings\/action-items 404$/,
+  // Trust is the owner's and the Team readers' page: any other reader is told it is not theirs
+  /^\/trust: GET \/api\/trust 404$/];
 
 type Watch = { errors: string[]; acted: string[]; failed: string[] };
 
@@ -69,14 +83,17 @@ async function watch(page: Page): Promise<Watch> {
 
 async function signIn(page: Page) {
   await page.goto("/signin");
-  await page.getByRole("button", { name: "Continue with demo sign-in" }).click();
+  // the button waits for the sign-in settings read, which a loaded machine answers slowly
+  await page.getByRole("button", { name: "Continue with demo sign-in" }).click({ timeout: 30_000 });
   await expect(page).not.toHaveURL(/\/signin/, { timeout: 20_000 });
 }
 
 async function settle(page: Page) {
   await page.waitForLoadState("networkidle", { timeout: 10_000 }).catch(() => {});
   // every part that said it was loading has finished (or the page shows why not)
-  await expect(page.locator("[data-pending], [aria-busy=true]")).toHaveCount(0, { timeout: 15_000 });
+  // (30 s: a loaded test machine answers the fixture API slowly; a part that never finishes
+  // still fails)
+  await expect(page.locator("[data-pending], [aria-busy=true]")).toHaveCount(0, { timeout: 30_000 });
 }
 
 /** Layout faults a reader sees: sideways scroll, visible things off screen, cut-off select text, overlapping controls. */
@@ -161,6 +178,9 @@ async function exercise(page: Page, where: string): Promise<string[]> {
     await page.keyboard.press("Escape");
     // a closing drawer's backdrop still takes clicks for a moment
     await page.locator(".fixed.inset-0.z-50").first().waitFor({ state: "detached", timeout: 3_000 }).catch(() => {});
+    // an open drawer or menu blocks the page's clicks until it has closed (slow on a loaded
+    // machine): wait for the page to take clicks again before the next control
+    await page.waitForFunction(() => getComputedStyle(document.body).pointerEvents !== "none", null, { timeout: 10_000 }).catch(() => {});
     if (page.url() !== home) {
       await page.goto(home);
       await settle(page);
@@ -223,11 +243,25 @@ async function exercise(page: Page, where: string): Promise<string[]> {
     const label = ((await b.getAttribute("aria-label")) || (await b.innerText().catch(() => "")) || "").trim().slice(0, 40);
     if (!label) out.push(`${where}: a button has no name`);
     if (NEVER.test(label) || (await b.isDisabled().catch(() => true)) || (await b.getAttribute("role")) === "tab") continue;
+    // a control that changes a stored setting (a switch, a workflow's mode, a note's status)
+    // is never pressed: the pass looks, it does not change what the owner set
+    if (await b.evaluate(setting).catch(() => true)) continue;
     await clearOfTabBar(b);
-    await b.click({ timeout: 3_000 }).catch((e) => out.push(`${where}: "${label}" cannot be clicked: ${String(e).split("\n").filter((l) => /intercepts|covered|obscur|not stable|not visible/i.test(l)).concat(String(e).split("\n")[0]).join(" | ").slice(0, 400)}`));
+    // a click that lands but whose reaction a loaded machine runs slowly is no fault: seconds, not 3
+    await b.click({ timeout: 10_000 }).catch((e) => out.push(`${where}: "${label}" cannot be clicked: ${String(e).split("\n").filter((l) => /intercepts|covered|obscur|not stable|not visible/i.test(l)).concat(String(e).split("\n")[0]).join(" | ").slice(0, 400)}`));
     await back();
   }
   return out;
+}
+
+/** Whether a button changes a stored setting: a switch, or one choice of a radio group that
+ * sets a mode or a status (a view's period or a theme only changes what this screen shows). */
+function setting(el: Element): boolean {
+  const role = el.getAttribute("role");
+  if (role === "switch") return true;
+  if (role !== "radio") return false;
+  const group = el.closest("[role=radiogroup]");
+  return !group || /\b(mode|status)\b/i.test(group.getAttribute("aria-label") ?? "");
 }
 
 /** Brings a control above the phone's fixed tab bar: centred, then, if the page cannot scroll
@@ -274,14 +308,15 @@ async function focusFaults(page: Page, where: string): Promise<string[]> {
 }
 
 async function shot(page: Page, name: string) {
-  await page.screenshot({ path: path.join(shots, `${name}.png`), fullPage: true });
+  await page.screenshot({ path: path.join(shots, `${name}.png`), fullPage: true, timeout: 20_000 });
 }
 
 const WIDTHS: Record<string, number[]> = { desktop: [1440, 1280], phone: [390] };
 
 for (const theme of ["light", "dark"] as const) {
   test(`every page and control works (${theme})`, async ({ page }, info) => {
-    test.setTimeout(600_000);
+    // 21 pages, every control on each: a loaded machine needs more than ten minutes
+    test.setTimeout(1_500_000);
     const w = await watch(page);
     await page.emulateMedia({ colorScheme: theme });
     await signIn(page);
@@ -325,7 +360,7 @@ test("loading and error states are worded and line up with the page", async ({ p
     if (r.request().method() !== "GET") return r.continue();
     if (fail) return r.fulfill({ status: 503, contentType: "application/json", body: JSON.stringify({ error: { code: "workbench_busy", message: "The Workbench is busy." } }) });
     slow.add(new URL(r.request().url()).pathname);
-    await new Promise((x) => setTimeout(x, 2_500));
+    await new Promise((x) => setTimeout(x, 8_000));
     return r.continue().catch(() => {});
   });
   const faults: string[] = [];
@@ -333,7 +368,7 @@ test("loading and error states are worded and line up with the page", async ({ p
     fail = false;
     await page.goto(route);
     const pending = page.locator("main [data-pending]").first();
-    await expect(pending, `${route}: says nothing while it loads`).toBeVisible({ timeout: 5_000 });
+    await expect(pending, `${route}: says nothing while it loads`).toBeVisible({ timeout: 15_000 });
     await expect(pending, `${route}: loading text is empty`).toHaveText(/\w{3,}/);
     // the loading line starts where the page's content starts and sits inside it
     const geo = await pending.evaluate((p) => {

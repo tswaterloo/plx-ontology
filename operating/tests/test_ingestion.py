@@ -195,6 +195,10 @@ class FakeSources:
             # The people-exclusion guard's one directory listing (names nobody).
             return j(200, {"value": [{"id": USER_ID, "userPrincipalName": MAILBOX,
                                       "mail": MAILBOX, "proxyAddresses": [f"SMTP:{MAILBOX}"]}]})
+        if path == "/v1.0/groups":
+            # The guard's groups listing: a tenant with no distribution lists (one complete
+            # page), so an address no listed user holds is decided as no list's.
+            return j(200, {"value": []})
         if re.fullmatch(r"/v1\.0/users/[^/]+", path):
             who = path.rsplit("/", 1)[1].lower()
             if who in (MAILBOX, USER_ID):
@@ -1030,7 +1034,7 @@ class MailWindowAnchorTests(IngestionTestCase):
                          ["received_high_water"], newest.strftime("%Y-%m-%dT%H:%M:%SZ"))
         # Every request of the run was a GET of the closed grammar (the guard
         # refuses anything else before I/O); none of them reached a write path.
-        self.assertTrue(all(c == "/v1.0/users" or c.startswith("/v1.0/users/")
+        self.assertTrue(all(c in ("/v1.0/users", "/v1.0/groups") or c.startswith("/v1.0/users/")
                             for c in self.fake.calls))
 
     def test_clock_anchored_window_reads_nothing_from_the_same_quiet_inbox(self):

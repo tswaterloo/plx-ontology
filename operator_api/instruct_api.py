@@ -45,6 +45,8 @@ from operating import instruct as ins
 from operating import instruct_files as files
 
 from . import doc_fill_api as dfa
+from . import doc_style_api as dsa
+from . import instruct_assist as ia
 from . import models as m
 from .ask_drafts import CARD_PREFIX, draft_card
 from .auth import Reader
@@ -104,10 +106,10 @@ def _sender_of(fields: Mapping[str, str]) -> Optional[str]:
     return None
 
 
-class InstructMixin:
+class InstructMixin(ia.InstructAssistMixin):
     """Needs ``source``, ``object_page``, ``suggest``, ``work_log`` and the write desk
     (``WriteIntentsMixin``); tests set ``instruct_call`` (the model) and may set
-    ``instruct_uploads``."""
+    ``instruct_uploads`` and ``instruct_history`` (``instruct_assist``)."""
 
     instruct_call: Any = None
     instruct_uploads: Any = None
@@ -267,20 +269,9 @@ class InstructMixin:
                     pass   # the item's own words only
         # records the instruction or an attached file names, on an exact match only
         words = " ".join([text] + [a.text[:4000] for a in attached if a.text])
-        for token in list(dict.fromkeys(_RECORDISH.findall(words)))[:MAX_LOOKUPS]:
-            try:
-                hits = self.suggest(reader, token, 3).suggestions  # type: ignore[attr-defined]
-                hit = next((h for h in hits if h.match == "exact"), None)
-                if hit is None or any(r["object_id"] == hit.object_id for r in records):
-                    continue
-                mat, got = self._record_material(reader, key("R"), hit.type, hit.object_id,
-                                                 guard)
-            except Exception:  # noqa: BLE001 - not found or not theirs: not read
-                continue
-            mats.append(mat)
-            cited += got
-            records.append({"object_id": hit.object_id, "type": hit.type,
-                            "label": mat.label})
+        tokens = list(dict.fromkeys(_RECORDISH.findall(words)))
+        unread = self._look_up(reader, tokens[:MAX_LOOKUPS], mats, cited, records, key, guard)
+        unread += ["+" + t for t in tokens[MAX_LOOKUPS:]]     # never looked up: said too
         for number, a in enumerate(attached, 1):
             if a.text:
                 mats.append(ins.Material(f"A{number}", "attachment", a.name, a.text[:6000],
@@ -297,8 +288,35 @@ class InstructMixin:
                       if c.meeting_id not in meetings_used]
         return {"materials": mats, "facts": cited,
                 "sources": [src for fact in cited for src in fact.sources],
-                "records": records, "reply": reply,
+                "records": records, "reply": reply, "unread": unread,
                 "candidates": candidates}
+
+    def _look_up(self, reader: Reader, tokens: list[str], mats: list[ins.Material],
+                 cited: list[m.Fact], records: list[dict[str, str]],
+                 key: Callable[[str], str], guard: Any) -> list[str]:
+        """Each of ``tokens`` read as the record the reader's own search finds for it on an
+        exact match (else not read), added to the materials, facts and records; the tokens
+        no record the reader may read holds exactly (``unread_notes`` says them)."""
+        unread: list[str] = []
+        for token in tokens:
+            try:
+                hits = self.suggest(reader, token, 3).suggestions  # type: ignore[attr-defined]
+                hit = next((h for h in hits if h.match == "exact"), None)
+                if hit is None:
+                    unread.append(token)
+                    continue
+                if any(r["object_id"] == hit.object_id for r in records):
+                    continue
+                mat, got = self._record_material(reader, key("R"), hit.type, hit.object_id,
+                                                 guard)
+            except Exception:  # noqa: BLE001 - not theirs, or the read failed: not read
+                unread.append("?" + token)      # could not be read, never "no record"
+                continue
+            mats.append(mat)
+            cited += got
+            records.append({"object_id": hit.object_id, "type": hit.type,
+                            "label": mat.label})
+        return unread
 
     def _reply_to(self, reader: Reader, mat: ins.Material) -> Optional[dict[str, str]]:
         """A reply in the thread when the message is in the reader's own mailbox."""
@@ -382,6 +400,7 @@ class InstructMixin:
         except ins.InstructRefused as refused:
             raise _refuse(refused.code) from None
         context = self._context_of(request)
+        self._assist_mail(reader, 0.0)   # the reader's own mail, read in the background
         if ins.route(text, mode=request.mode, continuing=request.instruction is not None) \
                 == "unsure":
             # one question: do it, or answer it (the person's pick comes back as ``mode``)
@@ -426,6 +445,18 @@ class InstructMixin:
                 yield from self._said(self.fill_answer(  # type: ignore[attr-defined]
                     reader, request, text, context, conversation, form, ms()))
                 return
+        if request.instruction is None and not request.attachments:
+            try:
+                styled = dsa.style_request(text)
+            except Exception:  # noqa: BLE001 - kinds unreadable: answered below as asked
+                styled = None
+            if styled is not None:
+                # a document in someone's own template, no model (``doc_style_api``)
+                yield "status", m.StatusEvent(step="reading", message="Making the draft",
+                                              elapsed_ms=ms())
+                yield from self._said(self.style_answer(  # type: ignore[attr-defined]
+                    reader, text, context, conversation, ms()))
+                return
         call = self._instruct_model()
         if call is None:
             raise _refuse("model_unavailable")
@@ -445,6 +476,26 @@ class InstructMixin:
         yield "status", m.StatusEvent(step="reading", message="Reading what you have open",
                                       elapsed_ms=ms())
         got = self._gather(reader, text, context, guard, attached, meetings_used)
+        # the assist's reading of the line (``instruct_assist``): short record numbers in
+        # full, unless the message may go outside; a new message's recipients beside the
+        # model call
+        reply = got["reply"] or {}
+        aim = self.assist_before(reader, text, bool(reply.get("in_reply_to")))
+        if aim.expanded:
+            numbered = [max((int(mt.key[1:]) for mt in got["materials"]
+                             if mt.key[:1] == "R" and mt.key[1:].isdigit()), default=0)]
+
+            def key(prefix: str) -> str:
+                numbered[0] += 1
+                return f"{prefix}{numbered[0]}"
+            got["unread"] += self._look_up(reader, aim.expanded, got["materials"],
+                                           got["facts"], got["records"], key, guard)
+            got["sources"] = [src for fact in got["facts"] for src in fact.sources]
+        # a record the line names that nothing the reader may read holds: said, never
+        # dropped in silence (``instruct_assist.unread_notes``)
+        aim.records = ia.unread_questions(text, got["unread"], aim.expanded)
+        pending = None if reply.get("in_reply_to") or aim.recipients is not None \
+            else self.assist_recipients(reader, text)
         targets, folders = self._targets(got["materials"], got["sources"])
         said_prompt = ins.prompt(text, got["materials"], got["candidates"],
                                  who=reader.display_name,
@@ -461,8 +512,9 @@ class InstructMixin:
         if outcome is None:
             raise _refuse("no_draft")
         outcome = ins.ground_outcome(outcome, ins.given_text(text, got["materials"], answers))
+        aim = ia.settle(pending, aim) if outcome.status != "question" else aim
         yield from self._said(self._answer(
-            reader, guard, text=text, context=context, answers=answers,
+            reader, guard, aim=aim, text=text, context=context, answers=answers,
             meetings_used=meetings_used, got=got, outcome=outcome, conversation=conversation,
             targets=targets, folders=folders, latency=ms(), attached=attached, files=files))
 
@@ -532,8 +584,10 @@ class InstructMixin:
                 answers: list[str], meetings_used: list[str], got: dict[str, Any],
                 outcome: ins.Outcome, conversation: str, targets: list[ins.WriteTarget],
                 folders: list[ins.Folder], latency: int, attached: list[Any],
-                files: Optional[list[dict[str, Any]]] = None) -> m.AnswerPayload:
+                files: Optional[list[dict[str, Any]]] = None,
+                aim: Optional[ia.Aim] = None) -> m.AnswerPayload:
         from .feedback import clean
+        aim = aim or ia.Aim()
         answer_id = secrets.token_hex(12)
         reply = got["reply"] or {}
         asking = outcome.status == "question"
@@ -544,7 +598,9 @@ class InstructMixin:
             missing = [f"Fill in: {', '.join(outcome.placeholders)}."] \
                 if outcome.placeholders and "[" in body else []
             draft: dict[str, Any] = {"id": card_id, "kind": d.kind, "sent": False,
-                                     "body": body, "details": [], "missing": missing}
+                                     "body": body, "details": [],
+                                     "missing": missing + [clean(n, guard, 300) or ""
+                                                           for n in aim.notes]}
             if d.kind == "email":
                 draft["title"] = (clean(d.subject, guard, 200) or "Draft email")[:200]
                 draft["email_subject"] = draft["title"]
@@ -554,8 +610,22 @@ class InstructMixin:
                     kinds = ("reply_in_thread", "send_email")
                 else:
                     kinds = ("send_email",)
-                    draft["missing"].insert(0, "Add the recipient's address before "
-                                               "sending.")
+                    plain = (lambda t: clean(t, guard, 300) or "")
+                    to, said_to = ia.address_notes(aim.recipients, plain)
+                    # a proposed address the reader's own exclusion check would strip
+                    # is never proposed
+                    draft["to"] = to if to and clean(to, guard, 300) == to else None
+                    draft["missing"][:0] = said_to
+                    if draft["to"] and aim.recipients is not None:
+                        draft["also_to"] = [a for a in aim.recipients.to[1:] if plain(a) == a]
+                        draft["cc"] = [a for a in aim.recipients.cc if plain(a) == a]
+                    draft["recipient_questions"] = ia.recipient_questions(aim.recipients,
+                                                                          plain)
+                draft["record_questions"] = [
+                    dict(q, record=clean(q["record"], guard, 100) or "",
+                         note=clean(q["note"], guard, 300) or "",
+                         ask_line=clean(q["ask_line"], guard, 300) or "")
+                    for q in aim.records]
             else:
                 details = [{"label": g.group(1).strip(), "value": g.group(2)[:500]}
                            for g in map(_DETAIL.match, body.splitlines()) if g][:20]
@@ -567,6 +637,7 @@ class InstructMixin:
                              details=details)
                 said_how, kinds = self._write_path(system, draft)
                 draft["missing"].append(said_how)
+                draft["missing"] += [clean(q["note"], guard, 300) or "" for q in aim.records]
             draft["actions"] = [o for o in ca.offers(draft_card(card_id, draft))
                                 if o["kind"] in kinds]
             drafts.append(draft)

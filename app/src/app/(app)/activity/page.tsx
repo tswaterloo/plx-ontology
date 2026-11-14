@@ -10,7 +10,7 @@ import { Toolbar } from "@/components/ui/toolbar";
 import { actionChip } from "@/lib/actions";
 import { getActionsLog } from "@/lib/api";
 import { plainError } from "@/lib/errors";
-import { formatDateTime, plural } from "@/lib/format";
+import { clockET, formatDateTime, plural } from "@/lib/format";
 import type { ActionLogRow } from "@/lib/types";
 
 const TZ = "America/Toronto";
@@ -52,7 +52,7 @@ function dayLabel(iso: string, now = new Date()): string {
   return d.toLocaleDateString("en-GB", { weekday: "short", day: "numeric", month: "short", ...(sameYear ? {} : { year: "numeric" }), timeZone: TZ }).replace("Sept", "Sep");
 }
 
-const timeOf = (iso: string) => new Date(iso).toLocaleTimeString("en-CA", { hour: "numeric", minute: "2-digit", timeZone: TZ });
+const timeOf = (iso: string) => clockET(new Date(iso));
 
 function Row({ r }: { r: ActionLogRow }) {
   const chip = actionChip(r, false);

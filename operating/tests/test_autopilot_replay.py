@@ -27,6 +27,7 @@ from operating.tests.test_proactive_threads import (APPROVER, APPROVER_OID, BOSS
                                                     mail, people)
 
 REP = "rep@synth-supplier.example"
+SHIPPED_REGISTRY = ap.REGISTRY_FILE
 DAY = datetime(SENT.year, SENT.month, SENT.day, tzinfo=timezone.utc)
 
 
@@ -550,7 +551,7 @@ class Config(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             for bad in ({"providers": ["mail_sent", "screen_scrape"]},
                         {"plugins": ["os:system"]}, {"plugins": ["operating.autopilot:nope"]},
-                        {"horizon_hours": 0}):
+                        {"horizon_hours": 0}, {"horizon_hours": 24 * 14 + 1}):
                 raw = json.loads(rp.CONFIG_FILE.read_text())
                 raw.update(bad)
                 path = Path(d) / "c.json"
@@ -563,6 +564,45 @@ class Config(unittest.TestCase):
             path.write_text(json.dumps(raw))
             with self.assertRaises(wf.WorkflowsInvalid):
                 wf.load(str(path))
+
+    def test_the_answer_window_counts_working_days_only(self):
+        """The window (``horizon_hours``, one setting, default 24) is Monday-to-Friday time on the business's calendar: a Friday afternoon's
+        trigger answered on Tuesday matches, as a Monday's answered on Thursday does; a
+        Saturday's window opens on Monday; the clock change of 2026-11-01 is kept."""
+        h, utc = timedelta(hours=72), timezone.utc
+        for at, want in (
+                (datetime(2026, 10, 19, 13, tzinfo=utc), datetime(2026, 10, 22, 13, tzinfo=utc)),
+                # Friday 16:00 EDT -> Wednesday 16:00 EST (the zone changed on the Sunday)
+                (datetime(2026, 10, 30, 20, tzinfo=utc), datetime(2026, 11, 4, 21, tzinfo=utc)),
+                # Saturday: Monday 00:00 EDT + 72 h
+                (datetime(2026, 10, 24, 14, tzinfo=utc), datetime(2026, 10, 29, 4, tzinfo=utc))):
+            with self.subTest(at=at):
+                self.assertEqual(rp.answer_end(at, h), want)
+        self.assertEqual(rp.load_config()["horizon"], timedelta(hours=24))
+        friday = datetime(2026, 10, 23, 20, tzinfo=utc)          # 16:00 EDT
+        events = {f"e{i}": {"event_type": "message.received", "object_id": f"m{i}",
+                            "object_type": "TeamsChatMessage", "at": ap._iso(friday),
+                            "conversation_id": f"c{i}"} for i in range(3)}
+        items = [{"event_id": f"e{i}", "autopilot": "teams_reply", "owner": "p",
+                  "created_at": ap._iso(friday), "body": {}} for i in range(3)]
+        # Tuesday 10:00, Wednesday 15:00 (in the window), Wednesday 17:00 EDT (after it)
+        acts = [{"person": "p", "kind": "teams_sent", "workflow": "teams_chat",
+                 "conversation": f"c{i}", "at": ap._iso(at), "records": []}
+                for i, at in enumerate((datetime(2026, 10, 27, 14, tzinfo=utc),
+                                        datetime(2026, 10, 28, 19, tzinfo=utc),
+                                        datetime(2026, 10, 28, 21, tzinfo=utc)))]
+        args = dict(horizon=h, data_end=friday + timedelta(days=9),
+                    since=friday - timedelta(days=1), until=friday + timedelta(days=1))
+        working = rp.score(items, events, acts, **args)["teams_chat"]
+        self.assertEqual((working["judged"], working["matched"]), (3, 2))
+        # one working day (24 h): Friday 16:00 EDT closes Monday 16:00; no Tuesday answer counts
+        day = rp.score(items, events, acts, **{**args, "horizon": timedelta(hours=24)})
+        self.assertEqual((day["teams_chat"]["judged"], day["teams_chat"]["matched"]), (3, 0))
+        # a window that closes after the data ends is unjudged, never a miss
+        short = rp.score(items, events, acts,
+                         **{**args, "data_end": datetime(2026, 10, 28, 12, tzinfo=utc)})
+        self.assertEqual((short["teams_chat"]["judged"], short["teams_chat"]["unjudged"]),
+                         (0, 3))
 
     def test_every_work_graph_workflow_has_a_name(self):
         for subject, side, want in (("Remittance advice", "customer", "cash_remittance"),
@@ -657,8 +697,26 @@ class WaitingOnYou(World):
     def test_cardinality_an_ask_in_a_copied_thread_the_owner_keeps_answering(self):
         """``mail_thread_turn`` (a fallback ahead of ``reply_prep``): an ask with two or more
         people copied, in a thread the owner wrote in twice or more in 14 days, is its own
-        workflow; one copied person or one own message stays ``reply_prep``; never both."""
+        workflow; one copied person or one own message stays ``reply_prep``; never both.
+        Shipped off (held-out 68-74%): switched on here; off, every one is ``reply_prep``'s."""
         copied = ("ann@synth-supplier.example", "bob@synth-supplier.example")
+        self.setUp()
+        for i in range(3):
+            self.thread(i, cc=copied)
+            self.own_again(i)
+        self.store()
+        self.assertEqual(self.replay()["prepared_by_autopilot"], {"reply_prep": 3})
+        shipped = ap.load_registry
+
+        def switched_on(path=None):
+            reg = shipped(path)
+            for a in reg["autopilots"]:
+                if a["id"] == "mail_thread_turn":
+                    a.pop("enabled", None)
+            return reg
+        patch = mock.patch.object(ap, "load_registry", switched_on)
+        patch.start()
+        self.addCleanup(patch.stop)
         for n in (1, 10, 60):
             with self.subTest(n=n):
                 self.setUp()
@@ -946,9 +1004,24 @@ class PastApprovals(World):
 
 class TeamsChats(World):
     """One-to-one Teams chats feed the autopilot by their time (no event index), and the
-    person's own chat messages are their actions."""
+    person's own chat messages are their actions. These tests are about which messages a
+    chat owes and how they score; the shipped rule's sender record (``answers_sender``) is
+    ``TeamsSenderAnswered``'s, so here it is left out of the registry the replay reads."""
 
     QUIET = "00000000-0000-4000-8000-0000000000a4"
+    SENDER_RECORD = False
+
+    def setUp(self) -> None:
+        super().setUp()
+        if not self.SENDER_RECORD:
+            reg = json.loads(SHIPPED_REGISTRY.read_text(encoding="utf-8"))
+            entry = next(a for a in reg["autopilots"] if a["id"] == "teams_reply")
+            entry["when"].pop("answers_sender")
+            path = self.dir / "registry-no-sender-record.json"
+            path.write_text(json.dumps(reg))
+            patch = mock.patch.object(ap, "REGISTRY_FILE", path)
+            patch.start()
+            self.addCleanup(patch.stop)
 
     def chat(self, chat: str, sender: str, hour: int, text: str, day: int = 0) -> str:
         # the capture's shape: {"display_name", "id"}
@@ -1359,6 +1432,94 @@ class CaptureShapeChats(TeamsChats):
         self.assertEqual(ap.chat_people(self.UNKNOWN, members, directory), [])
 
 
+class TeamsSenderAnswered(World):
+    """The shipped ``teams_reply`` rule: a chat is prepared only for a sender whose last
+    three or more messages the person answered in the chat within the window the replay
+    judges (24 working hours, ``autopilot_replay.json``) nine times in ten. A sender they
+    answer only days later (inside 72 clock hours: the old record's window), and a sender
+    with too short a record, are not prepared."""
+
+    chat = TeamsChats.chat
+    FAST = "00000000-0000-4000-8000-0000000000b1"
+    SLOW = "00000000-0000-4000-8000-0000000000b2"
+    FEW = "00000000-0000-4000-8000-0000000000b3"
+
+    def history(self, guard, sender: str, days: tuple[int, ...], answer_hours: float) -> None:
+        # DAY is a Sunday: days -12..-10 are Tuesday..Thursday
+        chat = f"h-{sender[-2:]}"
+        guard.chat_members[chat] = [OURS_OID, sender]
+        for d in days:
+            self.chat(chat, sender, 10, "Can you check the batch sheet?", day=d)
+            self.chat(chat, OURS_OID, 10 + answer_hours, "Checked.", day=d)
+
+    def test_cardinality_only_a_sender_answered_within_the_working_day_is_prepared(self):
+        for n in (1, 10, 60):
+            with self.subTest(n=n):
+                self.setUp()
+                guard = people()
+                self.history(guard, self.FAST, (-12, -11, -10), 2)
+                # answered two days on (49 h: inside 72 clock hours, past 24 working hours)
+                self.history(guard, self.SLOW, (-12, -11, -10), 49)
+                self.history(guard, self.FEW, (-11, -10), 2)
+                for i in range(n):
+                    chat = f"w{i}"
+                    guard.chat_members[chat] = [OURS_OID, self.FAST]
+                    self.chat(chat, OURS_OID, 8, "Morning", day=-1)
+                    self.chat(chat, self.FAST, 9 + i // 10, f"Did batch {i} pass?")
+                for sender in (self.SLOW, self.FEW):
+                    chat = f"w-{sender[-2:]}"
+                    guard.chat_members[chat] = [OURS_OID, sender]
+                    self.chat(chat, OURS_OID, 8, "Morning", day=-1)
+                    self.chat(chat, sender, 9, "Did the batch pass?")
+                self.store()
+                out = Replay.replay(self, role=f"person:{OURS}", guard=guard)
+                self.assertEqual(out["status"], "complete")
+                self.assertEqual(out["prepared_by_autopilot"], {"teams_reply": n})
+                q = ap.Queue(next((self.dir / "out").glob("person_*")) / ap.QUEUE_FILE)
+                self.addCleanup(q.close)
+                senders = {i["body"]["happened"]["sender"]
+                           for i in q.items(None, ("open", "done"))}
+                self.assertEqual(senders, {self.FAST})
+
+    def test_an_unreadable_answer_window_prepares_nothing(self):
+        """Fail closed: without the judged window the sender record is unknown, so no chat
+        passes ``answers_sender`` (never a guess at the window)."""
+        guard = people()
+        self.history(guard, self.FAST, (-12, -11, -10), 2)
+        guard.chat_members["w0"] = [OURS_OID, self.FAST]
+        self.chat("w0", OURS_OID, 8, "Morning", day=-1)
+        self.chat("w0", self.FAST, 9, "Did batch 1 pass?")
+        self.store()
+        broken = self.dir / "replay-broken.json"
+        broken.write_text("{not json")
+        with mock.patch.object(ap, "REPLAY_CONFIG_FILE", broken):
+            self.assertIsNone(ap.answer_window_hours())
+            out = Replay.replay(self, role=f"person:{OURS}", guard=guard)
+        self.assertEqual(out["prepared_by_autopilot"], {})
+        for bad in ({"horizon_hours": 0}, {"horizon_hours": True}, {"horizon_hours": "24"},
+                    {"horizon_hours": 24 * 15}, []):
+            broken.write_text(json.dumps(bad))
+            with mock.patch.object(ap, "REPLAY_CONFIG_FILE", broken):
+                self.assertIsNone(ap.answer_window_hours(), bad)
+
+    def test_the_record_counts_working_hours_not_the_weekend(self):
+        """A Friday afternoon message answered on Monday morning is answered within 24
+        working hours; the same answer a day later is not."""
+        q = ap.Queue(self.dir / "q.sqlite")
+        self.addCleanup(q.close)
+        friday = datetime(2026, 10, 16, 20, 0, tzinfo=timezone.utc)      # 4 PM New York
+        q.note_inbound([{"mailbox": OURS_OID, "conversation_id": f"t{k}", "sender": "s",
+                         "at": ap._iso(friday - timedelta(days=7 * k))} for k in range(3)])
+        q.note_sent([{"owner": OURS_OID, "conversation": f"t{k}", "message_id": f"m{k}",
+                      "to": ["s"], "at": ap._iso(friday - timedelta(days=7 * k)
+                                                 + timedelta(days=3 + (k == 2), hours=-6))}
+                     for k in range(3)])
+        later = ap._iso(friday + timedelta(days=10))
+        self.assertEqual(q.reply_history(OURS_OID, "s", later, horizon_hours=24,
+                                         working=True), (3, 2))
+        self.assertEqual(q.reply_history(OURS_OID, "s", later, horizon_hours=24), (3, 0))
+
+
 class SenderHistory(World):
     """``answers_sender``: the owner's own record of answering a sender, from messages whose
     answer window closed before the new one (no later evidence)."""
@@ -1603,6 +1764,9 @@ class MCQuestions(World):
                 self.assertEqual(out["feed_seen"], {"capture": n})
                 # every result names the scoring rules a comparison with an older run crosses
                 self.assertIn("teams_burst_credit", {r["id"] for r in out["scoring_rules"]})
+                self.assertIn("answer_window_working_days",
+                              {r["id"] for r in out["scoring_rules"]})
+                self.assertEqual(out["horizon_hours"], 24)
                 flow = out["workflows"]["mc_question"]
                 self.assertEqual((flow["judged"], flow["matched"]), (n, n))
                 # the same questions before the capture ran live: the configured lag

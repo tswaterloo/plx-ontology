@@ -25,6 +25,7 @@ from .autopilot_api import AutopilotMixin
 from .autopilot_area import AutopilotAreaMixin
 from .autopilot_studio import AutopilotStudioMixin
 from .doc_fill_api import DocFillMixin
+from .doc_style_api import DocStyleMixin
 from .instruct_api import InstructMixin
 from .ask_drafts import AskDraftsMixin
 from .write_intents_api import WriteIntentsMixin
@@ -581,7 +582,8 @@ _UNJUDGED = [("SalesOrder:demo:51007", "Sales order 51007"),
 
 
 class MockBackend(ActionsMixin, WriteIntentsMixin, AutopilotMixin, AutopilotAreaMixin,
-                  AutopilotStudioMixin, InstructMixin, DocFillMixin, MockWatchMixin,
+                  AutopilotStudioMixin, InstructMixin, DocFillMixin, DocStyleMixin,
+                  MockWatchMixin,
                   AskDraftsMixin):
     data_label = LABEL
 
@@ -596,7 +598,8 @@ class MockBackend(ActionsMixin, WriteIntentsMixin, AutopilotMixin, AutopilotArea
     def _studio_modes(self, passed: bool) -> list[str]:
         if self.studio_demo is None:
             return super()._studio_modes(passed)
-        return ["off", "suggest", "draft", "auto"] + (["watch"] if passed else [])
+        # Auto and Watch act for a person: only that person switches them on (Autopilot page)
+        return ["off", "suggest", "draft"]
 
     def autopilot_workflow_detail(self, reader: Reader, workflow: str
                                   ) -> m.AutopilotWorkflowDetail:
@@ -1336,6 +1339,14 @@ class MockBackend(ActionsMixin, WriteIntentsMixin, AutopilotMixin, AutopilotArea
         known = {s.handle: s for s in (PO_ROW, PO_LINE, MAIL, MAIL2, PORTAL, TEAMS, FILE,
                                          INV, ILE)}
         s = known.get(handle)
+        if s is None and isinstance(handle, str) and handle.startswith("demo://"):
+            # a demo calendar brief's citation (``mock_meetings``): named as its brief
+            # names it, no text of its own beyond that name
+            from . import mock_meetings
+            named = mock_meetings._labelled({"handle": handle})
+            return m.SourceView(handle=handle, system=named["system"], label=named["label"],
+                                kind="text", title=named["label"], text=named["label"],
+                                fields={}, as_of=None, text_offset=text_offset)
         if s is None:
             raise KeyError("source_not_found")
         return m.SourceView(handle=s.handle, system=s.system, label=s.label,

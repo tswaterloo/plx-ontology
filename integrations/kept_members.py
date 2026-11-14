@@ -43,6 +43,7 @@ from typing import Any, Hashable, Iterable, Iterator, Sequence
 import zlib
 
 from integrations import captured_text as ct
+from integrations import blob_pack
 from integrations.captured_text import (COMPRESSED_SUFFIX, ContainerReading, Member,
                                         READING_MODULES, blob_path, decode_reading,
                                         encode_reading, readings_code)
@@ -163,7 +164,7 @@ def decode_members(value: Any) -> ContainerReading | None:
 def _present(blobs: Sequence[str], key: Hashable) -> bool:
     digest = key[0] if isinstance(key, tuple) and key else None
     return isinstance(digest, str) and any(
-        blob_path(root, digest, suffix).exists()
+        blob_pack.exists(root, digest, suffix)
         for root in blobs for suffix in ("", COMPRESSED_SUFFIX))
 
 

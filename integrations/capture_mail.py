@@ -210,6 +210,7 @@ from ontology.types import Actor
 from operating.case_mail_scope import MailScope
 
 from . import live_source_grammar as grammar
+from . import blob_pack
 from .captured_text import (COMPRESSED_SUFFIX, DROPPED_SUFFIX, OCR_DEFERRED, OCR_PENDING,
                             OCR_UNAVAILABLE, TEXT_EXTRACTED,
                             TEXT_OCR, TEXT_UNREAD, UNTYPED_OCR_FAILURES, blob_path,
@@ -217,7 +218,7 @@ from .captured_text import (COMPRESSED_SUFFIX, DROPPED_SUFFIX, OCR_DEFERRED, OCR
                             member_view,
                             ocr_digest, read_dropped, reading_key, readings_of,
                             split_member, write_dropped)
-from .capture_store import (SourceKind, register_source_kind, sqlite_bytes,
+from .capture_store import (SourceKind, register_source_kind, signal_new, sqlite_bytes,
                             checkpoint, wal_journal)
 from .graph_evidence import (FILE_ATTACHMENT_TYPE, MAX_ATTACHMENT_BYTES,
                              is_mail_attachment_citation, mail_attachment_citation)
@@ -668,6 +669,18 @@ ATTACHMENTS_TRUNCATED = "truncated"
 # budget), but still counted as truncated, so its folder and mailbox stay incomplete.
 ATTACHMENTS_TRUNCATED_CAPPED = "truncated_capped"
 _TRUNCATED_STATES = (ATTACHMENTS_TRUNCATED, ATTACHMENTS_TRUNCATED_CAPPED)
+# The current versions whose attachment listing is cut, as literals so the planner can
+# prove ``messages_truncated_lists`` (an index holding only those rows) answers them.
+_TRUNCATED_WHERE = ("superseded_at IS NULL AND attachments_status IN "
+                    f"('{ATTACHMENTS_TRUNCATED}', '{ATTACHMENTS_TRUNCATED_CAPPED}')")
+# Every mail citation a reader is gated on that this host holds no capture of asks its
+# mailbox's coverage (``mailbox_coverage``), so this count runs per gated item. Over the
+# mailbox's current versions read row by row it took 7-25 s per mailbox on the live store
+# (3.3M messages, 2026-11-13) and ran Ask tools out of their time (plx.documents 40 s);
+# through this index, which holds no row but a cut listing, it is a probe. Building it is
+# one scan of the messages (70 s on that store), once, at the next writable open.
+_TRUNCATED_INDEX = ("CREATE INDEX IF NOT EXISTS messages_truncated_lists ON messages("
+                    f"mailbox_id, folder_id) WHERE {_TRUNCATED_WHERE}")
 CAPPED_AFTER_ATTEMPTS = 2
 REPAIRS_PER_ROUND = 100
 TIME_BUDGET = "time_budget"   # a folder left when the run's time budget was spent
@@ -863,6 +876,7 @@ class MailCaptureStore:
             # ``_person_row``): one probe per mailbox, never a scan of its mail
             # (measured before it: about 5 s per miss at 1M messages and 166 mailboxes).
             self.db.execute(_SENDER_INDEX)
+            self.db.execute(_TRUNCATED_INDEX)
         if version != STORE_SCHEMA_VERSION:
             self.db.close()
             raise CaptureError("store_schema_outdated")
@@ -1078,12 +1092,19 @@ class MailCaptureStore:
                                 (digest, kind, len(content), self.now(), len(stored)))
                 self.db.execute("UPDATE blobs SET stored_bytes=?, dropped_at=NULL WHERE "
                                 "sha256=?", (len(stored), digest))
+        elif kind != "body" and not blob_path(self.blobs, digest).exists() \
+                and not blob_path(self.blobs, digest, COMPRESSED_SUFFIX).exists():
+            # held only in the pack, where only bodies go (``integrations.blob_pack``), and
+            # now an attachment's bytes or text: a loose file again, as the typed-field
+            # steps test an attachment's blobs by path
+            self._write_file(blob_path(self.blobs, digest, COMPRESSED_SUFFIX),
+                             blob_pack.read(self.blobs, digest, COMPRESSED_SUFFIX))
         return digest
 
     def _present(self, digest: str) -> bool:
         """Whether the blob's bytes are stored (as they are or compressed)."""
         return (blob_path(self.blobs, digest).exists()
-                or blob_path(self.blobs, digest, COMPRESSED_SUFFIX).exists())
+                or blob_pack.exists(self.blobs, digest, COMPRESSED_SUFFIX))
 
     @staticmethod
     def _write_file(target: Path, data: bytes) -> None:
@@ -1101,8 +1122,8 @@ class MailCaptureStore:
             raise CaptureError("attachment_digest_invalid")
         try:
             content: bytes | None = blob_path(self.blobs, digest).read_bytes()
-        except FileNotFoundError:
-            content = inflate(blob_path(self.blobs, digest, COMPRESSED_SUFFIX).read_bytes())
+        except FileNotFoundError:   # loose or packed (``integrations.blob_pack``)
+            content = inflate(blob_pack.read(self.blobs, digest, COMPRESSED_SUFFIX))
         if content is None or sha256(content).hexdigest() != digest:
             raise CaptureError("attachment_digest_mismatch")
         return content
@@ -1221,6 +1242,7 @@ class MailCaptureStore:
             self._mark_deferred(record["mailbox"], folder_id)
         else:   # a version re-listed with its earlier rows kept (same handle)
             self._mark_if_deferred(record["citation"], record["mailbox"], folder_id)
+        signal_new(self.path)   # the autopilot's fast feed reads it now
         return superseded
 
     def fill_body(self, handle: str, record: Mapping[str, Any], body_status: str) -> None:
@@ -1694,6 +1716,8 @@ class MailCaptureStore:
         for folder in self.blobs.iterdir():
             if folder.is_dir():
                 total += sum(f.stat().st_size for f in folder.iterdir() if f.is_file())
+        pack = blob_pack.pack_path(self.blobs)   # the packed small blobs
+        total += pack.stat().st_size if pack.exists() else 0
         return total
 
     def _vacuum(self, free_bytes: Callable[[Path], int]) -> str:
@@ -1784,9 +1808,8 @@ class MailCaptureStore:
     def truncated_lists(self, mailbox_id: str, folder_id: str | None = None) -> int:
         """Current versions (of one folder, or of the mailbox) whose attachment
         listing is truncated (``truncated`` or ``truncated_capped``)."""
-        sql = ("SELECT COUNT(*) FROM messages WHERE mailbox_id=? AND superseded_at IS NULL "
-               "AND attachments_status IN (?, ?)")
-        params: list[Any] = [mailbox_id, *_TRUNCATED_STATES]
+        sql = f"SELECT COUNT(*) FROM messages WHERE mailbox_id=? AND {_TRUNCATED_WHERE}"
+        params: list[Any] = [mailbox_id]
         if folder_id is not None:
             sql += " AND folder_id=?"
             params.append(folder_id)
@@ -1962,7 +1985,7 @@ class MailCaptureStore:
         except FileNotFoundError:
             pass
         try:
-            with open(blob_path(self.blobs, digest, COMPRESSED_SUFFIX), "rb") as handle:
+            with blob_pack.open_blob(self.blobs, digest, COMPRESSED_SUFFIX) as handle:
                 return zlib.decompressobj().decompress(handle.read(size), size)
         except (OSError, zlib.error):
             return None
@@ -2030,7 +2053,7 @@ class MailCaptureStore:
                 for digest in gone:   # after the commit: a file is never missing for a row
                     if _SHA256.fullmatch(digest):
                         for suffix in ("", COMPRESSED_SUFFIX, DROPPED_SUFFIX):
-                            blob_path(self.blobs, digest, suffix).unlink(missing_ok=True)
+                            blob_pack.unlink(self.blobs, digest, suffix)
             finally:
                 db.execute("DROP TABLE IF EXISTS temp.withhold_attachments")
                 db.execute("DROP TABLE IF EXISTS temp.purge_blobs")
@@ -2410,7 +2433,7 @@ class MailCaptureStore:
             for digest in gone:   # after the commit: a file is never missing for a row
                 if _SHA256.fullmatch(digest):
                     for suffix in ("", COMPRESSED_SUFFIX, DROPPED_SUFFIX):
-                        blob_path(self.blobs, digest, suffix).unlink(missing_ok=True)
+                        blob_pack.unlink(self.blobs, digest, suffix)
         finally:
             for table in ("purge_boxes", "purge_addresses", "purge_messages",
                           "purge_attachments", "purge_blobs", "copy_pairs", "copy_ids"):
@@ -3976,7 +3999,7 @@ class _Extractors:
 
     def read(self, content: bytes, attachment: Mapping[str, Any], *, defer_ocr: bool,
              defer_all: bool, readings: bool = True, image_ocr: bool | None = None,
-             seconds: float | None = None
+             seconds: float | None = None, ocr_limits: tuple[int, int] | None = None
              ) -> tuple[str, str | None, dict[str, Any] | None]:
         with self._ready:
             while not self._idle:
@@ -3989,6 +4012,8 @@ class _Extractors:
                        "defer_all": defer_all, "readings": readings}
             if image_ocr is not None:
                 request["image_ocr"] = image_ocr
+            if ocr_limits is not None:   # page-capped OCR (``document_understanding``)
+                request["ocr_limits"] = list(ocr_limits)
             answer = self._ask(process, content, request, seconds)
         except _ExtractionLost as lost:
             self._end(process)
@@ -4460,6 +4485,220 @@ def deferred_attachments_pass(store: MailCaptureStore, reader: Any, actor: Actor
         "SELECT COUNT(*) FROM attachments a JOIN messages m ON m.l1_handle=a.message_handle "
         "AND m.superseded_at IS NULL WHERE a.content_status=?",
         (ATTACHMENT_DEFERRED,)).fetchone()[0]
+    return counts
+
+
+def apply_fetched_pass(store: MailCaptureStore, reader: Any, actor: Actor,
+                       fetch_dir: str | Path, *, budget_seconds: float,
+                       monotonic: Callable[[], float] = time.monotonic) -> dict[str, Any]:
+    """Apply what the attachment fast path (``integrations.attach_fetch``) fetched and
+    read beside ingest, through the capture's own write path, within ``budget_seconds``.
+
+    The fast path's files are only read here (``fetch.sqlite``, ``readings.sqlite``,
+    its bytes re-hashed). A row is applied only while it is still ``deferred:ocr_backlog``
+    on a current message version of a mailbox the exclusion does not withhold now
+    (fail-closed as :func:`deferred_attachments_pass`: a guard that is not ready applies
+    nothing). Fetched bytes are applied only once their reading is there (no text work
+    in this process): stored by ``_commit_attachment`` (its carried-mail exclusion
+    included), their row filled and their original settled. A terminal content status
+    (not a file attachment, size mismatch, over the cap) fills the row; a message the
+    exclusion refused at fetch marks it ``excluded:people``. Counts only."""
+    from .attach_fetch import APPLIABLE, EXCLUDED, FETCHED, FetchStore, Readings
+    counts: dict[str, Any] = {"applied": 0, "filled_other": 0, "excluded_messages": 0,
+                              "not_deferred": 0, "withheld": 0, "awaiting_reading": 0,
+                              "bytes_missing": 0, "left": 0, "budget_spent": 0}
+    try:
+        fetch = FetchStore(fetch_dir, read_only=True)
+    except FileNotFoundError:
+        return {"error": "fetch_store_missing", **counts}
+    try:
+        readings: Readings | None = Readings(fetch_dir, read_only=True)
+    except FileNotFoundError:
+        readings = None
+    try:
+        reader.prepare_people()
+    except ExclusionUnavailable:
+        return {"error": "people_exclusion_unavailable", **counts}
+    withheld = store.withheld_mailboxes(reader.people)
+    if withheld is None:
+        return {"error": "people_exclusion_unavailable", **counts}
+    held = {str(m).lower() for m in withheld}
+    deadline = monotonic() + budget_seconds
+    capture = MailCapture(store, reader, actor, workers=1, defer_ocr=True)
+    marks = ",".join("?" * len(APPLIABLE))
+    rows = fetch.db.execute(
+        f"SELECT * FROM work WHERE status IN ({marks}) ORDER BY priority, version_id DESC",
+        APPLIABLE).fetchall()
+    for row in rows:
+        if monotonic() >= deadline:
+            counts["budget_spent"] = 1
+            break
+        current = store.db.execute(
+            "SELECT a.metadata, a.content_status, a.mailbox_id FROM attachments a JOIN "
+            "messages m ON m.l1_handle=a.message_handle AND m.superseded_at IS NULL WHERE "
+            "a.message_handle=? AND a.attachment_id=?",
+            (row["message_handle"], row["attachment_id"])).fetchone()
+        if current is None or current["content_status"] != ATTACHMENT_DEFERRED:
+            counts["not_deferred"] += 1   # read since, superseded or gone: nothing to do
+            continue
+        if str(current["mailbox_id"]).lower() in held:
+            counts["withheld"] += 1
+            continue
+        if row["status"] == EXCLUDED:
+            counts["excluded_messages"] += store.exclude_attachment(row["message_handle"],
+                                                                    row["attachment_id"])
+            continue
+        entry: dict[str, Any] = {"id": row["attachment_id"],
+                                 "metadata": json.loads(current["metadata"])}
+        if row["status"] == FETCHED:
+            reading = None if readings is None else readings.get(row["read_key"])
+            if reading is None or reading["sha256"] != row["content_sha256"]:
+                counts["awaiting_reading"] += 1
+                continue
+            try:
+                content = fetch.bytes_of(row["content_sha256"])
+            except (OSError, ValueError):
+                counts["bytes_missing"] += 1
+                continue
+            entry.update(content=content, read=json.loads(row["read_meta"]),
+                         text_status=reading["text_status"], text=reading["text"],
+                         readings=(None if reading["readings"] is None
+                                   else json.loads(reading["readings"])), hold_ocr=False)
+        else:
+            entry["content_status"] = row["content_status"]
+        capture_counts = _new_counts()
+        with store.lock:
+            entry = capture._commit_attachment({"citation": row["message_handle"]}, entry,
+                                               capture_counts)
+            status = entry["content_status"]
+            if status in ("unavailable", ATTACHMENT_DEFERRED):
+                counts["left"] += 1
+                continue
+            store.fill_attachment(row["message_handle"], entry)
+            capture._settle_new(capture_counts)
+        counts["applied" if status == "captured" else "filled_other"] += 1
+    fetch.close()
+    counts["remaining"] = store.db.execute(
+        "SELECT COUNT(*) FROM attachments a JOIN messages m ON m.l1_handle=a.message_handle "
+        "AND m.superseded_at IS NULL WHERE a.content_status=?",
+        (ATTACHMENT_DEFERRED,)).fetchone()[0]
+    if readings is not None and monotonic() < deadline:
+        counts["stored"] = apply_stored_pass(store, fetch_dir, readings, held,
+                                             deadline=deadline, monotonic=monotonic)
+    if readings is not None and monotonic() < deadline:
+        counts["recapped"] = apply_recapped_pass(store, readings, held, deadline=deadline,
+                                                 monotonic=monotonic)
+    return counts
+
+
+def apply_recapped_pass(store: MailCaptureStore, readings: Any, held: set[str], *,
+                        deadline: float, monotonic: Callable[[], float] = time.monotonic
+                        ) -> dict[str, int]:
+    """Replace a page-capped reading by its full one (``attach_fetch.recap_pass``,
+    ``NOTE_FULL_AFTER_CAP``): a new text version (``fill_text``) on every attachment of
+    a current message version that still holds exactly the capped text (status
+    ``extracted_ocr``, the capped text's digest) under the same read key, in a mailbox
+    the exclusion does not withhold now. Counts only."""
+    from .attach_fetch import NOTE_FULL_AFTER_CAP, read_key
+    counts = {"applied": 0, "attachments_filled": 0, "withheld": 0, "budget_spent": 0}
+    if not readings.db.execute("SELECT 1 FROM sqlite_master WHERE name='notes'").fetchone():
+        return counts
+    for key, detail in readings.db.execute(
+            "SELECT read_key, detail FROM notes WHERE note=?", (NOTE_FULL_AFTER_CAP,)
+    ).fetchall():
+        if monotonic() >= deadline:
+            counts["budget_spent"] = 1
+            break
+        capped = json.loads(detail or "{}").get("capped_text_sha256")
+        reading = readings.get(key)
+        if capped is None or reading is None:
+            continue
+        targets = []
+        for at in store.db.execute(
+                "SELECT a.l1_handle, a.metadata, a.mailbox_id FROM attachments a JOIN "
+                "messages m ON m.l1_handle=a.message_handle AND m.superseded_at IS NULL "
+                "WHERE a.content_sha256=? AND a.content_status='captured' AND "
+                "a.text_status=? AND a.text_sha256=? AND a.l1_handle IS NOT NULL",
+                (reading["sha256"], TEXT_OCR, capped)):
+            if read_key(reading["sha256"], json.loads(at["metadata"])) != key:
+                continue
+            if str(at["mailbox_id"]).lower() in held:
+                counts["withheld"] += 1
+                continue
+            targets.append(at["l1_handle"])
+        if not targets:
+            continue
+        with store.lock:
+            pinned = store.put_text(reading["text"])
+            for handle in targets:
+                store.fill_text(handle, reading["text_status"], pinned)
+        counts["applied"] += 1
+        counts["attachments_filled"] += len(targets)
+    return counts
+
+
+# The readings of a stored item the fast path applies (``attach_fetch.StoredPlan``), by
+# the text status the capture left on it: an image's OCR reading (as ``image_ocr_pass``),
+# a scan's full or page-capped reading. Any other reading (a failure, a timeout, a
+# capped scan that read nothing: ``ocr_pending``, an image the prefilter or size rule
+# left: ``unsupported``) leaves the attachment as it is, for the capture's own passes.
+_STORED_APPLY = {"unsupported": (TEXT_OCR, "ocr_no_text"),
+                 OCR_PENDING: (TEXT_OCR, "ocr_no_text", TEXT_EXTRACTED)}
+
+
+def apply_stored_pass(store: MailCaptureStore, fetch_dir: str | Path, readings: Any,
+                      held: set[str], *, deadline: float,
+                      monotonic: Callable[[], float] = time.monotonic) -> dict[str, int]:
+    """Apply the fast path's readings of the mail store's own unread images and scans
+    (``attach_fetch plan-stored`` / ``read --state-dir``): each reading goes, as a new text
+    version (``fill_text``), to every attachment of a current message version that still
+    carries the same bytes, type and name under the text status it was planned from,
+    in a mailbox the exclusion does not withhold now (``held``). Counts only."""
+    from .attach_fetch import StoredPlan, STORED_KINDS, read_key
+    counts = {"applied": 0, "attachments_filled": 0, "not_applicable": 0, "withheld": 0,
+              "budget_spent": 0}
+    try:
+        plan = StoredPlan(fetch_dir, read_only=True)
+    except FileNotFoundError:
+        return counts
+    by_kind = {kind: status for status, kind in STORED_KINDS.items()}
+    try:
+        for row in plan.db.execute("SELECT read_key, content_sha256, kind FROM stored "
+                                   "ORDER BY priority, rowid"):
+            if monotonic() >= deadline:
+                counts["budget_spent"] = 1
+                break
+            reading = readings.get(row["read_key"])
+            if reading is None or reading["sha256"] != row["content_sha256"]:
+                continue
+            was = by_kind.get(row["kind"])
+            if was is None or reading["text_status"] not in _STORED_APPLY[was]:
+                counts["not_applicable"] += 1
+                continue
+            targets = []
+            for at in store.db.execute(
+                    "SELECT a.l1_handle, a.metadata, a.mailbox_id FROM attachments a JOIN "
+                    "messages m ON m.l1_handle=a.message_handle AND m.superseded_at IS NULL "
+                    "WHERE a.content_sha256=? AND a.content_status='captured' AND "
+                    "a.text_status=? AND a.l1_handle IS NOT NULL",
+                    (row["content_sha256"], was)):
+                if read_key(row["content_sha256"], json.loads(at["metadata"])) != \
+                        row["read_key"]:
+                    continue   # the same bytes under another type or name: its own reading
+                if str(at["mailbox_id"]).lower() in held:
+                    counts["withheld"] += 1
+                    continue
+                targets.append(at["l1_handle"])
+            if not targets:
+                continue
+            with store.lock:
+                pinned = store.put_text(reading["text"])
+                for handle in targets:
+                    store.fill_text(handle, reading["text_status"], pinned)
+            counts["applied"] += 1
+            counts["attachments_filled"] += len(targets)
+    finally:
+        plan.db.close()
     return counts
 
 
@@ -6212,6 +6451,24 @@ def capture_into(state_dir: str | Path, scope: CaptureScope, reader: Any, actor:
 CAPTURE_PRINCIPAL = "svc:mail-capture"
 
 
+def _runs_summary(last: Mapping[str, Any], folders: list[Mapping[str, Any]],
+                  store: "MailCaptureStore", resumes: int) -> dict[str, Any]:
+    """``run_cli``'s summary from the last run alone (``--runs-only``): its mailboxes and
+    folders, the store bound; the store-wide counts are not read (None)."""
+    mailboxes = last["mailboxes"]
+    return {"mailboxes": len(mailboxes),
+            "mailboxes_complete": sum(1 for m in mailboxes if m.get("complete")),
+            "folders": len(folders),
+            "folders_complete": sum(1 for f in folders if f.get("complete")),
+            "messages_current": None, "versions": None, "attachments_captured": None,
+            "delta_resumes": resumes, "degraded_bodies": None, "degraded_attachments": None,
+            "truncated_attachment_lists": None, "mismatched_attachments": None,
+            "complete_bound": last["complete_bound"], "bound_total": last["bound_total"],
+            "purge_undecided": last.get("purge_undecided", 0),
+            "store_bytes": store.store_bytes(), "store_full": store.store_full(),
+            "runs_only": True}
+
+
 def add_cli_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--state-dir", default=None,
                         help="Workbench state directory (outside every git work tree); "
@@ -6243,9 +6500,37 @@ def add_cli_arguments(parser: argparse.ArgumentParser) -> None:
                         help="mailboxes captured at once (one writer to the store)")
     parser.add_argument("--extract-workers", type=int, default=PRODUCTION["extract_workers"],
                         help="processes reading attachment text (0: inline)")
+    parser.add_argument("--runs-only", action="store_true",
+                        help="report the runs and the resolve/leak checks only, not the "
+                             "store-wide counts (the host's continuous ingest)")
     parser.add_argument("--max-store-bytes", type=int, default=None,
                         help="bound on the capture store (SQLite + blobs); a folder that "
                              "would pass it stops incomplete with reason store_full")
+    # The store's backlogs, read by this same process after the capture runs
+    # (:func:`after_capture`): under continuous ingest the host holds the cycle lock for
+    # its whole run, so the stand-alone ``deferred-attachments`` and ``image-ocr``
+    # commands can never take it.
+    parser.add_argument("--deferred-attachments-seconds", type=float, default=None,
+                        help="after the runs: read the attachments deferred by the OCR "
+                             "backlog for this long, newest first (deferred-attachments)")
+    parser.add_argument("--deferred-workers", type=int, default=MAX_WORKERS,
+                        help="download threads of that pass")
+    parser.add_argument("--deferred-extract-workers", type=int, default=None,
+                        help="text extraction processes of that pass (default: "
+                             "--extract-workers, else every core but one)")
+    parser.add_argument("--deferred-min-free-gb", type=float,
+                        default=DEFERRED_MIN_FREE_BYTES / (1 << 30),
+                        help="that pass stops before the store's file system has less free")
+    parser.add_argument("--apply-fetched-seconds", type=float, default=None,
+                        help="after the runs: apply what the attachment fast path fetched "
+                             "and read (integrations.attach_fetch) for this long")
+    parser.add_argument("--apply-fetched-dir", default=None,
+                        help="the fast path's store (--fetch-dir of attach_fetch)")
+    parser.add_argument("--image-ocr-seconds", type=float, default=None,
+                        help="after the runs: OCR the images stored unread for this long "
+                             "(image-ocr), from the stored bytes")
+    parser.add_argument("--image-ocr-workers", type=int, default=1,
+                        help="OCR processes of that pass")
 
 
 _FOLDER_COUNTS = ("pages", "messages_seen", "versions_new", "versions_superseded",
@@ -6280,6 +6565,93 @@ def _report_run(number: int, run: Mapping[str, Any]) -> dict[str, Any]:
             "mailboxes": mailboxes}
 
 
+def after_capture(store: MailCaptureStore, reader: Any, actor: Actor,
+                  args: argparse.Namespace) -> dict[str, Any] | None:
+    """The store's backlog passes after a capture's runs, in the capture's own process
+    and store (one writer): ``--deferred-attachments-seconds`` reads the attachments the
+    OCR backlog deferred (:func:`deferred_attachments_pass`, the people exclusion
+    fail-closed there, ``--deferred-min-free-gb`` its disk floor) and
+    ``--image-ocr-seconds`` OCRs the images stored unread (:func:`image_ocr_pass`; a
+    mailbox the exclusion withholds now is never read, and an exclusion that cannot say
+    which reads none). Under continuous ingest the host holds the cycle lock for its
+    whole run, so the stand-alone commands never run there. None when neither is set;
+    a budget that is not positive is refused before any capture (:func:`check_after`).
+    Counts only."""
+    deferred = getattr(args, "deferred_attachments_seconds", None)
+    images = getattr(args, "image_ocr_seconds", None)
+    applying = getattr(args, "apply_fetched_seconds", None)
+    if deferred is None and images is None and applying is None:
+        return None
+    out: dict[str, Any] = {}
+    if applying is not None:   # first: what the fast path already read is the cheapest
+        out["apply_fetched"] = _after_pass(lambda: apply_fetched_pass(
+            store, reader, actor, args.apply_fetched_dir, budget_seconds=applying))
+    if deferred is not None:
+        # the pass's own setting, else the capture's (0: inline, on the download threads)
+        extract = getattr(args, "deferred_extract_workers", None)
+        if extract is None:
+            extract = getattr(args, "extract_workers", None)
+        out["deferred_attachments"] = _after_pass(lambda: deferred_attachments_pass(
+            store, reader, actor, budget_seconds=deferred, workers=args.deferred_workers,
+            extract_workers=extract,
+            min_free_bytes=int(args.deferred_min_free_gb * (1 << 30))))
+    if images is not None:
+        out["image_ocr"] = _after_pass(lambda: _image_pass(store, reader, images,
+                                                           args.image_ocr_workers))
+    return out
+
+
+def _after_pass(run: Callable[[], dict[str, Any]]) -> dict[str, Any]:
+    """One backlog pass; an unexpected failure is that pass's (its type, logged without
+    content), never the capture's: what the capture stored stands and its report holds."""
+    try:
+        return run()
+    except Exception as exc:  # noqa: BLE001 - the capture before it is complete either way
+        import logging
+        logging.getLogger(__name__).warning("after-capture pass failed (%s)",
+                                            type(exc).__name__)
+        return {"error": "pass_failed", "failed_kind": type(exc).__name__}
+
+
+def _image_pass(store: MailCaptureStore, reader: Any, budget: float,
+                workers: int) -> dict[str, Any]:
+    from .document_understanding import local_image_ocr_available
+    withheld = None
+    try:
+        reader.prepare_people()
+        withheld = store.withheld_mailboxes(reader.people)
+    except ExclusionUnavailable:
+        pass
+    if withheld is None:
+        return {"error": "people_exclusion_unavailable"}
+    if not local_image_ocr_available():
+        return {"error": "ocr_engine_unavailable"}
+    held = {str(m).lower() for m in withheld}
+    return image_ocr_pass(store, budget_seconds=budget, workers=workers,
+                          excluded=lambda mailbox_id: str(mailbox_id).lower() in held)
+
+
+def check_after(args: argparse.Namespace) -> None:
+    """Refuse a backlog pass setting no pass could run with (before any capture)."""
+    if (getattr(args, "apply_fetched_seconds", None) is None) != (
+            getattr(args, "apply_fetched_dir", None) is None):
+        raise ValueError("apply_fetched_seconds and apply_fetched_dir go together")
+    for name in ("deferred_attachments_seconds", "image_ocr_seconds", "apply_fetched_seconds"):
+        value = getattr(args, name, None)
+        if value is not None and not (value > 0 and value != float("inf")):
+            raise ValueError(f"{name} must be positive")
+    workers = getattr(args, "deferred_workers", 1)
+    if isinstance(workers, bool) or not 1 <= workers <= MAX_WORKERS:
+        raise ValueError(f"deferred_workers must be 1..{MAX_WORKERS}")
+    extract = getattr(args, "deferred_extract_workers", None)
+    if extract is not None and not 1 <= extract <= MAX_WORKERS:
+        raise ValueError(f"deferred_extract_workers must be 1..{MAX_WORKERS}")
+    if not 1 <= getattr(args, "image_ocr_workers", 1) <= MAX_WORKERS:
+        raise ValueError(f"image_ocr_workers must be 1..{MAX_WORKERS}")
+    if not getattr(args, "deferred_min_free_gb", 1) >= 0:
+        raise ValueError("deferred_min_free_gb must be 0 or more")
+
+
 def run_cli(args: argparse.Namespace, *, environ: Mapping[str, str] | None = None,
             sender: Any = None, sleep: Callable[[float], None] = time.sleep) -> dict[str, Any]:
     """Capture ``--runs`` times, then read the store back as the capture actor and
@@ -6289,6 +6661,7 @@ def run_cli(args: argparse.Namespace, *, environ: Mapping[str, str] | None = Non
 
     if isinstance(args.runs, bool) or not 1 <= args.runs <= 5:
         raise ValueError("runs must be 1..5")
+    check_after(args)
     scope = CaptureScope.from_file(args.scope)
     audience = LiveSourceAudience.from_file(args.live_audience)
     env = os.environ if environ is None else environ
@@ -6329,6 +6702,7 @@ def run_cli(args: argparse.Namespace, *, environ: Mapping[str, str] | None = Non
                                if isinstance(v, int)}
             refused.append(refused_parts(run))
             last_run = run
+        after = after_capture(store, reader, actor, args)
         # Offline resolution of what was captured (no source read).
         view = store.messages(actor, audience, limit=1000)
         resolved = sum(1 for item in view["items"]
@@ -6343,10 +6717,19 @@ def run_cli(args: argparse.Namespace, *, environ: Mapping[str, str] | None = Non
         hidden_resolved = sum(1 for item in view["items"]
                               if store.resolve(item["l1_handle"], withheld, audience)
                               is not None)
-        counts = store.counts(actor, audience)
-        completeness = store.completeness(actor, audience)
-        folders = [f for m in completeness["mailboxes"] for f in m["folders"]]
         last = runs[-1]
+        if getattr(args, "runs_only", False):
+            # The host's continuous ingest reads only the runs (ingest_forever
+            # summarize_mail): the store-wide counts and per-mailbox byte sums read the
+            # whole store after the capture, unbudgeted, and ran it past its timeout
+            # (11-13: a 24.7 GB store, every run child_timeout). The resolve and leak
+            # checks above still run.
+            counts = completeness = None
+            folders = [f for m in last["mailboxes"] for f in m["folders"]]
+        else:
+            counts = store.counts(actor, audience)
+            completeness = store.completeness(actor, audience)
+            folders = [f for m in completeness["mailboxes"] for f in m["folders"]]
         resumes = sum(1 for r in runs[1:] for m in r["mailboxes"] for f in m["folders"]
                       if f["resumed_from"] == "delta_url" and f["complete"])
         report = {
@@ -6371,7 +6754,8 @@ def run_cli(args: argparse.Namespace, *, environ: Mapping[str, str] | None = Non
             # live-host-persistent-state-dir, never an untyped fail.
             "blocked_upstream": refused[-1] if all(refused) else budget_cut_block(
                 mail_cut_units(last_run), carried=carried),
-            "summary": {"mailboxes": len(completeness["mailboxes"]),
+            "summary": _runs_summary(last, folders, store, resumes) if completeness is None else
+            {"mailboxes": len(completeness["mailboxes"]),
                         "mailboxes_complete": sum(1 for m in completeness["mailboxes"]
                                                   if m["complete"]),
                         "folders": len(folders),
@@ -6408,7 +6792,7 @@ def run_cli(args: argparse.Namespace, *, environ: Mapping[str, str] | None = Non
             # a passing check names them, so the source registry counts them evaluated.
             "relations": {name: n for name, n in (
                 ("messages", counts["messages_current"]),
-                ("attachments", counts["attachments_captured"])) if n},
+                ("attachments", counts["attachments_captured"])) if n} if counts else {},
             "requests_sent": transport.requests_sent,
             # The Graph reads it made (grammar operations): the endpoints a pass evaluates.
             "operations_read": sorted(transport.operations_read),
@@ -6421,6 +6805,8 @@ def run_cli(args: argparse.Namespace, *, environ: Mapping[str, str] | None = Non
             and report["leak_check"]["withheld_actor_counts"] == 0
             and report["leak_check"]["withheld_actor_mailboxes"] == 0
             and hidden_resolved == 0)
+        if after is not None:   # counts only; the capture's own verdict is unchanged
+            report["after_capture"] = after
         sound = (resolved == len(view["items"]) and verified == len(attachment_handles)
                  and not any(report["leak_check"].values()))
         if not sound and not all(refused):   # blocked only while the cut is the whole failure
@@ -6620,7 +7006,8 @@ def main(argv: Sequence[str] | None = None) -> int:
 __all__ = ["CAPTURE_PRINCIPAL", "PERSISTENT_STATE_ASK", "CaptureError", "CaptureScope",
            "MAIL_KIND", "MailCapture", "MailCaptureStore", "WORKBENCH_STATE_ENV",
            "add_cli_arguments", "assert_outside_git", "blocked_reason", "budget_cut_block",
-           "capture_into", "check_state_dir", "compact_cli", "deferred_attachments_cli",
+           "after_capture", "apply_fetched_pass", "capture_into", "check_after", "check_state_dir", "compact_cli",
+           "deferred_attachments_cli",
            "deferred_attachments_pass", "ocr_deferred_cli",
            "ocr_deferred_gap", "ocr_deferred_pass", "directory_mailboxes", "folder_standing",
            "graph_block", "mail_cut_units", "run_cli", "schedule_units", "store_exists",

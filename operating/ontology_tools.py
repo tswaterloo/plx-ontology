@@ -924,6 +924,14 @@ AUDIENCE_KEYS_SQL = (
     "SELECT (SELECT MIN(audience_key) FROM objects WHERE audience_key > k.a) FROM k "
     "WHERE k.a IS NOT NULL) SELECT a FROM k WHERE a IS NOT NULL")
 
+# every (object type, audience key) pair by ``objects_by_type_audience``, one step a pair
+TYPE_AUDIENCE_SQL = (
+    "WITH RECURSIVE k(t, a) AS (SELECT * FROM (SELECT object_type, audience_key "
+    "FROM objects ORDER BY 1, 2 LIMIT 1) s UNION ALL SELECT n.object_type, n.audience_key "
+    "FROM k CROSS JOIN LATERAL (SELECT o.object_type, o.audience_key FROM objects o "
+    "WHERE (o.object_type, o.audience_key) > (k.t, k.a) "
+    "ORDER BY o.object_type, o.audience_key LIMIT 1) n) SELECT t, a FROM k")
+
 
 class StoreReader:
     """Read-only access to a ``plx-ontology-store/v10`` SQLite file.
@@ -1070,6 +1078,27 @@ class StoreReader:
                     AUDIENCE_KEYS_SQL if getattr(self.conn, "postgres", False)
                     else "SELECT DISTINCT audience_key FROM objects ORDER BY audience_key")))
             return list(self._audiences[1])
+
+    def type_audience_keys(self) -> list[tuple[str, str]]:
+        """Every (object type, audience key) pair of the store's objects, kept until the
+        store changes (as ``audience_keys``). On Postgres read by the type and audience
+        index, one step per pair (``TYPE_AUDIENCE_SQL``: 0.2 s over 13,800 pairs), never a
+        scan of every object (10 s, and a wait for a new store state's facts); a database
+        without that index (``objects_by_type_audience``) is scanned as before."""
+        with self.lock:
+            stamp = (self.data_version(), self.conn.total_changes)
+            held = getattr(self, "_type_audiences", None)
+            if held is None or held[0] != stamp:
+                # the skip-scan only where its index is (built by hand on the served
+                # database, in no migration): without it each step sorts a whole type
+                indexed = getattr(self.conn, "postgres", False) and self.conn.execute(
+                    "SELECT to_regclass('ontology.objects_by_type_audience') IS NOT NULL"
+                ).fetchone()[0]
+                held = self._type_audiences = (stamp, tuple(
+                    (row[0], row[1]) for row in self.conn.execute(
+                        TYPE_AUDIENCE_SQL if indexed
+                        else "SELECT object_type, audience_key FROM objects GROUP BY 1, 2")))
+            return list(held[1])
 
     def remember_audience_keys(self, keys: Sequence[str]) -> None:
         """``audience_keys`` as read before from this unchanged store (the facts a host
@@ -3824,17 +3853,32 @@ class OntologyTools:
                 + [dict(f) for f in links])
 
     def unsourced_filter_gaps(self, object_type: str, filters: Sequence[Mapping[str, Any]],
-                              kept: Callable[[str], bool] | None = None
+                              kept: Callable[[str], bool] | None = None,
+                              members: Iterable[str] | None = None
                               ) -> list[dict[str, Any]]:
         """A gap per filtered property some sources of the type never record: their
         records never match it (a supplier name only Business Central's purchase orders
         carry leaves the other systems' orders out), naming the links that reach the same
         related records in those sources, so the filter can name them instead. ``kept``:
         only the bindings it keeps are asked about (a count of one system's records leaves
-        no other system's record out)."""
+        no other system's record out). ``members``: the records the filter was applied to
+        (a walk's or a set's, before it): only the bindings they come from are asked about,
+        since a source none of them comes from loses none of them (11-13: every filter on a
+        walk's Sage orders said the BC and FileMaker orders were left out, so a count of
+        them was never exact); a member of no declared binding of the type asks them all."""
         if self.schema is None or object_type not in self.schema.object_types:
             return []
         spec = self.schema.object_types[object_type]
+        declared = {str(b.get("id")) for b in spec.get("bindings", ()) if isinstance(b, Mapping)}
+        if members is not None:
+            members = [str(oid) for oid in members]   # read twice below
+            present = {str(oid).split(":", 2)[1] if str(oid).count(":") >= 2 else ""
+                       for oid in members if str(oid).split(":", 1)[0] == object_type}
+            other = any(str(oid).split(":", 1)[0] != object_type for oid in members)
+            if not other and present <= declared:
+                outer = kept
+                kept = lambda binding: binding in present and (  # noqa: E731
+                    outer is None or outer(binding))
         bindings = [b.get("id") for b in spec.get("bindings", ()) if isinstance(b, Mapping)
                     and (kept is None or kept(str(b.get("id"))))]
         props = {p["name"]: p for p in spec.get("properties", ()) if isinstance(p, Mapping)}

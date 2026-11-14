@@ -1119,7 +1119,11 @@ class HostPolicyTests(unittest.TestCase):
             "SELECT o.audience_key, MIN(v.l1_handle) FROM objects o JOIN object_versions v "
             "ON v.object_id = o.object_id WHERE o.audience_key LIKE 'bc:%' "
             "AND v.l1_handle LIKE 'bc://%' GROUP BY o.audience_key")}
-        units = store_bc_units(SimpleNamespace(conn=conn, lock=threading.Lock()))
+        # the reader's kept key list (StoreReader.audience_keys: every object's key)
+        keys = [k for (k,) in conn.execute(
+            "SELECT DISTINCT audience_key FROM objects ORDER BY audience_key")]
+        units = store_bc_units(SimpleNamespace(conn=conn, lock=threading.Lock(),
+                                               audience_keys=lambda: list(keys)))
         self.assertEqual(units, like)
         self.assertEqual(units, {"bc:c1/purchaseOrders": "production", "BC:c1/vendors": "Prod",
                                  "bc:c3/customers": "zz"})
@@ -1136,10 +1140,14 @@ class HostPolicyTests(unittest.TestCase):
             policy = case_host_policy(runtime, actor, None, bc_units=units)
             return {k for k, principals in policy.audiences.items() if principals}
 
+        # The Page 50 references field page is the purchase orders' own fields: granted
+        # exactly as purchaseOrders is (capture_store.BC_FIELD_PAGES).
         self.assertEqual(granted(tb.BUYER), {f"bc:{MAN}/purchaseOrders",
-                                             f"bc:{MAN}/purchaseOrderLines"})
+                                             f"bc:{MAN}/purchaseOrderLines",
+                                             f"bc:{MAN}/purchaseOrderReferences"})
         # A line set needs its header set too (as the capture store decides).
-        self.assertEqual(granted(tb.HEADERS_ONLY), {f"bc:{MAN}/purchaseOrders"})
+        self.assertEqual(granted(tb.HEADERS_ONLY), {f"bc:{MAN}/purchaseOrders",
+                                                    f"bc:{MAN}/purchaseOrderReferences"})
         self.assertEqual(granted(tb.NOBODY), set())
         # BC is decided unit by unit: a reader granted every unit the store holds covers
         # the family (a BC record reached through a Portal twin is proven visible to it;
@@ -1147,8 +1155,8 @@ class HostPolicyTests(unittest.TestCase):
         # one lacking any held unit, or granted none, does not
         capture = Actor("plx", frozenset({"svc:capture"}), "restricted")
         for actor, covered, lacking in ((capture, True, 0),
-                                        (tb.BUYER, False, len(units) - 2),
-                                        (tb.HEADERS_ONLY, False, len(units) - 1),
+                                        (tb.BUYER, False, len(units) - 3),
+                                        (tb.HEADERS_ONLY, False, len(units) - 2),
                                         (tb.NOBODY, False, len(units))):
             with self.subTest(actor=sorted(actor.principals)):
                 policy = case_host_policy(runtime, actor, None, bc_units=units)

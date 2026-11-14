@@ -1,0 +1,13 @@
+{
+  "schema": "plx-doc-style-kinds/v1",
+  "comment": "Document kinds a person writes, by words in the file name; the first that matches names the kind. Data for operating.doc_style, never per person or customer.",
+  "kinds": [
+    {"kind": "quote", "name": "\\b(quot(e|es|ation|ations|ing)|qte|estimate|rfq resp\\w*|pricing (for|proposal))\\b"},
+    {"kind": "price_list", "name": "\\b(price ?lists?|price sheets?|pricing|prices)\\b"},
+    {"kind": "proposal", "name": "\\b(proposals?|scope of work)\\b"},
+    {"kind": "spec_sheet", "name": "\\b(spec(ification)?s? sheets?|tds|technical data|product (info|information|spec\\w*)|specs?)\\b"},
+    {"kind": "coa", "name": "\\b(coa|c o a|certificate of analysis)\\b"},
+    {"kind": "letter", "name": "\\b(letter|memo)\\b"},
+    {"kind": "invoice", "name": "\\b(invoice|proforma|pro forma)\\b"}
+  ]
+}

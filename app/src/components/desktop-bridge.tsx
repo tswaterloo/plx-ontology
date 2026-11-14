@@ -7,7 +7,9 @@ import { capNotices, desktopBridge, freshOnes, menuTarget, type Pending } from "
 import { useAuth } from "./auth";
 import { useFeedbackDialog } from "./feedback-dialog";
 
-const EVERY_MS = 120_000;
+// A prepared reply reaches My work seconds after its message is captured (the autopilot's
+// fast feed): the notice follows within a minute.
+const EVERY_MS = 60_000;
 
 /**
  * Inside the desktop app only: the menu's choices (Give feedback, Today, Ask...) and system

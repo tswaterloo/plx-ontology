@@ -116,6 +116,17 @@ def draft_card(card_id: str, draft: Mapping[str, Any],
                 if isinstance(to, str) and "@" in to else None
             card["draft"]["facts"].append({"fact": "last_vendor_message", "value": title,
                                            "citation": thread})
+        elif isinstance(draft.get("to"), str) and "@" in draft["to"]:
+            # a new message's recipient proposed from the reader's own mail
+            # (``operator_api.instruct_assist``): the preview's default To, never a domain
+            # the desk counts as known
+            card["draft"]["to"] = {"address": draft["to"], "source": None, "proposed": True}
+            # others the reader's own mail settles (``instruct_assist``): the preview's
+            # defaults, each checked in its review like any address typed
+            card["draft"]["also_to"] = [a for a in draft.get("also_to") or ()
+                                        if isinstance(a, str) and "@" in a]
+            card["draft"]["cc"] = [a for a in draft.get("cc") or ()
+                                   if isinstance(a, str) and "@" in a]
     else:
         card["action"] = {"text": " ".join(str(draft.get("body") or "").split())[:500]}
         # a Teams note from the desk carries the drafted words, not the headline

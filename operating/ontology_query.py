@@ -255,11 +255,13 @@ def _superseded(gaps: list, since: int) -> list:
 
 # Gaps of a walk that leave out no member of the set it returns: the age of what was
 # read, records set apart as leads or marked as resting on leads, a part not read that
-# holds none of them, records first captured after as_known_at, and a filter's note on
-# the sources never recording it (it matched every record it could).
+# holds none of them, records first captured after as_known_at, a filter's note on
+# the sources never recording it (it matched every record it could), and a measure's
+# citation cap (its first members cited, every one counted: 11-13, a count of 66 orders
+# made its own set "incomplete", so every later count of it was "at least").
 LOSSLESS_GAPS = frozenset({"stale_source", "schema_drift", POSSIBLY_RELATED, LEAD_BASIS,
                            "partly_read_elsewhere", "captured_after_as_known_at",
-                           "filter_not_sourced"})
+                           "filter_not_sourced", "citations_capped"})
 TRIMMED_REASONS = frozenset({"withheld_by_permission", "marking_withheld",
                              "policy_changed_since_handle"})
 IDENTIFIER_GAPS = frozenset({"no_identifier_match", "identifier_leads",

@@ -90,7 +90,7 @@ describe("ops status line", () => {
     api.ops = breach;
     render(<OpsStatus />);
     const line = await screen.findByTestId("ops-status");
-    expect(line).toHaveTextContent("Ops: 2 behind");
+    expect(line).toHaveTextContent("2 ops targets missed");
     expect(line).toHaveTextContent("Last update cycle, Alerts contradicted");
     expect(line).not.toHaveTextContent("Capture");
   });

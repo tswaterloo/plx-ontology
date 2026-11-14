@@ -196,7 +196,9 @@ class AgentPath(unittest.TestCase):
                          "\n\n" + aa.APP_READER_RULE + "\n\n" + PROSE_STYLE_RULE)
         self.assertEqual(sorted(hosts[0].principals), sorted(OPS))
         answer = got[-1][0][1]
-        self.assertEqual(answer["outcome"], "answered")
+        # the reply asserted a business state no passed claim is about ("shipped"): it is
+        # removed and the answer is partial, never the whole answer the agent gave (GATE-003)
+        self.assertEqual(answer["outcome"], "partial")
         self.assertIn(f"The order status is {status}.", answer["direct_answer"])
         self.assertNotIn("999", answer["direct_answer"])    # no passed claim backs it
         self.assertNotIn("```", answer["direct_answer"])
@@ -398,10 +400,12 @@ class AgentPath(unittest.TestCase):
         # a count beside a word that starts like a month, or a year after "of", is a
         # figure nobody gave, never a date
         for invented in ("the 5 marketplace orders this quarter", "the 3 junctions open",
-                         "the 12 decisions due", "the invoice of 2024 alone"):
+                         "the 12 decisions due", "the invoice of 2024 alone",
+                         "stock rose to 2025 units"):
             self.assertIsNone(read_decision({"decision": "assume", "assumption": invented,
                                              "options": []}, [], question), invented)
-        for dated in ("orders from 2024", "Q3 2025", "3 Mar 2025 to 10 Sept 2025"):
+        for dated in ("orders from 2024", "Q3 2025", "3 Mar 2025 to 10 Sept 2025",
+                      "orders from 2024 to 2025", "between 2023 and 2024"):
             self.assertIsNotNone(read_decision({"decision": "assume", "assumption": dated,
                                                 "options": []}, [], question), dated)
         again = self.ask_with(self.ops, {"question": "the fiscal quarter", "clarified": {
@@ -480,7 +484,8 @@ class AgentPath(unittest.TestCase):
             "case_id": "freight-review"}).json()["events"]
         self.assertEqual([e["source_id"] for e in listed], [answer["answer_id"]])
         # the exclusion list not loaded: no kept Ask, so no draft card (fail closed)
-        with mock.patch.object(self.guard, "unavailable", "excluded_people_oids_absent"):
+        from operator_api.tests.test_work_log import Guard
+        with mock.patch.object(self, "guard", Guard(unavailable=True)):
             self.assertEqual(self.ops.client.post("/api/actions/preview", json={
                 "card_id": email["id"], "kind": "send_email"}).status_code, 404)
         # the model saw the question and the house style, never a record
@@ -655,7 +660,8 @@ class AgentPath(unittest.TestCase):
         for content in ("Glycerin quote", "Northline,1288.40", b64(png)[:20]):
             self.assertNotIn(content, rows)
         # the exclusion list not loaded: nothing read, nothing shown to the model
-        with mock.patch.object(self.guard, "unavailable", "excluded_people_oids_absent"):
+        from operator_api.tests.test_work_log import Guard
+        with mock.patch.object(self, "guard", Guard(unavailable=True)):
             prompts = self.general_model(self.ops, "General help only.")
             answer = self.ask(self.ops, "what is the landed total of these?", files[:2]
                               )[-1][0][1]
@@ -1094,6 +1100,56 @@ class AgentPath(unittest.TestCase):
             self.ask(self.ops, "What is the status of the late order?")
         self.assertEqual(calls, [])
         self.assertNotIn("materials walk", seen["prompt"])
+
+    def test_a_reply_whose_trail_outruns_its_time_is_given_not_lost_as_busy(self):
+        """The agent's gated reply is written; its trail, read while the answer is shaped,
+        outruns the shaping's time (one slow store statement). The reply still comes,
+        without that trail, rather than the route's busy error (the person asking again
+        ran the whole agent again, four times in the held-out eval)."""
+        lines = [tool_use(1, "plx.case_get", {"answer": {"claims": []}}),
+                 tool_result(1, decision(self.handle, "Overdue"))]
+        self.use(self.ops, lambda on_line: ScriptedSession(
+            on_line, lines, "The order status is Overdue.\n\n"
+            + answer_block(self.handle, "Overdue")))
+        reads = []
+
+        def slow_trail(*args, **kwargs):
+            reads.append(1)
+            time.sleep(2.0)     # a statement running to its own limit, then failing closed
+            return None
+        with mock.patch.object(be, "SHAPE_SECONDS", 1.0), \
+                mock.patch.object(be, "one_trail", side_effect=slow_trail), \
+                self.assertLogs("operator_api.ask", "INFO") as logged:
+            started = time.monotonic()
+            answer = self.ask_with(self.ops, {"question": "What is the status of the late order?"})
+            took = time.monotonic() - started
+        self.assertEqual(answer["outcome"], "answered")
+        self.assertIn("The order status is Overdue.", answer["direct_answer"])
+        self.assertIsNone(answer.get("trail"))
+        self.assertEqual(len(reads), 1)          # the trail is read once, never again
+        self.assertTrue(any('"left_out_slow"' in line for line in logged.output))
+        self.assertLess(took, 30)
+        # a slow shaping that then fails waits for the one without the trail, never busy
+
+        failed = threading.Event()
+        shaped = be.agent_answer
+
+        def slow_failing_trail(*args, **kwargs):
+            time.sleep(2.0)
+            failed.set()
+            raise RuntimeError("store gone")
+
+        def bare_after_the_failure(*args, **kwargs):
+            if not kwargs.get("read_trail", True):
+                failed.wait(10)   # the shaping with the trail fails first
+                time.sleep(0.3)
+            return shaped(*args, **kwargs)
+        with mock.patch.object(be, "SHAPE_SECONDS", 1.0), \
+                mock.patch.object(be, "one_trail", side_effect=slow_failing_trail), \
+                mock.patch.object(be, "agent_answer", side_effect=bare_after_the_failure):
+            answer = self.ask_with(self.ops, {"question": "What is the status of the late order?"})
+        self.assertEqual(answer["outcome"], "answered")
+        self.assertIsNone(answer.get("trail"))
 
     def test_a_failed_preread_is_logged_by_type_and_counted_and_the_agent_goes_on(self):
         """preread.resolve raising does not stop the answer; the failure is counted and

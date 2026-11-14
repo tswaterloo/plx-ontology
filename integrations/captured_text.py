@@ -67,12 +67,14 @@ import logging
 import os
 from pathlib import Path
 import re
+import sqlite3
 import subprocess
 import threading
 import zlib
 from typing import Any, Callable, Generic, Hashable, Iterable, Iterator, Mapping, TypeVar
 from urllib.parse import parse_qs, quote
 
+from . import blob_pack
 from .captured_pages import PAGE_BREAK, is_paged_file, text_pages
 from .text_formats import LABEL_SUFFIXES, label_preview
 from operating.msg_reader import CFB_MAGIC
@@ -210,7 +212,7 @@ def capture_text(content: bytes, record: Mapping[str, Any], *,
     (``document_understanding.OcrFailed``). ``defer_ocr``: no OCR run now; a PDF with
     pages lacking a text layer is ``ocr_pending`` (text layer kept) on a host with an
     engine, so a later pass OCR-reads the stored bytes (``ocr_unavailable`` without one)."""
-    from .document_understanding import (MAX_BYTES, OcrFailed, extract_document,
+    from .document_understanding import (MAX_BYTES, MAX_PAGES, OcrFailed, extract_document,
                                          local_ocr_available)
 
     if len(content) > MAX_BYTES:
@@ -260,6 +262,10 @@ def capture_text(content: bytes, record: Mapping[str, Any], *,
     if read:
         return (TEXT_OCR if found.ocr_pages else TEXT_EXTRACTED), text
     if ocr and found.status == "no_text":
+        # Page-capped OCR (``document_understanding.ocr_limits``) that read nothing on its
+        # first pages has not read the rest: unread, for a full reading later.
+        if found.skipped_pages is not None and found.skipped_pages[0] <= MAX_PAGES:
+            return OCR_PENDING, None
         return OCR_NO_TEXT, None
     return (found.status if found.status in ("no_text", "unsupported") else "failed"), None
 
@@ -326,12 +332,13 @@ class CapturedText:
     def skipped_by_cap(self) -> dict[str, Any] | None:
         """The pages past the page bound, as the extractor's evidence records them
         (``first_page``, ``last_page``, ``cap`` ``pages``, ``limit``), else None."""
-        from .document_understanding import MAX_PAGES
+        from .document_understanding import skipped_cap
 
         if self.skipped_pages is None:
             return None
+        cap, limit = skipped_cap(self.skipped_pages[0])
         return {"first_page": self.skipped_pages[0], "last_page": self.skipped_pages[1],
-                "cap": "pages", "limit": MAX_PAGES}
+                "cap": cap, "limit": limit}
 
     @property
     def text_withheld(self) -> str | None:
@@ -374,11 +381,15 @@ def read_text(content: bytes, mime_type: str, *, filename: str = "",
     if text is not None:
         pages = tuple(enumerate(text_pages(text), 1))
         skipped = None
-        if paged and len(pages) >= MAX_PAGES:
+        if paged:
+            # Pages past the pinned text's: the page bound's, or page-capped OCR's
+            # (``document_understanding.ocr_limits``), whose text holds fewer pages.
             count = pdf_page_count(content)
-            if count is None:  # whether pages were left unread cannot be told
+            if count is None and len(pages) >= MAX_PAGES:
+                # whether pages were left unread cannot be told
                 raise ValidationError("PDF page count unknown")
-            skipped = (len(pages) + 1, count) if count > len(pages) else None
+            skipped = (len(pages) + 1, count) if count is not None and count > len(pages) \
+                else None
         return CapturedText(digest, mime_type, "extracted", "captured_ocr_text", pages,
                             frozenset(page for page, _ in pages), paged,
                             sha256(text.encode("utf-8")).hexdigest(), skipped)
@@ -412,6 +423,12 @@ def blob_path(blobs: str | Path, digest: str, suffix: str = "") -> Path:
     return Path(blobs) / digest[:2] / (digest + suffix)
 
 
+def blob_form_size(blobs: str | Path, digest: str, suffix: str = "") -> int:
+    """The size of one form of a blob wherever it is held (a file, or packed:
+    ``integrations.blob_pack``, the same bytes); ``OSError`` when it is not."""
+    return blob_pack.size(blobs, digest, suffix)
+
+
 def inflate(packed: bytes) -> bytes | None:
     """The bytes of a ``.z`` form, or None when it is not one whole zlib stream within
     :data:`MAX_INFLATED_BYTES`."""
@@ -434,9 +451,9 @@ def read_blob(blobs: str | Path, digest: Any) -> bytes | None:
     try:
         content: bytes | None = blob_path(blobs, digest).read_bytes()
     except FileNotFoundError:
-        try:
-            content = inflate(blob_path(blobs, digest, COMPRESSED_SUFFIX).read_bytes())
-        except OSError:
+        try:   # loose or packed (``integrations.blob_pack``)
+            content = inflate(blob_pack.read(blobs, digest, COMPRESSED_SUFFIX))
+        except (OSError, sqlite3.Error):
             return None
     except OSError:
         return None
@@ -688,7 +705,7 @@ _CACHE: ReadingMemo[CapturedText] = ReadingMemo(MAX_CACHED_CHARS, _size)
 
 def _blob_kept(blobs: str | Path, digest: str) -> bool:
     """Some form of the blob ``digest`` (its bytes, compressed or dropped) is on disk."""
-    return any(blob_path(blobs, digest, suffix).exists()
+    return any(blob_pack.exists(blobs, digest, suffix)
                for suffix in ("", COMPRESSED_SUFFIX, DROPPED_SUFFIX))
 
 
@@ -976,7 +993,7 @@ def stored_text(blobs: str | Path, row: Mapping[str, Any]) -> StoredText:
     digest = row.get("content_sha256")
     if isinstance(digest, str) and _SHA256.fullmatch(digest) is not None \
             and not blob_path(blobs, digest).exists() \
-            and not blob_path(blobs, digest, COMPRESSED_SUFFIX).exists():
+            and not blob_pack.exists(blobs, digest, COMPRESSED_SUFFIX):
         # A dropped original: the reading it kept is the one every reader cites.
         kept = read_dropped(blobs, digest)
         key = reading_key(mime, name, ocr_digest(row))
@@ -1240,7 +1257,7 @@ def split_member(handle: Any) -> tuple[str, str, str | None] | None:
     return (head[:-1], keys["member"][0], digest) if rebuilt == handle else None
 
 
-__all__ = ["COMPRESSED_SUFFIX", "DROPPED_SUFFIX", "KeptReadings", "READING_LIBRARIES",
+__all__ = ["COMPRESSED_SUFFIX", "blob_form_size", "DROPPED_SUFFIX", "KeptReadings", "READING_LIBRARIES",
            "READING_MODULES", "REREAD_GENERATION", "REREAD_SUFFIXES", "readings_code", "blob_path", "decode_reading",
            "encode_reading", "file_type", "inflate", "read_dropped", "reading_key", "readings_of",
            "write_dropped",

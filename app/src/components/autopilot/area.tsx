@@ -3,13 +3,14 @@
 import Link from "next/link";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { BuilderView, SchedulesView } from "@/components/autopilot/builder";
+import { OptInPanel } from "@/components/autopilot/opt-in";
 import { WorkflowsView } from "@/components/autopilot/workflows";
 import { Button } from "@/components/ui/button";
 import { EmptyState } from "@/components/ui/empty-state";
 import { ErrorNotice, LoadProblem } from "@/components/ui/notice";
 import { Pending } from "@/components/ui/skeleton";
 import { StatusBadge, StatusWord } from "@/components/ui/status-badge";
-import { decideAutopilotItem, getAutopilotAudit, getAutopilotCatalog, setAutopilotGlobal, undoAutopilotAction } from "@/lib/api";
+import { ackAutopilotNotice, decideAutopilotItem, getAutopilotAudit, getAutopilotCatalog, setAutopilotGlobal, undoAutopilotAction } from "@/lib/api";
 import {
   ITEM_STATE,
   NO_FILTERS,
@@ -35,8 +36,8 @@ import type { AutopilotArea as Area, AutopilotAudit, AutopilotAuditRow, Autopilo
 // The autopilot studio: the review queue (prepared items with their evidence and drafted
 // action: accept, edit, reject, snooze, one by one or in bulk), the workflows with their
 // gate and mode, the builder, the schedules and the audit log with undo. An accept is a
-// recorded dry run until its workflow passed the fresh gate and the owner set it to Auto;
-// the server decides both. A bulk accept never performs: a live item is accepted alone,
+// recorded dry run until its workflow passed the fresh gate for you and you turned it on
+// yourself (nobody else can, the owner included); the server decides both. A bulk accept never performs: a live item is accepted alone,
 // after its own confirm.
 
 type Tab = "queue" | "workflows" | "builder" | "schedules" | "audit";
@@ -486,6 +487,45 @@ function QueueView({ area, filters, split, decided, onDecided }: { area: Area; f
   );
 }
 
+/** Owner only: each workflow that passed its check for a role, told once until the owner
+ * acknowledges it. A pass turns nothing on: each person switches it on for themselves. */
+function GateNotices({ area, onArea }: { area: Area; onArea: (a: Area) => void }) {
+  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState<string | null>(null);
+  const notices = area.gate_notices ?? [];
+  if (!area.owner || !notices.length) return null;
+  const roleName = (role: string) => {
+    const row = (area.workflows ?? []).find((w) => w.role === role);
+    return row ? rowRole(area, row) : role.startsWith("person:") ? "one person" : roleLabel(role);
+  };
+  const ack = async (role: string, workflow: string) => {
+    setError(null);
+    setBusy(`${role}|${workflow}`);
+    try {
+      onArea(await ackAutopilotNotice(role, workflow));
+    } catch (e) {
+      setError(plainError(e));
+    } finally {
+      setBusy(null);
+    }
+  };
+  return (
+    <section className="border-l-2 border-accent pl-3 text-[13px]" aria-label="Passed their check" data-testid="autopilot-gate-notices">
+      {notices.map((n) => (
+        <div key={`${n.role}|${n.workflow}`} className="flex flex-wrap items-center gap-x-3 gap-y-1 py-1">
+          <span>
+            {workflowLabel(n.workflow)} passed its check for {roleName(n.role)} on {formatDateTime(n.passed_at)}. It runs for nobody until each person turns it on for themselves.
+          </span>
+          <Button size="sm" variant="outline" disabled={busy !== null} onClick={() => void ack(n.role, n.workflow)}>
+            Got it
+          </Button>
+        </div>
+      ))}
+      {error && <ErrorNotice message={error} />}
+    </section>
+  );
+}
+
 function AuditView({ area, filters }: { area: Area; filters: Filters }) {
   const roleName = (role?: string | null) => {
     if (!role) return null;
@@ -543,7 +583,7 @@ function AuditView({ area, filters }: { area: Area; filters: Filters }) {
                 {r.title ? ` · ${r.title}` : r.why ? ` · ${r.why}` : ""}
               </p>
               <p className="break-words text-[12px] text-muted">
-                {[formatDateTime(r.at), roleName(r.role), r.system ? systemLabel(r.system) : null, r.workflow ? workflowLabel(r.workflow) : null, r.operation?.replace(/_/g, " "), r.reasons?.length ? r.reasons.join(", ").replace(/_/g, " ") : null]
+                {[formatDateTime(r.at), r.event.startsWith("opt_in") && r.by && r.by !== "autopilot" ? personName(area, r.by) : null, roleName(r.role), r.system ? systemLabel(r.system) : null, r.workflow ? workflowLabel(r.workflow) : null, r.operation?.replace(/_/g, " "), r.reasons?.length ? r.reasons.join(", ").replace(/_/g, " ") : null]
                   .filter(Boolean)
                   .join(" · ")}
               </p>
@@ -579,6 +619,9 @@ function auditWhat(r: AutopilotAuditRow): string {
   if (r.event === "gate_passed") return "Gate passed";
   if (r.event === "gate_lost") return "Gate lost: back to dry run";
   if (r.event === "owner_notified") return "Owner told of the pass";
+  if (r.event === "opt_in") return r.status === "on" ? "Turned on by the person" : "Turned off by the person";
+  if (r.event === "opt_in_paused") return r.status === "paused" ? "Paused everything" : "Resumed";
+  if (r.event === "opt_in_suspended") return "Turned off by itself: under the bar";
   if (r.event === "reconciled") return `Checked by a person: ${r.status}`;
   const s = (r.status ?? "").replace(/_/g, " ");
   if (r.mode === "live") return r.event === "attempt" ? "Live attempt" : `Live: ${s}`;
@@ -636,7 +679,7 @@ export function AutopilotView({ area: initial, onReload }: { area: Area; onReloa
   const now = Date.now();
   const overdue = open.filter((i) => new Date(i.due_at).getTime() < now).length;
   const live = (area.workflows ?? []).filter((w) => w.state === "live" || w.state === "live_held").length;
-  const passed = (area.workflows ?? []).filter((w) => w.state === "passed_awaiting_owner").length;
+  const yours = (area.my_opt_ins ?? []).filter((o) => o.eligible && !o.on).length;
   const shownWorkflows = new Set(filterWorkflows(area, filters).map((w) => w.workflow));
   return (
     <div className="space-y-4" data-testid="autopilot">
@@ -650,13 +693,13 @@ export function AutopilotView({ area: initial, onReload }: { area: Area; onReloa
             ["Waiting on a decision", open.length, ""],
             ["Overdue", overdue, overdue ? "text-late" : ""],
             ["Workflows", (area.workflows ?? []).length, ""],
-            ["Passed, awaiting you", passed, passed ? "text-accent" : ""],
-            ["Auto", live, ""],
+            ["Yours to turn on", yours, yours ? "text-accent" : ""],
+            ["On", live, ""],
           ] as const
         ).map(([k, v, tone]) =>
-          // the workflows that passed are waiting on the owner's switch: the figure opens them
-          k === "Passed, awaiting you" && v > 0 ? (
-            <button key={k} type="button" className="cursor-pointer text-left" onClick={() => setTab("workflows")} title="Open the workflows" data-testid="autopilot-passed">
+          // workflows that passed for you and are off: the figure takes you to your switches
+          k === "Yours to turn on" && v > 0 ? (
+            <button key={k} type="button" className="cursor-pointer text-left" onClick={() => document.getElementById("ap-yours")?.scrollIntoView({ block: "start" })} title="Go to your switches" data-testid="autopilot-passed">
               <p className="text-[12px] text-muted">{k}</p>
               <p className={cn("num text-[19px] leading-6 hover:underline", tone)}>{v}</p>
             </button>
@@ -670,7 +713,7 @@ export function AutopilotView({ area: initial, onReload }: { area: Area; onReloa
         {area.owner && (
           <div className="ml-auto flex flex-wrap items-center gap-2 text-[12px]">
             <span className="text-muted">
-              {area.switches.global_off ? "All writes stopped." : "Writes run only for workflows set to Auto."} {area.switches.master_switch ? "The host's live switch is on." : "The host's live switch is off: nothing goes live."}
+              {area.switches.global_off ? "All writes stopped." : "Writes run only for people who turned a workflow on themselves."} {area.switches.master_switch ? "The host's live switch is on." : "The host's live switch is off: nothing goes live."}
             </span>
             {area.switches.global_off ? (
               <Button size="sm" variant="outline" onClick={() => void kill(false)}>
@@ -694,8 +737,10 @@ export function AutopilotView({ area: initial, onReload }: { area: Area; onReloa
           </div>
         )}
       </div>
+      <GateNotices area={area} onArea={(a) => setArea(a)} />
+      <OptInPanel area={area} onArea={(a) => setArea(a)} />
       <div className="flex flex-wrap items-center gap-x-6 gap-y-2">
-        <nav className="flex h-9 max-w-full items-stretch gap-3 sm:gap-4 overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden" role="tablist" aria-label="Autopilot">
+        <nav className="flex h-9 max-sm:h-10 max-w-full items-stretch gap-3 sm:gap-4 overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden" role="tablist" aria-label="Autopilot">
           {tabs.map(([t, label], i) => (
             <button
               key={t}

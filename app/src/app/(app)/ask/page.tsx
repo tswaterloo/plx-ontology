@@ -29,12 +29,14 @@ function SectionTitle({ children }: { children: React.ReactNode }) {
 const CAPTURE_WORDS: Record<string, string> = { failed: "last read failed", never_captured: "never read", partial: "partly read" };
 
 /** What Ask reads from, and how current each system is: an answer is only as fresh as these. */
-function Reads({ freshness }: { freshness: Freshness | null }) {
+function Reads({ freshness, failed = false }: { freshness: Freshness | null; failed?: boolean }) {
   const rows = freshness?.sources ?? [];
   return (
     <section aria-label="What Ask reads" data-testid="ask-reads">
       <SectionTitle>What it reads now</SectionTitle>
-      {freshness === null ? (
+      {failed ? (
+        <p className="text-[13px] text-muted">Couldn&apos;t read how current each system is just now; answers still say when their data is from.</p>
+      ) : freshness === null ? (
         <div className="skeleton h-3.5 w-40" />
       ) : rows.length === 0 ? (
         <p className="text-[13px] text-muted">No source has been read yet.</p>
@@ -66,20 +68,23 @@ function StartingPoints({ onAsk }: { onAsk: (q: string, objectId?: string) => vo
   const [late, setLate] = useState<LatePo[] | null>(null);
   const [examples, setExamples] = useState<string[]>(VERIFIED_EXAMPLES);
   const [freshness, setFreshness] = useState<Freshness | null>(null);
+  // a failed read is said as one, never shown as "no late POs" or "nothing read"
+  const [lateFailed, setLateFailed] = useState(false);
+  const [readsFailed, setReadsFailed] = useState(false);
   const saved = useSaved().filter((s) => s.kind === "question");
 
   useEffect(() => {
     let live = true;
     loadLate()
       .then((all) => live && setLate([...all].sort((a, b) => (b.days_late ?? 0) - (a.days_late ?? 0)).slice(0, 6)))
-      .catch(() => live && setLate([]));
+      .catch(() => live && setLateFailed(true));
     loadHome()
       .then((h) => {
         if (!live) return;
         if (h.examples?.length) setExamples(h.examples.slice(0, 6));
         setFreshness(h.freshness ?? { sources: [] });
       })
-      .catch(() => live && setFreshness({ sources: [] }));
+      .catch(() => live && setReadsFailed(true));
     return () => {
       live = false;
     };
@@ -93,7 +98,9 @@ function StartingPoints({ onAsk }: { onAsk: (q: string, objectId?: string) => vo
     <div className="grid grid-cols-1 gap-x-10 gap-y-8 md:grid-cols-2 xl:grid-cols-3">
       <section className="min-w-0" aria-label="Late orders to ask about">
         <SectionTitle>Late orders</SectionTitle>
-        {late === null ? (
+        {lateFailed ? (
+          <p className="px-2 text-[13px] text-muted">The late list didn&apos;t load just now. Ask about any PO by its number.</p>
+        ) : late === null ? (
           <div className="space-y-2 pt-1">
             {[0, 1, 2, 3].map((i) => (
               <div key={i} className="flex items-center gap-3 px-2">
@@ -163,7 +170,7 @@ function StartingPoints({ onAsk }: { onAsk: (q: string, objectId?: string) => vo
           </section>
         )}
       </div>
-      <Reads freshness={freshness} />
+      <Reads freshness={freshness} failed={readsFailed} />
     </div>
   );
 }
@@ -256,7 +263,9 @@ function Ask() {
           )
         }
       />
-      <div ref={scroller} className="min-h-0 flex-1 overflow-y-auto">
+      {/* relative: the thread's screen-reader lines (absolute) belong to this scroller, so they
+          never stretch the page under it and make it scroll as a whole on a phone */}
+      <div ref={scroller} className="relative min-h-0 flex-1 overflow-y-auto">
         {empty ? (
           <div className={cn(FRAME, "flex min-h-full max-w-[920px] flex-col justify-center pt-6 pb-[max(48px,8vh)]")}>
             <h1 className="sr-only">Ask</h1>

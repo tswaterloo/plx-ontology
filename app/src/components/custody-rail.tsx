@@ -170,7 +170,12 @@ function Chart({
   for (let d = custody.min; d <= custody.max; d++) {
     const date = new Date(d * 86_400_000);
     // no month label inside a stretch drawn short (its length is printed there instead)
-    if (date.getUTCDate() === 1 && !breaks.some((b) => Math.abs(GUTTER + b.at - x(d)) < 26)) ticks.push({ x: x(d), label: date.toLocaleDateString("en-GB", { month: "short", timeZone: "UTC" }).replace("Sept", "Sep") + (date.getUTCMonth() === 0 ? ` ${date.getUTCFullYear()}` : "") });
+    if (date.getUTCDate() !== 1 || breaks.some((b) => Math.abs(GUTTER + b.at - x(d)) < 26)) continue;
+    const label = date.toLocaleDateString("en-GB", { month: "short", timeZone: "UTC" }).replace("Sept", "Sep") + (date.getUTCMonth() === 0 ? ` ${date.getUTCFullYear()}` : "");
+    // months squeezed together by a short stretch would print over each other ("Jan 2026Feb"): the later one is left out
+    const last = ticks[ticks.length - 1];
+    if (last && x(d) - last.x < last.label.length * 6.5 + 8) continue;
+    ticks.push({ x: x(d), label });
   }
 
   function onKeyDown(ev: React.KeyboardEvent) {

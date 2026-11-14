@@ -141,6 +141,23 @@ class OrderLinks(unittest.TestCase):
         self.assertNotIn("Shipments and invoices of this order",
                          [n.what for n in got.not_found])
 
+    def test_a_raw_table_is_named_by_its_declared_business_label(self):
+        raw = "RelSageArIbh:gen.sage.ar_ibh:x1"
+        got = self.model([*full_hops(), hop("RelSageArIbh.customer", "reverse",
+                                            [obj(raw, "RelSageArIbh", "IN1000180707")])])
+        groups = {g.link_type: g for g in got.links}
+        self.assertEqual(groups["RelSageArIbh.customer"].type_label, "AR invoice entry")
+        self.assertIsNone(groups["SalesInvoice.bills"].type_label)   # curated: the app names it
+        self.assertIsNone(got.type_label)
+        # a raw record's own page: its business name, never the type code as its summary
+        own = be._page_model(Backend(), View(()), {
+            "object_id": raw, "card": {"object": {"object_type": "RelSageArIbh",
+                                                  "display": "IN1000180707"}, "values": []},
+            "answers": {}, "timeline": {"events": []}, "documents": {"result": {}},
+            "around": {"hops": [], "truncated": False}})
+        self.assertEqual((own.type_label, own.summary), ("AR invoice entry", "AR invoice entry"))
+        self.assertNotIn("RelSage", own.summary)
+
     def test_evidence_is_mail_first_without_the_page_own_row(self):
         got = self.model(full_hops())
         invoice = next(g for g in got.links if g.link_type == "SalesInvoice.bills").records[0]

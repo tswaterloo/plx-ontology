@@ -120,8 +120,8 @@ LINK_TYPES = (RECEIVED_LOT, LOT_RECEIPT, LINE_RECEIPT, RECEIPT_PO, LINE_PO_LINE,
 # A walk that stops: reason -> (link types that would carry it, the source that would).
 BREAKS: dict[str, tuple[tuple[str, ...], str]] = {
     "receipt_not_recorded": (
-        (RECEIVED_LOT, LOT_RECEIPT), "the receipt line carrying the lot (FileMaker raw "
-        "material or packaging receipt, Portal app_receipt_line)"),
+        (RECEIVED_LOT, LOT_RECEIPT), "the receipt line carrying the lot (a FileMaker raw "
+        "material or packaging receipt, or a Portal receipt line)"),
     "purchase_order_not_linked": (
         (RECEIPT_PO, LINE_PO_LINE, PO_LINE), "the purchase order on the receipt or the PO "
         "line on the receipt line"),
@@ -129,26 +129,25 @@ BREAKS: dict[str, tuple[tuple[str, ...], str]] = {
         (PO_SUPPLIER, RECEIPT_SUPPLIER), "the supplier on the purchase order or receipt"),
     "lot_consumption_not_recorded": (
         (CONSUMED,), "which assembly-order component consumed the lot: no source the "
-        "Workbench reads records it (Portal app_manufacturing_order_line.lot_id is not "
-        "served, upstream ask Q3); a review accepting a lot-number match records it"),
+        "Workbench reads records it yet (the Portal does not share the lot on its "
+        "manufacturing order lines); a review accepting a lot-number match records it"),
     "lot_consumption_lead_only": (
         (), "a firm record of the consumption (only lot-number matches were found: "
         "candidates, see the candidate entries)"),
     "batch_not_linked_to_order": (
         (FILLS_FROM, BATCH_ALLOCATES, BATCH_ORDER), "the assembly orders filled from the "
-        "batch (FileMaker assembly order idbatch), its FileMaker order-entry batch "
-        "allocations, or the one order its OE list names (Batch.for_sales_order, served "
-        "after the build)"),
+        "batch (the batch named on a FileMaker assembly order), its FileMaker order-entry "
+        "batch allocations, or the one order its order-entry list names"),
     "component_without_assembly_order": (
-        (COMPONENT_OF,), "the assembly order id on the FileMaker component row"),
+        (COMPONENT_OF,), "the assembly order named on the FileMaker component"),
     "assembly_order_not_linked_to_order_line": (
         (AO_LINE, ALLOCATES, ALLOCATION_LINE, AO_TWIN), "the Portal manufacturing order's "
-        "sales order line or FileMaker order-entry assembly allocations"),
+        "customer order line or the FileMaker order-entry assembly allocation"),
     "allocation_without_order_line": (
-        (ALLOCATION_LINE, BATCH_ALLOCATION_LINE), "the order-entry line id on the FileMaker "
-        "assembly or batch allocation"),
+        (ALLOCATION_LINE, BATCH_ALLOCATION_LINE), "the order-entry line named on the "
+        "FileMaker assembly or batch allocation"),
     "order_line_not_linked_to_order": (
-        (ORDER_LINE,), "the order id on the sales order line row"),
+        (ORDER_LINE,), "the order named on the customer order line"),
     "customer_not_linked": (
         (ORDERED_BY, SHIPPED_TO), "the customer on the order (or a copy of it) or on its "
         "shipments"),
@@ -157,10 +156,9 @@ BREAKS: dict[str, tuple[tuple[str, ...], str]] = {
     # Never ``absent_in_source``: only the order and its copies within two same_record_as
     # links are read, so no shipment found there does not prove none is recorded.
     "shipment_not_found": (
-        (), "a shipment (Portal app_shipment, Sage OE shipment header, BC sales shipment) "
-        "linked to the order or to a copy of it within two same_record_as links, directly "
-        "or by a Sage shipment line or invoice line of the order (those two served after "
-        "the build); none was found on the records read, and copies further away are not "
+        (), "a shipment (Portal, Sage or Business Central) linked to the order or to a "
+        "copy of it in another system, directly or by a Sage shipment or invoice line of "
+        "the order; none was found on the records read, and copies further away are not "
         "read"),
 }
 STAGE = {reason: ("supply" if reason in ("receipt_not_recorded", "purchase_order_not_linked",

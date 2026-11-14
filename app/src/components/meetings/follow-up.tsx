@@ -12,6 +12,7 @@ import { LoadProblem, StaleNote } from "@/components/ui/notice";
 import { getMeetingFollowUp, getMyActionItems } from "@/lib/api";
 import { ApiError, noticeKind, plainError } from "@/lib/errors";
 import { cn } from "@/lib/cn";
+import { formatDate } from "@/lib/format";
 import type { ActionResult, CardActionOffer } from "@/lib/types";
 
 export interface Person { name?: string | null; address?: string | null }
@@ -38,7 +39,7 @@ const STATUS: Record<Action["status"], string> = { open: "Open", overdue: "Overd
 
 export function statusText(a: Action): string {
   if (a.status === "done") return `Done: ${a.evidence?.[0]?.what ?? "marked done"}`;
-  return a.due ? `${STATUS[a.status]}, due ${a.due}` : STATUS[a.status];
+  return a.due ? `${STATUS[a.status]}, due ${formatDate(a.due.slice(0, 10))}` : STATUS[a.status];
 }
 
 function Cite({ item }: { item: Item }) {
@@ -94,7 +95,7 @@ export function PreparedWork({ work }: { work: Prepared }) {
     );
   }
   if (work.kind === "planner_task" && work.task) {
-    return <p className="text-[12px]" data-testid="prepared-planner">Proposed Planner task: {work.task.title}{work.task.due ? `, due ${work.task.due}` : ""} (not created: Planner writes wait for approval).</p>;
+    return <p className="text-[12px]" data-testid="prepared-planner">Proposed Planner task: {work.task.title}{work.task.due ? `, due ${formatDate(work.task.due.slice(0, 10))}` : ""} (not created: Planner writes wait for approval).</p>;
   }
   return null;
 }
@@ -201,7 +202,7 @@ function ActionRow({ a, today }: { a: Action; today: Date }) {
   const late = a.status !== "done" && (a.status === "overdue" || (n != null && n < 0));
   return (
     <li className={cn("border-b border-border text-[13px]", a.status === "done" && "text-muted")} data-testid="action-item">
-      <div className="grid cursor-pointer grid-cols-[18px_minmax(0,1fr)_150px_120px_170px] items-baseline gap-x-4 py-2 hover:bg-hover" onClick={() => setOpen((o) => !o)}>
+      <div className="grid cursor-pointer grid-cols-[18px_minmax(0,1fr)_88px] md:grid-cols-[18px_minmax(0,1fr)_150px_120px_170px] items-baseline gap-x-4 py-2 hover:bg-hover" onClick={() => setOpen((o) => !o)}>
         <span aria-hidden className={cn("mt-1 size-3 rounded-full border-[1.5px]", a.status === "done" ? "border-ok bg-ok" : late ? "border-late" : "border-border-strong")} />
         <span className="min-w-0">
           {/* the real control: a click or Enter here reaches the row's toggle below */}
@@ -212,18 +213,23 @@ function ActionRow({ a, today }: { a: Action; today: Date }) {
             {a.meeting_id && (
               <Link className="hover:underline" href={`/meetings/${encodeURIComponent(a.meeting_id)}`} onClick={(e) => e.stopPropagation()}>
                 {a.meeting}
-                {a.meeting_start && <span className="num"> · {a.meeting_start.slice(5, 10).replace("-", "/")}</span>}
+                {a.meeting_start && <span> · {formatDate(a.meeting_start, { short: true })}</span>}
               </Link>
             )}
             <Records records={a.records} />
           </span>
+          {/* a phone has no room for the owner and prepared columns: they read under the item */}
+          <span className="mt-0.5 flex flex-wrap gap-x-3 text-[12px] text-muted md:hidden" data-testid="action-item-compact">
+            <span>{a.owner?.name ?? "No owner"}</span>
+            {a.status !== "done" && a.prepared && <span className="text-accent">{PREPARED[a.prepared.kind]}</span>}
+          </span>
         </span>
-        <span className="truncate">{a.owner?.name ?? <span className="text-faint">No owner</span>}</span>
+        <span className="truncate max-md:hidden">{a.owner?.name ?? <span className="text-faint">No owner</span>}</span>
         <span className={cn("num text-[12px]", late ? "text-late" : "text-muted")}>
           {a.status === "done" ? "done" : dueText(n)}
-          {a.due && <span className="block text-faint">{a.due.slice(0, 10)}</span>}
+          {a.due && <span className="block text-faint">{formatDate(a.due.slice(0, 10), { short: true })}</span>}
         </span>
-        <span className="text-[12px] text-muted">
+        <span className="text-[12px] text-muted max-md:hidden">
           {a.status === "done" ? (a.evidence?.[0]?.what ?? "marked done") : a.prepared ? <span className="text-accent">{PREPARED[a.prepared.kind]}</span> : "Nothing prepared"}
         </span>
       </div>
@@ -283,12 +289,12 @@ export function MyActionItemsView({ items, person, today = new Date() }: { items
       ) : (
         <div className="grid gap-8 xl:grid-cols-[minmax(0,1fr)_260px]">
           <div className="min-w-0 space-y-5">
-            <div className="grid grid-cols-[18px_minmax(0,1fr)_150px_120px_170px] gap-x-4 border-b border-border pb-1 text-[11px] font-medium tracking-[0.02em] text-faint uppercase">
+            <div className="grid grid-cols-[18px_minmax(0,1fr)_88px] md:grid-cols-[18px_minmax(0,1fr)_150px_120px_170px] gap-x-4 border-b border-border pb-1 text-[11px] font-medium tracking-[0.02em] text-faint uppercase">
               <span />
               <span>Action item · meeting · records</span>
-              <span>Owner</span>
+              <span className="max-md:hidden">Owner</span>
               <span>Due</span>
-              <span>Prepared</span>
+              <span className="max-md:hidden">Prepared</span>
             </div>
             {groups.map((g) => (
               <section key={g.key} aria-label={g.title}>
@@ -358,6 +364,15 @@ function useLoad<T>(load: (signal: AbortSignal) => Promise<T>, key: string) {
 /** The follow-up of one meeting, loaded as the signed-in reader. */
 export function MeetingFollowUpPanel({ meetingId }: { meetingId: string }) {
   const { data, error, retry } = useLoad((s) => getMeetingFollowUp(meetingId, s), meetingId);
+  if (error instanceof ApiError && error.status === 404)
+    return (
+      <div className="text-[13px]" data-testid="follow-up-missing">
+        <p className="text-muted">No follow-up here: this meeting isn't one you attended, or it wasn't recorded.</p>
+        <Link href="/meetings?view=follow-ups" className="mt-2 inline-block font-medium text-accent hover:underline">
+          Your meeting follow-ups
+        </Link>
+      </div>
+    );
   if (error) return <LoadProblem message={plainError(error)} busy={noticeKind(error) === "busy"} onRetry={retry} />;
   if (!data) return <Pending label="Reading the meeting's follow-up" />;
   return <MeetingFollowUpView followUp={data.follow_up as unknown as FollowUp} />;

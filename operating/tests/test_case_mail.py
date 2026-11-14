@@ -188,7 +188,9 @@ class CaseMailTestCase(unittest.TestCase):
             "name": "PI-SWC024613.pdf", "contentType": "application/pdf",
             "size": len(self.pdf) + 300, "isInline": False,
             "contentBytes": base64.b64encode(self.pdf).decode()})
-        self.sender = FakeSender(routes, directory=DIRECTORY)
+        # A tenant with no distribution lists (a complete, empty groups listing): the
+        # internal address copied on the confirmation is decided as no list's.
+        self.sender = FakeSender(routes, directory=DIRECTORY, groups=[])
         self.capture()
 
     def live(self, audiences=None):

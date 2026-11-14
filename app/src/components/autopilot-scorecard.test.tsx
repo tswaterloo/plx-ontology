@@ -6,7 +6,7 @@ vi.mock("@/lib/api", async (orig) => ({ ...(await orig<typeof import("@/lib/api"
 
 const ME = "33333333-3333-4333-8333-333333333333";
 const gateRow = (workflow: string, countdown: unknown, person = ME) => ({
-  role: "person:ana@plx.example", person, workflow, dev: null, fresh: null, n: 0, state: "dry_run", on: true, live_flag: false,
+  role: "person:ana@plx.example", person, workflow, dev: null, fresh: null, n: 0, state: "dry_run", on: true, switched_on: 0,
   missing: [], last_run: null, scored_at: null, open_items: 0, draft: true, countdown,
 });
 

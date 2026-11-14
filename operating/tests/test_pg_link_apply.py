@@ -39,6 +39,19 @@ def _both(document):
     _covers_tier(document)
 
 
+def _rederived(layer, dsn, kind="Receipt.for_order"):
+    """The ids of ``kind`` the layer derives that no served row holds (sorted)."""
+    import sqlite3
+    import psycopg
+    with sqlite3.connect(f"file:{layer}?mode=ro", uri=True) as conn:
+        ids = [r[0] for r in conn.execute(
+            "SELECT link_id FROM links WHERE link_type = ? ORDER BY link_id", (kind,))]
+    with psycopg.connect(dsn) as pg:
+        served = {r[0] for r in pg.execute(
+            "SELECT link_id FROM ontology.link_rows WHERE link_id = ANY(%s)", (ids,))}
+    return [i for i in ids if i not in served]
+
+
 class LinkOnlyApplyTests(unittest.TestCase):
 
     def setUp(self):
@@ -126,13 +139,18 @@ class LinkOnlyApplyTests(unittest.TestCase):
         ontology_load.load(base, dsn, workers=1, replace=True, log=io.StringIO())
         plan = link_apply.plan(case.old, new)
         layer = self._layer(plan, new)
+        held = _rederived(layer, dsn)[:2]
+        self.assertEqual(len(held), 2)
         with psycopg.connect(dsn) as pg:
-            held = [r[0] for r in pg.execute(
+            # two served rows of the kind become history rows holding two of the ids the
+            # layer derives again (a link id names its whole link and its start since
+            # ga-f1f2, so a capped tier derives new ids: the history is planted on them)
+            served = [r[0] for r in pg.execute(
                 "SELECT link_id FROM ontology.link_rows WHERE link_type = 'Receipt.for_order' "
                 "AND superseded_at IS NULL ORDER BY link_id LIMIT 2")]
-            self.assertEqual(len(held), 2)
-            pg.execute("UPDATE ontology.link_rows SET superseded_at = '2026-11-06T00:00:00Z' "
-                       "WHERE link_id = ANY(%s)", (held,))
+            for old, lid in zip(served, held):
+                pg.execute("UPDATE ontology.link_rows SET link_id = %s, superseded_at = "
+                           "'2026-11-06T00:00:00Z' WHERE link_id = %s", (lid, old))
         before = logical_rows(dsn=dsn)
         staged = link_apply.stage(dsn, layer)["kinds"]["Receipt.for_order"]
         self.assertEqual(staged["superseded_replaced"], 2)
@@ -164,12 +182,14 @@ class LinkOnlyApplyTests(unittest.TestCase):
         ontology_load.load(base, dsn, workers=1, replace=True, log=io.StringIO())
         plan = link_apply.plan(case.old, new)
         layer = self._layer(plan, new)
+        lid = _rederived(layer, dsn)[0]
         with psycopg.connect(dsn) as pg:
-            lid = pg.execute("SELECT link_id FROM ontology.link_rows WHERE link_type = "
+            # a current row of another kind holds an id the layer derives
+            old = pg.execute("SELECT link_id FROM ontology.link_rows WHERE link_type = "
                              "'Receipt.for_order' AND superseded_at IS NULL ORDER BY link_id "
                              "LIMIT 1").fetchone()[0]
-            pg.execute("UPDATE ontology.link_rows SET link_type = 'Receipt.other_kind' "
-                       "WHERE link_id = %s", (lid,))
+            pg.execute("UPDATE ontology.link_rows SET link_type = 'Receipt.other_kind', "
+                       "link_id = %s WHERE link_id = %s", (lid, old))
         with self.assertRaisesRegex(link_apply.Refused, "link_id_held_by_another_row"):
             link_apply.stage(dsn, layer)
 

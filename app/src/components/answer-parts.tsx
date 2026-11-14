@@ -433,7 +433,7 @@ export function searchLag(freshness: Freshness | null | undefined, now?: Date): 
 }
 
 /**
- * One grey line: "Data as of 1 Nov, 6:40 p.m." (the data cut-off, the same on every
+ * One grey line: "Data as of 1 Nov, 6:40 PM ET" (the data cut-off, the same on every
  * screen), then any source read over a day before it ("Email and Teams to 30 Oct").
  * Per-system times are in its tooltip. Amber appears only when a source this view
  * relied on (`used`) is over a week old.
@@ -515,7 +515,7 @@ export function CheckedList({ freshness, facts, now }: { freshness: Freshness | 
   return (
     <dl className="space-y-1" data-testid="checked-list">
       {rows.map((r) => (
-        <div key={r.system} className="grid h-7 grid-cols-[40px_minmax(0,1fr)_auto] items-center gap-x-2 text-[13px]">
+        <div key={r.system} className="grid h-7 grid-cols-[54px_minmax(0,1fr)_auto] items-center gap-x-2 text-[13px]">
           <SystemCode system={r.code} size={18} />
           <div className="flex min-w-0 items-baseline gap-2">
             <dt className="truncate">{r.system}</dt>

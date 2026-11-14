@@ -24,6 +24,8 @@ EnvironmentFile=-/etc/plx/workbench-api.env
 # optionally PLX_OPS_IGNORE_UNITS, PLX_OPS_PG_DSN
 EnvironmentFile=-/etc/plx/ops-page.env
 Environment=PATH=/data/venv/bin:/usr/local/bin:/usr/bin:/bin
+# names its Postgres sessions after the unit (ARCH T2: pg_stat_activity, slow-query log)
+Environment=PGAPPNAME=%N
 ExecStart=/data/venv/bin/python3 -m operating.ops_alarms run --state-dir ${PLX_INGEST_STATE}
 Nice=10
 CPUWeight=20

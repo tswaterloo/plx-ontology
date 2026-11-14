@@ -17,6 +17,7 @@ SYSTEMS = {"mail": "Email", "attachment": "Email", "teams": "Teams", "sharepoint
 CACHE_SECONDS = 600.0
 _LOCK = threading.Lock()
 _CACHE: dict[str, tuple[float, dict[str, str]]] = {}
+_READING: dict[str, threading.Lock] = {}
 
 
 def coverage(dsn: str | None = None) -> dict[str, str]:
@@ -27,12 +28,19 @@ def coverage(dsn: str | None = None) -> dict[str, str]:
         held = _CACHE.get(target)
         if held is not None and now - held[0] < CACHE_SECONDS:
             return dict(held[1])
-    try:
-        out = _read(target)
-    except Exception:  # noqa: BLE001 - an unreadable index claims nothing
-        out = {}
     with _LOCK:
-        _CACHE[target] = (now, out)
+        reading = _READING.setdefault(target, threading.Lock())
+    with reading:   # one read per database at a time: the pages asking at once share it
+        with _LOCK:
+            held = _CACHE.get(target)
+            if held is not None and time.monotonic() - held[0] < CACHE_SECONDS:
+                return dict(held[1])
+        try:
+            out = _read(target)
+        except Exception:  # noqa: BLE001 - an unreadable index claims nothing
+            out = {}
+        with _LOCK:
+            _CACHE[target] = (time.monotonic(), out)
     return dict(out)
 
 

@@ -251,8 +251,10 @@ def served_peg_links(cur: Any, start: str, end: str) -> dict[str, dict[str, Any]
     """The served links of the id range ``[start, end)``, every column (``ontology.links``
     unpacks the packed texts)."""
     from ontology import store_ddl
+    from ontology.pg_byte_order import key_collate
+    c = key_collate(cur)   # byte order by the plain key index where the database's is
     cur.execute(f"SELECT {', '.join(store_ddl.LINK_COLUMNS)} FROM ontology.links WHERE "
-                "link_id COLLATE \"C\" >= %s AND link_id COLLATE \"C\" < %s", (start, end))
+                f"link_id{c} >= %s AND link_id{c} < %s", (start, end))
     names = [d.name for d in cur.description]
     return {row[0]: dict(zip(names, row)) for row in cur.fetchall()}
 

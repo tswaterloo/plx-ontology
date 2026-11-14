@@ -7,8 +7,8 @@
 #
 # Prepares only. Nothing here sends, writes to a business system or approves: a draft goes
 # out only through the app's card desk after its owner's confirm, and a write intent only
-# through operating.autopilot_write (not run by this unit), dry run until the owner's flag
-# and the master switch PLX_AUTOPILOT_WRITES are on. Off at once: PLX_AUTOPILOT_OFF=1 in
+# through operating.autopilot_write (not run by this unit), dry run until the item's person
+# turned the workflow on for themselves and the master switch PLX_AUTOPILOT_WRITES is on. Off at once: PLX_AUTOPILOT_OFF=1 in
 # proactive.env, or a file named autopilot.off beside the queue.
 #
 # PLX_AUTOPILOT_EVQ=1: the cycle's events are handed out through the ordered event queue
@@ -29,6 +29,8 @@ Group=@PLX_GROUP@
 WorkingDirectory=@PLX_CURRENT@
 EnvironmentFile=-@PLX_HOME@/.config/plx/proactive.env
 Environment=PATH=/data/venv/bin:/usr/local/bin:/usr/bin:/bin
+# names its Postgres sessions after the unit (ARCH T2: pg_stat_activity, slow-query log)
+Environment=PGAPPNAME=%N
 Environment=PLX_ONTOLOGY_PG=1
 Environment=PLX_AUTOPILOT_EVQ=1
 ExecStart=/data/venv/bin/python3 -m operating.autopilot follow --state-dir /data/plx-state

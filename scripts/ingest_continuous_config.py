@@ -25,10 +25,12 @@ from pathlib import Path
 import sys
 
 # Seconds between the end of one run of a source and the start of its next. Mail and
-# SharePoint run back to back (each run resumes from its cursors); Teams re-reads every
-# conversation's members each run (a run is about 400 s), so its member lists are never
-# older than about 40 minutes; the rest follow their upstream's pace.
-CADENCE = {"mail": 60, "sharepoint": 60, "teams": 1800, "bc": 1800, "portal": 7200,
+# SharePoint run back to back (each run resumes from its cursors); Teams 2 minutes after its
+# last run (a run, census included, was 285-360 s and 2,300 requests on 2026-11-13: a chat
+# message reaches the autopilot's fast feed about 4 min after it is sent at the median,
+# against 57 min at 30 min plus the build hold), its member lists re-read each run; the
+# rest follow their upstream's pace.
+CADENCE = {"mail": 60, "sharepoint": 60, "teams": 120, "bc": 1800, "portal": 7200,
            "mc": 3600, "sharepoint_lists": 3600, "meetings": 1800}
 
 

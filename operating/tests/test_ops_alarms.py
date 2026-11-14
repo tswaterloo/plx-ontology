@@ -345,6 +345,8 @@ class AlarmPassTest(unittest.TestCase):
         system = healthy_units()[:3] + [
             unit("plx-caddy.service", UnitFileState="enabled", Type="simple",
                  StateChangeTimestamp=f"@{STAMP - 5 * 3600}"),
+            unit("plx-web.service", UnitFileState="enabled", Type="simple",
+                 StateChangeTimestamp=f"@{STAMP - 120}"),
             unit("plx-api.service", "active", "running", UnitFileState="enabled",
                  Type="simple"),
             unit("plx-suite.service", UnitFileState="enabled", Type="oneshot"),
@@ -355,9 +357,13 @@ class AlarmPassTest(unittest.TestCase):
                  StateChangeTimestamp=f"@{STAMP - 3 * 3600}")]
         status = self.run_at(Fake(system=system))
         lines = {i["key"]: i["line"] for i in status["open"]}
-        self.assertEqual(set(lines), {"unit:plx-caddy.service", "unit:plx-delta.service"})
+        self.assertEqual(set(lines), {"unit:plx-caddy.service", "unit:plx-web.service",
+                                      "unit:plx-delta.service"})
         self.assertIn("enabled but not running for 5 h (it exited cleanly",
                       lines["unit:plx-caddy.service"])
+        # minutes, not "for 0 h"
+        self.assertIn("enabled but not running for under an hour (it exited cleanly",
+                      lines["unit:plx-web.service"])
         self.assertIn("still starting after 3 h", lines["unit:plx-delta.service"])
 
     def test_the_capture_service_says_it_stopped_and_why(self) -> None:

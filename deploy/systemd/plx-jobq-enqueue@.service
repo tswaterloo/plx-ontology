@@ -11,6 +11,8 @@ User=@PLX_USER@
 Group=@PLX_GROUP@
 WorkingDirectory=@PLX_CURRENT@
 Environment=PATH=/data/venv/bin:/usr/local/bin:/usr/bin:/bin
+# names its Postgres sessions after the unit (ARCH T2: pg_stat_activity, slow-query log)
+Environment=PGAPPNAME=%N
 ExecStart=/data/venv/bin/python3 -m operating.jobq enqueue --class %i
 TimeoutStartSec=2min
 MemoryMax=256M

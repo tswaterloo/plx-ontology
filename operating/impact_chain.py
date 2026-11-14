@@ -233,26 +233,24 @@ MARGIN_BASIS = ("margin at stake = sales amount excluding tax - ordered quantity
 # A chain that stops: reason -> (link types that would carry it, the source that would).
 BREAKS: dict[str, tuple[tuple[str, ...], str]] = {
     "po_line_not_recorded": (
-        (PO_LINE, *PO_TWINS), "the purchase order's line rows (Portal app_purchase_order_line, "
-        "Business Central purchase order lines)"),
+        (PO_LINE, *PO_TWINS), "the purchase order's lines in the Portal or Business Central"),
     "line_item_not_recorded": (
-        (LINE_ITEM,), "the item reference on the purchase order line (Portal product_id, "
-        "BC line itemId)"),
+        (LINE_ITEM,), "the item on the purchase order line, in the Portal or "
+        "Business Central"),
     "item_not_used_by_assembly_order": (
-        (USES_ITEM, *ITEM_TWINS), "FileMaker assembly order component rows "
-        "(fm_assembly_order_item); Business Central assembly consumption is not ingested"),
+        (USES_ITEM, *ITEM_TWINS), "the FileMaker assembly order's components; "
+        "Business Central assembly consumption is not read in yet"),
     "component_without_assembly_order": (
-        (COMPONENT_OF,), "the assembly order id on the FileMaker component row"),
+        (COMPONENT_OF,), "the assembly order named on the FileMaker component"),
     "assembly_order_not_linked_to_order_line": (
         (AO_LINE, ALLOCATES, ALLOCATION_LINE, AO_TWIN), "the Portal manufacturing order's "
-        "sales order line or FileMaker order-entry assembly allocations "
-        "(fm_order_entry_item_assembly)"),
+        "customer order line or the FileMaker order-entry assembly allocation"),
     "allocation_without_order_line": (
-        (ALLOCATION_LINE,), "the order-entry line id on the FileMaker assembly allocation"),
+        (ALLOCATION_LINE,), "the order-entry line named on the FileMaker assembly allocation"),
     "order_line_not_linked_to_order": (
-        (ORDER_LINE,), "the order id on the sales order line row"),
+        (ORDER_LINE,), "the order named on the customer order line"),
     "lateness_undetermined": (
-        (), "plx.process po_delivery_window (its own gap says which date is unproven)"),
+        (), "the PO delivery date check (its own gap says which date is unproven)"),
     "link_lead_only": (
         (), "a firm-tier record of the link (only a lead-tier link was found)"),
 }
@@ -271,7 +269,7 @@ BEFORE_ASSEMBLY = frozenset({"po_line_not_recorded", "line_item_not_recorded",
                              "item_not_used_by_assembly_order"})
 NO_LATE_PO = "no_late_purchase_order"
 MISSING: dict[str, tuple[tuple[str, ...], str]] = {
-    **BREAKS, NO_LATE_PO: ((), "plx.process po_delivery_window (no PO whose links reach an "
+    **BREAKS, NO_LATE_PO: ((), "the PO delivery date check (no PO whose links reach an "
                                "assembly order is late or slipping)")}
 MAX_MISSING = 5
 DAYS_AT_RISK_BASIS = ("days at risk is a lower bound: no assembly lead time is recorded, "

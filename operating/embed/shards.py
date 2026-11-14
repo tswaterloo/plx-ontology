@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import math
 import os
+import shutil
 import time
 from collections import Counter
 from pathlib import Path
@@ -17,7 +18,8 @@ from typing import Any, Iterable, Iterator, Sequence
 from operating.chunking import Chunk
 from operating.chunking.originals import OriginalsChunker
 from operating.chunking.permissions import load_exclusion, unit_row
-from operating.chunking.projection import WINDOW_SCHEMES, Counts, ProjectionChunker, open_ro
+from operating.chunking.pg_source import open_projection
+from operating.chunking.projection import WINDOW_SCHEMES, Counts, ProjectionChunker
 from operating.chunking.records import RecordChunker
 
 from . import store as st
@@ -36,15 +38,16 @@ LAYER_SKIPS: frozenset[str] = frozenset()
 def produce(state: Path, projection: Path, exclusion: Any, counts: Counts,
             kinds: Sequence[str], limit: int | None,
             shard: tuple[int, int] | None = None, since: str | None = None,
-            objects: frozenset[str] | None = None, until: str | None = None
-            ) -> Iterator[Chunk]:
+            objects: frozenset[str] | None = None, until: str | None = None,
+            dsn: str | None = None) -> Iterator[Chunk]:
     """Every chunk of ``kinds`` (a limit is spread evenly over the kinds asked).
     ``shard`` (i, n): this process's share of the projection's documents and of the
     business records (by object id: the schema rule reads every record type, so one
     process alone was the longest shard); the case originals (small) are shard 0's.
     ``objects``: a row-delta layer's own objects, the only ones chunked (no case
-    originals; ``LAYER_SKIPS``)."""
-    conn = open_ro(projection)
+    originals; ``LAYER_SKIPS``). ``projection``: a SQLite store, or
+    ``pg_source.PG_PROJECTION`` for the Postgres ontology (``dsn``)."""
+    conn = open_projection(projection, dsn)
     per_kind = None if limit is None else max(1, math.ceil(limit / len(kinds)))
     projection_kinds = [k for k in kinds if k in {"mail", "attachment", "sharepoint", "sheet_row",
                                                   "map_stage", "teams", "mc_task", "meeting"}
@@ -99,6 +102,7 @@ class _Tally:
         self.seen: list[str] = []
         self.written = (0, 0, 0, 0)
         self.counts: Counts | None = None
+        self.stopped: str | None = None
 
     def take(self, chunks: Iterable[Chunk], writer: Any) -> None:
         batch: list[Chunk] = []
@@ -162,10 +166,19 @@ def chunk_shard(task: tuple[dict[str, Any], int, int]) -> _Tally:
                                 unit_of=lambda key: unit_row(key, exclusion))
     tally = _Tally(job.get("window_since"))
     tally.counts = Counts()
+    floor = job.get("min_free_gb")
+    if floor and shutil.disk_usage(state).free / 1e9 < floor:
+        # a history window's shard is not begun under the disk floor; the window is
+        # then not recorded done and is read again whole next time
+        tally.stopped = "disk_below_min_free"
+        if writer is not None:
+            writer.conn.close()
+        return tally
     try:
-        tally.take(produce(state, Path(job["projection"]), exclusion, tally.counts,
+        tally.take(produce(state, job["projection"], exclusion, tally.counts,
                            job["kinds"], job["limit"], shard=(index, total),
-                           since=job.get("window_since"), until=job.get("window_until")),
+                           since=job.get("window_since"), until=job.get("window_until"),
+                           dsn=job.get("dsn")),
                    writer)
     finally:
         if writer is not None:

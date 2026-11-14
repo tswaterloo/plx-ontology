@@ -5,6 +5,7 @@ nothing."""
 
 from __future__ import annotations
 
+import contextlib
 import os
 import gzip
 import io
@@ -12,16 +13,19 @@ import json
 from pathlib import Path
 import sqlite3
 import tempfile
+from typing import Any
 import unittest
 from unittest import mock
 
+from operating import call_limits
 from operating.tests import pg_testdb
 
 MIGRATIONS = [Path(__file__).resolve().parents[1] / "pg" / "migrations" / name
               for name in ("0006_ontology.sql", "0007_ontology_compact.sql",
                            "0008_ontology_read.sql", "0009_schema_migrations.sql",
                            "0010_ontology_words.sql", "0011_ontology_word_order.sql",
-                           "0013_link_rows_step_reads.sql", "0014_ontology_autovacuum.sql")]
+                           "0013_link_rows_step_reads.sql", "0014_ontology_autovacuum.sql",
+                           "0018_drop_byte_order_key_twins.sql")]
 
 
 class ReloadRoomTests(unittest.TestCase):
@@ -196,7 +200,31 @@ class DeltaToPostgresTests(unittest.TestCase):
                                ("objects", "a_table_never_loaded")):
                 out = ontology_delta.follow(state, self.dsn, log=io.StringIO())
             self.assertEqual(out["state"], "not_whole_and_no_generation")
+            # ... and while its file is still on disk before the retirement, nothing
+            # opens it (an open file holds the generation's inode: it could never be
+            # deleted): not the digest read, not the facts' word index (``text_store``);
+            # a file no SQLite could read proves it
+            served.write_bytes(b"not a store " * 512)
+            from operating import ontology_tools_traverse as tt
+            with mock.patch.object(tt, "prime_pg_facts", wraps=tt.prime_pg_facts) as prime:
+                out = ontology_delta.follow(state, self.dsn, log=io.StringIO())
+            self.assertEqual((out["state"], out["held"], "loaded" in out),
+                             ("current", digest, False), out)
+            self.assertEqual([c.kwargs["text_store"] for c in prime.call_args_list], [None])
+            with mock.patch.object(ontology_delta, "apply_listed",
+                                   side_effect=AssertionError("applied")), \
+                    mock.patch("operating.pg.ontology_load.ORDER",
+                               ("objects", "a_table_never_loaded")):
+                out = ontology_delta.follow(state, self.dsn, log=io.StringIO())
+            self.assertEqual(out["state"], "not_whole_and_no_generation")
+            served.unlink()
         served.hardlink_to(base)
+        # mode 1 still reads the served generation's word index beside Postgres
+        with mock.patch.object(tt, "prime_pg_facts", wraps=tt.prime_pg_facts) as prime, \
+                mock.patch.dict(os.environ, {"PLX_ONTOLOGY_PG": "1"}):
+            out = ontology_delta.follow(state, self.dsn, log=io.StringIO())
+        self.assertEqual(out["state"], "current", out)
+        self.assertEqual([c.kwargs["text_store"] for c in prime.call_args_list], [served])
         with psycopg.connect(self.dsn, autocommit=True) as pg:
             pg.execute("UPDATE ontology.load_state SET value = jsonb_set(value, "
                        "'{content_digest}', '\"sha256:other\"') WHERE name = 'generation'")
@@ -509,7 +537,7 @@ class DeltaToPostgresTests(unittest.TestCase):
                            log=io.StringIO())
         families = ev.STORE_DOCUMENT_FAMILIES
 
-        def waited() -> float:
+        def waited(within: Any = None) -> float:
             release = threading.Event()
             self.addCleanup(release.set)
             tt._BACKGROUND.clear()
@@ -521,7 +549,8 @@ class DeltaToPostgresTests(unittest.TestCase):
                     mock.patch.object(tt, "PG_REQUEST_WAIT_SECONDS", 3):
                 self.assertFalse(host.prime_lazily(families))   # read in the background
                 started = _time.monotonic()
-                host._current_facts(("no_such_fact",))
+                with within() if within is not None else contextlib.nullcontext():
+                    host._current_facts(("no_such_fact",))
                 took = _time.monotonic() - started
                 release.set()
                 self.assertTrue(host._pending is None or host._pending[2].wait(60))
@@ -533,6 +562,38 @@ class DeltaToPostgresTests(unittest.TestCase):
         reader.close()
         tt.facts_path(marker).write_text("{}", encoding="utf-8")   # an earlier version's
         self.assertGreaterEqual(waited(), 2.5)  # kept before: waits for the fold
+        # never past the SQL deadline of the thread asking (a 4 s involvement check
+        # waited the whole wait)
+        self.assertLess(waited(lambda: call_limits.sql_deadline(_time.monotonic() + 0.5)),
+                        1.5)
+
+    def test_a_facts_read_is_cut_at_the_deadline_only_inside_facts_cut(self):
+        """A whole-table fact read on Postgres (``_store_cached``) ends at the SQL
+        deadline inside ``call_limits.facts_cut`` (an interrupt; nothing kept; the
+        session's own statement limit restored), and only there: under a plain request
+        deadline it goes on, so the background read that keeps the page reuses it."""
+        import sqlite3
+        import time as _time
+        from operating import ontology_tools as ot
+        from operating import ontology_tools_traverse as tt
+        from operating.pg.ontology_reader import PgStoreReader
+        reader = PgStoreReader.open(self.dsn, only=False)
+        self.addCleanup(reader.close)
+        host = tt.TraverseTools(ot.OntologyTools(reader, ot.ReadPolicy("plx", {})))
+        (before,) = reader.conn._pg.execute("SHOW statement_timeout").fetchone()
+
+        def slow() -> str:
+            return reader.conn.execute("SELECT 'read' FROM pg_sleep(1.0)").fetchone()[0]
+        with call_limits.facts_cut(_time.monotonic() + 0.3):
+            started = _time.monotonic()
+            with self.assertRaisesRegex(sqlite3.OperationalError, "interrupt"):
+                host._store_cached(("cut_fact",), slow)
+            self.assertLess(_time.monotonic() - started, 0.9)
+        self.assertNotIn(("cut_fact",), host.store.facts[1])
+        self.assertEqual(reader.conn._pg.execute("SHOW statement_timeout").fetchone()[0],
+                         before)
+        with call_limits.sql_deadline(_time.monotonic() + 0.3):
+            self.assertEqual(host._store_cached(("plain_fact",), slow), "read")
 
     def test_a_host_folds_the_layers_since_the_kept_version_instead_of_reading_it_whole(self):
         """A layer applied without its facts kept (a follower that did not fold): the
@@ -772,6 +833,52 @@ class DeltaToPostgresTests(unittest.TestCase):
         for key, value in expected.items():
             self.assertEqual(parallel[key], value, key)
         self.assertEqual(parallel[("slices", "link")], composed)
+        # F7: cut into 1, 10 or 60 byte-order ranges (bounds past ASCII among them) and
+        # read by the plain key indexes (no byte-order twin, migration 0018): the same
+        # facts, no row lost or read twice at a bound
+        probes = ["L", "L3", "L9", "N", "S", "e", "z", "\u00e9", "\u00e9t\u00e9", "\U0001f600"]
+        for n in (1, 10, 60):
+            keys = sorted({f"{p}{i}" for i in range(n) for p in probes},
+                          key=str.encode)[:max(n - 1, 0)]
+            cut_n = {kind: [None, *keys, None] for kind in ("link", "object", "event")}
+            with mock.patch.object(tt, "_pg_key_bounds",
+                                   side_effect=lambda cur, kind, pieces: cut_n[kind]):
+                _identity, got = tt._read_pg_facts_parallel(
+                    self.dsn, families, text_store=base, workers=3)
+            for key, value in expected.items():
+                self.assertEqual(got[key], value, (n, key))
+        # one worker on a table of more rows than a part may hold: cut by the table's
+        # size, not the worker count (live, 12 parts of 80M links each spilled past the
+        # temp limit), and the same facts
+        with psycopg.connect(self.dsn, autocommit=True) as pg:
+            pg.execute("ANALYZE ontology.link_rows")
+            with pg.cursor() as cur, mock.patch.object(tt, "FACTS_ROWS_PER_PART", 2):
+                self.assertGreaterEqual(len(tt._pg_key_bounds(cur, "link", 1)) - 1, 4)
+        with mock.patch.object(tt, "FACTS_ROWS_PER_PART", 2):
+            _, small = tt._read_pg_facts_parallel(self.dsn, families, text_store=base,
+                                                  workers=1)
+        self.assertEqual(small, parallel)
+        # a part whose hashes spill past the temp limit is read again as its two halves
+        # (live: one of 80 link parts did, and two hours of reading kept nothing)
+        real, spans = tt._range_slices, []
+
+        def spilling(tools, kind, lo, hi, odd, c=' COLLATE "C"'):
+            spans.append((kind, lo, hi))
+            if kind == "link" and lo is None and hi is None:
+                raise psycopg.errors.ConfigurationLimitExceeded("temp_file_limit")
+            return real(tools, kind, lo, hi, odd, c)
+        with mock.patch.object(tt, "_range_slices", spilling), \
+                mock.patch.object(tt, "_pg_key_bounds", lambda cur, kind, pieces: [None, None]):
+            _, halved = tt._read_pg_facts_parallel(self.dsn, families, text_store=base,
+                                                   workers=2)
+        self.assertEqual(halved, parallel)
+        links = [span for span in spans if span[0] == "link"]
+        self.assertEqual(len(links), 3)   # the whole range, then its two halves
+        self.assertEqual(links[1][2], links[2][1])
+        # any other failure is not retried: nothing is kept
+        with mock.patch.object(tt, "_range_slices", side_effect=psycopg.errors.QueryCanceled(
+                "statement timeout")), self.assertRaises(psycopg.errors.QueryCanceled):
+            tt._read_pg_facts_parallel(self.dsn, families, text_store=base, workers=2)
         # a layer's objects' links read by index (from or to them) give the composed
         # read's slice of those links
         # and one type's links by its index give the composed read's slice of that type
@@ -1013,6 +1120,101 @@ class DeltaToPostgresTests(unittest.TestCase):
             state.close_over({}, {"portal_api": [("r", "1")]}, read)   # published since
             self.assertIsNone(delta._resume(root, "k", state))
             self.assertFalse(path.exists())
+
+    def test_a_backlog_past_the_cap_drains_a_part_a_cycle_to_the_full_builds_rows(self):
+        """11-13: a 213,931-record catch-up was one cycle (4 h projecting, 18.8 GB) killed
+        by its unit's timeout. Over the Postgres base a cycle follows at most
+        ``PLX_DELTA_MAX_FOLLOWED`` open records, oldest first, and leaves the rest open:
+        the backlog drains a layer a cycle, each applied before the next closure, every
+        record followed once, and Postgres ends with a full build's rows, as one uncapped
+        cycle leaves them (the uncapped cycle is checked against the same full build)."""
+        from datetime import timedelta
+        from ontology import delta
+        from ontology.tests.test_delta import DeltaEquivalenceTests, normalizer
+        from ontology.tests.test_projection import T1, T2
+        from operating.pg import ontology_load
+        from operating.pg.ontology_parity import _BY_OBJECT, _pg_rows, _sqlite_rows
+        import psycopg
+
+        def run(cap: str | None) -> tuple[list[dict], set[str], Path]:
+            name, dsn = pg_testdb.create_db()
+            self.addCleanup(pg_testdb.drop_db, name)
+            with psycopg.connect(dsn, autocommit=True) as pg:
+                for migration in MIGRATIONS:
+                    pg.execute(migration.read_text(encoding="utf-8"))
+            fixture = DeltaEquivalenceTests("test_changed_records_equal_a_full_build_and_"
+                                            "nothing_else_is_owned")
+            fixture.setUp()
+            self.addCleanup(fixture.doCleanups)
+            fixture.capture(T1)
+            base = fixture.full("gen1.sqlite")
+            ontology_load.load(base, dsn, workers=1, replace=True, log=io.StringIO())
+            environ = {"PLX_DELTA_BASE_PG": "1", "PLX_PG_DSN": dsn}
+            if cap is not None:
+                environ["PLX_DELTA_MAX_FOLLOWED"] = cap
+            # a backlog: a changed order, a re-pointed line, a new line, a cancelled order
+            fixture.fake.set("public.app_purchase_order", "po-a", status="RECEIVED",
+                             total_cost="36.00")
+            fixture.fake.set("public.app_purchase_order_line", "l1", purchase_order_id="po-b")
+            fixture.fake.tables["public.app_purchase_order_line"].append(
+                {"id": "l9", "purchase_order_id": "po-c", "quantity": "7", "uom": "EA",
+                 "unit_cost": "1"})
+            fixture.fake.set("public.app_purchase_order", "po-b", status="CANCELLED")
+            fixture.capture(T2)
+            reports = []
+            for _ in range(8):
+                report = delta.build_delta(fixture.state, fixture.mirror_path,
+                                           fixture.root / "delta", base_path=base,
+                                           schema=fixture.schema, normalizer=normalizer,
+                                           environ=environ)
+                if report["layer"] == "none: nothing new":
+                    break
+                self.assertEqual((report["layer"], report["postgres"]["applied_now"]),
+                                 ("added", 1), report)
+                reports.append(report)
+            else:
+                self.fail("the backlog never drained")
+            full = fixture.full("gen2.sqlite")
+            owned: set[str] = set()
+            for report in reports:
+                with sqlite3.connect(report["store"]) as layer:
+                    owned |= {r[0] for r in layer.execute("SELECT object_id FROM delta_owned")}
+            conn = sqlite3.connect(f"file:{full}?mode=ro", uri=True)
+            self.addCleanup(conn.close)
+            with psycopg.connect(dsn) as pg, pg.cursor() as cur:
+                for oid in sorted(owned):
+                    for part in [*_BY_OBJECT, "object_values"]:
+                        self.assertEqual(_sqlite_rows(conn, part, oid),
+                                         _pg_rows(cur, part, oid), f"{cap}:{part}:{oid}")
+            state = delta.State(fixture.root / "delta" / "state.sqlite")
+            self.addCleanup(state.close)
+            self.assertEqual(state.open_count(), 0)
+            return reports, owned, full
+
+        whole, whole_owned, _ = run(None)
+        self.assertEqual(len(whole), 1, whole)
+        backlog = sum(whole[0]["followed"].values())
+        self.assertGreaterEqual(backlog, 3, whole[0])
+        self.assertEqual(whole[0]["followed_cap"], delta.MAX_FOLLOWED)
+        self.assertNotIn("deferred", whole[0])
+        parts, parts_owned, _ = run("1")
+        # one record a cycle, every record once, the rest said open until it drains
+        self.assertEqual([sum(r["followed"].values()) for r in parts], [1] * backlog, parts)
+        self.assertEqual([sum(r.get("deferred", {}).values()) for r in parts],
+                         list(range(backlog - 1, -1, -1)), parts)
+        # the parts together own every object the whole cycle owned (each part's own
+        # changes, and partners re-linked; never fewer)
+        self.assertLessEqual(whole_owned, parts_owned)
+
+    def test_the_cycle_cap_reads_a_number_and_never_turns_off_on_a_bad_value(self):
+        from ontology import delta
+        self.assertEqual(delta.cycle_cap({}), delta.MAX_FOLLOWED)
+        self.assertEqual(delta.cycle_cap({"PLX_DELTA_MAX_FOLLOWED": "500"}), 500)
+        self.assertEqual(delta.cycle_cap({"PLX_DELTA_MAX_FOLLOWED": "0"}), 0)
+        self.assertEqual(delta.cycle_cap({"PLX_DELTA_MAX_FOLLOWED": "-3"}), 0)
+        for bad in ("lots", "", " ", "inf", "nan"):
+            self.assertEqual(delta.cycle_cap({"PLX_DELTA_MAX_FOLLOWED": bad}),
+                             delta.MAX_FOLLOWED, bad)
 
     def test_a_record_changed_again_during_a_cycle_stays_open_for_the_next(self):
         """A cycle closes its records as it read them: one changed again while it ran

@@ -663,6 +663,60 @@ class OntologyToolsOnTheCaseHostTests(unittest.TestCase):
                                          for record in entry["records"]])
                 self.assertEqual(returned["currencies"], {(portal, "row.amount"): "USD"})
 
+    def test_a_delta_cycle_keeps_the_session_evidence_and_a_new_generation_drops_it(self):
+        """11-13 (Postgres the only store): every delta layer rewrites the store's
+        freshness keys; with the evidence scope keyed on them, a session that spanned a
+        delta lost all it had been returned and every claim citing it was refused. Across
+        a delta cycle what was returned is kept but no count stays complete (a member may
+        have come or gone: "at least" now); a new generation (content digest) or a store
+        without one (scoped by all of its meta) still starts empty."""
+        import dataclasses
+        server, call = self.client({"staff:purchasing"})
+        host = server.ontology
+        base = dict(host.store_meta(), content_digest="sha256:gen-a")
+        delta = dict(base, freshness='[{"source": "bc"}]', source_freshness='{"bc": 1}',
+                     relation_completeness='{"x": 1}', source_condition_unmet='{}')
+        sentinel = "api://public.app_purchase_order/kept@1-1"
+        # an unrestricted reader binds nothing to item permissions: only the scope decides
+        owner = dataclasses.replace(host.tools.policy, unrestricted=True)
+        reads = mock.Mock(unrestricted=True, units={})
+        for meta, kept, complete in ((dict(base), True, True), (delta, True, False),
+                                     (dict(base, content_digest="sha256:gen-b"), False, None)):
+            with self.subTest(changed=sorted(k for k in meta if meta[k] != base.get(k))):
+                server._bind(mcp_server._evidence_scope(base, owner), reads)
+                server._evidence = mcp_server._session_evidence()
+                server._evidence["handles"][sentinel] = None   # returned under gen-a
+                server._evidence["counts"].append({"value": "3", "records": [sentinel],
+                                                   "distinct": True, "complete": True})
+                server._bind(mcp_server._evidence_scope(meta, owner), reads)
+                self.assertEqual(sentinel in server._evidence["handles"], kept)
+                self.assertEqual([entry["complete"] for entry in server._evidence["counts"]],
+                                 [] if complete is None else [complete])
+        # through the tools: a delta between two calls keeps what the first returned
+        ids = iter(range(700, 800))
+
+        def client(name, arguments):
+            return server.handle({"jsonrpc": "2.0", "id": next(ids), "method": "tools/call",
+                                  "params": {"name": name, "arguments": arguments}})["result"]
+        with mock.patch.object(host, "store_meta", lambda: dict(base)):
+            read = client("plx.object", {"object_id": self.fixture.PO})["structuredContent"]
+        handle = read["values"][0]["citation"]["l1_handle"]
+        self.assertIn(handle, server._evidence["handles"])
+        for meta, kept in ((delta, True), (dict(base, content_digest="sha256:gen-b"), False)):
+            with mock.patch.object(host, "store_meta", lambda meta=meta: dict(meta)):
+                client("plx.find", {"query": "PO100012"})
+            self.assertEqual(handle in server._evidence["handles"], kept)
+        # a store naming no generation (no content digest) is scoped by all of its meta
+        policy = host.tools.policy
+        self.assertNotEqual(mcp_server._evidence_scope({"freshness": "a"}, policy),
+                            mcp_server._evidence_scope({"freshness": "b"}, policy))
+        self.assertFalse(mcp_server._one_generation(
+            mcp_server._evidence_scope({"format": "x", "freshness": "a"}, policy),
+            mcp_server._evidence_scope({"format": "x", "freshness": "b"}, policy)))
+        self.assertTrue(mcp_server._one_generation(
+            mcp_server._evidence_scope(dict(base, freshness="a"), policy),
+            mcp_server._evidence_scope(dict(base, freshness="b"), policy)))
+
     def test_an_unrestricted_reader_reads_no_item_permission_and_keeps_its_evidence(self):
         """Owner-open: for a reader holding the owner full-read
         grant (``EmployeeEntitlement.unrestricted``, carried by the call's read policy) no

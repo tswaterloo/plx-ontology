@@ -5,6 +5,8 @@ Description=PLX autopilot live feed 5 minutes after the last cycle ended
 OnBootSec=12min
 OnUnitInactiveSec=5min
 AccuracySec=30s
+# fallback: an ExecCondition skip leaves OnUnitInactiveSec with no next run
+OnCalendar=*:0/10
 
 [Install]
 WantedBy=timers.target

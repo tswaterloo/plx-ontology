@@ -82,6 +82,51 @@ class MigrationTest(unittest.TestCase):
         self.assertEqual(sorted(r[0] for r in rows), [f"Email:m:{n}" for n in (0, 100, 150, 50)])
         self.conn.rollback()
 
+    def test_the_whole_store_odd_link_and_type_reads_are_served_by_their_indexes(self) -> None:
+        """CC-P-07 (live 11-13: ~1.1 TB of link_rows read in 45 min by the odd-links read):
+        the odd texts, the links whose evidence slots name one and the (type, audience)
+        pairs of every object are read from their own indexes, never a table scan, and the
+        odd texts read is the same set as a scan finds."""
+        from operating.pg import ontology_reader
+        migrate.migrate(self.conn, values={"embed_model": "m", "embed_dim": 3})
+        texts = ["mail://box/1", 'a "quoted" word', "tab\there", "plain words", "x\\y",
+                 "ctrl\x01", "line\nbreak"]
+        for n, text in enumerate(texts, 1):
+            self.conn.execute("INSERT INTO ontology.link_texts (id, text) VALUES (%s, %s)",
+                              (n, text))
+        self.conn.execute("ANALYZE ontology.link_texts")
+        # odd: a quote, a backslash or a control character (what the JSON text escapes)
+        scanned = [n for n, t in enumerate(texts, 1)
+                   if any(c in t for c in '"\\') or any(ord(c) < 32 for c in t)]
+        self.assertEqual(scanned, [2, 3, 5, 6, 7])
+        self.conn.execute("SET enable_seqscan = off")
+        self.conn.execute("SET enable_bitmapscan = on")
+        reads = (
+            ("link_texts_odd_ids", ontology_reader.LINK_ODD_SQL, {"cap": 1001}),
+            ("link_rows_odd_slots", ontology_reader.LINK_ODD_ROWS_SQL, {"texts": [2, 3]}),
+            ("objects_by_type_audience",
+             "SELECT object_type, audience_key FROM ontology.objects GROUP BY 1, 2", None))
+        for index, sql, params in reads:
+            plan = "\n".join(row[0] for row in self.conn.execute("EXPLAIN " + sql, params))
+            self.assertIn(index, plan, plan)
+        odd = self.conn.execute(ontology_reader.LINK_ODD_SQL, {"cap": 1001}).fetchone()[0]
+        self.assertEqual(sorted(odd), scanned)
+        # the links read through the GIN: a row naming an odd text in its evidence slots,
+        # one naming it past its evidence end (ek), one without evidence and a plain one
+        for link_id, evidence, ek, slots in (("L:odd", 1, 2, [4, 2]), ("L:past", 1, 1, [4, 3]),
+                                             ("L:none", None, 2, [2, 3]),
+                                             ("L:plain", 1, 2, [1, 4])):
+            self.conn.execute(
+                "INSERT INTO ontology.link_rows (link_id, link_type, from_object, to_object, "
+                "tier, binding_kind, why_not, reason, evidence_id, evidence_handles, ek, "
+                "slots, markings, recorded_at) VALUES (%s, 't', 'A:1', 'B:1', 'firm', 'key', "
+                "'', '[]', %s, %s, %s, %s, '[]', '2026-11-13')",
+                (link_id, evidence, None if evidence else "[]", ek, slots))
+        rows = self.conn.execute(ontology_reader.LINK_ODD_ROWS_SQL,
+                                 {"texts": odd}).fetchone()[0]
+        self.assertEqual(rows, ["L:odd"])
+        self.conn.rollback()
+
     def test_check_names_every_departure_from_the_contract(self) -> None:
         migrate.migrate(self.conn, values={"embed_model": "BAAI/bge-m3", "embed_dim": 1024})
         self.conn.execute("DROP INDEX search.chunks_embedding_hnsw")

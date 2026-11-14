@@ -114,6 +114,11 @@ class GapWords(unittest.TestCase):
 
 
 class FactText(unittest.TestCase):
+    def test_field_names_keep_their_trade_acronyms(self):
+        self.assertEqual(p.field_label("qc_status"), "QC status")
+        self.assertEqual(p.field_label("bc_gst_amount"), "GST amount (BC)")
+        self.assertEqual(p.field_label("lotText"), "Lot text")
+
     def claim(self, label, phrase, field, citation, role=None):
         value = {"citation": citation, "field": field, "value": phrase}
         if role:

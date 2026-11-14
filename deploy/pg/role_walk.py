@@ -55,14 +55,23 @@ HOME_READS = ("/api/me", "/api/home", "/api/briefing",
               "/api/actions/state", "/api/actions/log", "/api/work-log", "/api/time-saved",
               "/api/ops/status", "/api/autopilot", "/api/team", "/api/workload",
               "/api/brief/meetings", "/api/meetings/action-items", "/api/labour",
-              "/api/rd-projects", "/api/feedback")
+              "/api/rd-projects", "/api/feedback",
+              # every other page's first read (app/src: Briefing, Autopilot, Briefs, Writes,
+              # Sources, Work log, View as)
+              "/api/briefing/items?event_type=vendor_no_reply",
+              "/api/briefing/unjudged?check=vendor_no_reply",
+              "/api/autopilot/catalog",
+              "/api/autopilot/schedules", "/api/autopilot/audit", "/api/brief/weekly",
+              "/api/brief/qc-daily", "/api/brief/qc-audit", "/api/writes",
+              "/api/work-log/autopilot-days", "/api/view-as/people")
 SEARCHES = ("order", "invoice", "shipment")
 RECORD_READS = ("/api/object/{t}/{i}", "/api/explore/{t}/{i}", "/api/history/{t}/{i}",
                 "/api/record-pack/{t}/{i}", "/api/brief/{t}/{i}", "/api/label-changes/{i}",
                 "/api/object-section/late/{t}/{i}", "/api/object-section/people/{t}/{i}",
                 "/api/object-section/landed_cost/{t}/{i}",
                 "/api/object-section/trail/{t}/{i}", "/api/object-section/margin/{t}/{i}",
-                "/api/object-section/knows/{t}/{i}")
+                "/api/object-section/knows/{t}/{i}", "/api/label-revisions/{i}",
+                "/api/as-of/{t}/{i}", "/api/object-impact/why/{t}/{i}")
 ASK_QUESTION = "Which open sales orders are late, and why?"
 DENIED = re.compile(r"permission denied for (table|relation|sequence|schema|function|"
                     r"view|materialized view|database|large object|type|language)\s+"
@@ -151,6 +160,33 @@ def check_role(base_dsn: str, role: str) -> None:
         raise SystemExit(f"role_walk: options=-c role did not take ({got})")
 
 
+# the API's only database writes (deploy/pg/plx_api_role.sql), each as the code issues it,
+# inside one transaction that is rolled back: the walk proves the grants without leaving a
+# row (a real rating would feed the learning from corrections)
+WRITES = (
+    "INSERT INTO search.query_log (actor, question, intent, entities, rewrites, results, "
+    "timings) VALUES ('role-walk', 'role-walk', NULL, '{}'::jsonb, '[]'::jsonb, '[]'::jsonb, "
+    "'{}'::jsonb) RETURNING id",
+    "DELETE FROM search.query_log WHERE at < now() - make_interval(days => 36500)",
+    "INSERT INTO search.feedback (at, actor, question, answer_id, rating, note) VALUES "
+    "(now(), 'role-walk', 'role-walk', 'role-walk', 1, NULL) RETURNING id",
+    "SET temp_file_limit = '1GB'",
+    "CREATE TEMP TABLE role_walk_tmp (n int) ON COMMIT DROP",
+)
+
+
+def check_writes(base_dsn: str, role: str) -> list[str]:
+    """Each write the API makes, run as ROLE and rolled back. Returns the refused ones."""
+    refused = []
+    for sql in WRITES:
+        got = subprocess.run(["psql", "-X", "-At", "-v", "ON_ERROR_STOP=1", "-d", base_dsn],
+                             input=f"BEGIN;\nSET LOCAL ROLE {role};\n{sql};\nROLLBACK;\n",
+                             capture_output=True, text=True, timeout=120)
+        if got.returncode != 0:
+            refused.append(f"{sql.split(' (')[0][:60]}: {got.stderr.strip().splitlines()[-1:]}")
+    return refused
+
+
 def refuse_other_reader(env: dict[str, str]) -> None:
     """The walk signs in as the owner reader only (Agents never sign in as
     another person): the claims must not name the full-read person in reader-vince.env."""
@@ -172,21 +208,27 @@ def refuse_other_reader(env: dict[str, str]) -> None:
 
 def mint(env: dict[str, str], state: Path, host: Path, out: Path,
          reader_env: str = "PLX_EVAL_READER") -> str:
-    subprocess.run([sys.executable, "-m", "operator_api.workspace.console_ticket", "mint",
+    got = subprocess.run([sys.executable, "-m", "operator_api.workspace.console_ticket", "mint",
                     "--state-dir", str(state), "--host-config", str(host),
                     "--reader-env", reader_env, "--ttl-minutes", "30", "--out", str(out)],
-                   cwd=ROOT, env=env, check=True, capture_output=True, timeout=120)
+                   cwd=ROOT, env=env, capture_output=True, timeout=120, check=False)
+    if got.returncode != 0:      # the refusal reason (a JSON status line, never a ticket)
+        raise SystemExit(f"role_walk: mint for {reader_env} refused: "
+                         f"{got.stdout.decode('utf-8', 'replace').strip()[-300:]}")
     return out.read_text(encoding="utf-8").strip().split("#access=", 1)[1]
 
 
 class Client:
     def __init__(self, base: str) -> None:
         self.base = base
+        # signs this client in again (a fresh development ticket): a walk on a busy host
+        # outlives the ticket's 30 minutes, and every route after that would read 401
+        self.relogin: Optional[Any] = None
         self.jar = http.cookiejar.CookieJar()
         self.opener = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(self.jar))
 
-    def call(self, path: str, body: Optional[dict] = None, timeout: float = 180
-             ) -> tuple[int, Any, float]:
+    def call(self, path: str, body: Optional[dict] = None, timeout: float = 180,
+             _retried: bool = False) -> tuple[int, Any, float]:
         data = json.dumps(body).encode() if body is not None else None
         req = urllib.request.Request(self.base + path, data=data, method="POST" if data else "GET",
                                      headers={"Content-Type": "application/json",
@@ -199,6 +241,9 @@ class Client:
             raw, status = exc.read(), exc.code
         except (urllib.error.URLError, TimeoutError, ConnectionError) as exc:
             return 0, {"error": type(exc).__name__}, time.monotonic() - started
+        if (status == 401 and self.relogin is not None and not path.startswith("/api/auth/")
+                and not _retried and self.relogin()):
+            return self.call(path, body, timeout, _retried=True)
         try:
             payload: Any = json.loads(raw) if raw else None
         except ValueError:
@@ -362,7 +407,7 @@ def synthetic_host(host_json: Path, owner_claims: dict, tmp: Path,
               "entraTenantId": policy["entra_tenant_id"], "entraObjectId": oid}
     portal["users"].append({
         "id": claims["uid"], "email": claims["email"], "entraObjectId": oid,
-        "entraTenantId": claims["entraTenantId"], "accessLevel": "L1", "role": "USER",
+        "entraTenantId": claims["entraTenantId"], "accessLevel": "L1", "role": "STAFF",
         "isActive": True, "departmentIds": departments, "accessScopes": [],
         "mrpProduction": False, "mrpRnD": False, "mrpWarehouse": False})
     portal_path.write_text(json.dumps(portal), encoding="utf-8")
@@ -441,8 +486,10 @@ def main(argv: Optional[list[str]] = None) -> int:
         return walk_running(args)
 
     baseline = args.role == "none"     # the same walk on the host's own login, to compare
+    write_refusals: list[str] = []
     if not baseline:
         check_role(args.pg_dsn, args.role)
+        write_refusals = check_writes(args.pg_dsn, args.role)
     dsn = args.pg_dsn if baseline else role_dsn(args.pg_dsn, args.role)
     env = api_env(dsn)
     if baseline:
@@ -487,21 +534,24 @@ def main(argv: Optional[list[str]] = None) -> int:
         else:
             print(f"role_walk: the API did not answer in {args.start_seconds:.0f} s", file=sys.stderr)
             return 2
-        ticket = mint(env, args.state_dir, args.host_config, tmp / "ticket.url")
-        status, me, _ = client.call("/api/auth/dev-login", {"ticket": ticket})
-        ticket = ""
-        if status != 200:
-            print(f"role_walk: sign-in refused ({status})", file=sys.stderr)
+        def signer(c: Client, reader_env: str, name: str) -> Any:
+            def sign_in() -> bool:
+                ticket = mint(env, args.state_dir, args.host_config, tmp / name,
+                              reader_env=reader_env)
+                ok = c.call("/api/auth/dev-login", {"ticket": ticket})[0] == 200
+                (tmp / name).unlink(missing_ok=True)
+                return ok
+            return sign_in
+        if not signer(client, "PLX_EVAL_READER", "ticket.url")():
+            print("role_walk: sign-in refused", file=sys.stderr)
             return 2
+        client.relogin = signer(client, "PLX_EVAL_READER", "ticket.url")
         owner_found = walk(client, not args.no_ask, report)
         if args.reader == "synthetic":
             other = Client(client.base)
-            ticket = mint(env, args.state_dir, args.host_config, tmp / "reader.url",
-                          reader_env=SYNTHETIC_VAR)
-            status, _, _ = other.call("/api/auth/dev-login", {"ticket": ticket})
-            ticket = ""
-            restricted = (restricted_checks(other, owner_found, report) if status == 200
-                          else [f"the synthetic reader's sign-in was refused ({status})"])
+            other.relogin = signer(other, SYNTHETIC_VAR, "reader.url")
+            restricted = (restricted_checks(other, owner_found, report) if other.relogin()
+                          else ["the synthetic reader's sign-in was refused"])
     finally:
         try:
             os.killpg(proc.pid, signal.SIGTERM)
@@ -517,6 +567,7 @@ def main(argv: Optional[list[str]] = None) -> int:
             (tmp / name).unlink(missing_ok=True)
     api_text = log.read_text(encoding="utf-8", errors="replace")
     code = report_findings(args, report, offset, api_text, str(log))
+    code = report_writes(write_refusals, args.role) or code
     if args.reader == "synthetic":
         print("\nnon-owner walk (synthetic L1 reader): " + (
             "nothing it may not get" if not restricted else f"{len(restricted)} failure(s)"))
@@ -543,13 +594,16 @@ def walk_running(args: argparse.Namespace) -> int:
     if client.call("/api/health", timeout=10)[0] != 200:
         print(f"role_walk: {args.api_url} is not up", file=sys.stderr)
         return 2
-    ticket = mint(env, args.state_dir, args.host_config, tmp / "ticket.url")
-    status, _, _ = client.call("/api/auth/dev-login", {"ticket": ticket})
-    ticket = ""
-    if status != 200:
-        print(f"role_walk: sign-in refused ({status}): the API must run on the development "
-              "secret", file=sys.stderr)
+    def sign_in() -> bool:
+        ticket = mint(env, args.state_dir, args.host_config, tmp / "ticket.url")
+        ok = client.call("/api/auth/dev-login", {"ticket": ticket})[0] == 200
+        (tmp / "ticket.url").unlink(missing_ok=True)
+        return ok
+    if not sign_in():
+        print("role_walk: sign-in refused: the API must run on the development secret",
+              file=sys.stderr)
         return 2
+    client.relogin = sign_in
     report: list[dict] = []
     walk(client, not args.no_ask, report)
     api_text = ""
@@ -561,7 +615,16 @@ def walk_running(args: argparse.Namespace) -> int:
             got = subprocess.run(["sudo", "-n", *cmd], capture_output=True, text=True,
                                  timeout=120)
         api_text = got.stdout
-    return report_findings(args, report, offset, api_text, f"journalctl -u {args.unit}")
+    code = report_findings(args, report, offset, api_text, f"journalctl -u {args.unit}")
+    return report_writes(check_writes(args.pg_dsn, args.role), args.role) or code
+
+
+def report_writes(refused: list[str], role: str) -> int:
+    print(f"database writes under {role} (rolled back): "
+          + ("all granted" if not refused else f"{len(refused)} refused"))
+    for line in refused:
+        print("  " + line)
+    return 1 if refused else 0
 
 
 def report_findings(args: argparse.Namespace, report: list[dict], offset: int,

@@ -108,7 +108,7 @@ export default function WatchingPage() {
             [
               ["Firing now", briefing?.status === "read" ? briefing.count : null, ""],
               ["New since your visit", briefing?.status === "read" ? briefing.new_since_visit : null, "text-accent"],
-              ["Kinds firing", reg ? `${fired.length} of ${reg.kinds.length}` : null, ""],
+              ["Kinds firing", reg && briefing?.status === "read" ? `${fired.length} of ${reg.kinds.length}` : null, ""],
               ["From your rules and follows", data ? data.alerts.length : null, ""],
               ["Following", data ? data.follows.length : null, ""],
             ] as const
@@ -136,7 +136,7 @@ export default function WatchingPage() {
             {data?.configured !== false && (
               <section aria-labelledby="rule-alerts">
                 <h2 id="rule-alerts" className="mb-1 text-[15px] font-semibold">From your rules and follows</h2>
-                {!data ? <Pending label="Reading your alerts" /> : data.alerts.length === 0 ? <p className="text-[13px] text-muted">None yet. A rule or a follow shows its changes here.</p> : <AlertFeed alerts={data.alerts} />}
+                {!data ? problem ? <p className="text-[13px] text-muted">Not loaded: see the note above.</p> : <Pending label="Reading your alerts" /> : data.alerts.length === 0 ? <p className="text-[13px] text-muted">None yet. A rule or a follow shows its changes here.</p> : <AlertFeed alerts={data.alerts} />}
               </section>
             )}
           </div>
@@ -194,6 +194,8 @@ export default function WatchingPage() {
           )}
         </section>
 
+        {(data || !problem) && (
+        <>
         <section aria-labelledby="rules" className="space-y-1">
           <h2 id="rules" className="text-[11px] font-semibold tracking-[0.04em] text-muted uppercase">Your rules</h2>
           {data && data.rules.length === 0 && <EmptyState title="No rules yet." />}
@@ -239,9 +241,12 @@ export default function WatchingPage() {
             ))}
           </ul>
         </section>
+        </>
+        )}
             </>
             )}
-            <AlertKindsSection compact data={{ reg, briefing, error: kindsError, retry: retryKinds }} />
+            {/* a failed read is said once, under What fired */}
+            {!kindsError && <AlertKindsSection compact data={{ reg, briefing, error: kindsError, retry: retryKinds }} />}
           </aside>
         </div>
       </div>

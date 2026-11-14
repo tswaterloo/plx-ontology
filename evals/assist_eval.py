@@ -1,4 +1,5 @@
-"""Assist mode measured on real self-started mail (dev days only): for each role, mail its
+"""Assist mode measured on real self-started mail (dev days; ``--held-out``: the fresh
+days ``HELD_OUT``, sampled once, its plan written before any draft): for each role, mail its
 people started themselves (no reply or forward, no earlier message of its conversation in
 their mailbox, not automated, not a template or scheduled send); the system is given only
 a one-line intent derived from the subject and the first recipient's name ("email <name>:
@@ -31,6 +32,7 @@ the repository; ``score`` prints counts and shares only. People pass the exclusi
 Run::
 
     python3 -m evals.assist_eval sample --state STATE --store STORE --roles ROLES --out DIR
+        [--held-out]
     python3 -m evals.assist_eval run --state STATE --out DIR --reader-env FILE [--seconds 200]
     python3 -m evals.assist_eval score --out DIR
 """
@@ -47,9 +49,12 @@ import re
 import sqlite3
 import sys
 import time
-from typing import Any, Iterable, Mapping, Sequence
+from typing import Any, Iterable, Mapping, Optional, Sequence
 
 SINCE, UNTIL = "2026-10-06T07:00:00Z", "2026-10-26T07:00:00Z"   # dev days only
+# a held-out window (``sample --held-out``): fresh days after the contaminated 10-26..11-05,
+# sampled once with its plan written beside it before any draft is made
+HELD_OUT = ("2026-11-06T05:00:00Z", "2026-11-12T05:00:00Z")
 PER_ROLE = 60
 MAIL_MINUTES, REVIEW_MINUTES = 6, 2
 _PREFIX = re.compile(r"^\s*(?:(?:re|fw|fwd|aw|tr|sv|antw)\s*:\s*)+", re.I)
@@ -146,8 +151,13 @@ def party_names(store: str) -> dict[str, str]:
         st.close()
 
 
-def sample(state: Path, store: str, roles: Mapping[str, list[str]], out: Path) -> dict[str, Any]:
+def sample(state: Path, store: str, roles: Mapping[str, list[str]], out: Path,
+           window: tuple[str, str] = (SINCE, UNTIL)) -> dict[str, Any]:
     from operating import assist
+    since, until = window
+    days = round((datetime.fromisoformat(until.replace("Z", "+00:00"))
+                  - datetime.fromisoformat(since.replace("Z", "+00:00"))).total_seconds() / 86400,
+                 2)       # a window of hours is a fraction of a day, never 0
     from operating import proactive_threads as pt
     people = _people(state)
     if people is None or people.unavailable:
@@ -178,7 +188,7 @@ def sample(state: Path, store: str, roles: Mapping[str, list[str]], out: Path) -
                 "SELECT l1_handle, record, body_sha256 FROM messages WHERE mailbox_id = ? AND "
                 "superseded_at IS NULL AND removed_reason IS NULL AND "
                 "json_extract(record, '$.sent_at') >= ? AND json_extract(record, '$.sent_at') < ?",
-                (oid, SINCE, UNTIL))]
+                (oid, since, until))]
             mine = [(h, r, b) for h, r, b in mine if str(r.get("from") or "").lower() in own]
             convs = sorted({r.get("conversation_id") for _h, r, _b in mine
                             if r.get("conversation_id")})
@@ -224,7 +234,8 @@ def sample(state: Path, store: str, roles: Mapping[str, list[str]], out: Path) -
                              "intent": f"email {name}: {_PREFIX.sub('', subject)}"[:300],
                              "outside": not _internal(first_to, internal)})
         pool.sort(key=lambda x: _digest(x["handle"]))
-        counts[role] = {"members": len(members), "window_days": 20, **dict(seen),
+        counts[role] = {"members": len(members), "window_days": days, "since": since,
+                       "until": until, **dict(seen),
                         "sampled": min(PER_ROLE, len(pool))}
         rows_out += pool[:PER_ROLE]
         out.mkdir(parents=True, exist_ok=True)
@@ -292,9 +303,15 @@ def sender_host(out: Path, t: Mapping[str, Any], people: Any, owner: Mapping[str
     return where / "host.json", claims
 
 
-def _facts(text: str) -> list[dict[str, Any]]:
-    return [{"text": s.strip(), "sources": ["gated"]}
-            for s in re.split(r"(?<=[.?!])\s+", text or "") if s.strip()]
+def _gated_values(ran: Any) -> int:
+    """The values a fast answer's block states (each one its gate passed), 0 for prose with
+    none (a not-found or a choice)."""
+    block = re.search(r"```json\s*(\{.*\})\s*```", str(getattr(ran, "agent_text", "") or ""),
+                      re.S)
+    try:
+        return len(json.loads(block.group(1)).get("values") or ()) if block else 0
+    except ValueError:
+        return 0
 
 
 def _agent_answer(state: Path, config: Path, claims: Mapping[str, str], secret: str,
@@ -327,7 +344,8 @@ def _agent_answer(state: Path, config: Path, claims: Mapping[str, str], secret: 
 
 
 def run(state: Path, out: Path, reader_env: str, host_config: str, seconds: float,
-        agent: bool = True, agent_per_role: int = AGENT_PER_ROLE) -> int:
+        agent: bool = True, agent_per_role: int = AGENT_PER_ROLE,
+        per_role: int = PER_ROLE_RUN) -> int:
     """Drafts for the first ``PER_ROLE_RUN`` sampled mails of each role, each read as its
     sender (``sender_host``) and as of its send instant (``Reads.as_of``: a record card is
     read as the store knew it then); a record question the fast path does not settle goes
@@ -354,7 +372,7 @@ def run(state: Path, out: Path, reader_env: str, host_config: str, seconds: floa
     for t in sample_rows:
         # a mail sampled for two roles (its sender holds both) is drafted once, for the
         # first: one draft per mail
-        if taken[t["role"]] < PER_ROLE_RUN and t["handle"] not in seen:
+        if taken[t["role"]] < per_role and t["handle"] not in seen:
             taken[t["role"]] += 1
             seen.add(t["handle"])
             was = done.get(t["handle"])
@@ -397,35 +415,51 @@ def run(state: Path, out: Path, reader_env: str, host_config: str, seconds: floa
                 intent = assist.parse(t["intent"])
                 own = {a for a, o in people.directory.items() if o.lower() == t["sender"]}
                 sent = assist.capture_history(state, t["sender"], own, until=t["at"][:10])
+                intent = assist.with_thread(intent, sent)    # short forms the mail writes
                 recipients = assist.resolve(
                     intent, me=t["sender"], people=people, sent=sent, roles={},
                     party=lambda name, side: assist.party_addresses(reads, name, side))
-                answers, settled, agent_calls, as_of_reads, agent_why = [], [], 0, [], []
-                for q in assist.questions(intent):
+                agent_calls, as_of_reads, agent_why = 0, [], []
+
+                def fast(q: str) -> tuple[str, Optional[str]]:
                     asked = fast_answer.Reads.of_server(server)
                     asked.as_of = t["at"]
-                    ran = fast_answer.answer(q, asked)
-                    as_of_reads += asked.as_of_reads
-                    text = (ran.final_text.split("```")[0].strip() if ran else "")
-                    how = "fast" if text else "none"
-                    if not text and agent and agents_used[t["role"]] < agent_per_role \
-                            and time.monotonic() - started < seconds - AGENT_SECONDS - 10:
-                        agent_calls += 1
-                        text, why = _agent_answer(state, config, claims, secret, q)
-                        how = "agent" if text else "none"
-                        agent_why.append(why)
-                    settled.append(how)
-                    answers.append({"question": q, "outcome": "answered" if text else "none",
-                                    "facts": _facts(text)})
+                    declined: list[str] = []
+                    ran = fast_answer.answer(q, asked, declined)
+                    as_of_reads.extend(asked.as_of_reads)
+                    # a fast answer is facts only when the gate passed a value of it: a
+                    # "can't find that order" settles nothing (the agent may find it) and
+                    # never goes into a message as a cited fact
+                    if ran and _gated_values(ran):
+                        return ran.final_text.split("```")[0].strip(), None
+                    return "", assist.found_of(ran, declined)
+
+                def by_agent(q: str) -> Optional[str]:
+                    nonlocal agent_calls
+                    if not (agent and agents_used[t["role"]] < agent_per_role
+                            and time.monotonic() - started < seconds - AGENT_SECONDS - 10):
+                        return None
+                    agent_calls += 1
+                    text, why = _agent_answer(state, config, claims, secret, q)
+                    agent_why.append(why)
+                    return text
+
+                answers, settled = assist.answers_for(intent, fast, by_agent)
                 if agent_calls:
                     agents_used[t["role"]] += 1
                 made = assist.draft(intent, recipients, answers, outside=recipients.outside)
+                if t["to"][0].lower() not in recipients.to:
+                    after = assist.resolve(
+                        picked(intent, t["to"][0].lower()), me=t["sender"], people=people,
+                        sent=sent, roles={}, party=None)
+                    row["after_pick"] = {"to": after.to, "cc": after.cc, "ask": after.ask}
                 row.update({"settled": settled, "agent_calls": agent_calls,
                             "agent_why": agent_why,
                             "as_of_reads": as_of_reads,
-                            "draft": {k: made[k] for k in (
-                                "channel", "to", "subject", "body", "facts", "gaps",
-                                "questions")}})
+                            "draft": {k: made.get(k) for k in (
+                                "channel", "to", "cc", "ask", "choices", "unresolved",
+                                "subject", "body", "facts", "gaps", "questions",
+                                "checks")}})
             except assist.AssistRefused as refused:
                 row["refused"] = refused.code
             finally:
@@ -437,6 +471,85 @@ def run(state: Path, out: Path, reader_env: str, host_config: str, seconds: floa
 
 
 # --------------------------------------------------------------------------- score
+
+def picked(intent: Any, address: str) -> Any:
+    """``intent`` as it is once the reader picks (or types) ``address`` for who it is for:
+    the one tap a question on the primary recipient asks of them."""
+    from dataclasses import replace
+    return replace(intent, mentions=[address], whole="", side=None, team=False)
+
+
+def recipients_outcome(t: Mapping[str, Any], draft: Mapping[str, Any],
+                       after_pick: Optional[Mapping[str, Any]] = None) -> dict[str, Any]:
+    """Each recipient line of a draft against the real mail, as the person meets it: filled
+    in and right, asked (the line left to a one-tap question, nothing wrong filled in), or
+    wrong (a filled-in address the real line does not hold, or one it holds that is
+    silently missing):
+
+    * ``primary``: right when the real first recipient is filled in on To; asked when it
+      is not, nothing filled in on To is off the real To, and To has a question;
+    * ``to`` / ``cc``: right when the filled-in line is the real one and nothing is asked
+      of it; asked when the filled-in part is in the real line and the line has a
+      question; ``hit``: the real line is in the filled-in part and the candidates.
+
+    Also the addresses filled in (``filled``) and those of them on the real line
+    (``filled_right``): the precision of what is filled in. ``after_pick``: the recipients
+    once the reader picked the real first recipient (``picked``); a primary asked is
+    followed by it, so the To and Cc lines are judged as the reader then meets them (To
+    at best asked: a question was put)."""
+    first_asked = recipients_outcome(t, draft)["primary"] == "asked" \
+        if after_pick is not None else False
+    if first_asked:
+        out = recipients_outcome(t, after_pick)
+        out["to"] = "asked" if out["to"] == "right" else out["to"]
+        out["to_hit"] = out["to_hit"] or out["to"] == "asked" and set(
+            a.lower() for a in t["to"]) <= set(a.lower() for a in after_pick.get("to") or ())
+        mine = recipients_outcome(t, draft)
+        out.update({k: mine[k] for k in ("primary", "primary_hit", "to_filled",
+                                          "to_filled_right", "cc_filled", "cc_filled_right")})
+        # what the draft filled in before the pick stays: anything off the real line on it
+        # is wrong whatever the pick brings
+        for line in ("to", "cc"):
+            if mine[line + "_filled"] > mine[line + "_filled_right"]:
+                out[line], out[line + "_hit"] = "wrong", False
+        return out
+    to = [a.lower() for a in draft.get("to") or ()]
+    cc = [a.lower() for a in draft.get("cc") or ()]
+    asks = list(draft.get("ask") or ())
+    for mention, offered in (draft.get("choices") or {}).items():
+        if not any(q.get("mention") == mention for q in asks):
+            asks.append({"field": "to", "pick": "one", "mention": mention,
+                         "candidates": offered})
+    unresolved = bool(draft.get("unresolved")) or not (to or asks)
+    real = {"to": [a.lower() for a in t["to"]], "cc": [a.lower() for a in t.get("cc") or ()]}
+    out: dict[str, Any] = {}
+    for line, filled in (("to", to), ("cc", cc)):
+        want = set(real[line])
+        asked = [q for q in asks if q.get("field") == line] or \
+            ([{"candidates": []}] if line == "to" and unresolved else [])
+        offered = {str(a).lower() for q in asked for a in q.get("candidates") or ()}
+        if set(filled) == want and not asked:
+            verdict = "right"
+        elif asked and set(filled) <= want:
+            verdict = "asked"
+        else:
+            verdict = "wrong"
+        out[line] = verdict
+        out[line + "_hit"] = verdict == "asked" and want <= set(filled) | offered
+        out[line + "_filled"] = len(filled)
+        out[line + "_filled_right"] = len(set(filled) & want)
+    first = real["to"][0]
+    to_asked = [q for q in asks if q.get("field") == "to"]
+    if first in to:
+        out["primary"] = "right"
+    elif set(to) <= set(real["to"]) and (to_asked or unresolved):
+        out["primary"] = "asked"
+    else:
+        out["primary"] = "wrong"
+    out["primary_hit"] = out["primary"] == "asked" and any(
+        first in {str(a).lower() for a in q.get("candidates") or ()} for q in to_asked)
+    return out
+
 
 def score_one(t: Mapping[str, Any], d: Mapping[str, Any]) -> dict[str, Any]:
     draft = d.get("draft") or {}
@@ -451,6 +564,7 @@ def score_one(t: Mapping[str, Any], d: Mapping[str, Any]) -> dict[str, Any]:
                       and "status:" + STATUS[f[7:]] in real_all and f not in real_all)
     primary = t["to"][0] in to
     cited = len(draft.get("facts") or ())
+    said = recipients_outcome(t, draft, d.get("after_pick")) if draft else {}
     return {"role": t["role"], "outside": t["outside"], "refused": d.get("refused"),
             "has_facts": cited > 0, "settled": list(d.get("settled") or ()),
             "agent_calls": int(d.get("agent_calls") or 0),
@@ -459,7 +573,20 @@ def score_one(t: Mapping[str, Any], d: Mapping[str, Any]) -> dict[str, Any]:
             "real": len(real), "drafted": len(drafted), "found": len(drafted & real_all),
             "found_real": len(drafted & real), "unconfirmed": len(drafted - real_all),
             "conflict": len(conflict), "has_record": bool(draft.get("questions")),
-            "usable": primary and not conflict}
+            "usable": primary and not conflict, "said": said,
+            # each record the line names: its facts in the draft, or said plainly to the
+            # person what was not settled (not found, several, unsettled); "silent": a
+            # record question the draft neither states nor names
+            "checks": _checks(draft)}
+
+
+def _checks(draft: Mapping[str, Any]) -> list[str]:
+    """Each record question's outcome (``assist.draft`` ``checks``); a draft from before
+    checks: ``fact`` per question when it carries facts, else ``silent`` (a record the
+    draft neither states nor names to the person as unsettled)."""
+    if "checks" in draft and draft["checks"] is not None:
+        return [str(c.get("outcome")) for c in draft["checks"]]
+    return ["fact" if draft.get("facts") else "silent" for _q in draft.get("questions") or ()]
 
 
 def score(out: Path) -> dict[str, Any]:
@@ -484,7 +611,7 @@ def score(out: Path) -> dict[str, Any]:
     for role, rows in sorted(per.items()):
         n = len(rows)
         c = counts.get(role, {})
-        weekly = c.get("self_started", 0) / (c.get("window_days", 20) / 7)
+        weekly = c.get("self_started", 0) / (max(float(c.get("window_days") or 20), 1 / 24) / 7)
         usable = sum(r["usable"] for r in rows)
         drafted = sum(r["drafted"] for r in rows)
         result["roles"][role] = {
@@ -514,14 +641,39 @@ def score(out: Path) -> dict[str, Any]:
                 sum(r["has_facts"] and "fast" in r["settled"] for r in rows if r["has_record"]),
                 sum(r["has_record"] for r in rows)),
             "facts_wrong": _pct(sum(r["conflict"] for r in rows), drafted),
+            "record_checks": dict(Counter(c for r in rows for c in r["checks"])),
             "questions_settled": dict(Counter(s for r in rows for s in r["settled"])),
             "agent_sessions": sum(r["agent_calls"] for r in rows),
             "read_as_of": dict(Counter(a for r in rows for a in r["as_of_reads"])),
             "usable": _pct(usable, n),
+            "recipients": recipients_summary(rows),
             "hours_per_week": round(weekly * (usable / n if n else 0)
                                     * (MAIL_MINUTES - REVIEW_MINUTES) / 60, 2)}
+    every = [r for rows in per.values() for r in rows]
+    result["all"] = {"n": len(every), "recipients": recipients_summary(every),
+                     "record_checks": dict(Counter(c for r in every for c in r["checks"])),
+                     "facts_present": _pct(sum(r["has_facts"] for r in every if r["has_record"]),
+                                           sum(r["has_record"] for r in every)),
+                     "facts_wrong": _pct(sum(r["conflict"] for r in every),
+                                         sum(r["drafted"] for r in every))}
     (out / "score.json").write_text(json.dumps(result, indent=1, sort_keys=True))
     return result
+
+
+def recipients_summary(rows: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
+    """Per line (primary, to, cc): right, asked (with the real line among the candidates:
+    ``asked_hit``) and wrong mails, and of the addresses filled in, those on the real line
+    (``filled_precision``). The target: wrong 0, asked as few as possible."""
+    said = [r["said"] for r in rows if r.get("said")]
+    out: dict[str, Any] = {"drafted": len(said)}
+    for line in ("primary", "to", "cc"):
+        got = Counter(x[line] for x in said)
+        out[line] = {"right": got["right"], "asked": got["asked"], "wrong": got["wrong"],
+                     "asked_hit": sum(bool(x[line + "_hit"]) for x in said)}
+        if line != "primary":
+            out[line]["filled_precision"] = _pct(sum(x[line + "_filled_right"] for x in said),
+                                                 sum(x[line + "_filled"] for x in said))
+    return out
 
 
 def _pct(a: int, b: int) -> Any:
@@ -536,11 +688,17 @@ def main(argv: Sequence[str] | None = None) -> int:
     p.add_argument("--roles", default=None, help="roles file (role -> object ids); "
                    "person:<address> roles are added with --person")
     p.add_argument("--person", action="append", default=[])
+    p.add_argument("--held-out", action="store_true",
+                   help=f"sample the held-out window {HELD_OUT[0]}..{HELD_OUT[1]} (fresh days)")
+    p.add_argument("--window", nargs=2, metavar=("SINCE", "UNTIL"), default=None,
+                   help="sample this window (UTC instants) instead: a fresh held-out set")
     p.add_argument("--out", required=True)
     p.add_argument("--reader-env", default=None)
     p.add_argument("--host-config", default=None)
     p.add_argument("--seconds", type=float, default=200.0)
     p.add_argument("--agent-per-role", type=int, default=AGENT_PER_ROLE)
+    p.add_argument("--per-role", type=int, default=PER_ROLE_RUN,
+                   help="mails drafted per role (the first of its sample)")
     p.add_argument("--no-agent", action="store_true",
                    help="never start an agent session (fast path only)")
     a = p.parse_args(argv)
@@ -553,11 +711,15 @@ def main(argv: Sequence[str] | None = None) -> int:
             oid = people.directory.get(address.lower())
             if oid:
                 roles["person:" + address.split("@")[0]] = [oid.lower()]
-        print(json.dumps(sample(state, a.store, roles, out), indent=1, sort_keys=True))
+        print(json.dumps(sample(state, a.store, roles, out,
+                                window=tuple(a.window) if a.window else
+                                HELD_OUT if a.held_out else (SINCE, UNTIL)),
+                         indent=1, sort_keys=True))
     elif a.stage == "run":
         print(json.dumps({"wrote": run(state, out, a.reader_env, a.host_config, a.seconds,
                                        agent=not a.no_agent,
-                                       agent_per_role=a.agent_per_role)}))
+                                       agent_per_role=a.agent_per_role,
+                                       per_role=a.per_role)}))
     else:
         print(json.dumps(score(out), indent=1, sort_keys=True))
     return 0

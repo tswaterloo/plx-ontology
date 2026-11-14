@@ -164,19 +164,38 @@ export function isUnsetDate(v: string | null | undefined): boolean {
   return !!v && /^0{3}1-01-01(?:$|[T ])/.test(v.trim());
 }
 
-/** "29 Oct, 6:34 a.m." (the year when it isn't this one). */
+/** "9:34 AM": the clock in Eastern, as the owner reads it. */
+export function clockET(d: Date): string {
+  return d.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit", timeZone: TZ });
+}
+
+/** "29 Oct, 6:34 AM ET" (the year when it isn't this one): the app's one date-and-time style, in Eastern. */
 export function formatDateTime(iso: string | null | undefined, now: Date = new Date()): string {
   if (!iso) return "";
   // a date with no time is that calendar day, never midnight UTC shown in Toronto (the
-  // day before, "8:00 p.m.")
+  // day before, "8:00 PM")
   if (/^\d{4}-\d{2}-\d{2}$/.test(iso)) return formatDate(iso);
   if (isUnsetDate(iso)) return "";
   const d = new Date(iso);
   if (Number.isNaN(d.getTime())) return iso;
   const sameYear = d.toLocaleDateString("en-CA", { year: "numeric", timeZone: TZ }) === now.toLocaleDateString("en-CA", { year: "numeric", timeZone: TZ });
   const day = d.toLocaleDateString("en-GB", { day: "numeric", month: "short", year: sameYear ? undefined : "numeric", timeZone: TZ }).replace("Sept", "Sep");
-  const time = d.toLocaleTimeString("en-CA", { hour: "numeric", minute: "2-digit", timeZone: TZ });
-  return `${day}, ${time}`;
+  return `${day}, ${clockET(d)} ET`;
+}
+
+/** "12:36 PM ET" today, "9 Nov, 12:36 PM ET" before: status lines say when in Eastern, the day only when it isn't today. */
+export function eastern(iso?: string | null, now: Date = new Date()): string {
+  if (!iso) return "";
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return "";
+  const day = (x: Date) => x.toLocaleDateString("en-CA", { timeZone: TZ });
+  return day(d) === day(now) ? `${clockET(d)} ET` : formatDateTime(iso, now);
+}
+
+/** A reliability problem's headline: the server's line up to its first "; ", with its
+ * snake_case names in words ("sharepoint_lists capture" reads "sharepoint lists capture"). */
+export function opsHeadline(line: string): string {
+  return line.split("; ")[0].replace(/_/g, " ");
 }
 
 /** "5 min ago", "3 h ago", "2 days ago" relative to `now`. */
@@ -272,7 +291,7 @@ export function money(m: { amount: string; currency: string } | null | undefined
 
 // ---- plain words for record fields and server text ------------------------------------
 
-const ACRONYM: Record<string, string> = { po: "PO", so: "SO", ao: "AO", eta: "ETA", uom: "UOM", gl: "GL", sku: "SKU", id: "ID", url: "URL", upc: "UPC", fm: "FM", bc: "BC" };
+const ACRONYM: Record<string, string> = { po: "PO", so: "SO", ao: "AO", eta: "ETA", uom: "UOM", gl: "GL", sku: "SKU", id: "ID", url: "URL", upc: "UPC", fm: "FM", bc: "BC", qc: "QC", coa: "COA", ar: "AR", ap: "AP", gst: "GST", hst: "HST", mo: "MO", oe: "OE", sds: "SDS", tds: "TDS" };
 const SYSTEM_PREFIX: Record<string, string> = { bc: "BC", portal: "Portal", fm: "FileMaker", sage: "Sage" };
 
 /** A record field's key without its container: "row.buyFromCity" -> "buyFromCity". */

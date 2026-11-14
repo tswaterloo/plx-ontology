@@ -12,9 +12,9 @@ carries no ``write`` spec, so no write desk ever sees it):
   (``proactive_sheets``' reader and index, numbers compared once punctuation, case and
   leading zeros go), all of one customer and one currency, each invoice open on the day
   (dated by then, not paid before), the amounts as the remittance states them.
-* ``shipment_posting`` (an order the order desk marks ready to ship): the shipment the
-  person would post: the accounting order's lines still outstanding on the day (ordered
-  less shipped on shipments dated before it).
+* ``shipment_posting`` (a one-line order entered for a customer whose orders ship whole):
+  the shipment the person would post: the accounting order's lines still outstanding on
+  the day (ordered less shipped on shipments dated before it).
 
 Money is ``Decimal`` with its currency; every entry is finance-marked through the records
 it reads (prices, amounts), so only a reader holding finance sees the item. No rule names
@@ -45,7 +45,8 @@ ACCOUNTING = ("portal.sage_oe_",)           # bindings of the accounting system'
 CUSTOMERS = ("portal.sage_ar_customer",)     # its customers are receivables records
 PAST_INVOICES = 40
 KEYER_LOOKBACK = 5                           # earlier invoices read for who keys them
-READY = frozenset({"READY_TO_SHIP"})
+POSTING_HISTORY = 3                          # the customer's latest orders read
+POSTING_AFTER = 7                            # days an order's first shipment is due in
 MISC_LINE = "2"                              # an OE line of a charge, not an item
 
 
@@ -216,7 +217,7 @@ def invoice_entry_events(st: Any, registry: Mapping[str, Any], as_of: date,
                                as_of - timedelta(days=window - 1), as_of) if _accounting(o)]
     ctx = ap.Ctx(st, as_of, float("inf"), ())
     heads = ctx.read(ids, SHIP_HEAD)
-    out = []
+    due: dict[tuple[str, date], list[tuple[str, str]]] = defaultdict(list)
     for oid in ids:
         head = heads.get(oid) or {}
         number = ap._v(head, "sage_shipment_number").strip()
@@ -228,12 +229,35 @@ def invoice_entry_events(st: Any, registry: Mapping[str, Any], as_of: date,
                  if (d := _day(ap._v(r, "invoice_date"))) and shipped <= d < as_of]
         if known:
             continue                                   # invoiced already
+        due[(order, shipped)].append((number, oid))
+    out = []
+    for (order, shipped), group in sorted(due.items()):
+        # one order's shipments of one day are billed on one invoice (measured on DEV days
+        # 2026-10-06..11-03: of 27 entries whose invoice billed items their shipment lacked,
+        # 14 had those items on another shipment of the order that same day): one entry,
+        # on the first shipment by number, carrying the others' lines
+        group.sort()
+        number, oid = group[0]
         customer = _one(ctx, oid, "Shipment.shipped_to", "Customer", CUSTOMERS)
-        out.append(_event("invoice_entry", oid, "Shipment", shipped.isoformat(),
-                          ap._types(st, [oid]).get(oid, ("", ""))[1],
-                          [c["l1_handle"] for c in head.values() if c.get("l1_handle")],
-                          {"shipment_number": number, "ship_date": shipped.isoformat()},
-                          order_id=order, owner_hint=keyer(ctx, customer, as_of, people)))
+        event = _event("invoice_entry", oid, "Shipment", shipped.isoformat(),
+                       ap._types(st, [oid]).get(oid, ("", ""))[1],
+                       [c["l1_handle"] for _n, o in group for c in (heads.get(o) or {}).values()
+                        if c.get("l1_handle")],
+                          {"shipment_number": number, "ship_date": shipped.isoformat(),
+                           **({"with_shipments": [n for n, _o in group[1:]]}
+                              if len(group) > 1 else {})},
+                       order_id=order, owner_hint=keyer(ctx, customer, as_of, people),
+                       **({"with": [o for _n, o in group[1:]]} if len(group) > 1 else {}))
+        # one entry per order and day, whoever is in it (one shipment or several): a
+        # shipment of that day found in a later cycle never makes a second entry billing
+        # the first one's lines again (it is keyed with the invoice entered from this one)
+        event["event_id"] = ap._digest("record.due", "invoice_entry", order,
+                                       shipped.isoformat())
+        if len(group) > 1:
+            event["handles"] = list(dict.fromkeys(
+                c["l1_handle"] for _n, o in group for c in (heads.get(o) or {}).values()
+                if c.get("l1_handle")))[:3 * len(group)]
+        out.append(event)
     return out
 
 
@@ -254,8 +278,35 @@ def _terms(ctx: Any, customer: str | None, before: date) -> tuple[int | None, An
     return None, None
 
 
-def prepare_invoice(ctx: Any, shipment: str, order: str | None = None) -> dict[str, Any]:
-    """The invoice entry for one shipment, or ``{"skip": reason}``."""
+def shipped_in_parts(ctx: Any, order: str, shipments: Sequence[str], day: date,
+                     by_line: Mapping[str, dict]) -> bool:
+    """True unless ``shipments`` (the order's shipments of ``day`` one entry bills) ship
+    the whole order at once: no other shipment of the order dated on or before ``day``,
+    every item line's ordered quantity on them together (no more, no less), and no shipped
+    line the order does not hold. An order shipped in parts is invoiced as the person decides (the parts together, or once
+    the rest ships), which the records do not tell: measured on dev days 2026-10-13..10-26,
+    a shipment of the whole order was invoiced as prepared 90 of 95 times, a part 22 of 76."""
+    ids = [o for o in ctx.linked(order, ("Shipment.ships",)) if o.startswith("Shipment:")
+           and _accounting(o) and o not in shipments]
+    heads = ap._read(ctx.st, ids, ("ship_date",))
+    if any((d := _day(ap._v(heads.get(s), "ship_date"))) is None or d <= day for s in ids):
+        return True
+    this: Counter = Counter()
+    for sl in (sl for oid in shipments for sl in shipped_lines(ctx, oid)):
+        ol = match_line(by_line, sl) if sl["qty"] else None
+        if ol is None and sl["qty"]:
+            return True                        # a shipped line no order line holds
+        if ol is not None:
+            this[ol["oid"]] += sl["qty"]
+    return any(ol["ordered"] is None or this.get(ol["oid"], Decimal(0)) != ol["ordered"]
+               for ol in by_line.values()
+               if ap._v(ol["row"], "line_type").strip() != MISC_LINE)
+
+
+def prepare_invoice(ctx: Any, shipment: str, order: str | None = None,
+                    with_: Sequence[str] = ()) -> dict[str, Any]:
+    """The invoice entry for one shipment (and ``with_``: the same order's other shipments
+    of that day, billed on the same invoice), or ``{"skip": reason}``."""
     head = ctx.read([shipment], SHIP_HEAD).get(shipment) or {}
     number = ap._v(head, "sage_shipment_number").strip()
     shipped = _day(ap._v(head, "ship_date"))
@@ -270,92 +321,196 @@ def prepare_invoice(ctx: Any, shipment: str, order: str | None = None) -> dict[s
     by_item: dict[str, list[dict]] = defaultdict(list)
     for ol in by_line.values():
         by_item[ol["item"]].append(ol)
+    others = ctx.read(list(with_), SHIP_HEAD) if with_ else {}
+    left: list[str] = []          # shipments of the group this entry does not bill (gaps)
+    together = [shipment]
+    for oid in dict.fromkeys(o for o in with_ if o != shipment):
+        # only a shipment of the same order and the same day (never a guess at another)
+        if _one(ctx, oid, "Shipment.ships", "SalesOrder") == order and \
+                _day(ap._v(others.get(oid), "ship_date")) == shipped:
+            together.append(oid)
+        else:
+            left.append(f"shipment {ap._v(others.get(oid), 'sage_shipment_number').strip() or '?'}"
+                        ": not this order's shipment of the day, not billed here")
+
+    def bill(oid: str) -> tuple[list[tuple[dict, dict, Decimal]], str | None]:
+        """One shipment's priced lines, or why it cannot be billed."""
+        got = []
+        for sl in sorted(shipped_lines(ctx, oid), key=lambda x: x["line"]):
+            if sl["qty"] is None:
+                return [], "quantity_unread"
+            if sl["qty"] == 0:
+                continue
+            ol = match_line(by_line, sl)
+            if ol is None or ol["price"] is None or not ol["item"]:
+                return [], "order_line_unknown"
+            got.append((sl, ol, (sl["qty"] * ol["price"]).quantize(CENT, rounding=ROUND_HALF_UP)))
+        return got, None
+
     lines, subtotal = [], Decimal(0)
-    for sl in sorted(shipped_lines(ctx, shipment), key=lambda x: x["line"]):
-        if sl["qty"] is None:
-            return {"skip": "quantity_unread"}
-        if sl["qty"] == 0:
+    billed, empty = [], []
+    for oid in together:
+        got, why = bill(oid)
+        if why is not None:
+            # a shipment of the day that cannot be billed: the rest is not the whole order
+            # at once, so no entry (one leaving a shipment out would bill a part)
+            return {"skip": why if len(together) == 1 else "shipped_in_parts"}
+        if not got:
+            empty.append(oid)              # nothing shipped on it: no line, never the lead
             continue
-        ol = match_line(by_line, sl)
-        if ol is None or ol["price"] is None or not ol["item"]:
-            return {"skip": "order_line_unknown"}
-        amount = (sl["qty"] * ol["price"]).quantize(CENT, rounding=ROUND_HALF_UP)
-        subtotal += amount
-        ctx.cite(sl["row"], "shipped_quantity")
-        ctx.cite(ol["row"], "sage_item_code", "unit_price")
-        lines.append({"item": ol["item"], "quantity": _qty(sl["qty"]),
-                      "unit_price": format(ol["price"].normalize(), "f"),
-                      "amount": _money(amount)})
+        billed.append(oid)
+        for sl, ol, amount in got:
+            subtotal += amount
+            ctx.cite(sl["row"], "shipped_quantity")
+            ctx.cite(ol["row"], "sage_item_code", "unit_price")
+            lines.append({"item": ol["item"], "quantity": _qty(sl["qty"]),
+                          "unit_price": format(ol["price"].normalize(), "f"),
+                          "amount": _money(amount)})
+    together = billed
     if not lines:
         return {"skip": "nothing_shipped"}
+    if shipped_in_parts(ctx, order, billed + empty, shipped, by_line):
+        return {"skip": "shipped_in_parts"}
     # the order's charge lines (freight and the like): named, never priced, since the
     # order's record does not state their amount; the person keys it (a gap)
     charges = sorted({ol["item"] or "charge" for ol in by_line.values()
                       if ap._v(ol["row"], "line_type").strip() == MISC_LINE})
-    ctx.cite(head, "sage_shipment_number", "ship_date")
+    heads = {shipment: head, **others}
+    for oid in together:
+        ctx.cite(heads.get(oid) or {}, "sage_shipment_number", "ship_date")
+    number = ap._v(heads.get(together[0]), "sage_shipment_number").strip() or number
     ctx.cite(ohead, "order_number", "currency")
     customer = _one(ctx, shipment, "Shipment.shipped_to", "Customer", CUSTOMERS)
     days, doc = _terms(ctx, customer, shipped)
     if doc:
         ctx.cite(doc, "dateinvc", "datedue")
     po = ap._v(ohead, "customer_po").strip() or ap._v(head, "customer_po").strip()
-    entry = {"kind": "ar_invoice", "shipment": number, "order": ap._v(ohead, "order_number"),
+    entry = {"kind": "ar_invoice", "shipment": number,
+             **({"with_shipments": [ap._v(heads.get(o), "sage_shipment_number").strip()
+                                    for o in together[1:]]} if len(together) > 1 else {}),
+             "order": ap._v(ohead, "order_number"),
              "customer_po": po or None, "invoice_date": shipped.isoformat(),
              "currency": currency, "lines": lines, "subtotal": _money(subtotal),
              "charges": [{"charge": c, "amount": None} for c in charges],
              "terms_days": days, "tax": "computed by the accounting system on entry"}
     gaps = ([] if days is not None else ["terms not found on an earlier invoice"]) + \
-        ([f"charge {c}: amount not on the order" for c in charges])
-    return {"summary": f"Shipment {number} ({len(lines)} line(s)) is ready to invoice: "
+        ([f"charge {c}: amount not on the order" for c in charges]) + left
+    return {"summary": f"Shipment {number}"
+                       + (f" with {len(together) - 1} more of the same day"
+                          if len(together) > 1 else "")
+                       + f" ({len(lines)} line(s)) is ready to invoice: "
                        f"{_money(subtotal)} {currency} of items before tax"
                        + (f" and {len(charges)} charge(s) to key." if charges else "."),
-            "object": {"object_id": shipment, "number": number, "date": shipped.isoformat()},
+            "object": {"object_id": together[0], "number": number,
+                       "date": shipped.isoformat()},
             "entry": entry, "gaps": gaps, "dry_run": True,
-            "links": [{"label": "Open the shipment", "href": f"/object/{shipment}"},
+            "links": [{"label": "Open the shipment", "href": f"/object/{together[0]}"},
                       {"label": "Open the order", "href": f"/object/{order}"}]}
 
 
 def h_invoice_entry(ctx: Any, event: Mapping[str, Any]) -> dict[str, Any]:
-    return prepare_invoice(ctx, event["object_id"], event.get("order_id"))
+    return prepare_invoice(ctx, event["object_id"], event.get("order_id"),
+                           [o for o in event.get("with") or () if isinstance(o, str)])
 
 
 # ----------------------------------------------------------------------------- shipment posting
 
+def _first_shipment_whole(ctx: Any, order: str) -> tuple[date, date | None, bool] | None:
+    """(order date, its first shipment's date or None, whether that shipment shipped every
+    item line's ordered quantity); None when the order date is unread."""
+    head = ap._read(ctx.st, [order], ("order_date",)).get(order)
+    ordered_on = _day(ap._v(head, "order_date"))
+    if ordered_on is None:
+        return None
+    ids = [o for o in ctx.linked(order, ("Shipment.ships",)) if o.startswith("Shipment:")
+           and _accounting(o)]
+    heads = ap._read(ctx.st, ids, ("ship_date",))
+    days = {s: _day(ap._v(heads.get(s), "ship_date")) for s in ids}
+    if not days or None in days.values():
+        return ordered_on, None, False         # none, or one unread: never judged whole
+    dated = sorted((d, s) for s, d in days.items())
+    by_line = order_lines(ctx, order)
+    got: Counter = Counter()
+    for sl in shipped_lines(ctx, dated[0][1]):
+        ol = match_line(by_line, sl) if sl["qty"] else None
+        if ol is None and sl["qty"]:
+            return ordered_on, dated[0][0], False
+        if ol is not None:
+            got[ol["oid"]] += sl["qty"]
+    whole = all(ol["ordered"] is not None and got.get(ol["oid"], Decimal(0)) == ol["ordered"]
+                for ol in by_line.values()
+                if ap._v(ol["row"], "line_type").strip() != MISC_LINE)
+    return ordered_on, dated[0][0], whole
+
+
+def ships_whole(ctx: Any, customer: str | None, before: date) -> bool:
+    """The customer's ``POSTING_HISTORY`` latest orders dated at least ``POSTING_AFTER``+1
+    days before ``before`` (so each one's outcome is known) each shipped whole: its first
+    shipment within ``POSTING_AFTER`` days of the order, every item line's quantity on it."""
+    if not customer:
+        return False
+    ids = [o for o in ctx.linked(customer, ("SalesOrder.ordered_by",))
+           if o.startswith("SalesOrder:") and _accounting(o)]
+    heads = ap._read(ctx.st, ids, ("order_date",))
+    days = {o: _day(ap._v(heads.get(o), "order_date")) for o in ids}
+    if None in days.values():
+        return False                           # an order of unread date may be the latest
+    cut = before - timedelta(days=POSTING_AFTER + 1)
+    dated = sorted((d, o) for o, d in days.items() if d <= cut)[-POSTING_HISTORY:]
+    if len(dated) < POSTING_HISTORY:
+        return False
+    for _d, o in dated:
+        ctx.check()
+        got = _first_shipment_whole(ctx, o)
+        if got is None or got[1] is None or not got[2] \
+                or not 0 <= (got[1] - got[0]).days <= POSTING_AFTER:
+            return False
+    return True
+
+
 def shipment_posting_events(st: Any, registry: Mapping[str, Any], as_of: date
                             ) -> list[dict[str, Any]]:
-    """``record.due`` events: orders whose order-desk status, as recorded by the end of
-    ``as_of``, is ready to ship (``READY``) and first was within the last ``window_days``,
-    tied to exactly one accounting order."""
+    """``record.due`` events: accounting orders entered in the last ``window_days`` with
+    one item line and nothing shipped yet, of a customer whose latest orders each shipped
+    whole (``ships_whole``). Measured on dev days 2026-10-13..11-02: such an order's first
+    shipment, within a week, shipped the whole line 24 of 25 times; every order entered,
+    150 of 266 (the order desk's ready-to-ship status, the trigger before, led to a
+    shipment within a week 55 of 208 times: it stays set for weeks)."""
     spec = _spec(registry, "shipment_posting")
     if spec is None:
         return []
-    until = (as_of + timedelta(days=1)).isoformat()
     window = int((spec.get("params") or {}).get("window_days", 1))
-    since = (as_of - timedelta(days=window - 1)).isoformat()
-    latest: dict[str, tuple[str, str, str]] = {}
-    became: dict[str, str] = {}              # when the ready status was first recorded
-    for oid, value, at, handle in st.conn.execute(
-            "SELECT v.object_id, v.value, v.recorded_at, v.l1_handle FROM object_values v "
-            "WHERE v.property = 'status' AND v.object_id IN (SELECT object_id FROM objects "
-            "WHERE object_type = 'SalesOrder' AND binding_id NOT LIKE 'portal.sage_oe_%') "
-            "AND v.recorded_at < ?", (until,)):
-        if oid not in latest or at > latest[oid][1]:
-            latest[oid] = (str(value or ""), at, handle)
-        if str(value or "").strip().upper() in READY and (oid not in became
-                                                           or at < became[oid]):
-            became[oid] = at
+    ids = [o for o in _due_ids(st, "SalesOrder.ordered", "SalesOrder",
+                               as_of - timedelta(days=window - 1), as_of) if _accounting(o)]
     ctx = ap.Ctx(st, as_of, float("inf"), ())
+    heads = ctx.read(ids, ORDER_HEAD)
+    steady: dict[str | None, bool] = {}        # customer -> ships_whole, once per day
     out = []
-    for oid, (value, at, handle) in sorted(latest.items()):
-        if value.strip().upper() not in READY or became.get(oid, "") < since:
-            continue                      # not ready, or ready since before the window
-        twins = sorted({o for o in ctx.linked(oid, ("SalesOrder.same_record_as",))
-                        if o.startswith("SalesOrder:") and _accounting(o)})
-        if len(twins) != 1:
+    for oid in ids:
+        head = heads.get(oid) or {}
+        ordered_on = _day(ap._v(head, "order_date"))
+        if ordered_on is None or ordered_on > as_of:
             continue
-        out.append(_event("shipment_posting", twins[0], "SalesOrder", at,
-                          ap._types(st, [twins[0]]).get(twins[0], ("", ""))[1], [handle],
-                          {"ready_since": at[:10]}, desk_order=oid))
+        items = [ol for ol in order_lines(ctx, oid).values()
+                 if ap._v(ol["row"], "line_type").strip() != MISC_LINE]
+        if len(items) != 1:
+            continue
+        shipped = ap._read(st, [s for s in ctx.linked(oid, ("Shipment.ships",))
+                                if s.startswith("Shipment:") and _accounting(s)],
+                           ("ship_date",))
+        if any((d := _day(ap._v(r, "ship_date"))) is None or d < as_of
+               for r in shipped.values()):
+            continue                                  # shipped before: not a new order
+        customer = _one(ctx, oid, "SalesOrder.ordered_by", "Customer", CUSTOMERS)
+        if customer not in steady:
+            steady[customer] = ships_whole(ctx, customer, as_of)
+        if not steady[customer]:
+            continue
+        out.append(_event("shipment_posting", oid, "SalesOrder", ordered_on.isoformat(),
+                          ap._types(st, [oid]).get(oid, ("", ""))[1],
+                          [c["l1_handle"] for c in head.values() if c.get("l1_handle")],
+                          {"order_number": ap._v(head, "order_number").strip(),
+                           "order_date": ordered_on.isoformat()}))
     return out
 
 
@@ -437,15 +592,75 @@ def _ar_index(st: Any) -> Any:
         else ps._index(ar_docs(st))
 
 
-def _remit_party(st: Any, rows: Sequence[Any]) -> str | None:
-    """The one accounting customer whose invoices a remittance's references name (the
-    lookup ``prepare_cash`` applies), else None."""
+def remit_parties(st: Any, rows: Sequence[Any]) -> dict[str | None, list[Any]]:
+    """A remittance's lines by the one accounting customer whose invoices each line's
+    reference names (the lookup ``prepare_cash`` applies; an accounting receipt is entered
+    per customer, so one remittance paying several customers is several entries). A line
+    naming invoices of several customers is under None (the remittance is then left whole:
+    no split beats a wrong one); a line naming none is left out."""
     from . import proactive_sheets as ps
     index = _ar_index(st)
-    parties = {d.party.strip().upper() for r in rows
-               for d in index.get(ps._norm(ps._v(r, "ref")), [])
-               if d.system == "sage" and d.kind == "invoice"}
-    return parties.pop() if len(parties) == 1 else None
+    out: dict[str | None, list[Any]] = defaultdict(list)
+    for r in rows:
+        parties = {d.party.strip().upper() for d in index.get(ps._norm(ps._v(r, "ref")), [])
+                   if d.system == "sage" and d.kind == "invoice"}
+        if parties:
+            out[parties.pop() if len(parties) == 1 else None].append(r)
+    return dict(out)
+
+
+def _receipt_lines(st: Any) -> list[tuple[str, tuple[str, str], str, str]]:
+    """Every accounting AR receipt line as (entry day ``YYYYMMDD``, receipt, the customer
+    whose invoice it pays, the customer the receipt was entered under), oldest first: read
+    once per run, only when a remittance names several customers."""
+    from .day_coverage import _scan
+
+    def load() -> list[tuple[str, tuple[str, str], str, str]]:
+        payer = {(ap._v(r, "cntbtch").strip(), ap._v(r, "cntitem").strip()):
+                 ap._v(r, "idcust").strip().upper()
+                 for _oid, r in _scan(st, "RelSageArTcr", ("cntbtch", "cntitem", "idcust"))}
+        out = []
+        for _oid, r in _scan(st, "RelSageArTcp", ("cntbtch", "cntitem", "idcust", "audtdate")):
+            k = (ap._v(r, "cntbtch").strip(), ap._v(r, "cntitem").strip())
+            d, cust = ap._v(r, "audtdate").strip(), ap._v(r, "idcust").strip().upper()
+            if cust and len(d) == 8 and d.isdigit():
+                out.append((d, k, cust, payer.get(k, "")))
+        return sorted(out)
+    memo = getattr(st, "memo", None)
+    return memo("receivables:receipt_lines", load) if memo else load()
+
+
+def receipt_plan(st: Any, rows: Sequence[Any], before: date
+                 ) -> list[tuple[tuple[str, ...] | None, str | None]]:
+    """How a remittance is entered: (its customers, the customer the receipt goes under)
+    per accounting receipt. One customer: one receipt. Several: one receipt for all of them
+    when any of the last ``KEYER_LOOKBACK`` receipts entered before ``before`` that paid any
+    of their invoices paid two or more of them together (a payer settling for related
+    accounts), under that receipt's customer; else one receipt per customer. A line naming
+    several customers' invoices, or none named: one plan of the whole (``prepare_cash``
+    then says why it has no entry)."""
+    groups = remit_parties(st, rows)
+    if not groups or None in groups:
+        return [(None, None)]
+    parties = sorted(p for p in groups if p)
+    if len(parties) == 1:
+        return [((parties[0],), parties[0])]
+    day, want = before.strftime("%Y%m%d"), set(parties)
+    # each receipt as its lines entered before the day showed it (a replay never reads a
+    # line entered on or after it)
+    paid: dict[tuple[str, str], set[str]] = defaultdict(set)
+    last: dict[tuple[str, str], tuple[str, str]] = {}
+    for d, k, cust, payer in _receipt_lines(st):
+        if d >= day:
+            break
+        if cust in want:
+            paid[k].add(cust)
+            last[k] = (d, payer)
+    recent = sorted(paid, key=lambda k: (last[k][0], k))[-KEYER_LOOKBACK:]
+    together = [k for k in recent if len(paid[k]) >= 2]
+    if together and last[together[-1]][1]:
+        return [(tuple(parties), last[together[-1]][1])]
+    return [((p,), p) for p in parties]
 
 
 def _receipts_by_customer(st: Any) -> dict[str, list[tuple[str, str]]]:
@@ -499,20 +714,28 @@ def cash_application_events(st: Any, registry: Mapping[str, Any], as_of: date,
         if got is None or not (lo <= got <= as_of):
             continue
         source = rows[0].cite
-        out.append(_event("cash_application", source["object_id"], "Attachment",
-                          got.isoformat(), ap._types(st, [source["object_id"]]).get(
-                              source["object_id"], ("", ""))[1], [source["l1_handle"]],
-                          {"remittance": key[:16], "table": table},
-                          remittance=[key, table],
-                          owner_hint=receipt_keyer(st, _remit_party(st, rows), as_of,
-                                                   people)))
+        plan = receipt_plan(st, rows, as_of)
+        for parties, payer in plan:
+            out.append(_event("cash_application", source["object_id"], "Attachment",
+                              got.isoformat(), ap._types(st, [source["object_id"]]).get(
+                                  source["object_id"], ("", ""))[1], [source["l1_handle"]],
+                              {"remittance": key[:16], "table": table,
+                               "receipts": len(plan)},
+                              event_id=ap._digest("record.due", "cash_application",
+                                                  source["object_id"], key, str(table),
+                                                  *(parties or ())),
+                              remittance=[key, table, list(parties) if parties else None,
+                                          payer],
+                              owner_hint=receipt_keyer(st, payer, as_of, people)))
     if out:
         _ar_index(st)          # the receivables read once here, not in a handler's budget
     return out
 
 
-def prepare_cash(ctx: Any, rows: Sequence[Any]) -> dict[str, Any]:
-    """The cash application for one remittance table, or ``{"skip": reason}``."""
+def prepare_cash(ctx: Any, rows: Sequence[Any], payer: str | None = None) -> dict[str, Any]:
+    """The cash application for one remittance table (or its lines of the customers one
+    receipt pays: ``receipt_plan``), or ``{"skip": reason}``. Invoices of several customers
+    only with the ``payer`` the receipt goes under."""
     from . import proactive_sheets as ps
     index = _ar_index(ctx.st)
     applied, parties, currencies = [], set(), set()
@@ -544,28 +767,36 @@ def prepare_cash(ctx: Any, rows: Sequence[Any]) -> dict[str, Any]:
                         "discount": _money(discount) if discount else None})
     if not applied:
         return {"skip": "no_reference_matched"}
-    if len(parties) != 1 or len(currencies) != 1 or "" in currencies:
+    if (len(parties) != 1 and not payer) or len(currencies) != 1 or "" in currencies:
         return {"skip": "customer_or_currency_not_one"}
     total = sum((Decimal(a["amount"]) for a in applied), Decimal(0))
     currency = currencies.pop()
-    customer = parties.pop().strip()
+    customers = sorted(p.strip() for p in parties)
+    customer = (payer or customers[0]).strip()
     return {"summary": f"A remittance of {_money(total)} {currency} applies to "
-                       f"{len(applied)} open invoice(s).",
+                       f"{len(applied)} open invoice(s)"
+                       + (f" of {len(customers)} customers." if len(customers) > 1 else "."),
             "entry": {"kind": "ar_receipt", "customer": customer, "currency": currency,
-                      "applied": applied, "total": _money(total)},
+                      "applied": applied, "total": _money(total),
+                      "invoices_of": customers if len(customers) > 1 else None},
             "gaps": [], "dry_run": True,
             "links": [{"label": "Open the remittance", "href": f"/object/{rows[0].cite['object_id']}"}]}
 
 
 def h_cash_application(ctx: Any, event: Mapping[str, Any]) -> dict[str, Any]:
-    key, table = (event.get("remittance") or [None, None])[:2]
+    key, table, parties, payer = [*(event.get("remittance") or ()), None, None, None, None][:4]
     people = getattr(ctx.st, "autopilot_people", None)
     if people is None:
         return {"skip": "people_exclusion_unavailable"}
     rows = remittances(ctx.st, people).get((key, table))
     if not rows:
         return {"skip": "remittance_unread"}
-    return prepare_cash(ctx, rows)
+    if parties:
+        groups = remit_parties(ctx.st, rows)
+        rows = [r for p in parties for r in groups.get(p, ())]
+        if not rows:
+            return {"skip": "remittance_unread"}
+    return prepare_cash(ctx, rows, payer if parties and len(parties) > 1 else None)
 
 
 def due_events(st: Any, registry: Mapping[str, Any], as_of: date, people: Any

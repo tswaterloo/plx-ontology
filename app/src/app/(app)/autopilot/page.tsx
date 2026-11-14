@@ -14,8 +14,9 @@ import { noticeKind, plainError } from "@/lib/errors";
 import type { AutopilotArea } from "@/lib/types";
 
 // The autopilots: today's prepared items by person, role, workflow and system, each with its
-// evidence and drafted action; per workflow its scores and state; the owner's switches and
-// the audit log. Accepting is a recorded dry run until a workflow is live.
+// evidence and drafted action; per workflow its scores and state; your own switches (each
+// person turns their own workflows on); the owner's stop switches and the audit log.
+// Accepting is a recorded dry run until a workflow is on for you.
 export default function AutopilotPage() {
   return (
     <Suspense>

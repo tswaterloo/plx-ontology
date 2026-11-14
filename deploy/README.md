@@ -258,6 +258,6 @@ reads only if `PLX_AUTOPILOT_ROLES_FILE` names it); system timers `plx-proactive
 h), `plx-backup` (03:15 ET), `plx-restore-test` (04:30 ET) and `plx-ops-health` (every 15
 min, `/etc/plx/ingest.env`), `plx-autopilot-follow` (the autopilot's live feed, 5 min after the
 last cycle and on each delta publish via its `.path`; prepares My work items only, ordered event
-queue on); and links `plx-release` into `~/.local/bin`. Each unit sets `Nice` and
+queue on), `plx-autopilot-fast` (the fast feed: a Teams or mail message the capture just stored is prepared within seconds, started by its `.path` on `<capture store>.new` and a 1-min timer; same guards, prepares only); and links `plx-release` into `~/.local/bin`. Each unit sets `Nice` and
 `MemoryMax`; the ones that read people data load `proactive.env` (the people exclusion only);
 no unit embeds a secret.

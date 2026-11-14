@@ -62,6 +62,7 @@ from operating.app_tables import rows as _rows
 
 from . import feedback as fb
 from .ask_drafts import linked_records
+from operating.file_modes import keep_private
 
 log = logging.getLogger("operator_api.work_log")
 
@@ -148,18 +149,12 @@ def exclusion() -> Any:
 
 
 def _actor_excluded(guard: Any, reader: Any) -> bool:
-    """Whether the reader is (or cannot be told from) an excluded person: fail closed."""
-    if guard is None or getattr(guard, "unavailable", "absent"):
-        return True
+    """Whether the reader is (or cannot be told from) an excluded person: fail closed
+    (``feedback.person_excluded``: their object id decides)."""
     session = reader.session
-    ids = {str(v).lower() for v in (*getattr(session, "identities", ()),
-                                     getattr(session, "subject_oid", None), reader.email)
-           if v}
-    ids |= {o.lower() for o in fb._UUID.findall(reader.key)}
-    try:
-        return any(guard.is_excluded(v) for v in ids)
-    except Exception:  # noqa: BLE001 - undecidable: excluded
-        return True
+    ids = [*getattr(session, "identities", ()), getattr(session, "subject_oid", None),
+           reader.email, *fb._UUID.findall(reader.key)]
+    return fb.person_excluded(guard, [v for v in ids if v])
 
 
 def _person_excluded(guard: Any, value: str) -> bool:
@@ -195,17 +190,17 @@ class WorkLog:
                                          isolation_level=None)
         else:
             self.directory.mkdir(parents=True, exist_ok=True, mode=0o700)
-            os.chmod(self.directory, 0o700)
+            keep_private(self.directory, 0o700)
             path = self.directory / "work-log.sqlite"
             os.close(os.open(path, os.O_RDWR | os.O_CREAT, 0o600))
-            os.chmod(path, 0o600)
+            keep_private(path, 0o600)
             self._conn = sqlite3.connect(str(path), timeout=30, check_same_thread=False,
                                          isolation_level=None)
             self._conn.execute("PRAGMA journal_mode = WAL")
             for side in ("-wal", "-shm"):
                 extra = path.with_name(path.name + side)
                 if extra.exists():
-                    os.chmod(extra, 0o600)
+                    keep_private(extra, 0o600)
         self._conn.row_factory = sqlite3.Row
         _schemas.apply(self._conn, _WORK_LOG)
         # where follow-through reads replies (``operating.autopilot.Queue`` inbound)
@@ -783,6 +778,17 @@ class Notes:
         # (reader, mail handle) -> the conversation id of that message, as the reader
         # may open it (None: unknown); a card reply's loop is matched on it
         self.conversation_of = conversation_of
+        # the person's memory (``operator_api.memory``), told what each path did; None:
+        # nothing remembered beyond this log
+        self.memory: Any = None
+
+    def _remember(self, what: str, reader: Any, *args: Any) -> None:
+        if self.memory is None:
+            return
+        try:
+            self.memory.observe(what, reader, *args)
+        except Exception as error:  # noqa: BLE001 - memory never fails the action
+            log.error("memory not told (%s): %s", what, type(error).__name__)
 
     def _conversation(self, reader: Any, replied: Any) -> Optional[str]:
         """The conversation a reply or forward continues: a cited message handle
@@ -817,6 +823,7 @@ class Notes:
                   thread=f"ask:{data['conversation_id']}", source="ask",
                   source_id=data.get("answer_id"),
                   records=linked_records(data), detail=data, once=f"ask:{data.get('answer_id')}")
+        self._remember("answer", reader, {k: v for k, v in data.items() if k != "_review"})
 
     def ask_failed(self, reader: Any, request: Any, code: str, *,
                    steps: Sequence[Mapping[str, Any]] = (), stream_ms: int = 0) -> None:
@@ -868,6 +875,8 @@ class Notes:
                          + (f": {entry.get('question')}" if entry.get("question") else "")),
                   thread=thread if valid_thread(thread) else "ask:rated",
                   source="feedback", source_id=entry.get("id"))
+        self._remember("feedback", reader, body.rating, getattr(body, "note", None),
+                       entry.get("question"), entry.get("id"), conversation)
 
     def note(self, reader: Any, body: Any, entry: Mapping[str, Any]) -> None:
         records = _ref({"object_id": body.object_id, "object_type": body.object_type,
@@ -880,6 +889,8 @@ class Notes:
         self._put(reader, kind="note", verb="noted", title=body.note,
                   thread=thread if valid_thread(thread) else "record:note/general",
                   source="feedback", source_id=entry.get("id"), records=records)
+        self._remember("note", reader, body.note, [r["object_id"] for r in records],
+                       entry.get("id"))
 
     def autopilot_prepared(self, reader: Any, area: Any) -> None:
         """Each item prepared for the reader, once, when they first see it."""
@@ -910,6 +921,7 @@ class Notes:
         title = data["title"] + (f" ({decision['outcome'].replace('_', ' ')})"
                                  if decision.get("outcome") else "")
         self._put(reader, kind="autopilot", verb=verb, title=title, **common)
+        self._remember("autopilot", reader, data)
         draft = (data.get("prepared") or {}).get("draft") or {}
         to = [t.get("address") if isinstance(t, Mapping) else t for t in draft.get("to") or ()]
         # a send only when the email's own action is done, never the first action's outcome
@@ -953,6 +965,11 @@ class Notes:
                                               reader, row.get("in_reply_to"))],
                                           at=self.store.clock())
                   if outbound and data["status"] == "sent" else None)
+        self._remember("action", reader, data["kind"], data["status"], title,
+                       list(row.get("to") or ()),
+                       [r["object_id"] for r in _ref({"object_id": subject.get("object_id")
+                                                      or subject.get("id")})],
+                       f"{data['card_id']}#{data.get('seq')}")
 
     def write(self, reader: Any, verb: str, view: Any) -> None:
         data = _dump(view)

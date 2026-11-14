@@ -58,5 +58,65 @@ class SearchConnectionTests(unittest.TestCase):
         self.assertEqual(core._IDLE.get("postgresql://made-up/db", []), [])
 
 
+
+class CoverageTests(unittest.TestCase):
+    def test_pages_asking_at_once_share_one_read_of_the_index(self):
+        """The search index's newest text per system (Home's and the late list's
+        freshness, a 2 s scan of the chunks, up to 5 s under load) is read once for the
+        pages asking at once, each of them shown the same answer."""
+        import threading
+        import time
+        from operating.search import coverage
+        coverage._CACHE.clear()
+        self.addCleanup(coverage._CACHE.clear)
+        reads: list[int] = []
+
+        def slow(target):
+            reads.append(1)
+            time.sleep(0.3)
+            return {"Email": "2026-11-12T04:09:33+00:00"}
+        got: list = []
+        with mock.patch.object(coverage, "_read", side_effect=slow):
+            asking = [threading.Thread(target=lambda: got.append(
+                coverage.coverage("postgresql:///none"))) for _ in range(5)]
+            for t in asking:
+                t.start()
+            for t in asking:
+                t.join(10)
+        self.assertEqual(len(reads), 1)
+        self.assertEqual(got, [{"Email": "2026-11-12T04:09:33+00:00"}] * 5)
+
+    def test_pages_asking_at_once_share_one_first_read_of_the_marked_documents(self):
+        """The documents marked beyond a reader (every page's file filter, a 6 s read on a
+        cold process) are read once for the pages asking at once; an unreadable set is
+        withheld from all of them (None: every file withheld), never read as none."""
+        import threading
+        import time
+        from operating.search import document_marks as dm
+        for result in ({"Doc:1": frozenset({"payroll"})}, None):
+            dm.forget()
+            self.addCleanup(dm.forget)
+            reads: list[int] = []
+
+            def slow(dsn, result=result):
+                reads.append(1)
+                time.sleep(0.3)
+                if result is None:
+                    raise OSError("search store down")
+                return result, {}
+            got: list = []
+            with mock.patch.object(dm._Marked, "_read", side_effect=slow), \
+                    mock.patch.object(dm, "enabled", return_value=True):
+                asking = [threading.Thread(target=lambda: got.append(
+                    dm.withheld_set({"public"}))) for _ in range(5)]
+                for t in asking:
+                    t.start()
+                for t in asking:
+                    t.join(10)
+            self.assertEqual(len(reads), 1)
+            want = None if result is None else (frozenset({"Doc:1"}), frozenset())
+            self.assertEqual(got, [want] * 5)
+
+
 if __name__ == "__main__":
     unittest.main()

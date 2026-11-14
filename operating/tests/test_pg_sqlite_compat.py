@@ -48,6 +48,41 @@ class CompatTests(unittest.TestCase):
         conn.executemany("INSERT INTO object_versions VALUES (?,?,?,?,?,?,?)", VERSIONS)
         return conn
 
+    def test_a_parameter_tested_alone_for_null_never_makes_the_server_log_an_error(self):
+        """GA-F17: ``? IS NULL`` cannot be typed by Postgres; preparing it failed, was
+        logged with the whole statement on every connection, then bound client side. Now
+        it is bound client side at once, with the same rows, and a typed statement is
+        still prepared."""
+        import psycopg
+        from operating.pg.sqlite_compat import PgCompatConnection
+        prepared = []
+        real = psycopg.Cursor.execute
+
+        def watch(cur, query, params=None, **kwargs):
+            if kwargs.get("prepare"):
+                prepared.append(str(query))
+            return real(cur, query, params, **kwargs)
+        sql = ("SELECT v.object_id FROM object_versions v WHERE (:id IS NULL OR "
+               "v.object_id = :id) AND (? IS NOT NULL OR 1 = 1) ORDER BY v.object_id")
+        from unittest import mock
+        for value in (None, "A:b:1"):
+            pg = PgCompatConnection(self.dsn)
+            self.addCleanup(pg.close)
+            with mock.patch.object(psycopg.Cursor, "execute", watch):
+                got = [r[0] for r in pg.execute(sql.replace("?", ":other"),
+                                                {"id": value, "other": None}).fetchall()]
+                typed = [r[0] for r in pg.execute(
+                    "SELECT object_id FROM object_versions WHERE object_id = ?",
+                    ("A:b:2",)).fetchall()]
+            lite = self.sqlite()
+            want = [r[0] for r in lite.execute(sql.replace("?", ":other"),
+                                               {"id": value, "other": None})]
+            self.assertEqual(got, want)
+            self.assertEqual(typed, ["A:b:2"])
+            self.assertFalse([q for q in prepared if "IS NULL" in q or "IS NOT NULL" in q])
+            self.assertTrue(prepared, "a typed statement is still prepared on the server")
+            prepared.clear()
+
     def test_scope_time_and_item_gate_read_the_same_rows_on_both_stores(self):
         from operating.pg.sqlite_compat import PgCompatConnection
         pg = PgCompatConnection(self.dsn)

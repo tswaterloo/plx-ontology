@@ -136,6 +136,34 @@ async function getJson<T>(path: string, signal?: AbortSignal): Promise<T> {
   return (await (await call(path, { signal })).json()) as T;
 }
 
+/** How often a Today list still being read for the first time is asked for again, and for how long at most. */
+export const READING_POLL_MS = 1500;
+export const READING_MOST_MS = 300_000;
+
+/** A Today list (Home, the late list, the briefing, the suggestions, the replies) or a record's page: the server answers
+ * at once with `reading: true` (nothing in it) while its first read for you goes on; ask again until
+ * the page is there, so the screens that are ready show while the rest fill in. Still reading after
+ * READING_MOST_MS: the calm "busy" notice, never the empty placeholder. */
+export async function getRead<T extends { reading?: boolean | null }>(path: string, signal?: AbortSignal): Promise<T> {
+  const until = Date.now() + READING_MOST_MS;
+  for (;;) {
+    const got = await getJson<T>(path, signal);
+    if (!got.reading) return got;
+    if (Date.now() >= until) throw new ApiError(503, "busy");
+    await new Promise<void>((done, fail) => {
+      const stop = () => {
+        clearTimeout(t);
+        fail(signal?.reason ?? new DOMException("aborted", "AbortError"));
+      };
+      const t = setTimeout(() => {
+        signal?.removeEventListener("abort", stop);
+        done();
+      }, READING_POLL_MS);
+      signal?.addEventListener("abort", stop, { once: true });
+    });
+  }
+}
+
 export function getAuthConfig(signal?: AbortSignal): Promise<AuthConfig> {
   return getJson<AuthConfig>("/api/auth/config", signal);
 }
@@ -237,12 +265,12 @@ export function getOpsAlarms(signal?: AbortSignal): Promise<OpsAlarms> {
 }
 
 export function getHome(signal?: AbortSignal): Promise<HomeResponse> {
-  return getJson<HomeResponse>("/api/home", signal);
+  return getRead<HomeResponse>("/api/home", signal);
 }
 
 /** Your briefing: the top events routed to you, every other one counted by type, with the digest preview. */
 export function getBriefing(signal?: AbortSignal, view: BriefingView = "all"): Promise<Briefing> {
-  return getJson<Briefing>(view === "all" ? "/api/briefing" : `/api/briefing?view=${view}`, signal);
+  return getRead<Briefing>(view === "all" ? "/api/briefing" : `/api/briefing?view=${view}`, signal);
 }
 
 /** One event type's items of your briefing, a page at a time (a group's "+N more"). */
@@ -314,12 +342,12 @@ export async function markAlertsRead(alertIds: string[]): Promise<WatchReadResul
 /** Every late purchase order you may see, a page at a time, longest late first ("show all"). */
 export function getLateList(offset = 0, signal?: AbortSignal, limit = 25): Promise<LateList> {
   const n = Math.min(100, Math.max(1, Math.floor(limit)));
-  return getJson<LateList>(`/api/late?offset=${Math.max(0, Math.floor(offset))}&limit=${n}`, signal);
+  return getRead<LateList>(`/api/late?offset=${Math.max(0, Math.floor(offset))}&limit=${n}`, signal);
 }
 
 /** What needs you and what to do: ranked suggestions, each with how we know, a draft and the actions it offers. */
 export function getSuggestions(signal?: AbortSignal): Promise<Suggestions> {
-  return getJson<Suggestions>("/api/suggestions", signal);
+  return getRead<Suggestions>("/api/suggestions", signal);
 }
 
 /** One card action as it would be done: the exact payload and request, its checks; nothing is done. */
@@ -408,7 +436,7 @@ export function getAlertKinds(signal?: AbortSignal): Promise<AlertKinds> {
 // Your own "needs my reply" list: only your mailbox and one-to-one chats; drafts are sent
 // only through a card's preview and your confirm.
 export function getReplies(signal?: AbortSignal): Promise<ReplyTriage> {
-  return getJson<ReplyTriage>("/api/replies", signal);
+  return getRead<ReplyTriage>("/api/replies", signal);
 }
 
 // The work the autopilots prepared for you (and your granted reports), with your digest.
@@ -450,6 +478,23 @@ export async function fillForm(body: DocFillRequest): Promise<InstructFill> {
 }
 
 /** Owner only: the write path's global kill switch. */
+/** Switch one of your own autopilot workflows on or off (only your own; on only once it
+ * passed its check for you). Answers the area as it now reads. */
+export async function setAutopilotOptIn(workflow: string, on: boolean): Promise<AutopilotArea> {
+  return (await (await call("/api/autopilot/opt-in", { method: "POST", json: { workflow, on } })).json()) as AutopilotArea;
+}
+
+/** Owner only: acknowledge that a workflow passed its check for a role (the owner is told
+ * once; it turns nothing on). Answers the area as it now reads. */
+export async function ackAutopilotNotice(role: string, workflow: string): Promise<AutopilotArea> {
+  return (await (await call("/api/autopilot/notices/ack", { method: "POST", json: { role, workflow } })).json()) as AutopilotArea;
+}
+
+/** Pause (or resume) everything you switched on, at once. */
+export async function setAutopilotPaused(paused: boolean): Promise<AutopilotArea> {
+  return (await (await call("/api/autopilot/pause", { method: "POST", json: { paused } })).json()) as AutopilotArea;
+}
+
 export async function setAutopilotGlobal(globalOff: boolean): Promise<AutopilotSwitches> {
   return (await (await call("/api/autopilot/switches", { method: "POST", json: { global_off: globalOff } })).json()) as AutopilotSwitches;
 }
@@ -511,7 +556,7 @@ export function getTeamPerson(key: string, signal?: AbortSignal): Promise<TeamPe
 
 // R&D and sample projects per customer, from the threads and records you may open.
 export function getRdBoard(signal?: AbortSignal): Promise<RdBoard> {
-  return getJson<RdBoard>("/api/rd-projects", signal);
+  return getRead<RdBoard>("/api/rd-projects", signal);
 }
 
 // An item's label and artwork changes from your own alert list.
@@ -524,12 +569,12 @@ export function getLabelRevisions(objectId: string, signal?: AbortSignal): Promi
 }
 
 export function getApprovals(signal?: AbortSignal): Promise<ApprovalsQueue> {
-  return getJson<ApprovalsQueue>("/api/approvals", signal);
+  return getRead<ApprovalsQueue>("/api/approvals", signal);
 }
 
 /** Calendar events in the next 14 days, each with its brief link. */
 export function getUpcomingMeetings(signal?: AbortSignal): Promise<UpcomingMeetings> {
-  return getJson<UpcomingMeetings>("/api/brief/meetings", signal);
+  return getRead<UpcomingMeetings>("/api/brief/meetings", signal);
 }
 
 /** Your confirmed actions, newest first. */
@@ -552,7 +597,7 @@ export function isObjectType(t: string): boolean {
  * while the full page is read. */
 export function getObject(type: string, id: string, signal?: AbortSignal, quick = false): Promise<ObjectPage> {
   if (!isObjectType(type) || !id || id.length > 700) return Promise.reject(new ApiError(404, "not_found"));
-  return getJson<ObjectPage>(`/api/object/${type}/${encodeURIComponent(id)}${quick ? "?quick=1" : ""}`, signal);
+  return getRead<ObjectPage>(`/api/object/${type}/${encodeURIComponent(id)}${quick ? "?quick=1" : ""}`, signal);
 }
 
 /** A record's neighbours one hop out, by kind of link, as this reader may see them (the

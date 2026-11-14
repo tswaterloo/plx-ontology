@@ -678,6 +678,26 @@ class BriefRoutes(unittest.TestCase):
             self.assertTrue(e["organizer"] and e["attendees"], e["object"]["label"])
             brief = client.get(e["brief_url"].replace("/meetings/brief/", "/api/brief/"))
             self.assertEqual(brief.status_code, 200, e["brief_url"])
+            # every source the brief cites opens, named as the brief names it
+            cited = {}
+
+            def walk(node):
+                if isinstance(node, dict):
+                    if isinstance(node.get("handle"), str) and node.get("label"):
+                        cited[node["handle"]] = node["label"]
+                    for v in node.values():
+                        walk(v)
+                elif isinstance(node, list):
+                    for v in node:
+                        walk(v)
+            walk(brief.json())
+            self.assertTrue(cited, e["brief_url"])
+            for handle, label in cited.items():
+                opened = client.get("/api/source", params={"handle": handle})
+                self.assertEqual(opened.status_code, 200, handle)
+                self.assertEqual(opened.json()["label"], label, handle)
+        self.assertEqual(client.get("/api/source", params={"handle": "demo2://x/y"}).status_code,
+                         404)
         for path in ("/api/brief/PurchaseOrder/90412", "/api/brief/CalendarEvent/x",
                      "/api/brief/Customer/" + "x" * 701):
             got = client.get(path)

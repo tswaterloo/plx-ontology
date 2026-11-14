@@ -77,12 +77,18 @@ NEXT_LINKS = {link["id"]: link for link in (
                    "pairs": [{"from": "ordnumber", "to": "ordnumber",
                               "compare": "identifier"}]}]})}
 NEXT = None   # tp.SCHEMA with NEXT_LINKS (the schema's own declarations win)
+# A served schema that does not declare them yet (main's before migration-next 85e9bc7dcc
+# declared all five): the if_declared steps are skipped there, never guessed.
+BEFORE = None
 
 
 def setUpModule():
     global NEXT
     tp.setUpModule()
+    global BEFORE
     NEXT = dataclasses.replace(tp.SCHEMA, link_types={**NEXT_LINKS, **tp.SCHEMA.link_types})
+    BEFORE = dataclasses.replace(tp.SCHEMA, link_types={
+        k: v for k, v in tp.SCHEMA.link_types.items() if k not in NEXT_LINKS})
 
 
 def customer(s, system, key):
@@ -584,15 +590,15 @@ class BatchRecallTests(Asker, unittest.TestCase):
         self.assertEqual(len(missing), 1)
         self.assertIn("so-ba-2", missing[0])
 
-    def test_on_main_s_schema_the_after_build_hops_are_named_not_guessed(self):
+    def test_before_the_schema_declares_them_the_after_build_hops_are_named_not_guessed(self):
         """Before the build serves them: the plan validates, the after-build steps are not
-        run and say so, and what main serves (fills_from, allocations) is still walked."""
-        self.assertEqual(oi.check_plan(json.loads(PLAN.read_text("utf-8")), tp.SCHEMA,
+        run and say so, and what is served (fills_from, allocations) is still walked."""
+        self.assertEqual(oi.check_plan(json.loads(PLAN.read_text("utf-8")), BEFORE,
                                        CONTRACTS), [])
         s = tp.Store()
         ids = batch_fixture(s, direct=(0,), filled=(1,), allocated=(2,),
                             ship_on={1: "portal"}, after_build=False)
-        out, answer = self.investigate_on(s, ids["batch"], tp.SCHEMA)
+        out, answer = self.investigate_on(s, ids["batch"], BEFORE)
         got = self.by_order(answer, ids)
         self.assertEqual(set(got), {1, 2})   # order 0 is reached only by the OE list
         unserved = {g["subject"]: g for g in out["gaps"] if g["reason"] == "link_not_served"}
@@ -623,10 +629,13 @@ class BatchRecallTests(Asker, unittest.TestCase):
         for st in plan["steps"]:
             st.pop("if_declared", None)
         self.assertEqual(oi.check_plan(plan, NEXT, CONTRACTS), [])
-        self.assertTrue(oi.check_plan(plan, tp.SCHEMA, CONTRACTS))
+        # main's schema declares them all now: the plan is whole there as written
+        self.assertEqual(oi.check_plan(plan, tp.SCHEMA, CONTRACTS), [])
+        # a schema without them: an unflagged step is a broken path
+        self.assertTrue(oi.check_plan(plan, BEFORE, CONTRACTS))
         self.assertEqual(li.plan_check(
             next(e for e in plan["evidence"] if e["kind"] == "compute")["engine_args"],
-            plan, len(plan["evidence"]) - 1, tp.SCHEMA), [])
+            plan, len(plan["evidence"]) - 1, BEFORE), [])
 
     def test_overlay_agrees_with_the_schema(self):
         """A next-build link main's schema already declares is declared the same way."""
@@ -662,7 +671,7 @@ class BatchRecallTests(Asker, unittest.TestCase):
         # a complete run over links the reader may see: recorded as absent
         self.assertEqual(gap["state"], "absent_in_source")
         # while the served schema cannot hold the OE-list link, never a proof of absence
-        out, answer = self.investigate_on(s, ids["batch"], tp.SCHEMA)
+        out, answer = self.investigate_on(s, ids["batch"], BEFORE)
         gap = next(g for g in out["gaps"] if g["reason"] == "batch_not_linked_to_order")
         self.assertEqual(gap["state"], "unknown")
 

@@ -21,6 +21,16 @@ const objectReads = (f: { mock: { calls: unknown[][] } }) => f.mock.calls.filter
 const json = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json" } });
 
 describe("record page reads", () => {
+  it("a record still reading after a minute says so instead of promising a minute", async () => {
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval", "Date"] });
+    vi.stubGlobal("fetch", vi.fn(() => new Promise<Response>(() => {})));
+    render(<ObjectView type="PurchaseOrder" id="A" />);
+    await act(async () => { vi.advanceTimersByTime(25_000); });
+    expect(screen.getByTestId("record-slow")).toHaveTextContent("take up to a minute");
+    await act(async () => { vi.advanceTimersByTime(40_000); });
+    expect(screen.getByTestId("record-slow")).toHaveTextContent("Taking longer than usual. Still reading.");
+  });
+
   it("a Retry that is still running when you move to another record cannot overwrite it (WEB-038)", async () => {
     // A fails once, then its retry hangs; B answers first; A's late answer arrives after
     let calls: Record<string, number> = {};

@@ -337,10 +337,8 @@ class DocumentQuestionTests(SharePointHostCase):
                     if "record" not in call.args[1].keys()]
         decided = mock.patch.object(SharePointCaptureStore, "_row_visible", autospec=True,
                                     side_effect=SharePointCaptureStore._row_visible)
-        with mock.patch.object(case_tools_host, "_file_names",
-                               side_effect=AssertionError("names read again")), \
-                mock.patch.object(case_tools_host, "_file_index",
-                                  side_effect=AssertionError("index read again")), \
+        with mock.patch.object(case_tools_host, "_sync_lookup",
+                               side_effect=AssertionError("lookup read again")), \
                 decided as decisions:
             again = self.ok(server, "plx.documents", question)
         self.assertEqual([d["citation"] for d in again["documents"]], [self.handle(SCAN)])
@@ -1728,9 +1726,7 @@ class StoredTextLookupTests(SharePointHostCase):
         counted = mock.patch.object(document_understanding, "extract_document",
                                     side_effect=document_understanding.extract_document)
         with mock.patch.object(captured_text, "_CACHE", captured_text._CACHE.empty()), \
-                mock.patch.dict(case_tools_host._INDEXES, clear=True), \
-                mock.patch.dict(case_tools_host._SNAPSHOTS, clear=True), \
-                mock.patch.dict(case_tools_host._VERSIONS, clear=True), \
+                mock.patch.dict(case_tools_host._LOOKUPS, clear=True), \
                 mock.patch.object(case_tools_host, "warm_sharepoint"), counted as extract:
             yield extract
 
@@ -1739,8 +1735,25 @@ class StoredTextLookupTests(SharePointHostCase):
                        {"query": query, "sources": ["sharepoint"]})
 
     def kept_index(self) -> Path:
-        from operating.case_tools_host import identifier_index_path
-        return identifier_index_path(self.store.root)
+        from operating.case_tools_host import lookup_path
+        return lookup_path(self.store.root)
+
+    def entries(self, store) -> dict:
+        """handle -> the kept entry (``_file_entry``'s shape) of each current file, after
+        a bring-up of the shared lookup file to ``store``'s state."""
+        from operating import case_tools_host as host
+        lookup, current = host._current_lookup(store)
+        self.assertTrue(current)
+        conn = lookup.reader()
+        out = {}
+        for handle, key, searched, why, skipped in conn.execute(
+                "SELECT f.handle, e.key, e.searched, e.why, e.skipped FROM files f "
+                "JOIN entries e ON e.key = f.key"):
+            named = [[k, n, p] for k, n, p in conn.execute(
+                "SELECT kind, normalized, page FROM named WHERE key = ? ORDER BY at", (key,))]
+            out[handle] = {"named": named if searched else None, "why": why,
+                           "skipped": None if skipped is None else json.loads(skipped)}
+        return out
 
     def test_no_question_extracts_and_a_new_process_reads_the_kept_index(self):
         with self.new_process() as extract:
@@ -1752,10 +1765,12 @@ class StoredTextLookupTests(SharePointHostCase):
         from integrations import captured_text
         unread = mock.patch.object(captured_text, "stored_text",
                                    side_effect=AssertionError("stored text read again"))
-        # nor is any file's record parsed again: its name facts are kept beside the store
+        # nor is any file's record parsed again: its name facts are kept in the same file
         from operating import case_tools_host
-        facts = Path(self.store.root) / case_tools_host.FACTS_FILE
-        self.assertEqual(facts.stat().st_mode & 0o777, 0o600)
+        for kept in (self.kept_index(), Path(f"{self.kept_index()}.lock"),
+                     Path(f"{self.kept_index()}-wal")):
+            if kept.exists():
+                self.assertEqual(kept.stat().st_mode & 0o777, 0o600, kept)
         unparsed = mock.patch.object(case_tools_host, "_name_tokens",
                                      side_effect=AssertionError("records parsed again"))
         with self.new_process() as extract, unread, unparsed:
@@ -1770,40 +1785,51 @@ class StoredTextLookupTests(SharePointHostCase):
                          self.handle(SCAN) + "#page=2")
         self.assertEqual(extract.call_count, 0)
 
-    def test_each_code_version_keeps_its_own_index_and_old_versions_files_are_pruned(self):
+    def test_each_code_version_keeps_its_own_lookup_and_old_kept_files_are_pruned(self):
         from operating import case_tools_host as host
         root = Path(self.store.root)
-        mine = host.identifier_index_path(root, "a" * 64)
-        other = host.identifier_index_path(root, "b" * 64)
+        mine = host.lookup_path(root, "a" * 64)
+        other = host.lookup_path(root, "b" * 64)
         self.assertNotEqual(mine, other)
         self.assertEqual(mine.parent, root)
-        mine.write_text("{}")
-        other.write_text("{}")
-        legacy = root / host.INDEX_FILE
-        legacy.write_text("{}")
+        for path in (mine, other, Path(f"{other}-wal"), Path(f"{other}.lock")):
+            path.write_text("x")
+        # what older code kept: the JSON index (unversioned and per code), the file facts
+        # and an unfinished temporary file of one
+        legacy = [root / host.INDEX_FILE, host.identifier_index_path(root, "c" * 64),
+                  root / host.LEGACY_FACTS_FILE,
+                  root / f".{host.identifier_index_path(root, 'c' * 64).name}.0badf00d.tmp"]
+        for path in legacy:
+            path.write_text("{}")
+        unrelated = root / "notes.json"
+        unrelated.write_text("{}")
         old = time.time() - host.INDEX_OTHER_VERSION_STALE - 60
-        os.utime(legacy, (old, old))
+        for path in legacy + [unrelated, mine]:
+            os.utime(path, (old, old))
         host._prune_indexes(mine)
-        # a recent file of another version (a process still running it) stays; a stale
-        # one and the unversioned file go; this version's own file is never touched
-        self.assertTrue(mine.exists() and other.exists())
-        self.assertFalse(legacy.exists())
+        # a recent file of another version (a process still running it) stays; stale ones
+        # of older code go; this version's own file and an unrelated one are never touched
+        self.assertTrue(mine.exists() and other.exists() and unrelated.exists())
+        self.assertFalse([path for path in legacy if path.exists()])
         os.utime(other, (old, old))
         host._prune_indexes(mine)
-        self.assertFalse(other.exists())
+        self.assertTrue(other.exists())   # its write-ahead log was written recently
+        for path in (Path(f"{other}-wal"), Path(f"{other}.lock")):
+            os.utime(path, (old, old))
+        host._prune_indexes(mine)
+        self.assertFalse([p for p in (other, Path(f"{other}-wal"), Path(f"{other}.lock"))
+                          if p.exists()])
         self.assertTrue(mine.exists())
-        self.assertEqual(host.identifier_index_path(root), host.identifier_index_path(
-            root, host._index_code()))
+        self.assertEqual(host.lookup_path(root), host.lookup_path(root, host._lookup_code()))
 
     def test_the_index_names_what_a_fresh_reading_of_every_captured_file_names(self):
         # Equivalence: per current file, the identifiers by page and the unsearched
         # reason the stored text gives are those a fresh reading of the bytes gives.
         from integrations import captured_text
-        from operating.case_tools_host import file_index
         store = SharePointCaptureStore.open_read_only(self.state)
         self.addCleanup(store.close)
         with self.new_process():
-            index = file_index(store)
+            index = self.entries(store)
         statuses = set()
         for row in store.db.execute("SELECT * FROM items WHERE superseded_at IS NULL"):
             handle = row["l1_handle"]
@@ -1853,32 +1879,48 @@ class StoredTextLookupTests(SharePointHostCase):
         self.assertIn("capture:sharepoint", self.labels(other, "text_not_read"))
         self.assertEqual(other["documents"], [])
 
-    def test_a_kept_index_that_is_foreign_or_forged_never_serves_a_mention(self):
+    def test_a_kept_lookup_that_is_foreign_or_forged_never_serves_a_mention(self):
         with self.new_process():
             self.ask(EMPLOYEE, "PO999999")
         path = self.kept_index()
-        kept = json.loads(path.read_text(encoding="utf-8"))
         # A forged entry claims the note names PO999999: the file's own text is read
         # before anything is served, so nothing is.
-        for entry in kept["files"].values():
-            if entry["named"] and [n for n in entry["named"] if n[1] == NOTE_PO]:
-                entry["named"].append(["petra_po", "PO999999", None])
-        path.write_text(json.dumps(kept), encoding="utf-8")
+        conn = sqlite3.connect(path)
+        with conn:
+            conn.execute("INSERT INTO named SELECT key, 'petra_po', 'PO999999', NULL, 99 "
+                         "FROM named WHERE normalized = ?", (NOTE_PO,))
+        conn.close()
         with self.new_process():
             forged = self.ask(EMPLOYEE, "PO999999")
         self.assertEqual(forged["documents"], [])
-        # Another code's index or a broken file is not used: the stored text answers.
-        for text in (json.dumps({**kept, "code": "0" * 64}), "{not json"):
-            path.write_text(text, encoding="utf-8")
+        # Another code's file, a file of another store (made anew) or a broken file is not
+        # used: it is made anew from the stored text, which answers.
+        for spoil in ("UPDATE meta SET value = 'other' WHERE key = 'code'",
+                      "UPDATE meta SET value = CASE key WHEN 'inode' THEN '1' ELSE "
+                      "'[\"content\", 1, [1, 1]]' END WHERE key IN ('inode', 'stamp')", None):
+            if spoil is None:
+                for item in (path, Path(f"{path}-wal"), Path(f"{path}-shm")):
+                    if item.exists():
+                        item.unlink()
+                path.write_bytes(b"not a database" * 100)
+            else:
+                conn = sqlite3.connect(path)
+                with conn:
+                    conn.execute("UPDATE files SET key = NULL")   # would answer nothing
+                    conn.execute(spoil)
+                conn.close()
             with self.new_process():
                 answer = self.ask(EMPLOYEE, NOTE_PO)
             self.assertEqual([d["citation"] for d in answer["documents"]],
-                             [self.handle(NOTE)])
+                             [self.handle(NOTE)], spoil)
+            conn = sqlite3.connect(path)
+            self.assertEqual(conn.execute("SELECT value FROM meta WHERE key = 'format'")
+                             .fetchone()[0], "plx-sharepoint-lookup/v1")
+            conn.close()
 
     def test_every_one_of_sixty_new_files_is_indexed_once(self):
         # Cardinality: N=1, 10 and 60 files captured since the index was kept are each
         # added once, and each identifier finds exactly its own file.
-        from operating.case_tools_host import file_index
         with self.new_process():
             self.ask(EMPLOYEE, "PO999999")
         added = 0
@@ -1891,9 +1933,12 @@ class StoredTextLookupTests(SharePointHostCase):
             self.capture.run(scope())
             store = SharePointCaptureStore.open_read_only(self.state)
             try:
-                index = file_index(store)
+                index = self.entries(store)
+                rows = store.db.execute(
+                    "SELECT COUNT(*) FROM items WHERE superseded_at IS NULL").fetchone()[0]
             finally:
                 store.close()
+            self.assertEqual(len(index), rows)   # no file lost or doubled
             for number in range(added):
                 named = index[self.handle(f"01N{number:03d}")]["named"]
                 self.assertEqual(named, [["petra_po", f"PO2{number:05d}", None]])
@@ -1909,10 +1954,8 @@ class StoredTextLookupTests(SharePointHostCase):
         from operating import case_tools_host
         with self.new_process():
             first = self.ask(EMPLOYEE, "PO999999")
-            with mock.patch.object(case_tools_host, "_file_names",
-                                   side_effect=AssertionError("names read again")), \
-                    mock.patch.object(case_tools_host, "_file_index",
-                                      side_effect=AssertionError("index read again")):
+            with mock.patch.object(case_tools_host, "_sync_lookup",
+                                   side_effect=AssertionError("lookup read again")):
                 again = self.ask(EMPLOYEE, "PO999999")
             for answer in (first, again):
                 answer.get("meta", {}).pop("as_known_at", None)
@@ -1943,10 +1986,8 @@ class StoredTextLookupTests(SharePointHostCase):
                 self.assertIsNotNone(thread)
                 thread.join(60)
                 self.assertFalse(thread.is_alive())
-            with mock.patch.object(case_tools_host, "_file_names",
-                                   side_effect=AssertionError("names read again")), \
-                    mock.patch.object(case_tools_host, "_file_index",
-                                      side_effect=AssertionError("index read again")):
+            with mock.patch.object(case_tools_host, "_sync_lookup",
+                                   side_effect=AssertionError("lookup read again")):
                 first = self.ask(EMPLOYEE, "PO999999")
             for answer in (first, expected):
                 answer.get("meta", {}).pop("as_known_at", None)
@@ -2503,11 +2544,11 @@ class LiveCheckModuleTests(unittest.TestCase):
         # A live re-read that refuses every captured file.
         refused = mock.patch.object(CaptureCaseHostTools, "_live_check",
                                     lambda host, gated, view: None)
-        # The identifier lookup cut before the packet (at its file or entry bound): the
+        # The identifier lookup cut before the packet (at its file or match bound): the
         # answer is cut, never an absence.
         from operating import case_tools_host
         files_cut = mock.patch.object(case_tools_host, "LOOKUP_FILES", 1)
-        entries_cut = mock.patch.object(case_tools_host, "LOOKUP_ENTRIES", 0)
+        matches_cut = mock.patch.object(case_tools_host, "LOOKUP_MATCHES", 0)
         # Two questions: the file name carries the first one's identifier only. Without
         # the capture's page lookup the projection still lists the packet for both (its
         # name, or its indexed text holding the identifier as written: no record holds
@@ -2517,7 +2558,7 @@ class LiveCheckModuleTests(unittest.TestCase):
                 ("packet-scan.pdf", unpaged, {"unpaged_mention": 2}),
                 ("packet-scan.pdf", refused, {"withheld": 2}),
                 ("packet-scan.pdf", files_cut, {"scan_cap": 2}),
-                ("packet-scan.pdf", entries_cut, {"scan_cap": 2})):
+                ("packet-scan.pdf", matches_cut, {"scan_cap": 2})):
             with self.subTest(expected=expected), patch:
                 report = self._run_check(name)
                 self.assertFalse(report["ok"])

@@ -87,7 +87,10 @@ ANSWER_GATE_RULE = (
     "from such a record), add \"via\": the handle of the record you followed it from, the "
     "one whose row or text holds that code or name, as returned to you. Give it whenever "
     "the cited row itself lacks the question's code or name; without it the gate refuses "
-    "the claim. "
+    "the claim. A year the question names (2024, a range 2024-2026, FY25, or 24, 25, 26 in a "
+    "question about years) is written in your text as the four-digit year, each figure "
+    "beside its own year (\"2025: 6\"), never as last year, this year or the year "
+    "before: the reader reads the figure against the year they wrote. "
     "A decision with outcome \"answered\" ends "
     "the session: the app renders your answer from that submission (its claims, text, "
     "each unknown as a gap, and gaps), so submit it complete. Only when its "
@@ -490,7 +493,8 @@ def gate_final_reply(final_text: str, events: Sequence[Mapping[str, Any]],
 
     # A name a tool returned verbatim (a record number, a customer or file name) is a
     # name in the reply, never a figure (``answer_gate.returned_names``).
-    names = answer_gate.returned_names(events, skip_tools=(ANSWER_GATE_TOOL,))
+    names = answer_gate.returned_names(events, skip_tools=(ANSWER_GATE_TOOL,
+                                                           *NOT_EVIDENCE_TOOLS))
 
     def lead_figures(*replies: dict[str, Any]) -> None:
         # The count or total the question asks for leads the reply when none of its texts
@@ -946,6 +950,21 @@ def asked_as(answer: Mapping[str, Any], question: str | None) -> dict[str, Any]:
     return {**answer, "question": question.strip()[:ASKED_QUESTION_CHARS]}
 
 
+# Tools the gate answers itself whose results are no evidence (``LocalTool``): the reader's
+# memory (``operator_api.memory.TOOL_NAME``) is what was said before, never a read of the
+# sources now, so a name only it returned stays unbacked in the final reply.
+NOT_EVIDENCE_TOOLS = frozenset({"plx.memory"})
+
+
+@dataclass(frozen=True)
+class LocalTool:
+    """A tool the gate answers itself (``serve_gate`` ``local``): its MCP listing (``spec``:
+    name, description, inputSchema, annotations) and ``call(arguments) -> JSON value``,
+    bound by the app to one reader before the session."""
+    spec: Mapping[str, Any]
+    call: Callable[[dict[str, Any]], Any]
+
+
 def serve_gate(allowed: Iterable[str], server: Sequence[str], log: Path, *,
                stdin: Any = None, stdout: Any = None, timing: Path | None = None,
                budget: "deep.Budget | None" = None, budget_log: Path | None = None,
@@ -958,7 +977,8 @@ def serve_gate(allowed: Iterable[str], server: Sequence[str], log: Path, *,
                prelude: Callable[[Callable[..., Any]], None] | None = None,
                early: "EarlyStart | None" = None,
                pool: "HostPool | None" = None, question: str | None = None,
-               entities: Sequence[Mapping[str, Any]] | None = None) -> int:
+               entities: Sequence[Mapping[str, Any]] | None = None,
+               local: "Mapping[str, LocalTool] | None" = None) -> int:
     """The tool gate: relay MCP stdio between a client (the agent) and ``server`` (the case
     host), listing only ``allowed`` tools and refusing a ``tools/call`` of any other name
     with a tool error, never forwarded; each refusal appends its tool name to ``log``. A
@@ -1008,9 +1028,16 @@ def serve_gate(allowed: Iterable[str], server: Sequence[str], log: Path, *,
     with ``entities``, the things it names as the app resolved them before the session
     (None: the host resolves them itself), so its answer gate never searches for them at
     the agent's submission.
+    ``local``: tools the gate answers itself, in this process, never forwarded to the host
+    (``LocalTool``: the app's own per-reader reads, such as the reader's memory): listed
+    beside the host's allowed tools, each call answered from its ``call`` in a thread of
+    its own (an error is a tool error, never a crash of the gate).
     """
     import threading
     from operating import call_limits, host_peers
+    local = dict(local or {})
+    allowed = frozenset(allowed) | frozenset(local)
+    local_open: set[str] = set()   # local tool calls not answered yet
     allowed, inbound = frozenset(allowed), stdin or sys.stdin
     # The host's output is read where the early start reads it (its one reader), even
     # when the host answered no early initialize and the client's goes to it.
@@ -1128,7 +1155,9 @@ def serve_gate(allowed: Iterable[str], server: Sequence[str], log: Path, *,
         if message.get("id") in listing and isinstance(result, dict):
             listing.discard(message["id"])
             result["tools"] = [tool for tool in result.get("tools") or []
-                               if isinstance(tool, Mapping) and tool.get("name") in allowed]
+                               if isinstance(tool, Mapping) and tool.get("name") in allowed
+                               and tool.get("name") not in local] + [
+                dict(tool.spec) for tool in local.values()]
             if question is not None and not told:
                 told.append(True)
                 notice: dict[str, Any] = {"question": question.strip()[:ASKED_QUESTION_CHARS]}
@@ -1178,6 +1207,18 @@ def serve_gate(allowed: Iterable[str], server: Sequence[str], log: Path, *,
                     with lock, budget_log.open("a", encoding="utf-8") as out:
                         out.write(json.dumps(summary) + "\n")
         emit(message)
+
+    def answer_local(ident: Any, tool: "LocalTool", arguments: Any) -> None:
+        try:
+            value = tool.call(dict(arguments) if isinstance(arguments, Mapping) else {})
+            text, failed = json.dumps(value, ensure_ascii=False, default=str), False
+        except Exception as error:  # noqa: BLE001 - its type only, never a value
+            text, failed = json.dumps({"ok": False, "error": "local_tool_failed",
+                                       "kind": type(error).__name__}), True
+        emit({"jsonrpc": "2.0", "id": ident, "result": {
+            "content": [{"type": "text", "text": text}], "isError": failed}})
+        with lock:
+            local_open.discard(json.dumps(ident))
 
     def send(message: Mapping[str, Any]) -> None:
         primary.send(message)   # one line at a time to the host (the client's, ``ask``'s)
@@ -1324,6 +1365,14 @@ def serve_gate(allowed: Iterable[str], server: Sequence[str], log: Path, *,
                     "content": [{"type": "text", "text": json.dumps(
                         {"ok": False, "error": GATE_REFUSAL})}], "isError": True}})
             continue
+        if message.get("method") == "tools/call" and params.get("name") in local:
+            if "id" in message:
+                with lock:
+                    waiting.add(json.dumps(message["id"]))   # answered before the gate ends
+                    local_open.add(json.dumps(message["id"]))
+                threading.Thread(target=answer_local, daemon=True, args=(
+                    message["id"], local[params["name"]], params.get("arguments"))).start()
+            continue
         if unknown_aliases:
             if "id" in message:
                 emit({"jsonrpc": "2.0", "id": message["id"], "result": {
@@ -1402,6 +1451,9 @@ def serve_gate(allowed: Iterable[str], server: Sequence[str], log: Path, *,
             threading.Thread(target=prelude, args=(ask,), daemon=True).start()
             prelude = None
 
+    ends = time.monotonic() + HOST_SUBMIT_SECONDS
+    while local_open and time.monotonic() < ends:
+        time.sleep(0.01)   # a local tool's answer is written before the gate ends
     if at_end is not None or client_end is not None:
         # The client's open requests are answered before it is let go.
         ends = time.monotonic() + HOST_SUBMIT_SECONDS
@@ -1915,8 +1967,10 @@ class HostGate:
                  pool: "HostPool | None" = None, question: str | None = None,
                  quiet: Sequence[tuple[str, Mapping[str, Any]]] = (),
                  entities: Sequence[Mapping[str, Any]] | None = None,
-                 ready: bool = False) -> None:
+                 ready: bool = False,
+                 local: Mapping[str, LocalTool] | None = None) -> None:
         import queue
+        self.local = dict(local or {})   # tools the gate answers itself (``serve_gate``)
         # the things the question names as the app resolved them (``serve_gate``), or None
         self.entities = None if entities is None else list(entities)
         self.pool = pool   # the session's helper hosts (``serve_gate``), or None
@@ -2065,7 +2119,7 @@ class HostGate:
                        prelude=self._prelude if self.prefetch and (
                            early is None or early.init_result is None) else None,
                        early=early, pool=self.pool, question=self.question,
-                       entities=self.entities)
+                       entities=self.entities, local=self.local)
         finally:
             for stream in (inbound, outbound):
                 try:
@@ -2541,6 +2595,9 @@ class ClaudeCodeAgent:
         # (``objective_runner.resolve_entities``): the host's answer gate takes them and
         # never searches for them (``serve_gate``). None: the host resolves them itself.
         self.question_entities: list[dict[str, Any]] | None = None
+        # Tools the session's gate answers itself (``LocalTool``), by name: the app's
+        # per-reader reads (the reader's memory); none for the scoreboard.
+        self.local_tools: dict[str, LocalTool] = {}
 
     def for_question(self, question: str) -> "ClaudeCodeAgent":
         """This agent told ``question`` (its answer gate decides against it) with the reads
@@ -2627,9 +2684,13 @@ class ClaudeCodeAgent:
 
     def _run_attached(self, prompt: str, host: Host) -> AgentRun:
         tools = host.tools()
-        catalog = [tool["name"] for tool in tools]
+        local = dict(getattr(self, "local_tools", None) or {})
+        catalog = [tool["name"] for tool in tools] + [n for n in local
+                                                      if n not in {t["name"] for t in tools}]
         allowed, refused = allowed_tools(tools, case_tools=self.case_tools,
                                          proposals=self.proposals)
+        allowed = [n for n in allowed if n not in local] + list(local)
+        refused = [n for n in refused if n not in local]
         with tempfile.TemporaryDirectory(prefix="plx-eval-") as work:
             config = Path(work) / "mcp.json"
             log = Path(work) / "gate-refused.jsonl"
@@ -2711,7 +2772,7 @@ class ClaudeCodeAgent:
                     child=None if spare is None else spare.child, pool=pool,
                     question=self.asked, entities=self.question_entities,
                     # a real session waits for its host before Claude Code starts
-                    ready=bool(getattr(self.spawn, "feeds", False)))
+                    ready=bool(getattr(self.spawn, "feeds", False)), local=local)
             except BaseException:
                 if spare is not None:
                     spare.stop()

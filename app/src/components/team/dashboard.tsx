@@ -6,6 +6,7 @@ import { Sheet } from "@/components/ui/sheet";
 import { getTeamPerson } from "@/lib/api";
 import { cn } from "@/lib/cn";
 import { plainError } from "@/lib/errors";
+import { eastern } from "@/lib/format";
 import type { TeamItem, TeamPerson, TeamPersonDetail, TeamView } from "@/lib/types";
 
 // The Team view: one dense row per person, every captured system over 7 or 28 days, open
@@ -95,16 +96,25 @@ function Spark({ values, className }: { values: number[]; className?: string }) 
   );
 }
 
+const AXIS = [0, 6, 12, 18, 23];
+
 function Hours({ hours, tall }: { hours: number[] | undefined; tall?: boolean }) {
   const list = hours?.length === 24 ? hours : Array(24).fill(0);
   const max = Math.max(1, ...list);
   const h = tall ? 40 : 16, bw = tall ? 10 : 2.5, gap = tall ? 3 : 0.8;
+  const w = 24 * (bw + gap);
+  // The tall chart carries its hour axis: each label sits under its own bar.
   return (
-    <svg width={24 * (bw + gap)} height={h} aria-hidden>
+    <svg width={w} height={tall ? h + 14 : h} aria-hidden data-testid={tall ? "team-hours" : undefined}>
       {list.map((n, i) => (
         <rect key={i} x={i * (bw + gap)} y={h - Math.max(n ? 1.5 : 0.75, (n / max) * h)} width={bw}
           height={Math.max(n ? 1.5 : 0.75, (n / max) * h)}
           fill={n ? "var(--accent)" : "var(--border-strong)"} opacity={n ? 0.35 + 0.65 * (n / max) : 1} />
+      ))}
+      {tall && AXIS.map((i, k) => (
+        <text key={i} x={k === 0 ? 0 : k === AXIS.length - 1 ? w - gap : i * (bw + gap) + bw / 2} y={h + 12}
+          textAnchor={k === 0 ? "start" : k === AXIS.length - 1 ? "end" : "middle"}
+          fontSize="10.5" fill="var(--fg-faint)" className="num">{hourLabel(i)}</text>
       ))}
     </svg>
   );
@@ -193,7 +203,7 @@ export function TeamDashboard({ data }: { data: TeamView }) {
   return (
     <div className="space-y-3" data-testid="team-dashboard">
       <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
-        <div role="radiogroup" aria-label="Period" className="flex h-7 overflow-hidden rounded-md border border-control text-[12px]">
+        <div role="radiogroup" aria-label="Period" className="flex h-7 overflow-hidden rounded-md border border-control text-[12px] max-sm:h-10">
           {([7, 28] as Period[]).map((p) => (
             <button key={p} type="button" role="radio" aria-checked={period === p} onClick={() => setPeriod(p)} data-testid={`period-${p}`}
               className={cn("px-2.5 cursor-pointer", period === p ? "bg-accent-soft text-fg font-medium" : "text-muted hover:text-fg")}>
@@ -211,7 +221,7 @@ export function TeamDashboard({ data }: { data: TeamView }) {
           </>
         )}
         <span className="ml-auto truncate text-[12px] text-muted" data-testid="team-note">
-          {data.as_of ? `Counted ${new Date(data.as_of).toLocaleString("en-US", { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })}` : ""}
+          {data.as_of ? `Counted ${eastern(data.as_of)}` : ""}
         </span>
       </div>
 
@@ -265,7 +275,7 @@ export function TeamDashboard({ data }: { data: TeamView }) {
                       {p.name}
                     </button>
                     {p.self && <span className="ml-1.5 text-[11px] text-muted">you</span>}
-                    {(p.roles ?? []).length > 0 && <div className="truncate text-[11px] text-muted">{(p.roles ?? []).join(", ")}</div>}
+                    {(p.roles ?? []).some((r) => r !== p.team) && <div className="truncate text-[11px] text-muted" data-testid="team-roles">{(p.roles ?? []).filter((r) => r !== p.team).join(", ")}</div>}
                   </td>
                   <td className="whitespace-nowrap px-2 py-1.5 text-muted">{p.team ?? <span className="text-faint">·</span>}</td>
                   <td className="px-2 py-1.5 text-right"><Figure n={total(p, period)} strong /></td>
@@ -278,14 +288,14 @@ export function TeamDashboard({ data }: { data: TeamView }) {
                   <td className="whitespace-nowrap px-2 py-1.5 text-right num">{minutes(replyOf(p, period)) || <span className="text-faint">·</span>}</td>
                   <td className="px-2 py-1.5"><Spark values={p.trend ?? []} /></td>
                   <td className="whitespace-nowrap px-2 py-1.5" title={busiest(p.hours) ? `Busiest: ${busiest(p.hours)}` : undefined}>
-                    <span className="inline-flex items-end gap-1.5"><Hours hours={p.hours} /><span className="num text-[11px] text-muted">{busiest(p.hours)}</span></span>
+                    <span className="inline-flex flex-col items-start gap-0.5"><Hours hours={p.hours} /><span className="num text-[11px] leading-3 text-muted">{busiest(p.hours)}</span></span>
                   </td>
                 </tr>
               );
             })}
           </tbody>
         </table>
-        {rows.length === 0 && <p className="py-4 text-[13px] text-muted">Nobody matches these filters.</p>}
+        {rows.length === 0 && <p className="py-4 text-[13px] text-muted">{people.length === 0 ? "No one has activity counted yet." : "Nobody matches these filters."}</p>}
       </div>
       {open && <PersonSheet key={open} personKey={open} onClose={() => setOpen(null)} onOpen={setOpen} />}
     </div>
@@ -299,7 +309,7 @@ const BUCKETS: { key: TeamItem["bucket"]; label: string }[] = [
 ];
 
 function dayLabel(iso: string): string {
-  return new Date(`${iso}T12:00:00`).toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric" });
+  return new Date(`${iso}T12:00:00`).toLocaleDateString("en-GB", { weekday: "short", day: "numeric", month: "short" }).replace("Sept", "Sep");
 }
 
 function PersonSheet({ personKey, onClose, onOpen }: { personKey: string; onClose: () => void; onOpen: (key: string) => void }) {
@@ -379,7 +389,7 @@ function PersonSheet({ personKey, onClose, onOpen }: { personKey: string; onClos
             <section className="space-y-1.5">
               <h3 className="text-[12px] font-medium text-muted">Busiest hours, Eastern</h3>
               <Hours hours={p.hours} tall />
-              <div className="flex justify-between text-[10.5px] text-faint num" style={{ width: 24 * 13 }}><span>12a</span><span>6a</span><span>12p</span><span>6p</span><span>11p</span></div>
+              <p className="sr-only">{busiest(p.hours) ? `Busiest: ${busiest(p.hours)}` : "No messages counted by hour."}</p>
             </section>
           </div>
         </div>
@@ -391,14 +401,16 @@ function PersonSheet({ personKey, onClose, onOpen }: { personKey: string; onClos
 function Timeline({ days }: { days: { day: string; counts?: Record<string, number> }[] }) {
   const rows = CHANNELS.filter((c) => days.some((d) => (d.counts?.[c.key] ?? 0) > 0));
   if (rows.length === 0) return <p className="text-[12px] text-faint">Nothing counted in these days.</p>;
+  // Wider than a phone: it scrolls sideways and opens on the latest day (rtl scroller), names pinned.
   return (
-    <table className="border-collapse text-[11.5px]" data-testid="team-timeline">
+    <div className="w-fit max-w-full overflow-x-auto [direction:rtl]" data-testid="team-timeline-scroll">
+    <table className="border-collapse text-[11.5px] [direction:ltr]" data-testid="team-timeline">
       <tbody>
         {rows.map((c) => {
           const max = Math.max(1, ...days.map((d) => d.counts?.[c.key] ?? 0));
           return (
             <tr key={c.key}>
-              <th scope="row" className="whitespace-nowrap pr-3 text-left font-normal text-muted">{c.title.split(" ").slice(0, 2).join(" ")}</th>
+              <th scope="row" className="sticky left-0 z-[1] whitespace-nowrap bg-raised pr-3 text-left font-normal text-muted">{c.title.split(" ").slice(0, 2).join(" ")}</th>
               {days.map((d) => {
                 const n = d.counts?.[c.key] ?? 0;
                 return (
@@ -411,12 +423,13 @@ function Timeline({ days }: { days: { day: string; counts?: Record<string, numbe
           );
         })}
         <tr>
-          <td />
+          <td className="sticky left-0 bg-raised" />
           {days.map((d, i) => (
             <td key={d.day} className="text-center text-[9.5px] text-faint num">{i % 7 === 0 || i === days.length - 1 ? new Date(`${d.day}T12:00:00`).getDate() : ""}</td>
           ))}
         </tr>
       </tbody>
     </table>
+    </div>
   );
 }

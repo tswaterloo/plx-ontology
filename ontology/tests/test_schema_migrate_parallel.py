@@ -139,8 +139,11 @@ class LayerDocumentWorkersTests(unittest.TestCase):
             seen.append((argv, par.DOCUMENTS))
             return 0
 
+        # (the build preflight, 82126b60b8, sizes and guards a real build: off here, where
+        # the build is a stand-in)
         with mock.patch.object(schema_migrate, "main", build), \
-                mock.patch.dict(os.environ, {"PLX_BUILD_WORKERS": "4"}):
+                mock.patch.dict(os.environ, {"PLX_BUILD_WORKERS": "4",
+                                             unit_layer_workers.PREFLIGHT_ENV: "off"}):
             self.assertEqual(unit_layer_workers.main(["build", "--x"]), 0)
         (argv, pool), = seen
         self.assertEqual(argv, ["build", "--x"])
@@ -148,7 +151,8 @@ class LayerDocumentWorkersTests(unittest.TestCase):
         self.assertIsNone(par.DOCUMENTS)
         for raw in ("0", "-3", "many"):
             with mock.patch.object(schema_migrate, "main", build), \
-                    mock.patch.dict(os.environ, {"PLX_BUILD_WORKERS": raw}), \
+                    mock.patch.dict(os.environ, {"PLX_BUILD_WORKERS": raw,
+                                                 unit_layer_workers.PREFLIGHT_ENV: "off"}), \
                     self.assertRaises(ProjectionError):
                 unit_layer_workers.main(["build"])
         self.assertEqual(len(seen), 1)    # refused before anything is read

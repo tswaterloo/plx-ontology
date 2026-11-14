@@ -4,6 +4,8 @@ import type { AutopilotArea, AutopilotItem, AutopilotWorkflowDetail } from "@/li
 
 const api = vi.hoisted(() => ({
   decide: vi.fn(),
+  optIn: vi.fn(),
+  pause: vi.fn(),
   mode: vi.fn(),
   global: vi.fn(),
   audit: vi.fn(),
@@ -13,10 +15,13 @@ const api = vi.hoisted(() => ({
   schedules: vi.fn(),
   draft: vi.fn(),
   replay: vi.fn(),
+  ack: vi.fn(),
 }));
 vi.mock("@/lib/api", async (orig) => ({
   ...(await orig<typeof import("@/lib/api")>()),
   decideAutopilotItem: api.decide,
+  setAutopilotOptIn: api.optIn,
+  setAutopilotPaused: api.pause,
   setAutopilotMode: api.mode,
   setAutopilotGlobal: api.global,
   getAutopilotAudit: api.audit,
@@ -26,6 +31,7 @@ vi.mock("@/lib/api", async (orig) => ({
   getAutopilotSchedules: api.schedules,
   draftAutopilotWorkflow: api.draft,
   replayAutopilotWorkflow: api.replay,
+  ackAutopilotNotice: api.ack,
 }));
 
 import { outcomeWords } from "@/lib/autopilot";
@@ -55,8 +61,8 @@ const area = (over: Partial<AutopilotArea> = {}): AutopilotArea => ({
     item({ item_id: "i3", title: "Teams question", workflow: "teams_chat", system: "teams", roles: [], today: false, prepared: { draft: { channel: "teams", body: "On it." } } }),
   ],
   workflows: [
-    { role: "person:ana@plx.example", person: ME, workflow: "customer_order_intake", dev: { judged: 40, matched: 37, percent: 92.5 }, fresh: { judged: 16, matched: 15, percent: 93.8 }, n: 16, state: "passed_awaiting_owner", on: true, live_flag: false, missing: ["owner_flag_off"], last_run: "2026-11-10T15:00:00Z", scored_at: null, open_items: 1 },
-    { role: "receivables", person: null, workflow: "ar_collections", dev: { judged: 20, matched: 15, percent: 75 }, fresh: null, n: 20, state: "dry_run", on: true, live_flag: false, missing: ["gate_not_passed"], last_run: null, scored_at: null, open_items: 1 },
+    { role: "person:ana@plx.example", person: ME, workflow: "customer_order_intake", dev: { judged: 40, matched: 37, percent: 92.5 }, fresh: { judged: 16, matched: 15, percent: 93.8 }, n: 16, state: "passed", on: true, switched_on: 0, missing: ["owner_flag_off"], last_run: "2026-11-10T15:00:00Z", scored_at: null, open_items: 1 },
+    { role: "receivables", person: null, workflow: "ar_collections", dev: { judged: 20, matched: 15, percent: 75 }, fresh: null, n: 20, state: "dry_run", on: true, switched_on: 0, missing: ["gate_not_passed"], last_run: null, scored_at: null, open_items: 1 },
   ],
   notes: [],
   ...over,
@@ -174,14 +180,61 @@ describe("autopilot studio: review queue", () => {
 });
 
 describe("autopilot studio: workflows, modes and the owner's controls", () => {
-  it("the passed-workflows figure opens the workflows waiting on the owner", () => {
-    render(<AutopilotView area={area()} onReload={vi.fn()} />);
-    fireEvent.click(screen.getByTestId("autopilot-passed"));
-    expect(screen.getByRole("tab", { name: "Workflows" })).toHaveAttribute("aria-selected", "true");
-    expect(screen.getAllByTestId("autopilot-workflow")[0]).toHaveTextContent("Passed, awaiting you");
+  it("a workflow that passed for you is off until you turn it on; you can pause everything; the owner sees who is on but cannot switch it for them", async () => {
+    const bar = { judged: 1292, matched: 1243, percent: 96.2, need_judged: 15, need_percent: 90 };
+    const off = { workflow: "teams_chat", eligible: true, on: false, since: null, score: bar, suspended: null };
+    const on = { ...off, on: true, since: "2026-11-13T19:10:00Z" };
+    api.optIn.mockResolvedValue(area({ my_opt_ins: [on], switched_on: [{ person: ME, workflow: "teams_chat", since: on.since, paused: false }] }));
+    api.pause.mockResolvedValue(area({ my_opt_ins: [on], paused: true, switched_on: [{ person: ME, workflow: "teams_chat", since: on.since, paused: true }] }));
+    render(<AutopilotView area={area({ my_opt_ins: [off], switched_on: [{ person: SAM, workflow: "ar_collections", since: "2026-11-13T15:00:00Z", paused: false }] })} onReload={vi.fn()} />);
+    const panel = screen.getByTestId("autopilot-opt-in");
+    expect(screen.getByTestId("autopilot-figures")).toHaveTextContent("Yours to turn on1");
+    const row = within(panel).getByTestId("opt-in-row");
+    expect(row).toHaveTextContent("Eligible: 1,243 of 1,292 past items matched what you did (96.2%). It needs 90% on at least 15.");
+    const sw = within(row).getByRole("switch", { name: "Teams chat: off" });
+    expect(sw).toHaveAttribute("aria-checked", "false");
+    // the owner's view of someone else: a name and a workflow, never a switch for them
+    const who = within(panel).getByTestId("autopilot-who-is-on");
+    expect(who).toHaveTextContent("AR collections");
+    expect(within(who).queryAllByRole("button")).toHaveLength(0);
+    expect(within(who).queryAllByRole("switch")).toHaveLength(0);
+    // nothing to pause until something is on
+    expect(within(panel).queryByRole("switch", { name: "Pause everything" })).toBeNull();
+    fireEvent.click(sw);
+    await waitFor(() => expect(api.optIn).toHaveBeenCalledWith("teams_chat", true));
+    expect(await within(panel).findByText(/On since/)).toBeTruthy();
+    fireEvent.click(within(panel).getByRole("switch", { name: "Pause everything" }));
+    await waitFor(() => expect(api.pause).toHaveBeenCalledWith(true));
+    expect(await within(panel).findByText("Paused. Nothing runs for you until you resume.")).toBeTruthy();
+    expect(within(panel).getByRole("switch", { name: "Resume" })).toHaveAttribute("aria-checked", "true");
   });
 
-  it("the owner sets a mode per workflow and role (Auto only after its gate); anyone else sees no controls and no audit log", async () => {
+  it("the owner is told once that a workflow passed its check, which turns nothing on; Got it clears it; nobody else sees it (AP-22)", async () => {
+    const notice = { role: "person:ana@plx.example", workflow: "customer_order_intake", passed_at: "2026-11-13T19:10:00Z" };
+    api.ack.mockResolvedValue(area({ gate_notices: [] }));
+    const { unmount } = render(<AutopilotView area={area({ gate_notices: [notice] })} onReload={vi.fn()} />);
+    const box = screen.getByTestId("autopilot-gate-notices");
+    expect(box).toHaveTextContent("passed its check for");
+    expect(box).toHaveTextContent("It runs for nobody until each person turns it on for themselves.");
+    fireEvent.click(within(box).getByRole("button", { name: "Got it" }));
+    await waitFor(() => expect(api.ack).toHaveBeenCalledWith("person:ana@plx.example", "customer_order_intake"));
+    await waitFor(() => expect(screen.queryByTestId("autopilot-gate-notices")).toBeNull());
+    unmount();
+    render(<AutopilotView area={area({ owner: false, gate_notices: [notice] })} onReload={vi.fn()} />);
+    expect(screen.queryByTestId("autopilot-gate-notices")).toBeNull();
+  });
+
+  it("an opt-in whose score fell under the bar says it turned itself off and why, and cannot be turned on until it passes", () => {
+    const bar = { judged: 40, matched: 30, percent: 75, need_judged: 15, need_percent: 90 };
+    const held = { workflow: "teams_chat", eligible: false, on: false, since: null, score: bar, suspended: { at: "2026-11-13T15:00:00Z", reason: "below_bar", score: bar } };
+    render(<AutopilotView area={area({ owner: false, my_opt_ins: [held] })} onReload={vi.fn()} />);
+    const panel = screen.getByTestId("autopilot-opt-in");
+    expect(within(panel).getByTestId("opt-in-suspended")).toHaveTextContent(/^Turned off by itself on .+: its score fell to 75\.0% on 40 items, under the 90% on at least 15 items it needs\. Turn it on again once it passes\.$/);
+    expect(within(panel).getByRole("switch", { name: "Teams chat: off" })).toBeDisabled();
+    expect(within(panel).queryByTestId("autopilot-who-is-on")).toBeNull();
+  });
+
+  it("the owner sets Off or Draft per workflow and role, never Auto (each person turns that on); anyone else sees no controls and no audit log", async () => {
     api.mode.mockResolvedValue({});
     const reload = vi.fn();
     const { unmount } = render(<AutopilotView area={area()} onReload={reload} />);
@@ -190,7 +243,7 @@ describe("autopilot studio: workflows, modes and the owner's controls", () => {
     expect(passed).toHaveTextContent("Customer order intake");
     expect(passed).toHaveTextContent("93.8%");
     expect(passed).toHaveTextContent("n 16");
-    expect(passed).toHaveTextContent("Passed, awaiting you");
+    expect(passed).toHaveTextContent("Passed, nobody has it on");
     expect(dry).toHaveTextContent("75.0%");
     expect(dry).toHaveTextContent("tuning");
     expect(within(dry).getByRole("radio", { name: "Auto" })).toBeDisabled();
@@ -198,11 +251,11 @@ describe("autopilot studio: workflows, modes and the owner's controls", () => {
     expect(within(passed).getByRole("radio", { name: "Suggest" })).toBeDisabled();
     expect(within(passed).getByRole("radio", { name: "Watch" })).toBeDisabled();
     expect(within(passed).getByRole("radio", { name: "Draft" })).toHaveAttribute("aria-checked", "true");
-    fireEvent.click(within(passed).getByRole("radio", { name: "Auto" }));
-    expect(api.mode).toHaveBeenCalledWith("customer_order_intake", "auto", "person:ana@plx.example");
-    await waitFor(() => expect(reload).toHaveBeenCalled());
+    expect(within(passed).getByRole("radio", { name: "Auto" })).toBeDisabled();
     fireEvent.click(within(dry).getByRole("radio", { name: "Off" }));
     expect(api.mode).toHaveBeenLastCalledWith("ar_collections", "off", null);
+    await waitFor(() => expect(reload).toHaveBeenCalled());
+    expect(api.mode).not.toHaveBeenCalledWith(expect.anything(), "auto", expect.anything());
     expect(screen.getByRole("tab", { name: "Audit log" })).toBeInTheDocument();
     expect(screen.getByRole("tab", { name: "Builder" })).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Stop all writes" }));
@@ -216,7 +269,7 @@ describe("autopilot studio: workflows, modes and the owner's controls", () => {
     expect(screen.queryAllByRole("radio")).toHaveLength(0);
   });
 
-  it("Watch is set only after a second confirm, and a workflow's page shows when, if and then with its gate", async () => {
+  it("Watch is never the owner's to set, even with the builder, and a workflow's page shows when, if and then with its gate", async () => {
     api.catalog.mockResolvedValue({ ...NO_BUILDER, builder: true });
     api.mode.mockResolvedValue({});
     const detailDoc: AutopilotWorkflowDetail = {
@@ -230,11 +283,10 @@ describe("autopilot studio: workflows, modes and the owner's controls", () => {
     render(<AutopilotView area={area()} onReload={() => {}} />);
     fireEvent.click(screen.getByRole("tab", { name: "Workflows" }));
     const [passed] = screen.getAllByTestId("autopilot-workflow");
-    await waitFor(() => expect(within(passed).getByRole("radio", { name: "Watch" })).toBeEnabled());
-    fireEvent.click(within(passed).getByRole("radio", { name: "Watch" }));
+    await waitFor(() => expect(within(passed).getByRole("radio", { name: "Suggest" })).toBeEnabled());
+    expect(within(passed).getByRole("radio", { name: "Watch" })).toBeDisabled();
+    expect(within(passed).getByRole("radio", { name: "Auto" })).toBeDisabled();
     expect(api.mode).not.toHaveBeenCalled();
-    fireEvent.click(within(passed).getByRole("button", { name: "Confirm Watch" }));
-    expect(api.mode).toHaveBeenCalledWith("customer_order_intake", "watch", "person:ana@plx.example");
     fireEvent.click(within(passed).getByRole("button", { name: "Customer order intake" }));
     const sheet = await screen.findByTestId("workflow-sheet");
     await within(sheet).findByText("Customer PO received");
@@ -296,7 +348,7 @@ describe("autopilot studio: workflows, modes and the owner's controls", () => {
 describe("Draft mode and the fresh-day countdown", () => {
   const draftRow = {
     role: "person:ana@plx.example", person: ME, workflow: "internal_approval", dev: { judged: 33, matched: 29, percent: 87.9 }, fresh: null, n: 33,
-    state: "dry_run" as const, on: true, live_flag: false, missing: ["gate_not_passed"], last_run: null, scored_at: null, open_items: 2, draft: true,
+    state: "dry_run" as const, on: true, switched_on: 0, missing: ["gate_not_passed"], last_run: null, scored_at: null, open_items: 2, draft: true,
     countdown: { judged: 12, matched: 11, need_judged: 15, need_percent: 90, percent: 91.7, passes: false, window: ["2026-06-08T07:00:00Z", "2026-11-12T07:00:00Z"], data_end: null,
       parts: [{ window: ["2026-06-08T07:00:00Z", "2026-06-15T07:00:00Z"], kind: "historical" as const, judged: 8, matched: 8 },
               { window: ["2026-11-06T07:00:00Z", "2026-11-12T07:00:00Z"], kind: "fresh" as const, judged: 4, matched: 3 }] },

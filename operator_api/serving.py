@@ -344,6 +344,27 @@ LAST_GOOD_SECONDS = 12 * 3600   # a main screen's last good page is served stale
 # A screen read not done in this long serves the reader's last good page (pages load in
 # under 2 s): the read goes on and keeps its page for the next request.
 SERVE_FAST_SECONDS = 1.2
+# Today's first read (owner 11-13: "almost instant"): a Today list (Home, the late list,
+# the briefing, the suggestions, the replies) or a record's page with no page kept for the
+# reader, asked
+# for by the app, waits at most this long for its read; the read then goes on off the
+# request, with the background's time (never cut at a request's limit), and the app is
+# answered at once with the screen marked ``reading`` (nothing in it), asks again shortly
+# and is served the page once kept. Set by ``serve`` only (``WorkspaceBackend.first_wait``).
+FIRST_WAIT_SECONDS = 1.5
+# A first read that failed off the request within this long is read on the next request
+# itself, as before (its refusal or error is then the answer, not another "reading").
+FIRST_FAILED_SECONDS = 60
+# A first read off the request that was read but not kept (its access state not confirmed
+# in time on a busy server: the 11-13 walk's polls fell back to reading on the request,
+# 90-300 s) is handed to the reader's next request for that screen within this long, once:
+# the same page a request reading it itself would have returned a moment later.
+FIRST_HANDOFF_SECONDS = 30
+# The app's Today and record-page requests (the route sets it): only they may be answered
+# "reading"; every other caller (an action's card, the read-ahead, an answer) waits for the
+# read as before.
+FIRST_PARTIAL: contextvars.ContextVar[bool] = contextvars.ContextVar("plx_first_partial",
+                                                                     default=False)
 LAST_GOOD_KEPT = 400
 # Snapshot first (owner 2026-11-11: every page under 1 s): a main screen's last good page
 # read under the inputs served now (``WorkspaceBackend.inputs_stamp``: the store, its delta

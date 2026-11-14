@@ -31,6 +31,9 @@ class ThreadConnectionsTest(unittest.TestCase):
             store = pe._Store.__new__(pe._Store)
             store._local = threading.local()
             store._conns, store._conns_lock = [], threading.Lock()
+            # what _Store.__init__ sets beside them (the owning thread of each connection,
+            # the helper threads and the idle part connections close() reads)
+            store._conn_thread, store._helpers, store._parts = {}, [], []
             store.interrupt, store.path = None, Path(d)
 
             def read():

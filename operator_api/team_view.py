@@ -171,8 +171,16 @@ class TeamViewMixin:
     def _team_file(self) -> Optional[Path]:
         from operating import team_activity as ta
         named = os.environ.get(FILE_ENV)
-        data_dir = getattr(self, "data_dir", None)
-        return Path(named) if named else Path(data_dir) / ta.SNAPSHOT_FILE if data_dir else None
+        if named:
+            return Path(named)
+        # the API's data directory, else the state directory the nightly unit writes to
+        # (plx-team-activity --out <state>/team-activity.json): a host that never set
+        # PLX_TEAM_ACTIVITY_FILE showed "not counted yet" beside a fresh snapshot
+        dirs = [Path(d) for d in (getattr(self, "data_dir", None), getattr(self, "state_dir", None)) if d]
+        for d in dirs:
+            if (d / ta.SNAPSHOT_FILE).is_file():
+                return d / ta.SNAPSHOT_FILE
+        return dirs[0] / ta.SNAPSHOT_FILE if dirs else None
 
     def _team_scope(self, reader: Reader) -> tuple[bool, frozenset[str], Callable[[str], bool], bool]:
         """(sees everyone, the reader's own ids, whether a person is shown to nobody)."""

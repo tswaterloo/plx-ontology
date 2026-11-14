@@ -680,6 +680,25 @@ class AroundTests(unittest.TestCase):
                 {"property": "status", "op": "eq", "value": "open"}]), FULL))
         self.assertIn("filter_not_sourced", {g["reason"] for g in out["gaps"]})
         self.assertNotIn("exact_count", out)
+        # Asked only of the sources the walked records come from: a walk reaching no BC
+        # order loses none to the filter (11-13: a count of a walk's Sage orders was never
+        # exact), and a reader the BC order is hidden from learns nothing of it.
+        tools_ = tools(store, schema=schema)[0]
+        hidden = ok(self, "plx.around", tools_.call("plx.around", dict(PARTY_ORDERS, filters=[
+            {"property": "status", "op": "eq", "value": "open"}]), OPS))
+        self.assertNotIn("filter_not_sourced", {g["reason"] for g in hidden["gaps"]})
+        self.assertNotIn("bc.sales_orders", json.dumps(hidden))
+        # a member of no declared binding of the type asks every source (fail closed)
+        base = tools_.base if hasattr(tools_, "base") else tools_
+        filt = [{"property": "status", "op": "eq", "value": "open"}]
+        self.assertEqual(base.unsourced_filter_gaps("Order", filt, members=[O1, O2]), [])
+        self.assertEqual(len(base.unsourced_filter_gaps("Order", filt, members=[O1, OB])), 1)
+        self.assertEqual(len(base.unsourced_filter_gaps(
+            "Order", filt, members=[O1, "Order:other.binding:z"])), 1)
+        self.assertEqual(len(base.unsourced_filter_gaps("Order", filt)), 1)
+        self.assertEqual(base.unsourced_filter_gaps("Order", filt,
+                                                    members=iter([O1, OB])) != [], True)
+        self.assertEqual(base.unsourced_filter_gaps("Order", filt, members=[]), [])
 
     def test_untrusted_text_envelope_for_mail(self):
         t, _ = tools()
@@ -1547,6 +1566,38 @@ class OwnerOpenReaderTests(unittest.TestCase):
         for blob in (json.dumps(out), json.dumps(count)):
             self.assertNotIn(D2, blob)
             self.assertNotIn("item-2", blob)
+
+    def test_owner_holding_every_unit_reads_no_per_type_facts(self):
+        # Every marking set and every audience key held, the item gate decided on what
+        # the hop reached: no audience or marking can hide a row, so the per-type slice
+        # facts (a minute and more a big type on Postgres) are never read. Missing one
+        # marking or one audience the store holds, they are read as before (the types'
+        # audiences first).
+        every = {m: {"full"} for m in store_ddl.MARKINGS}
+        cases = ((POLICY.audiences, every, 0, True),
+                 (POLICY.audiences, {**every, "pii": set()}, None, None),
+                 ({**POLICY.audiences, "sharepoint:*": set()}, every, None, None))
+        for audiences, markings, reads, whole in cases:
+            policy = ot.ReadPolicy(tenant=POLICY.tenant, audiences=audiences,
+                                   markings=markings, unrestricted=True)
+            base = ot.OntologyTools(ot.StoreReader(build(extra=self.crowded).conn), policy,
+                                    item_gate=lambda actor, handle: True, schema=SCHEMA,
+                                    grammar=None, contracts=CONTRACTS, clock=lambda: NOW,
+                                    monotonic=Clock().monotonic)
+            t = tt.TraverseTools(base)
+            read = []
+            slices, kinds = t._slices_of, t._audiences
+            t._slices_of = lambda kind, names: read.append(kind) or slices(kind, names)
+            t._audiences = lambda: read.append("audiences") or kinds()
+            out = ok(self, "plx.around", t.call("plx.around", {
+                "from": O1, "path": [{"link_type": "Document.documents_order",
+                                      "direction": "reverse"}]}, FULL))
+            if reads == 0:
+                self.assertEqual(read, [])
+                self.assertEqual(sorted(ids(out)), sorted([D1, D2]))
+                self.assertIs(out["completeness"]["complete"], whole)
+            else:
+                self.assertTrue(read, (audiences, markings))
 
     def test_other_readers_stay_decided_per_type(self):
         # A reader without the owner flag, even one whose gate opens every item it

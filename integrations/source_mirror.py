@@ -3818,8 +3818,16 @@ class SourceMirror:
              full: bool = False, absence_scan: bool = False,
              budget_seconds: float | None = None,
              order: Sequence[str] | None = None, workers: int = 1,
-             relation_budget_seconds: float | None = None) -> dict[str, Any]:
+             relation_budget_seconds: float | None = None,
+             coverage: bool = True,
+             full_below_rows: int | None = None) -> dict[str, Any]:
         """Capture every served catalog relation visible to ``actor``.
+
+        ``full_below_rows``: a mirrored relation whose last capture held at most so many
+        rows is read whole (a full traversal, which also sees its absences) instead of
+        incrementally, every call: a small relation is cheap to read whole, and its
+        removals and cancellations then show the same cycle (GA-F12: the manufacturing
+        and assembly orders are ~88 MOs and ~111 AOs a month, a few thousand lines).
 
         A relation never mirrored is filled; a mirrored one is refreshed
         (incrementally where its ``since`` allows, else by full traversal;
@@ -3855,7 +3863,11 @@ class SourceMirror:
         charged to its budget up to a per-run credit (``LOCK_WAIT_*``). Returns
         per-relation outcomes in capture order (with ``failure_class``, HTTP status, the
         service's error code, pages, rows, final page size and seconds) and
-        :meth:`coverage`.
+        :meth:`coverage`; ``coverage`` false: ``None`` in its place. Coverage counts every
+        present row of every relation (records, lineage, absences: whole reads of the
+        file, unbudgeted, after the capture), so a caller that reads only ``runs`` (the
+        host's continuous ingest) skips it: on the live mirror (69 GB, 31.7M rows in one
+        relation) it read 138 GB and outran the ingest child's timeout on 11-13.
         """
         if not isinstance(actor, Actor):
             raise MirrorError("invalid_actor", "actor must be an ontology Actor")
@@ -3873,12 +3885,18 @@ class SourceMirror:
         deadline = self._deadline(budget_seconds)
         if relation_budget_seconds is not None:
             self._deadline(relation_budget_seconds)   # the same bounds as the budget
+        if full_below_rows is not None and (
+                isinstance(full_below_rows, bool) or not isinstance(full_below_rows, int)
+                or not 1 <= full_below_rows <= MAX_ROWS_PER_RELATION_CAP):
+            raise MirrorError("invalid_full_below_rows",
+                              f"full_below_rows must be 1..{MAX_ROWS_PER_RELATION_CAP}")
         if not audience.grants_any(actor):
             # Nothing can be visible: no upstream request at all, not even the catalog.
             return {"schema": "plx-source-mirror-sync/v1", "full": full,
                     "absence_scan": absence_scan, "runs": [], "workers": workers,
                     "throttle_waits": {"count": 0, "seconds": 0.0},
-                    "coverage": self._coverage(actor, audience, {}, None, None)}
+                    "coverage": self._coverage(actor, audience, {}, None, None)
+                    if coverage else None}
         if self._client is None:
             raise MirrorError("source_unavailable", "no Workbench API client is configured")
         catalog, fetched_at, error = self._catalog(force=True)
@@ -3904,7 +3922,11 @@ class SourceMirror:
 
         names.sort(key=place)
         waits_before = len(self.throttle_waits)
-        step = dict(actor=actor, tenant=audience.tenant, full=full,
+        # mirrored relations small enough to read whole every call (never-captured ones
+        # are filled whole anyway)
+        whole = frozenset(name for name in names if full_below_rows is not None
+                          and 0 < sizes.get(name, 0) <= full_below_rows)
+        step = dict(actor=actor, tenant=audience.tenant, full=full, full_names=whole,
                     absence_scan=absence_scan, catalog=catalog, deadline=deadline,
                     lock_credit=_LockCredit(LOCK_WAIT_RUN_CAP_SECONDS),
                     relation_seconds=relation_budget_seconds)
@@ -3958,8 +3980,10 @@ class SourceMirror:
         checkpoint(self._db)
         return {"schema": "plx-source-mirror-sync/v1", "full": full,
                 "absence_scan": absence_scan, "runs": runs, "workers": workers,
+                "full_below_rows": full_below_rows, "read_whole": len(whole),
                 "throttle_waits": {"count": len(waits), "seconds": round(sum(waits), 3)},
-                "coverage": self._coverage(actor, audience, catalog, fetched_at, None)}
+                "coverage": self._coverage(actor, audience, catalog, fetched_at, None)
+                if coverage else None}
 
     def _last_captured(self) -> dict[str, int]:
         """relation -> the id of its last finished capture (``sync`` reads the stalest
@@ -3981,7 +4005,8 @@ class SourceMirror:
     def _sync_one(self, name: str, *, actor: Actor, tenant: str, full: bool,
                   absence_scan: bool, catalog: Mapping[str, Any],
                   deadline: float | None, lock_credit: _LockCredit,
-                  relation_seconds: float | None = None) -> dict[str, Any]:
+                  relation_seconds: float | None = None,
+                  full_names: frozenset[str] = frozenset()) -> dict[str, Any]:
         """One relation of :meth:`sync`: its run record (never raises but on a binding
         mismatch, which stops the whole sync). Every failure is in ``refresh_failure``
         so coverage counts the relation failed, whatever stored capture it has.
@@ -4008,7 +4033,8 @@ class SourceMirror:
             if current.tenant != tenant or not current.allows(actor, name):
                 return {"relation": name, "outcome": "access_revoked"}
             state, info = self._ensure_fresh(name, tenant, 0.0, force=True,
-                                             force_full=full, catalog=catalog,
+                                             force_full=full or name in full_names,
+                                             catalog=catalog,
                                              deadline=deadline, take_over_merge=True)
         except MirrorError as exc:
             if exc.code == "binding_mismatch":
@@ -5316,10 +5342,14 @@ def main(argv: Sequence[str] | None = None) -> int:
     sync.add_argument("--relation", action="append")
     sync.add_argument("--full", action="store_true")
     sync.add_argument("--absence-scan", action="store_true")
+    sync.add_argument("--full-below-rows", type=int,
+                      help="read a mirrored relation of at most this many rows whole")
     sync.add_argument("--budget-seconds", type=float)
     sync.add_argument("--relation-budget-seconds", type=float,
                       help="each relation's first-pass time slice; the rest of the budget "
                            "then goes to the relations it stopped")
+    sync.add_argument("--no-coverage", action="store_true",
+                      help="report the runs only (coverage: the coverage command)")
     commands.add_parser("coverage", help="per-relation completeness counts")
     scan = commands.add_parser("scan-absence", help="key-only absence scan of one relation")
     scan.add_argument("relation")
@@ -5362,7 +5392,9 @@ def main(argv: Sequence[str] | None = None) -> int:
                 result = mirror.sync(actor, relations=args.relation, full=args.full,
                                      absence_scan=args.absence_scan,
                                      budget_seconds=args.budget_seconds,
-                                     relation_budget_seconds=args.relation_budget_seconds)
+                                     relation_budget_seconds=args.relation_budget_seconds,
+                                     coverage=not args.no_coverage,
+                                     full_below_rows=args.full_below_rows)
             elif args.command == "coverage":
                 result = mirror.coverage(actor)
             else:

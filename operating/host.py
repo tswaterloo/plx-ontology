@@ -1788,11 +1788,16 @@ class Host:
         ledger serves, the host's working mirror (always: a Portal capture writes it and
         its next record serves it), and every ``state_capture_paths`` store (SharePoint:
         its drive and its list-item store). ``_project`` opens each one held, each with
-        one read snapshot until the build ends."""
+        one read snapshot until the build ends. With ``ingest.builds`` ``off`` none: no
+        build runs, so no capture waits for one (2026-11-13: every capture was held until
+        SharePoint's 2-hour run ended, Teams captured every 2 hours instead of 30 min)."""
         from ontology import project
 
         from .case_runtime import CASE_RUNTIME_DIR, MIRROR_FILE
 
+        if self.config is not None and self.config.ingest is not None \
+                and self.config.ingest.get("builds") == "off":
+            return []
         if self.snapshot_builds:
             # The build opens only its own copies, which no capture writes.
             inputs = self.state_dir / HOST_DIR / BUILD_INPUTS_DIR

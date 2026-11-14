@@ -61,7 +61,8 @@ def ledger_line(n: int) -> CapturedRecord:
     key = f"AD|10|19|1|{n}"
     row = {"_sage_pk": key, "amtextndhc": f"-{n}.700", "datebus": f"2017{11:02d}{n % 28 + 1:02d}",
            "idinvc": f"HEALTH INS NOV/{n}     ", "idvend": "BOYC02      ",
-           "glcomment": " " * 250, "gldesc": f"HEALTH INS NOV/{n}" + " " * 40, "cntline": str(n)}
+           "glcomment": " " * 250, "gldesc": f"HEALTH INS NOV/{n}" + " " * 40, "cntline": str(n),
+           "idacct": "5100-00"}   # an expense account off payroll (gl_account below)
     return CapturedRecord("portal_api", LEDGER, json.dumps({"_sage_pk": key}), row,
                           f"api://{LEDGER}/{n}@g-1", "row", f"{n:064d}", AT, None, AT,
                           f"api:{LEDGER}")
@@ -74,20 +75,32 @@ def supplier() -> CapturedRecord:
                           "api:public.app_supplier")
 
 
+def gl_account() -> CapturedRecord:
+    """The lines' GL account, off payroll: a Sage AP line whose account is unresolved or on
+    payroll is payroll whole (finance and pii on every value, 104c1d62c3)."""
+    row = {"acctid": "510000", "acctfmttd": "5100-00", "acctdesc": "Employee benefits - insurance"}
+    return CapturedRecord("portal_api", "sage.gl_account", '{"acctid":"510000"}', row,
+                          "api://sage.gl_account/510000@g-1", "row", "e" * 64, AT, None, AT,
+                          "api:sage.gl_account")
+
+
 class PackedLedgerTests(unittest.TestCase):
 
     def build(self, lines: int):
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
         path = Path(tmp.name) / "store.sqlite"
-        records = [ledger_line(n) for n in range(1, lines + 1)] + [supplier()]
+        records = [ledger_line(n) for n in range(1, lines + 1)] + [supplier(), gl_account()]
         build_store(path, schema(), {"portal_api": Captures(records)},
                     normalizer=identifiers.normalize, clock=lambda: T)
         reader = ot.StoreReader.open(path)
         self.addCleanup(reader.conn.close)
         policy = ot.ReadPolicy("plx", audiences={
             "api:*": frozenset({"staff:finance", "staff:operations"})},
-            markings={"finance": frozenset({"staff:finance"})})
+            # pii: the ledger's description and comment columns are finance and pii on
+            # every row (104c1d62c3); the finance reader here holds both
+            markings={"finance": frozenset({"staff:finance"}),
+                      "pii": frozenset({"staff:finance"})})
         tools = ot.OntologyTools(reader, policy, schema=ot.SchemaView.from_compiled(schema()),
                                  grammar=identifiers, contracts=ot.load_contracts())
         return reader.conn, tools
@@ -122,7 +135,7 @@ class PackedLedgerTests(unittest.TestCase):
                         self.assertEqual(self.found(out), [self.oid(n)], (prop, out))
                 read = tools.call("plx.object", {"object_id": self.oid(n)}, FINANCE)
                 values = {v["property"]: v for v in read["values"]}
-                self.assertEqual(len(values), 8)
+                self.assertEqual(len(values), 9)
                 amount = values["amtextndhc"]
                 self.assertEqual(json.dumps(amount["value"]).count(f"-{n}.700"), 1)
                 self.assertEqual((amount["citation"]["l1_handle"], amount["citation"]["field_path"]),
@@ -131,7 +144,7 @@ class PackedLedgerTests(unittest.TestCase):
                 # every value of every line reads back (no row lost or duplicated)
                 self.assertEqual(conn.execute("SELECT count(*) FROM object_values WHERE "
                                               "binding_id = ?", (f"gen.{LEDGER}",)).fetchone()[0],
-                                 8 * lines)
+                                 9 * lines)
 
     def test_a_reader_without_finance_never_sees_a_packed_amount(self):
         conn, tools = self.build(10)

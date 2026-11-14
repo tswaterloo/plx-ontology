@@ -539,9 +539,11 @@ def remapped_documents(pg: Any, link_types: Sequence[str]) -> set[str]:
     """The objects holding a served ``mention:`` link of one of ``link_types``."""
     if not link_types:
         return set()
+    from ontology.pg_byte_order import key_collate
+    c = key_collate(pg)
     return {r[0] for r in pg.execute(
         "SELECT DISTINCT from_object FROM ontology.link_rows WHERE link_type = "
-        "ANY(%s::text[]) AND link_id COLLATE \"C\" >= 'mention:' AND link_id COLLATE \"C\" "
+        f"ANY(%s::text[]) AND link_id{c} >= 'mention:' AND link_id{c} "
         "< 'mention;'", (list(link_types),)).fetchall()}
 
 

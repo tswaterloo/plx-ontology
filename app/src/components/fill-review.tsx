@@ -18,9 +18,12 @@ const LEFT: Record<string, string> = {
   ambiguous: "The records disagree",
 };
 
+// a suggested value is shown with its source for the person to check; it is not in the file
+const SHOWS_SOURCE = new Set(["filled", "suggested"]);
+
 function Source({ f }: { f: FillField }) {
-  if (f.status !== "filled" || !f.citation) return <span className="text-muted">{LEFT[f.status] ?? f.reason}</span>;
-  const where = `${f.citation.record} · ${f.citation.field}`;
+  if (!SHOWS_SOURCE.has(f.status) || !f.citation) return <span className="text-muted">{LEFT[f.status] ?? f.reason}</span>;
+  const where = `${f.status === "suggested" ? "Suggested, check: " : ""}${f.citation.record} · ${f.citation.field}`;
   return f.citation.open_url ? (
     <a className="text-accent hover:underline" href={f.citation.open_url}>
       {where}
@@ -59,7 +62,7 @@ export function FillReview({ fill }: { fill: InstructFill }) {
             <tr key={i} data-status={f.status} className="align-top">
               <td className="pr-4">{f.label}</td>
               <td className="pr-4 text-muted">{f.before || "—"}</td>
-              <td className={f.status === "filled" ? "pr-4 font-medium" : "pr-4 text-muted"}>{f.after || "—"}</td>
+              <td className={f.status === "filled" ? "pr-4 font-medium" : f.status === "suggested" ? "pr-4 italic" : "pr-4 text-muted"}>{f.after || "—"}</td>
               <td className="text-[12px]">
                 <Source f={f} />
               </td>

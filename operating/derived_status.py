@@ -730,13 +730,23 @@ def _ready(state_dir: Path) -> bool:
         thread.start()
     return False
 SERVED_TTL = 30.0
+# How long a page read waits for the status read it started (``served``): past it the page
+# shows the last status known, or none yet. The status parses the derivation code's
+# modules (``ontology.project.derivation_code``): on a cold process 25 s of CPU, read on
+# each of the Today screens' request threads at once (2026-11-13), which held each past
+# its time limit.
+SERVED_WAIT = 1.0
+_SERVING: dict[str, threading.Thread] = {}
+_SERVING_LOCK = threading.Lock()
 
 
 def served(state_dir: Path | None, *, monotonic: Callable[[], float] = time.monotonic
            ) -> dict[str, Any] | None:
     """What the operator API shows beside its data (cached ``SERVED_TTL`` seconds): the
     artifacts on screen made by older code, being refreshed, and the model-made ones
-    flagged. None without a state directory."""
+    flagged. None without a state directory. Read by one background thread per state
+    directory at a time, waited for ``SERVED_WAIT``: meanwhile the last status known is
+    shown, else ``status_computing`` (unknown, never "all current")."""
     if state_dir is None:
         return None
     key = str(state_dir)
@@ -744,10 +754,35 @@ def served(state_dir: Path | None, *, monotonic: Callable[[], float] = time.mono
     if held is not None and monotonic() - held[0] < SERVED_TTL:
         return held[1]
     try:
-        if not _ready(Path(state_dir)):
-            return {"stale": [], "flagged": [], "unknown": ["versions_computing"],
-                    "titles": {}, "checked_at": None}
-        found = status(Path(state_dir))
+        ready = _ready(Path(state_dir))
+    except Exception as error:  # noqa: BLE001 - reported as unknown, never a crash
+        return {"stale": [], "flagged": [], "unknown": [f"status:{type(error).__name__}"],
+                "titles": {}, "checked_at": None}
+    if not ready:
+        return {"stale": [], "flagged": [], "unknown": ["versions_computing"],
+                "titles": {}, "checked_at": None}
+    with _SERVING_LOCK:
+        thread = _SERVING.get(key)
+        if thread is None or not thread.is_alive():
+            thread = threading.Thread(target=_read_served, kwargs={
+                "state_dir": Path(state_dir), "key": key, "monotonic": monotonic},
+                name="derived-served", daemon=True)
+            _SERVING[key] = thread
+            thread.start()
+    thread.join(SERVED_WAIT)
+    now = _SERVED.get(key)
+    if now is not None and now is not held:
+        return now[1]
+    if held is not None:
+        return held[1]   # the last status known while it is read again
+    return {"stale": [], "flagged": [], "unknown": ["status_computing"], "titles": {},
+            "checked_at": None}
+
+
+def _read_served(state_dir: Path, key: str, monotonic: Callable[[], float]) -> None:
+    """``served``'s status read, kept for it."""
+    try:
+        found = status(state_dir)
     except Exception as error:  # noqa: BLE001 - reported as unknown, never a crash
         found = {"stale": [], "flagged": [], "unknown": [f"status:{type(error).__name__}"],
                  "artifacts": []}
@@ -757,7 +792,6 @@ def served(state_dir: Path | None, *, monotonic: Callable[[], float] = time.mono
                       [*found["stale"], *found["flagged"]]},
            "checked_at": found.get("checked_at")}
     _SERVED[key] = (monotonic(), out)
-    return out
 
 
 # --------------------------------------------------------------------------- refresh

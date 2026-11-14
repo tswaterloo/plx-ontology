@@ -361,6 +361,42 @@ class TransientAclTests(CaptureCase):
         self.assertEqual(sum(p.endswith("/items/3/permissions") for p in self.graph.gets()), 2)
 
 
+class AclBreakerTests(TransientAclTests):
+    """Live 11-13: 19 permission reads of one list timed out in a row and every host run
+    of the list capture ran past its time limit, so the lists after it were never read.
+    A list stops reading item permissions after ``ACL_MAX_TRANSIENT_IN_A_ROW`` transient
+    failures in a row or ``ACL_LIST_BUDGET_SECONDS``; the rest of its items are saved
+    unreadable (served to no reader) and the list says why."""
+
+    def test_transient_failures_in_a_row_stop_the_lists_permission_reads(self):
+        self.throttle({"1", "2", "3", "4", "5"}, times=99)
+        run = self.capture.run(scope())["lists"][0]
+        self.assertEqual((run["status"], run["reasons"]),
+                         ("incomplete", ["acl_timeouts_in_a_row"]))
+        read = {i for i in "12345"
+                if any(p.endswith(f"/items/{i}/permissions") for p in self.graph.gets())}
+        self.assertEqual(read, {"1", "2", "3"})   # 4 and 5: never asked
+        self.assertEqual(run["counts"]["acl_unreadable"], 5)
+        self.assertEqual(self.visible(READER), [])
+        self.assertEqual(self.store.operator_completeness(
+            CAPTURE, csl.LIST_KIND.name, self.unit)["records_current"], 5)
+
+    def test_a_list_past_its_permission_budget_reads_no_more_permissions(self):
+        self.throttle(set(), times=0)
+        ticks = iter([0.0, 0.0, 1.0, csl.ACL_LIST_BUDGET_SECONDS + 1] + [10_000.0] * 50)
+        self.capture._clock = lambda: next(ticks)
+        run = self.capture.run(scope())["lists"][0]
+        self.assertEqual((run["status"], run["reasons"]),
+                         ("incomplete", ["acl_list_budget"]))
+        self.assertEqual(sorted(r["key"]["id"] for r in self.visible(READER)), ["1", "2"])
+        self.assertEqual(sum(p.endswith("/permissions") for p in self.graph.gets()), 2)
+
+    def test_one_success_between_failures_resets_the_count(self):
+        self.throttle({"1", "2", "4", "5"}, times=1)
+        run = self.capture.run(scope())["lists"][0]
+        self.assertEqual(run["status"], "complete", run)
+
+
 class ResolverTests(CaptureCase):
     """The ``sharepoint-list://`` citation through the case runtime and the projected
     ``SharePointListItem`` through the ontology host, per reader."""

@@ -93,9 +93,13 @@ DBS = (
 # Loose files and directories (relative to the state dir unless absolute), one archive.
 FILES = (
     "view-as", "console-ticket-audit.jsonl", "teams-capture/census.json",
-    "sharepoint-capture/.file-facts.json", "case-originals", str(APP_DATA / "known-readers.json"),
+    "case-originals", str(APP_DATA / "known-readers.json"),
     str(APP_DATA / "test-records.json"), str(APP_DATA / "feedback.jsonl"),
 )
+# Loose files earlier copies held that are no longer backed up (disposable caches, rebuilt
+# from the stores): one missing now is never counted lost. The SharePoint file facts are
+# kept in the shared lookup file since GA-F10 (operating/case_tools_host.py).
+RETIRED_FILES = ("sharepoint-capture/.file-facts.json",)
 # Content-addressed blob stores (``<dir>/sha256/<xx>/...``), after every database.
 BLOBS = (("sharepoint", "sharepoint-capture/blobs"), ("mail", "mail-capture/blobs"))
 # Each blob store's database: a blob it no longer lists was deleted on purpose (a people
@@ -103,6 +107,12 @@ BLOBS = (("sharepoint", "sharepoint-capture/blobs"), ("mail", "mail-capture/blob
 BLOB_DBS = {"sharepoint": "sharepoint-capture/capture.db", "mail": "mail-capture/capture.db"}
 # A blob's stored forms (``integrations.captured_text``): the same blob under another name.
 BLOB_SUFFIXES = (".z", ".dropped")
+# Each blob store's pack of small compressed blobs (``integrations.blob_pack``, GA-F16): a
+# blob moved there leaves its shard. The pack is copied before the shards (the backup API:
+# one snapshot) and that copy's snapshot is what a shard is checked against: a blob missing
+# from its shard counts as kept only when this run's pack copy holds it (packed after the
+# snapshot, or the pack copy skipped: lost, and the shard's old copy stays).
+BLOB_PACKS = {"mail": ("mail-blob-pack", "mail-capture/blobs/pack.sqlite")}
 # Stores whose absence means the volume is not the one backed up: the run refuses.
 SENTINELS = ("mail-capture/capture.db",)
 SKIPPED_BY_DESIGN = {"case-runtime/source-mirror.sqlite":
@@ -165,6 +175,7 @@ class Run:
         self.pieces: dict[str, Any] = dict(self.old.get("pieces", {}))
         self.skipped: dict[str, str] = {}
         self.written = self.kept = 0
+        self.pack_copies: dict[str, Path] = {}   # store -> this run's pack snapshot
         self.volume: str | None = self.old.get("volume")
         accept = {n.strip() for n in os.environ.get("PLX_CAPTURE_BACKUP_ACCEPT_SHRINK",
                                                     "").split(",") if n.strip()}
@@ -208,7 +219,9 @@ class Run:
             self.old = body
 
     # ---- pieces
-    def database(self, name: str, rel: str) -> None:
+    def database(self, name: str, rel: str, keep: Path | None = None) -> None:
+        """Copy one SQLite store (``keep``: where its snapshot is left once the copy is
+        committed, for checks later in the run)."""
         source = _path(rel)
         key = f"db/{name}.sqlite.zst"
         if not source.is_file():
@@ -247,9 +260,11 @@ class Run:
             subprocess.run([*ZSTD, "-f", str(staged), "-o", str(tmp)], check=True,
                            stdin=subprocess.DEVNULL)
             raw = staged.stat().st_size
+            self.commit(key, tmp, raw)
+            if keep is not None:
+                os.replace(staged, keep)
         finally:
             staged.unlink(missing_ok=True)
-        self.commit(key, tmp, raw)
 
     def tar(self, key: str, base: Path, names: list[str], raw: int,
             store: str | None = None) -> None:
@@ -304,15 +319,18 @@ class Run:
             return {line for line in listed.stdout.splitlines() if line}
 
     def lost(self, key: str, names: list[str], store: str | None = None) -> int:
-        """How many names the copy held that ``names`` lacks. For a blob shard (``store``)
+        """How many names the copy held that ``names`` lacks (a ``RETIRED_FILES`` one is
+        never lost). For a blob shard (``store``)
         a name is its digest, whatever its stored form, and a digest the store's database
         no longer lists is not lost (deleted on purpose)."""
         old = self.old_names(key)
         if not old:
             return 0
         if store is None:
-            return len(old - set(names))
+            retired = {str(_path(rel)).lstrip("/") for rel in RETIRED_FILES}
+            return len(old - set(names) - retired)
         gone = {_digest(n) for n in old} - {_digest(n) for n in names}
+        gone -= self.packed(store, gone)
         if not gone:
             return 0
         if self.held_back(store):
@@ -327,6 +345,33 @@ class Run:
                 conn.close()
         except sqlite3.Error:
             return len(gone)   # cannot tell: every one counts as lost
+
+    def packed(self, store: str, digests: set[str]) -> set[str]:
+        """Which of ``digests`` the store's pack holds in their ``.z`` form (none when it
+        has no pack or it cannot be read: each then counts as it did)."""
+        if store not in BLOB_PACKS or not digests:
+            return set()
+        pack = self.pack_copies.get(store)
+        if pack is None or not pack.is_file():
+            return set()
+        out = set()
+        try:
+            conn = sqlite3.connect(pack.resolve().as_uri() + "?mode=ro", uri=True, timeout=120)
+            try:
+                for digest in sorted(digests):
+                    if len(digest) != 64 or digest.strip("0123456789abcdef"):
+                        continue
+                    name = digest + ".z"
+                    # the pack's row key (``blob_pack._key``): this script runs alone
+                    key = int.from_bytes(bytes.fromhex(digest[:16]), "big", signed=True)
+                    if conn.execute("SELECT 1 FROM packed WHERE id = ? AND name = ?",
+                                    (key, name)).fetchone():
+                        out.add(digest)
+            finally:
+                conn.close()
+        except sqlite3.Error:
+            return set()
+        return out
 
     def held_back(self, store: str) -> bool:
         """Whether ``store``'s database copy was not taken this run (shrunk, unsound,
@@ -449,8 +494,18 @@ def backup() -> tuple[int, dict[str, Any]]:
     for name, rel in DBS:
         run.database(name, rel)
     run.files()
-    for store, rel in BLOBS:
-        run.blobs(store, rel)
+    for store, _rel in BLOBS:   # before its shards: what they are checked against
+        if store in BLOB_PACKS:
+            snapshot = stage / f"{BLOB_PACKS[store][0]}.snapshot.sqlite"
+            run.database(*BLOB_PACKS[store], keep=snapshot)
+            if snapshot.is_file():
+                run.pack_copies[store] = snapshot
+    try:
+        for store, rel in BLOBS:
+            run.blobs(store, rel)
+    finally:
+        for snapshot in run.pack_copies.values():
+            snapshot.unlink(missing_ok=True)
     run.save(complete=True)
     total = sum(p["bytes"] for p in run.pieces.values())
     out = {"written": run.written, "kept": run.kept, "pieces": len(run.pieces),

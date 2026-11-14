@@ -317,13 +317,18 @@ class CuratedDomainFiles(unittest.TestCase):
                             self.assertEqual(binding["tier_ceiling"], "lead")
 
     def test_bc_bindings_name_allowlisted_entity_sets(self):
+        from integrations.capture_store import BC_FIELD_PAGES
         from integrations.live_source_grammar import BC_ENTITY_SETS
         for name in OWN:
             for otype in load(name)["object_types"]:
                 for binding in otype["bindings"]:
                     if binding["source"] == "bc":
                         with self.subTest(binding=binding["id"]):
-                            self.assertIn(binding["relation"], BC_ENTITY_SETS)
+                            # a capture field page (purchaseOrderReferences) is read from
+                            # its allowlisted entity set's page (capture_store.BC_FIELD_PAGES)
+                            relation = binding["relation"]
+                            self.assertIn(BC_FIELD_PAGES.get(relation, relation),
+                                          BC_ENTITY_SETS)
                             self.assertEqual(binding["lineage"], {"from_capture": "bc_company"})
 
     def test_evidence_is_pinned_and_resolvable(self):

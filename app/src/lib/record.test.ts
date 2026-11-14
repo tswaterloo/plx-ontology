@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { missingText } from "@/components/answer-parts";
 import { factMap, factValue, groupLinked, groupRelated, groupTimeline, isBlocked, linkSections, recordHead } from "./record";
-import type { LinkGroup, LinkRef, ObjectPage, Source } from "./types";
+import type { LinkedItem, LinkGroup, LinkRef, ObjectPage, Source } from "./types";
 
 const bc = (field: string): Source => ({ system: "BC", handle: "bc://production/c/purchaseOrders/1@e", label: "BC production", fields: { [field]: "x" } });
 const fact = (text: string, field: string) => ({ text, sources: [bc(field)], check: "read_from_record" });
@@ -113,6 +113,8 @@ describe("activity titles", () => {
     expect(activityTitle("Required: sales order SO-FM-23", 1)).toBe("Customer order SO-FM-23 due");
     expect(activityTitle("Required: sales order SO-FM-23", 6)).toBe("6 customer orders due");
     expect(activityTitle("Posted: receipt 107057", 3)).toBe("3 receipts posted");
+    expect(activityTitle("Email RE: Eucarol AGE C50 MB Inquiry received", 1)).toBe("RE: Eucarol AGE C50 MB Inquiry received");
+    expect(activityTitle("Email address changed", 1)).toBe("Email address changed");
     // an unknown verb stays as written, never guessed
     expect(activityTitle("Frobbed: thing 1", 2)).toBe("Frobbed ×2");
     expect(activityTitle("Order placed", 1)).toBe("Order placed");
@@ -173,6 +175,45 @@ describe("factValue", () => {
   });
 });
 
+describe("messages and documents", () => {
+  it("leaves out a mail's inline pictures and keeps real attachments", () => {
+    const src = { system: "Email", handle: "h", label: "Email", open_url: "" };
+    const items = ["image006.png", "Outlook-x1y2.jpg", "EUCAROL TDS.pdf", "image of label v2.png"].map((label) => ({ kind: "document", label, source: src })) as LinkedItem[];
+    expect(groupLinked(items).map((t) => t.subject).sort()).toEqual(["EUCAROL TDS.pdf", "image of label v2.png"]);
+  });
+});
+
+describe("a record's own number", () => {
+  it("names a shipment by its shipment number and keeps the order it ships beneath", () => {
+    const facts = ["Shipment number: SH1000085942", "Ship date: Nov 12, 2026"].map((text) => ({ text, sources: [] }));
+    const sh = { object_id: "Shipment:x:1", type: "Shipment", label: "OR1000154433, shipment", summary: "", status: null, facts, freshness: {} } as unknown as ObjectPage;
+    const h = recordHead(sh);
+    expect([h.title, h.subline]).toEqual(["SH1000085942", "OR1000154433, shipment"]);
+    // a label that already carries it is left alone
+    expect(recordHead({ ...sh, label: "SH1000085942" } as ObjectPage).title).toBe("SH1000085942");
+  });
+});
+
+describe("a supplier's last message", () => {
+  it("is read from the dated mail in its activity when the linked documents carry no date", () => {
+    const src = { system: "Email", handle: "graph-mail://b/m@c", label: "Email", open_url: "/source?h=m" };
+    const sup = { object_id: "Supplier:x:1", type: "Supplier", label: "Lamberti", summary: "", status: null, facts: [], freshness: {},
+      linked: [{ kind: "document", label: "image006.png", source: src }],
+      timeline: [{ at: "2026-11-05T10:00:00Z", system: "Email", title: "Email RE: Eucarol inquiry received", source: src }, { at: "2026-11-10T10:00:00Z", system: "Email", title: "Email RE: Eucarol inquiry received", source: src }] } as unknown as ObjectPage;
+    const last = recordHead(sup).stats.find((x) => x.label === "Last message");
+    expect(last?.value).toMatch(/^10 Nov/);
+    expect(last?.caption).toBe("Eucarol inquiry");
+  });
+});
+
+describe("a record without a page design of its own", () => {
+  it("says a value once when two fields of one name carry it, and keeps equal amounts apart", () => {
+    const facts = ["Lot number: 558-G-3", "Lot text: 558-G-3", "Total tax: 0.00 CAD", "Total amount: 0.00 CAD", "Quantity ordered: 5", "Quantity received: 5"].map((text) => ({ text, sources: [] }));
+    const lot = { object_id: "Lot:x:1", type: "Lot", label: "Lot 558-G-3", summary: "", status: null, facts, freshness: {} } as unknown as ObjectPage;
+    expect(recordHead(lot).keyFacts.map((k) => k.label)).toEqual(["Lot number", "Total tax", "Total amount", "Quantity ordered", "Quantity received"]);
+  });
+});
+
 describe("links by link kind", () => {
   const ref = (type: string, id: string, label: string, extra: Partial<LinkRef> = {}): LinkRef => ({ object_id: `${type}:x:${id}`, type, label, open_url: `/object/${type}/${id}`, evidence: [], ...extra });
   const group = (link_type: string, type: string, role: LinkGroup["role"], words: string, records: LinkRef[], count?: number): LinkGroup => ({
@@ -195,6 +236,21 @@ describe("links by link kind", () => {
     group("Quote.converted_to", "Quote", "related", "Quotes", [ref("Quote", "q1", "Q-7")]),
     group("SalesOrder.created_from_quote", "Quote", "related", "Created from quote", [ref("Quote", "q2", "Q-8")]),
   ];
+
+  it("shows a document's rows that all carry its number as one row with a count", () => {
+    const rows = [1, 2, 3].map((i) => ref("RelSageArPjd", `p${i}`, "IN1000180804"));
+    const got = linkSections({ type: "SalesInvoice", links: [{ ...group("RelSageArPjd.invoice", "RelSageArPjd", "related", "Rows", [...rows, ref("RelSageArPjd", "p9", "IN1000180805")]), type_label: "AR posted transaction line" }] });
+    expect(got.linked[0].records.map((r) => [r.label, r.times ?? 1])).toEqual([["IN1000180804", 3], ["IN1000180805", 1]]);
+    // two curated records of one name (two lots) stay two rows, each opening its own page
+    const lots = linkSections({ type: "Item", links: [group("Lot.of_item", "Lot", "related", "Lots", [ref("Lot", "a", "L-1"), ref("Lot", "b", "L-1")])] });
+    expect(lots.linked[0].records.map((r) => r.object_id)).toEqual(["Lot:x:a", "Lot:x:b"]);
+  });
+
+  it("heads a raw table's group with its business name, never the table code", () => {
+    const raw = { ...group("RelSageArIbh.customer", "RelSageArIbh", "related", "Sage ar ibh rows by idcust", [ref("RelSageArIbh", "r1", "IN1000180707")]), type_label: "AR invoice entry" };
+    const got = linkSections({ type: "Customer", links: [raw] });
+    expect(got.linked.map((s) => s.heading)).toEqual(["AR invoice entry"]);
+  });
 
   it("puts shipments and invoices in their section and every other link kind in the linked list", () => {
     const got = linkSections({ type: "SalesOrder", links });

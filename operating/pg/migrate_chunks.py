@@ -259,17 +259,18 @@ def _scope_objects(sconn: sqlite3.Connection, table: str) -> list[str]:
     return [r[0] for r in sconn.execute(f"SELECT object_id FROM {table} ORDER BY object_id")]
 
 
-def _step_scope(o: Mapping[str, Any], objects: Sequence[str] | None = None
-                ) -> tuple[str, list[Any], str, list[Any]]:
+def _step_scope(o: Mapping[str, Any], objects: Sequence[str] | None = None,
+                c: str = ' COLLATE "C"') -> tuple[str, list[Any], str, list[Any]]:
     """(Postgres where, params, SQLite where, params) of one step's owned links
-    (``objects``: the ids of the entry's object table, when it names one)."""
+    (``objects``: the ids of the entry's object table, when it names one; ``c``: the
+    collation of a byte-order key range, ``ontology.pg_byte_order.key_collate``)."""
     if o.get("objects"):   # the links from the layer's objects
         table = o["objects"]
-        return ("l.from_object = ANY(%s::text[]) AND l.link_id COLLATE \"C\" >= %s AND "
-                "l.link_id COLLATE \"C\" < %s", [list(objects or ()), o["prefix"], o["end"]],
+        return (f"l.from_object = ANY(%s::text[]) AND l.link_id{c} >= %s AND "
+                f"l.link_id{c} < %s", [list(objects or ()), o["prefix"], o["end"]],
                 f"link_id >= ? AND link_id < ? AND from_object IN (SELECT object_id FROM "
                 f"{table})", [o["prefix"], o["end"]])
-    pg = ("l.link_id COLLATE \"C\" >= %s AND l.link_id COLLATE \"C\" < %s AND "
+    pg = (f"l.link_id{c} >= %s AND l.link_id{c} < %s AND "
           "(%s::text[] IS NULL OR EXISTS (SELECT 1 FROM unnest(%s::text[]) f WHERE "
           "starts_with(l.from_object, f)))")
     pgp = [o["prefix"], o["end"], o["from"], o["from"]]
@@ -968,8 +969,10 @@ def _chunk(cur: Any, name: str, conn: sqlite3.Connection | None,
         return out
     if kind == "steps":
         o = step_record["owned"][int(which)]
+        from ontology.pg_byte_order import key_collate
         pg, pgp, lite, litep = _step_scope(
-            o, _scope_objects(sconn, o["objects"]) if o.get("objects") else None)
+            o, _scope_objects(sconn, o["objects"]) if o.get("objects") else None,
+            key_collate(cur))
         return _diff_links(cur, _served_links(cur, pg, pgp), _layer_links(sconn, lite, litep),
                            write, keys)
     if name == "final":

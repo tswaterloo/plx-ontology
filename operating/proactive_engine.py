@@ -542,15 +542,18 @@ def scan_threads(environ: Mapping[str, str] | None = None) -> int:
     return max(1, os.cpu_count() or 1)
 
 
-def _connect(path: Path) -> sqlite3.Connection:
+def _connect(path: Path, file_only: bool = False) -> sqlite3.Connection:
+    """A read-only connection to the store at ``path``: Postgres when it serves it, else
+    the file. ``file_only``: the file itself, whatever Postgres serves (a scratch store
+    of a few records, ``operating.autopilot_fast``)."""
     from operating.pg import ontology_reader
-    if ontology_reader.pg_only():
+    if not file_only and ontology_reader.pg_only():
         # Postgres is the only store: read it whole or not at all (an error, never an
         # empty run over a store being loaded)
         problem = ontology_reader.whole()
         if problem is not None:
             raise ostore.StoreError("store_not_whole", problem)
-    if ontology_reader.serves(path):
+    if not file_only and ontology_reader.serves(path):
         # PLX_ONTOLOGY_PG: the Postgres ontology (current to the last delta layer), the
         # detectors' SQL run as written (operating/pg/sqlite_compat.py)
         from operating.pg.sqlite_compat import PgCompatConnection
@@ -619,9 +622,10 @@ class _Store:
 
     def __init__(self, path: Path, *, threads: int | None = None,
                  scope: Iterable[str] | None = None,
-                 audience_keys: Iterable[str] | None = None) -> None:
+                 audience_keys: Iterable[str] | None = None, file_only: bool = False) -> None:
         from operating.pg import ontology_reader
-        if not Path(path).is_file() and not ontology_reader.pg_only():
+        self.file_only = file_only   # the file at ``path`` only (``_connect``)
+        if not Path(path).is_file() and (file_only or not ontology_reader.pg_only()):
             raise ostore.StoreError("store_missing")
         self.path = Path(path)
         # an incremental pass (``operating.proactive_incremental``): the records it may read
@@ -713,7 +717,7 @@ class _Store:
         """This thread's read-only connection (opened on its first read)."""
         conn = getattr(self._local, "conn", None)
         if conn is None:
-            conn = _connect(self.path)
+            conn = _connect(self.path, self.file_only)
             if self.interrupt is not None:
                 conn.set_progress_handler(self.interrupt, 10000)
             with self._conns_lock:
@@ -730,7 +734,7 @@ class _Store:
         with self._conns_lock:
             if self._parts:
                 return self._parts.pop()
-        conn = _connect(self.path)
+        conn = _connect(self.path, self.file_only)
         with self._conns_lock:
             self._conns.append(conn)
         return conn
@@ -1387,7 +1391,7 @@ def _run_link_types() -> list[str]:
         *declared_qc_links(),
         pg.LINE_LINK, pg.SUPPLIER_LINK, CONFIRMATION_LINK, *so_status.twin_links(),
         so_status.LINE_OF, *WORK_LINE_LINKS, *WORK_ALLOCATION,
-        *so_status.FULFILLED_LINKS, *ev.LINK_TYPES,
+        *so_status.FULFILLED_LINKS, *SHIP_LINKS, *ev.LINK_TYPES,
         *ic.LINK_TYPES, ic.LINE_SELLS, *ic.LEAD_ROUTE_TYPES, *amounts,
         *_rule_link_types()]))
 
@@ -1468,6 +1472,11 @@ PO_STATUS_PROPS = tuple(po_status.SOURCE_OF)
 # the follow-up field naming the order an item is about (its key and its record's rank):
 # never shown, read by ``read_inbox`` to list one item per order for each reader
 _ORDER = "order"
+# The order record a gap's evidence attests, on gaps that are not that order's own item
+# (``missing_in_record``): read by the active-population and test-record filters only,
+# never the inbox's one-item-per-order fold (``_ORDER``), so such a note never displaces
+# or folds that order's late item.
+_ATTESTS = "attests_order"
 
 
 def _po_source(st: _Store) -> po_status.StoreSource:
@@ -1552,6 +1561,13 @@ def _late_or_unconfirmed_po(st: _Store, as_of: date) -> dict[str, Any]:
             disagreeing.add((conflict["field"], records))
             # an open copy of an order another copy records received is a reconciliation
             # note (a receipt in any system closes the order), never a delivery risk
+            if conflict.get("reconcile"):
+                doubt = _receipt_doubt(conflict)
+                if doubt is not None:
+                    # the received side's own record does not stand behind "received"
+                    # (11-13 judging: 12 of 17 rested on a B.Order header or no receipt)
+                    counts[doubt] += 1
+                    continue
             gaps.append((_receipt_reconciliation if conflict.get("reconcile")
                          else _systems_disagree)(name, conflict, records,
                                                  [*marks, *po.marks]))
@@ -1744,7 +1760,7 @@ def _late_or_unconfirmed_po(st: _Store, as_of: date) -> dict[str, Any]:
                         "classes": {cls: classes.get(cls, 0) for cls in po_status.CLASSES},
                         **{key: counts.get(key, 0) for key in (
                             "evaluated", "late", "at_risk", "unconfirmed", "undated",
-                            "historic")},
+                            "historic", *RECEIPT_DOUBTS)},
                         # orders open by any of their reads (a Portal Pending order beside
                         # its BC Draft twin is classed by the BC record, yet open here):
                         # open_by_read = late + undated + historic + open_other
@@ -1809,6 +1825,36 @@ def _unconfirmed_summary(basis: str, need: date, doubt: str | None = None) -> st
            if basis == "lead_time" else "due by")
     return (f"An open purchase order {due} {need.isoformat()} has no supplier confirmation"
             + _doubt_words(doubt))
+
+
+RECEIPT_TYPES = (po_status.RECEIPT_TYPE, "ReceiptLine", po_status.LOT_TYPE)   # goods in
+RECEIPT_DOUBTS = ("received_header_open", "received_without_receipt")
+
+
+def _receipt_doubt(conflict: Mapping[str, Any]) -> str | None:
+    """Why a reconciliation note is not raised, else None. The side said to hold the goods
+    received must stand behind it on its own record: its header word may not read open
+    (B.Order, Pending, Generated or Revised: FileMaker's items rolled up over a header still
+    saying back-ordered are no closing record a person can act on), and it must cite a
+    recorded receipt (a ``Receipt``/``ReceiptLine`` record, or a BC side's own received
+    line quantities); a status word alone is no receipt. Judged on the cited items only,
+    so the verdict never reads more than the note shows."""
+    if conflict.get("field") != "receipt_state":
+        return None
+    received = conflict.get("governs")
+    side = next((s for s in conflict.get("sides") or () if s.get("system") == received), None)
+    if side is None:
+        return RECEIPT_DOUBTS[1]
+    items = [i for i in side.get("items") or () if isinstance(i, Mapping)]
+    open_words = po_status.FM_ITEM_PARTIAL | po_status.FM_HEADER_NOTHING
+    if any(str(i.get("object_id") or "").startswith("PurchaseOrder:")
+           and i.get("property") in ("status", "fm_status")
+           and po_status.word(i.get("value")) in open_words for i in items):
+        return RECEIPT_DOUBTS[0]
+    if not any(str(i.get("object_id") or "").split(":", 1)[0] in RECEIPT_TYPES
+               or i.get("property") == po_status.RECEIVED_QTY for i in items):
+        return RECEIPT_DOUBTS[1]
+    return None
 
 
 def _receipt_reconciliation(name: str, conflict: Mapping[str, Any], records: Iterable[str],
@@ -1909,6 +1955,11 @@ PROBABLE_SO = "order_probably_fulfilled"   # open, but every work order for it i
 # the records whose absence the verdict rests on (a shipment or invoice not linked, a
 # closing status not held): a reader must be granted every audience they sit in
 SO_ABSENCE_TYPES = (so_status.TYPE, "Shipment", "SalesInvoice")
+# A shipping document naming an order: evidence the goods left (a packing slip is cut when
+# the order is packed to ship). A mention link, so only a confirming tier counts, and the
+# slip must state its own ship date (``SHIP_DATE``) to stand as shipped evidence.
+SHIP_LINKS = ("PackingSlip.for_sales_order",)
+SHIP_DATE = "ship_date"
 
 
 @dataclasses.dataclass
@@ -1927,6 +1978,7 @@ class _OrderVerdict:
     reason: str | None = None
     dates: list = dataclasses.field(default_factory=list)   # business dates (activity)
     work: tuple = ()   # (work order id, closed) per work order made for its lines
+    shipped: tuple = ()   # (shipping document, link markings) naming it (``SHIP_LINKS``)
 
 
 def _customer_orders(st: _Store) -> tuple[dict[str, Any], list[_OrderVerdict]]:
@@ -1963,6 +2015,10 @@ def _read_customer_orders(st: _Store) -> tuple[dict[str, Any], list[_OrderVerdic
     lined = {link["to_object"] for link in line_links}   # records holding at least one line
     work = _work_orders(st, {link["from_object"]: link["to_object"] for link in line_links
                              if link["tier"] in SETTLED})
+    shipping: dict[str, set[tuple[str, str]]] = defaultdict(set)   # record -> its slips
+    for link in st.links(SHIP_LINKS):
+        if link["tier"] in CONFIRMING and link["to_object"] in found:
+            shipping[link["to_object"]].add((link["from_object"], link["markings"]))
     lead_twins: dict[str, set[tuple[str, str]]] = defaultdict(set)   # order -> (twin, link)
     for link in twins:
         ends = (link["from_object"], link["to_object"])
@@ -2007,6 +2063,7 @@ def _read_customer_orders(st: _Store) -> tuple[dict[str, Any], list[_OrderVerdic
              for m in group for n in SO_ACTIVITY for r in found[m]["props"].get(n, ())),
             imported))
         verdict.work = tuple(sorted({w for m in group for w in work.get(m, ())}))
+        verdict.shipped = tuple(sorted({s for m in group for s in shipping.get(m, ())}))
         out.append(verdict)
         order = verdict.order = so_status.order_status(state[m] for m in group)
 
@@ -2147,23 +2204,33 @@ def _late_customer_order(st: _Store, as_of: date) -> dict[str, Any]:
         late = (as_of - required).days
         work = verdict.work
         if work and all(done for _w, done in work):
-            # every work order made for its lines is done: the goods were made, so it has
-            # probably shipped without a closing record; said apart, ranked low, never late
+            # every work order made for its lines is done: the goods were made; with a
+            # shipping document naming it that states its ship date, it has probably shipped
+            # without a closing record (said apart, ranked low, never late). Made with no
+            # shipping evidence is not said either way (11-13 judging: 15 of 15 such
+            # notes could not be told shipped or not): counted, never listed
+            slips = _ship_evidence(st, verdict, as_of)
+            if not slips:
+                counts["made_no_ship_evidence"] += 1
+                continue
             counts["probably_fulfilled"] += 1
             gaps.append(_required(requires, _gap(
                 PROBABLE_SO, name, min(r["object_id"] for r in wanted.governing),
                 so_status.TYPE, "probably_fulfilled",
                 summary=f"A customer order still reads open {late} day"
                         f"{'' if late == 1 else 's'} past its required date "
-                        f"{required.isoformat()}, but every work order made for it is done: "
-                        "it has probably shipped (unconfirmed)",
+                        f"{required.isoformat()}, but every work order made for it is done "
+                        f"and a packing slip naming it shows it shipped {slips[0]}: its "
+                        "status was probably never closed",
                 missing="Did this order ship? If so, its status was never closed.",
                 why="Its status says open and no shipment or invoice is linked, but every "
-                    "assembly order for its lines is complete, so the open status is "
-                    "probably stale rather than the order late.",
+                    "assembly order for its lines is complete and a packing slip naming the "
+                    "order states its ship date, so the open status is probably stale "
+                    "rather than the order late.",
                 priority="low", about=(so_status.TYPE, so_status.DATE_PROP),
                 groups=[_cites(wanted.governing, *link_marks),
-                        *[[cite] for cite in _cites(order.open_by, *link_marks)]],
+                        *[[cite] for cite in _cites(order.open_by, *link_marks)],
+                        slips[1]],
                 extra=_cites(rows(*SO_NUMBERS), *link_marks),
                 event={"days": late, "required": required.isoformat()})))
             continue
@@ -2232,8 +2299,32 @@ def _late_customer_order(st: _Store, as_of: date) -> dict[str, Any]:
                                     for c in ("open", "closed", "draft", "unknown")},
                         **{k: counts.get(k, 0) for k in ("evaluated", "late", "undated",
                                                          "stale", "probably_fulfilled",
+                                                         "made_no_ship_evidence",
                                                          "own_day_doubt")}}
     return result
+
+
+def _ship_evidence(st: _Store, verdict: _OrderVerdict, as_of: date
+                   ) -> tuple[str, list[Cite]] | None:
+    """(the newest ship day said, the cited ship dates) of the shipping documents naming
+    the order (``verdict.shipped``) that state a ship date on or before ``as_of``, each
+    cited through its link's markings and the order's identity links; None when none
+    does."""
+    if not verdict.shipped:
+        return None
+    marks = dict(verdict.shipped)
+    found = st.values(("PackingSlip",), (SHIP_DATE,), objects=sorted(marks))
+    rows, days = [], []
+    for slip, entry in sorted(found.items()):
+        for row in entry["props"].get(SHIP_DATE, ()):
+            day = _day(row.get("value"))
+            if day is not None and day <= as_of:
+                rows.append((row, marks.get(slip)))
+                days.append(day)
+    if not rows:
+        return None
+    cited = [c for row, mark in rows for c in _cites([row], mark, *verdict.link_marks)]
+    return say_date(max(days)), cited
 
 
 def _required(requires: Sequence[str], gap: dict[str, Any] | None) -> dict[str, Any] | None:
@@ -3624,19 +3715,41 @@ def _card_rules(st: _Store, as_of: date, call: Callable | None, bound: int,
                 else (handle, None, UNREADABLE))
 
     gaps = []
+    seen: set[tuple[str, str, frozenset[str]]] = set()
+    repeats = 0
     for gap, requires in found:
         follow = gap["follow_up"]
-        gaps.append(_gap(
+        records: frozenset[str] = frozenset()
+        if gap["kind"] == pg.KINDS[0]:
+            # the records the document attests (every empty read's own record): one gap
+            # per (records, field) however many documents state it (the newest document
+            # is read first and kept; 11-13 judging: one order raised up to 4 times, once
+            # per assembly packet), and the order among them carried on the follow-up so
+            # the active-population filter leaves a closed or historic order out
+            records = frozenset(held[h]["object_id"] for group in requires[1:]
+                                for h in group if h in held)
+            if records:
+                if (gap["kind"], gap["summary"], records) in seen:
+                    repeats += 1
+                    continue
+                seen.add((gap["kind"], gap["summary"], records))
+        made = _gap(
             gap["kind"], "card_rules", gap["object_id"], gap["object_type"],
             gap["id"], summary=gap["summary"], missing=follow["missing"], why=follow["why"],
             priority=follow["priority"], about=(gap["object_type"], ""),
             groups=[[cite(h) for h in group] for group in requires],
-            extra=[cite(h) for h in gap["citations"]]))
+            extra=[cite(h) for h in gap["citations"]])
+        orders = sorted(r for r in records if r.split(":", 1)[0] in ORDER_TYPES)
+        if made is not None and orders:
+            made["follow_up"][_ATTESTS] = orders[0]
+        gaps.append(made)
     status = "truncated" if len(ids) > bound or unread else "complete"
-    return _result(gaps, status=status,
-                   reasons=(["card_bound"] if len(ids) > bound else [])
-                   + [f"unread:{code}" for code in sorted(unread)],
-                   not_evaluated=skipped)
+    out = _result(gaps, status=status,
+                  reasons=(["card_bound"] if len(ids) > bound else [])
+                  + [f"unread:{code}" for code in sorted(unread)],
+                  not_evaluated=skipped)
+    out["counts"] = {"cards": len(ids[:bound]), "repeats_merged": repeats}
+    return out
 
 
 # --------------------------------------------------------------------------- the inbox
@@ -5239,8 +5352,10 @@ def _drop_test_records(st: _Store, results: dict[str, dict[str, Any]], as_of: da
     for result in results.values():
         kept, dropped = [], 0
         for gap in result.get("gaps") or ():
-            order = ((gap.get("follow_up") or {}).get(_ORDER) or {}).get("key")
-            if gap.get("object_id") in tests or order in tests:
+            follow = gap.get("follow_up") or {}
+            order = (follow.get(_ORDER) or {}).get("key")
+            if gap.get("object_id") in tests or order in tests \
+                    or follow.get(_ATTESTS) in tests:
                 dropped += 1
             else:
                 kept.append(gap)
@@ -5355,9 +5470,10 @@ def _gap_orders(gap: Mapping[str, Any]) -> list[str]:
     out = []
     if gap.get("object_type") in ORDER_TYPES:
         out.append(gap.get("object_id"))
-    order = ((gap.get("follow_up") or {}).get(_ORDER) or {}).get("key")
-    if isinstance(order, str) and order.split(":", 1)[0] in ORDER_TYPES:
-        out.append(order)
+    follow = gap.get("follow_up") or {}
+    for order in ((follow.get(_ORDER) or {}).get("key"), follow.get(_ATTESTS)):
+        if isinstance(order, str) and order.split(":", 1)[0] in ORDER_TYPES:
+            out.append(order)
     return [o for o in out if isinstance(o, str)]
 
 
@@ -6031,6 +6147,15 @@ def _file_stamp(path: str) -> tuple[Any, ...] | None:
     return (st.st_dev, st.st_ino, st.st_mtime_ns, st.st_size, head)
 
 
+def _wal_stamp(path: str) -> tuple[Any, ...] | None:
+    """``_file_stamp`` of a WAL file, None for an empty one as for none: an empty WAL holds
+    no frame, so the database is its main file (whose stamp says when it changed); each
+    reader that opened and reset it moved its time, and every page read built the table
+    again (40 s of CPU three times over at once, 2026-11-13)."""
+    stamp = _file_stamp(path)
+    return None if stamp is None or stamp[3] == 0 else stamp
+
+
 def _coverage_key(conn: sqlite3.Connection, params: Mapping[str, str]
                   ) -> tuple[Any, ...] | None:
     """What the reader's counts depend on, or None (never kept) when any part cannot be
@@ -6041,13 +6166,13 @@ def _coverage_key(conn: sqlite3.Connection, params: Mapping[str, str]
     inbox, store = files.get("main") or "", files.get("st")
     if not inbox or store is None:
         return None   # an in-memory inbox: nothing says when it changed
-    stamps = (_file_stamp(inbox), _file_stamp(inbox + "-wal"))
+    stamps = (_file_stamp(inbox), _wal_stamp(inbox + "-wal"))
     if stamps[0] is None:
         return None
     meta = dict(conn.execute("SELECT key, value FROM st.store_meta WHERE key IN "
                              "('content_digest', 'changes_stamp')").fetchall())
     if store:
-        held = (store, _file_stamp(store), _file_stamp(store + "-wal"),
+        held = (store, _file_stamp(store), _wal_stamp(store + "-wal"),
                 meta.get("content_digest"))
         if held[1] is None:
             return None
@@ -6179,6 +6304,30 @@ def _unjudged_table(conn: sqlite3.Connection, tables: set[str],
                 while len(_tables_kept) > _TABLES_KEPT:
                     _tables_kept.popitem(last=False)
             return hit
+        # one build per key at a time: the page reads that ask at once wait for it and
+        # read what it kept, rather than each building it again beside it
+        with _coverage_lock:
+            building = _tables_building.setdefault(key, threading.Lock())
+        with building:
+            with _coverage_lock:
+                hit = _tables_kept.get(key)
+            if hit is not None:
+                return hit
+            try:
+                return _built_table(conn, tables, key)
+            finally:
+                with _coverage_lock:
+                    if _tables_building.get(key) is building:
+                        del _tables_building[key]
+    return _built_table(conn, tables, key)
+
+
+_tables_building: dict[tuple[Any, ...], threading.Lock] = {}
+
+
+def _built_table(conn: sqlite3.Connection, tables: set[str],
+                 key: tuple[Any, ...] | None) -> dict[str, Any]:
+    """``_unjudged_table`` read from the inbox (and kept, under ``key``)."""
     pairs_of: dict[str, set[tuple[str, str]]] = defaultdict(set)
     for object_id, audience, markings in conn.execute(
             "SELECT so.object_id, so.audience_key, sv.markings FROM st.objects so JOIN "
@@ -6453,6 +6602,7 @@ def read_inbox(inbox: Any, store: Any, *, reader: str, may_read: Callable[[str],
                 if not all_owners and not _owned(follow_up, row["kind"], reader):
                     continue   # another person's own mail: never theirs to see
                 order = follow_up.pop(_ORDER, None)
+                follow_up.pop(_ATTESTS, None)   # the filters' key, never shown
                 held = orders.get(order["key"]) if isinstance(order, dict) else None
                 if held is not None:
                     # this order is listed: its governing record's item replaces a twin's,
@@ -6474,6 +6624,10 @@ def read_inbox(inbox: Any, store: Any, *, reader: str, may_read: Callable[[str],
                 if isinstance(order, dict):
                     orders[order["key"]] = (order["rank"], entry)
         rules = _rule_coverage(conn, params, detectors)
+    try:
+        _learned_order(shown, store, reader)
+    except Exception:  # noqa: BLE001 - lessons never break a read: the order stands
+        pass
     failed = sorted(name for name, status in detectors.items() if status == "failed")
     truncated = any(status == "truncated" for status in detectors.values())
     # A rule that did not run (not configured on this schedule, blocked on a source, or
@@ -6580,6 +6734,32 @@ def _relative(summary: str, event: Any, days_late: Any, found_day: date | None,
     if isinstance(event, dict) and isinstance(event.get("days"), int) and moved:
         event = {**event, "days": event["days"] + (shift if "up" in moved else -shift)}
     return text, event, days_late
+
+
+def _learned_order(shown: list[dict[str, Any]], store: Any, reader: str) -> None:
+    """An alert kind this reader keeps dismissing (``operating.learning``: a lesson from
+    their own not useful / wrong marks) is weighed down (``learned``: its weight and the
+    lesson) and listed after the rest, in place; nothing is hidden by it."""
+    from . import feedback_signals, learning
+    state = feedback_signals.state_of(store)
+    lessons = learning.Lessons.load(learning.ledger_dir(state))
+    if not lessons or not shown:
+        return
+    who = learning.person_id(reader)
+    roles = [r for r, members in learning._roles_of(state).items()
+             if who in {learning.person_id(m) for m in members}]
+    from .briefing import EVENT_TYPES
+    weights = []
+    for entry in shown:
+        names = [entry.get("kind")] + [n for n, spec in EVENT_TYPES.items()
+                                       if entry.get("kind") in (spec.get("kinds") or ())]
+        weight, lesson = min((lessons.alert_weight(reader, str(n), roles) for n in names
+                              if n), key=lambda x: x[0], default=(1.0, None))
+        if lesson is not None:
+            entry["learned"] = {"weight": weight, "lesson_id": lesson}
+        weights.append(weight)
+    order = sorted(range(len(shown)), key=lambda i: -weights[i])
+    shown[:] = [shown[i] for i in order]
 
 
 def _shown(row: Mapping[str, Any], citations: Sequence[str], state: str,

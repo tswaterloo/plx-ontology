@@ -170,6 +170,32 @@ class CaptureBackupTest(unittest.TestCase):
         names = self.cb.Run(self.root, self.tmp / "stage", 0).old_names("blobs/mail-aa.tar.zst")
         self.assertEqual(names, {"aa/aa02.z"})
 
+    def test_a_retired_cache_an_older_copy_held_is_never_counted_lost(self) -> None:
+        # GA-F10: the SharePoint file facts moved into the shared lookup file; a copy made
+        # while they were still a loose file must not hold every later files backup back.
+        facts = self.state / "sharepoint-capture" / ".file-facts.json"
+        facts.parent.mkdir(parents=True)
+        facts.write_text("{}")
+        with self.stage_free, mock.patch.object(
+                self.cb, "FILES", (*self.cb.FILES, *self.cb.RETIRED_FILES)):
+            self.assertEqual(self.cb.backup()[0], 0)
+        self.assertIn(str(facts).lstrip("/"),
+                      self.cb.Run(self.root, self.tmp / "stage", 0).old_names("files.tar.zst"))
+        facts.unlink()
+        (self.state / "case-originals" / "f2").write_bytes(b"new")
+        with self.stage_free:
+            code, out = self.cb.backup()
+        self.assertEqual(code, 0, out)
+        self.assertNotIn("files.tar.zst", out["skipped"])
+        names = self.cb.Run(self.root, self.tmp / "stage", 0).old_names("files.tar.zst")
+        self.assertIn(str(self.state / "case-originals" / "f2").lstrip("/"), names)
+        self.assertNotIn(str(facts).lstrip("/"), names)
+        # a file still listed that is gone is still lost
+        (self.state / "case-originals" / "f1").unlink()
+        with self.stage_free:
+            out = self.cb.backup()[1]
+        self.assertEqual(out["skipped"].get("files.tar.zst"), "source_missing:1")
+
     def test_a_copy_that_fails_its_integrity_check_never_replaces_the_good_one(self) -> None:
         with self.stage_free:
             self.assertEqual(self.cb.backup()[0], 0)

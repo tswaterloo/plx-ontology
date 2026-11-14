@@ -70,9 +70,9 @@ export function WeeklyReview() {
           <button type="button" aria-label="Later week" className="flex size-7 items-center justify-center rounded-md hover:bg-hover disabled:opacity-40 cursor-pointer" disabled={weeks <= 0} onClick={() => setWeeks((w) => Math.max(0, w - 1))}>
             <ChevronRight className="size-4" aria-hidden />
           </button>
-          {brief && <span className="ml-3 text-[12px] text-muted">Read {formatDate(brief.as_of)}{brief.stored_at ? ` · kept ${formatDate(brief.stored_at)}` : ""}</span>}
+          {brief && <span className="ml-3 text-[12px] whitespace-nowrap text-muted">Read {formatDate(brief.as_of)}{brief.stored_at ? ` · kept ${formatDate(brief.stored_at)}` : ""}</span>}
         </div>
-        <div className="flex items-center gap-4 text-[13px]">
+        <div className="flex min-w-0 flex-wrap items-center gap-x-4 gap-y-2 text-[13px]">
           {next && <NextReview m={next} onOpen={setOpen} />}
           {brief?.summary_question && (
             <Link href={`/ask?q=${encodeURIComponent(brief.summary_question)}`} className="inline-flex h-8 items-center gap-1.5 rounded-lg bg-[color-mix(in_srgb,var(--fg)_6%,transparent)] px-3 font-medium">
@@ -112,7 +112,7 @@ function NextReview({ m, onOpen }: { m: UpcomingMeeting; onOpen: (m: UpcomingMee
   const people = (m.attendees ?? []).length + (m.organizer ? 1 : 0);
   const items = (m.open_items ?? []).length;
   return (
-    <button type="button" onClick={() => onOpen(m)} className="flex items-center gap-3 rounded-md px-2 py-1 text-left hover:bg-hover cursor-pointer" data-testid="next-review">
+    <button type="button" onClick={() => onOpen(m)} className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1 rounded-md px-2 py-1 text-left whitespace-nowrap hover:bg-hover cursor-pointer" data-testid="next-review">
       <span className="text-muted">Next review</span>
       <span className="num font-medium">{s ? `${dayTitle(s, new Date()).split(" · ")[0].replace(/,.*$/, "")} ${clock(s)}` : "—"}</span>
       {m.location ? (

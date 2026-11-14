@@ -592,13 +592,13 @@ def environment_digest(files: Iterable[tuple[str, str]]) -> str:
 
 def _blob_state(blobs: Path, value: Any) -> tuple[Any, ...]:
     """Which forms of a content-addressed blob are on disk, with their sizes."""
-    from integrations.captured_text import COMPRESSED_SUFFIX, DROPPED_SUFFIX, blob_path
+    from integrations.captured_text import COMPRESSED_SUFFIX, DROPPED_SUFFIX, blob_form_size
     if not isinstance(value, str) or not re.fullmatch(r"[0-9a-f]{64}", value):
         return ()
     out = []
     for suffix in ("", COMPRESSED_SUFFIX, DROPPED_SUFFIX):
-        try:
-            out.append(blob_path(blobs, value, suffix).stat().st_size)
+        try:   # a packed form has the same bytes, so the same size (blob_pack)
+            out.append(blob_form_size(blobs, value, suffix))
         except OSError:
             out.append(None)
     return tuple(out)

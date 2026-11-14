@@ -1,5 +1,6 @@
 """Autopilot write path: one executor that performs an autopilot's prepared item in the
-owning system, once the item's workflow passed its write gate and the owner switched it on.
+owning system, once the item's workflow passed its write gate for the item's person and that
+person switched it on for themselves.
 
 Everything here ships OFF. An item is performed live only when every one of these holds,
 checked in this order (the first that fails decides the outcome; every outcome is a row
@@ -21,10 +22,16 @@ of the audit log):
    operation or MC scope the rules do not list (``not_routine``).
 6. **Write gate** (``write_state``): the workflow passed >= 90% on >= 15 judged items on
    held-out days (``record_scores``: fresh days from ``fresh_from``, or a past window of
-   ``clean_windows``, ``held_out_kind``), the owner was told once
-   (``gate_passed`` -> ``owner_notified`` rows), and the owner's live flag names it
-   (``LIVE_ENV`` and ``LIVE_FILE``) with the master switch ``MASTER_ENV=1``. Otherwise the
-   action is recorded as a ``dry_run`` with the exact request it would send.
+   ``clean_windows``, ``held_out_kind``), the item's person
+   switched the workflow on for themselves (``set_opt_in``: an ``opt_in`` row they wrote,
+   never one written for them; off by default) and has not paused everything
+   (``set_paused``), and the host's master switch ``MASTER_ENV=1`` is on. An opt-in does
+   not outlive its gate: when the workflow no longer passes for the person it is
+   suspended (``suspend_lapsed``, an ``opt_in_suspended`` row saying why) and stays off
+   until they switch it on again. Nobody else can switch a person's workflow on, the owner
+   included; the owner is told of a first pass once (``notices``), which turns nothing
+   on. Otherwise the action is recorded as a ``dry_run`` with the exact request it would
+   send.
    A person's approval of the exact item (``Approval``) stands in for this gate: then the
    owner's per-kind switch (``APPROVED_ENV``) decides, money or a judgment call (step 5)
    runs only when the person acknowledged each reason, and the approver must be the item's
@@ -46,7 +53,7 @@ The audit log (``AUDIT_FILE``) is the hash-chained append-only journal of
 ``card_actions.Journal``: what, where, why, citations, result, key, mode. Nothing in this
 module sends HTTP; adapters receive injected transports.
 
-CLI (no flag is ever set by it)::
+CLI (it sets no switch and switches nobody's workflow on: a person does that in the app)::
 
     python3 -m operating.autopilot_write status --state DIR
     python3 -m operating.autopilot_write record-scores --state DIR --run OUT_RUN
@@ -82,8 +89,10 @@ WRITE_GATE_SCHEMA = "plx-autopilot-write-gate/v1"
 AUDIT_FILE = "autopilot-writes/audit.jsonl"
 UNDO_FILE = "autopilot-writes/undo-store.jsonl"   # an undo's words the audit keeps as digests
 MASTER_ENV = "PLX_AUTOPILOT_WRITES"              # "1": the owner's master switch
-LIVE_ENV = "PLX_AUTOPILOT_WRITES_LIVE"           # "role:workflow,..." the owner switched on
-LIVE_FILE = "autopilot-writes-live.json"         # {"live": ["role:workflow", ...]}
+# retired 2026-11-13 (owner: each person switches their own workflows on): the owner's
+# per-role live flags PLX_AUTOPILOT_WRITES_LIVE and autopilot-writes-live.json are read by
+# nothing; a host that still sets them turns nothing on
+OPT_IN_EVENTS = ("opt_in", "opt_in_paused", "opt_in_suspended")
 KILL_ENV = "PLX_AUTOPILOT_WRITES_OFF"
 KILL_FILE = "autopilot-writes.off"
 WORKFLOW_KILL_ENV = "PLX_AUTOPILOT_WRITES_OFF_WORKFLOWS"
@@ -705,7 +714,13 @@ class WriteGate:
     def __init__(self, path: Path, rules: Mapping[str, Any]) -> None:
         precision = Decimal(str(rules["gate"]["precision"]))
         minimum = int(rules["gate"]["min_judged"])
+        self.precision, self.minimum = precision, minimum
         self.roles: dict[str, tuple[set[str], set[str], set[str]]] = {}
+        # (role, workflow) -> (judged, matched): what a suspension or the page quotes
+        self.counts: dict[tuple[str, str], tuple[int, int]] = {}
+        # False when the gate could not be read: nothing passes, but nobody's opt-in is
+        # suspended on that (``suspend_lapsed``) — a gate measured and failed is needed
+        self.readable = False
         try:
             _held_out_windows(rules)
             raw = json.loads(Path(path).read_text(encoding="utf-8"))
@@ -719,14 +734,16 @@ class WriteGate:
                 for flow, c in (role.get("workflows") or {}).items():
                     judged, matched = int(c["judged"]), int(c["matched"])
                     seen.add(str(flow))
+                    self.counts[(str(name), str(flow))] = (judged, matched)
                     if judged >= minimum and 0 <= matched <= judged and \
                             Decimal(matched) / Decimal(judged) >= precision:
                         ok.add(str(flow))
                 self.roles[str(name)] = ({str(m).lower() for m in role.get("members") or ()},
                                          ok, seen)
+            self.readable = True
         except (OSError, ValueError, TypeError, KeyError, IndexError, AttributeError,
                 RulesInvalid):
-            self.roles = {}
+            self.roles, self.counts = {}, {}
         # the product gate's semantics over our verdicts (a workflow our stricter rules or
         # the freshness check refuse is passed in as measured and failed)
         self._gate, _ = ap.gate_of({"schema": ap.GATE_SCHEMA, "roles": {
@@ -751,8 +768,9 @@ class WriteGate:
 
 def sync_gate(journal: Journal, gate: WriteGate, now: datetime) -> list[dict[str, Any]]:
     """Record each (role, workflow) whose gate state changed: ``gate_passed`` the first time
-    it passes (the owner is then told once, ``owner_notified``), ``gate_lost``
-    when a later fresh score no longer passes it (live stops at once)."""
+    it passes (the owner is then told once, ``owner_notified``; that turns nothing on),
+    ``gate_lost`` when a later fresh score no longer passes it (live stops at once), and
+    every person's opt-in the gate no longer carries is suspended (``suspend_lapsed``)."""
     passing = set(gate.passing())
     added = []
     with journal.locked() as held:
@@ -770,12 +788,13 @@ def sync_gate(journal: Journal, gate: WriteGate, now: datetime) -> list[dict[str
             elif not now_passes and last == "gate_passed":
                 added.append(held.append({"event": "gate_lost", "role": key[0],
                                           "workflow": key[1], "at": _iso(now)}))
+        added += suspend_lapsed(held, gate, now)
     return added
 
 
 def notices(rows: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
     """Gate passes the owner has not been told of yet (the owner gets one message each,
-    then ``ack_notice``)."""
+    then ``ack_notice``). Information only: a notice turns nothing on."""
     pending: dict[tuple[str, str], Mapping[str, Any]] = {}
     for row in rows:
         key = (row.get("role"), row.get("workflow"))
@@ -794,43 +813,164 @@ def ack_notice(journal: Journal, role: str, workflow: str, now: datetime, by: st
             raise ValueError("no pending notice for this role and workflow")
         return held.append({"event": "owner_notified", "role": role, "workflow": workflow,
                             "at": _iso(now), "by": str(by)[:120],
-                            "status": "passed, owner notified; live when the owner's flag is set"})
+                            "status": "passed, owner notified; each person switches it on "
+                                      "for themselves"})
 
 
-def _notified(rows: Sequence[Mapping[str, Any]], role: str, workflow: str) -> bool:
-    told = False
+# ------------------------------------------------------------------ a person's opt-in
+
+def _person(value: Any) -> str:
+    out = str(value or "").strip().lower()
+    if not out or not _ROLE_FLOW.fullmatch(out) or ":" in out:
+        raise ValueError("unknown person")
+    return out
+
+
+def _workflow(value: Any) -> str:
+    out = str(value or "").strip()
+    if not out or not _ROLE_FLOW.fullmatch(out.lower()) or ":" in out:
+        raise ValueError("unknown workflow")
+    return out
+
+
+def opt_ins(rows: Sequence[Mapping[str, Any]]) -> dict[tuple[str, str], dict[str, Any]]:
+    """(person, workflow) -> where the person's own switch stands, from the audit rows:
+    ``on``, ``at`` and ``by`` of their last switch, and ``suspended`` (why) with
+    ``suspended_at`` when the gate dropped under them since they switched it on. Only an
+    ``opt_in`` row whose ``by`` is its ``person`` counts (nobody switches for anyone else);
+    a suspension holds until the person switches it on again."""
+    out: dict[tuple[str, str], dict[str, Any]] = {}
     for row in rows:
-        if row.get("role") == role and row.get("workflow") == workflow:
-            if row.get("event") == "owner_notified":
-                told = True
-            elif row.get("event") in ("gate_passed", "gate_lost"):
-                told = False
-    return told
+        event = row.get("event")
+        if event not in ("opt_in", "opt_in_suspended"):
+            continue
+        key = (str(row.get("person") or "").lower(), str(row.get("workflow") or ""))
+        if event == "opt_in":
+            if not key[0] or str(row.get("by") or "").lower() != key[0]:
+                continue
+            out[key] = {"person": key[0], "workflow": key[1], "on": row.get("on") is True,
+                        "at": row.get("at"), "suspended": None, "suspended_at": None}
+        elif key in out and out[key]["on"]:
+            out[key] = {**out[key], "on": False, "suspended_at": row.get("at"),
+                        "suspended": dict(row.get("why") or {"reason": "gate_lost"})}
+    return out
 
 
-def live_flags(environ: Mapping[str, str], state: Path) -> set[str]:
-    names = {p.strip().lower() for p in (environ.get(LIVE_ENV) or "").split(",") if p.strip()}
-    try:
-        raw = json.loads((state / LIVE_FILE).read_text(encoding="utf-8"))
-        names |= {str(p).strip().lower() for p in raw.get("live") or ()}
-    except (OSError, ValueError, AttributeError):
-        pass
-    return {n for n in names if _ROLE_FLOW.fullmatch(n)}
+def paused(rows: Sequence[Mapping[str, Any]]) -> dict[str, str]:
+    """person -> when they paused everything (only their own row counts)."""
+    out: dict[str, str] = {}
+    for row in rows:
+        if row.get("event") != "opt_in_paused":
+            continue
+        who = str(row.get("person") or "").lower()
+        if not who or str(row.get("by") or "").lower() != who:
+            continue
+        if row.get("paused") is True:
+            out[who] = str(row.get("at") or "")
+        else:
+            out.pop(who, None)
+    return out
+
+
+def eligible(gate: WriteGate, person: str, workflow: str) -> list[str]:
+    """The roles through which ``workflow`` passes its gate for ``person`` on its own
+    (``WriteGate.roles_for`` over every role of theirs: a role of theirs measured and failed
+    on it, or their own person role failed, refuses it); [] when it does not."""
+    return gate.roles_for(person, workflow, ())
+
+
+def shortfall(gate: WriteGate, person: str, workflow: str) -> dict[str, Any]:
+    """Why ``workflow`` does not pass for ``person`` now, from the gate's counts: the
+    weakest of their roles measured on it (``below_bar``: under the precision; ``too_few``:
+    under the judged minimum), or ``no_score`` when no score of theirs is on record."""
+    person = str(person).lower()
+    measured = [(r, gate.counts[(r, workflow)]) for r, (m, ok, seen) in gate.roles.items()
+                if person in m and workflow in seen and (r, workflow) in gate.counts]
+    failing = [(r, c) for r, c in measured if workflow not in gate.roles[r][1]] or measured
+    if not failing:
+        return {"reason": "no_score", "need_judged": gate.minimum,
+                "need_percent": str((gate.precision * 100).quantize(Decimal("0.1")))}
+
+    def share(c: tuple[int, int]) -> Decimal:
+        return Decimal(c[1]) / Decimal(c[0]) if c[0] > 0 else Decimal(-1)
+    role, (judged, matched) = min(failing, key=lambda rc: (share(rc[1]), rc[0]))
+    pct = (Decimal(matched) * 100 / Decimal(judged)).quantize(
+        Decimal("0.1"), rounding=ROUND_HALF_UP) if judged > 0 else None
+    return {"reason": "too_few" if judged < gate.minimum else "below_bar", "role": role,
+            "judged": judged, "matched": matched,
+            "percent": str(pct) if pct is not None else None,
+            "need_judged": gate.minimum, "need_percent": str((gate.precision * 100).quantize(Decimal("0.1")))}
+
+
+def suspend_lapsed(held: Any, gate: WriteGate, now: datetime) -> list[dict[str, Any]]:
+    """Under the audit journal's lock (``held``): suspend every opt-in that is on while its
+    workflow no longer passes for its person, with why. It stays off until they switch it
+    on again (a pass that comes back does not bring it back). A gate that could not be
+    read suspends nothing (nothing passes it, so nothing is written meanwhile)."""
+    if not getattr(gate, "readable", False):
+        return []
+    added = []
+    for (person, workflow), found in sorted(opt_ins(held.rows).items()):
+        if found["on"] and not eligible(gate, person, workflow):
+            added.append(held.append({"event": "opt_in_suspended", "person": person,
+                                      "workflow": workflow, "at": _iso(now), "by": "autopilot",
+                                      "why": shortfall(gate, person, workflow)}))
+    return added
+
+
+def set_opt_in(journal: Journal, gate: WriteGate, person: str, workflow: str, on: bool,
+               by: str, now: datetime) -> dict[str, Any]:
+    """``person`` switches their own ``workflow`` on or off. Only the person: ``by`` must be
+    ``person`` (``PermissionError`` otherwise, the owner included). On only while the
+    workflow passes its gate for them (``ValueError("not_eligible")``); off always."""
+    person, workflow = _person(person), _workflow(workflow)
+    if str(by or "").strip().lower() != person:
+        raise PermissionError("only the person themselves switches their autopilot")
+    with journal.locked() as held:
+        suspend_lapsed(held, gate, now)
+        row: dict[str, Any] = {"event": "opt_in", "person": person, "workflow": workflow,
+                               "on": bool(on), "at": _iso(now), "by": person}
+        if on:
+            roles = eligible(gate, person, workflow)
+            if not roles:
+                raise ValueError("not_eligible")
+            row["roles"] = sorted(roles)
+            row["scores"] = {r: {"judged": gate.counts.get((r, workflow), (0, 0))[0],
+                                 "matched": gate.counts.get((r, workflow), (0, 0))[1]}
+                             for r in sorted(roles)}
+        return held.append(row)
+
+
+def set_paused(journal: Journal, person: str, pause: bool, by: str, now: datetime
+               ) -> dict[str, Any]:
+    """``person`` pauses (or resumes) every workflow they switched on, at once. Only the
+    person (``PermissionError`` otherwise). Resuming turns on nothing that was off or
+    suspended."""
+    person = _person(person)
+    if str(by or "").strip().lower() != person:
+        raise PermissionError("only the person themselves pauses their autopilot")
+    with journal.locked() as held:
+        return held.append({"event": "opt_in_paused", "person": person, "paused": bool(pause),
+                            "at": _iso(now), "by": person})
 
 
 def write_state(gate: WriteGate, rows: Sequence[Mapping[str, Any]], environ: Mapping[str, str],
-                state: Path, owner: str, workflow: str, roles: Iterable[str]
-                ) -> tuple[str, list[str]]:
-    """``live`` or ``dry_run`` and what is missing for live."""
-    through = gate.roles_for(owner, workflow, roles)
-    if not through:
+                owner: str, workflow: str, roles: Iterable[str]) -> tuple[str, list[str]]:
+    """``live`` or ``dry_run`` and what is missing for live: the gate passed for the item's
+    person (``owner``) AND that person switched the workflow on for themselves, has not
+    paused and the gate still carries it AND the master switch is on."""
+    owner = str(owner or "").lower()
+    if not gate.roles_for(owner, workflow, roles):
         return "dry_run", ["gate_not_passed"]
-    told = [r for r in through if _notified(rows, r, workflow)]
-    if not told:
-        return "dry_run", ["passed_awaiting_owner_notice"]
-    flags = live_flags(environ, state)
-    if not any(f"{r}:{workflow}".lower() in flags for r in told):
-        return "dry_run", ["owner_flag_off"]
+    mine = opt_ins(rows).get((owner, workflow))
+    if mine is None or not mine["on"]:
+        if mine is not None and mine.get("suspended"):
+            return "dry_run", [f"opt_in_suspended:{mine['suspended'].get('reason')}"]
+        return "dry_run", ["not_switched_on_by_person"]
+    if not eligible(gate, owner, workflow):
+        return "dry_run", [f"opt_in_suspended:{shortfall(gate, owner, workflow)['reason']}"]
+    if owner in paused(rows):
+        return "dry_run", ["paused_by_person"]
     if environ.get(MASTER_ENV) != "1":
         return "dry_run", [f"master_switch_off:{MASTER_ENV}"]
     return "live", []
@@ -1046,7 +1186,9 @@ class Executor:
         gate = WriteGate(self.state / WRITE_GATE_FILE, rules)
         with self.journal.locked() as held:
             spec = self._spec(str(item.get("autopilot")))
-            mode, missing = write_state(gate, held.rows, self.environ, self.state,
+            # an opt-in the gate no longer carries is suspended (and recorded) first
+            suspend_lapsed(held, gate, now)
+            mode, missing = write_state(gate, held.rows, self.environ,
                                         base["owner"], base["workflow"],
                                         ap.item_roles(spec) if spec else frozenset())
             row["live_by"] = "gate" if mode == "live" else None
@@ -1137,7 +1279,7 @@ class Executor:
         spec = self._spec(str(item.get("autopilot")))
         gate = WriteGate(self.state / WRITE_GATE_FILE, rules)
         mode, _missing = write_state(gate, self.journal.rows() if rows is None else rows,
-                                     self.environ, self.state,
+                                     self.environ,
                                      str(item.get("owner") or "").lower(), workflow,
                                      ap.item_roles(spec) if spec else frozenset())
         live: list[str] = []
@@ -1267,7 +1409,8 @@ def _without_text(request: Any, keys: frozenset = _TEXT_KEYS) -> Any:
 # ------------------------------------------------------------------ status, CLI
 
 def status(state: Path, environ: Mapping[str, str] | None = None) -> dict[str, Any]:
-    """Counts and states only: adapters, switches, gate passes and notices, live count."""
+    """Counts and states only: adapters, switches, gate passes and notices, people's
+    opt-ins (on, suspended, paused), live count."""
     env = dict(os.environ if environ is None else environ)
     rules = load_rules()
     gate = WriteGate(state / WRITE_GATE_FILE, rules)
@@ -1276,7 +1419,9 @@ def status(state: Path, environ: Mapping[str, str] | None = None) -> dict[str, A
     return {"schema": "plx-autopilot-write-status/v1",
             "master_switch": env.get(MASTER_ENV) == "1",
             "killed": killed(env, state, "") is not None,
-            "live_flags": len(live_flags(env, state)),
+            "opted_in": sum(1 for o in opt_ins(rows).values() if o["on"]),
+            "suspended": sum(1 for o in opt_ins(rows).values() if o.get("suspended")),
+            "paused": len(paused(rows)),
             "approved_kinds": sorted(approved_kinds(env)),
             "gate_passing": [f"{r}:{f}" for r, f in gate.passing()],
             "pending_notices": notices(rows),

@@ -49,9 +49,6 @@ class AutopilotFollowUnit(unittest.TestCase):
 
     def test_installed_and_prepares_only(self):
         text = SCRIPT.read_text()
-        self.assertIn("plx-autopilot-follow", text.split("SYS_UNITS=", 1)[1].splitlines()[0])
-        self.assertIn('SYS_PATHS="plx-autopilot-follow"', text)
-        self.assertIn('enable --now "$u.path"', text)
         tmp = Path(tempfile.mkdtemp())
         env = tmp / "deploy.env"
         env.write_text("PLX_USER=u\nPLX_HOME=/home/u\n")
@@ -59,20 +56,24 @@ class AutopilotFollowUnit(unittest.TestCase):
         done = subprocess.run(["python3", str(render), "--out", str(tmp / "out"), "--env",
                                str(env)], capture_output=True, text=True)
         self.assertEqual(done.returncode, 0, done.stderr)
-        unit = (tmp / "out" / "plx-autopilot-follow.service").read_text()
-        lines = [ln for ln in unit.splitlines() if ln and not ln.startswith("#")]
-        start = [ln for ln in lines if ln.startswith("ExecStart=")]
-        self.assertEqual(len(start), 1)
-        self.assertIn("-m operating.autopilot follow --state-dir", start[0])
-        self.assertIn("Environment=PLX_AUTOPILOT_EVQ=1", lines)
-        self.assertIn("Environment=PLX_ONTOLOGY_PG=1", lines)
-        for live in ("autopilot_write", "PLX_AUTOPILOT_WRITES", "PLX_ACTIONS_LIVE",
-                     "PLX_AUTOPILOT_OFF=0"):
-            self.assertFalse([ln for ln in lines if live in ln], live)
-        self.assertTrue((tmp / "out" / "plx-autopilot-follow.timer").is_file())
-        path = (tmp / "out" / "plx-autopilot-follow.path").read_text()
-        self.assertIn("Unit=plx-autopilot-follow.service", path)
-
+        self.assertIn('enable --now "$u.path"', text)
+        # the live feed, and the fast feed a captured message starts (operating/autopilot_fast)
+        for name, command in (("plx-autopilot-follow", "follow"), ("plx-autopilot-fast", "fast")):
+            self.assertIn(name, text.split("SYS_UNITS=", 1)[1].splitlines()[0])
+            self.assertIn(name, text.split("SYS_PATHS=", 1)[1].splitlines()[0])
+            unit = (tmp / "out" / f"{name}.service").read_text()
+            lines = [ln for ln in unit.splitlines() if ln and not ln.startswith("#")]
+            start = [ln for ln in lines if ln.startswith("ExecStart=")]
+            self.assertEqual(len(start), 1)
+            self.assertIn(f"-m operating.autopilot {command} --state-dir", start[0])
+            self.assertIn("Environment=PLX_AUTOPILOT_EVQ=1", lines)
+            self.assertIn("Environment=PLX_ONTOLOGY_PG=1", lines)
+            for live in ("autopilot_write", "PLX_AUTOPILOT_WRITES", "PLX_ACTIONS_LIVE",
+                         "PLX_AUTOPILOT_OFF=0"):
+                self.assertFalse([ln for ln in lines if live in ln], live)
+            self.assertTrue((tmp / "out" / f"{name}.timer").is_file())
+            path = (tmp / "out" / f"{name}.path").read_text()
+            self.assertIn(f"Unit={name}.service", path)
 
 if __name__ == "__main__":
     unittest.main()

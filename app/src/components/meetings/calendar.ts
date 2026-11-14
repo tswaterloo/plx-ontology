@@ -101,7 +101,7 @@ export function relative(m: UpcomingMeeting, now: Date): string | null {
 export function dayTitle(d: Date, now: Date): string {
   const today = dayKey(now);
   const key = dayKey(d);
-  const name = d.toLocaleDateString("en-CA", { weekday: "long", month: "short", day: "numeric" });
+  const name = d.toLocaleDateString("en-GB", { weekday: "long", day: "numeric", month: "short" }).replace("Sept", "Sep");
   if (key === today) return `Today · ${name}`;
   if (key === dayKey(addDays(now, 1))) return `Tomorrow · ${name}`;
   return name;

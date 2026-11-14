@@ -582,16 +582,29 @@ class EngineTest(Engine):
     def pair(self, w: World, *, bc_fully: str = "false", portal_audience: str = "api:a",
              bc_audience: str = "bc:x", tier: str = "corroborated", bc_status: str = "Open",
              link: str = "PurchaseOrder.same_record_as", portal_status: str = "Complete",
-             portal_received: str = "10"):
+             portal_received: str = "10", receipt: bool = True, header: str = "Complete"):
         # each order its own past day: one day on a bulk share of the orders would be a
         # sync's default, never a requested-by date (``source_defaults``)
         day = (date(2026, 9, 1) + timedelta(days=w.n % 28)).isoformat()
-        portal = w.obj("PurchaseOrder", {"status": portal_status, "expected_date": day},
-                       audience=portal_audience, binding="portal.app_purchase_order")
-        w.link("PurchaseOrderLine.line_of", w.obj("PurchaseOrderLine", {
-            "ordered_quantity": ("10", "ea"),
-            "received_quantity": (portal_received, "ea", "received")},
-            audience=portal_audience), portal)
+        if portal_status == "Complete" and receipt:
+            # the received copy as the live ones are: a FileMaker order whose item is
+            # settled on a recorded receipt (the receipt is what a person checks)
+            portal = w.obj("PurchaseOrder", {"fm_status": header, "expected_date": day},
+                           audience=portal_audience, binding=ps.FM_BINDING)
+            item = w.obj("PurchaseOrderLine", {"ordered_quantity": ("10", "ea"),
+                                               "fm_receiving_status": "Complete"},
+                         audience=portal_audience)
+            w.link("PurchaseOrderLine.line_of", item, portal)
+            w.link("Receipt.receives_line", w.obj("Receipt", {"fm_status": "Received"},
+                                                  audience=portal_audience,
+                                                  binding="portal.fm_receipt"), item)
+        else:
+            portal = w.obj("PurchaseOrder", {"status": portal_status, "expected_date": day},
+                           audience=portal_audience, binding="portal.app_purchase_order")
+            w.link("PurchaseOrderLine.line_of", w.obj("PurchaseOrderLine", {
+                "ordered_quantity": ("10", "ea"),
+                "received_quantity": (portal_received, "ea", "received")},
+                audience=portal_audience), portal)
         bc = w.obj("PurchaseOrder", {"bc_status": bc_status, "bc_fully_received": bc_fully},
                    audience=bc_audience, binding="bc.purchase_orders")
         w.link(link, portal, bc, tier)
@@ -606,13 +619,33 @@ class EngineTest(Engine):
         self.assertEqual(len(found), 1)   # once, though both records are read as roots
         gap = found[0]
         self.assertEqual(gap["object_id"], bc)   # the copy that needs reconciling
-        self.assertIn("portal says fully received", gap["summary"])
+        self.assertIn("filemaker says fully received", gap["summary"])
         self.assertIn("bc says open lines still outstanding", gap["summary"])
-        self.assertIn("portal records the goods received", gap["summary"])
+        self.assertIn("filemaker records the goods received", gap["summary"])
         n = lambda oid: int(oid.rsplit(":", 1)[1])   # noqa: E731
         self.assertLessEqual({handle(n(portal)), handle(n(bc))}, set(gap["citations"]))
         # a receipt in any copy closes the order: no late item, no systems_disagree alert
         self.assertEqual([g for g in gaps if g["kind"] != RECONCILE], [])
+
+    def test_a_received_copy_that_does_not_stand_behind_it_raises_no_note(self):
+        # 11-13 judging: 12 of 17 notes rested on a FileMaker header still saying B.Order
+        # or on a Complete header with no receipt cited; neither is raised, each counted
+        for count in (1, 10, 60):
+            with self.subTest(n=count):
+                w = World()
+                good = [self.pair(w)[1] for _ in range(count)]
+                for _ in range(count):
+                    self.pair(w, header="B.Order")       # items settled, header back-ordered
+                    self.pair(w, receipt=False)          # a Complete word, no receipt
+                summary = self.run_engine(w)
+                found = sorted(g["object_id"] for g in self.read(limit=1000)["gaps"]
+                               if g["kind"] == RECONCILE)
+                self.assertEqual(found, sorted(good))
+                counts = summary["po_lateness"]
+                self.assertEqual((counts["received_header_open"],
+                                  counts["received_without_receipt"]), (count, count))
+                self.store.unlink()
+                self.inbox.unlink(missing_ok=True)
 
     def test_one_late_item_per_order_on_its_governing_record_citing_the_twin(self):
         # The BC record and its Portal twin each raised a late or

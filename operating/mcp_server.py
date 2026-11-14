@@ -304,16 +304,36 @@ _UNMAPPED = ("?",)
 UNRESTRICTED_SCOPE = "unrestricted:"
 
 
+# The ``store_meta`` keys that name a projection generation (``content_digest`` among
+# them: without it a store's generation is all of its meta). A delta layer rewrites the
+# others (``freshness``, ``source_freshness``, ``source_condition_unmet``,
+# ``relation_completeness``) every cycle. With the session evidence scoped on all of
+# them, every session that spanned a delta lost all it had been returned and the gate
+# refused each claim citing it (11-13, Postgres the only store:
+# "cites_what_this_run_did_not_return" on a count the agent read 60 s before). Across a
+# delta cycle the evidence is kept but no count or sum stays complete (``MCPServer._bind``):
+# the delta may have added or hidden a member, so a count read before it is "at least";
+# a claim is re-read as its record is now (``claim_changed_since``).
+GENERATION_META_KEYS = ("content_digest", "schema_digest", "format", "catalog_hash",
+                        "steps_digest", "built_at", "l1_generations", "as_known_at")
+# Between a scope's generation digest and its whole-meta digest (``_evidence_scope``).
+SCOPE_CYCLE_MARK = "~"
+
+
 def _evidence_scope(meta: dict[str, Any], policy: Any) -> str:
-    """The digest of a projection generation (its ``store_meta``) and a reader's grant (its
-    ``ReadPolicy``) that session evidence is kept under; the item permissions it was read
+    """The digest of a projection generation and a reader's grant (its ``ReadPolicy``) that
+    session evidence is kept under, then the digest of its whole ``store_meta``: two scopes
+    of one generation differ by a delta cycle only (``GENERATION_META_KEYS``; a store with
+    no ``content_digest`` has only the whole digest). The item permissions it was read
     under are compared item by item (``_permission_reads``, ``MCPServer._bind``)."""
     grant = [policy.tenant, *(sorted((key, sorted(principals))
                                      for key, principals in mapping.items())
                               for mapping in (policy.audiences, policy.markings))]
     digest = hashlib.sha256(json.dumps([sorted(meta.items()), grant]).encode()).hexdigest()
-    # An unrestricted reader's evidence binds to no item permission (``_bind``): the scope
-    # says so, so evidence kept under one never carries over to a restricted grant.
+    if meta.get("content_digest"):
+        named = sorted((key, meta[key]) for key in GENERATION_META_KEYS if key in meta)
+        digest = hashlib.sha256(json.dumps([named, grant]).encode()).hexdigest() \
+            + SCOPE_CYCLE_MARK + digest
     return UNRESTRICTED_SCOPE + digest if getattr(policy, "unrestricted", False) is True \
         else digest
 
@@ -495,6 +515,15 @@ def _permission_item(handle: Any, kinds: dict[str, Any]) -> tuple[str, ...] | No
     except ValueError:
         return _UNMAPPED
     return ("unit", kind.name, kind.unit(path))
+
+
+def _one_generation(scope: str | None, kept: str | None) -> bool:
+    """Whether two evidence scopes (``_evidence_scope``) are of one generation and grant,
+    a delta cycle apart."""
+    if not scope or not kept or SCOPE_CYCLE_MARK not in scope \
+            or SCOPE_CYCLE_MARK not in kept:
+        return False
+    return scope.split(SCOPE_CYCLE_MARK, 1)[0] == kept.split(SCOPE_CYCLE_MARK, 1)[0]
 
 
 def _drop_changed(evidence: dict[str, Any], changed: set[tuple[str, ...]] | None) -> None:
@@ -2140,7 +2169,8 @@ def _found_on_question(asked: str, finds: Iterable[tuple[Mapping[str, Any], Any]
     (``find_identifiers``), found as exactly one record; or a find of a name the question
     writes whole (at least ``MIN_NAME_ANCHOR_CHARS`` letters and digits, or a shorter one a
     find of one object type reads where the question names that type, ``_names_by_type``)
-    that exactly one candidate is named (its display text, as letters and digits, is that name): the
+    that exactly one candidate is named (its display text, as letters and digits, is that name),
+    or, of several so named, exactly one of a type the question writes beside the name: the
     things the entity index holds no names of (a Teams chat's topic, a task's title).
     A find of any other words adds nothing, so an agent's own search never widens what
     the question names."""
@@ -2178,6 +2208,13 @@ def _found_on_question(asked: str, finds: Iterable[tuple[Mapping[str, Any], Any]
                     asked, str(arguments.get("query") or ""), arguments.get("object_type")):
                 continue
             named = [c for c in candidates if _letters_digits(_display_text(c)) == query]
+            if len(named) > 1:
+                # Records of several types share the name (a meeting, its invitations and
+                # its chat): the one whose type the question writes beside the name ("the
+                # Teams chat Gleamin meeting prep") is the one it names.
+                named = [c for c in named if isinstance(c.get("object"), Mapping)
+                         and _names_by_type(asked, str(arguments.get("query") or ""),
+                                            c["object"].get("object_type"))]
             if len(named) != 1:
                 continue
             picked = named[0]
@@ -3107,6 +3144,12 @@ class MCPServer:
         that cannot be read (the item permission read failed): what any item gates is
         dropped, the rest kept (F29 gen 7: a timed-out read emptied the session's evidence
         and the gate refused claims on Portal records the session had read)."""
+        if scope != self._scope and _one_generation(scope, self._scope):
+            # A delta cycle of the same generation and grant: what was returned stays,
+            # but no count or sum is complete now (a member may have come or gone).
+            self._scope = scope
+            for entry in self._evidence["counts"]:
+                entry["complete"] = False
         if scope != self._scope:
             self._scope, self._evidence = scope, _session_evidence()
             self._items, self._whole = {}, None

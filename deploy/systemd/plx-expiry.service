@@ -15,6 +15,8 @@ EnvironmentFile=-/etc/plx/ingest.env
 # PLX_PG_DSN for the role-password expiry (one read-only query)
 EnvironmentFile=-@PLX_HOME@/.config/plx/plx.env
 Environment=PATH=/data/venv/bin:/usr/local/bin:/usr/bin:/bin
+# names its Postgres sessions after the unit (ARCH T2: pg_stat_activity, slow-query log)
+Environment=PGAPPNAME=%N
 ExecStart=/data/venv/bin/python3 deploy/ops/host/expiry.py --home @PLX_HOME@ --env-file @PLX_HOME@/.config/plx/plx.env --env-file /etc/plx/workbench-api.env --pg --json ${PLX_INGEST_STATE}/ops-alarms/expiry.json --markdown ${PLX_INGEST_STATE}/ops-alarms/expiry.md
 Nice=15
 CPUWeight=10

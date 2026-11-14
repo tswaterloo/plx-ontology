@@ -207,11 +207,16 @@ def _domain(address: str) -> str:
 def default_payload(kind: str, card: Mapping[str, Any], ctx: Context) -> dict[str, Any]:
     draft = card.get("draft") or {}
     to = [draft["to"]["address"]] if (draft.get("to") or {}).get("address") else []
+    # a drafted reply's other recipients (``autopilot.card_of``): proposed, checked in
+    # ``review`` like any address the person types
+    to += [a for a in draft.get("also_to") or () if isinstance(a, str) and a not in to] \
+        if to else []
+    cc = [a for a in draft.get("cc") or () if isinstance(a, str) and a not in to] if to else []
     note = f"{card.get('headline', '')}. Next: {(card.get('action') or {}).get('text', '')}"
     if kind == "send_email":
-        return {"to": to, "cc": [], "subject": draft.get("subject"), "body": draft.get("body")}
+        return {"to": to, "cc": cc, "subject": draft.get("subject"), "body": draft.get("body")}
     if kind == "reply_in_thread":
-        return {"to": to, "cc": [], "subject": None, "body": draft.get("body")}
+        return {"to": to, "cc": cc, "subject": None, "body": draft.get("body")}
     if kind == "forward":
         return {"to": [], "cc": [], "subject": None, "body": f"For your attention: {note}"}
     if kind == "teams_message":
@@ -370,9 +375,12 @@ def review(card: Mapping[str, Any], kind: str, edits: Mapping[str, Any] | None,
                 problems.append("You cannot send from this mailbox." if verdict == "excluded"
                                 else "Your mailbox could not be checked against the "
                                      "exclusion list.")
-        draft_to = ((card.get("draft") or {}).get("to") or {}).get("address")
+        drafted_to = (card.get("draft") or {}).get("to") or {}
+        draft_to = drafted_to.get("address")
+        # a recipient only proposed (from the reader's own mail) is no known domain
         known = _domains(ctx.environ.get(KNOWN_DOMAINS_ENV)) | (
-            {_domain(draft_to)} if draft_to and "@" in draft_to else set())
+            {_domain(draft_to)} if draft_to and "@" in draft_to
+            and not drafted_to.get("proposed") else set())
 
         def check(address: str, *, internal_only: bool = False, oid: str | None = None
                   ) -> None:

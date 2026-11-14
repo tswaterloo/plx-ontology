@@ -50,6 +50,14 @@ describe("on record: who, linked, last change and next step on a record without 
     expect(answer(rich, "Next step").href).toBeUndefined();
   });
 
+  it("names each linked record once and never the record itself", () => {
+    const inv = (n: number) => ({ label: n < 3 ? "IN1000180804" : `IN10001808${n}`, object_id: `RelSageArIbh:x:${n}`, type: "RelSageArIbh", open_url: "" });
+    const rows = { ...base, label: "IN1000180804", related: [0, 1, 2, 5, 6].map(inv) } as unknown as ObjectPage;
+    expect(answer(rows, "Linked to").a).toBe("IN100018085, IN100018086");
+    const self = { ...base, label: "IN1000180804", related: [0, 1, 2].map(inv) } as unknown as ObjectPage;
+    expect(answer(self, "Linked to").a).toBe("3 linked records");
+  });
+
   it("stays off the record types that have their own page design", () => {
     for (const type of ["PurchaseOrder", "SalesOrder", "AssemblyOrder", "Customer", "Supplier"]) {
       const { container, unmount } = render(<OnRecord obj={{ ...base, type }} />);

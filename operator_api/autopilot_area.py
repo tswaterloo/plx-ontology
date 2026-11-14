@@ -1,15 +1,21 @@
 """The app's autopilot area (``/api/autopilot*``): today's prepared items the reader may
 see, each with its evidence, drafted action and the reader's decision; per role and
-workflow the replay scores (dev and fresh), the write state and the owner's switches; the
+workflow the replay scores (dev and fresh), the write state and the owner's switches; per
+reader the workflows they may switch on for themselves (``my_opt_ins``) and one pause; the
 write path's audit log with undo where the system supports it.
 
 Reads the autopilot's queue and gate files and the write path's state directory
 (``operating.autopilot_write``; ``$state_dir/autopilot-write``). Writes only the
 Workbench's own files there: item decisions (a hash-chained journal), and for the
-owner-open reader only (decided server-side) the write path's own switch files (global
-kill, per-workflow off, per role and workflow live flag). It records a dry run with the exact request unless the
+owner-open reader only (decided server-side) the write path's own stop switches (global
+kill, per-workflow off), and for every reader their own opt-in rows (``set_opt_in``,
+``set_paused``: the reader's own ids only; nobody, the owner included, switches a
+workflow on for someone else). An accept runs the item through
+``autopilot_write.Executor``, the one gated write path, as the person's approval of that
+item (``autopilot_write.Approval``): it records a dry run with the exact request unless the
 owner opened the action's kind to approved writes (``PLX_APPROVED_WRITES``) or the workflow
-passed its fresh gate, the owner was told and switched it on and the master switch is set. Nothing else here sends or writes.
+passed its fresh gate for the person, they switched it on for themselves and the master
+switch is set. Nothing else here sends or writes.
 """
 
 from __future__ import annotations
@@ -89,7 +95,11 @@ def item_outcome(statuses: list[str]) -> str | None:
 
 
 AUDIT_EVENTS = ("decision", "attempt", "outcome", "reconciled", "gate_passed", "gate_lost",
-                "owner_notified", "switch")
+                "owner_notified", "switch", *aw.OPT_IN_EVENTS)
+NOT_YOURS = ("Only the person themselves can switch their autopilot on or off. You can see "
+             "who has it on, but not change it for them.")
+NOT_ELIGIBLE = ("This workflow hasn't passed its check for you, so it can't be switched on "
+                "yet.")
 NOT_OWNER = "Only the owner changes the autopilot's switches."
 
 try:
@@ -170,6 +180,7 @@ class AutopilotAreaMixin:
     autopilot_adapters: Any = None
     autopilot_guard: Any = None
     autopilot_owner: Any = None
+    autopilot_admin: Any = None
 
     # ------------------------------------------------------------ plumbing
 
@@ -184,6 +195,19 @@ class AutopilotAreaMixin:
             return bool(self.autopilot_owner(reader))
         check = getattr(self, "_is_owner", None)
         return bool(check(reader)) if callable(check) else False
+
+    def _apa_sees_opt_ins(self, reader: Reader) -> bool:
+        """The owner or an admin (``autopilot_admin`` hook, else the configured admins of
+        ``feedback.is_admin``): sees who switched what on, never switches it for them."""
+        if self._apa_is_owner(reader):
+            return True
+        if self.autopilot_admin is not None:
+            return bool(self.autopilot_admin(reader))
+        from .feedback import is_admin
+        try:
+            return bool(is_admin(reader))
+        except Exception:  # noqa: BLE001 - undecidable: not an admin
+            return False
 
     def _apa_owner_only(self, reader: Reader) -> Path:
         if not self._apa_is_owner(reader):
@@ -365,14 +389,35 @@ class AutopilotAreaMixin:
             p.roles = sorted(member_of.get(oid, ()))
         # per role and workflow: scores, state, switches (a reader who is not the owner
         # sees only the roles they belong to)
-        live = aw.live_flags(env, state) if state else set()
         mine_roles = set().union(*(member_of.get(o, set()) for o in me)) if me else set()
         workflows: list[m.AutopilotWorkflowRow] = []
         gate = aw.WriteGate(state / aw.WRITE_GATE_FILE, rules) if state and rules else None
         if rules is None:
             notes.append("The write rules are unreadable: nothing is performed.")
+        if gate is not None and state is not None and any(
+                o["on"] and not aw.eligible(gate, p, w) for (p, w), o in aw.opt_ins(rows).items()):
+            # an opt-in the gate no longer carries is suspended now, with why, not only at
+            # the next scoring or run (it then stays off until its person switches it on);
+            # the journal is locked only when there is one to suspend. Unwritable here: the
+            # page still reads (the write path re-checks the gate and suspends it itself)
+            try:
+                with self._apa_journal(state).locked() as held:
+                    if aw.suspend_lapsed(held, gate, now):
+                        rows = list(held.rows)
+            except OSError:
+                notes.append("A switch whose score fell under the bar could not be recorded "
+                             "as off just now; it does nothing either way.")
         passing = set(gate.passing()) if gate else set()
         master = env.get(aw.MASTER_ENV) == "1"
+        sees_all = self._apa_sees_opt_ins(reader)
+        chosen = aw.opt_ins(rows)
+        stopped = aw.paused(rows)
+
+        def acting(person: str, flow: str) -> bool:
+            """``person`` switched ``flow`` on, has not paused and the gate carries it."""
+            found = chosen.get((person, flow))
+            return bool(found and found["on"] and person not in stopped and gate is not None
+                        and aw.eligible(gate, person, flow))
         open_by: dict[str, int] = {}
         for it in items:
             if it.state in ("waiting", "edited"):
@@ -396,17 +441,24 @@ class AutopilotAreaMixin:
                 person = str(found[0]).lower() if len(found) == 1 else None
             flows = set((d.get("workflows") or {})) | set((f.get("workflows") or {})) | \
                 set(drafted.get(role) or ())
+            members = {str(x).lower() for x in (d.get("members") or ())} | \
+                {str(x).lower() for x in (f.get("members") or ())}
+            if gate is not None and role in gate.roles:
+                members |= gate.roles[role][0]
+            # who of this row the reader may count: everyone for the owner and admins,
+            # else only themselves
+            counted = members if sees_all else members & me
             for flow in sorted(flows):
                 ds, fs = _score((d.get("workflows") or {}).get(flow)), \
                     _score((f.get("workflows") or {}).get(flow))
-                flag = f"{role}:{flow}".lower() in live
+                n_on = sum(1 for p in counted if acting(p, flow))
                 missing: list[str] = []
                 if glob or flow in off or broken:
                     st = "off"
                 elif (role, flow) not in passing:
                     st, missing = "dry_run", ["gate_not_passed"]
-                elif not aw._notified(rows, role, flow) or not flag:
-                    st, missing = "passed_awaiting_owner", ["owner_flag_off"]
+                elif not n_on:
+                    st, missing = "passed", ["not_switched_on_by_person"]
                 elif not master:
                     st, missing = "live_held", ["master_switch_off"]
                 else:
@@ -415,7 +467,7 @@ class AutopilotAreaMixin:
                 workflows.append(m.AutopilotWorkflowRow(
                     role=role, person=person, workflow=flow, dev=ds, fresh=fs,
                     n=(fs or ds).judged if (fs or ds) else 0, state=st,
-                    on=not (flow in off or broken), live_flag=flag, missing=missing,
+                    on=not (flow in off or broken), switched_on=n_on, missing=missing,
                     last_run=last_at.get(flow) or None,
                     scored_at=str(window[-1]) if window else None,
                     open_items=open_by.get(flow, 0),
@@ -428,13 +480,29 @@ class AutopilotAreaMixin:
         if not items and not drafted and \
                 not ap.gate_of({"schema": ap.GATE_SCHEMA, "roles": dev})[1]:
             notes.insert(0, NO_GATE_PASSED)
+        mine_opt, paused_me = self._apa_my_opt_ins(gate, chosen, stopped, me)
+        switched_on = None
+        if sees_all:
+            switched_on = [m.AutopilotOptInPerson(person=p, workflow=w, since=o.get("at"),
+                                                  paused=p in stopped)
+                           for (p, w), o in sorted(chosen.items()) if o["on"]]
+            for entry in switched_on:
+                people.setdefault(entry.person, m.AutopilotPerson(
+                    id=entry.person, name="", you=entry.person in me,
+                    roles=sorted(member_of.get(entry.person, ()))))
         roles_seen = {r for r in set(dev) | set(fresh) | set(role_members)
                       if not r.startswith("person:")}
         roles_seen |= {r for it in items for r in it.roles}
         if not owner:
             roles_seen &= mine_roles | {r for it in items for r in it.roles}
+        # the owner is told once of each workflow's first gate pass (AP-22): pending until
+        # they acknowledge it; information only, it switches nothing on
+        gate_notices = [m.AutopilotGateNotice(role=str(n["role"]), workflow=str(n["workflow"]),
+                                              passed_at=str(n["passed_at"]))
+                        for n in aw.notices(rows)] if owner else None
         return m.AutopilotArea(
-            owner=owner,
+            owner=owner, gate_notices=gate_notices,
+            my_opt_ins=mine_opt, paused=paused_me, switched_on=switched_on,
             switches=m.AutopilotSwitches(
                 global_off=glob, master_switch=master,
                 autopilot_off=bool(str(env.get(ap.KILL_ENV, "")).lower() in
@@ -599,56 +667,146 @@ class AutopilotAreaMixin:
 
     def autopilot_workflow(self, reader: Reader, workflow: str,
                            body: m.AutopilotWorkflowSwitch) -> m.AutopilotArea:
-        """The owner switches a workflow off or on (the write path's per-workflow kill
-        switch), or a role's workflow live (only once it passed its fresh gate; switching
-        it on is the owner's acknowledgement of the pass) or back to dry run."""
+        """The owner switches a workflow off for everyone or back on (the write path's
+        per-workflow kill switch). Back on makes it act for nobody: each person switches
+        it on for themselves (``autopilot_opt_in``)."""
         state = self._apa_owner_only(reader)
         if not aw._ROLE_FLOW.fullmatch(workflow.lower()) or ":" in workflow:
             raise UserFacing("not_found", "No such workflow.", 404)
-        if body.on is None and body.live is None:
-            raise UserFacing("bad_request", "Say on or live.", 422)
-        now = datetime.now(timezone.utc)
         journal = self._apa_journal(state)
-        if body.on is not None:
-            path = state / aw.WORKFLOW_KILL_FILE
-            with journal.locked():
-                try:
-                    off = set(json.loads(path.read_text(encoding="utf-8"))["workflows"]) \
-                        if path.exists() else set()
-                except (OSError, ValueError, KeyError, TypeError):
-                    off = set()     # unreadable: every workflow was off; rebuilt from here
-                    off |= {w.workflow for w in self._area_read(reader).workflows}
-                (off.discard if body.on else off.add)(workflow)
-                _write_json(path, {"workflows": sorted(off)})
-            self._apa_switch_row(state, reader, switch="workflow_on", workflow=workflow,
-                                 value=body.on)
-        if body.live is not None:
-            role = str(body.role or "")
-            if not role or not aw._ROLE_FLOW.fullmatch(role.lower()):
-                raise UserFacing("bad_request", "Say which role's workflow goes live.", 422)
-            flag = f"{role}:{workflow}".lower()
-            path = state / aw.LIVE_FILE
-            if body.live:
-                gate = aw.WriteGate(state / aw.WRITE_GATE_FILE, aw.load_rules())
-                if (role, workflow) not in set(gate.passing()):
-                    raise UserFacing("action_refused", "This workflow has not passed its "
-                                     "fresh gate for this role: it stays a dry run.", 409)
-                if any(n["role"] == role and n["workflow"] == workflow
-                       for n in aw.notices(journal.rows())):
-                    aw.ack_notice(journal, role, workflow, now,
-                                  "owner:" + sorted(self._apa_me(reader))[0])
-            with journal.locked():
-                try:
-                    flags = set(json.loads(path.read_text(encoding="utf-8")).get("live") or ()) \
-                        if path.exists() else set()
-                except (OSError, ValueError, AttributeError):
-                    flags = set()
-                flags = {str(f).lower() for f in flags}
-                (flags.add if body.live else flags.discard)(flag)
-                _write_json(path, {"live": sorted(flags)})
-            self._apa_switch_row(state, reader, switch="live", role=role, workflow=workflow,
-                                 value=body.live)
+        path = state / aw.WORKFLOW_KILL_FILE
+        with journal.locked():
+            try:
+                off = set(json.loads(path.read_text(encoding="utf-8"))["workflows"]) \
+                    if path.exists() else set()
+            except (OSError, ValueError, KeyError, TypeError):
+                off = set()     # unreadable: every workflow was off; rebuilt from here
+                off |= {w.workflow for w in self._area_read(reader).workflows}
+            (off.discard if body.on else off.add)(workflow)
+            _write_json(path, {"workflows": sorted(off)})
+        self._apa_switch_row(state, reader, switch="workflow_on", workflow=workflow,
+                             value=body.on)
         return self._area_read(reader)
+
+    def autopilot_ack_notice(self, reader: Reader, body: m.AutopilotNoticeAck
+                             ) -> m.AutopilotArea:
+        """The owner acknowledges a workflow's gate-pass notice (told once: it is not shown
+        again unless the gate is lost and passed anew). Turns nothing on."""
+        state = self._apa_owner_only(reader)
+        try:
+            aw.ack_notice(self._apa_journal(state), body.role, body.workflow,
+                          datetime.now(timezone.utc), sorted(self._apa_me(reader))[0])
+        except ValueError:
+            raise UserFacing("not_found", "No such notice is waiting for you.", 404) from None
+        return self._area_read(reader)
+
+    # ------------------------------------------------------------ a person's own opt-in
+
+    def _apa_own_ids(self, reader: Reader) -> list[str]:
+        """The signed-in person's own ids, for switching their own autopilot. A view-as
+        session or a session naming nobody switches nothing (403)."""
+        session = getattr(reader, "session", None)
+        if getattr(session, "view_as", False) or getattr(session, "warm_ahead", False):
+            raise UserFacing("forbidden", NOT_YOURS, 403)
+        from operating.proactive_commitments import owner_ids
+        ids = sorted(owner_ids(_principals(reader)))
+        if not ids:
+            raise UserFacing("forbidden", "Your sign-in doesn't say who you are, so your "
+                             "autopilot can't be switched from it.", 403)
+        return ids
+
+    def _apa_opt_in_state(self) -> tuple[Path, aw.WriteGate, Journal]:
+        state = self._apa_state()
+        if state is None:
+            raise UserFacing("action_refused", "The autopilot's state directory is not "
+                             "configured on this server.", 409)
+        try:
+            rules = aw.load_rules()
+        except aw.RulesInvalid:
+            raise UserFacing("action_refused", "The write rules can't be read, so nothing "
+                             "can be switched on.", 409) from None
+        state.mkdir(parents=True, exist_ok=True, mode=0o700)
+        return state, aw.WriteGate(state / aw.WRITE_GATE_FILE, rules), self._apa_journal(state)
+
+    def autopilot_opt_in(self, reader: Reader, body: m.AutopilotOptInRequest
+                         ) -> m.AutopilotArea:
+        """The reader switches one of their own workflows on (only while it passes its gate
+        for them) or off. Always the reader's own: the request names no person, so the
+        owner cannot switch it on for anyone else. Recorded on the audit log."""
+        ids = self._apa_own_ids(reader)
+        _state, gate, journal = self._apa_opt_in_state()
+        try:
+            workflow = aw._workflow(body.workflow)
+        except ValueError:
+            raise UserFacing("not_found", "No such workflow.", 404) from None
+        now = datetime.now(timezone.utc)
+        mine = [i for i in ids if aw.eligible(gate, i, workflow)] if body.on else ids
+        if not mine:
+            raise UserFacing("action_refused", NOT_ELIGIBLE, 409)
+        for oid in mine:
+            try:
+                aw.set_opt_in(journal, gate, oid, workflow, body.on, oid, now)
+            except ValueError:
+                raise UserFacing("action_refused", NOT_ELIGIBLE, 409) from None
+        return self._area_read(reader)
+
+    def autopilot_pause(self, reader: Reader, body: m.AutopilotPauseRequest
+                        ) -> m.AutopilotArea:
+        """The reader pauses (or resumes) everything they switched on, at once."""
+        ids = self._apa_own_ids(reader)
+        _state, _gate, journal = self._apa_opt_in_state()
+        now = datetime.now(timezone.utc)
+        for oid in ids:
+            aw.set_paused(journal, oid, body.paused, oid, now)
+        return self._area_read(reader)
+
+    @staticmethod
+    def _apa_my_opt_ins(gate: Optional[aw.WriteGate], chosen: Mapping[tuple[str, str], Any],
+                        stopped: Mapping[str, str], me: Any
+                        ) -> tuple[list[m.AutopilotOptIn], bool]:
+        """The reader's workflows they may switch on (passed for them now) or switched on
+        before (on, or suspended since), and whether they paused everything."""
+        out: dict[str, m.AutopilotOptIn] = {}
+        flows: set[str] = {w for (p, w), o in chosen.items()
+                           if p in me and (o["on"] or o.get("suspended"))}
+        if gate is not None:
+            flows |= {w for r, (members, ok, _s) in gate.roles.items()
+                      for w in ok if members & set(me)}
+        for flow in sorted(flows):
+            best: Optional[m.AutopilotOptIn] = None
+            for person in sorted(me):
+                roles = aw.eligible(gate, person, flow) if gate is not None else []
+                found = chosen.get((person, flow)) or {}
+                if not roles and not found:
+                    continue
+                score = None
+                if gate is not None:
+                    if roles:
+                        role = max(roles, key=lambda r: _share(gate.counts.get((r, flow))))
+                        score = _bar(gate.counts.get((role, flow)), gate)
+                    else:
+                        short = aw.shortfall(gate, person, flow)
+                        if short.get("judged") is not None:
+                            score = _bar((short["judged"], short["matched"]), gate)
+                susp = found.get("suspended") or None
+                suspension = None
+                if susp:
+                    counted = (susp.get("judged"), susp.get("matched"))
+                    suspension = m.AutopilotSuspension(
+                        at=found.get("suspended_at"), reason=str(susp.get("reason") or
+                                                                  "gate_lost"),
+                        score=_bar(counted, gate) if gate is not None and all(
+                            isinstance(c, int) for c in counted) else None)
+                row = m.AutopilotOptIn(
+                    workflow=flow, eligible=bool(roles),
+                    on=bool(found.get("on")) and bool(roles),
+                    since=found.get("at") if found.get("on") else None, score=score,
+                    suspended=suspension)
+                if best is None or (row.on, row.eligible) > (best.on, best.eligible):
+                    best = row
+            if best is not None:
+                out[flow] = best
+        return list(out.values()), bool(set(me) & set(stopped))
 
     # ------------------------------------------------------------ audit, undo
 
@@ -676,8 +834,15 @@ class AutopilotAreaMixin:
                 continue
             target = r.get("target")
             done = r.get("event") == "outcome" and r.get("status") == "done" and not r.get("of")
+            status = r.get("status")
+            if r["event"] == "opt_in":           # a person's own switch: on or off
+                status = "on" if r.get("on") is True else "off"
+            elif r["event"] == "opt_in_paused":
+                status = "paused" if r.get("paused") is True else "resumed"
+            elif r["event"] == "opt_in_suspended":
+                status = "suspended"
             out.append(m.AutopilotAuditRow(
-                at=str(r.get("at") or ""), event=str(r["event"]), status=r.get("status"),
+                at=str(r.get("at") or ""), event=str(r["event"]), status=status,
                 mode=r.get("mode"), workflow=r.get("workflow"), role=r.get("role"),
                 system=r.get("system") or WRITE_SYSTEM.get(str(r.get("kind")))
                 if r.get("kind") else r.get("system"),
@@ -685,7 +850,9 @@ class AutopilotAreaMixin:
                 target=json.dumps(target, sort_keys=True)[:200]
                 if isinstance(target, (dict, list)) else (str(target)[:200] if target else None),
                 item_id=r.get("item_id"), title=titles.get(str(r.get("item_id"))),
-                why=r.get("why"), reasons=[str(x) for x in r.get("reasons") or ()][:8],
+                why=r.get("why") if isinstance(r.get("why"), str) else None,
+                reasons=[str(x) for x in r.get("reasons") or ()][:8] or (
+                    [str(r["why"].get("reason"))] if isinstance(r.get("why"), dict) else []),
                 key=r.get("key"), by=r.get("by"),
                 undoable=bool(done and r.get("inverse") and r.get("key") not in undo_state),
                 undone=bool(done and undo_state.get(r.get("key")) == "done"),
@@ -754,6 +921,24 @@ def _countdown(entry: Optional[Mapping[str, Any]], flow: str,
     except Exception:  # noqa: BLE001 - unreadable rules: no countdown, never a guess
         return None
     return m.AutopilotCountdown(**found) if found else None
+
+
+def _share(counts: Optional[tuple[int, int]]) -> Decimal:
+    if not counts or counts[0] <= 0:
+        return Decimal(-1)
+    return Decimal(counts[1]) / Decimal(counts[0])
+
+
+def _bar(counts: Optional[tuple[int, int]], gate: aw.WriteGate) -> Optional[m.AutopilotScoreBar]:
+    """Counts against the gate's bar, the percentage with one decimal (Decimal, half up)."""
+    if not counts:
+        return None
+    judged, matched = int(counts[0]), int(counts[1])
+    pct = float((Decimal(matched) * 100 / Decimal(judged)).quantize(
+        Decimal("0.1"), rounding=ROUND_HALF_UP)) if judged > 0 else None
+    return m.AutopilotScoreBar(judged=judged, matched=matched, percent=pct,
+                               need_judged=gate.minimum,
+                               need_percent=float(gate.precision * 100))
 
 
 def _principals(reader: Reader) -> str:

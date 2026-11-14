@@ -551,7 +551,7 @@ class AggregateTools:
                     unsure = set(unsure) | {f["property"] for f in links}
                 passing &= linked
             undecided |= unsure
-            gaps += base.unsourced_filter_gaps(object_type, filters)
+            gaps += base.unsourced_filter_gaps(object_type, filters, members=ids)
             kept += [oid for oid in ids if oid in passing]
         if undecided:
             from operating.ontology_tools import _filter_gaps
@@ -1273,7 +1273,7 @@ class AggregateTools:
             kept |= set(passing)
             if undecided:
                 gaps.append(_withheld_filter_gap(object_type, undecided))
-            gaps += base.unsourced_filter_gaps(object_type, filters)
+            gaps += base.unsourced_filter_gaps(object_type, filters, members=ids)
         return [oid for oid in roots if oid in kept], gaps
 
     def _filtered_root(self, scope: Any, arguments: Mapping[str, Any], actor: Actor

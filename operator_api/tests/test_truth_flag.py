@@ -157,5 +157,37 @@ class DocumentsPendingFlag(unittest.TestCase):
         with mock.patch.dict(os.environ, {"PLX_EXCLUDED_PEOPLE_OIDS": ""}):
             self.assertIsNone(self.pending())
 
+    def test_the_layers_list_is_read_once_and_an_exclusion_change_decides_again(self):
+        """11-13: every screen's freshness read and keyed the layer's whole pending list
+        (Trust 3-16 s warm). It is decided once per layer file and exclusion; adding a
+        person to the exclusion withholds their mail at once, and a new layer is read."""
+        from operator_api import freshness as fr
+        self.layer("box@x.example", "gone@x.example")
+        with mock.patch.dict(os.environ, {"PLX_EXCLUDED_PEOPLE_OIDS": ""}):
+            self.assertIsNone(self.pending())   # undecided: withheld, nothing said
+        self.assertEqual(self.pending().records, 1)
+        opened, real = [], sqlite3.connect
+
+        def connect(target, *args, **kwargs):
+            opened.append(str(target))
+            return real(target, *args, **kwargs)
+
+        with mock.patch.object(sqlite3, "connect", connect):
+            again = self.pending(["graph-mail://box@x.example/msg-1@v1"])
+        self.assertEqual((again.records, again.this_record), (1, True))
+        self.assertFalse([p for p in opened if "layer-" in p], opened)
+        # both people excluded now: nothing of either is counted, at once
+        with mock.patch.dict(os.environ, {"PLX_EXCLUDED_PEOPLE_OIDS":
+                                          f"{self.EXCLUDED},{self.KEPT}"}):
+            self.assertIsNone(self.pending())
+        # a new layer is read; past the memo's time the same layer is read again
+        self.layer("box@x.example")
+        self.assertEqual((self.pending().records, self.pending().files), (1, 2))
+        with mock.patch.object(fr, "PENDING_MEMO_SECONDS", -1), \
+                mock.patch.object(sqlite3, "connect", connect):
+            self.pending()
+        self.assertTrue([p for p in opened if "layer-" in p])
+
+
 if __name__ == "__main__":
     unittest.main()

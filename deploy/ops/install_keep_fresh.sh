@@ -18,6 +18,9 @@
 #     plx-autopilot-follow.timer 5 min after the last cycle, and .path on each delta publish:
 #                                the autopilot's live feed; prepares My work items only (never
 #                                sends, writes or approves), ordered event queue on (EVQ=1)
+#     plx-autopilot-fast.timer   1 min after the last start, and .path on each captured Teams or
+#                                mail message: the fast feed (operating/autopilot_fast.py), the
+#                                same guards; prepares My work items only
 #   and ~/.local/bin/plx-release -> $PLX_REPO/deploy/release/plx-release
 #
 #Nothing here writes to a business system or reads a secret; the units name env files, not
@@ -30,8 +33,8 @@ dry=0; [ "${1:-}" = "--dry-run" ] && dry=1
 render=$here/../render.py
 tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT
 USER_UNITS="plx-sheet-readings plx-system-activity plx-team-activity plx-work-graph"
-SYS_UNITS="plx-proactive-whole plx-backup plx-restore-test plx-ops-health plx-ops-memory plx-expiry plx-autopilot-follow"
-SYS_PATHS="plx-autopilot-follow"   # also started by a .path unit
+SYS_UNITS="plx-proactive-whole plx-backup plx-restore-test plx-ops-health plx-ops-memory plx-expiry plx-autopilot-follow plx-autopilot-fast"
+SYS_PATHS="plx-autopilot-follow plx-autopilot-fast"   # also started by a .path unit
 
 python3 "$render" --user --out "$tmp/user" >/dev/null
 python3 "$render" --out "$tmp/sys" >/dev/null
@@ -51,7 +54,7 @@ verify_unit() {  # verify_unit [--user] service timer
 for u in $USER_UNITS; do verify_unit --user "$tmp/user/$u.service" "$tmp/user/$u.timer"; done
 for u in $SYS_UNITS; do verify_unit "$tmp/sys/$u.service" "$tmp/sys/$u.timer"; done
 for u in $SYS_PATHS; do verify_unit "$tmp/sys/$u.service" "$tmp/sys/$u.path"; done
-for f in "$tmp"/user/plx-{sheet-readings,system-activity,team-activity,work-graph}.* "$tmp"/sys/plx-{proactive-whole,backup,restore-test,ops-health,ops-memory,expiry,autopilot-follow}.*; do
+for f in "$tmp"/user/plx-{sheet-readings,system-activity,team-activity,work-graph}.* "$tmp"/sys/plx-{proactive-whole,backup,restore-test,ops-health,ops-memory,expiry,autopilot-follow,autopilot-fast}.*; do
   [[ $f == *.timer || $f == *.path ]] && continue
   grep -q "^MemoryMax=" "$f" || { echo "no MemoryMax: $f" >&2; exit 1; }
   grep -q "^Nice=" "$f" || { echo "no Nice: $f" >&2; exit 1; }

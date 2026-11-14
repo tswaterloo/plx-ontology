@@ -12,7 +12,7 @@ import TrustRoute from "./page";
 
 const row = (over: Record<string, unknown> = {}) => ({
   role: "person:vince@plx.example", person: null, workflow: "teams_chat", dev: { judged: 51, matched: 45, percent: 88.2 }, fresh: null, n: 51,
-  state: "dry_run" as const, on: true, live_flag: false, missing: ["gate_not_passed"], last_run: null, scored_at: null, open_items: 0, draft: true,
+  state: "dry_run" as const, on: true, switched_on: 0, missing: ["gate_not_passed"], last_run: null, scored_at: null, open_items: 0, draft: true,
   countdown: { judged: 12, matched: 11, need_judged: 15, need_percent: 90, percent: 91.7, passes: false, window: ["2026-11-06T07:00:00Z", "2026-11-12T07:00:00Z"], data_end: null },
   ...over,
 });
@@ -35,7 +35,7 @@ const page = (over: Partial<TrustPage> = {}): TrustPage => ({
   autopilot_gate: { need_judged: 15, need_percent: 90 },
   lines: [
     { state: "live", words: "Reading BC, Email, read only." },
-    { state: "gated", words: "Autopilot sends and writes: a workflow acts only after 15 judged held-out items at 90% or better and the owner's switch." },
+    { state: "gated", words: "Autopilot sends and writes: a workflow acts only after 15 judged held-out items at 90% or better, and only for a person who switched it on for themselves." },
     { state: "pending", words: "Held-out answer scores: not measured yet." },
   ],
   switches: [
@@ -108,7 +108,7 @@ describe("Trust page", () => {
     const table = await screen.findByTestId("trust-answers");
     const held = within(table).getByLabelText("Held-out score");
     expect(held).toHaveTextContent("90.0%");
-    expect(held).toHaveTextContent("9 of 10 right · 12 questions, 12 runs · Nov 10");
+    expect(held).toHaveTextContent("9 of 10 right · 12 questions, 12 runs · 10 Nov");
   });
 
   it("a reader the server refuses sees page not found, nothing of the page", async () => {

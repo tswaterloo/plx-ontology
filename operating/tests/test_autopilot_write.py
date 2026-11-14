@@ -127,38 +127,45 @@ class Base(unittest.TestCase):
         aw.sync_gate(aw.Journal(self.state / aw.AUDIT_FILE),
                      aw.WriteGate(self.state / aw.WRITE_GATE_FILE, rules), NOW)
 
+    def opt_in(self, workflow: str = "internal_approval", on: bool = True,
+               by: str = OWNER) -> dict:
+        rules = aw.load_rules()
+        return aw.set_opt_in(aw.Journal(self.state / aw.AUDIT_FILE),
+                             aw.WriteGate(self.state / aw.WRITE_GATE_FILE, rules),
+                             OWNER, workflow, on, by, NOW)
+
     def go_live(self, workflows=("internal_approval",)) -> dict:
+        """The gate passed and the item's person switched each workflow on themselves."""
         self.pass_gate()
-        journal = aw.Journal(self.state / aw.AUDIT_FILE)
         for w in workflows:
-            aw.ack_notice(journal, ROLE, w, NOW, "operator")
-        return {aw.MASTER_ENV: "1", aw.LIVE_ENV: ",".join(f"{ROLE}:{w}" for w in workflows)}
+            self.opt_in(w)
+        return {aw.MASTER_ENV: "1"}
 
 
 class GateAndFlags(Base):
-    def test_ships_off_dry_run_until_gate_notice_and_owner_flag(self):
+    def test_ships_off_dry_run_until_gate_and_the_persons_own_switch(self):
         # no gate, no flags: a routine MC launch approval is a dry run with the exact request
         ex = self.executor()
         r = ex.run(mc_item(), NOW)[0]
         self.assertEqual((r["status"], r["reasons"]), ("dry_run", ["gate_not_passed"]))
         self.assertEqual(r["request"]["body"]["decision"], "approved")
         self.assertEqual(r["request"]["body"]["renderedScope"]["kind"], "launch")
-        # passed on fresh days: recorded once, waits for the owner notice
+        # passed on fresh days: recorded once, the owner told once (that turns nothing on)
         self.pass_gate()
         self.pass_gate()                   # a re-run of the same scores: no second notice
         rows = ex.journal.rows()
         self.assertEqual([n["workflow"] for n in aw.notices(rows)],
                          ["customer_order_intake", "internal_approval"])
         self.assertEqual(sum(r.get("event") == "gate_passed" for r in rows), 2)
-        self.assertEqual(ex.run(mc_item(), NOW)[0]["reasons"], ["passed_awaiting_owner_notice"])
+        self.assertEqual(ex.run(mc_item(), NOW)[0]["reasons"], ["not_switched_on_by_person"])
         aw.ack_notice(ex.journal, ROLE, "internal_approval", NOW, "operator")
-        self.assertEqual(ex.run(mc_item(), NOW)[0]["reasons"], ["owner_flag_off"])
-        # the owner's flag without the master switch, then both
-        flag = {aw.LIVE_ENV: f"{ROLE}:internal_approval"}
-        self.assertEqual(self.executor(flag).run(mc_item(), NOW)[0]["reasons"],
+        self.assertEqual(ex.run(mc_item(), NOW)[0]["reasons"], ["not_switched_on_by_person"])
+        # the person's own switch without the master switch, then both
+        self.opt_in()
+        self.assertEqual(self.executor().run(mc_item(), NOW)[0]["reasons"],
                          [f"master_switch_off:{aw.MASTER_ENV}"])
         self.assertEqual(self.mc.calls, [])
-        r = self.executor({**flag, aw.MASTER_ENV: "1"}).run(mc_item(), NOW)[0]
+        r = self.executor({aw.MASTER_ENV: "1"}).run(mc_item(), NOW)[0]
         self.assertEqual((r["status"], r["mode"]), ("done", "live"))
         self.assertEqual(len(self.mc.calls), 1)
         # the audit row: what, where, why, citations, result, key; the chain holds
@@ -262,10 +269,10 @@ class GateAndFlags(Base):
                      aw.WriteGate(self.state / aw.WRITE_GATE_FILE, aw.load_rules()), NOW)
         r = self.executor(env).run(mc_item(), NOW)[0]
         self.assertEqual((r["status"], r["reasons"]), ("dry_run", ["gate_not_passed"]))
-        # passing again needs a fresh owner notice before live
+        # passing again needs the person to switch it on again
         self.pass_gate()
         self.assertEqual(self.executor(env).run(mc_item(), NOW)[0]["reasons"],
-                         ["passed_awaiting_owner_notice"])
+                         ["opt_in_suspended:below_bar"])
         self.assertEqual(self.mc.calls, [])
 
     def test_invalid_or_looser_rules_refuse_everything(self):
@@ -283,6 +290,145 @@ class GateAndFlags(Base):
         self.assertEqual(self.executor(env, rules=path).run(mc_item(), NOW)[0]["status"],
                          "refused")
         self.assertEqual(self.mc.calls, [])
+
+
+class PersonOptIn(Base):
+    """Each person switches their own autopilot workflows on;
+    nothing is on by default and nobody, the owner included, switches it on for them."""
+
+    OTHER = "boss@plx.example"
+
+    def test_nothing_acts_without_the_persons_own_switch(self):
+        self.pass_gate()
+        journal = aw.Journal(self.state / aw.AUDIT_FILE)
+        aw.ack_notice(journal, ROLE, "internal_approval", NOW, "owner")
+        # every retired owner path at once: the old per-role live flag in the environment
+        # and in its file, the owner told of the pass, the master switch on
+        (self.state / "autopilot-writes-live.json").write_text(
+            json.dumps({"live": [f"{ROLE}:internal_approval"]}))
+        env = {aw.MASTER_ENV: "1", "PLX_AUTOPILOT_WRITES_LIVE": f"{ROLE}:internal_approval"}
+        ex = self.executor(env)
+        self.assertEqual(ex.live_kinds(mc_item()), [])
+        r = ex.run(mc_item(), NOW)[0]
+        self.assertEqual((r["status"], r["reasons"]), ("dry_run", ["not_switched_on_by_person"]))
+        # the owner (anyone but the person) cannot switch it on for them
+        with self.assertRaises(PermissionError):
+            self.opt_in(by=self.OTHER)
+        # nor does a row written for them count, nor someone else's own switch
+        with journal.locked() as held:
+            held.append({"event": "opt_in", "person": OWNER, "workflow": "internal_approval",
+                         "on": True, "at": "2026-11-12T15:00:00Z", "by": self.OTHER})
+            held.append({"event": "opt_in", "person": self.OTHER,
+                         "workflow": "internal_approval", "on": True,
+                         "at": "2026-11-12T15:00:00Z", "by": self.OTHER})
+        self.assertEqual(ex.run(mc_item(2), NOW)[0]["reasons"], ["not_switched_on_by_person"])
+        # a workflow that has not passed for the person cannot be switched on at all
+        with self.assertRaises(ValueError):
+            self.opt_in("supplier_eta_receiving")
+        self.assertEqual(self.mc.calls, [])
+        # the person's own switch: it acts (once), and only while they have not paused
+        self.opt_in()
+        self.assertEqual(ex.live_kinds(mc_item(3)), ["mc_approval"])
+        aw.set_paused(journal, OWNER, True, OWNER, NOW)
+        self.assertEqual(ex.live_kinds(mc_item(3)), [])
+        self.assertEqual(ex.run(mc_item(3), NOW)[0]["reasons"], ["paused_by_person"])
+        with self.assertRaises(PermissionError):
+            aw.set_paused(journal, OWNER, False, self.OTHER, NOW)
+        aw.set_paused(journal, OWNER, False, OWNER, NOW)
+        self.assertEqual(ex.run(mc_item(4), NOW)[0]["status"], "done")
+        # without the master switch nothing goes live, opt-in or not
+        self.assertEqual(self.executor().run(mc_item(5), NOW)[0]["reasons"],
+                         [f"master_switch_off:{aw.MASTER_ENV}"])
+        # switched off again by the person: back to a dry run
+        self.opt_in(on=False)
+        self.assertEqual(ex.run(mc_item(6), NOW)[0]["reasons"], ["not_switched_on_by_person"])
+        self.assertEqual(len(self.mc.calls), 1)
+
+    def test_an_opt_in_does_not_survive_a_gate_drop(self):
+        env = self.go_live()
+        rules = aw.load_rules()
+        gate_path = self.state / aw.WRITE_GATE_FILE
+        # the score falls to 10 of 15: the opt-in is suspended at once, saying why
+        aw.record_scores(self.fresh_run(15, 10), gate_path, rules)
+        aw.sync_gate(aw.Journal(self.state / aw.AUDIT_FILE), aw.WriteGate(gate_path, rules), NOW)
+        rows = aw.Journal(self.state / aw.AUDIT_FILE).rows()
+        held = [r for r in rows if r.get("event") == "opt_in_suspended"]
+        self.assertEqual(len(held), 1)
+        self.assertEqual((held[0]["person"], held[0]["workflow"], held[0]["by"]),
+                         (OWNER, "internal_approval", "autopilot"))
+        self.assertEqual({k: held[0]["why"][k] for k in ("reason", "judged", "matched",
+                                                         "percent", "need_judged",
+                                                         "need_percent")},
+                         {"reason": "below_bar", "judged": 15, "matched": 10,
+                          "percent": "66.7", "need_judged": 15, "need_percent": "90.0"})
+        self.assertEqual(aw.opt_ins(rows)[(OWNER, "internal_approval")]["on"], False)
+        self.assertEqual(self.executor(env).run(mc_item(), NOW)[0]["reasons"],
+                         ["gate_not_passed"])
+        # the gate passes again: the opt-in stays suspended until the person switches it on
+        self.pass_gate()
+        r = self.executor(env).run(mc_item(), NOW)[0]
+        self.assertEqual((r["status"], r["reasons"]), ("dry_run", ["opt_in_suspended:below_bar"]))
+        found = aw.status(self.state, env)
+        self.assertEqual((found["opted_in"], found["suspended"]), (0, 1))
+        self.assertEqual(self.mc.calls, [])
+        # a drop nobody scored (the gate file itself changed): the next run suspends it,
+        # and the pass coming back does not bring it back
+        self.opt_in()
+        good = gate_path.read_text()
+        doc = json.loads(good)
+        for part in doc["roles"][ROLE]["parts"]:
+            part["workflows"]["internal_approval"] = {"judged": 15, "matched": 13}
+        gate_path.write_text(json.dumps(doc))
+        self.assertEqual(self.executor(env).run(mc_item(2), NOW)[0]["reasons"],
+                         ["gate_not_passed"])
+        gate_path.write_text(good)
+        self.assertEqual(self.executor(env).run(mc_item(2), NOW)[0]["reasons"],
+                         ["opt_in_suspended:below_bar"])
+        self.assertEqual(self.mc.calls, [])
+        self.opt_in()
+        self.assertEqual(self.executor(env).run(mc_item(2), NOW)[0]["status"], "done")
+
+    def test_an_unreadable_gate_refuses_live_but_suspends_no_opt_in(self):
+        env = self.go_live()
+        gate_path = self.state / aw.WRITE_GATE_FILE
+        good = gate_path.read_text()
+        for broken in ("{", None):          # half-written, then missing (a restore)
+            if broken is None:
+                gate_path.unlink()
+            else:
+                gate_path.write_text(broken)
+            self.assertEqual(self.executor(env).run(mc_item(3), NOW)[0]["reasons"],
+                             ["gate_not_passed"])
+            rows = aw.Journal(self.state / aw.AUDIT_FILE).rows()
+            self.assertFalse([r for r in rows if r.get("event") == "opt_in_suspended"])
+            self.assertTrue(aw.opt_ins(rows)[(OWNER, "internal_approval")]["on"])
+        self.assertEqual(self.mc.calls, [])
+        gate_path.write_text(good)          # read again: the person's opt-in still holds
+        self.assertEqual(self.executor(env).run(mc_item(3), NOW)[0]["status"], "done")
+
+    def test_the_audit_trail_says_who_switched_what_on_and_when(self):
+        self.pass_gate()
+        journal = aw.Journal(self.state / aw.AUDIT_FILE)
+        rules = aw.load_rules()
+        gate = aw.WriteGate(self.state / aw.WRITE_GATE_FILE, rules)
+        later = NOW + timedelta(hours=2)
+        aw.set_opt_in(journal, gate, OWNER.upper(), "internal_approval", True, OWNER, NOW)
+        aw.set_paused(journal, OWNER, True, OWNER, NOW + timedelta(hours=1))
+        aw.set_opt_in(journal, gate, OWNER, "internal_approval", False, OWNER, later)
+        rows = journal.rows()      # re-checks the hash chain
+        trail = [(r["event"], r["person"], r["by"], r.get("workflow"), r.get("on"),
+                  r.get("paused"), r["at"]) for r in rows if r["event"] in aw.OPT_IN_EVENTS]
+        self.assertEqual(trail, [
+            ("opt_in", OWNER, OWNER, "internal_approval", True, None, "2026-11-12T15:00:00Z"),
+            ("opt_in_paused", OWNER, OWNER, None, None, True, "2026-11-12T16:00:00Z"),
+            ("opt_in", OWNER, OWNER, "internal_approval", False, None, "2026-11-12T17:00:00Z")])
+        on = next(r for r in rows if r["event"] == "opt_in")
+        self.assertEqual((on["roles"], on["scores"]),
+                         ([ROLE], {ROLE: {"judged": 15, "matched": 14}}))
+        # a refused switch leaves no row
+        with self.assertRaises(PermissionError):
+            aw.set_opt_in(journal, gate, OWNER, "internal_approval", True, "x@plx.example", later)
+        self.assertEqual(len(journal.rows()), len(rows))
 
 
 class Routine(Base):

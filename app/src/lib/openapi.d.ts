@@ -352,9 +352,72 @@ export type paths = {
          * Autopilot Decide
          * @description Accept, edit, reject or snooze an item of your own. Accept runs it through the
          *     gated write path: a dry run (the decision recorded, nothing written) unless its
-         *     workflow passed the fresh gate and the owner switched it live.
+         *     workflow passed the fresh gate for you and you switched it on for yourself.
          */
         post: operations["autopilot_decide_api_autopilot_items__item_id__decision_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/autopilot/notices/ack": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Autopilot Ack Notice
+         * @description The owner acknowledges that a workflow passed its fresh gate for a role (told
+         *     once). Owner only (403 for every other reader); turns nothing on.
+         */
+        post: operations["autopilot_ack_notice_api_autopilot_notices_ack_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/autopilot/opt-in": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Autopilot Opt In
+         * @description Switch one of your own workflows on (only while it passes its gate for you: 409
+         *     otherwise) or off. Always your own; recorded on the audit log. It acts only while
+         *     the host's master switch is on, and only on routine items.
+         */
+        post: operations["autopilot_opt_in_api_autopilot_opt_in_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/autopilot/pause": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Autopilot Pause
+         * @description Pause (or resume) everything you switched on, at once. Your own only.
+         */
+        post: operations["autopilot_pause_api_autopilot_pause_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -438,8 +501,9 @@ export type paths = {
         put?: never;
         /**
          * Autopilot Workflow
-         * @description Switch a workflow off or on, or a role's workflow live (only after its fresh
-         *     gate passed) or back to dry run. Owner only (403 for every other reader).
+         * @description Switch a workflow off for everyone, or back on. Owner only (403 for every other
+         *     reader). Nobody switches a workflow on to act for someone else: each person does
+         *     that for themselves (``/api/autopilot/opt-in``).
          */
         post: operations["autopilot_workflow_api_autopilot_workflows__workflow__post"];
         delete?: never;
@@ -1111,6 +1175,49 @@ export type paths = {
         put?: never;
         post?: never;
         delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/memory": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Memory Items
+         * @description What the Workbench remembers about you and uses in every answer: your standing
+         *     instructions, preferences, open commitments and facts, newest first. Only yours
+         *     (the owner too sees only their own).
+         */
+        get: operations["memory_items_api_memory_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/memory/{item_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /**
+         * Memory Forget
+         * @description Delete one thing the Workbench remembers about you; it is not used again. Only
+         *     your own (another person's reads as not found).
+         */
+        delete: operations["memory_forget_api_memory__item_id__delete"];
         options?: never;
         head?: never;
         patch?: never;
@@ -2451,6 +2558,11 @@ export type components = {
              */
             read_at?: string | null;
             /**
+             * Reading
+             * @description True when this screen's first read for this reader is still going on: nothing of it is shown yet (its lists are empty and its counts zero, never a finding); ask again shortly for the page.
+             */
+            reading?: boolean;
+            /**
              * Sent
              * @constant
              */
@@ -2535,8 +2647,18 @@ export type components = {
         AskDraft: {
             /** Actions */
             actions?: components["schemas"]["CardActionOffer"][];
+            /**
+             * Also To
+             * @description Others the reader's own mail settles on To (a new message).
+             */
+            also_to?: string[];
             /** Body */
             body: string;
+            /**
+             * Cc
+             * @description Who the reader's own mail settles on Cc (a new message).
+             */
+            cc?: string[];
             /**
              * Details
              * @description An action's details, each shown before any confirm.
@@ -2567,6 +2689,10 @@ export type components = {
              * @description What the draft lacks before it can be done, in words.
              */
             missing?: string[];
+            /** Recipient Questions */
+            recipient_questions?: components["schemas"]["RecipientQuestion"][];
+            /** Record Questions */
+            record_questions?: components["schemas"]["RecordQuestion"][];
             /**
              * Sent
              * @default false
@@ -2692,9 +2818,14 @@ export type components = {
         /**
          * AutopilotArea
          * @description The autopilot area: today's prepared items you may see, per workflow its scores and
-         *     state, and the switches (``owner``: you may change them).
+         *     state, the switches (``owner``: you may change them), and your own opt-ins.
          */
         AutopilotArea: {
+            /**
+             * Gate Notices
+             * @description Owner only: each workflow's first pass of its fresh gate the owner has not acknowledged yet, told once. Absent for everyone else.
+             */
+            gate_notices?: components["schemas"]["AutopilotGateNotice"][] | null;
             /** Items */
             items?: components["schemas"]["AutopilotItem"][];
             /**
@@ -2702,10 +2833,20 @@ export type components = {
              * @description every workflow the autopilot knows (``operating.workflows``), scored or not: the workflow filter offers them before any is scored or prepared
              */
             known_workflows?: string[];
+            /**
+             * My Opt Ins
+             * @description Your workflows you may switch on for yourself.
+             */
+            my_opt_ins?: components["schemas"]["AutopilotOptIn"][];
             /** Notes */
             notes?: string[];
             /** Owner */
             owner: boolean;
+            /**
+             * Paused
+             * @description You paused everything you switched on.
+             */
+            paused?: boolean;
             /** People */
             people?: components["schemas"]["AutopilotPerson"][];
             /**
@@ -2720,6 +2861,11 @@ export type components = {
              * @description Set when the server serves the last page it read for this same reader instead of reading it now: when that page was read (ISO). It is read again in the background.
              */
             stale_since?: string | null;
+            /**
+             * Switched On
+             * @description Owner and admins only: who switched what on. Absent for everyone else.
+             */
+            switched_on?: components["schemas"]["AutopilotOptInPerson"][] | null;
             switches: components["schemas"]["AutopilotSwitches"];
             /** Workflows */
             workflows?: components["schemas"]["AutopilotWorkflowRow"][];
@@ -2971,6 +3117,20 @@ export type components = {
             rule: string;
         };
         /**
+         * AutopilotGateNotice
+         * @description A workflow that passed its fresh gate for a role, which the owner has not yet been
+         *     told of (``operating.autopilot_write.notices``). Information only: it switches nothing
+         *     on; each person switches the workflow on for themselves.
+         */
+        AutopilotGateNotice: {
+            /** Passed At */
+            passed_at: string;
+            /** Role */
+            role: string;
+            /** Workflow */
+            workflow: string;
+        };
+        /**
          * AutopilotGatePart
          * @description One scored window the write gate counts for a workflow: fresh days (from the rules'
          *     ``fresh_from``) or a historical window never used for tuning (the rules'
@@ -3071,6 +3231,72 @@ export type components = {
              * @description draft/auto: the role (or person: role) it applies to.
              */
             role?: string | null;
+        };
+        /** AutopilotNoticeAck */
+        AutopilotNoticeAck: {
+            /** Role */
+            role: string;
+            /** Workflow */
+            workflow: string;
+        };
+        /**
+         * AutopilotOptIn
+         * @description One of your workflows you may switch on for yourself: it passed its gate for you,
+         *     or you switched it on before and it was suspended. Off until you switch it on.
+         */
+        AutopilotOptIn: {
+            /**
+             * Eligible
+             * @description It passes its gate for you now.
+             */
+            eligible: boolean;
+            /**
+             * On
+             * @description You switched it on (and it was not suspended since).
+             */
+            on: boolean;
+            score?: components["schemas"]["AutopilotScoreBar"] | null;
+            /**
+             * Since
+             * @description When you switched it on.
+             */
+            since?: string | null;
+            suspended?: components["schemas"]["AutopilotSuspension"] | null;
+            /** Workflow */
+            workflow: string;
+        };
+        /**
+         * AutopilotOptInPerson
+         * @description Someone who switched a workflow on for themselves (shown to the owner and admins,
+         *     who can see it but cannot switch it for them).
+         */
+        AutopilotOptInPerson: {
+            /**
+             * Paused
+             * @default false
+             */
+            paused: boolean;
+            /** Person */
+            person: string;
+            /** Since */
+            since?: string | null;
+            /** Workflow */
+            workflow: string;
+        };
+        /** AutopilotOptInRequest */
+        AutopilotOptInRequest: {
+            /**
+             * On
+             * @description true: on for you; false: off.
+             */
+            on: boolean;
+            /** Workflow */
+            workflow: string;
+        };
+        /** AutopilotPauseRequest */
+        AutopilotPauseRequest: {
+            /** Paused */
+            paused: boolean;
         };
         /** AutopilotPerson */
         AutopilotPerson: {
@@ -3173,6 +3399,22 @@ export type components = {
              */
             percent?: number | null;
         };
+        /**
+         * AutopilotScoreBar
+         * @description A workflow's held-out score for one person against the gate's bar.
+         */
+        AutopilotScoreBar: {
+            /** Judged */
+            judged: number;
+            /** Matched */
+            matched: number;
+            /** Need Judged */
+            need_judged: number;
+            /** Need Percent */
+            need_percent: number;
+            /** Percent */
+            percent?: number | null;
+        };
         /** AutopilotScoreDay */
         AutopilotScoreDay: {
             /** Accepted */
@@ -3222,6 +3464,19 @@ export type components = {
              * @description The step in plain words.
              */
             words: string;
+        };
+        /**
+         * AutopilotSuspension
+         * @description Why a person's opt-in was switched off by itself: the workflow's score for them
+         *     no longer meets the bar (``below_bar``), too few items are judged (``too_few``), no
+         *     score is on record (``no_score``) or its gate was lost (``gate_lost``).
+         */
+        AutopilotSuspension: {
+            /** At */
+            at?: string | null;
+            /** Reason */
+            reason: string;
+            score?: components["schemas"]["AutopilotScoreBar"] | null;
         };
         /** AutopilotSwitchRequest */
         AutopilotSwitchRequest: {
@@ -3328,7 +3583,7 @@ export type components = {
         /**
          * AutopilotWorkflowRow
          * @description One workflow of one role (a ``person:`` role is one person's whole day): its replay
-         *     scores, its write state and the owner's switches.
+         *     scores, its write state and how many of its people switched it on.
          */
         AutopilotWorkflowRow: {
             /** @description Judged fresh items toward the write gate; absent until the scorer published a result for this role. */
@@ -3344,11 +3599,6 @@ export type components = {
             fresh?: components["schemas"]["AutopilotScore"] | null;
             /** Last Run */
             last_run?: string | null;
-            /**
-             * Live Flag
-             * @description The owner switched this role's workflow live.
-             */
-            live_flag: boolean;
             /** Missing */
             missing?: string[];
             /**
@@ -3377,27 +3627,25 @@ export type components = {
             scored_at?: string | null;
             /**
              * State
-             * @description off: switched off; dry_run: gate not passed; passed_awaiting_owner: passed, the owner has not switched it on; live_held: switched on, held by the host's master switch; live: performs through the write path.
+             * @description off: switched off; dry_run: gate not passed; passed: passed, nobody it acts for switched it on; live_held: someone switched it on, held by the host's master switch; live: acts for whoever switched it on.
              * @enum {string}
              */
-            state: "off" | "dry_run" | "passed_awaiting_owner" | "live_held" | "live";
+            state: "off" | "dry_run" | "passed" | "live_held" | "live";
+            /**
+             * Switched On
+             * @description People of this row who switched it on for themselves and have not paused (only yourself unless you are the owner or an admin).
+             */
+            switched_on?: number;
             /** Workflow */
             workflow: string;
         };
         /** AutopilotWorkflowSwitch */
         AutopilotWorkflowSwitch: {
-            /** Live */
-            live?: boolean | null;
             /**
              * On
-             * @description false: the workflow is switched off (nothing is performed, not even a dry run).
+             * @description false: the workflow is switched off for everyone (nothing is performed, not even a dry run); true: back on. Switching it on never makes it act for anyone: each person does that.
              */
-            on?: boolean | null;
-            /**
-             * Role
-             * @description live: the role whose passed gate it goes live through.
-             */
-            role?: string | null;
+            on: boolean;
         };
         /**
          * Brief
@@ -3655,6 +3903,11 @@ export type components = {
             other_teams: number;
             /** Rank Basis */
             rank_basis: string;
+            /**
+             * Reading
+             * @description True when this screen's first read for this reader is still going on: nothing of it is shown yet (its lists are empty and its counts zero, never a finding); ask again shortly for the page.
+             */
+            reading?: boolean;
             /**
              * Refreshing
              * @description True while some checks' findings are of older data than the records now show: those are left out until the checks re-run on it.
@@ -4812,10 +5065,10 @@ export type components = {
             reason: string;
             /**
              * Status
-             * @description filled: from one value the records agree on (``citation``); kept: it already held a value; person_only: a signature, signer or signing date; unknown_field: no rule for the label; no_fact: no record read holds it; ambiguous: the records disagree. Only filled changes.
+             * @description filled: from one value the records agree on (``citation``); kept: it already held a value; person_only: a signature, signer or signing date; unknown_field: no rule for the label; no_fact: no record read holds it; ambiguous: the records disagree; suggested: a value from a source that cannot be certain (``after``, ``citation``) for the person to check, not written. Only filled changes.
              * @enum {string}
              */
-            status: "filled" | "kept" | "person_only" | "unknown_field" | "no_fact" | "ambiguous";
+            status: "filled" | "kept" | "person_only" | "unknown_field" | "no_fact" | "ambiguous" | "suggested";
         };
         /**
          * FillReply
@@ -5025,6 +5278,11 @@ export type components = {
             /** Greeting Name */
             greeting_name: string;
             needs_attention: components["schemas"]["NeedsAttention"];
+            /**
+             * Reading
+             * @description True when this screen's first read for this reader is still going on: nothing of it is shown yet (its lists are empty and its counts zero, never a finding); ask again shortly for the page.
+             */
+            reading?: boolean;
             /** Recent Questions */
             recent_questions: components["schemas"]["RecentQuestion"][];
             /**
@@ -5756,6 +6014,11 @@ export type components = {
             /** Offset */
             offset: number;
             /**
+             * Reading
+             * @description True when this screen's first read for this reader is still going on: nothing of it is shown yet (its lists are empty and its counts zero, never a finding); ask again shortly for the page.
+             */
+            reading?: boolean;
+            /**
              * Stale Since
              * @description Set when the server could not read this page in time and serves the last page it read for this same reader: when that page was read (ISO). It is refreshed in the background.
              */
@@ -5836,6 +6099,11 @@ export type components = {
              * @description The type of the records at the link's other end.
              */
             type: string;
+            /**
+             * Type Label
+             * @description That type's business name where the schema declares one (a raw Portal, FileMaker or Sage table, e.g. 'AR invoice entry'); absent for curated types.
+             */
+            type_label?: string | null;
             /**
              * Words
              * @description The navigation name in plain words, e.g. 'Invoices'.
@@ -5940,6 +6208,11 @@ export type components = {
              */
             ops_reader?: boolean;
             /**
+             * Owner
+             * @description The owner-open reader: may read everyone's work log and time saved.
+             */
+            owner?: boolean;
+            /**
              * Principal
              * @description employee:<oid>, or the fixture principals joined.
              */
@@ -6004,6 +6277,50 @@ export type components = {
             label: string;
             /** Sources */
             sources?: components["schemas"]["Source"][];
+        };
+        /** MemoryForgotten */
+        MemoryForgotten: {
+            /** Forgotten */
+            forgotten: boolean;
+        };
+        /**
+         * MemoryItem
+         * @description One thing the Workbench remembers about you (``operator_api.memory``): a standing
+         *     instruction, a preference, an open commitment or a fact, with where it came from.
+         */
+        MemoryItem: {
+            /** At */
+            at: string;
+            /** Confidence */
+            confidence: number;
+            /** Id */
+            id: number;
+            /** Importance */
+            importance: number;
+            /**
+             * Kind
+             * @enum {string}
+             */
+            kind: "fact" | "preference" | "instruction" | "commitment" | "summary";
+            /** Records */
+            records?: string[];
+            /**
+             * Source
+             * @description What it was learned from: ask, clarify, autopilot, learn, ...
+             */
+            source: string;
+            /** Text */
+            text: string;
+        };
+        /** MemoryItems */
+        MemoryItems: {
+            /**
+             * Available
+             * @description False when memory is off (no store) or cannot be read now (the people exclusion is not loaded).
+             */
+            available: boolean;
+            /** Items */
+            items: components["schemas"]["MemoryItem"][];
         };
         /** Money */
         Money: {
@@ -6337,6 +6654,11 @@ export type components = {
              * @description Follow-up drafts and proposed updates built from this page's gated facts and trail; never sent or applied.
              */
             proposals?: components["schemas"]["Proposal"][];
+            /**
+             * Reading
+             * @description True when this screen's first read for this reader is still going on: nothing of it is shown yet (its lists are empty and its counts zero, never a finding); ask again shortly for the page.
+             */
+            reading?: boolean;
             /** Related */
             related?: components["schemas"]["ObjectRef"][];
             /**
@@ -6353,6 +6675,11 @@ export type components = {
             trail?: components["schemas"]["EvidenceTrail"] | null;
             /** Type */
             type: string;
+            /**
+             * Type Label
+             * @description The type's business name where the schema declares one (a raw Portal, FileMaker or Sage table, e.g. 'AR invoice entry'); absent for curated types.
+             */
+            type_label?: string | null;
         };
         /** ObjectRef */
         ObjectRef: {
@@ -7006,6 +7333,11 @@ export type components = {
              */
             read_at?: string | null;
             /**
+             * Reading
+             * @description True when this screen's first read for this reader is still going on: nothing of it is shown yet (its lists are empty and its counts zero, never a finding); ask again shortly for the page.
+             */
+            reading?: boolean;
+            /**
              * Sent
              * @constant
              */
@@ -7112,6 +7444,28 @@ export type components = {
             conversation_id?: string | null;
             /** Question */
             question: string;
+        };
+        /**
+         * RecipientQuestion
+         * @description A recipient the reader's own mail did not settle, put to them as one tap: ``pick``
+         *     one of the candidates (who the line means) or ``any`` (who else goes on it); every
+         *     candidate cleared by the people exclusion, best first.
+         */
+        RecipientQuestion: {
+            /** Candidates */
+            candidates?: string[];
+            /**
+             * Field
+             * @enum {string}
+             */
+            field: "to" | "cc";
+            /** Label */
+            label: string;
+            /**
+             * Pick
+             * @enum {string}
+             */
+            pick: "one" | "any";
         };
         /**
          * RecordAsOf
@@ -7289,6 +7643,25 @@ export type components = {
             subject: string;
             to?: components["schemas"]["PlaybookAddress"] | null;
         };
+        /**
+         * RecordQuestion
+         * @description A record the line names that the draft could not state, put to the reader: its
+         *     note, and the sentence that asks the recipient instead (one tap adds it to the
+         *     message).
+         */
+        RecordQuestion: {
+            /** Ask Line */
+            ask_line: string;
+            /** Note */
+            note: string;
+            /**
+             * Outcome
+             * @enum {string}
+             */
+            outcome: "not_found" | "unreadable" | "not_looked_up";
+            /** Record */
+            record: string;
+        };
         /** ReplyLine */
         ReplyLine: {
             /**
@@ -7354,6 +7727,11 @@ export type components = {
              * @description Set when this page is the one read for this same reader a moment ago, served as kept: when it was read (ISO). Other people's decisions and actions it shows are as of then.
              */
             read_at?: string | null;
+            /**
+             * Reading
+             * @description True when this screen's first read for this reader is still going on: nothing of it is shown yet (its lists are empty and its counts zero, never a finding); ask again shortly for the page.
+             */
+            reading?: boolean;
             /**
              * Sent
              * @constant
@@ -7706,6 +8084,11 @@ export type components = {
              * @default
              */
             rank_basis: string;
+            /**
+             * Reading
+             * @description True when this screen's first read for this reader is still going on: nothing of it is shown yet (its lists are empty and its counts zero, never a finding); ask again shortly for the page.
+             */
+            reading?: boolean;
             /**
              * Sent
              * @default false
@@ -8411,6 +8794,11 @@ export type components = {
              * @description Set when this page is the one read for this same reader a moment ago, served as kept: when it was read (ISO). Other people's decisions and actions it shows are as of then.
              */
             read_at?: string | null;
+            /**
+             * Reading
+             * @description True when this screen's first read for this reader is still going on: nothing of it is shown yet (its lists are empty and its counts zero, never a finding); ask again shortly for the page.
+             */
+            reading?: boolean;
             /**
              * Stale Since
              * @description Set when the server serves the last page it read for this same reader instead of reading it now: when that page was read (ISO). It is read again in the background.
@@ -9997,6 +10385,204 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    autopilot_ack_notice_api_autopilot_notices_ack_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AutopilotNoticeAck"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AutopilotArea"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Unprocessable Entity */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    autopilot_opt_in_api_autopilot_opt_in_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AutopilotOptInRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AutopilotArea"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Unprocessable Entity */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    autopilot_pause_api_autopilot_pause_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AutopilotPauseRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AutopilotArea"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
                 };
             };
         };
@@ -11685,6 +12271,84 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["MeetingFollowUp"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    memory_items_api_memory_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MemoryItems"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    memory_forget_api_memory__item_id__delete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                item_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MemoryForgotten"];
                 };
             };
             /** @description Unauthorized */

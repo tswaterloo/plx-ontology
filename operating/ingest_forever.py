@@ -272,7 +272,7 @@ class SourceSpec:
     source: str                         # the blocked-part ``source`` label
     argv: Callable[[Path, Mapping[str, Any]], list[str]]
     summarize: Callable[[Mapping[str, Any]], dict[str, Any]]
-    fields: Mapping[str, str]           # config key -> kind (path, str, strs, seconds, int)
+    fields: Mapping[str, str]           # config key -> kind (_option: path, str, seconds, ...)
     required: frozenset[str] = frozenset()
     env: tuple[str, ...] = ()           # every name must be set, else blocked
     resume_kind: str = "cursor"
@@ -310,10 +310,27 @@ def _budget(options: Mapping[str, Any]) -> list[str]:
     return [] if value is None else ["--budget-seconds", str(value)]
 
 
+# A child's worker threads or processes (capture_mail.MAX_WORKERS).
+MAX_CHILD_WORKERS = 16
+# Mail's backlog passes after its capture (``capture_mail.after_capture``): their
+# seconds lengthen the child's time limit, plus one reading's time
+# (``capture_mail.EXTRACT_SECONDS``) for the work in flight a pass finishes past its
+# budget (each pass its own); the GiB floor and worker counts do not.
+AFTER_CAPTURE_SECONDS = ("apply_fetched_seconds", "deferred_attachments_seconds",
+                         "image_ocr_seconds")
+AFTER_CAPTURE_TAIL_SECONDS = 600
+AFTER_CAPTURE_OPTIONS = AFTER_CAPTURE_SECONDS + (
+    "deferred_workers", "deferred_extract_workers", "deferred_min_free_gb", "image_ocr_workers",
+    "apply_fetched_dir")
+
+
 def _graph_argv(command: str) -> Callable[[Path, Mapping[str, Any]], list[str]]:
     def argv(state: Path, options: Mapping[str, Any]) -> list[str]:
         args = [_python(), "-m", "integrations.graph_read", command, "--state-dir", str(state),
                 "--live-audience", options["live_audience"], "--runs", "1"]
+        # mail: summarize_mail reads the runs only; the store-wide counts after the capture
+        # (unbudgeted, the whole 24.7 GB store) ran every run past its timeout (11-13)
+        args += ["--runs-only"] if command == "mail-capture" else []
         if options.get("scope"):
             args += ["--scope", options["scope"]]
         if options.get("page_size"):
@@ -324,6 +341,10 @@ def _graph_argv(command: str) -> Callable[[Path, Mapping[str, Any]], list[str]]:
             args += ["--principal", options["principal"]]
         if options.get("named_originals") is True:   # case originals' items first
             args += ["--named-originals"]
+        if command == "mail-capture":   # the store's backlogs, after the capture
+            for key in AFTER_CAPTURE_OPTIONS:
+                if options.get(key) is not None:
+                    args += ["--" + key.replace("_", "-"), str(options[key])]
         if command == "sharepoint-capture":
             # the post-run self-check samples its handles: unsampled, it outran the grace
             # every cycle on the whole estate (child_timeout)
@@ -348,7 +369,11 @@ def _portal_argv(state: Path, options: Mapping[str, Any]) -> list[str]:
         args += ["--relation", relation]
     if options.get("relation_budget_seconds") is not None:   # each relation's first slice
         args += ["--relation-budget-seconds", str(options["relation_budget_seconds"])]
-    return args + _budget(options)
+    if options.get("full_below_rows") is not None:   # small relations read whole (GA-F12)
+        args += ["--full-below-rows", str(options["full_below_rows"])]
+    # summarize_portal reads the runs only: the sync's coverage (whole reads of the
+    # mirror after the capture, no budget) outran the child's timeout (11-13)
+    return args + ["--no-coverage"] + _budget(options)
 
 
 def _bc_argv(state: Path, options: Mapping[str, Any]) -> list[str]:
@@ -583,7 +608,7 @@ SOURCES: dict[str, SourceSpec] = {spec.name: spec for spec in (
     SourceSpec("portal", "portal-workbench-api", _portal_argv, summarize_portal,
                {"audience": "path", "relations": "strs", "principal": "str",
                 "clearance": "str", "tenant": "str", "budget_seconds": "seconds",
-                "relation_budget_seconds": "seconds"},
+                "relation_budget_seconds": "seconds", "full_below_rows": "int"},
                frozenset({"audience"}), PORTAL_ENV, projected="portal_api",
                served_store=portal_mirror, writes=lambda state: (portal_mirror(state),)),
     SourceSpec("bc", "business-central", _bc_argv, summarize_bc,
@@ -592,7 +617,12 @@ SOURCES: dict[str, SourceSpec] = {spec.name: spec for spec in (
                frozenset({"live_audience"}), BC_ENV, projected="bc",
                writes=_state_store("bc")),
     SourceSpec("mail", "microsoft-graph", _graph_argv("mail-capture"), summarize_mail,
-               {**_GRAPH_FIELDS, "page_size": "int", "principal": "str"},
+               {**_GRAPH_FIELDS, "page_size": "int", "principal": "str",
+                "deferred_attachments_seconds": "seconds", "deferred_workers": "workers",
+                "deferred_extract_workers": "workers",
+                "deferred_min_free_gb": "gib", "image_ocr_seconds": "seconds",
+                "image_ocr_workers": "workers", "apply_fetched_seconds": "seconds",
+                "apply_fetched_dir": "dir"},
                frozenset({"live_audience"}),
                GRAPH_ENV, projected="graph_mail", writes=_state_store("graph_mail")),
     SourceSpec("sharepoint", "microsoft-graph", _graph_argv("sharepoint-capture"),
@@ -654,6 +684,10 @@ def _option(kind: str, value: Any, base: Path) -> Any:
         return value
     if kind == "int" and type(value) is int and 1 <= value <= 100_000:
         return value
+    if kind == "workers" and type(value) is int and 1 <= value <= MAX_CHILD_WORKERS:
+        return value
+    if kind == "gib" and _number(value, 0, 100_000):   # a free-space floor, 0 allowed
+        return value
     if kind == "flag" and type(value) is bool:
         return value
     if kind == "str" and _string(value):
@@ -661,6 +695,10 @@ def _option(kind: str, value: Any, base: Path) -> Any:
     if kind == "strs" and isinstance(value, list) and value and len(value) <= 1000 \
             and all(_string(v) for v in value):
         return list(value)
+    if kind == "dir" and _string(value):   # a directory another job writes (never Git)
+        path = (base / value).resolve()
+        if path.is_dir():
+            return str(path)
     if kind == "path" and _string(value):
         path = (base / value).resolve()
         if path.is_file():
@@ -828,6 +866,9 @@ def run_source(spec: SourceSpec, options: Mapping[str, Any], state: Path,
     budget = options.get(spec.budget_field) if spec.budget_field else None
     timeout = (budget + grace) if budget else options.get("timeout_seconds",
                                                            DEFAULT_TIMEOUT_SECONDS)
+    # mail's backlog passes run after its capture, within the same child
+    passes = [options[key] for key in AFTER_CAPTURE_SECONDS if options.get(key)]
+    timeout += sum(passes) + AFTER_CAPTURE_TAIL_SECONDS * len(passes)
     started = time.monotonic()
     try:
         argv = spec.argv(state, options)

@@ -174,6 +174,33 @@ class Engine(Fixture):
         card = ap.card_of(item)
         self.assertEqual(card["id"], ap.CARD_PREFIX + item["item_id"])
 
+    def test_a_reply_draft_keeps_the_others_on_the_message_never_the_owner(self):
+        # people answer to all (DEV 10-13..27: same To and Cc 24 of 43 kept, 4 sender-only)
+        self.order("PO-4513", on_hand="50", need="10")
+        other = "buyer2@synth-customer.example"
+        # someone the exclusion bars on the Cc: nothing is prepared, so never drafted to
+        barred = self.message(5, "Please find attached our PO PO-4513 for 10 cases.",
+                              subject="New PO PO-4513", cc=(BOSS,))
+        self.assertEqual(self.cycle([barred])["prepared"], {})
+        msg = self.message(4, "Please find attached our PO PO-4513 for 10 cases.",
+                           subject="New PO PO-4513", to=(OURS, other, OUTSIDE.upper()),
+                           cc=(APPROVER, OURS))
+        self.cycle([msg], name="s2.sqlite")
+        (item,) = self.queue().items()
+        draft = item["body"]["prepared"]["draft"]
+        self.assertEqual(draft["to"], [{"address": OUTSIDE}, {"address": other}])
+        self.assertEqual(draft["cc"], [{"address": APPROVER.lower()}])
+        card = ap.card_of(item)
+        from operating import card_actions as ca
+        got = ca.default_payload("reply_in_thread", card, None)
+        self.assertEqual((got["to"], got["cc"]), ([OUTSIDE, other], [APPROVER.lower()]))
+        # a draft for a message with no one else on it: the sender alone, no Cc line
+        self.assertEqual(ap.reply_all(OUTSIDE, [OURS], [], [OURS]), {"to": [], "cc": []})
+        # a card without the extra lists (every other card kind): unchanged
+        bare = {**card, "draft": {k: v for k, v in card["draft"].items()
+                                  if k not in ("also_to", "cc")}}
+        self.assertEqual(ca.default_payload("send_email", bare, None)["cc"], [])
+
     def test_a_machine_report_prepares_nothing_a_burst_from_one_person_still_does(self):
         # triage's automated-mail test (``inbox_triage.automated_mail``) by form: a JSON
         # report is skipped. A cycle is no window (minutes live, a day in a replay), so 35

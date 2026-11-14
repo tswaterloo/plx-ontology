@@ -168,6 +168,13 @@ MAX_DISCOVERED_COLUMNS = 100
 # listing, after a pause (``ListCapture._reread_transient``).
 TRANSIENT_ACL_STATUSES = frozenset({408, 429, 500, 502, 503, 504})
 ACL_RETRY_PAUSE_SECONDS = 10.0
+# A list's item-permission reads stop once this many fail transiently in a row, or once
+# the list has spent this long on them (live 11-13: 19 timed-out reads in a row in one list
+# ran every host run past its time limit, so the lists after it were never read). The rest
+# of that list's items are saved unreadable (served to no reader who needs a source ACL)
+# and the list is incomplete with the reason, read again next run.
+ACL_MAX_TRANSIENT_IN_A_ROW = 3
+ACL_LIST_BUDGET_SECONDS = 180.0
 RETRY_BUDGET_SECONDS = 240   # the run's GET retry sleep, within the host's list timeout
 
 
@@ -391,10 +398,12 @@ class ListCapture:
     (checked against the live audience per list before any of its I/O)."""
 
     def __init__(self, store: CaptureStore, api: Any, audience: LiveSourceAudience,
-                 actor: Actor, *, sleep: Callable[[float], None] = time.sleep) -> None:
+                 actor: Actor, *, sleep: Callable[[float], None] = time.sleep,
+                 clock: Callable[[], float] = time.monotonic) -> None:
         self.store, self.api, self.audience, self.actor = store, api, audience, actor
         self.targets: tuple[ListTarget, ...] = ()   # the lists the last run took
         self._sleep = sleep
+        self._clock = clock
 
     def run(self, scope: ListScope, *, discover_only: bool = False) -> dict[str, Any]:
         blocked: list[dict[str, Any]] = []
@@ -552,7 +561,9 @@ class ListCapture:
                                          "list_template_unknown"})
         run = self.store.begin_run(LIST_KIND.name, target.unit, [target.resource])
         run_id, reasons = run["run_id"], set()
-        acl_state: dict[str, Any] = {"op": ACL_V1, "blocked": None, "transient": {}}
+        acl_state: dict[str, Any] = {"op": ACL_V1, "blocked": None, "transient": {},
+                                     "in_a_row": 0,
+                                     "deadline": self._clock() + ACL_LIST_BUDGET_SECONDS}
         url = target.items_url(scope.page_size)
         if run["resumed"] and run["cursor"]:
             url, result["resumed_from"] = run["cursor"], "cursor"
@@ -626,6 +637,10 @@ class ListCapture:
         the beta read was refused or not found earlier in this list's run."""
         unreadable = {"status": "unreadable", "identities": []}
         while state["blocked"] is None:
+            deadline = state.get("deadline")
+            if deadline is not None and self._clock() >= deadline:
+                state["blocked"] = "acl_list_budget"   # the rest of this list: unreadable
+                break
             op = state["op"]
             try:
                 perms, completeness = self.api.get_pages(target.url(op, item=item_id),
@@ -648,7 +663,11 @@ class ListCapture:
                     transient = state.get("transient")
                     if isinstance(transient, dict):
                         transient[item_id] = True
+                    state["in_a_row"] = int(state.get("in_a_row") or 0) + 1
+                    if state["in_a_row"] >= ACL_MAX_TRANSIENT_IN_A_ROW:
+                        state["blocked"] = "acl_timeouts_in_a_row"
                 break
+            state["in_a_row"] = 0
             acl = permission_acl(perms, completeness)
             counts["acl_read" if acl["status"] == "read" else "acl_unreadable"] += 1
             counts["acl_read_beta"] += op == ACL_BETA and acl["status"] == "read"

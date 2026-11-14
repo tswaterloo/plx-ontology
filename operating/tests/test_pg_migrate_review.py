@@ -446,16 +446,38 @@ class MigrationReviewTests(unittest.TestCase):
         self.assertIn("ONTOLOGY DELTA STALLED", err.getvalue())
 
     def test_step_links_are_deleted_by_an_indexed_id_range(self):
+        """F7: on a byte-order database the key ranges name no collation and plan on the
+        plain key indexes; their byte-order twins are gone (migration 0018)."""
         import psycopg
+        from ontology.pg_byte_order import key_collate
 
         self.load()
         with psycopg.connect(self.dsn) as pg:
+            provider, collate = pg.execute(
+                "SELECT datlocprovider::text, datcollate FROM pg_database WHERE "
+                "datname = current_database()").fetchone()
+            if (provider, collate) not in {("c", "C"), ("c", "C.UTF-8"), ("c", "C.utf8"),
+                                           ("c", "POSIX")}:
+                self.skipTest(f"the test server's default collation is {collate}")
+            c = key_collate(pg)
+            self.assertEqual(c, "")
+            twins = [r[0] for r in pg.execute(
+                "SELECT indexname FROM pg_indexes WHERE schemaname = 'ontology' AND "
+                "indexname IN ('link_rows_by_id', 'object_versions_by_object_c')")]
             pg.execute("SET enable_seqscan = off")
-            plan = "\n".join(r[0] for r in pg.execute(
-                "EXPLAIN DELETE FROM ontology.link_rows WHERE link_id COLLATE \"C\" >= %s "
-                "AND link_id COLLATE \"C\" < %s", ("crb-po-", "crb-po.")))
+            plans = {}
+            for name, sql in (
+                    ("link", f"DELETE FROM ontology.link_rows WHERE link_id{c} >= %s AND "
+                             f"link_id{c} < %s"),
+                    ("object", f"SELECT object_id FROM ontology.object_versions WHERE "
+                               f"object_id{c} >= %s AND object_id{c} < %s")):
+                plans[name] = "\n".join(r[0] for r in pg.execute(
+                    "EXPLAIN " + sql, ("crb-po-", "crb-po.")))
             pg.rollback()
-        self.assertIn("link_rows_by_id", plan)
+        self.assertEqual(twins, [])
+        # the primary key, or on a partitioned link_rows (0017) its partitions' keys
+        self.assertRegex(plans["link"], r"link_rows\w*_pkey")
+        self.assertIn("object_versions_by_object", plans["object"])
 
 
 class MigrationReviewTestsDefaultGuard(MigrationReviewTests):

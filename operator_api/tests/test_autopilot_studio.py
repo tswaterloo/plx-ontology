@@ -20,6 +20,7 @@ from fastapi.testclient import TestClient
 
 from integrations.people_exclusion import PeopleExclusion
 from operating import autopilot as ap
+from operator_api import autopilot_studio as studio
 from operating import autopilot_write as aw
 from operating.session_identity import CHANNEL_CONSOLE, fixture_session
 from operator_api import mock_studio
@@ -84,7 +85,7 @@ class Studio(unittest.TestCase):
                          (40, 37, 92.5, False, False))
         self.assertEqual((doc["caught"], doc["missed"], doc["false_alarms"],
                           doc["hours_saved"]), (37, 3, None, None))
-        self.assertEqual((doc["mode"], doc["modes"]), ("draft", ["off", "draft", "auto"]))
+        self.assertEqual((doc["mode"], doc["modes"]), ("draft", ["off", "draft"]))
         # the colleague has an item of it but is in none of its roles: the page, without the
         # owner's role row, gate counts or history
         theirs = self.sam.get(f"/api/autopilot/workflows/{FLOW}").json()
@@ -111,6 +112,14 @@ class Studio(unittest.TestCase):
         self.assertFalse(catalog["builder"])
         self.assertIn("message.received", [t["kind"] for t in catalog["triggers"]])
 
+    def test_the_builder_names_every_step_in_words_not_its_key(self) -> None:
+        catalog = self.owner.get("/api/autopilot/catalog").json()
+        for part in ("triggers", "conditions", "actions"):
+            for step in catalog[part]:
+                self.assertNotEqual(step["words"], studio._humanize(step["kind"]), (part, step["kind"]))
+        words = [a["words"] for a in catalog["actions"]]
+        self.assertEqual(len(words), len(set(words)), "two builder actions read the same")
+
     def test_modes_go_through_the_owner_switches_and_fail_closed(self) -> None:
         path = f"/api/autopilot/workflows/{FLOW}/mode"
         before = self.switch_files()
@@ -121,11 +130,12 @@ class Studio(unittest.TestCase):
         self.assertEqual(self.switch_files(), before)
         # an unknown mode is refused by the contract
         self.assertEqual(self.owner.put(path, json={"mode": "autonomous"}).status_code, 422)
-        # Auto before the fresh gate passed: refused, and the workflow is not switched on
+        # Auto is each person's own switch: the owner is refused, the workflow not switched on
         self.assertEqual(self.owner.put(path, json={"mode": "off"}).status_code, 200)
         off = self.switch_files()
-        self.assertEqual(self.owner.put(path, json={"mode": "auto", "role": ROLE}).status_code,
-                         409)
+        r = self.owner.put(path, json={"mode": "auto", "role": ROLE})
+        self.assertEqual(r.status_code, 409)
+        self.assertIn("Nobody can turn it on for them", r.json()["error"]["message"])
         self.assertEqual(self.switch_files(), off)
         self.assertEqual(self.owner.get(f"/api/autopilot/workflows/{FLOW}").json()["mode"],
                          "off")
@@ -137,7 +147,7 @@ class Studio(unittest.TestCase):
         # Draft switches it back on, not live
         doc = self.owner.put(path, json={"mode": "draft", "role": ROLE}).json()
         self.assertEqual(doc["mode"], "draft")
-        self.assertFalse(any(r["live_flag"] for r in doc["rows"]))
+        self.assertFalse(any(r["switched_on"] for r in doc["rows"]))
         self.assertEqual(json.loads((self.state / aw.WORKFLOW_KILL_FILE).read_text())
                          ["workflows"], [])
         # the builder is refused on this server: nothing kept, nothing replayed
@@ -161,21 +171,23 @@ class DemoStudio(unittest.TestCase):
         self.addCleanup(lambda: __import__("shutil").rmtree(demo.root, ignore_errors=True))
         self.client = client_for(self.backend, ("demo@plx-demo.example", None))
 
-    def test_watch_opens_only_after_a_passed_gate(self) -> None:
+    def test_the_demo_owner_sets_neither_auto_nor_watch(self) -> None:
         area = self.client.get("/api/autopilot").json()
         self.assertEqual(len(area["items"]), len(mock_studio._items(
             __import__("datetime").datetime.now(__import__("datetime").timezone.utc))))
         passed = {w["workflow"] for w in area["workflows"]
-                  if w["state"] == "passed_awaiting_owner"}
+                  if w["state"] == "passed"}
         self.assertEqual(passed, {"purchase_order_to_supplier", "internal_approval"})
-        not_passed = "meeting_admin"
-        r = self.client.put(f"/api/autopilot/workflows/{not_passed}/mode",
-                            json={"mode": "watch"})
-        self.assertEqual(r.status_code, 409)
-        doc = self.client.put("/api/autopilot/workflows/purchase_order_to_supplier/mode",
-                              json={"mode": "watch"}).json()
-        self.assertEqual(doc["mode"], "watch")
-        self.assertIn("watch", doc["modes"])
+        # Auto and Watch act for a person: only that person switches them on, never the
+        # owner, passed gate or not
+        for flow in ("meeting_admin", "purchase_order_to_supplier"):
+            for mode in ("auto", "watch"):
+                r = self.client.put(f"/api/autopilot/workflows/{flow}/mode",
+                                    json={"mode": mode})
+                self.assertEqual(r.status_code, 409, (flow, mode))
+        doc = self.client.get("/api/autopilot/workflows/purchase_order_to_supplier").json()
+        self.assertNotIn("watch", doc["modes"])
+        self.assertNotIn("auto", doc["modes"])
         # nothing in the demo performs: no adapter, so an accept is a recorded dry run
         mine = next(i for i in area["items"] if i["mine"])
         done = self.client.post(f"/api/autopilot/items/{mine['item_id']}/decision",

@@ -774,12 +774,63 @@ class VersionIntegrityTests(CaptureCase):
         self.assertEqual(box["truncated_attachment_lists"], 1)
         self.assertEqual(self.store.degraded(BOX_A, FOLDER_A, 10), [])
 
+    def test_the_cut_listing_count_is_a_probe_of_its_own_index_on_old_stores_too(self):
+        """Every gated mail citation a host holds no capture of asks its mailbox's
+        coverage, which counts the cut listings; read row by row over the mailbox it took
+        7-25 s on the live store and ran Ask tools out of time. The count reads an index
+        holding only cut listings, a store made before that index gets it at its next
+        writable open, and a reader of a store not reopened yet still counts right."""
+        atts = [file_attachment(f"ATT-{i:02d}", content=f"c{i}".encode()) for i in range(51)]
+        self.graph.put(BOX_A, "MSG-1", "CK-1-1", attachments=atts)
+        self.graph.put(BOX_A, "MSG-2", "CK-2-1", attachments=[file_attachment("ATT-X")])
+        self.capture(attachment_list_cap=50).run(SCOPE)
+        box, folder = self.store.db.execute(
+            "SELECT mailbox_id, folder_id FROM messages WHERE attachments_status != "
+            "'complete'").fetchone()
+
+        def counted(store, *args):
+            statements: list[str] = []
+            store.db.set_trace_callback(statements.append)
+            try:
+                count = store.truncated_lists(box, *args)
+            finally:
+                store.db.set_trace_callback(None)
+            (statement,) = [s for s in statements if s.lstrip().upper().startswith("SELECT")]
+            plan = " ".join(str(tuple(r)) for r in
+                            store.db.execute("EXPLAIN QUERY PLAN " + statement))
+            return count, plan
+
+        for args in ((), (folder,)):
+            count, plan = counted(self.store, *args)
+            self.assertEqual(count, 1, args)   # MSG-2's listing is whole
+            self.assertIn("USING INDEX messages_truncated_lists", plan, args)
+        coverage = self.store.mailbox_coverage(box, READER_A, reader_audience())
+        self.assertIn("attachment_lists_truncated", coverage["reasons"])
+
+        # a store made before the index: a reader of it counts the slow way, still right
+        with self.store.db:
+            self.store.db.execute("DROP INDEX messages_truncated_lists")
+        reader = MailCaptureStore.open_read_only(self.state)
+        try:
+            count, plan = counted(reader)
+            self.assertEqual(count, 1)
+            self.assertNotIn("messages_truncated_lists", plan)
+        finally:
+            reader.db.close()
+        # ... and the next writable open builds it
+        self.store.db.close()
+        self.store = MailCaptureStore(self.state, clock=self.clock)
+        count, plan = counted(self.store)
+        self.assertEqual(count, 1)
+        self.assertIn("USING INDEX messages_truncated_lists", plan)
+
     def test_schema_2_store_marks_possibly_cut_listings_truncated(self):
         atts = [file_attachment(f"ATT-{i:02d}", content=f"c{i}".encode()) for i in range(50)]
         self.graph.put(BOX_A, "MSG-1", "CK-1-1", attachments=atts)
         self.graph.put(BOX_A, "MSG-2", "CK-2-1", attachments=[file_attachment("ATT-X")])
         self.capture().run(SCOPE)
-        with self.store.db:   # what a schema 2 file looks like
+        with self.store.db:   # what a schema 2 file looks like (no cut-listing index yet)
+            self.store.db.execute("DROP INDEX messages_truncated_lists")
             self.store.db.execute("ALTER TABLE messages DROP COLUMN attachments_status")
             self.store.db.execute("UPDATE meta SET value='2' WHERE key='schema_version'")
         self.store.close()
@@ -1451,6 +1502,68 @@ class ScopeAndCliTests(unittest.TestCase):
                                        environ=ENV, sender=graph)
         self.assertEqual(code, 0, out.getvalue())
         self.assertEqual(json.loads(out.getvalue())["check"], "graph.mail_capture")
+
+    def test_a_runs_only_report_reads_no_store_wide_counts_and_summarizes_the_same(self):
+        """Live 11-13: the host's mail child ran past its timeout in the closing
+        store-wide counts (per-mailbox byte sums over a 24.7 GB store), after the capture
+        itself had ended; the host reads only the runs. ``--runs-only`` skips the counts
+        for the capture's reader (the leak and resolve checks still run) and the host's
+        summary of the report is unchanged."""
+        from operating import ingest_forever
+        import contextlib
+        import io
+
+        def run(extra, patch_heavy):
+            graph = FakeGraph()
+            graph.put(BOX_A, "MSG-1", "CK-1-1")
+            graph.put(BOX_A, "MSG-2", "CK-2-1")
+            with tempfile.TemporaryDirectory() as tmp:
+                audience = Path(tmp) / "audience.json"
+                audience.write_text(json.dumps({
+                    "schema": "plx-live-source-audience/v1", "tenant": "plx",
+                    "audiences": {f"mail:{UPN_A}": ["svc:mail-capture"]},
+                    "classifications": {"mail:*": "restricted"}}))
+                scope = Path(tmp) / "scope.json"
+                scope.write_text(json.dumps({"schema": capture_mail.SCOPE_SCHEMA,
+                                             "mailboxes": [{"address": UPN_A}]}))
+                out = io.StringIO()
+                calls = []
+                real = capture_mail.MailCaptureStore.completeness
+
+                def guarded(store, actor, audience_):
+                    if capture_mail.CAPTURE_PRINCIPAL in actor.principals:
+                        calls.append("completeness")
+                        if patch_heavy:
+                            raise AssertionError("store-wide counts read")
+                    return real(store, actor, audience_)
+                with contextlib.redirect_stdout(out), \
+                        unittest.mock.patch.object(MailScope, "builtin", lambda: SYNTHETIC), \
+                        unittest.mock.patch.object(capture_mail.MailCaptureStore,
+                                                   "completeness", guarded):
+                    code = graph_read.main(["mail-capture", "--state-dir",
+                                            str(Path(tmp) / "st"), "--scope", str(scope),
+                                            "--live-audience", str(audience), "--runs", "1",
+                                            *extra], environ=ENV, sender=graph)
+            self.assertEqual(code, 0, out.getvalue())
+            return json.loads(out.getvalue()), calls
+
+        full, full_calls = run([], False)
+        light, light_calls = run(["--runs-only"], True)
+        self.assertEqual((full_calls, light_calls), (["completeness"], []))
+        self.assertTrue(light["summary"]["runs_only"])
+        for key in ("mailboxes", "mailboxes_complete", "folders", "folders_complete",
+                    "complete_bound", "bound_total"):
+            self.assertEqual(light["summary"][key], full["summary"][key], key)
+        self.assertIsNone(light["summary"]["messages_current"])
+        self.assertEqual(light["leak_check"], full["leak_check"])
+        self.assertEqual(light["resolve_check"], full["resolve_check"])
+        self.assertEqual(light["ok"], full["ok"])
+        self.assertEqual(ingest_forever.summarize_mail(light)["units"],
+                         ingest_forever.summarize_mail(full)["units"])
+        # the host passes it
+        argv = ingest_forever.SOURCES["mail"].argv(Path("/tmp/st"), {
+            "live_audience": "/a.json", "scope": "/s.json", "budget_seconds": 60})
+        self.assertIn("--runs-only", argv)
 
     def test_the_live_check_audience_grants_every_mailbox_its_scope_captures(self):
         # Live 2026-10-05: complete_bound 2/22 when the check's scope widened to every

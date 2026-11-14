@@ -377,7 +377,8 @@ class AgentAsk:
             roots: Sequence[Mapping[str, Any]] = (),
             entities: Optional[Sequence[Mapping[str, Any]]] = None,
             looked: Optional[Mapping[str, Any]] = None,
-            cancel: Optional[threading.Event] = None) -> AskRun:
+            cancel: Optional[threading.Event] = None,
+            memory: Optional[tuple[str, Any]] = None) -> AskRun:
         """``cancel``: set when nobody waits for the answer any more (the reader left or
         the Ask timed out): the session's process is ended at its next line.
 
@@ -392,7 +393,11 @@ class AgentAsk:
         app resolved them before the session (``objective_runner.resolve_entities``), so
         the session's answer gate never searches for them; None: it resolves them.
         ``looked``: what the app already looked up for the question as this reader
-        (``session_prefetch.first_reads``): the session does not look it up again."""
+        (``session_prefetch.first_reads``): the session does not look it up again.
+        ``memory``: the reader's memory for this turn (``operator_api.memory``): the
+        context put before the task (core memory, the conversation so far, what is
+        relevant from earlier ones; "" for none) and the ``plx.memory`` tool bound to the
+        reader, which the session's gate answers itself (``agent_session.LocalTool``)."""
         from operating import agent_session as runner
         from . import ask_progress as progress
 
@@ -451,10 +456,18 @@ class AgentAsk:
             # stated only through a claim the gate passed, like any other tool output's.
             prompt = app_prompt(question, route) + (
                 "\n\n" + PREREAD_HEADING + context.strip() if context.strip() else "")
+            if memory is not None:
+                from .memory import MEMORY_RULE
+                remembered, recall_tool = memory
+                prompt += "\n\n" + MEMORY_RULE + (
+                    "\n\n" + remembered.strip() if remembered and remembered.strip() else "")
             budget = deep.question_budget(question, self.seconds, route)
             agent = self.agent_for(on_line, budget)
             if cancel is not None:
                 agent.cancel_event = cancel
+            if memory is not None and memory[1] is not None \
+                    and hasattr(agent, "local_tools"):
+                agent.local_tools = {**agent.local_tools, memory[1].spec["name"]: memory[1]}
             if entities is not None and hasattr(agent, "question_entities"):
                 agent.question_entities = [dict(entity) for entity in entities]
             # the sources the pre-read brief names are read in the session itself, so

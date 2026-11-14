@@ -217,13 +217,24 @@ class OpenAcrossSystems(Engine):
         counted = summary["not_evaluated"][RULE]
         self.assertEqual(counted.get("historic_order"), 2, counted)
 
-    def test_an_order_whose_work_orders_are_all_done_is_probably_fulfilled(self):
+    def test_an_order_made_and_shown_shipped_is_probably_fulfilled_never_made_alone(self):
         w = World()
-        portal, fm = order(w, fm="Open", fm_required="2026-10-01", lines=False)
-        line = w.obj("SalesOrderLine", {"quantity": "5"}, audience="api:fm")
-        w.link(so.LINE_OF, line, fm)
-        w.link("AssemblyOrder.for_order_line",
-               w.obj("AssemblyOrder", {"status": "Realized"}, audience="api:fm"), line)
+
+        def made(*, slip: dict | None = None, tier: str = "corroborated") -> str:
+            _portal, fm = order(w, fm="Open", fm_required="2026-10-01", lines=False)
+            line = w.obj("SalesOrderLine", {"quantity": "5"}, audience="api:fm")
+            w.link(so.LINE_OF, line, fm)
+            w.link("AssemblyOrder.for_order_line",
+                   w.obj("AssemblyOrder", {"status": "Realized"}, audience="api:fm"), line)
+            if slip is not None:
+                w.link("PackingSlip.for_sales_order",
+                       w.obj("PackingSlip", slip, audience="api:slips"), fm, tier)
+            return fm
+        fm = made(slip={"ship_date": "2026-10-03"})
+        made()                                                  # made, nothing shipped
+        made(slip={"document_number": "PS1"})                   # a slip with no ship date
+        made(slip={"ship_date": "2026-10-03"}, tier="lead")     # a slip merely matched
+        made(slip={"ship_date": "2026-12-01"})                  # dated after as_of
         _p, busy = order(w, fm="Open", fm_required="2026-10-01", lines=False)
         line2 = w.obj("SalesOrderLine", {"quantity": "5"}, audience="api:fm")
         w.link(so.LINE_OF, line2, busy)
@@ -232,12 +243,19 @@ class OpenAcrossSystems(Engine):
                w.obj("AssemblyOrder", {"status": "In Progress"}, audience="api:fm"))
         w.link("AssemblyOrderAllocation.for_order_line", allocation, line2)
         summary = self.run_rule(w)
-        kinds = {g["object_id"]: g["kind"] for g in self.read()["gaps"]}
+        gaps = self.read()["gaps"]
+        kinds = {g["object_id"]: g["kind"] for g in gaps}
+        # 11-13 judging: 15 of 15 "probably fulfilled" notes on made-only orders could not
+        # be told shipped or not; made with no dated, confirmed slip is counted, unlisted
         self.assertEqual(kinds, {fm: pe.PROBABLE_SO, busy: RULE})
+        self.assertIn("shipped", next(g for g in gaps if g["object_id"] == fm)["summary"])
         self.assertEqual(summary["detectors"][RULE], "complete")
         # a reader who may not read the FileMaker records (the work orders' and the
-        # order's) sees neither item
+        # order's) sees neither item; one who may not open the packing slip does not see
+        # the shipped claim
         self.assertEqual(self.read(may_read=lambda key: key != "api:fm")["gaps"], [])
+        self.assertEqual({g["object_id"]: g["kind"] for g in self.read(
+            may_read=lambda key: key != "api:slips")["gaps"]}, {busy: RULE})
 
     def test_records_a_rule_cannot_judge_are_counted_per_reason_for_who_may_read_them(self):
         w = World()

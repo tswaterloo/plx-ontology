@@ -1,6 +1,11 @@
 import "@testing-library/jest-dom/vitest";
-import { cleanup } from "@testing-library/react";
+import { cleanup, configure } from "@testing-library/react";
 import { afterEach } from "vitest";
+
+// findBy*/waitFor resolve as soon as the screen is right; the 1 s default only bounds how long a
+// slow first render may take, and a loaded landing host misses it (a record page still
+// "Loading the record" at 1 s with 40 busy processes on 4 cores). A wrong screen still fails.
+configure({ asyncUtilTimeout: 10_000 });
 
 afterEach(() => cleanup());
 

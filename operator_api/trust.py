@@ -31,6 +31,7 @@ from operating import alert_kinds
 from operating import autopilot_write as aw
 
 from . import models as m
+from .autopilot_area import _instant, _iso  # one copy of the time helpers
 from .serving import LEDGER_SYSTEMS
 
 # the write-capable systems and the flag each answers to (integrations.live_source_guard)
@@ -41,18 +42,6 @@ WRITE_SYSTEMS = (("bc", "Business Central"), ("sharepoint", "SharePoint"),
                  ("planner", "Planner"), ("calendar", "Calendar"))
 NO_WRITE_PATH = (("mc", "Mission Control"), ("sage", "Sage"), ("portal", "Portal"),
                  ("filemaker", "FileMaker"))
-
-
-def _iso(when: datetime) -> str:
-    return when.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-
-
-def _instant(raw: Any) -> Optional[datetime]:
-    try:
-        out = datetime.fromisoformat(str(raw).replace("Z", "+00:00"))
-    except ValueError:
-        return None
-    return out if out.tzinfo else None
 
 
 def _pct(text: Any) -> Optional[float]:
@@ -235,7 +224,8 @@ def lines(fresh: list[m.TrustFreshness], sets: list[m.TrustAnswerSet],
     else:
         out.append(m.TrustLine(state="gated", words="Autopilot sends and writes: a workflow "
                                f"acts only after {g.need_judged} judged held-out items at "
-                               f"{_pct_words(g.need_percent)} or better and the owner's switch"
+                               f"{_pct_words(g.need_percent)} or better, and only for a person "
+                               "who switched it on for themselves"
                                + (", or for " + ", ".join(sorted(k.replace("_", " ")
                                                                  for k in approved))
                                   + " when a person approves and confirms the item"
@@ -270,8 +260,28 @@ def build(backend: Any, reader: Any, environ: Optional[Mapping[str, str]] = None
     rule, kinds = alerts()
     rows: list[m.AutopilotWorkflowRow] = []
     note = None
-    area = getattr(backend, "_area_read", None)
-    if callable(area):
+    # the autopilot page's own served copy (``WorkspaceBackend.autopilot_area``: kept per
+    # reader under the same access rules, read again when its inputs move), not a fresh
+    # read of the whole area on every visit (11-13: warm Trust 2.5-12.5 s)
+    # read under the inputs served now; one served stale (its queue or switches moved
+    # since) is read again here, so Trust never shows an older workflow state
+    served = getattr(backend, "autopilot_area", None)
+    fresh_read = getattr(backend, "_area_read", None)
+
+    def area(who: Any) -> Any:
+        got = None
+        if callable(served):
+            try:
+                got = served(who)
+            except Exception:  # noqa: BLE001 - busy or refused: read it here instead
+                got = None
+        if got is None or getattr(got, "stale_since", None) is not None:
+            got = fresh_read(who) if callable(fresh_read) else got
+        if got is None:
+            raise LookupError("no autopilot area")
+        return got
+
+    if callable(served) or callable(fresh_read):
         try:
             rows = list(area(reader).workflows)
         except Exception:  # noqa: BLE001 - the page stands without the autopilot part

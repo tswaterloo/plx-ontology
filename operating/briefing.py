@@ -1081,9 +1081,18 @@ def rank(items: list[Item]) -> tuple[list[Item], str]:
             item.money_place = values.index(item.amount[0]) / len(values)
     ordered = sorted(items, key=lambda i: i.order)
     ordered.sort(key=lambda i: str(i.gap.get("first_seen") or ""), reverse=True)
-    ordered.sort(key=lambda i: (not i.yours, i.acknowledged, i.event_type == "po_undated",
+    # an alert kind the reader keeps dismissing (``read_inbox``'s ``learned`` weight)
+    # goes after the rest of its tier
+    ordered.sort(key=lambda i: (not i.yours, i.acknowledged, -_learned(i),
+                                i.event_type == "po_undated",
                                 -i.orders_affected, i.money_place, not i.new_this_generation, -_urgency(i)))
     return ordered, RANK_BASIS
+
+
+def _learned(item: Item) -> float:
+    learned = item.gap.get("learned")
+    weight = learned.get("weight") if isinstance(learned, Mapping) else None
+    return float(weight) if isinstance(weight, (int, float)) and 0 < weight <= 1 else 1.0
 
 
 def _event(item: Item) -> Mapping[str, Any]:
@@ -1319,8 +1328,10 @@ def build(inbox: Mapping[str, Any], *, routing: Routing, hidden: Mapping[str, in
                            "acknowledged": sum(1 for i in members if i.acknowledged),
                            "in_top": sum(1 for i in members[:TOP_ITEMS]
                                          if i in ordered[:TOP_ITEMS])})
-    groups.sort(key=lambda g: min(ordered.index(i) for i in ordered
-                                  if i.event_type == g["event_type"]))
+    first: dict[str, int] = {}   # each type's first place in the ranking (one pass: the
+    for n, item in enumerate(ordered):   # search per group was 2 s on 1,800 items)
+        first.setdefault(item.event_type, n)
+    groups.sort(key=lambda g: first[g["event_type"]])
     hidden_by_type = _hidden(hidden, routing)
     kinds = inbox.get("kind_history") or {}
     shown = [_out(i, rank_n, kinds, routing)

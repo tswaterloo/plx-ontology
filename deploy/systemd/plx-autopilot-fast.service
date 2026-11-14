@@ -1,0 +1,36 @@
+# The autopilot's fast feed (`python3 -m operating.autopilot fast`, operating/autopilot_fast.py):
+# a Teams or mail message the capture just stored is projected on its own (the one projector,
+# a scratch store of those records) and handled over the served Postgres ontology as the live
+# feed handles it (people exclusion, replay gate and Draft, horizon, rate limit, ordered event
+# queue), so its prepared work is in My work seconds after the capture, not after the next
+# delta cycle. The same message typed later by plx-autopilot-follow is the same event, never
+# handled twice.
+#
+# Prepares only, as plx-autopilot-follow: nothing here sends, writes to a business system or
+# approves. Off at once: PLX_AUTOPILOT_OFF=1 in proactive.env, or autopilot.off beside the
+# queue. Started by plx-autopilot-fast.path (a capture stored a message: <store>.new) and
+# .timer (1 min after the last start ended, in case a signal came while a cycle ran); a start
+# with nothing new since the last cycle opens no store and exits at once.
+[Unit]
+Description=PLX Workbench autopilot fast feed (prepares work items only)
+After=postgresql.service
+
+[Service]
+Type=oneshot
+User=@PLX_USER@
+Group=@PLX_GROUP@
+WorkingDirectory=@PLX_CURRENT@
+EnvironmentFile=-@PLX_HOME@/.config/plx/proactive.env
+Environment=PATH=/data/venv/bin:/usr/local/bin:/usr/bin:/bin
+# names its Postgres sessions after the unit (ARCH T2: pg_stat_activity, slow-query log)
+Environment=PGAPPNAME=%N
+Environment=PLX_ONTOLOGY_PG=1
+Environment=PLX_AUTOPILOT_EVQ=1
+ExecStart=/data/venv/bin/python3 -m operating.autopilot fast --state-dir /data/plx-state
+Nice=5
+CPUWeight=100
+MemoryHigh=1G
+MemoryMax=2G
+MemorySwapMax=512M
+TimeoutStartSec=10min
+UMask=0077

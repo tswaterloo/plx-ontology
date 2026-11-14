@@ -1,5 +1,6 @@
 "use client";
 
+import { useReaderWords } from "@/components/view-as";
 import { useCallback, useEffect, useState } from "react";
 import { MyWorkList } from "@/components/my-work";
 import { Pending } from "@/components/ui/skeleton";
@@ -14,6 +15,7 @@ import type { MyWork } from "@/lib/types";
 // meetings and record changes. A message goes out only through its preview and your
 // confirm; an entry is a dry-run write intent until writes are granted.
 export default function MyWorkPage() {
+  const w = useReaderWords();
   const [work, setWork] = useState<MyWork | null>(null);
   const [error, setError] = useState<unknown>(null);
   const [round, setRound] = useState(0);
@@ -39,7 +41,7 @@ export default function MyWorkPage() {
             <MyWorkList work={work} />
           </>
         ) : (
-          <Pending page label="Reading the work prepared for you" />
+          <Pending page label={`Reading the work prepared for ${w.you}`} />
         )}
       </div>
     </div>

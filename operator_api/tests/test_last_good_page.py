@@ -731,6 +731,257 @@ class NeverServedCold(LastGoodPage.__base__):
         self.assertEqual(shown_objects(back), shown_objects(page))
 
 
+class FirstReadAnswersReading(LastGoodPage.__base__):
+    """Today's lists asked for by the app with no page kept for the reader (11-13 walk:
+    cold Home 38 s, the briefing 54 s, the suggestions refused busy at 61 s): the request
+    waits ``first_wait`` at most, is answered ``reading`` (nothing of the page in it) while
+    the read goes on with the background's time, and the next request is served the page
+    the read kept. Every other caller waits for the read, as before."""
+
+    def setUp(self):
+        LastGoodPage.setUp(self)
+        self.backend.first_wait = 0.2
+        self.backend._first_failed = {}
+
+    serve = LastGoodPage.serve
+    wait_over = LastGoodPage.wait_over
+
+    def ask(self, who, read):
+        """As the app's route asks (``app.first_partial``)."""
+        from operator_api.app import first_partial
+        with first_partial():
+            return self.backend._serving(who, ("late", 0, 25), read, reading=lambda: m.LateList(
+                total=0, offset=0, reading=True))
+
+    def test_a_slow_first_read_answers_reading_at_once_and_the_next_request_its_page(self):
+        from operator_api import serving
+        self.backend._inputs_of = lambda *a, **k: (("served", 1), 0)   # inputs unchanged
+        who = reader("grp-a")
+        release, budgets = threading.Event(), []
+
+        def read():
+            budgets.append(serving.READ_BUDGET.get())
+            release.wait(10)
+            return page(21)
+
+        started = time.monotonic()
+        got = self.ask(who, read)
+        self.assertLess(time.monotonic() - started, 2)
+        self.assertEqual((got.reading, got.total, got.items), (True, 0, []))
+        # asked again while the read goes on: still reading, and no second read beside it
+        self.assertTrue(self.ask(who, read).reading)
+        self.assertEqual(budgets, [serving.BACKGROUND_READ_BUDGET])   # never a request's limit
+        # never kept, so never served to anyone as a page
+        self.assertNotIn((who.key, who.mode, ("late", 0, 25)), self.backend._good)
+        release.set()
+        self.wait_over()
+        got = self.ask(who, read)
+        self.assertEqual((got.reading, got.total, got.stale_since), (False, 21, None))
+        self.assertEqual(len(budgets), 1)   # served the kept page: no read again
+        # another reader has no page of this one's: their own first read, reading
+        hold = threading.Event()
+        other = self.ask(reader("grp-b"), lambda: hold.wait(10) and page(99))
+        self.assertEqual((other.reading, other.total), (True, 0))
+        hold.set()
+        self.wait_over()
+
+    def test_a_first_read_off_the_request_waits_the_backgrounds_time_for_the_access_state(self):
+        """11-13 W7 (load 80-100): the access state not read within 3 s left most first
+        reads unkept, so the warm visit read every Today list again (21-26 s). A read
+        off the request waits BACKGROUND_READ_BUDGET times as long for it; a request's
+        own wait is unchanged."""
+        from operator_api import serving
+        waits = []
+        real = self.backend._access_result
+        self.backend._access_result = lambda future, wait: (waits.append(wait),
+                                                            real(future, wait))[1]
+        hold = threading.Event()
+        self.assertTrue(self.ask(reader("grp-a"), lambda: hold.wait(10) and page(5)).reading)
+        hold.set()
+        self.wait_over()
+        background = [w for w in waits if w > be.ACCESS_WAIT_SECONDS]
+        self.assertEqual(background, [be.ACCESS_WAIT_SECONDS * serving.BACKGROUND_READ_BUDGET] * 2)
+        waits.clear()
+        self.backend._access_now(reader("grp-a"))
+        self.assertEqual(waits, [be.ACCESS_WAIT_SECONDS])
+
+    def test_a_quick_first_read_is_the_answer(self):
+        got = self.ask(reader("grp-a"), lambda: page(5))
+        self.assertEqual((got.reading, got.total), (False, 5))
+
+    def test_every_other_caller_waits_for_the_read(self):
+        """An action's card (``_card`` reads the suggestions) or the read-ahead never gets
+        an empty page: without the route's mark the read is waited for."""
+        def slow():
+            threading.Event().wait(0.6)
+            return page(8)
+
+        got = self.backend._serving(reader("grp-a"), ("late", 0, 25), slow,
+                                    reading=lambda: m.LateList(total=0, offset=0, reading=True))
+        self.assertEqual((got.reading, got.total), (False, 8))
+        self.backend.first_wait = None   # and off unless ``serve`` set it
+        got = self.ask(reader("grp-b"), slow)
+        self.assertEqual((got.reading, got.total), (False, 8))
+
+    def test_a_first_read_that_fails_is_answered_by_its_error_not_reading_again(self):
+        who = reader("grp-a")
+        calls = []
+
+        def refused():
+            calls.append(1)
+            threading.Event().wait(0.4)
+            raise errors.UserFacing("forbidden", "Not yours.", 403)
+
+        self.assertTrue(self.ask(who, refused).reading)
+        self.wait_over()
+        with self.assertRaises(errors.UserFacing) as caught:
+            self.ask(who, refused)
+        self.assertEqual(caught.exception.code, "forbidden")
+        self.assertEqual(len(calls), 2)   # the next request read for itself
+        with self.assertRaises(TimeoutError):   # a busy refusal stands the same way
+            self.ask(reader("grp-c"), lambda: (calls.append(1), threading.Event().wait(0.4),
+                                               busy()))
+            self.wait_over()
+            self.ask(reader("grp-c"), busy)
+
+    def test_a_slow_first_read_that_keeps_nothing_is_the_next_requests_answer_once(self):
+        """A screen whose slow read ends in a page never kept (a briefing that could not
+        be read: ``unavailable``; or, on a busy server, the reader's access state
+        confirmed only once, as the 11-13 walk's polls met: 90-300 s read on the request)
+        is no "reading" loop and no second read: the reader's next request is answered
+        with that page, once, as a request reading it itself would have been; only under
+        the same inputs (no write of theirs since) and the same access state."""
+        stamp = [(("served", 1), 0)]
+        self.backend._inputs_of = lambda *a, **k: stamp[0]
+        who = reader("grp-a")
+        calls = []
+        # each read below holds until the test lets it end (over), so the request's
+        # first_wait always ends before it on a loaded machine (0.4 s sleeps raced it)
+        gate = threading.Event()
+
+        def first(who, read):
+            gate.clear()
+            return self.ask(who, read)
+
+        def over():
+            gate.set()
+            self.wait_over()
+
+        def unreadable():
+            calls.append(1)
+            gate.wait(10)
+            return m.Suggestions(status="unavailable", total=0, note="not read")
+
+        self.assertTrue(first(who, unreadable).reading)
+        over()
+        got = self.ask(who, unreadable)
+        self.assertEqual((got.reading, got.status, len(calls)), (False, "unavailable", 1))
+        # once: the next request reads again (and another reader never had it)
+        self.assertTrue(first(who, unreadable).reading)
+        self.assertTrue(first(reader("grp-b"), unreadable).reading)
+        over()
+
+        def slow(total):
+            return lambda: (gate.wait(10), page(total))[1]
+
+        real = self.backend._access_now
+
+        def before_unconfirmed():
+            """The reader's access state not read in time before the read, read after."""
+            calls = []
+            return lambda *a, **k: None if not calls.append(1) and len(calls) == 1 \
+                else real(*a, **k)
+
+        # the access state not confirmed before the read, only after: not kept, handed
+        self.backend._access_now = before_unconfirmed()
+        self.assertTrue(first(reader("grp-c"), slow(31)).reading)
+        over()
+        self.backend._access_now = real
+        self.assertNotIn((reader("grp-c").key, "dev", ("late", 0, 25)), self.backend._good)
+        got = self.ask(reader("grp-c"), busy)
+        self.assertEqual((got.reading, got.total), (False, 31))
+        # never confirmed at all: nothing handed, the next request reads for itself
+        self.backend._access_now = lambda *a, **k: None
+        self.assertTrue(first(reader("grp-e"), slow(51)).reading)
+        over()
+        self.backend._access_now = real
+        with self.assertRaises(TimeoutError):
+            self.ask(reader("grp-e"), busy)
+        # a write of the reader's since the read (their inputs moved): not handed
+        self.backend._access_now = before_unconfirmed()
+        self.assertTrue(first(reader("grp-f"), slow(61)).reading)
+        over()
+        self.backend._access_now = real
+        stamp[0] = (("served", 1), 1)
+        self.assertTrue(first(reader("grp-f"), slow(62)).reading)
+        over()
+        # the access state moved since the read (a marking revoked): not handed
+        self.backend._access_now = before_unconfirmed()
+        self.assertTrue(first(reader("grp-g"), slow(71)).reading)
+        over()
+        self.backend._access_now = real
+        self.reads.policy = policy()
+        self.assertTrue(first(reader("grp-g"), slow(72)).reading)
+        over()
+        # past FIRST_HANDOFF_SECONDS it is gone
+        self.backend._access_now = before_unconfirmed()
+        self.assertTrue(first(reader("grp-d"), slow(41)).reading)
+        over()
+        self.backend._access_now = real
+        with mock.patch.object(be, "FIRST_HANDOFF_SECONDS", -1):
+            self.assertTrue(first(reader("grp-d"), slow(42)).reading)
+        over()
+
+    def test_each_today_screen_reading_shows_nothing_of_the_reader_data(self):
+        """The five Today lists' ``reading`` answers: empty lists, zero counts, no source
+        and no finding; Home only the reader's own name, the examples and their asked
+        questions. Each a valid page of its screen."""
+        backend = be.WorkspaceBackend.__new__(be.WorkspaceBackend)
+        backend._lock, backend._recent = threading.RLock(), {}
+        backend.warm = lambda *a, **k: False
+        backend._screen_inputs = lambda **k: None
+        backend._serving = lambda who, name, read, inputs_of=None, reading=None: reading()
+        who = reader("grp-a")
+        pages = [backend.home(who), backend.late_list(who, offset=25, limit=25),
+                 backend.briefing(who), backend.suggestions(who), backend.reply_triage(who)]
+        others = [backend.approvals_queue(who), backend.upcoming_meetings(who),
+                  backend.rd_board(who)]
+        for got in others:   # the slower other screens: empty, zero, marked reading
+            dumped = got.model_dump(mode="json")
+            self.assertIs(dumped["reading"], True, type(got).__name__)
+            self.assertFalse([k for k, v in dumped.items()
+                              if isinstance(v, list) and v or k in ("total", "idle") and v])
+            type(got).model_validate(dumped)
+        for got in pages:
+            dumped = got.model_dump(mode="json")
+            self.assertIs(dumped["reading"], True, type(got).__name__)
+            type(got).model_validate(dumped)
+        home, late, brief, sugg, replies = pages
+        self.assertEqual((home.greeting_name, home.needs_attention.status,
+                          home.needs_attention.late_pos, home.needs_attention.late_total,
+                          home.freshness.sources), ("Test", "unavailable", [], None, []))
+        self.assertEqual((late.total, late.items, late.offset, late.more), (0, [], 25, False))
+        self.assertEqual((brief.status, brief.count, brief.items, brief.groups),
+                         ("unavailable", 0, [], []))
+        self.assertEqual((sugg.status, sugg.total, sugg.items), ("unavailable", 0, []))
+        self.assertEqual((replies.total, replies.lines), (0, []))
+        # a record's page while its first read goes on: the id asked for and nothing else,
+        # neither remembered as opened (the read-ahead) nor journalled
+        backend._pages_seen, opened = {}, []
+        backend.remember_reader = lambda who: opened.append("remembered")
+        backend._labelled = lambda who, page, route: opened.append("journalled") or page
+        rec = backend.object_page(who, "Customer", "Customer:portal.x:{\"id\":\"C1\"}")
+        self.assertEqual((rec.reading, rec.label, rec.summary, rec.facts, rec.timeline,
+                          rec.linked, rec.status.state, rec.complete, rec.customer),
+                         (True, "", "", [], [], [], "reading", False, None))
+        self.assertEqual((backend._pages_seen, opened), ({}, []))
+        m.ObjectPage.model_validate(rec.model_dump(mode="json"))
+        # a screen read that never comes back says "reading" is no last good page
+        self.backend._keep_good(("k",), m.LateList(total=0, offset=0, reading=True),
+                                ("s",), ("s",))
+        self.assertNotIn(("k",), self.backend._good)
+
+
 class RewarmOnDeltaLayer(unittest.TestCase):
     def test_a_new_delta_layer_pointer_reads_the_known_readers_ahead(self):
         import tempfile
@@ -760,6 +1011,33 @@ class RewarmOnDeltaLayer(unittest.TestCase):
             stop.set()
             watcher.join(2)
         self.assertEqual(warmed, [1])
+
+
+    def test_a_cycle_written_to_postgres_reads_the_known_readers_ahead(self):
+        """Over Postgres a delta cycle moves the load state, not a file: the known
+        readers' Today is read again then (not only every REWARM_SECONDS), at most once
+        per REWARM_FLOOR_SECONDS however often it moves."""
+        backend = be.WorkspaceBackend.__new__(be.WorkspaceBackend)
+        backend.store_path = None
+        stamp, warmed, clock = [(3, "t1")], [], [0.0]
+        backend._pg_load_stamp = lambda: stamp[0]
+        backend.warm_known = lambda: warmed.append(stamp[0]) or 0
+        # each poll: (the time then, the load state then); None: stopped
+        plan = [(10, (3, "t1")), (20, (3, "t2")), (30, (4, "t3")), (100, (4, "t3")),
+                (145, (4, "t3")), (150, (4, "t3"))]
+
+        class Polls:
+            def wait(self, seconds):
+                if not plan:
+                    return True
+                clock[0], stamp[0] = plan.pop(0)
+                return False
+
+        with mock.patch.object(be, "time", SimpleNamespace(monotonic=lambda: clock[0])), \
+                mock.patch.object(be, "REWARM_FLOOR_SECONDS", 120):
+            backend.watch_generation(Polls(), rewarm_seconds=3600)
+        # t2 at once; t3 (moved again 10 s later) once the floor has passed, once
+        self.assertEqual(warmed, [(3, "t2"), (4, "t3")])
 
 
 class PlainWordsAndBusinessDay(unittest.TestCase):

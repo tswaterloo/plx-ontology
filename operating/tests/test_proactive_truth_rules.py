@@ -20,8 +20,18 @@ FM = "portal.fm_generated_purchase_order"
 
 class DateProvenanceTest(Engine):
     def test_a_bulk_default_day_or_the_orders_own_day_dates_nothing(self):
+        """Since BIZ-007 (5e47bd6a73) a bulk day dates nothing only when a system computed
+        it (every holder: its own order day + 1); an expected date on the order's own day
+        is judged, at low priority, with its doubt."""
         w = World()
-        bulk = [po(w, "Pending", "2026-07-14", binding=PORTAL) for _ in range(12)]
+        bulk = []
+        for _ in range(12):
+            order = w.obj("PurchaseOrder", {"status": "Pending", "expected_date": "2026-07-14",
+                                            "order_date": "2026-07-13"}, binding=PORTAL)
+            w.link("PurchaseOrderLine.line_of", w.obj("PurchaseOrderLine", {
+                "ordered_quantity": ("10", "ea"),
+                "received_quantity": ("0", "ea", "received")}), order)
+            bulk.append(order)
         own = w.obj("PurchaseOrder", {"status": "Pending", "expected_date": "2026-09-15",
                                       "order_date": "2026-09-15"}, binding=PORTAL)
         w.link("PurchaseOrderLine.line_of", w.obj("PurchaseOrderLine", {
@@ -29,9 +39,12 @@ class DateProvenanceTest(Engine):
             own)
         real = po(w, "Pending", "2026-10-01", binding=PORTAL)
         self.run_engine(w)
-        kinds = {g["object_id"]: g["kind"] for g in self.read(limit=1000)["gaps"]}
+        gaps = {g["object_id"]: g for g in self.read(limit=1000)["gaps"]}
+        kinds = {oid: g["kind"] for oid, g in gaps.items()}
         self.assertEqual({kinds[b] for b in bulk}, {pe.UNDATED_KIND})
-        self.assertEqual(kinds[own], pe.UNDATED_KIND)
+        self.assertEqual(kinds[own], "unconfirmed_po")
+        self.assertEqual(gaps[own]["follow_up"]["priority"], "low")
+        self.assertIn("the day the order was placed", gaps[own]["summary"])
         self.assertEqual(kinds[real], "unconfirmed_po")
 
 

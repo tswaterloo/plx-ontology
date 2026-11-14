@@ -20,6 +20,8 @@ UnsetEnvironment=AZURE_CLIENT_SECRET BC_CLIENT_SECRET MICROSOFT_GRAPH_CLIENT_SEC
 EnvironmentFile=-/etc/plx/workbench-api.env
 EnvironmentFile=-/etc/plx/ops-page.env
 Environment=PATH=/data/venv/bin:/usr/local/bin:/usr/bin:/bin
+# names its Postgres sessions after the unit (ARCH T2: pg_stat_activity, slow-query log)
+Environment=PGAPPNAME=%N
 ExecStart=/data/venv/bin/python3 -m operating.ops_alarms memory --state-dir ${PLX_INGEST_STATE}
 # runs when memory is short: small, but never the one the kernel picks first
 Nice=5

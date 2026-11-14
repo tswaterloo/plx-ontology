@@ -647,6 +647,12 @@ def main(argv: Sequence[str] | None = None, *, fixtures: Any = None,
         print(f"Proactive engine: {found['state']}, {found.get('gaps_found', 0)} gaps")
     elif ontology_path is None and (state_dir / ONTOLOGY_FILE).is_file():
         ontology_path = state_dir / ONTOLOGY_FILE
+    elif ontology_path is None:
+        from operating.pg import ontology_reader
+        if ontology_reader.pg_only():
+            # Postgres is the only store: the path names the served generation, no file
+            # need be there (ontology_reader.serves; its store_meta is read from Postgres)
+            ontology_path = state_dir / ONTOLOGY_FILE
     if args.mail_capture_dir is not None or args.sharepoint_capture_dir is not None:
         # Case citations of captured mail and SharePoint resolve through the gates
         # plx.read reads the captures with, over the store it reads (as the MCP host).

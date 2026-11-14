@@ -92,6 +92,22 @@ describe("dates, money and words a reader sees", () => {
     expect(fieldValue("row.requestedReceiptDate", "0001-01-01")).toBe("Not set");
   });
 
+  it("says every time one way, in Eastern: day first, AM/PM, ET", async () => {
+    const { formatDateTime, eastern } = await import("./format");
+    const now = new Date("2026-11-13T15:00:00Z");
+    expect(formatDateTime("2026-11-13T07:52:00Z", now)).toBe("13 Nov, 2:52 AM ET");
+    expect(formatDateTime("2026-06-24T16:00:00Z", now)).toBe("24 Jun, 12:00 PM ET");
+    // the status lines drop the day when it is today, in Eastern (03:30 UTC is still the 12th there)
+    expect(eastern("2026-11-13T14:05:00Z", now)).toBe("9:05 AM ET");
+    expect(eastern("2026-11-13T03:30:00Z", now)).toBe("12 Nov, 10:30 PM ET");
+    expect(eastern("not a time", now)).toBe("");
+  });
+
+  it("gives a reliability problem its headline in words", async () => {
+    const { opsHeadline } = await import("./format");
+    expect(opsHeadline("sharepoint_lists capture last refreshed 12 days ago (target 3 h); stale since 1 Nov")).toBe("sharepoint lists capture last refreshed 12 days ago (target 3 h)");
+  });
+
   it("always says the currency, whatever its spelling", async () => {
     const { currencyCode } = await import("./format");
     expect(formatMoney("9680", "USD")).toBe("$9,680.00 USD");
@@ -106,6 +122,7 @@ describe("dates, money and words a reader sees", () => {
     expect(fieldLabel("bc_fully_received")).toBe("Fully received");
     expect(fieldLabel("erp_code")).toBe("Code");
     expect(fieldLabel("row.buyFromCity")).toBe("Buy from city");
+    expect(fieldLabel("qc_status")).toBe("QC status");
     expect(fieldLabel("custom_fields.fmPoNumber")).toBe("FM PO number");
     expect(fieldLabel("po number")).toBe("PO number");
     for (const k of ["row.id", "row.currencyId", "row.change_key", "row.content_sha256", "row.authentication_results", "external_id"]) expect(isInternalField(k)).toBe(true);

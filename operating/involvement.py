@@ -39,8 +39,13 @@ import re
 import time
 from typing import Any, Callable, Iterable, Mapping, Sequence
 
+from .call_limits import facts_cut
+
 MAX_OBJECTS = 120        # records checked per briefing (in its ranked order)
 BUDGET_SECONDS = 4.0     # time for every check of one briefing
+# An answer that says the store could not be read (a fact read cut at the budget, a
+# store gone, a call cut at its limit): the record is not checked, never "not yours".
+UNREAD_CODES = frozenset({"store_unavailable", "tool_timed_out", "rebuild_required"})
 MAIL_FROM = "Email"      # the message type (``ontology.schema.MENTION_LINK_RULE['from']``)
 MAILBOX_PROPERTY = "mailbox"   # its mailbox owner's object id (schema: documents.json)
 MENTION_PREFIX = "mentions_"
@@ -159,16 +164,32 @@ def derive(call: Call, actor: Any, schema: Any, identity: Identity,
     mailboxes = sorted(identity.object_ids) if paths.mailbox else []
     corresponds: dict[str, str | None] = {}   # counterpart id -> a message id, or None
 
+    unread: list[bool] = [False]   # a check of the record under way could not be read
+
     def over() -> bool:
         return clock() - start >= budget_seconds
+
+    def asked(name: str, arguments: Mapping[str, Any]) -> Any:
+        """``call``, a failure noted: a raise, or a store that could not be read (a fact
+        read cut at the budget, ``call_limits.facts_cut``) leaves the record not
+        checked, never "not yours"."""
+        try:
+            out = call(name, arguments, actor)
+        except Exception:  # noqa: BLE001 - counted as not checked
+            unread[0] = True
+            return None
+        error = out.get("error") if isinstance(out, Mapping) else None
+        if not isinstance(out, Mapping) or (
+                isinstance(error, Mapping) and error.get("code") in UNREAD_CODES):
+            unread[0] = True
+        return out
 
     def mail_around(root: str, link: str) -> str | None:
         """A message in the reader's own mailbox one reverse hop from ``root``."""
         for box in mailboxes:
-            out = call("plx.around", {"from": root, "limit": 1, "path": [
+            out = asked("plx.around", {"from": root, "limit": 1, "path": [
                 {"link_type": link, "direction": "reverse"}],
-                "filters": [{"property": MAILBOX_PROPERTY, "op": "eq", "value": box}]},
-                actor)
+                "filters": [{"property": MAILBOX_PROPERTY, "op": "eq", "value": box}]})
             if not isinstance(out, Mapping) or "error" in out:
                 continue
             for item in out.get("objects") or ():
@@ -177,12 +198,9 @@ def derive(call: Call, actor: Any, schema: Any, identity: Identity,
                     return oid
         return None
 
-    for n, oid in enumerate(seen):
-        if n >= max_objects or over():
-            found.not_checked = len(seen) - n
-            break
+    def check(oid: str) -> list[dict[str, str]]:
         reasons: list[dict[str, str]] = []
-        record = call("plx.object", {"object_id": oid}, actor)
+        record = asked("plx.object", {"object_id": oid})
         if isinstance(record, Mapping) and "error" not in record:
             for value in record.get("values") or ():
                 if isinstance(value, Mapping) and identity.names(value.get("value")):
@@ -194,8 +212,8 @@ def derive(call: Call, actor: Any, schema: Any, identity: Identity,
                 reasons.append({"reason": "your_mail", "via": message})
         if mailboxes:
             for link in paths.counterparts.get(kind, ()):
-                out = call("plx.around", {"from": oid, "limit": 5, "path": [
-                    {"link_type": link, "direction": "forward"}]}, actor)
+                out = asked("plx.around", {"from": oid, "limit": 5, "path": [
+                    {"link_type": link, "direction": "forward"}]})
                 if not isinstance(out, Mapping) or "error" in out:
                     continue
                 for item in out.get("objects") or ():
@@ -205,12 +223,29 @@ def derive(call: Call, actor: Any, schema: Any, identity: Identity,
                     if sender is None:
                         continue
                     if other not in corresponds:
-                        corresponds[other] = mail_around(other, sender)
-                    if corresponds[other]:
+                        before = unread[0]
+                        unread[0] = False
+                        message = mail_around(other, sender)
+                        if not unread[0]:   # an unread answer is asked again, not kept
+                            corresponds[other] = message
+                        unread[0] = unread[0] or before
+                    if corresponds.get(other):
                         reasons.append({"reason": "you_correspond", "via": other})
-        found.checked += 1
-        if reasons:
-            found.by_object[oid] = reasons
+        return reasons
+
+    with facts_cut(time.monotonic() + max(0.0, budget_seconds - (clock() - start))):
+        for n, oid in enumerate(seen):
+            if n >= max_objects or over():
+                found.not_checked += len(seen) - n
+                break
+            unread[0] = False
+            reasons = check(oid)
+            if reasons:
+                found.by_object[oid] = reasons   # a reason read is the reader's
+            if unread[0] and not reasons:
+                found.not_checked += 1
+            else:
+                found.checked += 1
     return found
 
 

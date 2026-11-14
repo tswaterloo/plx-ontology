@@ -6,7 +6,7 @@ import { useCallback, useEffect, useState } from "react";
 import { getWorkLog, getWorkThread, organiseWorkThread } from "@/lib/api";
 import { cn } from "@/lib/cn";
 import { plainError } from "@/lib/errors";
-import { formatDateTime, objectHref, recordLabel, typeLabel } from "@/lib/format";
+import { clockET, formatDateTime, objectHref, recordLabel, typeLabel } from "@/lib/format";
 import type { WorkLogEvent, WorkLogKind } from "@/lib/types";
 
 const TZ = "America/Toronto";
@@ -97,7 +97,7 @@ export function recordName(r: { object_id: string; type?: string | null; label?:
   // a key with a structured tail ({"no": ...}) names nothing a person reads: its kind says what it is
   return tail && /^[\w .-]{1,40}$/.test(tail) ? recordLabel(type, tail) : typeLabel(type);
 }
-const timeOf = (iso: string) => new Date(iso).toLocaleTimeString("en-CA", { hour: "numeric", minute: "2-digit", timeZone: TZ });
+const timeOf = (iso: string) => clockET(new Date(iso));
 
 /** A sent message's follow-through, in words. */
 export function LoopLine({ e }: { e: WorkLogEvent }) {

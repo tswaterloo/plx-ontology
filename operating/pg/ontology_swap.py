@@ -70,7 +70,17 @@ def swap(dsn: str, *, lock_timeout_ms: int = 60_000) -> dict[str, Any]:
         cur.execute(f"DELETE FROM {NEXT}.load_state WHERE name LIKE 'indexes:%%'")
         for table in TABLES:
             cur.execute(f"DROP TABLE IF EXISTS ontology.{table} CASCADE")
+            # a partitioned table's partitions (``link_partitions``) move with it, else
+            # dropping the next schema below would drop them
+            cur.execute("SELECT c.relname FROM pg_inherits i JOIN pg_class c ON c.oid = "
+                        "i.inhrelid JOIN pg_namespace n ON n.oid = c.relnamespace WHERE "
+                        "i.inhparent = %s::regclass AND n.nspname = %s",
+                        (f"{NEXT}.{table}", NEXT))
+            parts = [r[0] for r in cur.fetchall()]
             cur.execute(f"ALTER TABLE {NEXT}.{table} SET SCHEMA ontology")
+            for part in parts:
+                cur.execute(f"DROP TABLE IF EXISTS ontology.{part} CASCADE")
+                cur.execute(f'ALTER TABLE {NEXT}."{part}" SET SCHEMA ontology')
         for sequence in sequences:
             cur.execute(f"DROP SEQUENCE IF EXISTS ontology.{sequence}")
             cur.execute(f"ALTER SEQUENCE {NEXT}.{sequence} SET SCHEMA ontology")

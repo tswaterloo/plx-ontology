@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { ask, getObject, logout, getObjectSection, getSource, mergeSection, setTokenProvider } from "./api";
+import { ask, getLateList, getObject, getSuggestions, logout, getObjectSection, getSource, mergeSection, READING_MOST_MS, READING_POLL_MS, setTokenProvider } from "./api";
 import { ApiError } from "./errors";
 import type { AskEvent, ObjectPage, ObjectSection } from "./types";
 
@@ -152,5 +152,34 @@ describe("logout (WEB-014)", () => {
     await expect(logout()).resolves.toBeUndefined();
     status(200);
     await expect(logout()).resolves.toBeUndefined();
+  });
+});
+
+describe("Today lists still being read", () => {
+  afterEach(() => vi.useRealTimers());
+
+  it("asks again until the page is there and never hands back the empty placeholder", async () => {
+    vi.useFakeTimers();
+    const answers = [
+      { status: "unavailable", total: 0, items: [], reading: true },
+      { status: "unavailable", total: 0, items: [], reading: true },
+      { status: "read", total: 2, items: [{ id: "a" }, { id: "b" }] },
+    ];
+    const fetch = vi.fn(async () => new Response(JSON.stringify(answers.shift()), { status: 200 }));
+    vi.stubGlobal("fetch", fetch);
+    const got = getSuggestions();
+    await vi.advanceTimersByTimeAsync(READING_POLL_MS * 3);
+    await expect(got).resolves.toMatchObject({ status: "read", total: 2 });
+    expect(fetch).toHaveBeenCalledTimes(3);
+  });
+
+  it("still reading after the most it waits: the calm busy notice", async () => {
+    vi.useFakeTimers();
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({ total: 0, offset: 0, items: [], reading: true }), { status: 200 })));
+    const got = getLateList(0).catch((e) => e);
+    await vi.advanceTimersByTimeAsync(READING_MOST_MS + READING_POLL_MS * 2);
+    const err = await got;
+    expect(err).toBeInstanceOf(ApiError);
+    expect((err as ApiError).code).toBe("busy");
   });
 });

@@ -22,6 +22,7 @@ class _Versions(unittest.TestCase):
         ds._SERVED.clear()
         self.addCleanup(ds.OVERRIDES.clear)
         self.addCleanup(ds._SERVED.clear)
+        self.addCleanup(ds._SERVING.clear)
         self.state = Path(tempfile.mkdtemp(prefix="derived-"))
         (self.state / "raw-money-profile.json").write_text(json.dumps(
             {"derived_code": {"code": "new-money-profile", "at": "2026-11-06T09:00:00Z"}}))
@@ -97,6 +98,40 @@ class StatusTest(_Versions):
         shown = derived_code_status(self.state)
         self.assertEqual(shown.stale, ["truth-check"])
         self.assertEqual(shown.titles["truth-check"], "Truth-check report")
+
+    def test_a_slow_status_never_holds_the_page_and_is_read_once(self) -> None:
+        """The status read (minutes of parsing on a cold process) runs once, off the
+        pages asking at once: each waits ``SERVED_WAIT`` and shows it unknown
+        (``status_computing``, never "all current"), then every later page the status
+        read, older code named."""
+        import threading
+        import time as _time
+        self.report("old-code")
+        release = threading.Event()
+        reads: list[int] = []
+        real = ds.status
+
+        def slow(state_dir):
+            reads.append(1)
+            release.wait(30)
+            return real(state_dir)
+        got: list = []
+        with mock.patch.object(ds, "status", side_effect=slow), \
+                mock.patch.object(ds, "SERVED_WAIT", 0.2):
+            started = _time.monotonic()
+            asking = [threading.Thread(target=lambda: got.append(ds.served(self.state)))
+                      for _ in range(4)]
+            for t in asking:
+                t.start()
+            for t in asking:
+                t.join(10)
+            self.assertLess(_time.monotonic() - started, 2.0)
+            self.assertEqual([g["unknown"] for g in got], [["status_computing"]] * 4)
+            self.assertEqual(got[0]["stale"], [])
+            release.set()
+            ds._SERVING[str(self.state)].join(10)
+            self.assertEqual(ds.served(self.state)["stale"], ["truth-check"])
+        self.assertEqual(len(reads), 1)
 
 
 class InboxCodeTest(_Versions):
