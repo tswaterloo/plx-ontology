@@ -30,9 +30,7 @@ Changed:
 - A price you may not see counts as a withheld line in purchase price history and never enters a last price or an average.
 - The Trust page's lag is the age of the newest capture.
 - Manufacturing zeros are gaps, not values: a 0 or blank assembly order quantity or lot number is left empty, a receipt lot of N/A, NONE or a dash creates no lot, a Business Central unit cost of 0 falls back to the Portal or FileMaker average cost, and a Sage sales order's required date is its expected ship date.
-<!-- SLOT RN-COLLAPSE: fill at 3C APPLIED -->
-- [to fill at 3C APPLIED: repeated mentions of one record in one document stored once]
-<!-- /SLOT RN-COLLAPSE -->
+- A record named several times in one document is now stored as one mention link that keeps every occurrence: 1,606,585 repeated rows were folded into 505,652, and answers and links are unchanged.
 
 Fixed:
 - Search listings that come in pages no longer stop after the first page.
@@ -45,7 +43,6 @@ Must keep working:
 
 Known gaps:
 - Meeting transcripts, Amazon, carriers and several mailboxes still wait on access. Desktop builds are unsigned until the signing certificates exist.
-<!-- SLOT RN-ROUTER: fill at the CAP-L180 router eval decision (Changed line, or drop) -->
 
 ## v0.19 (2026-11-14)
 
