@@ -24,6 +24,13 @@ Open, then Open again. You only do this once.
   anything an autopilot has prepared for you.
 - **Ask** is the box at the top of every page. Type a question the way you would ask a
   colleague, or ask it to do something ("draft a reply to this supplier").
+- **Yours**, in the sidebar, keeps your Memory, your Templates and your logs one click
+  away from every section.
+- **Watching** shows alerts, late POs and quality as tabs on one page.
+- **Record pages** open from any answer or list: a customer, order, product, lot or
+  supplier with everything linked to it. A product's page lists its formula line by line,
+  down to the raw materials and their suppliers. If a linked document is one you may not
+  open, the page counts it and does not name it.
 - **Help** has a short guide for your role, with example questions and a checklist for
   your first week. Pick your role the first time you open it.
 
@@ -43,14 +50,18 @@ When you ask the Workbench to do something, or an autopilot prepares work for yo
 get a draft. Nothing is sent or changed yet.
 
 1. Open the draft. It shows exactly who it goes to and what it says or changes.
-2. Edit it if you want.
+2. Edit it if you want. To reuse a reply or document you send often, save it as a
+   template from the draft, and your next draft of that kind starts from it.
 3. Confirm it. Only then does it happen, and it is written down in the work log.
 
 ## 5. Autopilots
 
 An autopilot prepares routine work for your role, such as a supplier's new ship date or
 a customer purchase order. It is off until you turn it on for yourself on the Autopilot
-page. While it is in Draft, it only prepares and you decide every time. Work about money,
+page. While it is in Draft, it only prepares and you decide every time. Its drafts follow
+your Memory (your greeting and sign-off, phrases you never use, keeping it short) and your
+saved template, and each draft lists which of them shaped it, so you can correct one that
+is wrong. Work about money,
 prices, credit, permissions or new customers and suppliers always waits for a person.
 
 ## 6. What it will not do
