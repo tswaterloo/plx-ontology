@@ -15,6 +15,40 @@ Must keep working:
 Known gaps:
 ```
 
+## v0.20 (2026-11-15)
+
+Added:
+- **Formula on product pages**: each product lists its formula line by line, down to the raw materials and who supplies them, each line citing the formula sheet.
+- **Yours in the sidebar**: memory, templates and your logs are one click away from every section. Watching holds alerts, late purchase orders and quality as tabs.
+- **Autopilot drafts follow you**: your greeting, sign-off, phrases you never use and your saved template, and each draft lists only the entries that changed it.
+- Business Central Production changes from an autopilot need both owner switches, a fresh company check and a named person's accept of the exact item; unattended runs stay practice runs.
+
+Changed:
+- Updates switch to a warm copy of the app server, so an update or restart never sends anyone to a server that is still starting.
+- Record pages count linked business records you may not open, without naming them, over every page of links; documents the people exclusion holds back are never counted.
+- A line on an unnamed receipt is titled by its item and lot ("Maple syrup on a receipt, lot 043681").
+- A price you may not see counts as a withheld line in purchase price history and never enters a last price or an average.
+- The Trust page's lag is the age of the newest capture.
+<!-- SLOT RN-T4: fill at train 4 APPLIED -->
+- [to fill at train 4 APPLIED: assembly order quantities, lot numbers, product cost and sales order required dates]
+<!-- /SLOT RN-T4 -->
+<!-- SLOT RN-COLLAPSE: fill at 3C APPLIED -->
+- [to fill at 3C APPLIED: repeated mentions of one record in one document stored once]
+<!-- /SLOT RN-COLLAPSE -->
+
+Fixed:
+- Search listings that come in pages no longer stop after the first page.
+- Records changed during the storage moves are brought up to date by the regular update cycle.
+- The daily people-exclusion clean-up runs beside capture without stopping it.
+
+Must keep working:
+- Memory you forget stays forgotten; a template's placeholders are filled from records with their sources; create mode never writes without a confirm (v0.19).
+- Ask's asking back and the first question after a restart (v0.18); mail the exclusion cannot decide stays held back.
+
+Known gaps:
+- Meeting transcripts, Amazon, carriers and several mailboxes still wait on access. Desktop builds are unsigned until the signing certificates exist.
+<!-- SLOT RN-ROUTER: fill at the CAP-L180 router eval decision (Changed line, or drop) -->
+
 ## v0.19 (2026-11-14)
 
 Added:
