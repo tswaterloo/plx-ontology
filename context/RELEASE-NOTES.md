@@ -45,6 +45,7 @@ Must keep working:
 
 Known gaps:
 - Meeting transcripts, Amazon, carriers and several mailboxes still wait on access. Desktop builds are unsigned until the signing certificates exist.
+<!-- SLOT RN-ROUTER: fill at the CAP-L180 router eval decision (Changed line, or drop) -->
 
 ## v0.19 (2026-11-14)
 
