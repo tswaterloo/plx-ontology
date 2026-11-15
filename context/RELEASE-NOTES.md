@@ -29,9 +29,7 @@ Changed:
 - A line on an unnamed receipt is titled by its item and lot ("Maple syrup on a receipt, lot 043681").
 - A price you may not see counts as a withheld line in purchase price history and never enters a last price or an average.
 - The Trust page's lag is the age of the newest capture.
-<!-- SLOT RN-T4: fill at train 4 APPLIED -->
-- [to fill at train 4 APPLIED: assembly order quantities, lot numbers, product cost and sales order required dates]
-<!-- /SLOT RN-T4 -->
+- Manufacturing zeros are gaps, not values: a 0 or blank assembly order quantity or lot number is left empty, a receipt lot of N/A, NONE or a dash creates no lot, a Business Central unit cost of 0 falls back to the Portal or FileMaker average cost, and a Sage sales order's required date is its expected ship date.
 <!-- SLOT RN-COLLAPSE: fill at 3C APPLIED -->
 - [to fill at 3C APPLIED: repeated mentions of one record in one document stored once]
 <!-- /SLOT RN-COLLAPSE -->
@@ -47,7 +45,6 @@ Must keep working:
 
 Known gaps:
 - Meeting transcripts, Amazon, carriers and several mailboxes still wait on access. Desktop builds are unsigned until the signing certificates exist.
-<!-- SLOT RN-ROUTER: fill at the CAP-L180 router eval decision (Changed line, or drop) -->
 
 ## v0.19 (2026-11-14)
 
