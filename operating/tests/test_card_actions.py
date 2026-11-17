@@ -6,6 +6,7 @@ No network: every send goes to an injected fake. Evidence: ``injected-transport`
 from __future__ import annotations
 
 import base64
+import hashlib
 from datetime import date, datetime, timedelta, timezone
 import json
 from pathlib import Path
@@ -155,6 +156,161 @@ class SendShape(unittest.TestCase):
             self.assertEqual(message.get("subject"), sent, subject)
 
 
+FILE = b"PK\x03\x04 the filled questionnaire"
+UPLOAD = {"upload_id": "up_1", "name": "Questionnaire (filled).xlsx", "kind": "xlsx",
+          "size": len(FILE), "digest": hashlib.sha256(FILE).hexdigest(), "people": [],
+          "data": FILE}
+
+
+def filed(**over) -> dict:
+    found = card()
+    found["attachments"] = ["up_1"]
+    return {**found, **over}
+
+
+class Attachments(unittest.TestCase):
+    """A filled form sent back (AUDIT4-06): the card's file goes with the message only as the
+    reader's own kept file, re-hashed at confirm, in Graph's exact fileAttachment shape."""
+
+    def send(self, kind="send_email", upload=None, edits=None, d=None):
+        d, graph = d or desk()
+        row = dict(UPLOAD if upload is None else upload)
+        c = ctx(attachment=lambda uid: row if uid == row["upload_id"] else None)
+        found = d.preview(filed(), kind, edits, c)
+        if found["problems"]:
+            return found, None, graph, d
+        done = d.confirm(filed(), kind, edits, c, confirmed=True, idempotency_key="a" * 20,
+                         shown_hash=found["payload_hash"])
+        return found, done, graph, d
+
+    def test_the_file_goes_with_a_new_email_and_a_reply_in_graphs_exact_shape(self):
+        for kind in ("send_email", "reply_in_thread"):
+            found, done, graph, d = self.send(kind)
+            self.assertEqual(done["status"], "sent", kind)
+            [(_url, _bearer, body)] = graph.calls
+            self.assertEqual(body["message"]["attachments"], [{
+                "@odata.type": "#microsoft.graph.fileAttachment",
+                "name": "Questionnaire (filled).xlsx",
+                "contentType": "application/vnd.openxmlformats-officedocument."
+                               "spreadsheetml.sheet",
+                "contentBytes": base64.b64encode(FILE).decode()}], kind)
+            # the preview and the result name the file and its size, never its bytes
+            shown = found["request"]["body"]["message"]["attachments"]
+            self.assertEqual([("contentBytes" in a, a["size"]) for a in shown],
+                             [(False, len(FILE))])
+            self.assertNotIn(base64.b64encode(FILE).decode(), json.dumps(done))
+            row = d.journal.rows()[-1]
+            self.assertEqual(row["attachments"], [{"name": "Questionnaire (filled).xlsx",
+                                                   "size": len(FILE),
+                                                   "sha256": UPLOAD["digest"]}])
+            self.assertNotIn(base64.b64encode(FILE).decode(), json.dumps(d.journal.rows()))
+
+    def test_taking_the_file_off_changes_the_hash_and_a_forward_or_note_carries_none(self):
+        on, _, _, _ = self.send()
+        off, done, graph, _ = self.send(edits={"attachments": []})
+        self.assertNotEqual(on["payload_hash"], off["payload_hash"])
+        self.assertNotIn("attachments", graph.calls[0][2]["message"])
+        for kind in ("forward", "teams_message"):
+            with self.assertRaises(ca.ActionRefused):
+                self.send(kind, edits={"attachments": ["up_1"]})
+        with self.assertRaises(ValueError):
+            from integrations.graph_send import request_for
+            request_for("forward", VINCE, {"message_id": "m", "body": "x", "to": [],
+                                           "attachments": [{"name": "a", "content": b"x"}]})
+
+    def test_a_file_not_the_readers_changed_too_big_or_naming_an_excluded_person_is_refused(
+            self):
+        cases = [
+            ({**UPLOAD, "upload_id": "up_2"}, "could not be read as yours"),
+            ({**UPLOAD, "data": FILE + b"!"}, "changed since it was prepared"),
+            ({**UPLOAD, "kind": "html"}, "is not one the Workbench sends"),
+            ({**UPLOAD, "name": "../evil.xlsx"}, "is not one the Workbench sends"),
+            ({**UPLOAD, "people": ["hidden@plx.example"]}, "names someone whose data"),
+            ({**UPLOAD, "people": ["nobody@plx.example"]}, "could not be checked"),
+        ]
+        big = b"x" * (ca.MAX_ATTACHMENT_BYTES + 1)
+        cases.append(({**UPLOAD, "data": big, "size": len(big),
+                       "digest": hashlib.sha256(big).hexdigest()}, "at most"))
+        for upload, said in cases:
+            found, done, graph, _ = self.send(upload=upload)
+            self.assertIn(said, " ".join(found["problems"]), said)
+            self.assertIsNone(done)
+            self.assertEqual(graph.calls, [])
+        # an edit adds no other file
+        found, _, _, _ = self.send(edits={"attachments": [{"upload_id": "up_9"}]})
+        self.assertIn("Only the file prepared", " ".join(found["problems"]))
+        # the people exclusion unavailable: refused for everyone
+        d, graph = desk()
+        c = ctx(exclusion=PeopleExclusion(unavailable="excluded_people_oids_absent"),
+                attachment=lambda uid: UPLOAD)
+        self.assertTrue(d.preview(filed(), "send_email", None, c)["problems"])
+
+    def test_the_file_changed_between_preview_and_confirm_is_never_sent(self):
+        d, graph = desk()
+        row = dict(UPLOAD)
+        c = ctx(attachment=lambda uid: row)
+        found = d.preview(filed(), "send_email", None, c)
+        row["data"] = FILE + b"!"
+        with self.assertRaises(ca.ActionRefused):
+            d.confirm(filed(), "send_email", None, c, confirmed=True,
+                      idempotency_key="b" * 20, shown_hash=found["payload_hash"])
+        self.assertEqual(graph.calls, [])
+        self.assertEqual(d.journal.rows(), [])
+        # changed at the very last moment (after review, before the bytes are read)
+        reads = []
+
+        def late(uid):
+            reads.append(uid)
+            return UPLOAD if len(reads) == 1 else {**UPLOAD, "data": FILE + b"?"}
+        c = ctx(attachment=late)
+        found = d.preview(filed(), "send_email", None, ctx(attachment=lambda u: UPLOAD))
+        with self.assertRaises(ca.ActionRefused) as refused:
+            d.confirm(filed(), "send_email", None, c, confirmed=True,
+                      idempotency_key="c" * 20, shown_hash=found["payload_hash"])
+        self.assertEqual(refused.exception.status, 409)
+        self.assertEqual(graph.calls, [])
+
+    def test_the_guard_takes_only_approved_file_attachments_on_a_new_email_or_reply(self):
+        url = f"https://graph.microsoft.com/v1.0/users/{VINCE}/sendMail"
+        reply = f"https://graph.microsoft.com/v1.0/users/{VINCE}/messages/m1/reply"
+        forward = f"https://graph.microsoft.com/v1.0/users/{VINCE}/messages/m1/forward"
+        good = {"@odata.type": "#microsoft.graph.fileAttachment", "name": "Form (filled).pdf",
+                "contentType": "application/pdf",
+                "contentBytes": base64.b64encode(b"%PDF-1.4").decode()}
+
+        def body(files, text="x", key="message"):
+            return json.dumps({key: {"subject": "s", "body": {"contentType": "Text",
+                                                              "content": text},
+                                     "toRecipients": [], "attachments": files}}).encode()
+        guard.check_action_request("POST", url, body([good]), environ=LIVE)
+        guard.check_action_request("POST", reply, body([good]), environ=LIVE)
+        huge = base64.b64encode(b"x" * (guard.MAX_ACTION_ATTACHMENT_BYTES + 1)).decode()
+        refused = [
+            (forward, json.dumps({"comment": "c", "toRecipients": [],
+                                  "message": {"attachments": [good]}}).encode()),
+            (url, body([{**good, "@odata.type": "#microsoft.graph.referenceAttachment"}])),
+            (url, body([{**good, "@odata.type": "#microsoft.graph.itemAttachment"}])),
+            (url, body([{**good, "contentType": "text/html"}])),
+            (url, body([{**good, "name": "../x.pdf"}])),
+            (url, body([{**good, "contentId": "cid1"}])),
+            (url, body([{**good, "contentBytes": "not base64!"}])),
+            (url, body([{**good, "contentBytes": huge}])),
+            (url, body([good] * (guard.MAX_ACTION_ATTACHMENTS + 1))),
+            (url, body([])),
+            (url, body("x")),
+            # a file does not lift the text's own cap
+            (url, body([good], text="y" * guard.MAX_ACTION_BODY_BYTES)),
+        ]
+        for target, raw in refused:
+            with self.assertRaises(guard.ReadOnlyGuardError, msg=raw[:160]):
+                guard.check_action_request("POST", target, raw, environ=LIVE)
+        # without a file the plain cap holds as before
+        with self.assertRaises(guard.ReadOnlyGuardError):
+            guard.check_action_request(
+                "POST", url, body(None, text="y" * guard.MAX_ACTION_BODY_BYTES).replace(
+                    b',"attachments":null', b""), environ=LIVE)
+
+
 class Gate(unittest.TestCase):
     def test_without_flag_sender_or_scope_the_confirm_is_a_dry_run_naming_what_is_missing(self):
         cases = [({}, ("Mail.Send",), "PLX_ACTIONS_LIVE=1 not set"),
@@ -273,7 +429,26 @@ class SendApp(unittest.TestCase):
         # (live_source_guard.meetings_read_credentials, GET-only transport); ingest mode
         # hands its secret to the meetings child alone. No other path names it.
         allowed = {"integrations/live_source_guard.py", "integrations/graph_send.py",
-                   "integrations/capture_meetings.py", "operating/ingest_forever.py"}
+                   "integrations/capture_meetings.py", "operating/ingest_forever.py",
+                   # The ops alarm mailer (e4f7af6db3): alarm mail to the recipients of
+                   # the root disk's /etc/plx/ops-notify.json (default the owner alone),
+                   # with the AZURE app's own token; off until it is enabled with a sender.
+                   "operating/ops_notify.py",
+                   # Entra secret expiry (e4f7af6db3): each app's own token reads that
+                   # app's passwordCredentials end dates (GET /applications), never a send.
+                   "deploy/ops/host/expiry.py",
+                   # Write readiness (cfaddaca7f): names the approved-action app's env
+                   # keys to load them from the setup env files, and takes its token from
+                   # graph_send.action_bearer (the approved path's own provider).
+                   "operating/autopilot_write_readiness.py",
+                   # Graph subscription renewer (f36ed20077, fb278c4cc5; default off): the
+                   # AZURE app's token from its own unit environment, requests only through
+                   # the pinned graph_subscription_sender (token URL and /subscriptions,
+                   # no DELETE), never a send.
+                   "integrations/graph_subscriptions.py",
+                   # Change-notification receiver: names AZURE_TENANT_ID only, to check an
+                   # incoming notification's tenantId; it reads no client id or secret.
+                   "integrations/graph_notifications.py"}
         found = set()
         for path in root.rglob("*.py"):
             rel = path.relative_to(root).as_posix()
@@ -283,6 +458,19 @@ class SendApp(unittest.TestCase):
             if pattern.search(path.read_text(encoding="utf-8", errors="replace")):
                 found.add(rel)
         self.assertEqual(found, set())
+
+
+class RejectedSend(unittest.TestCase):
+    def test_a_send_graph_rejects_is_failed_once_says_so_and_a_replay_sends_nothing(self):
+        d, graph = desk(graph=FakeGraph(status=400))
+        first = confirm(d)
+        self.assertEqual((first["status"], len(graph.calls)), ("failed", 1))
+        row = d.journal.rows()[-1]
+        self.assertEqual((row["status"], row["http_status"]), ("failed", 400))
+        self.assertEqual(ca._state_text(row), "Send failed (HTTP 400): nothing is retried")
+        again = confirm(d)                       # the same dialog pressed again
+        self.assertTrue(again["replayed"])
+        self.assertEqual(len(graph.calls), 1)
 
 
 class OnceOnly(unittest.TestCase):

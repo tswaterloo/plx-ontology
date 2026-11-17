@@ -12,7 +12,7 @@ from integrations import bc_read
 from integrations import live_source_grammar as grammar
 from integrations.capture_store import bc_unit
 from integrations.live_source_guard import LiveSourceAudience
-from integrations.tests.test_bc_capture import CO, SERVICE, FakeBc, Harness
+from integrations.tests.test_bc_capture import CO, FakeBc, Harness
 from ontology.core import Actor
 
 SET = bc_read.PARTY_CONTACT_SET

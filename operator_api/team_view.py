@@ -17,6 +17,17 @@ session only (nothing in a request can claim it):
 A row's ``key`` is an opaque handle (a digest of the object id), so no id reaches a page or
 a URL. Open items come from the reader's own trimmed alert list, so a marked item they cannot
 open is counted (``withheld``), never shown.
+
+The productivity tracker (AUDIT2-12; the measure decided under Internal
+only, the owner hidden). Each row's ``weeks``: the last four Monday weeks (US Eastern, the
+current one cut at the snapshot's day) of **done** (everything they sent or did: mail sent,
+Teams messages, meetings and each system's recorded actions; mail received is what **came
+in**, not work), **closed** (their alerts resolved that week), the **median reply** and the
+replies it rests on, and **time saved** (the work log's estimate, joined per request by the
+API: everyone's for the owner only, as ``/api/time-saved``; a named Team reader sees only
+their own, other rows null). **Waiting** is the row's open replies, tasks and alerts now. No
+single blended score: a score would rank people by what the captured systems happen to see
+(floor, lab and phone work are not seen), so the tracker shows the parts side by side.
 """
 
 from __future__ import annotations
@@ -31,6 +42,7 @@ from pathlib import Path
 import threading
 from typing import Any, Callable, Iterable, Mapping, Optional
 
+from operating.file_modes import keep_shared
 from operating import briefs as br
 from . import models as m
 from .auth import Reader
@@ -40,6 +52,9 @@ READERS_ENV = "PLX_TEAM_VIEW_READERS"
 HIDDEN_ENV = "PLX_TEAM_HIDDEN_PEOPLE"
 FILE_ENV = "PLX_TEAM_ACTIVITY_FILE"
 CLOSED_DAYS = 28
+# what counts as work done in the tracker: every channel but mail they received
+DONE_CHANNELS = frozenset(("mail_sent", "teams", "meetings", "mc_approvals", "mc_questions",
+                           "mc_tasks", "planner", "sharepoint", "bc", "portal", "sage"))
 NOTE = "Mail, Teams, meetings and the systems that record who did what. Floor, lab and phone work is not seen."
 
 _CACHE: dict[str, tuple[float, Any]] = {}
@@ -81,7 +96,7 @@ def _learn_owner(path: Optional[Path], oids: Iterable[str]) -> None:
         try:
             tmp = Path(str(path) + ".tmp")
             tmp.write_text(json.dumps(sorted(have | new)))
-            os.chmod(tmp, 0o600)
+            keep_shared(tmp, 0o600)
             os.replace(tmp, path)
         except OSError:
             pass
@@ -131,6 +146,62 @@ def _sum(days: Mapping[str, Mapping[str, int]], start: date, until: date) -> dic
     return {k: v for k, v in out.items() if v}
 
 
+CLOSED_ON = "closed_on:"     # open_counts key prefix: alerts closed on that day
+
+
+def tracker_weeks(row: Mapping[str, Any], *, until: date,
+                  open_: Mapping[str, int]) -> list[dict[str, Any]]:
+    """The productivity tracker (AUDIT2-12): per Monday week, the current one last and cut
+    at ``until``: work done (everything they sent or did in a system), messages received,
+    alerts closed, the median reply time and the replies it rests on. Time saved is joined
+    in by the API from the work log (``attach_saved``); waiting is the row's open counts."""
+    from operating import team_activity as ta
+    days = row.get("days") or {}
+    replies = row.get("reply_weeks") or {}
+    out = []
+    for start in ta.week_starts(until):
+        end = min(start + timedelta(days=6), until)
+        counts = _sum(days, start, end)
+        closed = sum(int(v) for k, v in open_.items() if k.startswith(CLOSED_ON)
+                     and start.isoformat() <= k[len(CLOSED_ON):] <= end.isoformat())
+        reply = replies.get(start.isoformat()) or {}
+        out.append({"week": start.isoformat(), "to": end.isoformat(),
+                    "partial": end < start + timedelta(days=6),
+                    "done": sum(n for c, n in counts.items() if c in DONE_CHANNELS),
+                    "received": counts.get("mail_received", 0), "closed": closed,
+                    "reply_minutes": reply.get("median"), "replies": int(reply.get("n") or 0),
+                    "saved_minutes": None})
+    return out
+
+
+def attach_saved(people: Iterable[Any], found: Optional[Mapping[str, Any]],
+                 reader_key: Optional[str] = None) -> None:
+    """Fills each person's (``TeamPerson`` models already shown to the reader) weekly ``saved_minutes`` from ``work_log.time_saved``
+    (keyed by the reader's principals, which name their object ids). Only rows already in
+    the view get a figure (the owner, hidden, never does); a week the log has no row for
+    stays None (not counted), a counted week with nothing used is 0. ``reader_key``: the
+    log was read for that reader alone, so only their own row gets a figure."""
+    from operating.proactive_commitments import owner_ids
+    if found is None:
+        return
+    by_key: dict[str, dict[str, int]] = {}
+    for person in found.get("people") or ():
+        weeks = {str(w.get("start")): int(w.get("minutes") or 0) for w in person.get("weeks") or ()}
+        for oid in owner_ids(str(person.get("reader") or "")):
+            slot = by_key.setdefault(key_of(oid), {})
+            for start, minutes in weeks.items():
+                slot[start] = slot.get(start, 0) + minutes
+    counted = {str(s) for s in found.get("weeks") or ()}
+    only = None if reader_key is None else {key_of(o) for o in owner_ids(reader_key)}
+    for person in people:
+        if only is not None and person.key not in only:
+            continue
+        mine = by_key.get(person.key, {})
+        for week in person.weeks:
+            if week.week in counted:
+                week.saved_minutes = mine.get(week.week, 0)
+
+
 def person_row(oid: str, row: Mapping[str, Any], *, until: date, team: Optional[str],
                open_: Mapping[str, int], is_self: bool) -> dict[str, Any]:
     from operating import team_activity as ta
@@ -148,7 +219,8 @@ def person_row(oid: str, row: Mapping[str, Any], *, until: date, team: Optional[
             "alerts": open_.get("alerts", 0), "alerts_closed": open_.get("alerts_closed", 0),
             "reply_minutes_7": reply.get("7"), "reply_minutes_28": reply.get("28"),
             "replies_28": int(n.get("28") or 0), "trend": trend,
-            "hours": [int(h) for h in (row.get("hours") or [0] * 24)][:24]}
+            "hours": [int(h) for h in (row.get("hours") or [0] * 24)][:24],
+            "weeks": tracker_weeks(row, until=until, open_=open_)}
 
 
 def open_counts(rows: Iterable[Mapping[str, Any]], closed: Iterable[Mapping[str, Any]],
@@ -161,7 +233,10 @@ def open_counts(rows: Iterable[Mapping[str, Any]], closed: Iterable[Mapping[str,
                                                                  owner_kinds)] += 1
     for row in closed:
         if row.get("owner"):
-            per.setdefault(row["owner"], Counter())["alerts_closed"] += 1
+            mine = per.setdefault(row["owner"], Counter())
+            mine["alerts_closed"] += 1
+            if row.get("resolved_on"):
+                mine[CLOSED_ON + str(row["resolved_on"])] += 1
     return per
 
 
@@ -181,6 +256,19 @@ class TeamViewMixin:
             if (d / ta.SNAPSHOT_FILE).is_file():
                 return d / ta.SNAPSHOT_FILE
         return dirs[0] / ta.SNAPSHOT_FILE if dirs else None
+
+    def my_roles(self, reader: Reader) -> list[str]:
+        """The reader's own work roles in the team snapshot (``team_activity.ROLE_LABELS``
+        keys, e.g. ``purchasing``), for the app's per-role defaults (pinned pages). Only
+        the reader's own row; unknown roles are dropped; no snapshot or any failure: []."""
+        from operating import team_activity as ta
+        try:
+            people = (snapshot(self._team_file()) or {}).get("people") or {}
+            mine = self._my_oids(reader)   # type: ignore[attr-defined]
+            roles = {str(r) for oid in mine for r in ((people.get(oid) or {}).get("roles") or ())}
+        except Exception:  # noqa: BLE001 - a default, never a page failure
+            return []
+        return sorted(r for r in roles if r in ta.ROLE_LABELS)
 
     def _team_scope(self, reader: Reader) -> tuple[bool, frozenset[str], Callable[[str], bool], bool]:
         """(sees everyone, the reader's own ids, whether a person is shown to nobody)."""

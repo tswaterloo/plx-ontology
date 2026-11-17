@@ -12,6 +12,7 @@ from __future__ import annotations
 import unittest
 
 from operating import proactive_engine as pe
+from operating import proactive_engine_config
 from operating.tests.test_proactive_engine import Engine, World, handle, po
 
 PORTAL = "portal.app_purchase_order"
@@ -41,7 +42,7 @@ class DateProvenanceTest(Engine):
         self.run_engine(w)
         gaps = {g["object_id"]: g for g in self.read(limit=1000)["gaps"]}
         kinds = {oid: g["kind"] for oid, g in gaps.items()}
-        self.assertEqual({kinds[b] for b in bulk}, {pe.UNDATED_KIND})
+        self.assertEqual({kinds[b] for b in bulk}, {proactive_engine_config.UNDATED_KIND})
         self.assertEqual(kinds[own], "unconfirmed_po")
         self.assertEqual(gaps[own]["follow_up"]["priority"], "low")
         self.assertIn("the day the order was placed", gaps[own]["summary"])
@@ -63,13 +64,14 @@ class ActivePopulationTest(Engine):
             return order
         legacy = undated(order_date="2025-02-10")
         recent = undated(order_date="2026-09-01")
-        for _ in range(12):   # a migration stamped every record's edit time on one day
+        # a migration stamped every record's edit time on one (Eastern business) day
+        for _ in range(12):
             w.obj("PurchaseOrder", {"status": "Closed", "portal_updated_at":
-                                    "2026-09-30T03:00:00Z"}, binding=PORTAL)
-        loaded = undated(order_date="2025-01-15", portal_updated_at="2026-09-30T04:00:00Z")
+                                    "2026-09-30T15:00:00Z"}, binding=PORTAL)
+        loaded = undated(order_date="2025-01-15", portal_updated_at="2026-09-30T16:00:00Z")
         summary = self.run_engine(w)
         kinds = {g["object_id"]: g["kind"] for g in self.read(limit=1000)["gaps"]}
-        self.assertEqual(kinds.get(recent), pe.UNDATED_KIND)
+        self.assertEqual(kinds.get(recent), proactive_engine_config.UNDATED_KIND)
         self.assertNotIn(legacy, kinds)
         self.assertNotIn(loaded, kinds)
         self.assertEqual(summary["po_lateness"]["historic"], 2)

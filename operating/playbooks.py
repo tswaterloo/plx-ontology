@@ -151,8 +151,8 @@ def _retired_tools() -> frozenset[str]:
     """Host tools that retired into successors (``ontology_tools.HOST_RETIREMENTS`` and
     ``mcp_server.CASE_TOOL_RETIREMENTS``): a published version naming one still loads, as
     a retired version."""
-    from .mcp_server import CASE_TOOL_RETIREMENTS
-    from .ontology_tools import HOST_RETIREMENTS
+    from .mcp_server_catalog import CASE_TOOL_RETIREMENTS
+    from .ontology_tools_results import HOST_RETIREMENTS
     return frozenset(HOST_RETIREMENTS) | frozenset(CASE_TOOL_RETIREMENTS)
 
 

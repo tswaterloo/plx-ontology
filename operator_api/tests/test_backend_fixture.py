@@ -28,7 +28,9 @@ from unittest import mock
 from fastapi.testclient import TestClient
 
 from operating import objective_runner, proactive_engine
+from operating import proactive_engine_inbox
 from operator_api import backend as be
+from operator_api import backend_common
 from operator_api import models as m
 from operator_api.server import main as serve_main
 from operator_api.workspace import case_console
@@ -380,6 +382,110 @@ class FixtureBackend(unittest.TestCase):
         answer = json.loads(bodies[0])[-1][1]
         self.assertEqual(answer["facts"], [])
 
+    def test_only_a_record_not_found_is_404_and_a_crash_in_the_read_is_a_500(self):
+        """serve-1115d V-19: the record routes read ANY KeyError as "not found", so a crash
+        inside a record read was a 404 for days. Only ``RecordNotFound`` is a 404 now; a
+        KeyError from a bug in the walk is a logged 500 with an incident id and nothing of
+        the error in the body. A record hidden from the reader still answers exactly what a
+        record that does not exist answers, on every record route."""
+        from operator_api import explorer, history
+        ops = self.ops.client
+        po = ops.get(f"/api/object/PurchaseOrder/{case_fixtures.PO_NUMBER}").json()
+        oid = quote(po["object_id"], safe="")
+        missing = quote("PurchaseOrder:po-synth:no-such-order", safe="")
+        routes = ("/api/object/PurchaseOrder/{}", "/api/object/PurchaseOrder/{}?quick=1",
+                  "/api/explore/PurchaseOrder/{}", "/api/history/PurchaseOrder/{}",
+                  "/api/as-of/PurchaseOrder/{}?at=2026-10-01",
+                  "/api/object-impact/why/PurchaseOrder/{}",
+                  *(f"/api/object-section/{name}/PurchaseOrder/{{}}"
+                    for name in m.PAGE_SECTIONS))
+        for route in routes:
+            hidden = self.outsider.client.get(route.format(oid))
+            absent = self.outsider.client.get(route.format(missing))
+            absent_ops = ops.get(route.format(missing))
+            self.assertEqual((hidden.status_code, hidden.json()), (404, absent.json()), route)
+            self.assertEqual((absent.status_code, absent_ops.status_code), (404, 404), route)
+            self.assertEqual(absent.json(), absent_ops.json(), route)
+            self.assertEqual(absent.json()["error"]["code"], "not_found", route)
+
+        def boom(*args, **kwargs):
+            raise KeyError("boom_inside_the_walk")
+
+        crashes = (
+            ("/api/explore/PurchaseOrder/" + oid, mock.patch.object(explorer, "_tiers", boom)),
+            ("/api/history/PurchaseOrder/" + oid, mock.patch.object(history, "_label", boom)),
+            ("/api/as-of/PurchaseOrder/" + oid + "?at=2099-01-01",
+             mock.patch.object(history, "_label", boom)),
+            # a record reference never resolved before (nothing kept for it): the
+            # resolver's own KeyError was kept as "resolves to nothing"
+            ("/api/object/PurchaseOrder/crash-probe-1115",
+             mock.patch.object(be, "resolve_object", boom)))
+        for path, patch in crashes:
+            with patch, self.assertLogs("operator_api", "ERROR") as logged:
+                got = ops.get(path)
+            self.assertEqual((got.status_code, got.json()["error"]["code"]), (500, "internal"),
+                             (path, got.text))
+            self.assertIn("incident", got.json()["error"]["message"])
+            for leak in ("boom_inside_the_walk", "KeyError", "Traceback"):
+                self.assertNotIn(leak, got.text, path)
+            self.assertTrue(any("incident" in line and "KeyError" in line
+                                for line in logged.output), logged.output)
+        # nothing of the crash was kept: the same reads answer once the bug is gone
+        self.assertEqual(ops.get("/api/explore/PurchaseOrder/" + oid).status_code, 200)
+        self.assertEqual(ops.get("/api/object/PurchaseOrder/crash-probe-1115").status_code,
+                         404)
+
+    def test_a_hidden_source_or_answer_reads_as_a_missing_one_and_a_crash_is_a_500(self):
+        """followups-1115: the source and feedback routes caught any KeyError as "not
+        found". A source the reader may not open, or another reader's answer, answers
+        exactly what one that does not exist answers; a KeyError from a bug inside the
+        read is a logged 500 with an incident id."""
+        from operator_api import feedback as fb_module, page_parts
+        ops, out = self.ops.client, self.outsider.client
+        po = ops.get(f"/api/object/PurchaseOrder/{case_fixtures.PO_NUMBER}").json()
+        handle = po["facts"][0]["sources"][0]["handle"]
+        missing = handle.rsplit("/", 1)[0] + "/no-such-row-1115"
+        for path in ("/api/source", "/api/source/records"):
+            self.assertEqual(ops.get(path, params={"handle": handle}).status_code, 200, path)
+            hidden = out.get(path, params={"handle": handle})
+            absent = out.get(path, params={"handle": missing})
+            absent_ops = ops.get(path, params={"handle": missing})
+            self.assertEqual((hidden.status_code, hidden.json()), (404, absent.json()), path)
+            self.assertEqual(absent.json()["error"]["code"], "not_found", path)
+            if path == "/api/source":
+                self.assertEqual((absent_ops.status_code, absent_ops.json()),
+                                 (404, absent.json()))
+            else:   # a source the reader may open but nothing cites: an empty list
+                self.assertEqual((absent_ops.status_code, absent_ops.json()["records"]),
+                                 (200, []))
+        answer = self.ask(self.ops, f"is {case_fixtures.PO_NUMBER} late?")[-1][1]
+        others = out.post("/api/feedback", json={"answer_id": answer["answer_id"],
+                                                 "rating": 1})
+        none = out.post("/api/feedback", json={"answer_id": "no-such-answer", "rating": 1})
+        self.assertEqual((others.status_code, others.json()), (404, none.json()))
+
+        def boom(*args, **kwargs):
+            raise KeyError("boom_inside_the_read")
+
+        crashes = (
+            ("GET", "/api/source", {"params": {"handle": handle}},
+             mock.patch.object(page_parts, "source_payload", boom)),
+            ("GET", "/api/source/records", {"params": {"handle": handle}},
+             mock.patch.object(objects.ObjectWorkspace, "_around", boom)),
+            ("POST", "/api/feedback", {"json": {"answer_id": answer["answer_id"],
+                                                "rating": 1}},
+             mock.patch.object(fb_module, "_add", boom)))
+        for method, path, kw, patch in crashes:
+            with patch, self.assertLogs("operator_api", "ERROR") as logged:
+                got = ops.request(method, path, **kw)
+            self.assertEqual((got.status_code, got.json()["error"]["code"]), (500, "internal"),
+                             (path, got.text))
+            for leak in ("boom_inside_the_read", "KeyError", "Traceback"):
+                self.assertNotIn(leak, got.text, path)
+            self.assertTrue(any("incident" in line and "KeyError" in line
+                                for line in logged.output), logged.output)
+        self.assertEqual(ops.get("/api/source", params={"handle": handle}).status_code, 200)
+
     def test_an_ask_in_progress_never_holds_up_other_routes(self):
         routes = (("/api/home", None), ("/api/suggest", {"q": case_fixtures.PO_NUMBER}),
                   (f"/api/object/PurchaseOrder/{case_fixtures.PO_NUMBER}", None),
@@ -395,14 +501,23 @@ class FixtureBackend(unittest.TestCase):
         asker.start()
         self.assertTrue(HELD.wait(60), "the Ask never reached its planner")
         try:
-            po = self.outsider.client  # another reader, and the same reader, both answer
+            # Another reader, and the same reader, both answer while the Ask is still held
+            # (it waits on HOLD until the end): a route queued behind it would answer only
+            # once HOLD is set, so it is read on its own thread and must answer before
+            # that, the Ask still in progress. Event-ordered, never a wall-clock race.
+            po = self.outsider.client
             for client in (self.ops.client, po):
                 for path, params in routes:
-                    started = time.perf_counter()
-                    response = client.get(path, params=params)
-                    took = time.perf_counter() - started
-                    self.assertIn(response.status_code, (200, 404), path)
-                    self.assertLess(took, 1.0, (path, took))
+                    answered: list = []
+                    reading = threading.Thread(target=lambda c=client, p=path, q=params:
+                                               answered.append(c.get(p, params=q)),
+                                               daemon=True)
+                    reading.start()
+                    reading.join(120)
+                    self.assertTrue(answered, (path, "held up behind the Ask"))
+                    self.assertFalse(HOLD.is_set())
+                    self.assertTrue(asker.is_alive(), "the Ask ended before the routes read")
+                    self.assertIn(answered[0].status_code, (200, 404), path)
         finally:
             HOLD.set()
             asker.join(60)
@@ -849,7 +964,7 @@ class SuggestPermissionFilter(unittest.TestCase):
 
     def grant(self, *keys):
         from ontology.types import Actor
-        from operating.ontology_tools import ReadPolicy
+        from operating.ontology_tools_policy import ReadPolicy
         actor = Actor("plx", frozenset({"staff:x"}), "internal")
         policy = ReadPolicy("plx", {key: frozenset({"staff:x"}) for key in keys})
         self.backend._reader_policy = lambda reader: (actor, policy)
@@ -1017,6 +1132,7 @@ class HomeFreshnessTest(unittest.TestCase):
         import sqlite3
         from datetime import datetime, timezone
         from operating import ontology_tools
+        from operating import ontology_tools_policy
 
         tmp = Path(tempfile.mkdtemp(prefix="home-fresh-"))
         self.addCleanup(shutil.rmtree, tmp, True)
@@ -1076,11 +1192,11 @@ class HomeFreshnessTest(unittest.TestCase):
                                       freshness_bounds=bounds, clock=lambda: now)
         self.addCleanup(backend.stop)
         home = {s.system: s for s in backend.freshness().sources}
-        failed = ontology_tools.capture_failures(tmp / "host" / "host.sqlite",
+        failed = ontology_tools_policy.capture_failures(tmp / "host" / "host.sqlite",
                                                  "2026-10-31T04:40:00Z")
         self.assertEqual(failed, {"mission_control", "sharepoint"})
         # with no served build time to compare, every recorded failure counts
-        self.assertEqual(ontology_tools.capture_failures(tmp / "host" / "host.sqlite"),
+        self.assertEqual(ontology_tools_policy.capture_failures(tmp / "host" / "host.sqlite"),
                          {"mission_control", "portal_api", "sharepoint"})
         # answers find the same ledger from their store's own path
         from types import SimpleNamespace
@@ -1089,7 +1205,7 @@ class HomeFreshnessTest(unittest.TestCase):
         tools = SimpleNamespace(store=SimpleNamespace(conn=conn))
         self.assertEqual(ontology_tools.OntologyTools._capture_failures(
             tools, ontology_tools.OntologyTools._served_at(tools)), failed)
-        answers = {e["source"]: ontology_tools.aged(e, bounds, now, failed)["stale"]
+        answers = {e["source"]: ontology_tools_policy.aged(e, bounds, now, failed)["stale"]
                    for e in entries if e["captured_at"]}
         # a failed or never-run capture is stale whatever its age; a partial one
         # (budgeted, continuing next cycle) is judged by age like any other
@@ -1113,7 +1229,7 @@ class HomeFreshnessTest(unittest.TestCase):
         # the backend's clock) closes the label
         alarm = "; captures not refreshed: MC, Portal, SharePoint (oldest 2 h)"
         self.assertEqual(backend.freshness().label,
-                         "Data as of 31 Oct 2026 1:00 AM ET; Teams to 29 Oct" + alarm)
+                         "Data as of 31 Oct 2026 1:00 AM ET; some records last read: Teams 29 Oct" + alarm)
         # with hybrid search on, a source whose searchable text ends over a day before its
         # capture says so (records after it exist but search cannot find them yet)
         with mock.patch.dict(os.environ, {"PLX_SEARCH": "hybrid"}), mock.patch(
@@ -1121,7 +1237,7 @@ class HomeFreshnessTest(unittest.TestCase):
                 return_value={"Teams": "2026-10-27T22:00:00+00:00",
                               "Portal": "2026-10-30T15:00:00+00:00"}):
             fresh = backend.freshness()
-        self.assertEqual(fresh.label, "Data as of 31 Oct 2026 1:00 AM ET; Teams to 29 Oct; "
+        self.assertEqual(fresh.label, "Data as of 31 Oct 2026 1:00 AM ET; some records last read: Teams 29 Oct; "
                                       "searchable text: Teams to 27 Oct" + alarm)
         self.assertEqual({s.system: s.searchable_to for s in fresh.sources}["Teams"],
                          "2026-10-27T22:00:00+00:00")
@@ -1141,6 +1257,7 @@ class HomeFreshnessTest(unittest.TestCase):
         import sqlite3
         from datetime import datetime, timezone
         from operating import ontology_tools
+        from operating import ontology_tools_policy
 
         tmp = Path(tempfile.mkdtemp(prefix="home-fresh-"))
         self.addCleanup(shutil.rmtree, tmp, True)
@@ -1169,7 +1286,7 @@ class HomeFreshnessTest(unittest.TestCase):
                               (3, "2026-10-31T08:00:00Z")])
             conn.execute("INSERT INTO source_state VALUES ('portal', 1, '2026-10-31T04:10:00Z', "
                          "'2026-10-31T08:05:00Z', 'capture_failed', '2026-10-31T08:05:00Z')")
-        self.assertEqual(ontology_tools.capture_failures(ledger, "2026-10-31T00:40:00Z"),
+        self.assertEqual(ontology_tools_policy.capture_failures(ledger, "2026-10-31T00:40:00Z"),
                          {"portal_api"})
         backend = be.WorkspaceBackend(lambda session: None, data_label="t", state_dir=tmp,
                                       freshness_bounds={"portal_api": 36 * 3600.0},
@@ -1182,12 +1299,12 @@ class HomeFreshnessTest(unittest.TestCase):
         # failure, before the build) is what the served data holds: excused
         with sqlite3.connect(ledger) as conn:
             conn.execute("UPDATE source_state SET captured_at = '2026-10-31T00:30:00Z'")
-        self.assertEqual(ontology_tools.capture_failures(ledger, "2026-10-31T00:40:00Z"),
+        self.assertEqual(ontology_tools_policy.capture_failures(ledger, "2026-10-31T00:40:00Z"),
                          frozenset())
         # at the build instant itself it is still the build's own capture: excused
         with sqlite3.connect(ledger) as conn:
             conn.execute("UPDATE source_state SET captured_at = '2026-10-31T00:40:00Z'")
-        self.assertEqual(ontology_tools.capture_failures(ledger, "2026-10-31T00:40:00Z"),
+        self.assertEqual(ontology_tools_policy.capture_failures(ledger, "2026-10-31T00:40:00Z"),
                          frozenset())
 
 
@@ -1463,7 +1580,7 @@ class ResumedAskHostSources(unittest.TestCase):
         self.assertEqual(fake.ask_withheld(reader, [self.MAIL, self.FILE]), "withheld")
         fake, _ = self.backend({self.MAIL, self.FILE}, serves=False)   # no host
         self.assertEqual(fake.ask_withheld(reader, [self.MAIL]), "withheld")
-        many = [f"sharepoint://site/d{i}@1" for i in range(be.RESUME_HOST_CHECKS + 1)]
+        many = [f"sharepoint://site/d{i}@1" for i in range(backend_common.RESUME_HOST_CHECKS + 1)]
         fake, reads = self.backend(set(many))
         self.assertEqual(fake.ask_withheld(reader, many), "withheld")
         self.assertEqual(reads, [])
@@ -1560,9 +1677,8 @@ class OrdersAtRiskTests(unittest.TestCase):
     def test_which_orders_are_at_risk_and_whats_late_for_one_order_or_customer(self):
         for question in ("which customer orders are at risk from late POs?",
                          "any sales orders held up by late materials"):
-            self.assertEqual(be.ask_shortcut(m.AskRequest(question=question)), "at_risk")
-        self.assertEqual(be.ask_shortcut(m.AskRequest(question="which POs are late?")),
-                         "late_list")
+            self.assertTrue(be.orders_at_risk_question(question), question)
+        self.assertFalse(be.orders_at_risk_question("which POs are late?"))
         self.assertEqual(be.late_for_target("what's late for SO 470?"), "SO 470")
         self.assertEqual(be.late_for_target("which materials are late for customer Three "
                                             "Ships"), "Three Ships")
@@ -1788,7 +1904,7 @@ class SuggestionRankingTests(unittest.TestCase):
                                actor=SimpleNamespace(tenant="plx", principals=["user:a"]))
         before, visit = be.inbox_stamp(view), be.last_visit_of(view)
         time.sleep(0.01)
-        proactive_engine.record_visit(inbox, proactive_engine.reader_key(view.actor))
+        proactive_engine_inbox.record_visit(inbox, proactive_engine.reader_key(view.actor))
         self.assertEqual(be.inbox_stamp(view), before)        # Home, lists, cards: kept
         self.assertNotEqual(be.last_visit_of(view), visit)    # the briefing: read again
         time.sleep(0.01)
@@ -2042,7 +2158,7 @@ class KnownReaderWarmTests(unittest.TestCase):
         backend.directory_for = lambda: [seen.upper(), refused, fresh]
         self.assertEqual(backend.warm_known(), 2)
         self.assertEqual([oid for oid, _ in made], [seen, fresh])
-        self.assertLessEqual(made[1][1], now + be.DIRECTORY_WARM_SECONDS + 5)
+        self.assertLessEqual(made[1][1], now + backend_common.DIRECTORY_WARM_SECONDS + 5)
         # one who signed out is left out of the directory's read-ahead until they sign in
         backend._warmed.clear()
         made.clear()
@@ -2179,7 +2295,7 @@ class RecordTruthTests(unittest.TestCase):
         self.assertEqual(found.field, "order date vs receipt date")
         self.assertEqual([(v.value, v.source.handle, v.trusted) for v in found.values],
                          [("2099-03-28", self.PO, False), ("2098-04-14", self.RECEIPT, False)])
-        self.assertIn("2 receipt(s)", found.values[0].why)
+        self.assertIn("2 receipts of this order are dated before its order date", found.values[0].why)
         # receipts after the order, no order date, or a receipt the reader may not open:
         # nothing said
         self.assertEqual(be.received_before_ordered(

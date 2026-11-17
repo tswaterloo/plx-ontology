@@ -980,7 +980,8 @@ def _claim(value: Mapping[str, Any], resolved: Mapping[str, Any] | None,
            ) -> tuple[dict[str, Any] | None, str | None]:
     """The value claim a reader would make for one projected value, or a problem code."""
     from ontology.project import _parse
-    from operating.claim_checks import dig
+    from operating.claim_checks_cells import stamp_zone
+    from operating.claim_checks_parse import dig
 
     if resolved is None:
         return None, "handle_unresolved"
@@ -992,7 +993,10 @@ def _claim(value: Mapping[str, Any], resolved: Mapping[str, Any] | None,
     claimed = value["value"]
     if value["parser"] in TRANSFORMING_PARSERS:
         kind = kinds.get((value["object_type"], value["property"]))
-        parsed, problem = _parse(value["parser"], cell, kind=kind, normalizer=normalizer)
+        # a timestamp is reproduced under its source's declared zone (C-09)
+        parsed, problem = _parse(value["parser"], cell, kind=kind, normalizer=normalizer,
+                                 zone=stamp_zone(value["l1_handle"], resolved,
+                                                 value["field_path"]))
         if problem is not None or parsed != value["value"]:
             return None, "parse_not_reproduced"
         claimed = str(cell).strip()
@@ -1109,6 +1113,7 @@ def check_store(store_path: str, rows: Callable[[str], Mapping[str, Any] | None]
     from ontology.store import ProjectionStore, ReadPolicy
     from ontology.store_ddl import MARKINGS
     from operating import claim_checks
+    from operating import claim_checks_parse
 
     started = monotonic()
     kinds = {(tid, p["name"]): p.get("identifier_kind")
@@ -1179,7 +1184,7 @@ def check_store(store_path: str, rows: Callable[[str], Mapping[str, Any] | None]
             continue
         items.append({"id": f"F{index + 1}", "texts": [],
                       "citations": [{"handle": value["l1_handle"], "status": "resolved"}],
-                      "value_claims": claim_checks.parse_value_claims(
+                      "value_claims": claim_checks_parse.parse_value_claims(
                           [claim], [value["l1_handle"]], [])})
     # The schema's declared quantity roles of the values the served policy grants
     # ``actor`` (a contract lookup, every marking held: the claim still needs the row).
@@ -1257,10 +1262,11 @@ def removal_checks(host: Any, store: str, *, sample: int = REMOVAL_SAMPLE,
     from datetime import datetime
     from types import SimpleNamespace
 
-    from integrations.source_mirror import (DEFAULT_IDENTIFIERS, MirrorError,
-                                            _identifier_value, parse_citation)
+    from integrations.source_mirror import parse_citation
+    from integrations.source_mirror_values import (DEFAULT_IDENTIFIERS, MirrorError,
+                                                   _identifier_value)
     from ontology.store import removals_at, removed_at_sql
-    from operating.ontology_tools import REMOVAL_REASONS
+    from operating.ontology_tools_identity import REMOVAL_REASONS
     from operating.ontology_tools_review import _states
 
     tick = checkpoint or (lambda: None)
@@ -1685,9 +1691,8 @@ def session_mirror(db: str, unstable: Sequence[str] = ()) -> dict[str, Any]:
     probe's report counts it: relation and current-row counts, the relations served and
     complete, and the one completeness block (``scripts.mirror_measure.completeness``;
     ``unstable`` relations leave its denominator). Names and counts only."""
-    from integrations.source_mirror import (PROBE_PRINCIPAL, AudienceMap, SourceMirror,
-                                            load_ingest_config, mirror_options,
-                                            soft_delete_counts)
+    from integrations.source_mirror import AudienceMap, SourceMirror, load_ingest_config
+    from integrations.source_mirror_query import PROBE_PRINCIPAL, mirror_options, soft_delete_counts
     from ontology.core import Actor
     from scripts.mirror_measure import bound_relations, completeness
 
@@ -2110,7 +2115,7 @@ def _produce_mail(budget: _Budget, store: str, mail: Mapping[str, Any]
 def _portal_down(coverage: Mapping[str, Any]) -> dict[str, Any] | None:
     """A Portal part blocked when no bound relation completed and the source itself failed
     the sync of some (a whole outage behind a served catalog), else None."""
-    from integrations.source_mirror import upstream_failures
+    from integrations.source_mirror_values import upstream_failures
 
     failed = upstream_failures(coverage.get("relation_outcomes", ()))
     if coverage.get("complete_bound_relation_count") or not failed:
@@ -2187,7 +2192,7 @@ def _run_probe(budget: _Budget, partial: dict[str, Any], client: Any, db: str, s
     producer's (``seed_session_bc``)."""
     from contextlib import ExitStack
 
-    from integrations.source_mirror import MirrorError
+    from integrations.source_mirror_values import MirrorError
     from ontology.project import (MailCaptures, MirrorCaptures, SharePointCaptures,
                                   build_store)
     from ontology.project_bc import BcCaptures
@@ -2245,7 +2250,7 @@ def _run_probe(budget: _Budget, partial: dict[str, Any], client: Any, db: str, s
         from ontology.project import _default_normalizer
         normalizer = _default_normalizer()
     if schema is None:
-        from ontology.schema import load_schema   # L4
+        from ontology.schema import load_schema
         schema = load_schema()
     session_bc = manifest is not None and "bc" in manifest["sources"]
     budget.at("served", "served_state", served_state_path(store))
@@ -2742,7 +2747,7 @@ def main(argv: Sequence[str] | None = None, *, environ: Mapping[str, str] | None
               if args.bc_capture else None)
         mail, mail_blocked = None, None
         if args.mail_capture_scope is not None:
-            from integrations.capture_mail import CaptureScope
+            from integrations.capture_mail_scope import CaptureScope
             from integrations.graph_read import GraphMailReader, build_graph
             from integrations.live_source_guard import LiveSourceAudience
             from ontology.types import Actor

@@ -143,6 +143,7 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import contextvars
 import io
 import json
 import os
@@ -154,122 +155,51 @@ import time
 from typing import Any, Callable, Collection, Mapping, Sequence
 import warnings
 
-SCHEMA = "plx-case-workspace-live/v1"
-# KIND -> the ontology object type plx.find looks for (None: any type).
-KIND_TYPES = {"ao": "AssemblyOrder", "sales_order": "SalesOrder",
-              "customer_po": "CustomerPurchaseOrder", "petra_po": "PurchaseOrder",
-              "find": None}
-OPEN_KINDS = (*KIND_TYPES, "pick")
-INDEX_DIR = "case-workspace-live"
-INDEX_FILE = "opened.json"
-MIRROR_EVIDENCE = {
-    "label": "source-mirror captures (ingestion runner)",
-    "fixture": False,
-    "note": ("Rows come from the captures the ingestion runner (operating.ingestion) "
-             "wrote into this state directory. This workspace never calls the Portal API "
-             "or refreshes them: captures are paged and non-atomic, never prove a "
-             "deletion and may be older than the source (each cited row shows its "
-             "relation's last refresh). Whether the run that wrote them read live sources "
-             "is recorded by that run, not here."),
-}
-WITHHELD = "withheld_citation_unavailable"
-MIN_LEAK_CHARS = 8  # any text this long (operating.ingestion.row_data_check's threshold)
-MIN_DIGIT_CHARS = 4  # an identifier or number with a digit: PO numbers, quantities, dates
-MAX_REQUESTS = 20
+from .case_workspace_live_model import (
+    BLOCKED_UPSTREAM, FORWARD_SHARE, INDEX_DIR, INDEX_FILE, JOIN_REASONS, KIND_TYPES, LEAD_GAPS,
+    LEAD_KINDS, LEAD_STATEMENT, MAX_CITATIONS, MAX_FINDINGS, MAX_LEAD_PAGES, MAX_LEAD_PAGE_READS,
+    MAX_REQUESTS, MAX_TWINS, MIRROR_EVIDENCE, MissingData, OPEN_KINDS, OPEN_LIVE_SECONDS, OWN_GAPS,
+    OpenError, SCHEMA, UNLINKED_CAUSES, WHO, WITHHELD, _CLAIM_FIELD, _DOCUMENT_FIELD, _LEAD_KIND,
+    _OBJECT_ID, _OPEN_SCHEMA, _SCOPE_WHY, _TYPE, _UNREAD_FIND_GAPS, _WITHHELD_FIND_GAPS, _hops,
+    _system, carrier_key)
+from .case_workspace_live_projection import (
+    RunProjection, _StampedRuntime, _mirror_relation, _plain, _read_only, case_tokens, cited_rows,
+    host_capture_gaps, host_refusals, ingested, projection_file, run_projection, upstream_parts)
+from .case_workspace_live_evidence import (
+    _code, _document_types, _evidence_reached, _freshness, _held, _l1_handle, _link_paths,
+    _one_record, _reaches, _rooted, _shared_values, _unnumbered)
+from .case_workspace_live_checks import (
+    _audience_digest, _count, _decisions, leak_check, panel_totals, relationships, summary_check,
+    workspace)
+from .case_workspace_live_cli import (
+    GAP_REASON, _GAP_ROOT_REASONS, _StderrCauses, _direction_totals, _host_books, _host_cycle,
+    _ingest, _months, _reader, _totals, _write)
+
 PICK_SCAN = 50  # candidates a pick confirms through the tools at most
-# The ``+LINKED`` pick causes that are a capture's state, never the records': the case is
-# rooted without the linked record (status ``unlinked``) and the cause stays reported.
-UNLINKED_CAUSES = ("pick_source_not_captured:", "pick_source_not_configured:")
+
 # Wall clock one join pick may spend, both directions together (its plx.find calls may
 # each probe BC live across companies and entity sets: the live check of 73775fc89 spent
 # 37 minutes in the forward direction alone). Every live request inside it is refused
 # before I/O once it has passed, and one sent waits at most the time left
 # (``live_source_guard.RequestDeadline``); a candidate a refusal cut is not decided.
 PICK_BUDGET_SECONDS = 420.0
-# Share of it the forward direction may spend: the rest is kept for the reverse one. The
-# live check of 4130ffdf7 spent all 420 s on 11 forward roots (each naming no Portal
-# row), so the reverse direction, the one that can join when the capture holds few
-# invoices, never ran.
-FORWARD_SHARE = 0.5
-# Wall clock of the live requests of one case open (its pick included): beside a host
-# cycle of at most 1500 s (portal 900 + bc 600; about 180 s live) the live check's two
-# opens still end inside its 2400 s and print their counts.
-OPEN_LIVE_SECONDS = 600.0
-MAX_FINDINGS = 150  # cited values recorded per case; the rest are counted in one gap
+
 MAX_GAPS = 60
-OWN_GAPS = 7  # of MAX_GAPS, kept for the case's own gaps (``_Recorder.gap(own=True)``)
-MAX_TWINS = 4  # same-record twins whose cards a case records
+
 MAX_REACHED = 30  # records the question families reached whose cards a case records
-MAP_OBJECTS = 60  # case objects whose links one reader's relationship counts read
-MAP_PAGES = 4  # plx.around pages read per case object, link type and direction
-MAP_PAGE = 50  # objects per plx.around page (the contract's maximum)
-LOWEST_TIER = "contradicted"  # the relationship counts read every tier
-CARD_IDENTITY, CARD_LINK_TYPES = 50, 100  # what one plx.object card lists at most
-WHO = ["the owner of the source record"]
-BLOCKED_UPSTREAM = "blocked_upstream:portal"
-_PRINCIPAL = re.compile(r"[A-Za-z0-9_.:@-]{1,120}")
-_TYPE = re.compile(r"[A-Z][A-Za-z0-9]{1,63}")
-_CLAIM_FIELD = re.compile(r"^(?:row|key|rows\.(?:0|[1-9][0-9]*))(?:\.[A-Za-z_][A-Za-z0-9_]*){1,3}$")
-# A document type's machine-read field as its pinned bytes' ``documentFields`` row holds it.
-_DOCUMENT_FIELD = re.compile(r"^row\.fields\.[A-Za-z_][A-Za-z0-9_]*\.value$")
-# An ontology object id (``Type:binding:{source key}``) as the tools write it into text.
-_OBJECT_ID = re.compile(r"[A-Z][A-Za-z0-9]{1,63}:[a-z0-9_]+\.[a-z0-9_.]+:\{[^{}]{0,400}\}")
-MAX_CITATIONS = 20  # what one case finding or gap cites at most (operating.cases)
-# The plx.object lead kinds a case records (operating/attested_conflicts.py), each as an
-# unknown fact finding whose statement starts with LEAD_STATEMENT (structure() counts them).
-LEAD_KINDS = ("missing_in_record",)
-LEAD_STATEMENT = "Lead ({kind}): "
-LEAD_GAPS = ("leads_truncated",)  # plx.object gaps derived from its leads (ontology_tools)
-_LEAD_KIND = re.compile(r"^Lead \(([a-z_]{1,40})\): ")
-MAX_LEAD_PAGES = 20  # captured pages a lead's stated value is looked for on
-MAX_LEAD_PAGE_READS = 40  # plx.read page reads all of one case's leads share
-# Why a join pick's candidate joined no record of the other system: one reason each, by
-# this precedence over its searched values (``{src}``: the linked binding's system,
-# ``{property}``: the first searched property, the direct carrier).
-# ``scope_unread``: a scoped carrier's match whose scope party (the root's or the
-# candidate's) the tools did not show as one record; ``scope_mismatch``: both read, not
-# one record (``CaseOpener._scoped``). ``path_unreached``: a two-hop carrier matched a
-# record from which its last hop reaches no one record (``CaseOpener._follow``).
-JOIN_REASONS = ("root_not_readable", "no_identifier", "not_in_served_replica",
-                "{src}_row_unreadable_for_reader", "find_live_error", "ambiguous_root",
-                "scope_unread", "scope_mismatch", "cross_scope", "{src}_carrier_unread",
-                "identity_lead_only", "normalized_only", "path_unreached",
-                "no_{src}_row_for_{property}")
-# A scoped match the root gate refuses (``ontology_tools.scoped_root_lead``'s why) as a
-# join reason; None: the owning system never matches that record (a cancelled order).
-# Any other why is a lead (``identity_lead_only``).
-_SCOPE_WHY = {"identity_scope_ambiguous": "ambiguous_root", "no_scope_value": "scope_unread",
-              "scope_value_withheld": "scope_unread", "no_scope_field": "scope_unread",
-              "normalized_only": "normalized_only", "scope_status_excluded": None}
-# find gaps that say a carrier was not read in full or now: absence is not shown.
-_UNREAD_FIND_GAPS = frozenset({"stale_source", "source_unavailable", "freshness_unknown",
-                               "no_visible_match", "scan_cap", "projection_not_built",
-                               "source_not_configured", "schema_drift"})
-_WITHHELD_FIND_GAPS = frozenset({"marking_withheld", "undecided_by_withheld_value"})
-
-
-class OpenError(ValueError):
-    """A request that cannot be opened (``code`` names it; never source text)."""
-
-    def __init__(self, code: str) -> None:
-        super().__init__(code)
-        self.code = code
-
-
-class MissingData(LookupError):
-    """The root of a request is not held (``code``: the tool's state, never source text)."""
-
-    def __init__(self, code: str) -> None:
-        super().__init__(code)
-        self.code = code
 
 
 def _schema() -> Any:
     from .ontology_tools import default_schema
 
+    held = _OPEN_SCHEMA.get()
+    if held:
+        return held[0]
     schema = default_schema()
     if schema is None:
         raise OpenError("ontology_schema_unavailable")
+    if held is not None:
+        held.append(schema)
     return schema
 
 
@@ -287,42 +217,6 @@ def parse_pick(text: str) -> tuple[str, str | None, bool]:
     if join and not join_carriers(kind, linked):
         raise OpenError("pick TYPE>LINKED needs a declared link between two systems")
     return kind, linked or None, join
-
-
-def _system(binding_id: Any) -> str:
-    """The system of a binding id (``portal.app_sales_order`` -> ``portal``)."""
-    return str(binding_id).split(".", 1)[0]
-
-
-def _hops(schema: Any, start: str, *, single: bool) -> list[dict[str, Any]]:
-    """One declared link hop from ``start`` per link binding pair, in schema order:
-    ``{link_type, direction, to_type, from_binding, field, to_binding, to_field,
-    identifier_kind, where}``. A forward hop follows a link as declared; with ``single``
-    only hops that reach one record (forward N:1/1:1, or reverse 1:1 such as
-    ``same_record_as``), else forward ones only (the direct carriers)."""
-    out: list[dict[str, Any]] = []
-    for name, link in schema.link_types.items():
-        for direction in ("forward", "reverse"):
-            ends = (link.get("from"), link.get("to"))
-            here_type, there_type = ends if direction == "forward" else ends[::-1]
-            if here_type != start or (direction == "reverse" and not single) or (
-                    single and link.get("cardinality") not in
-                    (("N:1", "1:1") if direction == "forward" else ("1:1",))):
-                continue
-            for binding in link.get("bindings") or ():
-                sides = (binding.get("from_binding"), binding.get("to_binding"))
-                here, there = sides if direction == "forward" else sides[::-1]
-                if not isinstance(here, str) or not isinstance(there, str):
-                    continue
-                for pair in binding.get("pairs") or ():
-                    fields = (pair.get("from"), pair.get("to"))
-                    field, to_field = fields if direction == "forward" else fields[::-1]
-                    out.append({"link_type": name, "direction": direction,
-                                "to_type": there_type, "from_binding": here, "field": field,
-                                "to_binding": there, "to_field": to_field,
-                                "identifier_kind": pair.get("identifier_kind"),
-                                "where": bool(binding.get("where"))})
-    return out
 
 
 def join_carriers(object_type: str, linked: str) -> list[dict[str, Any]]:
@@ -360,7 +254,8 @@ def join_carriers(object_type: str, linked: str) -> list[dict[str, Any]]:
     carrier excepted: its scope party is a record of that company); ``_join`` links its
     match only when no other company holds the number. Data only: the schema and the
     identifier registry."""
-    from .ontology_tools import default_grammar, scoped_kind
+    from .ontology_tools import default_grammar
+    from .ontology_tools_identity import scoped_kind
 
     schema = _schema()
     sources: dict[tuple[str, str], str] = {}
@@ -440,15 +335,6 @@ def join_carriers(object_type: str, linked: str) -> list[dict[str, Any]]:
     return out
 
 
-def carrier_key(carrier: Mapping[str, Any]) -> str:
-    """A join carrier's name in ``carrier_outcomes``, schema names only and short enough
-    for a live record's plain keys: its target binding and field
-    (``portal.app_sales_order.po_reference``, a two-hop path's cross-system one:
-    ``portal.app_shipment.shipment_code``); a two-hop path whose field an earlier carrier
-    already names adds its carried property (``join_carriers``)."""
-    return carrier.get("key") or f"{carrier['to_binding']}.{carrier['to_field']}"
-
-
 def scope_links(object_type: str, carrier: Mapping[str, Any], linked: str
                 ) -> tuple[str, str] | None:
     """For a join carrier whose identifier kind is unique only within a scope
@@ -497,24 +383,6 @@ def parse_open(text: str) -> tuple[str, str]:
     return kind, identifier.strip()
 
 
-def ingested(state_dir: str | Path) -> bool:
-    """True when the ingestion runner has written this state directory."""
-    from .ingestion import STORE_DIR, STORE_FILE
-
-    return (Path(state_dir) / STORE_DIR / STORE_FILE).is_file()
-
-
-def _read_only(path: Path, query: str) -> list[tuple] | None:
-    try:
-        db = sqlite3.connect(path.resolve().as_uri() + "?mode=ro", uri=True)
-        try:
-            return db.execute(query).fetchall()
-        finally:
-            db.close()
-    except sqlite3.Error:
-        return None
-
-
 def portal_upstream(state_dir: str | Path) -> list[str] | None:
     """Why the Portal captures this state directory holds may not be current, read-only:
     the ``source_error`` reasons of the Portal relation units of the latest finished
@@ -545,102 +413,6 @@ def portal_upstream(state_dir: str | Path) -> list[str] | None:
     return sorted(reasons) or None
 
 
-_PART_TEXT = re.compile(r"[A-Za-z0-9_.:-]{1,79}")
-_PART_KEYS = ("part", "source", "error_code", "cause", "permission")
-
-
-def host_refusals(state_dir: str | Path) -> dict[str, list[dict[str, Any]]]:
-    """Per projection source (``host.PROJECTED_SOURCE``) of each source other than the
-    Portal (``portal_upstream``) the host configures, the ``blocked_upstream`` parts its
-    latest read was refused or not answered on, read-only from the host ledger
-    (``host.blocked_parts``); none when no host ran. Each part is rebuilt from its names,
-    status and codes only; a row that does not read keeps its source blocked
-    (``host_ledger_unreadable``), never cleared."""
-    from .host import _UPSTREAM, HOST_DIR, LEDGER_FILE, PROJECTED_SOURCE
-
-    host = Path(state_dir) / HOST_DIR / LEDGER_FILE
-    rows = (_read_only(host, (
-        "SELECT b.source, b.parts FROM source_blocked b JOIN source_state s ON s.source = "
-        "b.source WHERE s.configured = 1 AND b.source != 'portal' ORDER BY b.source"))
-            or []) if host.is_file() else []
-    refused: dict[str, list[dict[str, Any]]] = {}
-    for source, text in rows:
-        if source not in PROJECTED_SOURCE:
-            continue
-        try:
-            listed = json.loads(text)
-        except (TypeError, ValueError):
-            listed = None
-        parts = []
-        for part in listed if isinstance(listed, list) else [None]:
-            entry: dict[str, Any] = {key: part[key] for key in _PART_KEYS
-                                     if isinstance(part, Mapping) and isinstance(
-                                         part.get(key), str)
-                                     and _PART_TEXT.fullmatch(part[key])}
-            status = part.get("http_status") if isinstance(part, Mapping) else None
-            if isinstance(status, int) and not isinstance(status, bool):
-                entry["http_status"] = status
-            if "part" not in entry or "error_code" not in entry:
-                entry = {"part": source, "error_code": "host_ledger_unreadable"}
-            parts.append({"source": _UPSTREAM[source], **entry})
-        refused[PROJECTED_SOURCE[source]] = parts
-    return refused
-
-
-def host_capture_gaps(state_dir: str | Path) -> dict[str, dict[str, Any]]:
-    """Per projection source (``host.PROJECTED_SOURCE``) the host configures and whose
-    latest capture its own budget cut (``source_state.complete = 0`` and the latest cycle's
-    outcome for it partial with a ``*_budget`` reason: ``time_budget``, ``page_budget``),
-    the typed ``capture_gap`` part a case that needed that source is blocked on, read-only
-    from the host ledger; none when no host ran. A source that finished, was never
-    configured, has no row or is incomplete for another reason (a unit that failed) is no
-    budget gap."""
-    from .host import _UPSTREAM, HOST_DIR, LEDGER_FILE, PROJECTED_SOURCE
-
-    host = Path(state_dir) / HOST_DIR / LEDGER_FILE
-    if not host.is_file():
-        return {}
-    cut = {source for (source,) in _read_only(host, (
-        "SELECT source FROM source_state WHERE configured = 1 AND complete = 0")) or ()}
-    latest = _read_only(host, "SELECT report FROM cycle ORDER BY cycle_id DESC LIMIT 1")
-    try:
-        sources = json.loads(latest[0][0]).get("sources") if latest else None
-    except (TypeError, ValueError, AttributeError):
-        sources = None
-    gaps = {}
-    for source in sorted(cut):
-        outcome = sources.get(source) if isinstance(sources, dict) else None
-        reasons = outcome.get("reasons") if isinstance(outcome, dict) else None
-        if source in PROJECTED_SOURCE and source != "portal" \
-                and isinstance(outcome, dict) and outcome.get("state") == "partial" \
-                and any(isinstance(r, str) and r.endswith("_budget")
-                        for r in reasons or ()):
-            gaps[PROJECTED_SOURCE[source]] = {
-                "part": source, "source": _UPSTREAM[source],
-                "error_code": "capture_budget_cut", "cause": "capture_gap"}
-    return gaps
-
-
-def upstream_parts(reasons: Sequence[str] | None) -> list[dict[str, str]]:
-    """``portal_upstream`` reasons as the live verifier's ``blocked_upstream`` parts
-    (the live verifier: the check is then blocked, never a pass)."""
-    parts = {("host:portal" if reason.startswith("host_error:") else
-              "ingestion:portal_relation", reason.split(":", 1)[1][:79])
-             for reason in reasons or ()}
-    return [{"part": part, "source": "portal-workbench-api", "error_code": code}
-            for part, code in sorted(parts)]
-
-
-def projection_file(state_dir: str | Path, tenant: str) -> Path:
-    """Where the case workspace keeps ``tenant``'s projection of the state directory: its
-    content (reviewed links, confirmations) is the tenant's, so each tenant has its own
-    file, named by a digest of the tenant (never a path the tenant's text could shape)."""
-    from hashlib import sha256
-
-    digest = sha256(tenant.encode("utf-8")).hexdigest()[:16]
-    return Path(state_dir) / INDEX_DIR / f"ontology-{digest}.sqlite"
-
-
 def offline_runtime(state_dir: str | Path, mirror_audience: Any, tenant: str, *,
                     live: Any = None, originals_options: Mapping[str, Any] | None = None,
                     environ: Mapping[str, str] | None = None):
@@ -666,392 +438,6 @@ def offline_runtime(state_dir: str | Path, mirror_audience: Any, tenant: str, *,
     if held:
         runtime.captures = CaseCaptures(runtime, **held)
     return runtime
-
-
-def project_state(state_dir: str | Path, path: str | Path, *, tenant: str,
-                  internal_domains: Sequence[str] = (),
-                  checkpoint: Callable[[], None] | None = None) -> dict[str, Any]:
-    """Project every capture the state directory holds (the Portal mirror; BC, mail and
-    SharePoint captures) into ``path``, offline: no source system is contacted. The new
-    store replaces the old one by rename, so a reader never opens a half-built file.
-
-    The build runs the host's ``post_project`` steps (``operating.build_steps``) over the
-    state directory's review and confirmation stores for ``tenant``: a link a person
-    accepted is ``reviewed`` and one they rejected ``contradicted``
-    (``ontology.reviews.link_step``), so a live Portal<->BC customer ``same_record_as``
-    link, a lead until reviewed, joins a case pick's scope only once a person accepted it,
-    and a confirmed document kind reaches its SharePoint file as the host projects it. The
-    stores are read if present, never created or written: the ``confirmations`` step runs
-    over a copy made beside ``path`` (``post_project(scratch=)``: the document kinds the
-    review store holds are imported into the copy, as the host's next build imports them).
-    A review store that is there but unreadable fails the build
-    (``ReviewStoreUnreadable``), never a build that would serve a rejected link as a lead."""
-    from contextlib import ExitStack
-
-    from ontology import project
-    from ontology.schema import load_schema
-
-    from . import build_steps
-    from .case_runtime import CASE_RUNTIME_DIR, MIRROR_FILE
-    from .host import state_captures
-
-    path = Path(path)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temp = path.with_name(f".{path.name}.build")
-    temp.unlink(missing_ok=True)
-    with ExitStack() as stack:
-        sources = state_captures(Path(state_dir), stack, internal_domains=internal_domains)
-        mirror = Path(state_dir) / CASE_RUNTIME_DIR / MIRROR_FILE
-        if mirror.is_file():
-            captures = stack.enter_context(project.MirrorCaptures(mirror))
-            sources[captures.source] = captures
-        steps = build_steps.post_project(state_dir, tenant, scratch=path.parent)
-        try:
-            report = project.build_store(temp, load_schema(), sources, post_project=steps,
-                                         checkpoint=checkpoint)
-        except BaseException:
-            temp.unlink(missing_ok=True)
-            raise
-    os.replace(temp, path)
-    return report
-
-
-# ------------------------------------------------------------------ the run's projection
-#
-# A state directory a persistent host serves (``operating.host``: ``<DIR>/projection``,
-# generations committed by ``ontology.project_incremental``) already holds the projection
-# of every capture: a run reads that generation, read-only, and never builds its own copy
-# (a cold private build of a full state directory needs as much disk again as the served
-# one). A private build happens only when the directory has no served generation, or when
-# the served one cannot be shown to carry this tenant's decisions, and only with room.
-
-SERVED_DIR = "projection"  # ``operating.host.PROJECTION_DIR`` (not imported: host is heavy)
-PIN_PREFIX = ".served-"
-# A private build starts only with this much free beyond its estimate (the host's own
-# floor, ``operating.host.MIN_FREE_BYTES``), and stops when free space falls below it.
-PRIVATE_FREE_FLOOR = 4 * 1024 ** 3
-
-
-class ProjectionDiskLow(OpenError):
-    """A private projection build refused or stopped: too little free disk."""
-
-    def __init__(self, free: int | None, needed: int) -> None:
-        super().__init__("projection_disk_low")
-        self.free, self.needed = free, needed
-
-
-class RunProjection:
-    """The projection one run reads: ``path``, ``source`` (``served``: the host's
-    committed generation; ``private``: built for this run), ``reason`` (why that one) and,
-    when served, the ``generation`` and ``content_digest``. A served generation is
-    pinned (``pinned``): a hard link to its store in ``case-workspace-live`` keeps the
-    whole generation readable for the run while the host commits and prunes newer ones;
-    :meth:`close` drops the link. A committed generation is never written again, so every
-    read of the run sees one consistent projection."""
-
-    def __init__(self, path: Path, source: str, reason: str, *,
-                 generation: str | None = None, content_digest: str | None = None,
-                 pin: Path | None = None) -> None:
-        self.path, self.source, self.reason = Path(path), source, reason
-        self.generation, self.content_digest, self.pin = generation, content_digest, pin
-
-    @property
-    def pinned(self) -> bool:
-        return self.pin is not None
-
-    def summary(self) -> dict[str, Any]:
-        """Counts and enums only (no path)."""
-        return {"source": self.source, "reason": self.reason,
-                "generation": self.generation, "pinned": self.pinned}
-
-    def close(self) -> None:
-        if self.pin is not None:
-            self.pin.unlink(missing_ok=True)
-            self.pin = None
-
-
-def _foreign_or_unproven(state_dir: Path, tenant: str, generation: Any) -> str | None:
-    """Why the served ``generation`` cannot stand for ``tenant``'s projection, or None.
-    The host records no tenant with a generation; its ``post_project`` rows are its own
-    tenant's decisions as they were when the build started. So it is reused only when the
-    decision stores hold no other tenant's rows; when ``tenant`` has decisions, the build
-    read some (the host's tenant is then ``tenant``) and started after the newest of them.
-    A store or time that cannot be read is unproven."""
-    from ontology import reviews
-    from ontology.store import instant
-
-    from . import kind_confirmation
-
-    own, newest = 0, []
-    for path, table, at in (
-            (reviews.store_path(state_dir), "reviews", "recorded_at"),
-            (kind_confirmation.store_path(state_dir), "confirmation",
-             "json_extract(record_json, '$.confirmed_at')")):
-        if not path.is_file():
-            continue
-        try:
-            with contextlib.closing(sqlite3.connect(path.resolve().as_uri() + "?mode=ro",
-                                                    uri=True, timeout=5)) as db:
-                if db.execute("SELECT 1 FROM sqlite_master WHERE type = 'table' AND "
-                              "name = ?", (table,)).fetchone() is None:
-                    continue
-                other, mine = db.execute(
-                    f"SELECT COALESCE(SUM(tenant != ?), 0), COALESCE(SUM(tenant = ?), 0) "
-                    f"FROM {table}", (tenant, tenant)).fetchone()
-                if mine:
-                    newest.append(db.execute(f"SELECT MAX({at}) FROM {table} "
-                                             "WHERE tenant = ?", (tenant,)).fetchone()[0])
-        except sqlite3.Error:
-            return "decision_store_unreadable"
-        if other:
-            return "served_tenant_unproven"
-        own += mine
-    if not own:
-        return None
-    steps = generation.report.get("post_project") or {}
-    read = sum(int(((steps.get(name) or {}).get("counts") or {}).get(key) or 0)
-               for name, key in (("reviews", "decisions"), ("confirmations", "confirmations")))
-    if not read:
-        return "served_tenant_unproven"
-    try:
-        with contextlib.closing(sqlite3.connect(
-                generation.store.resolve().as_uri() + "?mode=ro", uri=True)) as db:
-            built = instant(db.execute("SELECT value FROM store_meta WHERE key = 'built_at'"
-                                       ).fetchone()[0])
-        if any(instant(at) >= built for at in newest):
-            return "served_older_than_decisions"
-    except (sqlite3.Error, TypeError, ValueError):
-        return "served_tenant_unproven"
-    return None
-
-
-def _pid_alive(pid: int) -> bool:
-    try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
-        return False
-    except OSError:
-        return True
-    return True
-
-
-def _sweep_pins(directory: Path) -> None:
-    """Drop the pins of runs no longer running (a killed run leaves its hard link)."""
-    for pin in directory.glob(f"{PIN_PREFIX}*.sqlite"):
-        match = re.fullmatch(re.escape(PIN_PREFIX) + r"[0-9A-Za-z]+-(\d+)-[0-9a-f]+\.sqlite",
-                             pin.name)
-        if match and not _pid_alive(int(match.group(1))):
-            pin.unlink(missing_ok=True)
-
-
-def _pin(state_dir: Path, generation: Any) -> Path | None:
-    """A hard link to ``generation``'s store in ``case-workspace-live`` (no bytes copied),
-    checked to be that generation (its content digest); None when the file system cannot
-    link it (another device, no permission) or the generation was pruned meanwhile."""
-    import secrets
-
-    directory = state_dir / INDEX_DIR
-    directory.mkdir(parents=True, exist_ok=True)
-    _sweep_pins(directory)
-    pin = directory / f"{PIN_PREFIX}{generation.id}-{os.getpid()}-{secrets.token_hex(4)}.sqlite"
-    try:
-        os.link(generation.store, pin)
-    except OSError:
-        return None
-    try:
-        with contextlib.closing(sqlite3.connect(pin.resolve().as_uri() + "?mode=ro",
-                                                uri=True)) as db:
-            row = db.execute("SELECT value FROM store_meta WHERE key = 'content_digest'"
-                             ).fetchone()
-    except sqlite3.Error:
-        row = None
-    if row is None or row[0] != generation.content_digest:
-        pin.unlink(missing_ok=True)
-        return None
-    return pin
-
-
-def served_generation(state_dir: str | Path, tenant: str) -> tuple[Any, str]:
-    """(the host's committed generation this run may read for ``tenant``, or None; the
-    reason code). Read-only: ``CURRENT`` and the generation's store are only read."""
-    from ontology.project_incremental import current_generation
-
-    generation = current_generation(Path(state_dir) / SERVED_DIR)
-    if generation is None:
-        return None, "no_served_generation"
-    refused = _foreign_or_unproven(Path(state_dir), tenant, generation)
-    if refused:
-        return None, refused
-    return generation, "served_generation"
-
-
-def run_projection(state_dir: str | Path, tenant: str, *,
-                   internal_domains: Sequence[str] = (),
-                   disk_free: Callable[[Path], int] | None = None) -> RunProjection:
-    """The projection a run reads (:class:`RunProjection`; the caller closes it). The
-    host's served generation when there is one this tenant may use (opened read-only,
-    pinned; ``internal_domains`` is then the host's own mail scope); else a private build
-    at :func:`projection_file` (:func:`project_state`), refused before it starts when free
-    space is below ``PRIVATE_FREE_FLOOR`` plus the last private file's size, and stopped
-    (:class:`ProjectionDiskLow`, partial files removed) when free space falls below the
-    floor while it runs."""
-    import shutil
-
-    state = Path(state_dir)
-    free_of = disk_free or (lambda path: shutil.disk_usage(path).free)
-    generation, reason = served_generation(state, tenant)
-    for _attempt in range(2):   # a generation pruned between reading CURRENT and linking
-        if generation is None:
-            break
-        pin = _pin(state, generation)
-        if pin is not None:
-            return RunProjection(pin, "served", reason, generation=generation.id,
-                                 content_digest=generation.content_digest, pin=pin)
-        again, why = served_generation(state, tenant)
-        if again is not None and again.id == generation.id:
-            # Linking is not possible here: read the generation in place, unpinned (the
-            # host keeps the previous generation on disk after one commit, ``KEEP``).
-            return RunProjection(generation.store, "served", "served_generation_unpinned",
-                                 generation=generation.id,
-                                 content_digest=generation.content_digest)
-        generation, reason = again, why
-    path = projection_file(state, tenant)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    previous = path.stat().st_size if path.is_file() else 0
-
-    def free() -> int | None:
-        try:
-            return int(free_of(path.parent))
-        except OSError:
-            return None
-
-    needed = PRIVATE_FREE_FLOOR + previous
-    before = free()
-    if before is None or before < needed:
-        raise ProjectionDiskLow(before, needed)
-
-    def checkpoint() -> None:
-        now = free()
-        if now is None or now < PRIVATE_FREE_FLOOR:
-            raise ProjectionDiskLow(now, PRIVATE_FREE_FLOOR)
-
-    project_state(state, path, tenant=tenant, internal_domains=internal_domains,
-                  checkpoint=checkpoint)
-    return RunProjection(path, "private", reason)
-
-
-_TOKEN = re.compile(r"[A-Za-z0-9][A-Za-z0-9#._/-]*")
-
-
-def _value_texts(value: Any) -> list[str]:
-    """Comparable texts of one row value (an integral number also as an integer)."""
-    if value is None or isinstance(value, bool):
-        return []
-    if isinstance(value, float) and value.is_integer():
-        return [str(int(value)), str(value)]
-    if isinstance(value, (int, float)):
-        return [str(value)]
-    if isinstance(value, str):
-        text = value.strip()
-        if re.fullmatch(r"-?\d+\.0+", text):
-            return [text, text.split(".", 1)[0]]
-        return [text] if text else []
-    return []
-
-
-def _row_texts(node: Any, out: set[str]) -> None:
-    stack = [node]
-    while stack:
-        item = stack.pop()
-        if isinstance(item, Mapping):
-            stack.extend(item.values())
-        elif isinstance(item, (list, tuple)):
-            stack.extend(item)
-        else:
-            out.update(_value_texts(item))
-
-
-def _plain(value: Any) -> Any:
-    """A tool value without its untrusted-text envelope (the source text itself)."""
-    if isinstance(value, Mapping) and isinstance(value.get("untrusted_text"), str):
-        return value["untrusted_text"]
-    return value
-
-
-def _mirror_relation(handle: Any) -> tuple[str, dict[str, Any]] | None:
-    from integrations.source_mirror import parse_citation
-
-    try:
-        relation, _canonical, key, _capture = parse_citation(handle)
-    except ValueError:
-        return None
-    return relation, key
-
-
-def cited_rows(result: Any) -> list[tuple[str, set[str]]]:
-    """(relation, value texts) for every mirror-cited value in a tool result: a value
-    with its ``citation``, or source text whose envelope names its ``origin`` row. The
-    row's key values count as its texts too (an object id carries them)."""
-    out: list[tuple[str, set[str]]] = []
-    stack = [result]
-    while stack:
-        item = stack.pop()
-        if isinstance(item, Mapping):
-            cite = item.get("citation")
-            handle = cite.get("l1_handle") if isinstance(cite, Mapping) else None
-            value = item.get("value")
-            if handle is None and isinstance(item.get("untrusted_text"), str):
-                handle = (item.get("origin") or {}).get("citation")
-                value = item["untrusted_text"]
-            found = _mirror_relation(handle) if isinstance(handle, str) else None
-            if found is not None:
-                texts: set[str] = set()
-                _row_texts([_plain(value), found[1]], texts)
-                out.append((found[0], texts))
-            stack.extend(item.values())
-        elif isinstance(item, list):
-            stack.extend(item)
-    return out
-
-
-def case_tokens(texts: Sequence[Any]) -> list[str]:
-    """Identifier-shaped tokens (a digit, 3+ characters) of the case's own words."""
-    out: list[str] = []
-    for text in texts:
-        for token in _TOKEN.findall(str(text or "")):
-            token = token.rstrip("._/-")
-            if len(token) >= 3 and any(ch.isdigit() for ch in token) and token not in out:
-                out.append(token)
-    return out
-
-
-class _StampedCases:
-    """A case store view whose ``open`` records ``kind`` as the question's author.
-
-    The in-process MCP server stamps every ``plx.case_open`` question ``agent`` (an
-    agent supplied it). When a person's session opens the case (``SessionIdentity``
-    with ``author_kind == "human"``, the console ``--open``), the question is theirs:
-    this view replaces the stamp with the session's kind, and ``CaseStore.open``
-    still refuses ``human`` for an actor holding an agent principal."""
-
-    def __init__(self, cases: Any, kind: str) -> None:
-        self._cases, self._kind = cases, kind
-
-    def open(self, *args: Any, **kwargs: Any) -> str:
-        kwargs["objective_author_kind"] = self._kind
-        return self._cases.open(*args, **kwargs)
-
-    def __getattr__(self, name: str) -> Any:
-        return getattr(self._cases, name)
-
-
-class _StampedRuntime:
-    def __init__(self, runtime: Any, kind: str) -> None:
-        self._runtime = runtime
-        self.cases = _StampedCases(runtime.cases, kind)
-
-    def __getattr__(self, name: str) -> Any:
-        return getattr(self._runtime, name)
 
 
 class _Session:
@@ -1173,64 +559,6 @@ class _Session:
         if tool == "plx.case_open" and isinstance(result.get("case_id"), str):
             self.opened.append(result["case_id"])
         return result
-
-
-_BARE_NUMBER = re.compile(r"(?<![\w.:/#@+-])[+-]?\d+(?:[.,]\d+)*(?![\w.:/#@%+-])")
-# An ISO date or timestamp in uncited prose: no claim a row holds either (claim_checks).
-_BARE_DATE = re.compile(r"(?<![\w.:/#@+-])\d{4}-\d{2}-\d{2}(?:[T ]\d{2}:\d{2}[\d:.]*"
-                        r"(?:Z|[+-]\d{2}(?::?\d{2})?)?)?(?![\w/#@%-])")
-
-
-def _document_types() -> set[str]:
-    """The object types projected from a document's machine-read fields."""
-    from ontology.document_fields import profiles
-    return {profile["object_type"] for profile in profiles()["profiles"]}
-
-
-def _l1_handle(value: Mapping[str, Any]) -> str | None:
-    cite = value.get("citation")
-    handle = cite.get("l1_handle") if isinstance(cite, Mapping) else None
-    return handle if isinstance(handle, str) and handle else None
-
-
-def _unnumbered(text: str, dates: Collection[str] = ()) -> str:
-    """``text`` with every bare number and ISO date written as "#", except the dates in
-    ``dates`` (the values of the item's own date claims, which the claim gate checks)."""
-    return _BARE_NUMBER.sub("#", _BARE_DATE.sub(
-        lambda match: match.group(0) if match.group(0) in dates else "#", str(text)))
-
-
-def _code(result: Mapping[str, Any]) -> str:
-    error = result.get("error")
-    code = error.get("code") if isinstance(error, Mapping) else None
-    return code if isinstance(code, str) and re.fullmatch(r"[a-z_]{1,60}", code) else "error"
-
-
-def _evidence_reached(answer: Mapping[str, Any]) -> list[str]:
-    """The answer chain's objects joined to its root by evidence-tier links: an object
-    reached only through lead-tier links is a lead, never the basis of an answer.
-
-    Limitation, failing closed: ``plx.investigate`` exposes its root only for a single
-    root (``answer["root"]``) and no root collection ids otherwise, so with several roots,
-    or a root not among the chain's objects, nothing is reached and the answer's
-    fallback cites only its own entries' citations (fewer citations, never a lead's)."""
-    from .ontology_tools_investigate import _EVIDENCE_TIERS
-    chain = answer.get("chain") if isinstance(answer.get("chain"), Mapping) else {}
-    linked: dict[Any, set[Any]] = {}
-    for edge in chain.get("edges") or ():
-        if isinstance(edge, Mapping) and edge.get("tier") in _EVIDENCE_TIERS:
-            linked.setdefault(edge.get("from"), set()).add(edge.get("to"))
-            linked.setdefault(edge.get("to"), set()).add(edge.get("from"))
-    root = answer.get("root") if isinstance(answer.get("root"), Mapping) else {}
-    seen = {root.get("object_id")}
-    frontier = list(seen)
-    while frontier:
-        for other in linked.get(frontier.pop(), ()):
-            if other not in seen:
-                seen.add(other)
-                frontier.append(other)
-    return [ref["object_id"] for ref in chain.get("objects") or ()
-            if isinstance(ref, Mapping) and ref.get("object_id") in seen]
 
 
 class _Recorder:
@@ -1732,43 +1060,6 @@ class _Recorder:
                             "families again with plx.investigate to read them", own=True)
 
 
-def _rooted(candidate: Mapping[str, Any], identifier: str) -> Mapping[str, Any]:
-    """The object a lone plx.find candidate roots. A candidate matched on a kind unique
-    only within a scope (a customer PO) roots only when it passes the one root gate
-    (``ontology_tools.roots_exactly``, read through ``scoped_root_lead``: a root reason or
-    a linked record, its one scope and the identifier's literal text); else the request is
-    refused ``root_lead_only:<why>``, never opened on a lead. Other kinds root as plx.find
-    answers them."""
-    from .ontology_tools import default_grammar, scoped_root_lead
-
-    why = scoped_root_lead(candidate, identifier, default_grammar())
-    if why is not None:
-        raise OpenError(f"root_lead_only:{why}")
-    return candidate["object"]
-
-
-def _one_record(call: Callable[[str, dict], dict], candidates: Sequence[Mapping[str, Any]]
-                ) -> bool:
-    """True when every candidate is one record held in several systems: the candidates
-    are joined to one another by same-record identity links the tools report at a
-    verified or reviewed tier (``plx.object`` ``identity``, read by
-    ``ontology_tools.same_party``). Then the first ranked roots the case and the plans
-    reach the others as its twins; anything less stays ambiguous."""
-    from .ontology_tools import same_party
-
-    ids = [c.get("object_id") for c in candidates]
-    if len(ids) < 2 or len(set(ids)) != len(ids):
-        return False
-    edges: list[tuple[Any, Any, Any]] = []
-    for object_id in ids:
-        card = call("plx.object", {"object_id": object_id})
-        if "error" in card:
-            return False
-        edges += [(edge["from"], edge["to"], edge.get("tier"))
-                  for edge in card.get("identity") or []]
-    return all(same_party(ids[0], other, edges) is True for other in ids[1:])
-
-
 def _newest(db: sqlite3.Connection, object_type: str, near: str | None = None, *,
             only: Collection[str] | None = None) -> list[str]:
     """Object ids of ``object_type`` still held (no open removal: missing from the source
@@ -1805,86 +1096,6 @@ def _newest(db: sqlite3.Connection, object_type: str, near: str | None = None, *
         "MAX(COALESCE(e.time, e.window_end)) DESC, o.first_recorded_at DESC, "
         "o.object_id DESC LIMIT :cap", {"type": object_type, "near": near,
                                          "cap": PICK_SCAN * 10})]
-
-
-def _shared_values(db: sqlite3.Connection, object_type: str, linked: str,
-                   carriers: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
-    """Which held ``object_type`` records carry, at a join carrier's ``field``, a value a
-    held ``linked`` record holds at that carrier's ``to_field`` (the reverse direction of a
-    join pick: the two populations intersected by value, however old either record is).
-    Only carriers that compare the two records directly (no ``then`` hop) are read; a
-    value naming a row of a prefix-setting database (``UAT-``) is skipped, as ``_join``
-    never searches it. Values are compared trimmed and case-folded: a candidate only,
-    which ``_join`` then decides through the tools by the owning system's literal rule.
-    ``{"start_held", "linked_held", "linked_matched", "start": [object ids],
-    "start_scoped": [object ids]}``: counts of the projection's records carrying any such
-    value (under the relation grants the caller filtered ``carriers`` by, never a row's
-    own ACL: a candidate the investigator may not read is ``root_not_readable`` when it is
-    tried), and the start records that share one through a carrier unique on its own
-    (``start``) or only through a scoped one (``start_scoped``: a customer PO, where a
-    common text such as a verbal-order marker matches many customers' orders, so these are
-    tried after every order-number match)."""
-    from ontology import identifiers
-    from ontology.store import removed_at_sql
-
-    from .ontology_tools import _column_path, default_grammar, scoped_kind
-
-    grammar = default_grammar()
-    pairs = {(c["from_binding"], c["field"], c["to_binding"], c["to_field"])
-             for c in carriers if c.get("then") is None and c.get("find_type") == linked}
-    scoped = {(c["from_binding"], c["field"], c["to_binding"], c["to_field"])
-              for c in carriers if c.get("then") is None and c.get("find_type") == linked
-              and scoped_kind(grammar, c["identifier_kind"])}
-
-    def load(type_id: str, fields: dict[str, set[str]]) -> dict[str, set[tuple[str, str, str]]]:
-        out: dict[str, set[tuple[str, str, str]]] = {}
-        if not fields:
-            return out
-        for object_id, binding, path, value in db.execute(
-                "SELECT v.object_id, v.binding_id, v.field_path, v.value FROM object_values v "
-                "JOIN objects o ON o.object_id = v.object_id WHERE o.object_type = :type "
-                "AND v.superseded_at IS NULL AND v.value IS NOT NULL "
-                "AND v.binding_id IN (SELECT value FROM json_each(:bindings)) "
-                f"AND NOT {removed_at_sql('o.object_id')}",
-                {"type": type_id, "bindings": json.dumps(sorted(fields))}):
-            column, text = _column_path(str(path)), str(value).strip()
-            if column in fields.get(binding, ()) and text \
-                    and not identifiers.environment_prefix(text):
-                out.setdefault(object_id, set()).add((binding, column, text.casefold()))
-        return out
-
-    starts: dict[str, set[str]] = {}
-    ends: dict[str, set[str]] = {}
-    for start_binding, field, end_binding, end_field in pairs:
-        starts.setdefault(start_binding, set()).add(field)
-        ends.setdefault(end_binding, set()).add(end_field)
-    held = load(object_type, starts)
-    targets = load(linked, ends)
-    index: dict[tuple[str, str, str], set[str]] = {}
-    for object_id, carried in targets.items():
-        for key in carried:
-            index.setdefault(key, set()).add(object_id)
-    start: set[str] = set()
-    start_scoped: set[str] = set()
-    matched: set[str] = set()
-    for object_id, carried in held.items():
-        for binding, column, text in carried:
-            for pair in {p for p in pairs if p[:2] == (binding, column)}:
-                found = index.get((pair[2], pair[3], text))
-                if found:
-                    (start_scoped if pair in scoped else start).add(object_id)
-                    matched |= found
-    return {"start_held": len(held), "linked_held": len(targets),
-            "linked_matched": len(matched), "start": sorted(start),
-            "start_scoped": sorted(start_scoped - start)}
-
-
-def _held(db: sqlite3.Connection, object_type: str) -> bool:
-    """Whether the projection still holds an object of ``object_type`` (no open removal)."""
-    from ontology.store import removed_at_sql
-    return db.execute("SELECT 1 FROM objects o WHERE o.object_type = ? AND NOT "
-                      f"{removed_at_sql('o.object_id')} LIMIT 1", (object_type,)
-                      ).fetchone() is not None
 
 
 def _join_counts(db: sqlite3.Connection, object_type: str, linked: str,
@@ -1939,17 +1150,6 @@ def _join_counts(db: sqlite3.Connection, object_type: str, linked: str,
                 unheld += 1
                 break
     return {"linked_held": row[0], "linked_to_start": row[1], "linked_refs_unheld": unheld}
-
-
-def _freshness(db: sqlite3.Connection) -> dict[str, Any]:
-    """The projection's ``store_meta.source_freshness`` (source -> relation -> facts); {}
-    when absent or unreadable."""
-    row = db.execute("SELECT value FROM store_meta WHERE key = 'source_freshness'").fetchone()
-    try:
-        freshness = json.loads(row[0]) if row else {}
-    except (TypeError, ValueError):
-        freshness = {}
-    return freshness if isinstance(freshness, dict) else {}
 
 
 def _bindings(object_type: str) -> list[Mapping[str, Any]]:
@@ -2012,59 +1212,6 @@ def _binding(binding_id: str) -> Mapping[str, Any] | None:
 
     found = binding_spec(_schema(), binding_id)
     return found[1] if found else None
-
-
-def _link_paths(db: sqlite3.Connection, object_id: str, linked: str
-                ) -> list[list[dict[str, str]]]:
-    """``plx.around`` paths (one or two links, schema directions) from ``object_id`` to an
-    object of type ``linked``, as the store's links run."""
-    def hops(source: str, end_type: str | None = None) -> list[tuple[str, str, str]]:
-        """Links at ``source`` (to an object of ``end_type`` only, when given)."""
-        return [(row[0], row[1], row[2]) for row in db.execute(
-            "SELECT l.link_type, CASE WHEN l.from_object = :at THEN 'forward' ELSE 'reverse' "
-            "END, o.object_id FROM links l JOIN objects o ON o.object_id = CASE WHEN "
-            "l.from_object = :at THEN l.to_object ELSE l.from_object END WHERE "
-            "(l.from_object = :at OR l.to_object = :at) AND (:end IS NULL OR "
-            "o.object_type = :end) LIMIT 200", {"at": source, "end": end_type})]
-
-    def type_of(oid: str) -> str | None:
-        row = db.execute("SELECT object_type FROM objects WHERE object_id = ?",
-                         (oid,)).fetchone()
-        return row[0] if row else None
-
-    paths: list[list[dict[str, str]]] = []
-    for link, direction, middle in hops(object_id, linked) + hops(object_id):
-        first = {"link_type": link, "direction": direction}
-        if type_of(middle) == linked:
-            paths.append([first])
-            continue
-        for link2, direction2, end in hops(middle, linked):
-            if end != object_id:
-                paths.append([first, {"link_type": link2, "direction": direction2}])
-    unique: list[list[dict[str, str]]] = []
-    for path in paths:
-        if path not in unique:
-            unique.append(path)
-    return unique[:4]
-
-
-def _reaches(call: Callable[[str, dict], dict], object_id: str,
-             path: list[dict[str, str]]) -> tuple[str | None, list[str]]:
-    """How ``plx.around`` reaches a readable object along ``path``: ``evidence`` at its
-    default tier floor, ``lead`` only when asked again at lead tier by the plans' own rule
-    (``ontology_tools_investigate.ask_again``: the tool said the path's links lie below its
-    floor, as a machine-read document reference does), else None; with the ids of the
-    objects it reached."""
-    from .ontology_tools_investigate import LEAD_RETRY, ask_again
-
-    first, found = ask_again(lambda args: call("plx.around", args),
-                             {"from": object_id, "path": path, "limit": 1}, LEAD_RETRY,
-                             lambda answer: not answer.get("objects"))
-    if not found.get("objects"):
-        return None, []
-    reached = [str(o["object_id"]) for o in found["objects"]
-               if isinstance(o, Mapping) and isinstance(o.get("object_id"), str)]
-    return ("evidence" if found is first else "lead"), reached
 
 
 class CaseOpener:
@@ -2190,7 +1337,11 @@ class CaseOpener:
         under a capture-state cause, ``missing``).
         ``self.root`` then names the opened case's root (object id and type, and its
         mirror row: relation and key) for an in-process caller; never printed."""
-        result = self._open(kind, identifier, reinvestigate)
+        token = _OPEN_SCHEMA.set([])
+        try:
+            result = self._open(kind, identifier, reinvestigate)
+        finally:
+            _OPEN_SCHEMA.reset(token)
         if self._pick_stats is not None:
             result["pick"] = self._pick_stats
         return result
@@ -2613,7 +1764,9 @@ class CaseOpener:
         from ontology import identifiers
         from ontology.resolve import only_sources
 
-        from .ontology_tools import _column_path, _handle_company, default_grammar, scoped_kind
+        from .ontology_tools import default_grammar
+        from .ontology_tools_identity import _handle_company, scoped_kind
+        from .ontology_tools_results import _column_path
 
         reverse = self._pick_stats["directions"]["reverse"]
         bc = reverse["bc"]
@@ -2764,8 +1917,10 @@ class CaseOpener:
         ``joined`` or its own reason by the same precedence."""
         from ontology import identifiers
 
-        from .ontology_tools import (ROOT_REASONS, _column_path, _handle_company,
-                                     default_grammar, roots_exactly, scoped_kind)
+        from .ontology_tools import default_grammar
+        from .ontology_tools_identity import _handle_company, roots_exactly, scoped_kind
+        from .ontology_tools_policy import ROOT_REASONS
+        from .ontology_tools_results import _column_path
 
         values: dict[str, Any] = {}
         companies: set[str | None] = set()
@@ -2976,7 +2131,7 @@ class CaseOpener:
         match) is the same record as the candidate's; else ``scope_mismatch`` (both read,
         not one record), ``scope_unread`` (either not shown as one record) or the refused
         match's reason (``_SCOPE_WHY``; None: the owning system never matches it)."""
-        from .ontology_tools import scoped_root_lead
+        from .ontology_tools_identity import scoped_root_lead
 
         why = scoped_root_lead(candidate, value, grammar)
         if why is not None:
@@ -2999,7 +2154,7 @@ class CaseOpener:
         ``link`` in ``direction`` (asked again at lead tier by the plans' own rule when the
         tool says the link lies below its floor, as a Portal-native row's own foreign key
         does), or None: none, several or a cut answer shows no one party."""
-        from .ontology_tools_investigate import LEAD_RETRY, ask_again
+        from .ontology_tools_investigate_plans import LEAD_RETRY, ask_again
 
         key = ("party", object_id, link, direction)
         if key not in memo:
@@ -3047,7 +2202,7 @@ class CaseOpener:
                      identifier: str) -> str | None:
         from operator_api.workspace.object_workspace import plans_for
 
-        from .ontology_tools import _IDENTITY_TIERS
+        from .ontology_tools_policy import _IDENTITY_TIERS
 
         extra: list[str] = []
         if kind == "pick":
@@ -3206,22 +2361,6 @@ class CaseOpener:
         return case_id
 
 
-def _audience_digest(audience: Any) -> str | None:
-    """SHA-256 of a mirror ``AudienceMap``'s grants and classifications (its content,
-    whichever file it came from), or None for another ``allows`` object."""
-    from hashlib import sha256
-
-    grants = getattr(audience, "_audiences", None)
-    levels = getattr(audience, "_classifications", None)
-    if not isinstance(grants, Mapping) or not isinstance(levels, Mapping):
-        return None
-    return sha256(json.dumps({
-        "tenant": getattr(audience, "tenant", None),
-        "default_classification": getattr(audience, "default_classification", None),
-        "audiences": {pattern: sorted(principals) for pattern, principals in grants.items()},
-        "classifications": dict(levels)}, sort_keys=True).encode("utf-8")).hexdigest()
-
-
 def _last_ingestion_run(state_dir: Path) -> int | None:
     """The latest finished ingestion run id (read-only), or None."""
     import sqlite3
@@ -3240,53 +2379,6 @@ def _last_ingestion_run(state_dir: Path) -> int | None:
     except sqlite3.Error:
         return None
     return row[0] if row else None
-
-
-def _decisions(state_dir: Path, tenant: str) -> dict[str, list[int]] | None:
-    """The state of ``tenant``'s decisions the projection is built from: per store (the
-    review store, the confirmation store; both append-only), its last sequence number and
-    row count, ``[]`` when the store is not there. Read-only; None when a store is there
-    but cannot be read."""
-    from ontology import reviews
-
-    from . import kind_confirmation
-
-    out: dict[str, list[int]] = {}
-    for name, path, table in (("reviews", reviews.store_path(state_dir), "reviews"),
-                              ("confirmations", kind_confirmation.store_path(state_dir),
-                               "confirmation")):
-        if not path.is_file():
-            out[name] = []
-            continue
-        try:
-            with contextlib.closing(sqlite3.connect(path.resolve().as_uri() + "?mode=ro",
-                                                    uri=True, timeout=5)) as db:
-                row = db.execute(f"SELECT MAX(seq), COUNT(*) FROM {table} WHERE tenant = ?",
-                                 (tenant,)).fetchone()
-        except sqlite3.Error:
-            return None
-        out[name] = [row[0] or 0, row[1]]
-    return out
-
-
-# ------------------------------------------------------------------ render
-
-
-def workspace(runtime: Any, reader: Any, case_id: str, *, evidence: Mapping[str, Any] | None = None,
-              action_path: Any = None, ingestion: Any = None) -> dict[str, Any] | None:
-    """The console workspace of one case for ``reader``, or None when not readable."""
-    from operator_api.workspace.case_workspace import CaseWorkspace
-
-    view = CaseWorkspace(runtime, reader, evidence=evidence or MIRROR_EVIDENCE,
-                         action_path=action_path, ingestion=ingestion)
-    try:
-        return view.case(case_id)
-    except KeyError:
-        return None
-
-
-def _count(items: Any) -> int:
-    return len(items) if isinstance(items, list) else 0
 
 
 def structure(view: Mapping[str, Any] | None) -> dict[str, Any]:
@@ -3355,108 +2447,6 @@ def structure(view: Mapping[str, Any] | None) -> dict[str, Any]:
     }
 
 
-def panel_totals(cases: list[Mapping[str, Any]]) -> dict[str, Any]:
-    """Readers whose rendered case shows every panel, and readers by evaluation status."""
-    readers = [r for e in cases for r in e.get("readers", []) if r.get("status") == "read"]
-    by_status: dict[str, int] = {}
-    for reader in readers:
-        if reader.get("evaluation") is not None:
-            status = str(reader["evaluation"])
-            by_status[status] = by_status.get(status, 0) + 1
-    return {"converged_readers": sum(1 for r in readers if r.get("converged")),
-            "evaluation_by_status": dict(sorted(by_status.items()))}
-
-
-def _resolved_handles(node: Any, out: set[str]) -> set[str]:
-    """Every citation handle a rendered workspace marks ``resolved`` for its reader."""
-    if isinstance(node, Mapping):
-        if isinstance(node.get("handle"), str) and node.get("status") == "resolved":
-            out.add(node["handle"])
-        for value in node.values():
-            _resolved_handles(value, out)
-    elif isinstance(node, list):
-        for value in node:
-            _resolved_handles(value, out)
-    return out
-
-
-def _versions_citing(projection: Path, handles: Sequence[str]) -> list[str] | None:
-    """Ids of the projection objects with a captured version under one of ``handles``
-    (sorted), or None when the projection cannot be read. Ids only: whether a reader may
-    read one is that reader's ``plx.object`` answer."""
-    if not projection.is_file():
-        return None
-    try:
-        db = sqlite3.connect(projection.resolve().as_uri() + "?mode=ro", uri=True)
-        try:
-            return [row[0] for row in db.execute(
-                "SELECT DISTINCT object_id FROM object_versions WHERE l1_handle IN "
-                "(SELECT value FROM json_each(?)) ORDER BY object_id",
-                (json.dumps(sorted(handles)),))]
-        finally:
-            db.close()
-    except sqlite3.Error:
-        return None
-
-
-def relationships(call: Callable[[str, dict], dict], projection: Path,
-                  view: Mapping[str, Any] | None) -> dict[str, Any]:
-    """Counts of the projection's ontology links around one reader's case workspace,
-    read through that reader's generic tools (``call``): ``relationship_nodes`` (the case
-    objects the reader may read), ``relationship_edges`` (link type -> distinct links the
-    reader sees with an end on one of them; identity edges included) and
-    ``relationship_truncated`` (the sorted parts the bounded read could not finish, so a
-    count there is a floor, never complete)."""
-    if view is None:
-        return {}
-    truncated: set[str] = set()
-    found = _versions_citing(projection, sorted(_resolved_handles(view, set())))
-    if found is None:
-        found, truncated = [], {"projection_unavailable"}
-    if len(found) > MAP_OBJECTS:
-        truncated.add("objects")
-    links: dict[str, str] = {}   # link id -> link type
-    nodes = 0
-    for object_id in found[:MAP_OBJECTS]:
-        card = call("plx.object", {"object_id": object_id})
-        if "error" in card:
-            if _code(card) != "object_not_found":   # not visible to this reader: not counted
-                truncated.add("object_error")
-            continue
-        nodes += 1
-        if len(card.get("identity") or []) >= CARD_IDENTITY or len(
-                card.get("linked_counts") or []) >= CARD_LINK_TYPES:
-            truncated.add("card")   # a card lists at most this many of either
-        for edge in card.get("identity") or []:
-            links[str(edge.get("link_id"))] = str(edge.get("link_type"))
-        for entry in card.get("linked_counts") or []:
-            if not entry.get("count"):
-                continue
-            arguments = {"from": object_id, "tier_floor": LOWEST_TIER, "limit": MAP_PAGE,
-                         "path": [{"link_type": entry["link_type"],
-                                   "direction": entry["direction"]}]}
-            for _page in range(MAP_PAGES):
-                around = call("plx.around", arguments)
-                if "error" in around:
-                    truncated.add(_code(around))
-                    break
-                for edge in around.get("edges") or []:
-                    links[str(edge.get("link_id"))] = str(edge.get("link_type"))
-                if any(gap.get("reason") == "edge_cap" for gap in around.get("gaps") or []):
-                    truncated.add("links")
-                cursor = (around.get("completeness") or {}).get("next_cursor")
-                if not cursor:
-                    break
-                arguments = {**arguments, "cursor": cursor}
-            else:
-                truncated.add("links")
-    counts: dict[str, int] = {}
-    for link_type in links.values():
-        counts[link_type] = counts.get(link_type, 0) + 1
-    return {"relationship_nodes": nodes, "relationship_edges": dict(sorted(counts.items())),
-            "relationship_truncated": sorted(truncated)}
-
-
 class _ReaderTools:
     """One in-process tool session per reader over the run's projection, for
     ``relationships`` (opened on first use, closed with the run)."""
@@ -3482,302 +2472,6 @@ class _ReaderTools:
     def close(self) -> None:
         for session in self.sessions.values():
             session.close()
-
-
-def checkable(value: str) -> bool:
-    """A value the leak checks look for: an identifier/number shape (a digit and
-    ``MIN_DIGIT_CHARS`` or more characters: PO5447, 1509, 2026-01-07) or any text of
-    ``MIN_LEAK_CHARS`` or more. Shorter values (``20``, ``EA``, ``open``) cannot be told
-    from the view's own counts and words and are counted as skipped."""
-    return (len(value) >= MIN_LEAK_CHARS
-            or (len(value) >= MIN_DIGIT_CHARS and any(ch.isdigit() for ch in value)))
-
-
-def _strings(node: Any, out: set[str]) -> None:
-    texts: set[str] = set()
-    _row_texts(node, texts)
-    out.update(texts)
-
-
-def _found(value: str, text: str) -> bool:
-    """``value`` occurs in ``text`` as a whole token (not inside a longer id or digest)."""
-    return re.search(rf"(?<![A-Za-z0-9]){re.escape(value)}(?![A-Za-z0-9])", text) is not None
-
-
-# Timestamps the Workbench writes itself (case events, reads, refreshes): never source
-# values, so they are left out of the text a leak check searches.
-_OWN_TIME_KEYS = frozenset({"at", "opened_at", "updated_at", "closed_at", "read_at",
-                            "recorded_at", "last_refresh_at", "relation_last_refresh_at",
-                            "content_last_seen_at", "decided_at"})
-
-
-def _without_own_times(node: Any) -> Any:
-    if isinstance(node, Mapping):
-        return {key: _without_own_times(value) for key, value in node.items()
-                if key not in _OWN_TIME_KEYS}
-    if isinstance(node, list):
-        return [_without_own_times(item) for item in node]
-    return node
-
-
-def leak_check(runtime: Any, full_actor: Any, reader: Any, full_view: Mapping[str, Any] | None,
-               reader_view: Mapping[str, Any] | None, audience: Any) -> dict[str, Any]:
-    """Does ``reader_view`` hold any value of a row ``reader`` may not read?
-
-    Every row cited on the case (as ``full_actor`` resolves it now) whose relation the
-    mirror ``audience`` does not grant ``reader`` is withheld. Its citation handle, and
-    every ``checkable`` value no source the reader may read also holds (a readable row, a
-    readable original or live citation), must not occur as a whole token anywhere in the
-    reader's workspace, the case's own question, roots and uncited items included (a
-    case script writes identifiers it read from rows into them; ``case_text_leaks``
-    counts those apart, inside ``row_leaks``). Counts only; ``values_skipped_short``
-    states the blind spot."""
-    from .cases import CitationUnresolvable
-
-    if full_view is None or reader_view is None:
-        return {"withheld_rows": 0, "values_checked": 0, "values_skipped_short": 0,
-                "row_leaks": 0, "case_text_leaks": 0, "withheld_relation_refs": 0}
-    own_words, rest = _split_uncited(_without_own_times(reader_view))
-    text = json.dumps(rest, sort_keys=True, default=str, ensure_ascii=False)
-    hidden: set[str] = set()
-    shown: set[str] = set()
-    handles: list[str] = []
-    withheld_relations: set[str] = set()
-    for record in full_view.get("records") or []:
-        handle = record.get("handle")
-        try:
-            view = runtime.resolve_citation(handle, full_actor)
-        except CitationUnresolvable:
-            continue
-        rows = [view["row"]] if "row" in view else list(view.get("rows") or [])
-        if audience.allows(reader, view["relation"]):
-            _strings(rows, shown)
-        else:
-            handles.append(handle)
-            withheld_relations.add(view["relation"])
-            _strings(rows, hidden)
-    # What the reader holds from a source it may read: its originals (file name, path,
-    # citation), each re-read for this reader by the workspace, and its readable rows'
-    # values (a withheld value that is a whole token of a readable one, such as a code
-    # inside the readable AO number, is what the reader may already read).
-    held = json.dumps([[original.get("filename"), original.get("citation"),
-                        (original.get("source") or {}).get("path"),
-                        (original.get("source") or {}).get("name"),
-                        (original.get("source") or {}).get("citation")]
-                       for original in reader_view.get("originals") or []]
-                      + sorted(shown), default=str, ensure_ascii=False)
-    candidates = {value for value in hidden - shown if not _found(value, held)}
-    values = {value for value in candidates if checkable(value)}
-    in_text = sum(1 for value in values if _found(value, text))
-    in_words = sum(1 for value in values if _found(value, own_words))
-    refs = sum(1 for handle in handles if handle in text or handle in own_words)
-    refs += sum(1 for record in reader_view.get("records") or []
-                if record.get("relation") in withheld_relations)
-    return {"withheld_rows": len(handles), "values_checked": len(values),
-            "values_skipped_short": len(candidates) - len(values),
-            "row_leaks": in_text + in_words, "case_text_leaks": in_words,
-            "withheld_relation_refs": refs}
-
-
-def _split_uncited(view: Mapping[str, Any]) -> tuple[str, dict[str, Any]]:
-    """(the case's uncited text as JSON, the rest of the view).
-
-    Uncited text is what the case store shows every case-audience member whatever the
-    sources: the question, the roots and every finding, gap, proposal or calculation
-    recorded without a citation."""
-    own: list[Any] = [view.get("question"), view.get("roots")]
-    rest = {key: value for key, value in view.items() if key not in ("question", "roots")}
-
-    def uncited(item: Any) -> bool:
-        return (isinstance(item, Mapping) and not item.get("citations")
-                and not (item.get("inputs") or {}))
-
-    for name in ("gaps", "proposals", "calculations"):
-        items = list(view.get(name) or [])
-        own.extend(item for item in items if uncited(item))
-        rest[name] = [item for item in items if not uncited(item)]
-    findings = {}
-    for bucket, items in (view.get("findings") or {}).items():
-        own.extend(item for item in items if uncited(item))
-        findings[bucket] = [item for item in items if not uncited(item)]
-    rest["findings"] = findings
-    return json.dumps(own, sort_keys=True, default=str), rest
-
-
-def summary_check(runtime: Any, full_actor: Any, views: Sequence[Mapping[str, Any] | None],
-                  text: str) -> dict[str, int]:
-    """No cited row value (``checkable``, whole token) and no handle in ``text``."""
-    from .cases import CitationUnresolvable
-
-    values: set[str] = set()
-    for view in views:
-        for record in (view or {}).get("records") or []:
-            values.add(record["handle"])
-            try:
-                resolved = runtime.resolve_citation(record["handle"], full_actor)
-            except CitationUnresolvable:
-                continue
-            _strings([resolved.get("row"), resolved.get("rows")], values)
-        for original in (view or {}).get("originals") or []:
-            _strings([original.get("citation"), original.get("filename"),
-                      (original.get("source") or {}).get("path")], values)
-    checked = {value for value in values if checkable(value)}
-    return {"values_checked": len(checked), "values_skipped_short": len(values) - len(checked),
-            "leaked": sum(1 for v in checked if _found(v, text))}
-
-
-# ------------------------------------------------------------------ CLI
-
-
-def _reader(text: str, tenant: str, clearance: str):
-    from ontology.core import Actor
-
-    principals = [part.strip() for part in str(text).split(",") if part.strip()]
-    if not principals or any(not _PRINCIPAL.fullmatch(p) or "*" in p for p in principals):
-        raise OpenError("reader_principals_invalid")
-    return Actor(tenant, frozenset(principals), clearance)
-
-
-def _ingest(args: argparse.Namespace, environ: Mapping[str, str]) -> tuple[int, dict[str, Any]]:
-    """Run ``operating.ingestion run`` into the state directory; counts-only result."""
-    from . import ingestion
-
-    argv = ["run", "--state-dir", str(args.state_dir), "--sources", str(args.ingest_sources),
-            "--mirror-audience", str(args.mirror_audience), "--runs", str(args.ingest_runs)]
-    if args.ingest_live_audience is not None:
-        argv += ["--live-audience", str(args.ingest_live_audience)]
-    out, err = io.StringIO(), io.StringIO()
-    with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
-        code = ingestion.main(argv, environ=environ)
-    try:
-        report = json.loads(out.getvalue() or "{}")
-    except ValueError:
-        report = {}
-    if code != 0:
-        try:
-            error = json.loads(err.getvalue() or "{}").get("error")
-        except ValueError:
-            error = None
-        return code, {"exit_code": code, "error": error if isinstance(error, str) else
-                      "ingestion_failed"}
-    status = report.get("status") or {}
-    return 0, {"exit_code": 0, "runs": [run.get("summary") for run in report.get("runs") or []],
-               "cursor_regressions": report.get("cursor_regressions"),
-               "row_data_check": report.get("row_data_check"),
-               "status_summary": status.get("summary"),
-               # Per relation: rows read and why a unit is incomplete (cap reasons).
-               "units": [{key: unit.get(key) for key in ("unit_id", "kind", "state",
-                                                          "reasons", "counts")}
-                         for unit in status.get("units") or []]}
-
-
-def _host_cycle(args: argparse.Namespace, environ: Mapping[str, str],
-                options: Mapping[str, Any]) -> tuple[int, dict[str, Any]]:
-    """One capture cycle of the host into the state directory; counts-only result."""
-    from .host import Host, HostConfig, HostError
-
-    try:
-        report = Host(args.state_dir, HostConfig.from_file(args.host_config),
-                      environ=environ, **options).cycle()
-    except HostError as error:
-        return 1, {"exit_code": 1, "error": error.code}
-    return 0, {"exit_code": 0, "state": report.get("state"),
-               "sources": {name: {key: outcome.get(key) for key in (
-                   "state", "complete", "counts", "reasons") if key in outcome}
-                   for name, outcome in (report.get("sources") or {}).items()},
-               "projection": {**{key: (report.get("projection") or {}).get(key)
-                                 for key in ("state", "objects")},
-                              "reference_alias": _reference_alias(report.get("projection")),
-                              "reviews": _review_step(report.get("projection"))}}
-
-
-def _reference_alias(projection: Mapping[str, Any] | None) -> dict[str, Any]:
-    """The supplier-number alias join of the build (the acceptance bar): its typed outcome
-    (``ontology.mentions.reference_alias_outcome``: ``alias_joined``, a pending lead, or
-    why no candidate was found) and counts only, from the mention step's counts."""
-    from ontology.mentions import reference_alias_outcome
-
-    counts = ((projection or {}).get("steps") or {}).get("mentions") or {}
-    return {"outcome": reference_alias_outcome(counts),
-            **{key: counts.get(key) for key in (
-                "reviewed_alias_links", "reviewed_alias_links_open", "alias_numbers",
-                "alias_leads", "alias_no_candidate")}}
-
-
-def _review_step(projection: Mapping[str, Any] | None) -> dict[str, int]:
-    """The people's decisions the build projected (``ontology.reviews.link_step``'s
-    counts: links, allocations and why a decision was not projected), counts only."""
-    counts = ((projection or {}).get("steps") or {}).get("reviews") or {}
-    return {key: value for key, value in counts.items()
-            if isinstance(key, str) and isinstance(value, int) and not isinstance(value, bool)}
-
-
-def _host_books(path: Path | None) -> dict[str, dict[str, str]] | None:
-    """The BC company books the host config's capture pinned (``bc.books``), so a live
-    lookup pins the companies the capture read; None: the default map."""
-    if path is None:
-        return None
-    from integrations.bc_read import load_company_books
-
-    from .host import HostConfig
-
-    books = (HostConfig.from_file(path).sources.get("bc") or {}).get("books")
-    return None if books is None else load_company_books(books)
-
-
-STDERR_CAUSES_MAX = 12
-_CAUSE_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]{0,23}(?:\.[A-Za-z_][A-Za-z0-9_]{0,23})?")
-
-
-class _StderrCauses(contextlib.AbstractContextManager):
-    """Counts, by typed cause, the noise the run would otherwise write to stderr: pypdf's
-    logging records on a malformed mailed PDF, which the reading keeps off stderr where
-    pypdf reads (``document_understanding.pypdf_record_listener``), and ``warnings``
-    messages, which it keeps off stderr: ``causes`` (``{"records": n, "by_cause":
-    {"log:<logger, two name parts>:<LEVEL>" | "warning:<Category>": n}}``), never a
-    message, which may carry a document's text. At most ``STDERR_CAUSES_MAX`` causes are
-    named; the rest count as ``other``. Any other logging record, a traceback logged with
-    ``exc_info`` included, reaches stderr unchanged (the live verifier reads its
-    exception class), as does an exception escaping the run. Warnings are caught
-    process-wide (``warnings.catch_warnings``: not thread-safe), so it wraps the CLI only."""
-
-    def __init__(self, causes: dict[str, Any]):
-        from integrations import document_understanding
-
-        self.causes = causes
-        causes.update(records=0, by_cause={})
-        self._lock = threading.Lock()
-        self._pypdf = document_understanding.pypdf_record_listener(lambda record: self._count(
-            f"log:{_cause_name('.'.join(record.name.split('.')[:2]))}:"
-            f"{_cause_name(record.levelname)}"))
-        self._warnings = warnings.catch_warnings(record=True)
-
-    def _count(self, cause: str) -> None:
-        with self._lock:   # pypdf reads in the capture's worker threads too
-            by_cause = self.causes["by_cause"]
-            if cause not in by_cause and len(by_cause) >= STDERR_CAUSES_MAX:
-                cause = "other"
-            by_cause[cause] = by_cause.get(cause, 0) + 1
-            self.causes["records"] += 1
-
-    def __enter__(self) -> "_StderrCauses":
-        self._pypdf.__enter__()
-        self._caught = self._warnings.__enter__()
-        return self
-
-    def __exit__(self, *exc: Any) -> None:
-        self.flush()
-        self._warnings.__exit__(*exc)
-        self._pypdf.__exit__(*exc)
-
-    def flush(self) -> None:
-        """Count the warnings caught so far (a summary printed mid-run shows them)."""
-        while self._caught:
-            self._count(f"warning:{_cause_name(self._caught.pop(0).category.__name__)}")
-
-
-def _cause_name(text: str) -> str:
-    return text if _CAUSE_NAME.fullmatch(text) else "other"
 
 
 def main(argv: Sequence[str] | None = None, *, environ: Mapping[str, str] | None = None,
@@ -4044,10 +2738,6 @@ def _main(argv: Sequence[str] | None, *, environ: Mapping[str, str] | None,
     return 0 if ok else 1
 
 
-GAP_REASON = "not_in_served_replica"  # the check's blocked string (source_gap)
-_GAP_ROOT_REASONS = re.compile(r"no_portal_row_for_\w+|not_in_served_replica")
-
-
 def _replica_gap(opener: CaseOpener, requests: Sequence[tuple[str, str]],
                  cases: list[dict[str, Any]]) -> tuple[str | None, dict[str, Any]]:
     """The join picks' month buckets (``{type: {YYYY-MM: held objects by latest event}}``,
@@ -4104,79 +2794,12 @@ def _replica_gap(opener: CaseOpener, requests: Sequence[tuple[str, str]],
     return GAP_REASON, months
 
 
-def _months(db: sqlite3.Connection, object_type: str) -> dict[str, int]:
-    """Held ``object_type`` objects by month (``YYYY-MM``) of their latest event, the
-    pick's own ordering; ``undated`` for none."""
-    from ontology.store import removed_at_sql
-
-    out: dict[str, int] = {}
-    for (when,) in db.execute(
-            "SELECT MAX(COALESCE(e.time, e.window_end)) FROM objects o "
-            "LEFT JOIN event_objects eo ON eo.object_id = o.object_id "
-            "LEFT JOIN events e ON e.event_id = eo.event_id "
-            f"WHERE o.object_type = ? AND NOT {removed_at_sql('o.object_id')} "
-            "GROUP BY o.object_id", (object_type,)):
-        key = str(when)[:7] if re.fullmatch(r"\d{4}-\d{2}.*", str(when)) else "undated"
-        out[key] = out.get(key, 0) + 1
-    return dict(sorted(out.items()))
-
-
-def _totals(counts: Any) -> dict[str, int]:
-    out: dict[str, int] = {}
-    for each in counts:
-        for key, value in (each or {}).items():
-            out[key] = out.get(key, 0) + int(value)
-    return dict(sorted(out.items()))
-
-
-def _direction_totals(picks: Any) -> dict[str, dict[str, Any]]:
-    """The join picks' per-direction counts summed over the run (``_join_pick``
-    ``directions``): numbers added, ``joined`` / ``tried`` / ``budget_spent`` /
-    ``bc.reader`` as how many picks, reasons and lookup states per key (``reverse.bc``:
-    the BC point lookups of the reverse direction). Counts only; a key the totals do not
-    name is dropped, never echoed."""
-    bc = {"reader": 0, "orders": 0, "orders_unreadable": 0, "requests": 0, "lookups": 0,
-          "lookup_states": {}, "hits": 0, "scanned": 0}
-    out: dict[str, dict[str, Any]] = {"forward": {"joined": 0, "scanned": 0,
-                                                  "budget_spent": 0},
-                                      "reverse": {"joined": 0, "linked_held": 0,
-                                                  "linked_matched": 0, "reasons": {},
-                                                  "scanned": 0, "start_held": 0,
-                                                  "tried": 0, "budget_spent": 0,
-                                                  "bc": bc}}
-
-    def add(total: dict[str, Any], counts: Mapping[str, Any]) -> None:
-        for key, value in counts.items():
-            if key not in total:
-                continue
-            if isinstance(total[key], dict) and isinstance(value, Mapping):
-                if key in ("reasons", "lookup_states"):
-                    total[key] = _totals([total[key], value])
-                else:
-                    add(total[key], value)
-            elif isinstance(value, (int, bool)) and not isinstance(total[key], dict):
-                total[key] += int(value)
-
-    for pick in picks:
-        for name, counts in ((pick or {}).get("directions") or {}).items():
-            if name in out and isinstance(counts, Mapping):
-                add(out[name], counts)
-    return out
-
-
-def _write(directory: Path, index: int, reader: Any, view: Mapping[str, Any]) -> None:
-    directory.mkdir(parents=True, exist_ok=True)
-    name = "_".join(sorted(p.replace(":", "-") for p in reader.principals))[:120]
-    (directory / f"case-{index}-{name}.json").write_text(
-        json.dumps(view, indent=1, sort_keys=True, default=str), "utf-8")
-
-
 __all__ = ["CaseOpener", "JOIN_REASONS", "KIND_TYPES", "MIRROR_EVIDENCE", "MissingData",
-           "OPEN_KINDS", "OpenError", "carrier_key", "case_tokens", "checkable", "cited_rows",
+           "OPEN_KINDS", "OpenError", "carrier_key", "case_tokens", "cited_rows",
            "host_capture_gaps", "host_refusals", "ingested", "join_carriers", "leak_check", "main",
-           "offline_runtime", "parse_open", "parse_pick", "portal_upstream", "project_state",
-           "ProjectionDiskLow", "RunProjection", "run_projection", "served_generation",
-           "projection_file", "scope_links", "structure", "summary_check", "upstream_parts", "workspace"]
+           "offline_runtime", "parse_open", "parse_pick", "portal_upstream", "RunProjection",
+           "run_projection", "projection_file", "scope_links", "structure", "summary_check",
+           "upstream_parts", "workspace"]
 
 
 if __name__ == "__main__":

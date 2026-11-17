@@ -110,6 +110,68 @@ class DocStyleApi(ti.InstructApi):
             self.ana, "make a quote for Harbor like Pat does").text)
         self.assertEqual(self.model.prompts, [])
 
+    def test_listing_opens_each_document_once_and_a_session_with_two_addresses_names_no_one(self):
+        from types import SimpleNamespace
+        from operator_api.doc_style_api import _own_address
+        root = self.backend.style_store()
+        kinds = [template_of([MAIL, FILE_H], SENT[:2], author=ANA[0])]
+        for kind in ("invoice", "packing_list"):
+            t = template_of([MAIL, FILE_H], SENT[:2], author=ANA[0])
+            kinds.append(t.__class__(**{**t.__dict__, "kind": kind}) if hasattr(t, "__dict__")
+                         and not isinstance(t, dict) else {**t, "kind": kind})
+        ds.save(root / "templates.json", kinds, "2026-11-14T06:00:00Z")
+        calls, real = [], self.backend.source
+        self.backend.source = lambda reader, source, n: (calls.append(source),
+                                                         real(reader, source, n))[1]
+        body = self.ana.get("/api/templates/learned").json()
+        self.assertEqual(len(body["templates"]), 3)
+        self.assertEqual(sorted(calls), sorted({str(MAIL), str(FILE_H)}))  # once each
+        one = SimpleNamespace(email=None, session=SimpleNamespace(identities=frozenset(
+            {"ana@plx.example", "00000000-0000-4000-8000-0000000000a1"})))
+        two = SimpleNamespace(email=None, session=SimpleNamespace(identities=frozenset(
+            {"ana@plx.example", "shared-orders@plx.example"})))
+        self.assertEqual(_own_address(one), "ana@plx.example")
+        self.assertIsNone(_own_address(two))
+        self.assertEqual(_own_address(SimpleNamespace(email="Ana@plx.example", session=two.session)),
+                         "Ana@plx.example")
+
+    def test_your_learned_templates_are_listed_and_their_words_make_one(self):
+        from operator_api.doc_style_api import KIND_WORDS, style_request
+        root = self.backend.style_store()
+        own = template_of([MAIL, FILE_H], SENT[:2], author=ANA[0])
+        beside_ben = template_of([MAIL, FILE_H, BEN_MAIL], SENT, author=ANA[0])
+        pats = template_of([MAIL, FILE_H], SENT[:2])
+        ds.save(root / "templates.json", [own, beside_ben, pats], "2026-11-14T06:00:00Z")
+        got = self.ana.get("/api/templates/learned")
+        self.assertEqual(got.status_code, 200, got.text)
+        body = got.json()
+        self.assertEqual((body["status"], body["learned_at"]), ("read", "2026-11-14T06:00:00Z"))
+        # one quote template: the one Ana opens every document of (never the one beside
+        # Ben's mail, never Pat's)
+        (quote,) = body["templates"]
+        self.assertEqual((quote["kind"], quote["label"], quote["documents"]), ("quote", "Quote", 2))
+        self.assertEqual(quote["last_sent"], "2026-02-01")
+        # the listed words ask for exactly that: Ask makes it from there
+        made = self.instruct(self.ana, quote["ask"] + "Harbor Naturals")
+        self.assertEqual(made.status_code, 200, made.text)
+        self.assertEqual(made.json()["fills"][0]["digest_before"],
+                         hashlib.sha256(SENT[1]).hexdigest())
+        for kind, words in KIND_WORDS.items():   # every kind's words read back to it
+            with self.subTest(kind=kind):
+                asked = style_request(f"make a {words} in my usual template for Harbor")
+                self.assertEqual((asked["kind"], asked["author"], asked["subject"]),
+                                 (kind, "", "Harbor"))
+        # Ben authored none: nothing of Ana's or Pat's is listed for him
+        self.assertEqual(self.ben.get("/api/templates/learned").json()["templates"], [])
+        # the people exclusion unreadable: nothing listed (fail closed)
+        self.backend._instruct_guard = lambda: None
+        blind = self.ana.get("/api/templates/learned").json()
+        self.assertEqual((blind["status"], blind["templates"]), ("unavailable", []))
+        # nothing learned, or a file this code cannot read: none, never a guess
+        del self.backend._instruct_guard
+        (root / "templates.json").write_text("{}")
+        self.assertEqual(self.ana.get("/api/templates/learned").json()["status"], "none")
+
 
 def load_tests(loader, tests, pattern):
     """This module's own tests (the instruct harness's run in its module)."""

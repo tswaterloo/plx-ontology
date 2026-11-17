@@ -88,9 +88,16 @@ class ExploreTests(unittest.TestCase):
         self.assertTrue(out.partial)
 
     def test_unreadable_record_is_not_found(self):
-        for code in ("object_not_found", "invalid_input", "something_else"):
-            with self.assertRaises(KeyError):
+        from operator_api.errors import RecordNotFound, RecordReadFailed
+        for code in ("object_not_found", "not_in_projection", "invalid_input"):
+            with self.assertRaises(RecordNotFound):
                 self.run_explore(View([], {}, error=code))
+        # serve-1115d V-19: a failed read is the server's failure (a 500 incident), never
+        # told as a missing record (and never a KeyError a caller could read as one)
+        for code in ("store_unavailable", "contract_violation", "something_else"):
+            with self.assertRaises(RecordReadFailed) as raised:
+                self.run_explore(View([], {}, error=code))
+            self.assertNotIsInstance(raised.exception, KeyError)
 
     def test_cardinality_caps_per_kind_kinds_and_total(self):
         for n in (1, 10, 60):

@@ -650,7 +650,7 @@ def _contract() -> Mapping[str, Any]:
     (description, input) and its output contract, whose typed handles (every line's
     ``citations`` and each cited value's ``l1_handle``) the final-answer gate takes as
     evidence (``answer_gate.evidence_handles``)."""
-    from .ontology_tools import load_contracts
+    from .ontology_tools_policy import load_contracts
     return load_contracts()["tools"][TOOL_NAME]
 
 

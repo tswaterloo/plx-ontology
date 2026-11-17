@@ -357,7 +357,28 @@
    "name": "for_receipt_line",
    "reverse_name": "certificates_of_analysis",
    "cardinality": "N:M",
-   "description": "A certificate of analysis states the supplier lot this ReceiptLine received: its lot field's value as the lot_number normaliser reads it, resolved only on ReceiptLine.supplier_lot_number in the identifier index (ontology/document_fields.py store_document_links, refers_to_property), never through a PLX lab id or batch code. The lot trace runs on from the line: ReceiptLine.line_of -> Receipt.supplied_by -> Supplier, ReceiptLine.receives_line -> PurchaseOrderLine.line_of -> PurchaseOrder (or Receipt.receives), ReceiptLine.for_item -> Product. Always a lead: several lines received the same supplier lot stay several links, and the document's author is unknown (an external assertion).",
+   "description": "A certificate of analysis states the supplier lot this ReceiptLine received: its lot field's value as the lot_number normaliser reads it, resolved only on ReceiptLine.supplier_lot_number in the identifier index (ontology/document_fields.py store_document_links, refers_to_property), never through a PLX lab id or batch code. The lot trace runs on from the line: ReceiptLine.line_of -> Receipt.supplied_by -> Supplier, ReceiptLine.receives_line -> PurchaseOrderLine.line_of -> PurchaseOrder (or Receipt.receives), ReceiptLine.for_item -> Product. Always a lead: several lines of one product that received the same supplier lot stay several links; when the lot's lines span more than one product only the lines whose product the certificate names are linked (none matching, none linked), and a lot text under 4 characters links only such lines. The document's author is unknown (an external assertion).",
+   "bindings": [
+    {
+     "kind": "mention",
+     "tier_ceiling": "lead",
+     "evidence": [
+      {
+       "kind": "workbench_code",
+       "path": "ontology/document_fields.py"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "CertificateOfAnalysis.for_lot",
+   "from": "CertificateOfAnalysis",
+   "to": "Lot",
+   "name": "for_lot",
+   "reverse_name": "certificates_of_analysis",
+   "cardinality": "N:M",
+   "description": "A certificate of analysis states the supplier lot of this Lot: its lot field resolved on the Lot's lot_number AND the same product (ontology/document_fields.py store_document_links, _lot_links): the certificate's product code or product name equals the code, ERP code or name of the Lot's Product (Lot.of_item) or the supplier item number of the line that received it (ReceiptLine.supplier_item), a PLX item code read with or without a trailing /NN revision; and, when the certificate names a supplier, the supplier of the Lot's receipt (Lot.received_in -> Receipt.supplied_by) is that supplier. A lot number alone links nothing (lot numbers repeat across suppliers and products); a certificate naming no product, a product that is not the Lot's, or a lot whose candidates are of several products is left unlinked. Always a lead (document text): the Lot is built from its receipt line's lot, so the line agreeing is no independent evidence. Never a QC release and never proof that a receipt is this lot: the supplier lot is not a PLX lot. Several Lot records of one lot and product (the same lot received on several lines) stay several links.",
    "bindings": [
     {
      "kind": "mention",

@@ -23,7 +23,8 @@ from urllib.parse import parse_qs, unquote, urlsplit
 from verify import live_verify as lv
 from integrations import graph_read
 from integrations import mail_directory_scope as mds
-from integrations.capture_mail import CaptureError, MailCaptureStore
+from integrations.capture_mail import MailCaptureStore
+from integrations.capture_mail_scope import CaptureError
 from integrations.live_source_guard import BoundedBackoff, LiveSourceAudience
 from integrations.people_exclusion import PeopleExclusion
 from integrations.tests.test_capture_mail import ENV, FakeGraph, file_attachment, j

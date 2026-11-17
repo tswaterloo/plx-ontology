@@ -90,33 +90,24 @@ from __future__ import annotations
 import bisect
 from collections import OrderedDict
 import hashlib
-import json
 import os
 from pathlib import Path
 import re
 import threading
 import time
 from typing import Any, Callable, Iterable, Mapping, Sequence
-from urllib.parse import parse_qs, unquote, urlsplit
+from urllib.parse import urlsplit
 
+from integrations.case_original_receipts import (ENTRY_ID, PARENT_UNKNOWN, RECEIPT_SCHEMA,
+    REPOSITORY, SOURCE_NOT_CAPTURED, STORE_DIR, _Entry, _onedrive_owner, _readable_receipt,
+    read_entries, sharepoint_items, source_unit)
 from .cases import CitationUnresolvable
 
-STORE_DIR = "case-originals"
 SCHEME = "original://"
-ENTRY_ID = re.compile(r"^(?:co|nr|rv)-[0-9a-f]{12}$")
 HANDLE = re.compile(r"^original://((?:co|nr|rv)-[0-9a-f]{12})(?:#page=([1-9][0-9]{0,3}))?$")
-_HEX64 = re.compile(r"^[0-9a-f]{64}$")
-_PERSONAL = re.compile(r"^/personal/([^/]+)/", re.IGNORECASE)
-_TEAMS_MESSAGE = re.compile(r"^/l/message/([^/]+)/([0-9]{1,20})$")
-# A repository-sourced original's ``repository_ref`` (a GitHub blob at a commit, the shape
-# ``scripts.case_originals`` reads from the local object store): owner and name.
-_REPOSITORY_REF = re.compile(r"^https://github\.com/([A-Za-z0-9_.\-]{1,100})/"
-                             r"([A-Za-z0-9_.\-]{1,100})/blob/[0-9a-f]{40}/[^\x00-\x20?#]+$")
-RECEIPT_SCHEMA = "plx-case-original-receipt/v1"
 OCR_METHOD = "tesseract-ocr"
 TEXT_ONLY_METHODS = frozenset({"utf8-text"})
 PAGE_METHOD = "captured-text-lines"
-MAX_PARENT_DEPTH = 8
 # Captured originals one document search gates at most (each a source-gate decision).
 MAX_LISTING_CHECKS = 200
 # Gate kinds of matching originals a reader may not open (``search``'s ``withheld``).
@@ -132,19 +123,10 @@ SETTLED_NS = 2_000_000_000
 # Page windows of stored texts one store keeps (``_pages_of``; 128 per page).
 SPLITS_BOUND = 8_000_000
 
-# Why an original has no source ACL (``coverage``): served to nobody.
-NOT_READ = "bytes_not_read"
-NO_SOURCE_ITEM = "source_item_unidentified"
-REPOSITORY = "repository_file"
-CHANNEL = "teams_channel_unsupported"
-PARENT_UNKNOWN = "container_unknown"
-SOURCE_NOT_CAPTURED = "source_not_captured"
-
 # Why a reader is not served an original (``refusal_kind``; never in a tool result).
 REFUSED = "refused"   # decided: ACL denies, no known ACL by policy, or people excluded
 FAILED = "failed"     # undecided: an exception, guard, configuration or store failure
 _KIND = "refusal_kind"   # the attribute a gate's CitationUnresolvable carries it in
-
 
 def refusal(code: str, kind: str) -> CitationUnresolvable:
     """A ``CitationUnresolvable(code)`` that carries its refusal ``kind`` (``REFUSED`` or
@@ -154,73 +136,10 @@ def refusal(code: str, kind: str) -> CitationUnresolvable:
     setattr(exc, _KIND, kind)
     return exc
 
-
 def kind_of(exc: BaseException) -> str:
     """The refusal kind an exception carries: ``REFUSED`` only when set so, else
     ``FAILED`` (an unmarked exception is never a refusal)."""
     return REFUSED if getattr(exc, _KIND, None) == REFUSED else FAILED
-
-
-def _onedrive_owner(url: Any) -> str | None:
-    """The ``/personal/<segment>/`` of a OneDrive URL, lowercased, or None."""
-    if not isinstance(url, str):
-        return None
-    try:
-        parts = urlsplit(url)
-    except ValueError:
-        return None
-    if not (parts.hostname or "").endswith("-my.sharepoint.com"):
-        return None
-    found = _PERSONAL.match(unquote(parts.path))
-    return found.group(1).lower() if found else None
-
-
-def _teams_chat(url: Any) -> tuple[str, str] | str | None:
-    """(chat id, message id) of a Teams chat message link; ``CHANNEL`` for any other Teams
-    message link; None when ``url`` is no Teams message link."""
-    if not isinstance(url, str) or not url.startswith("https://teams.microsoft.com/l/message/"):
-        return None
-    try:
-        parts = urlsplit(url)
-        context = json.loads((parse_qs(parts.query).get("context") or ["{}"])[0])
-    except ValueError:
-        return CHANNEL
-    found = _TEAMS_MESSAGE.match(parts.path)
-    if found is None or not isinstance(context, Mapping) \
-            or context.get("contextType") != "chat":
-        return CHANNEL
-    chat = unquote(found.group(1))
-    if not re.fullmatch(r"19:[A-Za-z0-9_.\-]{1,200}@[A-Za-z0-9_.\-]{1,64}", chat):
-        return CHANNEL
-    return chat, found.group(2)
-
-
-def source_unit(receipt: Mapping[str, Any]) -> tuple[dict[str, Any] | None, str | None]:
-    """(unit, None) of a receipt's own canonical source, or (None, reason) when it names
-    no source whose ACL a capture keeps. A ``parent`` is resolved by the caller."""
-    source = receipt.get("canonical_source")
-    if not isinstance(source, Mapping):
-        return None, NO_SOURCE_ITEM
-    owner = _onedrive_owner(source.get("url"))
-    drive, item = source.get("drive_id"), source.get("item_id")
-    if isinstance(drive, str) and drive and isinstance(item, str) and item:
-        return {"kind": "sharepoint", "drive_id": drive, "item_id": item,
-                "onedrive_owner": owner}, None
-    chat = _teams_chat(source.get("teams_message_url"))
-    if isinstance(chat, tuple):
-        return {"kind": "teams_chat", "chat_id": chat[0], "message_id": chat[1],
-                "onedrive_owner": owner}, None
-    if chat == CHANNEL:
-        return None, CHANNEL
-    if source.get("repository_ref"):
-        ref = source["repository_ref"]
-        found = _REPOSITORY_REF.match(ref) if isinstance(ref, str) else None
-        if found is None or any(set(part) == {"."} for part in found.groups()):
-            return None, REPOSITORY
-        return {"kind": "repository", "repository": f"{found.group(1)}/{found.group(2)}",
-                "onedrive_owner": owner}, None
-    return None, NO_SOURCE_ITEM
-
 
 def repository_resource(unit: Mapping[str, Any]) -> str | None:
     """The live-audience resource that grants a ``repository`` unit
@@ -229,11 +148,9 @@ def repository_resource(unit: Mapping[str, Any]) -> str | None:
         return None
     return f"repo:{unit['repository']}"
 
-
 def vocabulary(text: str) -> tuple[str, ...]:
     """The distinct casefolded words of ``text``, sorted (``holds_words`` looks them up)."""
     return tuple(sorted(set(_WORD.findall(text.casefold()))))
-
 
 def holds_words(words: Sequence[str], name: str, words_of_text: Sequence[str]) -> bool:
     """Does every one of ``words`` (casefolded) occur in the file ``name`` or begin a word
@@ -249,7 +166,6 @@ def holds_words(words: Sequence[str], name: str, words_of_text: Sequence[str]) -
             return False
     return True
 
-
 def serves_text(current: Mapping[str, Any] | None) -> bool:
     """Whether the SharePoint capture serves usable extracted text for a current version
     (``SourceLookup.sharepoint``): read (``extracted``) or OCR-read; anything else (an
@@ -257,35 +173,10 @@ def serves_text(current: Mapping[str, Any] | None) -> bool:
     from integrations.captured_text import TEXT_READ
     return isinstance(current, Mapping) and current.get("text_status") in TEXT_READ
 
-
-def _readable_receipt(receipt: Any) -> bool:
-    """Bytes read in full, matching what the registry pinned (a discovered file has no
-    pin), stored at their content address."""
-    if not isinstance(receipt, Mapping) or receipt.get("schema") != RECEIPT_SCHEMA:
-        return False
-    sha = receipt.get("sha256")
-    return (receipt.get("body_status") == "read" and receipt.get("match") is not False
-            and isinstance(sha, str) and bool(_HEX64.match(sha))
-            and receipt.get("stored") == f"{STORE_DIR}/{sha}"
-            and isinstance(receipt.get("entry_id"), str)
-            and bool(ENTRY_ID.match(receipt["entry_id"])))
-
-
-class _Entry:
-    __slots__ = ("id", "receipt", "unit", "reason", "root")
-
-    def __init__(self, entry_id: str, receipt: Mapping[str, Any]) -> None:
-        self.id, self.receipt = entry_id, receipt
-        self.unit: dict[str, Any] | None = None
-        self.reason: str | None = None
-        self.root = entry_id   # the outermost container (itself for a file)
-
-
 def _unchanged_key(path: Path, stat: os.stat_result, sha256: str) -> tuple:
     """What a remembered hash of a stored file is valid for (``_bytes_ok``)."""
     return (str(path), stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns,
             stat.st_ctime_ns, sha256)
-
 
 class SourceLookup:
     """The source captures' current versions, read-only, without any reader: which
@@ -322,7 +213,6 @@ class SourceLookup:
         """Whether a SharePoint capture is wired and exists (else no item is decided)."""
         from integrations import capture_sharepoint as cs
         return self.sharepoint_dir is not None and cs.store_exists(self.sharepoint_dir)
-
     def sharepoint_deleted(self, drive_id: str, item_id: str) -> bool:
         """Whether the SharePoint capture recorded the item deleted: its latest captured
         version is gone from the source (``absent_after_resync``). False for an item it
@@ -340,7 +230,6 @@ class SourceLookup:
         except Exception:  # noqa: BLE001 - undecided: not a refusal
             return True
         return latest is not None and latest["removed_reason"] == cs.ABSENT
-
     def teams_chat(self, chat_id: str, message_id: str) -> str | None:
         """The capture handle of the message's current captured version, or None."""
         found = self.teams_chat_decided(chat_id, message_id)
@@ -368,7 +257,6 @@ class SourceLookup:
             return None
         finally:
             store.close()
-
 
     def teams_chat_people(self, chat_id: str, message_id: str) -> list[Any] | None:
         """Everyone the people exclusion must clear before anything about a chat
@@ -401,18 +289,6 @@ class SourceLookup:
         meta = record.payload.get("meta") or {}
         return [membership, row.get("from"), row.get("participants"),
                 (meta.get("source_acl") or {}) if isinstance(meta, Mapping) else {}]
-
-
-def sharepoint_items(state_dir: str | Path) -> list[tuple[str, str]]:
-    """The (canonical drive id, item id) of every SharePoint item a served-shape case
-    original under ``<state_dir>/case-originals`` names as its source unit (a member's:
-    its outermost container's), sorted, each once: the items the SharePoint capture
-    reads first so their gate can decide (``capture_sharepoint`` Named items first).
-    Read-only; serves nothing (the gate here opens no original)."""
-    entries = CapturedOriginals(state_dir, gate=lambda _unit, _actor: False).entries()
-    return sorted({(e.unit["drive_id"], e.unit["item_id"]) for e in entries.values()
-                   if e.unit is not None and e.unit["kind"] == "sharepoint"})
-
 
 class CapturedOriginals:
     """``<state>/case-originals`` read as originals, each behind its source's gate.
@@ -455,68 +331,27 @@ class CapturedOriginals:
 
     # ---- index -------------------------------------------------------------
 
-    def _receipt_files(self) -> list[Path]:
-        receipts = self.root / "receipts"
-        if not receipts.is_dir():
-            return []
-        return sorted(p for folder in receipts.iterdir() if folder.is_dir()
-                      for p in folder.glob("*.json"))
-
     def _signature(self) -> tuple:
         receipts = self.root / "receipts"
         if not receipts.is_dir():
             return ()
         return tuple(sorted((f.name, f.stat().st_mtime_ns) for f in receipts.iterdir()
                             if f.is_dir()))
-
     def entries(self) -> dict[str, _Entry]:
         """Every entry with a receipt, its source unit or the reason it has none."""
         signature = self._signature()
         with self._lock:
             if self._cache is not None and self._cache[0] == signature:
                 return self._cache[1]
-        latest: dict[str, Mapping[str, Any]] = {}
-        for path in self._receipt_files():
-            try:
-                receipt = json.loads(path.read_text(encoding="utf-8"))
-            except (OSError, ValueError):
-                continue
-            entry_id = receipt.get("entry_id") if isinstance(receipt, Mapping) else None
-            if not isinstance(entry_id, str) or not ENTRY_ID.match(entry_id):
-                continue
-            held = latest.get(entry_id)
-            # A readable receipt wins over an unreadable one, then the newest read.
-            rank = (_readable_receipt(receipt), str(receipt.get("read_at") or ""))
-            if held is None or rank > (_readable_receipt(held), str(held.get("read_at") or "")):
-                latest[entry_id] = receipt
-        entries = {entry_id: _Entry(entry_id, receipt) for entry_id, receipt in latest.items()}
-        for entry in entries.values():
-            self._place(entry, entries)
+        # this module's ``source_unit`` (a test may stand an earlier rule in for it)
+        entries = read_entries(self.root, source_unit)
         with self._lock:
             self._cache = (signature, entries)
         return entries
-
-    @staticmethod
-    def _place(entry: _Entry, entries: Mapping[str, _Entry]) -> None:
-        if not _readable_receipt(entry.receipt):
-            entry.reason = NOT_READ
-            return
-        node, depth = entry.receipt, 0
-        while node.get("parent") is not None:
-            parent = entries.get(str(node.get("parent")))
-            depth += 1
-            if parent is None or depth > MAX_PARENT_DEPTH:
-                entry.reason = PARENT_UNKNOWN
-                return
-            node, entry.root = parent.receipt, parent.id
-        entry.unit, entry.reason = source_unit(node)
-
     def _source_lookup(self) -> SourceLookup | None:
         lookup = self._lookup() if callable(self._lookup) else self._lookup
         return lookup if isinstance(lookup, SourceLookup) else None
-
     # ---- gate --------------------------------------------------------------
-
     def _unit_for_gate(self, entry: _Entry, lookup: SourceLookup | None,
                        held: Mapping[tuple[str, str], Mapping[str, Any]] | None = None
                        ) -> dict[str, Any] | None:
@@ -536,7 +371,6 @@ class CapturedOriginals:
             handle = lookup.teams_chat(unit["chat_id"], unit["message_id"])
             return None if handle is None else {**unit, "handle": handle}
         return None
-
     def _allowed(self, unit: Mapping[str, Any] | None, actor: Any) -> bool:
         return unit is not None and self._decision(unit, actor) is True
 
@@ -574,7 +408,6 @@ class CapturedOriginals:
                 self._unit_for_gate(entry, self._source_lookup()), actor):
             raise CitationUnresolvable("original_not_visible")
         return entry
-
     def refusal_kind(self, handle: Any, actor: Any) -> str | None:
         """Why ``actor`` is not served the captured original ``handle`` now: None when the
         gate opens it, ``REFUSED`` for a decided refusal, ``FAILED`` for anything else
@@ -596,9 +429,7 @@ class CapturedOriginals:
         except Exception:  # noqa: BLE001 - a failing check is a failure, never a refusal
             return FAILED
         return None if decided is True else decided
-
     # ---- content -----------------------------------------------------------
-
     def _bytes_ok(self, receipt: Mapping[str, Any]) -> None:
         """The stored bytes still hash to the receipt's SHA-256, else
         ``original_missing`` / ``original_content_changed``. A file this process hashed
@@ -656,7 +487,6 @@ class CapturedOriginals:
                 "ocr_pages": [p["page"] for p in pages["pages"]] if ocr else [],
                 "warnings": sorted(str(r) for r in facts.get("unread_reasons") or []),
                 "text_sha256": pages["text_sha256"], "source_methods": methods}
-
     def _pages_of(self, text: str) -> dict[str, Any]:
         """``case_originals._text_extraction`` of the stored text (its line-window pages
         and ``text_sha256``), remembered by the SHA-256 of the text just read: the text
@@ -670,7 +500,6 @@ class CapturedOriginals:
             pages = _text_extraction(content)["pages"]
         return {"text": text, "text_sha256": digest,
                 "pages": [{**page, "lines": list(page["lines"])} for page in pages]}
-
     @staticmethod
     def _summary(extraction: Mapping[str, Any]) -> dict[str, Any]:
         return {"status": extraction["status"], "method": extraction["method"],
@@ -678,7 +507,6 @@ class CapturedOriginals:
                 "ocr_pages": extraction["ocr_pages"], "warnings": extraction["warnings"],
                 "text_sha256": extraction["text_sha256"],
                 "source_methods": extraction["source_methods"]}
-
     @staticmethod
     def _text_source(extraction: Mapping[str, Any]) -> str:
         if extraction["ocr_pages"]:
@@ -686,7 +514,6 @@ class CapturedOriginals:
         if set(extraction["source_methods"]) <= TEXT_ONLY_METHODS:
             return "original_text"
         return "machine_converted"
-
     def _view(self, entry: _Entry, handle: str, page: str | None
               ) -> tuple[dict[str, Any], dict[str, Any]]:
         receipt = entry.receipt
@@ -770,7 +597,6 @@ class CapturedOriginals:
 
         words = self._words.read((receipt["sha256"], stat.st_mtime_ns, stat.st_size), read)
         return words if isinstance(words, tuple) else ()
-
     def _countable(self, entry: _Entry, entries: Mapping[str, _Entry],
                    lookup: SourceLookup, chats: dict[tuple[str, str], Any]) -> bool:
         """May a withheld match on ``entry`` be counted: the people exclusion decides it
@@ -848,7 +674,6 @@ class CapturedOriginals:
             current = held.get((unit.get("drive_id"), unit.get("item_id")))
             return (unit.get("kind") == "sharepoint" and current is not None
                     and current["content_sha256"] == root.receipt["sha256"])
-
         def duplicate(entry: _Entry) -> bool:
             unit = entry.unit or {}
             return same_bytes(entry) and serves_text(
@@ -872,9 +697,7 @@ class CapturedOriginals:
             if entry.id not in units:
                 units[entry.id] = self._unit_for_gate(entry, lookup, held)
             return units[entry.id]
-
         refusals: dict[str, bool] = {}
-
         def refused_repository(entry: _Entry) -> bool:
             # A repository file this reader's grant does not open reads as it did before
             # the grant existed (decision 2026-10-29): counted with the originals of no
@@ -946,7 +769,6 @@ class CapturedOriginals:
                  for _rank, entry, match in admitted[:limit]]
         return {"found": found, "cut": cut,
                 "withheld": None if withheld is None else dict(sorted(withheld.items()))}
-
     def _by_version(self) -> dict[tuple[str, str, str], list[_Entry]]:
         """(drive, item, sha256) -> the root originals of a SharePoint item with those
         bytes (by entry id), rebuilt when the entries change."""
@@ -988,7 +810,6 @@ class CapturedOriginals:
         except Exception:  # noqa: BLE001 - a failing lookup or gate names nothing
             return None
         return None
-
     def _countable_at_all(self) -> bool:
         """The people exclusion decides at all (a file in no OneDrive is withheld from
         nobody): else no withheld original is counted."""
@@ -998,9 +819,7 @@ class CapturedOriginals:
             return self._exclusion_clear(None, None) is True
         except Exception:  # noqa: BLE001 - an undecided exclusion counts nothing
             return False
-
     # ---- coverage (no reader) ----------------------------------------------
-
     def coverage(self) -> dict[str, Any]:
         """Counts only: captured originals with a source gate (by unit kind) and those
         served to nobody (by reason); ``entries``: entry id -> state."""
@@ -1024,7 +843,6 @@ class CapturedOriginals:
                 "servable": sum(s.startswith("servable") for s in states.values()),
                 "unknown_acl": sum(s.startswith("unknown_acl") for s in states.values()),
                 "by_state": dict(sorted(counts.items())), "states": states}
-
 
 __all__ = ["CapturedOriginals", "FAILED", "HANDLE", "REFUSED", "SourceLookup",
            "WITHHELD_GATE_DENIED", "WITHHELD_UNKNOWN_ACL", "holds_words", "kind_of",

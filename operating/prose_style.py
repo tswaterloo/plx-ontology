@@ -13,7 +13,9 @@ closers, straw men, fragment cadence, dressed metaphors, label-first framing), p
 chatbot defaults (residue, filler, inflated significance, participle tails, copula
 avoidance, stock vocabulary). The rule changes wording only; it adds no fact and never
 overrides an answer, citation or gate rule. ``operating.humanize`` repairs what ``check``
-flags and proves every fact survived."""
+flags and proves every fact survived. The lint also fails static copy where the software
+speaks as "I" ("What I couldn't confirm"); the prompt rule leaves that alone because answers
+carry such a line on purpose."""
 
 from __future__ import annotations
 
@@ -142,6 +144,12 @@ def style_rule(person: Optional[str] = None, *, draft: bool = False,
     return "\n".join(parts)
 
 
+# a sentence of one to three plain words (no figure, no record number)
+_SHORT_SENTENCE = r"[a-z][a-z’'-]*(?: [a-z][a-z’'-]*){0,2}[.!]"
+# "A, B and 6 more" / "A, B, and 6 others" (a template's "${n}" or JSX "{n}" stands for the count)
+_TRUNCATED_LIST = (r"[^,.;:\n]{1,60}, [^,.;:\n]{1,60},? and (?:\d+|\$?\{[^}\n]{1,60}\}|several|"
+                   r"a few|many) (?:more|others?)\b")
+
 # Each pattern names one tic; a match in static copy is a defect. The patterns are narrow on
 # purpose: plain copy such as "Not on record" or "Draft, not sent" never matches.
 TIC_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = tuple(
@@ -158,6 +166,7 @@ TIC_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = tuple(
         ("significance designation",
          r"\bhere['’]s (?:the|what) (?:thing|catch|twist|kicker|rub|matters)\b"),
         ("significance designation", r"\bthe leg that\b"),
+        ("significance designation", r"\bwhat matters (?:about|here|most|now)\b"),
         ("abstraction agency",
          r"(?:^|[.!?:;]\s+)(?:the )?(?:table|data|median|chart|numbers?|metrics?|picture)\s+"
          r"(?:shows|hides|tells|says|reveals|lies)\s+(?:it|us|you|the story)\b"),
@@ -167,10 +176,14 @@ TIC_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = tuple(
         ("coy header", r"^(?:what|why|how) (?:it|this|that) (?:means|matters|works)\b"),
         ("coy header", r"^(?:what|how) we know\b"),
         ("coy header", r"^what (?:the data|it all) (?:actually )?(?:shows|means)\b"),
+        ("coy header", r"^what (?:\w+ ){0,2}reads\b"),
+        ("coy header", r"^what['’]s (?:open|new|next|left)\b"),
+        ("coy header", r"^how (?:late|bad|far|much), (?:drawn|charted|mapped)\b"),
         ("aphoristic closer",
          r"\b(?:that|this)['’]?s? (?:is )?(?:the whole point|the point|the trick|"
          r"the difference|what matters)\s*[.!]"),
         ("aphoristic closer", r"\bnothing is made up in (?:its|their) place\b"),
+        ("aphoristic closer", r"\bwe read every (?:note|message|word|one)\b"),
         ("straw-man knockdown",
          r"\b(?:you might|you may|one might) (?:think|assume|expect)\b"),
         ("straw-man knockdown", r"\bis the obvious reading\b"),
@@ -179,10 +192,31 @@ TIC_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = tuple(
         ("dressed metaphor",
          r"\b(?:load-bearing|north star|tapestry|the seam where|fault line|deep dive|"
          r"game[- ]changer|supercharge|delve|single source of truth|beating heart)\b"),
+        ("first-person software",
+         r"^(?:[-*•]\s+)?what I (?:couldn['’]t|could not|can['’]t|cannot|found|know|checked)\b"),
         ("label-first framing",
          r"^(?:bottom line|tl;dr|key takeaway|the short version|the upshot|verdict|"
          r"the gist|in short)\s*[:—-]"),
+        # two clipped sentences in a row ("Couldn't save. Try again.", "Nothing late. All
+        # clear."): each of one to three words, no figure in either; one plain sentence says it
+        ("paired short sentences",
+         r"(?:^|[.!?]\s+)" + _SHORT_SENTENCE + r"\s+" + _SHORT_SENTENCE + r"(?=\s|$)"),
+        # a list cut by a count ("slipped, vendor and 6 more"): name every one, or give the
+        # count alone and list them where the reader can open them
+        ("truncated list", _TRUNCATED_LIST),
     ))
+
+
+def some_of(names: Sequence[str], limit: int, *, sep: str = ", ") -> str:
+    """``names`` for a line of copy: every one when there are ``limit`` or fewer, else the
+    first ``limit`` after the count they come from ("3 of 7: A, B, C"). Never "A, B and 4
+    more": the reader learns how many there are before reading the names, and the line
+    says it names only some (the truncated-list tic the lint fails on)."""
+    names = [str(n) for n in names]
+    limit = max(1, int(limit))
+    if len(names) <= limit:
+        return sep.join(names)
+    return f"{limit} of {len(names)}: " + sep.join(names[:limit])
 
 
 def tics(text: str) -> list[str]:
@@ -323,6 +357,7 @@ _GENERATED: tuple[tuple[str, str, str, Optional[tuple[str, ...]]], ...] = (
      r"\bas of my (?:last|latest) (?:update|knowledge)\b|\bbased on (?:the )?available "
      r"information\b|\bwhile (?:specific )?details are limited\b", None),
     ("fragment cadence", "strong", r"(?:^|[.!?]\s)(?:\w+[.]\s){3,}", None),
+    ("truncated list", "strong", _TRUNCATED_LIST, None),
     ("emoji", "strong", "[\U0001F300-\U0001FAFF☀-➿⭐✅❌]", None),
     # weak alone: a tic only in a cluster
     ("stock word", "weak",
@@ -340,6 +375,8 @@ _GENERATED: tuple[tuple[str, str, str, Optional[tuple[str, ...]]], ...] = (
     ("filler", "weak",
      r"\bin order to\b|\bdue to the fact that\b|\bat this point in time\b|\bin the event "
      r"that\b|\bhas the ability to\b|\bfor all intents and purposes\b", None),
+    ("paired short sentences", "weak",
+     r"(?:^|[.!?]\s+)" + _SHORT_SENTENCE + r"\s+" + _SHORT_SENTENCE + r"(?=\s|$)", None),
     ("em dash", "weak", "—", None),
     ("bold label", "weak", r"(?:^|\n)\s*(?:[-*•]|\d+\.)\s+\*\*[^*\n]{1,40}:?\*\*:?", None),
     ("ensuring tail", "weak", r",\s+(?:ensuring|contributing to|encompassing)\b", None),
@@ -450,4 +487,4 @@ def per_thousand(reports: Sequence[Report]) -> float:
 
 __all__ = ["CLUSTER", "DRAFT_STYLE_RULE", "FAMILIES", "Hit", "KINDS", "PROSE_STYLE_RULE",
            "PersonStyle", "Report", "TIC_PATTERNS", "check", "per_thousand", "person_style",
-           "set_person_style", "style_rule", "tics"]
+           "set_person_style", "some_of", "style_rule", "tics"]

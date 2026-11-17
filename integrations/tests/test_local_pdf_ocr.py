@@ -316,8 +316,8 @@ class PortablePdfOcrTest(unittest.TestCase):
             return buffer.getvalue()
 
         rendered = []
-        real = du._png_size
-        with patch.object(du, "_png_size", side_effect=lambda path: rendered.append(
+        real = du._pgm_size
+        with patch.object(du, "_pgm_size", side_effect=lambda path: rendered.append(
                 real(path)) or rendered[-1]):
             large = du._portable_pdf_text(blank(5184, 2880))
         self.assertEqual(large[2], "no_text")
@@ -326,7 +326,7 @@ class PortablePdfOcrTest(unittest.TestCase):
         with self.assertRaisesRegex(ValidationError, "local_pdf_ocr_failed"):
             du._portable_pdf_text(blank(20_500, 600))
         # A render that did not produce the expected image raises.
-        with patch.object(du, "_png_size", return_value=(1, 1)):
+        with patch.object(du, "_pgm_size", return_value=(1, 1)):
             with self.assertRaisesRegex(ValidationError, "local_pdf_ocr_failed"):
                 du._portable_pdf_text(PDF.read_bytes())
         # Over the OCR page bound: the code local_archive falls back on.
@@ -390,14 +390,32 @@ class PortablePdfOcrTest(unittest.TestCase):
             buffer = io.BytesIO()
             writer.write(buffer)
             rendered = []
-            real = du._png_size
-            with unittest.mock.patch.object(du, "_png_size", side_effect=lambda path:
+            real = du._pgm_size
+            with unittest.mock.patch.object(du, "_pgm_size", side_effect=lambda path:
                     rendered.append(real(path)) or rendered[-1]):
                 text, _pages, status, warnings, ocr, _ = du._portable_pdf_text(buffer.getvalue())
             self.assertEqual(ocr, frozenset({1}), name)
             self.assertLessEqual(max(rendered[0]), du._MAX_RENDER_PIXELS + 2, name)
             self.assertIn("SO-OCR-123", text, name)
 
+
+    def test_a_render_is_checked_by_its_pgm_header_and_length(self):
+        import tempfile
+        from integrations import document_understanding as du
+        from ontology import ValidationError
+        with tempfile.TemporaryDirectory() as tmp:
+            page = Path(tmp) / "page.pgm"
+            page.write_bytes(b"P5\n3 2\n255\n" + bytes(6))
+            self.assertEqual(du._pgm_size(page), (3, 2))
+            for bad in (b"P5\n3 2\n255\n" + bytes(5),          # short: a failed render
+                        b"\x89PNG\r\n\x1a\n" + bytes(24),         # another format
+                        b"P6\n3 2\n255\n" + bytes(18), b""):
+                page.write_bytes(bad)
+                with self.subTest(bad=bad[:4]), self.assertRaisesRegex(
+                        ValidationError, "local_pdf_ocr_failed"):
+                    du._pgm_size(page)
+            with self.assertRaisesRegex(ValidationError, "local_pdf_ocr_failed"):
+                du._pgm_size(Path(tmp) / "missing.pgm")
 
     @unittest.skipUnless(_portable_available(), "poppler and tesseract not installed")
     def test_form_feed_in_a_text_layer_keeps_every_page(self):

@@ -116,7 +116,7 @@ class PoTrailTests(unittest.TestCase):
     def test_a_late_po_reads_due_issue_promises_follow_ups_and_the_verdict_in_order(self):
         s = tp.Store()
         po = late_po(s)
-        email(s, po, "m1", "2099-01-18T10:00:00Z", "Chasing PO300001", f"Ann <ann@plx.test>")
+        email(s, po, "m1", "2099-01-18T10:00:00Z", "Chasing PO300001", "Ann <ann@plx.test>")
         email(s, po, "m2", "2099-01-25T09:00:00Z", "RE: Chasing PO300001",
               "Bob <bob@vendor.example>")
         trail = et.po_trail(reader(s), po)

@@ -250,7 +250,7 @@ def digest(found: Mapping[str, Any], slow_ms: float = 3000) -> Iterator[str]:
     for a in found["flagged"][:25]:
         yield f"  {a['at'][:16]} {a['who']}: {a['question']}  [{_why(a, slow_ms)}]"
     if len(found["flagged"]) > 25:
-        yield f"  ... {len(found['flagged']) - 25} more (--json)"
+        yield f"  {len(found['flagged']) - 25} further flagged asks: --json lists them"
     lat = found["latency"]
     if lat["read"]:
         yield f"Slow pages (>= {slow_ms / 1000:.1f}s): " + (", ".join(

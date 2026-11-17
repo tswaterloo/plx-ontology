@@ -1,0 +1,12 @@
+# The lander's landings (tools/job.py --class land): the queue keeps 4 cores and 6 GB of the
+# workspaces pool free for them, and this slice outranks plx-workspaces.slice for CPU so a landing's
+# test run is never starved by the workspaces it lands.
+[Unit]
+Description=PLX landings
+Before=slices.target
+
+[Slice]
+CPUWeight=200
+IOWeight=200
+MemoryMax=12G
+MemorySwapMax=0

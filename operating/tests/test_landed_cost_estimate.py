@@ -23,7 +23,9 @@ from ontology.json_contract import validate
 from ontology.types import Actor
 from operating import landed_cost as lc
 from operating import ontology_tools as ot
+from operating import ontology_tools_results
 from operating import ontology_tools_investigate as oi
+from operating import ontology_tools_investigate_host
 from operating import ontology_tools_traverse as tt
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -506,11 +508,11 @@ class InvestigateEstimateTests(unittest.TestCase):
         base = ot.OntologyTools(reader, policy, schema=ot.default_schema(),
                                 grammar=ot.default_grammar())
         table: dict = {}
-        ot.register(table, base)
+        ontology_tools_results.register(table, base)
         tt.register(table, tt.TraverseTools(base))
         oi.register(table, oi.InvestigateTools(
             table, rows=oi.citation_rows(self.runtime, policy.held_markings),
-            scope=oi.read_scope(base),
+            scope=ontology_tools_investigate_host.read_scope(base),
             assumptions=assumptions))
         result = table["plx.investigate"]["handler"](
             {"family": "landed_cost", "root": {"identifier": "PO300001"}, "as_known_at": AT},
@@ -664,15 +666,15 @@ class LongOpenOrderPagingTests(unittest.TestCase):
         base = ot.OntologyTools(reader, policy, schema=ot.default_schema(),
                                 grammar=ot.default_grammar())
         table: dict = {}
-        ot.register(table, base)
+        ontology_tools_results.register(table, base)
         tt.register(table, tt.TraverseTools(base))
         oi.register(table, oi.InvestigateTools(table, rows=oi.citation_rows(runtime,
                                                                             policy.held_markings),
-                                               scope=oi.read_scope(base)))
+                                               scope=ontology_tools_investigate_host.read_scope(base)))
         actor = Actor(script.TENANT, frozenset(who))
         args = {"family": "landed_cost", "root": {"identifier": "PO300001"}, "as_known_at": AT}
         seen: dict[str, int] = {}
-        cursor, pages, gaps = None, 0, []
+        cursor, pages, gaps, held = None, 0, [], []
         while True:
             page = table["plx.investigate"]["handler"](
                 {**args, **({"cursor": cursor} if cursor else {})}, actor)
@@ -681,6 +683,7 @@ class LongOpenOrderPagingTests(unittest.TestCase):
                                       root=CONTRACTS), [])
             self.assertLessEqual(ot._envelope_bytes(page), base.limits["max_result_bytes"])
             pages += 1
+            held.append((len(page["answer"]), len(page["gaps"])))
             gaps += page["gaps"]   # a gap is named on the page it arose on
             for entry in page["answer"]:
                 seen[entry["name"]] = seen.get(entry["name"], 0) + 1
@@ -688,7 +691,11 @@ class LongOpenOrderPagingTests(unittest.TestCase):
             if not cursor:
                 break
             self.assertLess(pages, 200)
-        self.assertEqual(pages > 1, n > 1, pages)
+        # AUD-11: the chain and values no answer page has room for follow on detail pages
+        # after the answer's last page (no entry, no gap), never cut away
+        answered = sum(1 for entries, _gaps in held if entries)
+        self.assertEqual(held[answered:], [(0, 0)] * (pages - answered), held)
+        self.assertEqual(answered > 1, n > 1, held)
         read = min(n, 50)  # the plan reads 50 lines; past them the run is incomplete
         # Each line's estimate, its landed cost line and its item's empty units-per-case cell
         # on exactly one page; nothing lost or repeated.

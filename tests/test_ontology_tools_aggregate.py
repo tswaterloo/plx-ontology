@@ -26,8 +26,11 @@ from ontology.json_contract import validate
 from ontology.types import Actor
 from operating import claim_checks
 from operating import ontology_tools as ot
+from operating import ontology_tools_policy
+from operating import ontology_tools_results
 from operating import ontology_tools_aggregate as oa
 from operating import ontology_tools_process as op
+from operating import ontology_tools_process_helpers
 
 ROOT = Path(__file__).resolve().parents[1]
 CONTRACTS = json.loads((ROOT / "operating/ontology_tool_contracts.json").read_text("utf-8"))
@@ -842,6 +845,7 @@ class FilterCountTests(_Base):
 
     def test_counts_every_match_past_the_scan_cap_n_1_10_60_and_binds_a_count_claim(self):
         from operating import claim_checks
+        from operating import claim_checks_values
         widget = [{"property": "description", "op": "eq", "value": "widget"}]
         made = 0
         for n in (1, 10, 60):
@@ -860,7 +864,7 @@ class FilterCountTests(_Base):
                 self.assertEqual(len(set(group["members_cited"])), min(n, oa.MAX_CITATIONS))
                 self.assertEqual({g["reason"] for g in out["gaps"]},
                                  {"citations_capped"} if n > oa.MAX_CITATIONS else set())
-                entry = claim_checks.returned_evidence(
+                entry = claim_checks_values.returned_evidence(
                     "plx.aggregate", {"object_type": "PurchaseOrderLine", "filters": widget,
                                       "measure": {"op": "count"}}, out)["counts"][0]
                 self.assertEqual((entry["value"], entry["complete"]), (str(n), True))
@@ -871,7 +875,7 @@ class FilterCountTests(_Base):
         self.assertEqual(group["value"], "60")
         self.assertEqual(len(group["inputs_citations"]), oa.MAX_CITATIONS)
         self.assertEqual({g["reason"] for g in out["gaps"]}, {"citations_capped"})
-        entry = claim_checks.returned_evidence(
+        entry = claim_checks_values.returned_evidence(
             "plx.aggregate", {"object_type": "PurchaseOrderLine", "filters": widget,
                               "measure": {"op": "count", "property": "description"}},
             out)["counts"][0]
@@ -879,6 +883,7 @@ class FilterCountTests(_Base):
         self.assertEqual(entry["value"], "60")
 
     def test_only_what_the_reader_may_read_is_counted_and_withheld_values_are_partial(self):
+        from operating import claim_checks_values
         ordered = [{"property": "ordered_quantity", "op": "gte", "value": "1"}]
         staff, sales = self.count(ordered), self.count(ordered, SALES)
         # L5 sits in BC, which sales may not read: never counted, never named
@@ -895,7 +900,7 @@ class FilterCountTests(_Base):
         # a count whose filter some sources never record is no exact count for the gate
         priced = self.count([{"property": "unit_price", "op": "gte", "value": "0"}])
         self.assertIn("filter_not_sourced", {g["reason"] for g in priced["gaps"]})
-        entry = claim_checks.returned_evidence(
+        entry = claim_checks_values.returned_evidence(
             "plx.aggregate", {"object_type": "PurchaseOrderLine", "measure": {"op": "count"},
                               "filters": [{"property": "unit_price", "op": "gte",
                                            "value": "0"}]}, priced)["counts"][0]
@@ -1241,7 +1246,7 @@ class AsKnownAtTests(_Base):
         # A question stating a time before the data's end reads its count at that time;
         # the count binds exactly (``known_now``) only when the same call now returns the
         # same members: a record captured after T makes it a count of then alone.
-        from operating.claim_checks import known_now
+        from operating.claim_checks_counts import known_now
         args = {"set": self.set_of(STAFF, L1, L2), "measure": {"op": "count"},
                 "as_known_at": "2099-01-22"}
         same = self.call("plx.aggregate", args)
@@ -1377,7 +1382,7 @@ class AsKnownAtTests(_Base):
         policy = ot.ReadPolicy("plx", dict(POLICY.audiences, **{f"{k}:*": frozenset({"staff"})
                                                                for k in extra}),
                                POLICY.markings)
-        with mock.patch.dict(ot._AUDIENCE_SOURCE, extra):
+        with mock.patch.dict(ontology_tools_policy._AUDIENCE_SOURCE, extra):
             base = ot.OntologyTools(ot.StoreReader(self.store.conn), policy, schema=SCHEMA,
                                     contracts=contracts, clock=lambda: NOW)
             tools_ = oa.AggregateTools(base)
@@ -1475,9 +1480,12 @@ class TaxBasisTests(_Base):
         self.assertIn("incl_tax", out["refused"]["message"])
         self.assertIn("unknown from portal.app_sales_order.total_amount",
                       out["refused"]["message"])
-        out = self.total(NATIVE_SO, SAGE_SO)  # two unknown columns may differ
+        # Sage's ordtotal is before tax (CC-NY-1): an unknown basis never sums with it
+        out = self.total(NATIVE_SO, SAGE_SO)
         self.assertEqual(out["refused"]["code"], "role_mixing")
-        self.assertIn("portal.sage_oe_order_header.total_amount", out["refused"]["message"])
+        self.assertIn("excl_tax", out["refused"]["message"])
+        self.assertIn("unknown from portal.app_sales_order.total_amount",
+                      out["refused"]["message"])
 
     def test_same_basis_sums(self):
         for ids, want in (((BC_SO, BC_SO2), "169.5"), ((FM_SO, FM_SO2), "150"),
@@ -1551,7 +1559,7 @@ class UnitFoldAgreementTests(unittest.TestCase):
                 key = lambda u: project._conflict_key(  # noqa: E731
                     {"value": "10", "unit": u, "currency": None})
                 self.assertEqual(key(a) == key(b), same)
-                self.assertEqual(op._units_compatible(a, b), same)
+                self.assertEqual(ontology_tools_process_helpers._units_compatible(a, b), same)
 
 
 class ExactDecimalTests(_Base):
@@ -1669,7 +1677,7 @@ class FilterEvidenceTests(unittest.TestCase):
         self.assertTrue(second["partial"])
         # one plan run: its calls share the run's first decision
         allowed[0] = True
-        with ot.run_memo():
+        with ontology_tools_policy.run_memo():
             self.assertEqual(self.count(s, t, S1)["groups"][0]["value"], "2")
             allowed[0] = False
             self.assertEqual(self.count(s, t, S1)["groups"][0]["value"], "2")
@@ -1773,7 +1781,7 @@ class DefaultDatesAndOrigins(_Base):
         # the copy dated by its migration day reads its FileMaker origin's 2030-06-01; the
         # copy with no origin is neither matched nor excluded, its gap says so
         self.assertEqual(passing, {self.copies[0]})
-        self.assertEqual(undecided, {ot.undated_marker("order_date")})
+        self.assertEqual(undecided, {ontology_tools_results.undated_marker("order_date")})
 
     def test_groups_count_a_twin_once_by_its_origin_date(self):
         out = self.agg(STAFF, [*self.copies, self.dated, self.origin], {"op": "count"},

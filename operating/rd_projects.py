@@ -7,11 +7,12 @@ stability test or a certificate of analysis (``classify``; automated mail and ma
 skipped and counted). Threads are grouped into projects per customer, conservatively: a project
 is one customer, one kind and one product item (the settled ``mentions_product`` link) or, with
 no single item, one conversation. The customer is the thread's single settled customer link
-(``Email.sent_by_customer``, ``mentions_customer``) or, with none, its one outside business
-domain (a customer or a supplier: the mail carries no link yet); a thread with no customer link
-whose mail is settled-linked ``Email.sent_by_supplier`` is purchasing, no project (counted,
-``supplier_thread``); two customers, or only
-personal-mail senders, make no project (counted, not guessed). A thread needs a human message
+(``Email.sent_by_customer``, ``mentions_customer``) or, with none, the one customer record
+stating an outside sender's address or business domain (``parties``); a thread whose mail is
+settled-linked ``Email.sent_by_supplier``, or whose outside sender a supplier record states,
+is purchasing, no project (counted, ``supplier_thread``); two customers, a party both a
+customer and a supplier, or no record stating the sender make no project (counted,
+``no_single_customer``, ``party_unknown``; never grouped by mail domain, never guessed). A thread needs a human message
 of ours and one of theirs, and the first message about the work must be theirs (a sample or
 quote we asked a supplier for is no customer project).
 
@@ -56,7 +57,7 @@ from . import inbox_triage as it
 from . import label_changes as lc
 from . import proactive_threads as pt
 from .proactive_business import _tick
-from .proactive_chasers import _FORWARD, PUBLIC_MAIL
+from .proactive_chasers import _FORWARD
 
 RULE = "rd_projects"
 LINE = "rd_project_line"
@@ -197,8 +198,19 @@ def rd_projects(st: Any, as_of: date, *, gap: Callable, cites: Callable, result:
     out = result(gaps, not_evaluated=skipped)
     out["counts"] = {k: counts[k] for k in ("threads", "projects", "lines", IDLE, "automated",
                                             "mailing", "no_single_customer", "one_sided",
-                                            "asked_by_us", "supplier_thread")}
+                                            "asked_by_us", "supplier_thread", "party_unknown")}
     return out
+
+
+def parties(st: Any, address: str) -> set[tuple[str, str]]:
+    """(side, record) of the customer and supplier records stating ``address``, else its
+    business domain (``autopilot._parties``: a public mail domain counts by its address)."""
+    from . import autopilot as ap
+    from . import autopilot_events
+    try:
+        return set(autopilot_events._parties(st, address.lower()))
+    except Exception:  # noqa: BLE001 - an unreadable party list identifies nobody
+        return set()
 
 
 def project_lines(st: Any, pop: Mapping[str, Any], as_of: date, people: Any, counts: Counter,
@@ -261,9 +273,6 @@ def project_lines(st: Any, pop: Mapping[str, Any], as_of: date, people: Any, cou
         t: pt._Thread = x["t"]
         customers = sorted({c for o in x["humans"] for c in links[o]["customers"]})
         items = sorted({i for o in x["humans"] for i in links[o]["items"]})
-        domains_out = sorted({a.rsplit("@", 1)[1] for o in x["humans"]
-                              for a in [t.sender(o)] if "@" in a
-                              and not pt._internal(a, domains)})
         party = None
         if len(customers) > 1:   # two customers in one thread: not guessed
             counts["no_single_customer"] += 1
@@ -275,13 +284,22 @@ def project_lines(st: Any, pop: Mapping[str, Any], as_of: date, people: Any, cou
             # certificates are purchasing, never a customer's project
             counts["supplier_thread"] += 1
             continue
-        elif len(domains_out) == 1 and domains_out[0] not in PUBLIC_MAIL:
-            # no settled customer link on the thread's mail: the one outside domain is the
-            # party (a customer, a supplier: it is not known which), never a person
-            customer, party = None, "@" + domains_out[0]
         else:
-            counts["no_single_customer"] += 1
-            continue
+            # no settled link on the thread's mail: the customer and supplier records that
+            # state an outside sender's address (else its business domain) decide. One
+            # customer and no supplier: that customer. A supplier: purchasing, out. Both, two
+            # customers or none: no project (never grouped by mail domain, never guessed).
+            outside = sorted({t.sender(o) for o in x["humans"]
+                              if "@" in t.sender(o) and not pt._internal(t.sender(o), domains)})
+            stated = set().union(*(parties(st, a) for a in outside)) if outside else set()
+            named = sorted({o for side, o in stated if side == "customer"})
+            if any(side == "supplier" for side, _o in stated):
+                counts["supplier_thread" if not named else "no_single_customer"] += 1
+                continue
+            if len(named) != 1:
+                counts["party_unknown" if not named else "no_single_customer"] += 1
+                continue
+            customer = named[0]
         anchor = items[0] if len(items) == 1 else x["conversation"]
         last = x["last"]
         text = t.text(last)
@@ -378,10 +396,8 @@ def board(gaps: Iterable[Mapping[str, Any]], today: date, *,
             continue
         event = item.get("event") if isinstance(item.get("event"), Mapping) else {}
         if not isinstance(event.get("project"), str) or event.get("kind") not in KIND_WORD \
-                or event.get("state") not in STATES or not (
-                    isinstance(event.get("customer"), str)
-                    or (event.get("customer") is None and isinstance(event.get("party"), str))):
-            continue   # a line whose shape cannot be trusted is not shown
+                or event.get("state") not in STATES or not isinstance(event.get("customer"), str):
+            continue   # a line whose shape cannot be trusted, or with no customer, is not shown
         raw.append((item, event))
     handles = sorted({h for _i, e in raw for h in [e.get("customer"), *(e.get("items") or ())]
                       if isinstance(h, str)})
@@ -407,7 +423,7 @@ def board(gaps: Iterable[Mapping[str, Any]], today: date, *,
         owners = Counter(e.get("owner") for _i, e in group if isinstance(e.get("owner"), str))
         owner = max(owners, key=lambda k: (owners[k], k)) if owners else None
         out.append({
-            "id": key, "customer": latest["customer"], "party": latest.get("party"), "kind": latest["kind"],
+            "id": key, "customer": latest["customer"], "kind": latest["kind"],
             "status": status, "last_on": latest.get("last_on"), "days": waited,
             "idle": status != "closed" and waited >= n_idle,
             "owner": owner, "owner_is_you": bool(owner and owner.lower() in mine),

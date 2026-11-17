@@ -30,7 +30,9 @@ from ontology import store_ddl
 from ontology.generator import overrides as ov
 from ontology.types import Actor
 from operating import ontology_tools as ot
+from operating import ontology_tools_results
 from operating import ontology_tools_investigate as oi
+from operating import ontology_tools_investigate_host
 from operating import ontology_tools_traverse as tt
 from operating.tests import test_landed_cost_history as hist
 from tests import test_investigate_landed_cost as world
@@ -293,7 +295,7 @@ class PurchasingGrantTest(unittest.TestCase):
                 return {"rows": [{"department_id": "d1", "user_id": f"u{i}"}
                                  for i in range(self.members)]}
         guard = PeopleExclusion([self.OIDS[0]])
-        # PROC empty, two titled people.
+        # The 2026-10-27 reading: PROC empty, two titled people.
         passing = self.probe.run({}, Client(0), self._graph(["Buyer", "x", "Sourcing Lead",
                                                              "Procurement"]), guard)
         self.assertEqual(lv.check_expectations(spec, 0, passing), [])
@@ -360,12 +362,12 @@ class FixtureReaders(unittest.TestCase):
         base = ot.OntologyTools(reader, policy, schema=ot.default_schema(),
                                 grammar=ot.default_grammar())
         table: dict = {"_conn": reader.conn}
-        ot.register(table, base)
+        ontology_tools_results.register(table, base)
         tt.register(table, tt.TraverseTools(base))
         oi.register(table, oi.InvestigateTools(
             table, rows=oi.citation_rows(world.FixtureWorld.runtime,
                                          held_markings=policy.held_markings),
-            scope=oi.read_scope(base),
+            scope=ontology_tools_investigate_host.read_scope(base),
             held_markings=lambda actor: policy.held_markings(actor)))
         return table
 

@@ -1,5 +1,6 @@
 """Business records linked to the staff ``Person`` who owns them: a PO's buyer, an order's
-salesperson, a customer's account owner, a task's assignee. A ``post_project`` step
+salesperson, a customer's account owner, a task's assignee and reporter, the person who
+requested and who decided an approval. A ``post_project`` step
 (``operating/build_steps.py`` ``with_owners``; steps run in name order, so after
 ``reviews``), link id prefix ``PREFIX``, self-contained like ``ontology.people_links``,
 whose Person keys (``read_people``) it reads.
@@ -8,14 +9,22 @@ whose Person keys (``read_people``) it reads.
 
 * ``oids`` (Planner ``assignees``): an Entra object id exactly one staff Person holds,
   ``corroborated``;
-* ``local_or_address`` (Mission Control ``assignee``): an address one Person holds, or a
+* ``local_or_address`` (Mission Control ``assignee``, ``reporter``, ``requested_by``,
+  ``decided_by``): an address one Person holds, or a
   bare name that is one staff Person's address local part, ``corroborated`` (the people
   links' MC rule);
 * ``code`` (BC purchaser and salesperson codes, Sage salesperson codes): an address one
   Person holds is ``corroborated``; a bare code equal to one staff Person's address local
   part is a **lead** (a code is no identity: the BC salesperson table with its e-mail is
   not captured);
-* ``name`` (FileMaker ``requisitioner_c``): a person's name spelled as one staff Person's
+* ``sage_code`` (Sage ``salesper1`` / ``codeslsp1`` on orders and customers): the code is
+  looked up, case-insensitively and trimmed, in the current Sage AR salesperson rows
+  (``RelSageArSalesperson``: ``codeslsp`` -> ``codeempl``, read once per run); the employee
+  code, when it is one staff Person's address local part, makes a **lead**. A code Sage does
+  not list, a blank employee code, or a code listed with two employee codes names nobody
+  (counted). The salesperson rows are finance and pii marked, so the link carries those
+  markings with the value's own;
+* ``name`` (FileMaker ``requisitioner_c``, an assembly order's ``auditcreator``): a person's name spelled as one staff Person's
   local part (``first.last``, ``firstlast``, ``flast``, ``first_last``, or a one-word
   name), a **lead**; spellings naming two Persons name nobody.
 
@@ -35,12 +44,11 @@ from __future__ import annotations
 
 from collections import Counter
 import json
-import os
 import re
 from typing import Any, Iterable, Mapping
 
 from ontology import mentions
-from ontology.people_links import Holder, People, _json, keys, read_people
+from ontology.people_links import Holder, People, _excluder, _json, keys, read_people
 from ontology.sender_parties import _digest, _q, _values, _versions, own_domains
 
 PREFIX = "owner:"
@@ -50,15 +58,22 @@ FIRM_KEYS = ("oid", "address")
 
 # record type -> owner property -> (link type, how the value names a person)
 OWNERS: dict[str, dict[str, tuple[str, str]]] = {
+    "AssemblyOrder": {"created_by_account": ("AssemblyOrder.created_by", "name")},
     "PurchaseOrder": {"purchaser_code": ("PurchaseOrder.buyer", "code"),
                       "requisitioner": ("PurchaseOrder.buyer", "name")},
-    "SalesOrder": {"salesperson_code": ("SalesOrder.sales_rep", "code")},
-    "Customer": {"salesperson_code": ("Customer.account_owner", "code")},
+    "SalesOrder": {"salesperson_code": ("SalesOrder.sales_rep", "code"),
+                   "sage_salesperson_code": ("SalesOrder.sales_rep", "sage_code")},
+    "Customer": {"salesperson_code": ("Customer.account_owner", "code"),
+                 "sage_salesperson_code": ("Customer.account_owner", "sage_code")},
     "PlannerTask": {"assignees": ("PlannerTask.assigned_to", "oids")},
-    "MCTask": {"assignee": ("MCTask.assigned_to", "local_or_address")},
+    "MCTask": {"assignee": ("MCTask.assigned_to", "local_or_address"),
+               "reporter": ("MCTask.reported_by", "local_or_address")},
+    "MCApproval": {"requested_by": ("MCApproval.requested_by_person", "local_or_address"),
+                   "decided_by": ("MCApproval.decided_by_person", "local_or_address")},
 }
 LINK_TYPES = tuple(sorted({lt for props in OWNERS.values() for lt, _h in props.values()}))
 _WORD = re.compile(r"[a-z]+")
+SALESPERSON = "RelSageArSalesperson"
 
 
 def owner_keys(how: str, value: Any) -> list[list[tuple[str, str]]]:
@@ -82,13 +97,6 @@ def owner_keys(how: str, value: Any) -> list[list[tuple[str, str]]]:
         return [[("local", s) for s in dict.fromkeys(
             (f"{first}.{last}", f"{first}{last}", f"{first[0]}{last}", f"{first}_{last}"))]]
     return []
-
-
-def _excluder() -> Any:
-    """The people exclusion from the environment, or None when it is unavailable."""
-    from integrations.people_exclusion import PeopleExclusion, environ_with_exclusion
-    guard = PeopleExclusion.from_env(environ_with_exclusion(os.environ))
-    return None if guard.unavailable else guard
 
 
 def _drop_excluded(conn: Any, people: People, guard: Any, counts: Counter) -> None:
@@ -131,6 +139,61 @@ def _judge(people: People, spellings: list[list[tuple[str, str]]]
     return out
 
 
+def read_salespeople(conn: Any) -> dict[str, list[dict[str, Any]]]:
+    """Sage salesperson code (trimmed, lower case) -> its current rows, each with the
+    trimmed lower-case employee code ('' when blank) and the two cells' citations."""
+    cells: dict[str, dict[str, Any]] = {}
+    for row, prop in _values(conn, ("codeslsp", "codeempl"), (SALESPERSON + ":",)):
+        cells.setdefault(row["object_id"], {})[prop] = row
+    out: dict[str, list[dict[str, Any]]] = {}
+    for oid in sorted(cells):
+        held = cells[oid]
+        code = held.get("codeslsp")
+        if code is None or not isinstance(code["value"], str) or not code["value"].strip():
+            continue
+        employee = held.get("codeempl")
+        text = employee["value"].strip().lower() if employee is not None \
+            and isinstance(employee["value"], str) else ""
+        out.setdefault(code["value"].strip().lower(), []).append({
+            "employee": text, "rows": [r for r in (code, employee) if r is not None],
+            "handle": (employee or code)["l1_handle"]})
+    return out
+
+
+def _cite(row: Any) -> dict[str, Any]:
+    return {"l1_handle": row["l1_handle"], "field_path": row["field_path"],
+            "digest": row["digest"], "lineage": row["lineage"]}
+
+
+def _sage_owner(people: People, salespeople: Mapping[str, list[dict[str, Any]]], value: Any,
+                link_type: str, counts: Counter) -> tuple[Holder, dict[str, Any]] | None:
+    """The one staff Person a Sage salesperson code reaches through its employee code."""
+    entries = salespeople.get(value.strip().lower(), []) if isinstance(value, str) else []
+    if not entries:
+        counts[f"{link_type}:no_person"] += 1
+        counts[f"{link_type}:sage_code_unlisted"] += 1
+        return None
+    employees = {e["employee"] for e in entries if e["employee"]}
+    if len(employees) != 1:
+        counts[f"{link_type}:{'ambiguous' if employees else 'no_person'}"] += 1
+        counts[f"{link_type}:sage_employee_" + ("conflict" if employees else "blank")] += 1
+        return None
+    found = {}
+    for kind, key in keys("local", next(iter(employees))):
+        outcome, holder = people.judge(kind, key)
+        if outcome == "ambiguous":
+            counts[f"{link_type}:ambiguous"] += 1
+            return None
+        if holder is not None:
+            found[holder.person] = holder
+    if len(found) != 1:
+        counts[f"{link_type}:no_person"] += 1
+        return None
+    counts[f"{link_type}:linked"] += 1
+    holder = next(iter(found.values()))
+    return holder, next(e for e in entries if e["employee"])
+
+
 def declared_owners(schema_links: Mapping[str, Mapping[str, Any]]
                     ) -> dict[str, dict[str, tuple[str, str]]]:
     out: dict[str, dict[str, tuple[str, str]]] = {}
@@ -145,24 +208,31 @@ def declared_owners(schema_links: Mapping[str, Mapping[str, Any]]
 def owner_links(conn: Any, families: Mapping[str, Mapping[str, tuple[str, str]]],
                 people: People, counts: Counter) -> list[dict[str, Any]]:
     props = sorted({p for f in families.values() for p in f})
-    found: list[tuple[Any, str, Holder, str, str]] = []
+    found: list[tuple[Any, str, Holder, str, str, dict[str, Any] | None]] = []
+    salespeople = read_salespeople(conn) if any(
+        how == "sage_code" for f in families.values() for _l, how in f.values()) else {}
     for row, prop in _values(conn, props, tuple(t + ":" for t in families)):
         declared = families.get(row["object_id"].split(":", 1)[0], {}).get(prop)
         if declared is None:
             continue
         link_type, how = declared
+        if how == "sage_code":
+            hit = _sage_owner(people, salespeople, row["value"], link_type, counts)
+            if hit is not None:
+                found.append((row, link_type, hit[0], prop, "lead", hit[1]))
+            continue
         for outcome, holder, kind in _judge(people, owner_keys(how, row["value"])):
             counts[f"{link_type}:{outcome}"] += 1
             if holder is not None:
                 tier = "corroborated" if kind in FIRM_KEYS or how == "local_or_address" \
                     else "lead"
-                found.append((row, link_type, holder, prop, tier))
-    versions = _versions(conn, {h.person for _r, _l, h, _p, _t in found})
+                found.append((row, link_type, holder, prop, tier, None))
+    versions = _versions(conn, {f[2].person for f in found})
     rejected = {(r[0], r[1], r[2]) for lt in LINK_TYPES for r in _q(
         conn, "SELECT from_object, to_object, link_type FROM link_rows WHERE link_type = ? "
               "AND tier = 'contradicted'", [lt])}
     out: dict[str, dict[str, Any]] = {}
-    for row, link_type, holder, prop, tier in found:
+    for row, link_type, holder, prop, tier, sage in found:
         version = versions.get(holder.person)
         if version is None:
             continue
@@ -177,9 +247,14 @@ def owner_links(conn: Any, families: Mapping[str, Mapping[str, tuple[str, str]]]
                 "digest": row["digest"], "lineage": row["lineage"]}
         reason = [{"feature": f"{prop}_key", "agrees": True, "citations": [cite]},
                   {"feature": "person_key", "agrees": True, "citations": [dict(holder.cite)]}]
+        if sage is not None:
+            reason.insert(1, {"feature": "salesperson_employee", "agrees": True,
+                              "citations": [_cite(r) for r in sage["rows"]]})
         why_not = [] if tier != "lead" else [
             {"feature": "code_or_name_only", "agrees": None,
-             "detail": "a code or name matched one staff address local part: a lead"}]
+             "detail": "a Sage salesperson code's employee code matched one staff address "
+                       "local part: a lead (a code is no identity)" if sage is not None else
+                       "a code or name matched one staff address local part: a lead"}]
         out[link_id] = {
             "link_id": link_id, "link_type": link_type, "from_object": row["object_id"],
             "to_object": holder.person, "tier": tier,
@@ -187,13 +262,16 @@ def owner_links(conn: Any, families: Mapping[str, Mapping[str, tuple[str, str]]]
             "reason": json.dumps(reason, sort_keys=True, separators=(",", ":")),
             "why_not": json.dumps(why_not, sort_keys=True, separators=(",", ":")),
             "evidence_handles": json.dumps(list(dict.fromkeys(
-                [row["l1_handle"], holder.handle, version["l1_handle"]])),
+                [row["l1_handle"], *([sage["handle"]] if sage else []), holder.handle,
+                 version["l1_handle"]])),
                 separators=(",", ":")),
             "reviewed_by": None, "reviewed_at": None, "review_action_id": None,
-            "markings": mentions._marks(row["vmarks"], row["kmarks"], holder.markings,
-                                        version["markings"]),
+            "markings": mentions._marks(
+                row["vmarks"], row["kmarks"], holder.markings, version["markings"],
+                *[m for r in (sage["rows"] if sage else ()) for m in (r["vmarks"], r["kmarks"])]),
             "recorded_at": max(row["recorded_at"] or "", holder.recorded_at or "",
-                               version["recorded_at"] or ""),
+                               version["recorded_at"] or "",
+                               *[r["recorded_at"] or "" for r in (sage["rows"] if sage else ())]),
             "superseded_at": None}
     return [out[k] for k in sorted(out)]
 

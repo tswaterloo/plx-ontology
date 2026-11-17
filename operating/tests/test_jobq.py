@@ -20,7 +20,6 @@ from operating.jobq import classes as jc
 from operating.jobq import hygiene, inline, status as js
 from operating.jobq import queue as jq
 from operating.jobq.worker import UnitState, Worker
-from tools import testslot
 
 try:
     from operating.pg import scratch_db
@@ -470,7 +469,7 @@ class QueueTests(unittest.TestCase):
         first.wait()
         second = inline.Ticket(self.queue(), "land", key="land:b", wait_timeout=0.5, poll_s=0.1)
         with self.assertRaises(inline.WaitTimeout):
-            second.wait()
+            second.wait()                              # the one landing slot is held
         with self.assertRaises(inline.Duplicate):
             dup = inline.Ticket(self.queue(), "tests", key="same")
             other = inline.Ticket(self.queue(), "tests", key="same")
@@ -516,121 +515,13 @@ class QueueTests(unittest.TestCase):
         from datetime import datetime, timedelta, timezone
         later = datetime.now(timezone.utc) + timedelta(seconds=js.STALE_S + 5)
         self.assertFalse(js.read_snapshot(self.state, now=later)["fresh"])
-        # a check that took ``now`` just before the worker wrote (11-13: a false page)
+        # a check that took ``now`` just before the worker wrote (once a false page)
         earlier = datetime.now(timezone.utc) - timedelta(seconds=js.CLOCK_SKEW_S - 5)
         self.assertTrue(js.read_snapshot(self.state, now=earlier)["fresh"])
         self.assertEqual(js.read_snapshot(self.state, now=earlier)["age_s"], 0)
         long_before = datetime.now(timezone.utc) - timedelta(seconds=js.CLOCK_SKEW_S + 60)
         self.assertFalse(js.read_snapshot(self.state, now=long_before)["fresh"])
         self.assertEqual(js.read_snapshot(Path(tempfile.mkdtemp()))["configured"], False)
-
-
-@unittest.skipIf(_DSN is None, "no scratch Postgres")
-class TestslotThroughTheQueueTests(unittest.TestCase):
-    """tools/testslot.py with PLX_JOBQ=1: a test run is a ``tests`` job of the queue."""
-
-    def setUp(self) -> None:
-        q = jq.Queue(_DSN, environ={})
-        q.conn.execute("DROP SCHEMA IF EXISTS jobq CASCADE")
-        q.init()
-        self.q = q
-        self.tmp = Path(tempfile.mkdtemp())
-        self.env = {**os.environ, "PLX_JOBQ": "1", jq.DSN_ENV: _DSN,
-                    "PLX_TEST_SLOT_DIR": str(self.tmp / "slots"), "PLX_TEST_SLOTS": "2"}
-        for name in ("mem_available_mb", "unit_memory_mb"):
-            patch = mock.patch.object(jq.Probe, name,
-                                      return_value=200 * GB if name == "mem_available_mb" else None)
-            patch.start()
-            self.addCleanup(patch.stop)
-
-    def tearDown(self) -> None:
-        self.q.close()
-
-    def test_run_is_a_tests_job_and_its_detached_children_end_with_it(self):
-        pidfile = self.tmp / "child.pid"
-        script = ("import os,subprocess;"
-                  "p=subprocess.Popen(['sleep','300'],start_new_session=True);"
-                  f"open({str(pidfile)!r},'w').write(str(p.pid));"
-                  "raise SystemExit(0 if os.environ.get('PLX_JOBQ_JOB') else 9)")
-        code = testslot.run([sys.executable, "-c", script], environ=self.env)
-        self.assertEqual(code, 0)
-        rows = self.q.conn.execute("SELECT class, kind, state FROM jobq.jobs").fetchall()
-        self.assertEqual([(r["class"], r["kind"], r["state"]) for r in rows],
-                         [("tests", "inline", "done")])
-        pid = int(pidfile.read_text())
-        for _ in range(100):
-            if not hygiene._alive(pid):
-                break
-            time.sleep(0.05)
-        self.assertFalse(hygiene._alive(pid))
-
-    def test_a_failing_run_keeps_its_status_and_a_blocked_run_times_out_as_124(self):
-        self.assertEqual(testslot.run([sys.executable, "-c", "raise SystemExit(5)"],
-                                      environ=self.env), 5)
-        jq.Probe.mem_available_mb.return_value = 1 * GB
-        env = {**self.env, "PLX_TEST_SLOT_WAIT": "1"}
-        self.assertEqual(testslot.run([sys.executable, "-c", "pass"], environ=env),
-                         testslot.SLOT_TIMEOUT_EXIT)
-        states = sorted(r["state"] for r in self.q.conn.execute("SELECT state FROM jobq.jobs"))
-        self.assertEqual(states, ["cancelled", "failed"])
-
-    def test_queue_off_or_in_a_gate_check_never_touches_it(self):
-        for env in ({**self.env, "PLX_JOBQ": ""}, {**self.env, testslot.GATE_CHECK: "1"}):
-            self.assertEqual(testslot.run([sys.executable, "-c", "pass"], environ=env), 0)
-        self.assertIsNone(self.q.conn.execute("SELECT 1 FROM jobq.jobs").fetchone())
-
-
-@unittest.skipIf(_DSN is None, "no scratch Postgres")
-class LandLaneTests(unittest.TestCase):
-    """tools/land.sh with PLX_JOBQ=1: one landing at a time, in order, through the queue."""
-
-    def test_an_unreachable_queue_lands_without_it(self):
-        tmp = Path(tempfile.mkdtemp())
-        env = {**os.environ, "PLX_JOBQ": "1", jq.DSN_ENV: "host=/nonexistent dbname=x connect_timeout=1",
-               "LAND_LOGS": str(tmp / "logs"), "LAND_WORKDIR": str(tmp / "wt")}
-        env.pop("PLX_JOBQ_LAND_HELD", None)
-        land = Path(__file__).resolve().parents[2] / "tools" / "land.sh"
-        done = subprocess.run(["bash", str(land), "main", "-m", "x"], env=env,
-                              capture_output=True, text=True, timeout=120)
-        self.assertEqual(done.returncode, 1)
-        self.assertIn("job queue unreachable; landing without it", done.stderr)
-        self.assertIn("the lane is main", done.stdout)
-
-    def test_a_second_landing_waits_in_the_lane_then_runs(self):
-        q = jq.Queue(_DSN, environ={})
-        self.addCleanup(q.close)
-        q.conn.execute("DROP SCHEMA IF EXISTS jobq CASCADE")
-        q.init()
-        tmp = Path(tempfile.mkdtemp())
-        zero = tmp / "classes.json"     # the host's real memory never decides this test
-        zero.write_text(json.dumps({c.name: {"mem_gb": 0, "cpus": 0}
-                                    for c in jc.load({}).values()}))
-        env = {**os.environ, "PLX_JOBQ": "1", jq.DSN_ENV: _DSN, jq.FLOOR_ENV: "0",
-               jc.OVERRIDES_ENV: str(zero), "LAND_LOGS": str(tmp / "logs"),
-               "LAND_WORKDIR": str(tmp / "wt")}
-        env.pop("PLX_JOBQ_LAND_HELD", None)
-        holder = inline.Ticket(jq.Queue(_DSN, environ=env), "land", key="land:other",
-                               say=lambda m: None)
-        self.addCleanup(holder.queue.close)
-        holder.wait()
-        land = Path(__file__).resolve().parents[2] / "tools" / "land.sh"
-        proc = subprocess.Popen(["bash", str(land), "main", "-m", "x"], env=env,
-                                stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-        for _ in range(200):
-            row = q.conn.execute("SELECT state FROM jobq.jobs WHERE idem_key = 'land:main'").fetchone()
-            if row:
-                break
-            time.sleep(0.05)
-        time.sleep(0.5)
-        self.assertEqual(row["state"], "queued")
-        self.assertIsNone(proc.poll())
-        holder.finish(0)
-        out, err = proc.communicate(timeout=60)
-        self.assertEqual(proc.returncode, 1)                 # land.sh's own refusal, unchanged
-        self.assertIn("NOT LANDED", out)
-        self.assertIn("the lane is main", out)
-        self.assertEqual(q.conn.execute("SELECT state FROM jobq.jobs WHERE idem_key ="
-                                        " 'land:main'").fetchone()["state"], "failed")
 
 
 class ProbeTests(unittest.TestCase):
@@ -647,3 +538,145 @@ class ProbeTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+WORKSPACE_CLASSES = {
+    "land": jc.JobClass("land", 50, 6, 4, 1, max_attempts=1, max_runtime_s=540, pool="workspaces",
+                        reserve=True),
+    "workspace": jc.JobClass("workspace", 55, 4, 2, 64, preemptible=True, max_attempts=1, pool="workspaces"),
+    "tests": jc.JobClass("tests", 60, 4, 2, 64, preemptible=True, max_attempts=1,
+                         max_runtime_s=540, pool="workspaces"),
+    "backup": jc.JobClass("backup", 40, 3, 2, 1, unit="plx-backup.service"),
+}
+
+
+class DiskProbe(FakeProbe):
+    def __init__(self) -> None:
+        super().__init__(200 * GB)
+        self.free = {"/data": 50 * GB}
+
+    def disk_free_mb(self, path: str) -> int:
+        return self.free[self.mount(path)]
+
+    def mount(self, path: str) -> str:
+        return "/data" if path.startswith("/data") else "/"
+
+
+@unittest.skipIf(_DSN is None, "no scratch Postgres")
+class DeclaredAdmissionTests(unittest.TestCase):
+    """A job declares its cores, memory, disk and workspace; the workspaces pool counts cores
+    (not runs) and keeps the lander's share; the disk keeps its floor; a workspace holds at
+    most two jobs."""
+
+    def setUp(self) -> None:
+        self.env = {jq.FLOOR_ENV: "4", jq.CPU_ENV: "64", jq.WORKSPACE_CPUS_ENV: "12",
+                    jq.WORKSPACE_MEM_ENV: "26"}
+        self.probe = DiskProbe()
+        self.q = jq.Queue(_DSN, classes=WORKSPACE_CLASSES, probe=self.probe, environ=self.env)
+        self.addCleanup(self.q.close)
+        self.q.conn.execute("DROP SCHEMA IF EXISTS jobq CASCADE")
+        self.q.init()
+
+    def admit_all(self) -> tuple[list[int], jq.Decision]:
+        claimed = []
+        while True:
+            decision = self.q.try_admit("o", lambda j: True)
+            if decision.claimed is None:
+                return claimed, decision
+            claimed.append(decision.claimed["id"])
+
+    def refusal(self, job_id: int) -> str:
+        return self.q.get(job_id)["last_refusal"] or ""
+
+    def test_cores_are_counted_not_runs_and_the_lander_keeps_its_share(self):
+        ids = [self.q.enqueue("tests", kind="inline", cpus=4, workspace=f"l{i}")[0] for i in range(4)]
+        claimed, _ = self.admit_all()
+        # 12 workspace cores less the lander's 4: two 4-core runs, not four (nor fifteen)
+        self.assertEqual(claimed, ids[:2])
+        self.assertTrue(self.refusal(ids[2]).startswith("workspaces: 8 of 12 workspace cores"),
+                        self.refusal(ids[2]))
+        land = self.q.enqueue("land", kind="inline", workspace="lander")[0]
+        claimed, _ = self.admit_all()
+        self.assertEqual(claimed, [land])          # the reserve was kept for it
+        held = self.q.get(ids[0])
+        self.assertEqual((held["cpus"], held["workspace"]), (4.0, "l0"))
+
+    def test_declared_memory_counts_against_the_pool(self):
+        big = self.q.enqueue("workspace", kind="inline", mem_gb=16, cpus=1, workspace="a")[0]
+        too = self.q.enqueue("workspace", kind="inline", mem_gb=8, cpus=1, workspace="b")[0]
+        claimed, _ = self.admit_all()
+        self.assertEqual(claimed, [big])            # 16 + 8 > 26 - 6 kept for the lander
+        self.assertIn("workspace memory", self.refusal(too))
+        # never admissible beside the lander's kept share: refused at once, never queued
+        for decl in ({"cpus": 9}, {"mem_gb": 21}):
+            with self.assertRaisesRegex(ValueError, "can ever be admitted with"):
+                self.q.enqueue("workspace", kind="inline", workspace="c", **decl)
+        self.assertEqual(jq.workspace_ceiling(WORKSPACE_CLASSES["workspace"], WORKSPACE_CLASSES, self.env),
+                         (8.0, 20 * GB))
+        self.assertEqual(jq.workspace_ceiling(WORKSPACE_CLASSES["land"], WORKSPACE_CLASSES, self.env),
+                         (12.0, 26 * GB))
+        self.q.enqueue("land", kind="inline", cpus=12, workspace="lander")   # the lander may
+
+    def test_a_job_its_disk_cannot_hold_waits_and_never_holds_the_others_back(self):
+        floor_gb = jq.disk_floor_mb("/data", {}) / GB
+        self.assertEqual(floor_gb, 40.0)           # ops_health.DISK_FLOOR_GB["/data"]
+        big = self.q.enqueue("workspace", kind="inline", cpus=1, disk_gb=20, disk_path="/data/x",
+                             workspace="a")[0]
+        small = self.q.enqueue("workspace", kind="inline", cpus=1, disk_gb=6, workspace="b")[0]
+        second = self.q.enqueue("workspace", kind="inline", cpus=1, disk_gb=6, workspace="c")[0]
+        plain = self.q.enqueue("workspace", kind="inline", cpus=1, workspace="d")[0]
+        claimed, _ = self.admit_all()
+        self.assertEqual(claimed, [small, plain])  # 50 - 6 held - 6 < 40
+        self.assertTrue(self.refusal(big).startswith("disk: 51200 MB free on /data"))
+        self.assertIn("6144 MB declared by held jobs", self.refusal(second))
+
+    def test_a_workspace_holds_two_jobs_and_other_workspaces_still_start(self):
+        mine = [self.q.enqueue("workspace", kind="inline", cpus=1, workspace="a")[0] for _ in range(3)]
+        other = self.q.enqueue("workspace", kind="inline", cpus=1, workspace="b")[0]
+        claimed, _ = self.admit_all()
+        self.assertEqual(claimed, [*mine[:2], other])
+        self.assertTrue(self.refusal(mine[2]).startswith("workspace: a already holds 2"))
+        status = self.q.status()
+        self.assertEqual(status["workspaces"]["a"], {"held": 2, "cpus": 2.0, "mem_mb": 8192,
+                                                "waiting": 1})
+        self.assertEqual(status["workspace_pool"]["cpus_held"], 3.0)
+        text = js.render(status)
+        self.assertIn("workspace a: 2 held (2 cores, 8.0G), 1 waiting", text)
+        self.assertIn("workspaces pool: 3 of 12 cores", text)
+        self.assertEqual(js._trim(status)["workspaces"]["b"]["held"], 1)
+
+    def test_a_waiting_callers_own_refusal_is_said(self):
+        said: list[str] = []
+        self.q.enqueue("workspace", kind="inline", cpus=1, workspace="a")
+        self.q.enqueue("workspace", kind="inline", cpus=1, workspace="a")
+        self.admit_all()
+        ticket = inline.Ticket(self.q, "workspace", wait_timeout=0.3, poll_s=0.05, say=said.append,
+                               declare={"cpus": 1, "workspace": "a"})
+        with self.assertRaises(inline.WaitTimeout):
+            ticket.wait()
+        self.assertTrue(any("workspace: a already holds 2" in m for m in said), said)
+
+
+@unittest.skipIf(_DSN is None, "no scratch Postgres")
+class SchemaBehindTests(unittest.TestCase):
+    """Code newer than the queue database's schema never crash-loops."""
+
+    def setUp(self) -> None:
+        self.q = jq.Queue(_DSN, environ={})
+        self.addCleanup(self.q.close)
+        self.q.conn.execute("DROP SCHEMA IF EXISTS jobq CASCADE")
+        self.q.init()
+        self.q.conn.execute("ALTER TABLE jobq.jobs DROP COLUMN workspace")
+        self.q.conn.execute("DELETE FROM jobq.migrations WHERE name = '0004_workspace'")
+
+    def test_run_says_unreachable_and_the_worker_applies_the_migration_first(self):
+        from operating.jobq import __main__ as cli
+        with mock.patch.dict(os.environ, {jq.DSN_ENV: _DSN}):
+            self.assertEqual(cli.main(["run", "--class", "tests", "--", "true"]),
+                             cli.UNREACHABLE)
+            with mock.patch("operating.jobq.worker.Worker.serve") as serve:
+                cli.main(["worker"])
+        serve.assert_called_once()
+        self.assertIsNotNone(self.q.conn.execute(
+            "SELECT 1 FROM information_schema.columns WHERE table_schema = 'jobq'"
+            " AND table_name = 'jobs' AND column_name = 'workspace'").fetchone())

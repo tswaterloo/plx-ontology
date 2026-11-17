@@ -626,7 +626,6 @@ class AgentBudget(Temp):
 
             def mcp_server(self):
                 return {"command": sys.executable, "args": [str(host_script)], "env": {}}
-        seen = {}
 
         def spawn(argv, cwd, env, timeout):
             server = json.loads(Path(argv[argv.index("--mcp-config") + 1]).read_text(
@@ -874,7 +873,8 @@ class HostCallLimits(unittest.TestCase):
         from unittest import mock
         from integrations.source_mirror import AudienceMap  # noqa: F401 - fixture import
         from operating.case_runtime import CaseRuntime
-        from operating.mcp_server import META_RESERVE_BYTES, MCPServer, local_client
+        from operating.mcp_server import MCPServer, local_client
+        from operating.mcp_server_results import META_RESERVE_BYTES
         from operating.ontology_host import CaseHostTools
         from ontology.types import Actor
         from tests import test_ontology_tools as fixture

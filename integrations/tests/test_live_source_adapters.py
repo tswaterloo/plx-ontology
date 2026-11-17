@@ -14,7 +14,7 @@ import pickle
 import re
 import unittest
 from hashlib import sha256
-from typing import Any, Callable
+from typing import Any
 from urllib.parse import parse_qs, quote, unquote, urlencode, urlsplit
 
 from integrations import bc_read, graph_read
@@ -241,7 +241,7 @@ class GuardTests(unittest.TestCase):
                          "graph.microsoft.com")
 
     def test_teams_urls_never_called(self):
-        target = f"https://graph.microsoft.com/v1.0/users/teams-bot@petralabx.com/messages"
+        target = "https://graph.microsoft.com/v1.0/users/teams-bot@petralabx.com/messages"
         environ = {"MC_GO_LIVE_TEAMS_WEBHOOK_URL": target}
         transport, sender = self.transport(environ)
         with self.assertRaises(ReadOnlyGuardError):
@@ -260,7 +260,7 @@ class GuardTests(unittest.TestCase):
                               (url + "?x=1", good),
                               (f"https://login.microsoftonline.com/{TENANT_ID}/oauth2/authorize",
                                good),
-                              (f"https://graph.microsoft.com/v1.0/users", good)):
+                              ("https://graph.microsoft.com/v1.0/users", good)):
             with self.assertRaises(ReadOnlyGuardError):
                 transport.request("POST", bad_url, {}, form=form)
         self.assertEqual(sender.calls, [])
@@ -918,7 +918,9 @@ class ClosedGrammarTests(unittest.TestCase):
              "share_id": "u!aHR0cHM6Ly9wZXRyYWxhYnguc2hhcmVwb2ludC5jb20vOmI6L3MvUUMvRWFC",
              "freightcom_id": "fc-Test_1", "amazon_shipment_id": "FBA1TEST0001",
              "bc_company_name": "My Company", "meeting_id": "AAMkAD-_=1",
-             "planner_id": "AAMkAD-_=1", "plx_api_set": "plxPostedSalesInvoices"}
+             "planner_id": "AAMkAD-_=1", "plx_api_set": "plxPostedSalesInvoices",
+             "vendor_numeric_id": "4242", "shopify_version": "2025-10",
+             "granola_note_id": "not_1d3tmYTlCICgjy"}
     # External operations whose closed query grammar requires parameters
     # (live_source_grammar.SP_QUERIES): a valid query, so only the path is under test.
     VALID_QUERY = {
@@ -940,8 +942,23 @@ class ClosedGrammarTests(unittest.TestCase):
         if op == "bc.odata_item_ledger_entries":  # likewise: the fixed lot $select and $filter
             from integrations import live_source_grammar as g
             return g.bc_odata_item_lot_query()
+        if op.startswith(("zendesk.", "shopify.", "granola.")):
+            return self.VENDOR_VALID_QUERY.get(op, {})
         return self.VALID_QUERY.get(op.rsplit(".", 1)[-1], {}) if op.startswith("sp_api.") \
             else {}
+
+    # Order-intake and meeting sources (live_source_grammar.VENDOR_QUERIES): a valid query.
+    VENDOR_VALID_QUERY = {
+        "zendesk.incremental_tickets": {"start_time": "1"},
+        "shopify.orders": {"status": "any", "updated_at_min": "2026-11-01T00:00:00Z"},
+        "shopify.customers": {"updated_at_min": "2026-11-01T00:00:00Z"}}
+
+    @staticmethod
+    def tenant(op: str) -> dict:
+        """The tenant host a ``*.vendor`` operation is built for (none for fixed hosts)."""
+        from integrations import live_source_grammar as g
+        host = g.TEMPLATES[op][0]
+        return {"tenant_host": "synthetic" + host[1:]} if host in g.TENANT_HOST_SUFFIXES else {}
     GENERIC_BAD = ("", "/", "a/b", "..", "../../x", "%2e%2e", "a%b", "a%2Fb", "a\\b",
                    "a\nb", "a\x00b", "x" * 3000, " a", "a ")
     TYPE_BAD = {
@@ -981,6 +998,9 @@ class ClosedGrammarTests(unittest.TestCase):
                      "u!aHR0cHM6Ly94LmNvbS9hIGI", "u!aHR0cHM6Ly9+LmNvbQ", "u!aHR0cHM/Ly94",
                      "u!aHR0cHM6Ly94LmNvbR"),
         "freightcom_id": ("-a", "a.b", "a b", "a:b", "x" * 65),
+        "vendor_numeric_id": ("4x", "-1", "1.5", "1" * 21),
+        "shopify_version": ("latest", "2025-05", "2025-1", "unstable"),
+        "granola_note_id": ("12345", "not_", "not_/x", "NOT_1d3tmYTlCICgjy"),
         "amazon_shipment_id": ("fba1test0001", "FBA12", "XBA1TEST0001", "FBA1TEST-001",
                                "FBA1TEST0001ABCD"),
     }
@@ -988,6 +1008,7 @@ class ClosedGrammarTests(unittest.TestCase):
     def raw_url(self, op: str, target: str, encoded: str) -> str:
         from integrations import live_source_grammar as g
         host, template = g.TEMPLATES[op]
+        host = self.tenant(op).get("tenant_host", host)
         path = template
         for name, type_name in re.findall(r"\{([a-z]+):([a-z_]+)\}", template):
             value = encoded if name == target else g.TYPES[type_name].encode(
@@ -1001,7 +1022,7 @@ class ClosedGrammarTests(unittest.TestCase):
         for op, (_host, template) in g.TEMPLATES.items():
             params = {name: self.VALID[t] for name, t in
                       re.findall(r"\{([a-z]+):([a-z_]+)\}", template)}
-            url = g.url(op, self.valid_query(op), **params)
+            url = g.url(op, self.valid_query(op), **params, **self.tenant(op))
             check_request("GET", url, environ={})
             self.assertEqual(g.match(urlsplit(url).hostname, urlsplit(url).path), op)
 
@@ -1015,7 +1036,7 @@ class ClosedGrammarTests(unittest.TestCase):
                     params = {n: self.VALID[t] for n, t in fields}
                     params[name] = bad
                     with self.assertRaises(ValueError, msg=(op, name, bad)):
-                        g.url(op, self.valid_query(op), **params)
+                        g.url(op, self.valid_query(op), **params, **self.tenant(op))
                     safe = "/" if type_name == "drive_path" else ""
                     for encoded in {quote(bad, safe=safe), quote(bad, safe="@,!()")}:
                         url = self.raw_url(op, name, encoded)

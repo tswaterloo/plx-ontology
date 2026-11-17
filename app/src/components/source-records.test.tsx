@@ -25,7 +25,7 @@ describe("a source's records: what it was read into and what links to those", ()
     expect(linked).toHaveTextContent("Maple Leaf Soapworks");
     expect(linked).toHaveTextContent("SO 77120");
     expect(screen.getByRole("link", { name: /SO 77120/ }).getAttribute("href")).toBe("/object/SalesOrder/SalesOrder%3Ademo%3A77120");
-    expect(citedLine(got)).toBe("Read into PO 90412 and 2 more records");
+    expect(citedLine(got)).toBe("Read into PO 90412; linked to Maple Leaf Soapworks and SO 77120");
   });
 
   it("says when no record the reader can open cites it, when the list was cut, and when it couldn't be read", () => {
@@ -42,5 +42,15 @@ describe("a source's records: what it was read into and what links to those", ()
     // a server with no records to look in shows nothing, rather than "none cite it"
     const { container } = render(<SourceRecordsPanel got={{ ...got, served: false, records: [] }} />);
     expect(container).toBeEmptyDOMElement();
+  });
+  it("names each record in its line up to three, counts a longer list, and never cuts a list with 'and N more'", () => {
+    const linked = (n: number) =>
+      Array.from({ length: n }, (_, i) => ({ record: ref(`SalesOrder:demo:${7000 + i}`, "SalesOrder", String(7000 + i)), how: "linked" as const, link: "supplies" }));
+    const from = got.records![0];
+    expect(citedLine({ ...got, records: [from] })).toBe("Read into PO 90412");
+    expect(citedLine({ ...got, records: [from, ...linked(10)] })).toBe("Read into PO 90412; linked to 10 records");
+    expect(citedLine({ ...got, truncated: true, records: [from, ...linked(39)] })).toBe("Read into PO 90412; linked to at least 39 records");
+    expect(citedLine({ ...got, records: linked(2) } as SourceRecords)).toBe("Linked to SO 7000 and SO 7001");
+    for (const n of [1, 10, 60]) expect(citedLine({ ...got, records: [from, ...linked(n)] } as SourceRecords)).not.toMatch(/\bmore\b/);
   });
 });

@@ -1330,6 +1330,60 @@ def _still_resolves(conn: Any, document: Document, resolved: Mapping[str, Any],
                    for kind, value in resolved["keys"])
 
 
+# A document that names this many records of one type is a list (a tracker, a statement,
+# an open-order report, a date-named workbook), not one record's own document: its mention
+# links stay leads (``mention_firm`` raises none of them), each saying so (``list_file``,
+# the count). Measured 11-14 on the served Attachment -> PurchaseOrder / SalesOrder links
+# (a 1/8 hash sample, read-only): of the files naming 2 numbers of one type most are the
+# record's own PDF (``PO #PO10002026.PDF``; an order and its twin's number); at 3-4 own
+# invoices and packing slips still occur beside statements; from 5 on every sampled file
+# was a statement, report or dated workbook. 69% of the corroborated PO links and 86% of
+# the SO links came from files naming 5 or more.
+LIST_FILE_MIN = 5
+LIST_FILE = "list_file"
+
+
+# The document's own name: a file's name, a message's subject. A number there is the
+# document naming itself, never one entry of a list (no list_file on it).
+TITLE_FIELDS = frozenset({"row.name", "row.subject"})
+
+
+def list_key(citation: Any, field_path: Any, object_type: Any) -> tuple[Any, Any, Any]:
+    """The key one list count is kept under: one field of one document version (the
+    pages of one file together) and one record type."""
+    base = cited_page(citation)[0] if isinstance(citation, str) else citation
+    return (base, field_path, object_type)
+
+
+def listed_records(found: Iterable[Mapping[str, Any]]) -> dict[tuple[Any, Any, Any], int]:
+    """:func:`list_key` -> how many distinct values of that type's identifier kinds the
+    document's own text names in that field: its own primary readings only (a quoted
+    reply's numbers are someone else's text; a secondary or label-conflict reading of a
+    value is not another record). A mention's links carry its own kind's count, whatever
+    record each resolved to. A count of what the document says, never of what resolved:
+    it tells no reader whether a record it may not see holds one of the numbers."""
+    values: dict[tuple[Any, Any, Any], set[tuple[str, str]]] = {}
+    for mention in found:
+        if not mention.get("normalized") or mention.get("secondary_of") \
+                or mention.get("label_kind_conflict") or mention.get("quoted_history") \
+                or not mention.get("object_type"):
+            continue
+        key = list_key(mention["citation"], mention.get("field_path"), mention["object_type"])
+        values.setdefault(key, set()).add((mention["identifier_kind"], mention["normalized"]))
+    return {key: len(found_values) for key, found_values in values.items()}
+
+
+def listed_count(listed: Mapping[tuple[Any, Any, Any], int],
+                 mention: Mapping[str, Any]) -> int:
+    """The list count a mention's links carry: 0 for a mention in the document's name or
+    one not counted (quoted, secondary), else its field's count (:func:`listed_records`)."""
+    if mention.get("field_path") in TITLE_FIELDS or mention.get("quoted_history") \
+            or mention.get("secondary_of") or mention.get("label_kind_conflict"):
+        return 0
+    return listed.get(list_key(mention["citation"], mention.get("field_path"),
+                               mention.get("object_type")), 0)
+
+
 def _document_links(conn: Any, declared: Mapping[tuple[str, str], str], document: Document,
                     found: Sequence[Mapping[str, Any]], aliases: Any, extractor: str
                     ) -> dict[str, Any]:
@@ -1352,6 +1406,7 @@ def _document_links(conn: Any, declared: Mapping[tuple[str, str], str], document
     count("documents")
     count("documents_text_withheld", document.text_withheld is not None)
     spans_of_doc = held_spans(source)
+    listed = listed_records(found)
     fields: dict[str, Any] = {document.citation: source}
     for mention in found:
         count("mentions")
@@ -1402,14 +1457,15 @@ def _document_links(conn: Any, declared: Mapping[tuple[str, str], str], document
             count("reviewed_alias_links", "review_id" in row.keys())
             count("reviewed_alias_links_open", "review_id" in row.keys() and window[1] is None)
             rows.append(_store_link(document, mention, source, cited, row, window,
-                                    link_type, link_id, group, extractor))
+                                    link_type, link_id, group, extractor,
+                                    listed_count(listed, mention)))
     return {**read, "keys": [list(k) for k in keys], "rows": rows,
             "unanswered": sorted(unanswered.items()), "counts": counts}
 
 
 def _store_link(document: Document, mention: Mapping[str, Any], source: Any, cited: Any,
                 row: Any, window: tuple[str, str | None], link_type: str, link_id: str,
-                group: str, extractor: str) -> dict[str, Any]:
+                group: str, extractor: str, listed: int = 0) -> dict[str, Any]:
     mention_cite = {"l1_handle": mention["citation"], "field_path": mention["field_path"],
                     "digest": cited["digest"], "lineage": cited["lineage"]}
     target_cite = {"l1_handle": row["l1_handle"], "field_path": row["field_path"],
@@ -1438,6 +1494,8 @@ def _store_link(document: Document, mention: Mapping[str, Any], source: Any, cit
     if is_reference(row):
         why_not.append({"feature": "via_reference", "agrees": False,
                         "property": row["property"], "matched_kind": row["identifier_kind"]})
+    if listed >= LIST_FILE_MIN:
+        why_not.append({"feature": LIST_FILE, "agrees": False, "records": listed})
     evidence = list(dict.fromkeys([document.citation, mention["citation"], row["l1_handle"],
                                    *cited_handles]))
     return {"link_id": link_id, "link_type": link_type, "from_object": source["object_id"],
@@ -1499,6 +1557,11 @@ MENTION_FEATURES: Mapping[str, Mapping[str, Any]] = {
                                 "order number), not its own: a lead via that reference"},
     "label_kind_conflict": {"role": "veto",
                             "detail": "the label assigns another identifier kind"},
+    "list_file": {"role": "veto",
+                  "detail": "the document names LIST_FILE_MIN or more records of the "
+                            "target's type (a tracker, statement or report): it lists the "
+                            "record, it is not the record's own document; records: how "
+                            "many its text names"},
 }
 
 # Shared mail providers: free mail, ISP mail and marketplace hosts. Any address
@@ -1911,7 +1974,7 @@ def _agreeing(conn: Any, row: Any, named: Mapping[tuple[str, str], Mapping[str, 
     the ``same_record_twin`` folds (never counted towards :data:`CORROBORATION_MIN`), or
     None when a veto holds or the mention is not an exact identifier of its target."""
     why_not = {f.get("feature") for f in json.loads(row["why_not"]) if isinstance(f, dict)}
-    if why_not & {"quoted_history", "label_kind_conflict"}:
+    if why_not & {"quoted_history", "label_kind_conflict", LIST_FILE}:
         return None
     if not exact_candidate(json.loads(row["reason"])):
         return None

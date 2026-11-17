@@ -71,7 +71,7 @@ import sys
 import threading
 import time
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from typing import Any, Callable, Iterable, Mapping, Optional, Sequence
 
 from . import feedback as fb
@@ -87,7 +87,22 @@ LOG_KINDS = ("question", "answer", "tool_call", "clarify", "draft", "edit", "dec
 # never written again from them (``remember``).
 RELEARNED = frozenset({"learn", "clarify"})
 SOURCES = frozenset({"ask", "clarify", "assist", "autopilot", "feedback", "action", "learn",
-                     "working"})
+                     "working", "you"})
+# What a person may write or correct themselves on the Memory screen (``Memory.write``).
+WRITE_KINDS = ("instruction", "preference", "commitment", "fact")
+MAX_WRITE = 1000
+# Why a person's own write was not kept, in their words (``Memory.write``).
+WRITE_REFUSED = {
+    "view_as": "Viewing as someone changes nothing of theirs.",
+    "unavailable": "Memory can't be changed right now: the list of people it must leave out "
+                   "isn't loaded. Try again in a minute.",
+    "finance": "Memory never keeps pay or finance. Keep that out and try again.",
+    "excluded": "That names someone the Workbench leaves out, so it can't be kept.",
+    "empty": "Write what the Workbench should remember.",
+    "too_long": f"Keep it under {MAX_WRITE} characters.",
+    "kind": "Choose an instruction, a preference, a commitment or a fact.",
+    "not_found": "That item isn't in your memory any more.",
+}
 MAX_TEXT = 8000
 ANSWER_CHARS = 3000
 MAX_CITATIONS = 60         # a summary carries its turns' citations
@@ -303,10 +318,135 @@ _COMMITMENT = re.compile(
     re.I)
 
 
+# ---- when a commitment is due, in the person's words --------------------------------------
+
+_EASTERN = None
+
+
+def _eastern(moment: datetime) -> datetime:
+    global _EASTERN
+    if _EASTERN is None:
+        from zoneinfo import ZoneInfo
+        _EASTERN = ZoneInfo("America/Toronto")
+    return moment.astimezone(_EASTERN)
+
+
+_WEEKDAYS = ("monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday")
+_MONTHS = ("january", "february", "march", "april", "may", "june", "july", "august",
+           "september", "october", "november", "december")
+_MONTH = r"(jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|june?|july?|aug(?:ust)?|" \
+         r"sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\.?"
+_DUE_PATTERNS = (
+    ("iso", re.compile(r"\b(20\d\d)-(\d\d)-(\d\d)\b")),
+    ("month_day", re.compile(r"\b" + _MONTH + r"\s+(\d{1,2})(?:st|nd|rd|th)?\b", re.I)),
+    ("day_month", re.compile(r"\b(\d{1,2})(?:st|nd|rd|th)?\s+(?:of\s+)?" + _MONTH + r"\b",
+                             re.I)),
+    ("numeric", re.compile(r"(?<![\w/.-])(\d{1,2})/(\d{1,2})(?![\w/.-])(?!\s+of\b)")),
+    ("relative", re.compile(
+        r"\b(today|tonight|this (?:morning|afternoon|evening)|end of (?:the )?day|eod|"
+        r"tomorrow|end of (?:the |this )?week|eow|end of (?:the |this )?month|next week|"
+        r"in (\d{1,2}|a|one|two|three) (days?|weeks?))\b", re.I)),
+    ("weekday", re.compile(r"\b(next\s+)?(" + "|".join(_WEEKDAYS) + r"|tues|thurs|fri)\b", re.I)),
+)
+_SMALL = {"a": 1, "one": 1, "two": 2, "three": 3}
+
+
+def due_of(text: Any, said_at: Any) -> Optional[str]:
+    """The day (``YYYY-MM-DD``, US Eastern) a commitment says it is due, read against when
+    it was said: an explicit date ("Nov 20", "20 November", "11/20", "2026-11-20"), "today",
+    "tomorrow", a weekday ("Friday": the next one after the day said; "next Friday": the
+    one in the week after), "end of the week" (that Friday), "next week" (its Monday),
+    "end of the month", "in 3 days". None when it says no day (never guessed)."""
+    if not isinstance(text, str) or not text:
+        return None
+    if isinstance(said_at, str):
+        try:
+            said_at = datetime.fromisoformat(said_at.replace("Z", "+00:00"))
+        except ValueError:
+            return None
+    if not isinstance(said_at, datetime):
+        return None
+    if said_at.tzinfo is None:
+        said_at = said_at.replace(tzinfo=timezone.utc)
+    day = _eastern(said_at).date()
+    found: list[tuple[int, date]] = []
+    for name, pattern in _DUE_PATTERNS:
+        for hit in pattern.finditer(text):
+            got = _due_hit(name, hit, day)
+            if got is not None:
+                found.append((hit.start(), got))
+        if found and name != "relative":
+            break   # an explicit date wins over a weekday said beside it
+    if not found:
+        return None
+    return min(found)[1].isoformat()
+
+
+def _year_for(month: int, dom: int, day: date) -> Optional[date]:
+    for year in (day.year, day.year + 1):
+        try:
+            got = date(year, month, dom)
+        except ValueError:
+            continue   # "Feb 29" in a year without one is next leap year's, or none
+        if got >= day - timedelta(days=7):   # "Nov 10" said on Nov 12 is last week's
+            return got
+    return None
+
+
+def _due_hit(name: str, hit: "re.Match[str]", day: date) -> Optional[date]:
+    try:
+        if name == "iso":
+            return date(int(hit.group(1)), int(hit.group(2)), int(hit.group(3)))
+        if name in ("month_day", "day_month"):
+            month_word, dom = (hit.group(1), hit.group(2)) if name == "month_day" else \
+                (hit.group(2), hit.group(1))
+            month = next(i for i, m in enumerate(_MONTHS, 1)
+                         if m.startswith(month_word.lower().rstrip(".")[:3]))
+            if month_word.lower() == "may" and month_word != "May":
+                return None   # "we may 4 ..." is a verb; the month is written "May"
+            return _year_for(month, int(dom), day)
+        if name == "numeric":   # month/day, as written in North America
+            return _year_for(int(hit.group(1)), int(hit.group(2)), day)
+    except (ValueError, StopIteration):
+        return None
+    word = hit.group(0).lower()
+    if name == "relative":
+        if word in ("today", "tonight", "eod") or word.startswith(("this ", "end of the day",
+                                                                   "end of day")):
+            return day
+        if word == "tomorrow":
+            return day + timedelta(days=1)
+        if "week" in word and word.startswith(("end", "eow")):
+            return day + timedelta(days=(4 - day.weekday()) % 7)
+        if word.startswith("end of") and "month" in word:
+            nxt = date(day.year + (day.month == 12), day.month % 12 + 1, 1)
+            return nxt - timedelta(days=1)
+        if word == "next week":
+            return day + timedelta(days=7 - day.weekday())
+        if word.startswith("in "):
+            n = hit.group(2)
+            n = int(n) if n.isdigit() else _SMALL[n.lower()]
+            return day + timedelta(days=n * (7 if hit.group(3).lower().startswith("week") else 1))
+        return None
+    # a weekday (full names, "tues", "thurs", "fri": "mon", "wed", "sat", "sun" are words)
+    target = next(i for i, w in enumerate(_WEEKDAYS) if w.startswith(hit.group(2).lower()[:3]))
+    if hit.group(1):   # "next Friday": the one in the week after this one
+        return day + timedelta(days=7 - day.weekday() + target)
+    return day + timedelta(days=(target - day.weekday()) % 7 or 7)
+
+
 # ---- the person's current access to what memory cites -------------------------------------
 
 DECIDE_SECONDS = 300.0     # a decision on a cited source is used this long, then asked again
 DECIDE_MOST = 20000        # decisions held in all (oldest dropped first)
+
+
+def _not_theirs(reader: Any) -> bool:
+    """A session whose reads and writes are not the reader's own memory: the owner viewing
+    as someone (``view_as``) or the Ask canary's service session (``canary``): nothing is
+    remembered for it and nothing remembered is read for it."""
+    session = getattr(reader, "session", None)
+    return bool(getattr(session, "view_as", False) or getattr(session, "canary", False))
 
 
 class Decisions:
@@ -457,6 +597,7 @@ def listed_names(api: Any, guard: Any) -> Optional[frozenset[str]]:
         "$select": "id,displayName,givenName,surname", "$top": "999"}),
         max_pages=50, max_items=5000)
     if not completeness.get("complete"):
+        log.warning("excluded names unreadable: directory listing incomplete")
         return None
     named: dict[str, set[str]] = {}
     for user in users:
@@ -467,7 +608,11 @@ def listed_names(api: Any, guard: Any) -> Optional[frozenset[str]]:
             v.strip().lower() for v in (user.get("displayName"), user.get("givenName"),
                                         user.get("surname"))
             if isinstance(v, str) and len(v.strip()) > 1)
-    if len([oid for oid, held in named.items() if held]) < int(guard.count):
+    found = len([oid for oid, held in named.items() if held])
+    if found < int(guard.count):
+        # counts only: memory stays closed until every excluded person is named
+        log.warning("excluded names unreadable: %d of %d excluded people named in the "
+                    "directory", found, int(guard.count))
         return None
     return frozenset(n for held in named.values() for n in held)
 
@@ -546,6 +691,13 @@ class Memory:
         self.connect, self.guard, self.clock = connect, guard, clock
         # the excluded people's names (``ExcludedNames``); None from it: fail closed
         self.names = names if names is not None else ExcludedNames()
+        # told of every instruction or preference the person kept, corrected or forgot
+        # (reader, item id, its text or None): their stated drafting rules
+        # (``operating.learning.set_stated``); set by the app
+        self.stated: Optional[Callable[[Any, int, Optional[str]], Any]] = None
+        # told of a learned item the person deleted (reader, its subject): the learner
+        # forgets that lesson (``operating.learning.unlearn``); set by the app
+        self.unlearn: Optional[Callable[[Any, str], Any]] = None
         self._names_under: Optional[tuple[Any, Any]] = None   # (names, the list's key)
         self.sync = sync
         self._jobs: "queue.Queue[Callable[[], Any]]" = queue.Queue(maxsize=QUEUE_MOST)
@@ -644,7 +796,7 @@ class Memory:
                  citations: Iterable[Mapping[str, Any]], subject: Any = None
                  ) -> Optional[tuple[str, Optional[str], list[str], list[dict[str, str]]]]:
         """(text, subject, people, citations) as kept, or None when nothing may be."""
-        if getattr(getattr(reader, "session", None), "view_as", False):
+        if _not_theirs(reader):
             return None
         guard = self._guard()
         if guard is None or wl._actor_excluded(guard, reader):
@@ -723,11 +875,14 @@ class Memory:
         ids = sorted({int(i) for i in log_ids})
         with self.connect() as conn:
             if subject and source in RELEARNED and conn.execute(
-                    "SELECT 1 FROM memory.item WHERE reader = %s AND kind = %s AND subject = %s "
-                    "AND source = %s AND deleted_at IS NOT NULL LIMIT 1",
-                    (reader.key, kind, subject, source)).fetchone():
+                    "SELECT 1 FROM memory.item WHERE reader = %s AND subject = %s AND ("
+                    "(kind = %s AND source = %s AND deleted_at IS NOT NULL) OR (source = "
+                    "'you' AND (deleted_at IS NOT NULL OR superseded_by IS NULL))) LIMIT 1",
+                    (reader.key, subject, kind, source)).fetchone():
                 conn.rollback()
-                return None   # the person deleted it: never learned again unseen
+                # the person deleted it, or corrected it in their own words (kept or
+                # deleted since): never learned again unseen, never over their words
+                return None
             if subject:
                 same = conn.execute(
                     "SELECT id, text FROM memory.item WHERE reader = %s AND kind = %s AND "
@@ -756,13 +911,16 @@ class Memory:
                 conn.commit()
                 return None   # written before (a retried write)
             new = int(row[0])
+            replaced = []
             if subject:
-                conn.execute(
+                replaced = [int(r[0]) for r in conn.execute(
                     "UPDATE memory.item SET superseded_by = %s WHERE reader = %s AND kind = %s "
-                    "AND subject = %s AND id <> %s AND superseded_by IS NULL",
-                    (new, reader.key, kind, subject, new))
+                    "AND subject = %s AND id <> %s AND superseded_by IS NULL RETURNING id",
+                    (new, reader.key, kind, subject, new)).fetchall()]
             conn.commit()
         self._wrote(reader.key)
+        for old in replaced:   # a superseded item states no rule any more
+            self._tell_stated(reader, old, None)
         return new
 
     # -- reads --
@@ -771,7 +929,7 @@ class Memory:
         """The exclusion for a read by ``reader``, or None: nothing may be read (the list
         cannot decide, the reader is excluded, or it is a view-as session: memory is the
         person's own, never shown to someone viewing as them)."""
-        if getattr(getattr(reader, "session", None), "view_as", False):
+        if _not_theirs(reader):
             return None
         guard = self._guard()
         if guard is None or wl._actor_excluded(guard, reader):
@@ -1316,15 +1474,108 @@ class Memory:
     def forget(self, reader: Any, item_id: int) -> bool:
         """Delete one of the person's own items (never another's): True when it was theirs
         and not deleted before. Kept as deleted, so it is not learned again unseen."""
-        if getattr(getattr(reader, "session", None), "view_as", False):
+        if _not_theirs(reader):
             return False
         with self.connect() as conn:
-            done = conn.execute(
+            gone = conn.execute(
                 "UPDATE memory.item SET deleted_at = now() WHERE id = %s AND reader = %s AND "
-                "deleted_at IS NULL", (int(item_id), reader.key)).rowcount
+                "deleted_at IS NULL RETURNING source, subject",
+                (int(item_id), reader.key)).fetchall()
             conn.commit()
         self._wrote(reader.key)
-        return bool(done)
+        if gone:
+            self._tell_stated(reader, int(item_id), None)
+            source, subject = gone[0][0], gone[0][1]
+            if source == "learn" and subject and self.unlearn is not None:
+                try:
+                    self.unlearn(reader, str(subject))
+                except Exception as error:  # noqa: BLE001 - the delete itself stands
+                    logging.getLogger("operator_api.memory").warning(
+                        "lesson not forgotten: %s", type(error).__name__)
+        return bool(gone)
+
+    def write(self, reader: Any, *, kind: str, text: str, replaces: Optional[int] = None
+              ) -> tuple[Optional[int], Optional[str]]:
+        """The person's own words kept as one of their items (source ``you``), or one of
+        their items corrected (``replaces``: the new text supersedes it and keeps its
+        subject, so a learner never writes over the correction). (id, None), or (None, why)
+        with ``why`` a ``WRITE_REFUSED`` key. Every check of ``remember`` applies: view-as
+        writes nothing, the exclusion fails closed, pay and finance are never kept."""
+        text = " ".join(str(text or "").split())
+        if _not_theirs(reader):
+            return None, "view_as"
+        if kind not in WRITE_KINDS:
+            return None, "kind"
+        if not text:
+            return None, "empty"
+        if len(text) > MAX_WRITE:
+            return None, "too_long"
+        if finance_text(text):
+            return None, "finance"
+        if self._guard() is None:
+            return None, "unavailable"
+        subject = None
+        if replaces is not None:
+            with self.connect() as conn:
+                old = conn.execute(
+                    "SELECT subject FROM memory.item WHERE id = %s AND reader = %s AND kind = "
+                    "ANY(%s) AND deleted_at IS NULL AND superseded_by IS NULL",
+                    (int(replaces), reader.key, list(WRITE_KINDS))).fetchone()
+            if old is None:
+                return None, "not_found"
+            subject = old[0] or f"you | {int(replaces)}"
+        else:
+            with self.connect() as conn:
+                same = conn.execute(
+                    "SELECT id FROM memory.item WHERE reader = %s AND kind = %s AND text = %s "
+                    "AND deleted_at IS NULL AND superseded_by IS NULL LIMIT 1",
+                    (reader.key, kind, text)).fetchone()
+            if same is not None:
+                return int(same[0]), None
+        new = self.remember(reader, kind=kind, text=text, source="you", subject=subject,
+                            confidence=1.0, importance=max(IMPORTANCE.get(kind, 0.5), 0.85))
+        if new is None:
+            return None, ("unavailable" if self._guard() is None else "excluded")
+        if replaces is not None and new != int(replaces):
+            with self.connect() as conn:
+                # the kind may have changed: the subject alone did not supersede it
+                conn.execute("UPDATE memory.item SET superseded_by = %s WHERE id = %s AND "
+                             "reader = %s AND superseded_by IS NULL",
+                             (new, int(replaces), reader.key))
+                conn.commit()
+            self._wrote(reader.key)
+        if replaces is not None and new != int(replaces):
+            self._tell_stated(reader, int(replaces), None)
+        if kind in ("instruction", "preference"):
+            self._tell_stated(reader, new, text)
+        return new, None
+
+    def done(self, reader: Any, item_id: int) -> bool:
+        """One of the person's own commitments done: no longer used or shown, and kept in
+        their memory log as done (``action``). True when it was their open commitment."""
+        if _not_theirs(reader):
+            return False
+        with self.connect() as conn:
+            row = conn.execute(
+                "UPDATE memory.item SET deleted_at = now() WHERE id = %s AND reader = %s AND "
+                "kind = 'commitment' AND deleted_at IS NULL AND superseded_by IS NULL "
+                "RETURNING text, records", (int(item_id), reader.key)).fetchone()
+            conn.commit()
+        if row is None:
+            return False
+        self._wrote(reader.key)
+        self.log_event(reader, kind="action", text=f"Done: {row[0]}"[:MAX_TEXT],
+                       records=list(row[1] or ()), source_ref=f"done:{int(item_id)}")
+        return True
+
+    def _tell_stated(self, reader: Any, item_id: int, text: Optional[str]) -> None:
+        if self.stated is None:
+            return
+        try:
+            self.stated(reader, int(item_id), text)
+        except Exception as error:  # noqa: BLE001 - a rule not kept never fails the write
+            logging.getLogger("operator_api.memory").warning(
+                "stated rules not kept: %s", type(error).__name__)
 
     def purge_excluded(self) -> Optional[dict[str, int]]:
         """Delete every row of or about a person the exclusion now keeps out (their own
@@ -1359,8 +1610,8 @@ class Memory:
         handler = {"answer": self.from_answer, "tools": self.from_tools,
                    "clarify": self.from_clarify, "autopilot": self.from_autopilot,
                    "feedback": self.from_feedback, "note": self.from_note,
-                   "action": self.from_action}[what]
-        if getattr(getattr(reader, "session", None), "view_as", False):
+                   "action": self.from_action, "prepared": self.from_prepared}[what]
+        if _not_theirs(reader):
             return
         self.submit(lambda: handler(reader, *args))
 
@@ -1434,6 +1685,8 @@ class Memory:
                              subject=f"{kind} | {about}" if about else None,
                              conversation=conversation, source_ref=f"{kind}:{log_id}",
                              log_ids=[log_id], confidence=0.8)
+        if kept is not None and kind == "instruction":
+            self._tell_stated(reader, kept, said)
         return [kept] if kept is not None else []
 
     def from_tools(self, reader: Any, conversation: Optional[str], answer_id: str,
@@ -1493,6 +1746,20 @@ class Memory:
                                       conversation=f"autopilot:{item.get('item_id')}",
                                       source_ref=f"ap:{item.get('item_id')}:{verb}:text"))
         return [i for i in out if i is not None]
+
+    def from_prepared(self, reader: Any, item: Mapping[str, Any]) -> list[int]:
+        """An autopilot item prepared for the person, when they first see it: its title
+        and the record it is about, so a later turn can find what the autopilot did for
+        them (the decision on it follows through ``from_autopilot``)."""
+        title = str(item.get("title") or "").strip()
+        if not title or finance_text(title) or not item.get("item_id"):
+            return []
+        happened = item.get("happened") or {}
+        records = [happened["object_id"]] if happened.get("object_id") else []
+        got = self.log_event(reader, kind="draft", text=f"Autopilot prepared \"{title}\"",
+                             records=records, conversation=f"autopilot:{item['item_id']}",
+                             source_ref=f"ap:{item['item_id']}:prepared")
+        return [got] if got is not None else []
 
     def from_feedback(self, reader: Any, rating: Optional[int], note: Optional[str],
                       question: Optional[str], feedback_id: Optional[str],

@@ -116,18 +116,62 @@ class LabelPreviewTests(unittest.TestCase):
                                  (ct.TEXT_OCR, "label text"), name)
             # The preview is what OCR reads (a PNG, a BMP), never the label file itself.
             self.assertEqual(seen, [b"\x89P", b"BM"])
-            # Without a preview, or another label format (an encrypted .nlbl archive):
-            # unread as before, never OCR-read.
-            for content, name in ((btw[:60], "cut.btw"), (b"PK\x03\x04\x14\x00\x01\x00", "a.nlbl"),
+            # Without a preview: unread as before, never OCR-read. An encrypted .nlbl
+            # archive is the same gap with its cause named.
+            for content, name in ((btw[:60], "cut.btw"),
                                   (_compound_file({"Contents": b"x"}), "old.lbl")):
                 self.assertEqual(ct.capture_text(content, {"name": name}, image_ocr=True)[0],
                                  "unsupported", name)
+            self.assertEqual(ct.capture_text(b"PK\x03\x04\x14\x00\x01\x00", {"name": "a.nlbl"},
+                                             image_ocr=True)[0], ct.TEXT_ENCRYPTED)
             self.assertEqual(len(seen), 2)
         if du.local_image_ocr_available():   # the real engine on the real preview bytes
             status, text = ct.capture_text(lbl, {"name": "FMVM-15.lbl"}, image_ocr=True)
             self.assertEqual(status, ct.TEXT_OCR)
             self.assertIn("FMVM-15", text)
         self.assertTrue({".btw", ".lbl"} <= set(ct.REREAD_SUFFIXES))
+
+
+class StaleFolderSweepTest(unittest.TestCase):
+    """2026-11-13: capture children killed mid-reading left 79 plx-doc-convert-* and 28
+    plx-pdf-ocr-* folders in the ingest's temp root. Each folder is named for its process
+    now, and the next process to make one removes those whose process is gone."""
+
+    def test_folders_of_a_gone_process_are_removed_and_nothing_else(self):
+        import os
+        import subprocess
+        import sys
+        import tempfile
+        import time
+        from pathlib import Path
+        from integrations import child_process
+        from ontology import private_tmp
+
+        with tempfile.TemporaryDirectory() as root:
+            gone = subprocess.run([sys.executable, "-c", "import os; print(os.getpid())"],
+                                  capture_output=True, text=True).stdout.strip()
+            dead = Path(root, f"plx-doc-convert-{gone}-abcd1234")
+            mine = Path(root, f"plx-doc-convert-{os.getpid()}-abcd1234")
+            old = Path(root, "plx-doc-convert-0bdzmr6t")      # before pid names, 7 h old
+            young = Path(root, "plx-doc-convert-1bdzmr6t")    # before pid names, just made
+            cache = Path(root, "plx-doc-convert-cache-1000")  # not this module's
+            other = Path(root, "plx-pdf-ocr-zzzz1234")
+            for folder in (dead, mine, old, young, cache, other):
+                folder.mkdir()
+                (folder / "page.png").write_bytes(b"x")
+            past = time.time() - 7 * 3600
+            for folder in (old, cache, other):
+                os.utime(folder, (past, past))
+            removed = private_tmp.sweep("plx-doc-convert-", [root])
+            self.assertEqual(removed, 2)
+            self.assertEqual(sorted(p.name for p in Path(root).iterdir()),
+                             sorted(p.name for p in (mine, young, cache, other)))
+            # a new folder is named for its process and swept on first use
+            with mock.patch.object(tempfile, "gettempdir", return_value=root), \
+                    mock.patch.object(private_tmp, "_swept", set()):
+                with child_process.private_directory("plx-pdf-ocr-") as made:
+                    self.assertTrue(Path(made).name.startswith(f"plx-pdf-ocr-{os.getpid()}-"))
+                self.assertFalse(other.exists())   # swept (old, unnamed)
 
 
 if __name__ == "__main__":
@@ -208,13 +252,14 @@ class MailImageTests(unittest.TestCase):
             def __init__(self, workers, mp_context=None):
                 pools.append(mp_context.get_start_method() if mp_context else "fork")
 
-            def __enter__(self):
-                return self
+            def submit(self, fn, *args):
+                from concurrent.futures import Future
+                future = Future()
+                future.set_result(fn(*args))
+                return future
 
-            def __exit__(self, *exc):
-                return False
-
-            map = staticmethod(map)
+            def shutdown(self, wait=True, cancel_futures=False):
+                pass
         with mock.patch.object(du, "local_image_ocr_available", return_value=True), \
                 mock.patch.object(du, "local_image_text", return_value="Open POs") as ocr, \
                 mock.patch("concurrent.futures.ProcessPoolExecutor", Pool):
@@ -225,3 +270,65 @@ class MailImageTests(unittest.TestCase):
         self.assertEqual(sorted(filled), [("a0", ct.TEXT_OCR, "t:Open POs"),
                                           ("a1", ct.TEXT_OCR, "t:Open POs")])
         self.assertEqual((counts["too_small"], counts["excluded"], counts["images"]), (1, 1, 3))
+
+    def test_the_image_pass_abandons_a_reading_still_running_at_its_deadline(self):
+        # 2026-11-13: the old pass handed a batch to pool.map and waited for all of it,
+        # whatever its budget said; the deadline now holds for the reading in flight.
+        import hashlib
+        import json
+        import sqlite3
+        from concurrent.futures import Future
+        from integrations import capture_mail as cm
+
+        db = sqlite3.connect(":memory:")
+        db.row_factory = sqlite3.Row
+        db.executescript("""CREATE TABLE messages (l1_handle TEXT, superseded_at TEXT,
+                                record TEXT);
+            CREATE TABLE attachments (l1_handle TEXT, content_sha256 TEXT, metadata TEXT,
+                mailbox_id TEXT, message_handle TEXT, content_status TEXT, text_status TEXT);""")
+        meta = json.dumps({"name": "image001.png", "content_type": "image/png"})
+        content = image(900, 300)
+        db.execute("INSERT INTO messages VALUES ('m0',NULL,?)",
+                   (json.dumps({"received_at": "2026-11-04T10:00:00Z"}),))
+        db.execute("INSERT INTO attachments VALUES ('a0',?,?,'ok','m0','captured',"
+                   "'unsupported')", (hashlib.sha256(content).hexdigest(), meta))
+        filled, ended = [], []
+
+        class Store:
+            pass
+        store = Store()
+        store.db = db
+        store.blob = lambda digest: content
+        store.put_text = lambda text: "t"
+        store.fill_text = lambda *args: filled.append(args)
+        clock = [0.0]
+
+        class Hung:   # a worker that never answers
+            def __init__(self, workers, mp_context=None):
+                pass
+
+            def submit(self, fn, *args):
+                clock[0] += 30.0   # the reading takes the rest of the budget and more
+                return Future()
+
+            def shutdown(self, wait=True, cancel_futures=False):
+                ended.append((wait, cancel_futures))
+        with mock.patch("concurrent.futures.ProcessPoolExecutor", Hung), \
+                mock.patch.object(cm, "DEADLINE_POLL_SECONDS", 0.01):
+            counts = cm.image_ocr_pass(store, budget_seconds=20, workers=1,
+                                       monotonic=lambda: clock[0])
+        self.assertEqual((counts["budget_spent"], counts["abandoned"], filled),
+                         (1, 1, []), counts)
+        self.assertEqual(ended, [(False, True)])   # never waited for
+        # The row scan itself is held to the deadline (a whole-store scan is interrupted
+        # once it passes), and the connection keeps no handler after it.
+        slow = "WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i+1 FROM n) " \
+               "SELECT COUNT(*) FROM (SELECT i FROM n LIMIT 50000000)"
+        with self.assertRaises(sqlite3.OperationalError):
+            with cm.deadline_queries(db, 5.0, lambda: 10.0):
+                db.execute(slow).fetchone()
+        self.assertEqual(db.execute("SELECT COUNT(*) FROM attachments").fetchone()[0], 1)
+        with mock.patch("concurrent.futures.ProcessPoolExecutor", Hung):
+            spent = cm.image_ocr_pass(store, budget_seconds=0.0, monotonic=lambda: 1.0)
+        self.assertEqual((spent["budget_spent"], spent.get("abandoned", 0), filled),
+                         (1, 0, []), spent)

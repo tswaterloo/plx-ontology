@@ -20,7 +20,6 @@ projection or answers, and stores the query it used (``reads``, ``rule``):
 from __future__ import annotations
 
 from collections import defaultdict
-from datetime import timedelta
 from decimal import Decimal
 import re
 from typing import Any, Callable, Mapping, Sequence

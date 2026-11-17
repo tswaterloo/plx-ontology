@@ -22,6 +22,7 @@ from typing import Any, Callable, Iterable, Iterator, Mapping, Optional
 from urllib.parse import quote, unquote, urlsplit
 
 from . import models as m
+from operating import currency_display
 from .auth import Reader
 
 
@@ -37,11 +38,17 @@ MAX_SOURCES_PER_FACT = 4
 MAX_ANSWERS_KEPT = 2000
 ASK_TIMEOUT_SECONDS = 600
 ASK_WORKERS = 2
-# An Ask worker's session at its peak: its host and helpers (``agent_session.HOST_HELPERS``,
-# about 1.2 GB each) and the model CLI; more workers than the memory available beside
-# ``ASK_MEMORY_FLOOR_GB`` holds are not started (``ask_worker_count``), and never past
-# ``ASK_WORKERS_MOST``.
-ASK_WORKER_GB = 4.5
+# An Ask worker at its peak: its runtime, its session's host and helpers
+# (``agent_session.HOST_HELPERS``) and the model CLI; more workers than the memory
+# available beside ``ASK_MEMORY_FLOOR_GB`` holds are not started (``ask_worker_count``),
+# and never past ``ASK_WORKERS_MOST``. Was 4.5 when a host held ~1.2 GB; measured
+# 2026-11-14 (dev API, Ask on, margin Ask with its look-up ahead on a second worker):
+# hosts 100-160 MB, model CLIs 150-250 MB, the whole API's anonymous memory 2.1 GB with
+# two workers busy, so 4.5 GB a worker left a 20 GB-available box at one worker, and an
+# Ask's own reads (``fan_out``) never had a second to spread over. 3.0 keeps a margin
+# over that and still gives such a box two. Agent sessions are admitted on their own
+# (``SessionSlots``, ``ASK_SESSION_GB`` each).
+ASK_WORKER_GB = 3.0
 ASK_MEMORY_FLOOR_GB = 12.0
 ASK_WORKERS_MOST = 4
 WARM_HOSTS = 1
@@ -544,6 +551,8 @@ def plain(value: Any) -> Optional[str]:
             return str(value["untrusted_text"])[:500]
         if "value" in value and isinstance(value["value"], (str, int, float)):
             unit = value.get("unit") or value.get("currency")
+            if not unit and currency_display.is_unstated(value):
+                return currency_display.amount_words(str(value["value"]))
             return f"{value['value']} {unit}".strip() if unit else str(value["value"])
         return None
     if value is None or isinstance(value, bool):
@@ -826,9 +835,6 @@ class Worker:
         """A live read is queued or running."""
         return self.running > 0 or not self.jobs.empty()
 
-    def idle_for(self) -> float:
-        return 0.0 if self.busy() else time.monotonic() - self.last_done
-
 
 @contextmanager
 def _no_scope() -> Iterator[None]:
@@ -847,7 +853,7 @@ def page_scope() -> Iterator[None]:
     """A page read (the read workers, the warm-up, the section pool): every mail item gate
     of its tool calls is the per-call memoized one (``case_tools_host.page_build``), with
     the same decisions as the full check."""
-    from operating.case_tools_host import page_build
+    from operating.case_tools_host_citations import page_build
     with page_build():
         yield
 
@@ -937,7 +943,7 @@ def fan_out(jobs: "queue.PriorityQueue", stopped: threading.Event, reader: Reade
 
     # a caller reading as of one moment (``ontology_tools.snapshot_reads``: a record
     # page's margin) has its helpers read as of that moment too
-    from operating.ontology_tools import current_snapshot, joined_snapshot
+    from operating.ontology_tools_policy import current_snapshot, joined_snapshot
     snap = current_snapshot()
 
     def helper(view: Any) -> None:
@@ -1024,9 +1030,17 @@ class _Watched:
                 return getattr(server, name)
 
             def handle(self, message: Any, *args: Any, **kwargs: Any) -> Any:
-                if isinstance(message, Mapping) and message.get("method") == "tools/call":
+                called = isinstance(message, Mapping) and message.get("method") == "tools/call"
+                if called:
                     on_call(str((message.get("params") or {}).get("name") or ""))
-                return server.handle(message, *args, **kwargs)
+                response = server.handle(message, *args, **kwargs)
+                if called and not kwargs.get("host_code") and isinstance(response, dict) \
+                        and isinstance(response.get("result"), dict):
+                    # a connector's tool result holds no card number or credential
+                    # (``operating.card_text``)
+                    from operating.card_text import mask_served_in
+                    response = {**response, "result": mask_served_in(response["result"])}
+                return response
         return Server()
 
 

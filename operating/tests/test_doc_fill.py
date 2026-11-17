@@ -203,6 +203,57 @@ class Fill(unittest.TestCase):
         with self.assertRaises(KeyError):
             df.facts_from(type("None", (), {"get": lambda _s, _o: None})(), "X:1", self.terms)
 
+    def test_a_label_outside_the_list_is_matched_by_its_words_and_near_ones_only_suggested(self):
+        """AUDIT3-12: labels neither the terms file nor the exact schema names know."""
+        extra = [df.Fact("SupplierItem.lead_time_days", "30", C("SupplierItem:1",
+                         "lead_time_days", "bc://si/1@a")),
+                 df.Fact("Product.shelf_life_months", "24", C("Product:bc:P1",
+                         "shelf_life_months", "bc://p/1@a")),
+                 df.Fact("Product.country_of_origin", "Canada", C("Product:bc:P1",
+                         "country_of_origin", "bc://p/1@b")),
+                 df.Fact("Supplier.bc_email", "s@maple.example", C("Supplier:bc:V1",
+                         "bc_email", "bc://v/1@a")),
+                 df.Fact("Shipment.carrier", "UPS", C("Shipment:bc:S1", "carrier", "bc://s/1@d")),
+                 df.Fact("Shipment.carrier", "FedEx", C("Shipment:bc:S2", "carrier",
+                                                        "bc://s/2@e")),
+                 df.Fact("Lot.manufacture_date", "2026-01-02", C("Lot:1", "manufacture_date",
+                                                                 "bc://l/1@a")),
+                 df.Fact("Lot.expiry_date", "2028-01-02", C("Lot:1", "expiry_date",
+                                                            "bc://l/1@b"))]
+        labels = ["Lead-time (days)", "Months of shelf life", "Origin country",
+                  "Please state your country of origin", "Supplier's e-mail",
+                  "Shipment carriers", "Manufacture date of the lot", "Supplier lead time", "Shelf life",
+                  "Number", "Email", "Status", "Weight", "Favourite colour"]
+        fields = [df.FormField(f"f{i}", label) for i, label in enumerate(labels)]
+        got = {f.label: (f.status, f.after, f.citation.source if f.citation else None)
+               for f in df.plan(fields, extra, self.terms)}
+        self.assertEqual(got["Lead-time (days)"], ("filled", "30", "bc://si/1@a"))
+        self.assertEqual(got["Months of shelf life"], ("filled", "24", "bc://p/1@a"))
+        self.assertEqual(got["Origin country"], ("filled", "Canada", "bc://p/1@b"))
+        self.assertEqual(got["Please state your country of origin"][:2], ("filled", "Canada"))
+        self.assertEqual(got["Supplier's e-mail"][:2], ("filled", "s@maple.example"))
+        self.assertEqual(got["Manufacture date of the lot"][:2], ("filled", "2026-01-02"))
+        # two values stand: never one picked
+        self.assertEqual(got["Shipment carriers"][0], "ambiguous")
+        # near: two of the property's words and the type's; shown to check, never written
+        self.assertEqual(got["Supplier lead time"], ("suggested", "30", "bc://si/1@a"))
+        self.assertEqual(got["Shelf life"][:2], ("suggested", "24"))
+        reasons = {f.label: f.reason for f in df.plan(fields, extra, self.terms)}
+        self.assertIn("supplier item lead time days", reasons["Supplier lead time"])
+        # one bare word names nothing, and a label no fact speaks of stays unknown
+        for label in ("Number", "Email", "Status", "Weight", "Favourite colour"):
+            self.assertEqual(got[label][0], "unknown_field", label)
+        # a suggested value is never written into the file
+        data = files.make("xlsx", "Supplier lead time:|\nLead-time (days):|")
+        result = df.fill(data, extra, self.terms)
+        self.assertEqual({f.label: f.status for f in result.fields},
+                         {"Supplier lead time": "suggested", "Lead-time (days)": "filled"})
+        self.assertEqual(sum(1 for f in result.fields if f.status == "filled"), 1)
+        # a choice field is never answered by a general match
+        choice = df.plan([df.FormField("c", "Origin country", kind="choice")], extra,
+                         self.terms)
+        self.assertEqual(choice[0].status, "unknown_field")
+
     def test_an_unknown_file_or_terms_file_fills_nothing(self):
         for data, code in ((b"", "empty"), (b"hello", "not_a_form"),
                            (files._zip({"a.xml": "<a/>"}), "not_a_form"),
@@ -249,7 +300,7 @@ class Fill(unittest.TestCase):
     def test_one_ten_and_sixty_fields_each_fill_once_within_budget(self):
         labels = sorted(self.terms.fields)
         for n in (1, 10, 60):
-            rows = [f"Lot #:|" if i == 0 else f"PO Number {i}:|" for i in range(n)]
+            rows = ["Lot #:|" if i == 0 else f"PO Number {i}:|" for i in range(n)]
             data = files.make("xlsx", "\n".join(rows))
             start = time.monotonic()
             got = df.fill(data, FACTS, self.terms)

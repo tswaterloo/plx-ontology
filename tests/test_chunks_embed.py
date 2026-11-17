@@ -40,7 +40,6 @@ from unittest import mock
 import numpy as np
 
 from integrations.people_exclusion import PeopleExclusion
-from ontology import store_ddl
 from ontology.types import Actor
 from operating.chunking import dedup as dd
 from operating.chunking import split
@@ -660,6 +659,37 @@ class FixtureChunkerTests(unittest.TestCase):
         self.assertEqual([e.object_id for e in teams], [f"TeamsChatMessage:{chat}/t1"])
         self.assertEqual(list(participants(conn, Counts(), None)), [])   # no guard: none
 
+    def test_every_packaging_lot_is_its_own_entity_keyed_by_object_id(self):
+        # AUD-13 / audit B #13: lots written as words (no digit, so no identifier an
+        # entity may carry) were dropped as unnamed; two lines of one lot number are two
+        # records. Each lot object gets an entity; a placeholder and a lot with no text
+        # do not; lookups by lot number still work.
+        a = "Lot:portal.fm_receipt_packaging.lotnoqc:1"
+        b = "Lot:portal.fm_receipt_packaging.lotnoqc:2"
+        self.fx.obj(a, "Lot", "api:fm.receipt", values={"lot_text": ("24J0712", "[]")},
+                    idents=[("lot_number", "24J0712", "primary", "[]", "lot_number")])
+        self.fx.obj(b, "Lot", "api:fm.receipt", values={"lot_text": ("24J0712", "[]")},
+                    idents=[("lot_number", "24J0712", "primary", "[]", "lot_number")])
+        self.fx.obj("Lot:words", "Lot", "api:fm.receipt",
+                    values={"lot_text": ("  Blue  drums ", "[]")})
+        self.fx.obj("Lot:na", "Lot", "api:fm.receipt", values={"lot_text": ("N/A", "[]")})
+        self.fx.obj("Lot:blank", "Lot", "api:fm.receipt")
+        self.fx.obj("Lot:marked", "Lot", "api:fm.receipt",
+                    values={"lot_text": ("Secret words", '["finance"]')})
+        self.fx.done()
+        conn = open_ro(self.path)
+        self.addCleanup(conn.close)
+        counts = Counts()
+        found = {e.object_id: e for e in entities(conn, counts, types=["lot"])}
+        self.assertEqual({a, b, "Lot:words"}, set(found))   # a marked text is never named
+        self.assertEqual(found[a].entity_id, f"e:{a}")
+        self.assertNotEqual(found[a].entity_id, found[b].entity_id)
+        self.assertEqual(found[a].name, "Lot 24J0712")
+        self.assertIn("24J0712", found[a].alias)
+        self.assertEqual(found["Lot:words"].name, "Lot Blue drums")
+        self.assertNotIn("Blue drums", found["Lot:words"].alias)   # words alone name no lot
+        self.assertEqual(counts.skipped.get("entity_unnamed:lot"), 3)
+
     def test_entities_name_alias_fold_and_marked_identifiers_left_out(self):
         self.fx.obj("Customer:1", "Customer", "api:public.app_customer",
                     values={"name": ("Savon Québec Inc.", "[]")},
@@ -845,6 +875,35 @@ class FixtureChunkerTests(unittest.TestCase):
         self.assertNotIn("PO7777", first.header + " ".join(first.linked_ids))
         self.assertIn("PO5555", first.header)
         self.assertIn("Cartons thread", first.header)
+
+    def test_mention_link_targets_join_every_chunks_linked_ids_when_the_document_names_them(self):
+        # AUD-13 / audit B #14: a stored mention link (lead tier) reaches the chunk even
+        # when the id sits in quoted text the chunk does not carry; an identifier the
+        # message never names, a target marked beyond the chunk, and a target of no
+        # mention link stay out; the header never prints it.
+        box = "12345678-aaaa-bbbb-cccc-0000000000ab"
+        text = ("Please ship the cartons tomorrow morning to the dock, thanks.\n\n"
+                "On Mon, 2 Nov 2026, Buyer wrote:\n> Is PO PO5280 confirmed for this week? "
+                "Also PO5281.\n")
+        self.email("Email:q", box, text)
+        self.fx.obj("PurchaseOrder:m", "PurchaseOrder", "api:public.app_purchase_order",
+                    idents=[("petra_po", "PO5280", "primary", "[]"),
+                            ("vendor_ref", "VR-NEVER-NAMED", "alias", "[]")])
+        self.fx.obj("PurchaseOrder:fin", "PurchaseOrder", "api:public.app_purchase_order",
+                    marks='["finance"]', idents=[("petra_po", "PO5281", "primary", "[]")])
+        self.fx.obj("PurchaseOrder:nolink", "PurchaseOrder", "api:public.app_purchase_order",
+                    idents=[("petra_po", "PO9999", "primary", "[]")])
+        self.fx.link("Email:q", "PurchaseOrder:m", "Email.mentions_purchase_order", "mention")
+        self.fx.link("Email:q", "PurchaseOrder:fin", "Email.mentions_purchase_order", "mention")
+        chunks, _ = self.run_chunker(exclusion())
+        mail = [c for c in chunks if c.object_id == "Email:q"]
+        self.assertTrue(mail)
+        for c in mail:
+            self.assertIn("petra_po:PO5280", c.linked_ids)
+            self.assertNotIn("petra_po:PO9999", c.linked_ids)
+            self.assertNotIn("petra_po:PO5281", c.linked_ids)   # named, linked, marked beyond
+            self.assertNotIn("VR-NEVER-NAMED", " ".join(c.linked_ids))
+            self.assertNotIn("PO5280", c.header)
 
     def test_ids_match_on_token_boundaries_and_attachments_follow_their_sender(self):
         from operating.chunking import headers as hd
@@ -1237,6 +1296,52 @@ class TextUnitTests(unittest.TestCase):
         self.assertNotIn("d", groups)
         self.assertGreater(dd.near(base, base + " Thanks."), 0.85)
 
+    def test_distinct_records_never_share_a_cluster(self):
+        """11-15 measure: 14 of 200 clusters merged distinct texts (a MinHash estimate
+        over 0.85 for a true 0.76-0.85; records differing only in amounts or ids)."""
+        filler = " ".join(f"w{chr(97 + i % 26)}{chr(97 + i // 26)}" for i in range(120))
+        text = "Invoice {n} for the soap boxes, carton lot {lot}, is due on receipt. " + filler
+        one, two = text.format(n=10041, lot=771), text.format(n=10042, lot=772)
+        self.assertGreater(dd.near(one, two), 0.5)    # a MinHash band candidate
+        self.assertFalse(dd.same_text(one, two))
+        forward = one + " Sent on 12 Nov 2026 by the buyer."
+        self.assertTrue(dd.same_text(one, forward))   # a forward adds; it differs in nothing
+        asked: list[list[str]] = []
+        bodies = {"a": one, "b": two, "c": forward, "d": one}
+
+        def body_of(ids):
+            asked.append(sorted(ids))
+            return {i: bodies[i] for i in ids}
+        rows = [(cid, dd.body_sha(b), b) for cid, b in bodies.items()]
+        for got in (dd.groups(rows), dd.groups(rows, body_of=body_of)):
+            self.assertEqual(got["a"], got["c"])
+            self.assertEqual(got["a"], got["d"])
+            self.assertNotIn("b", got)
+        self.assertTrue(asked and all(len(ids) <= 3 for ids in asked))  # candidates only
+        # no numbers, exact word 5-gram Jaccard 86/106 = 0.81: two texts
+        words = [f"w{chr(97 + i % 26)}{chr(97 + i // 26)}" for i in range(100)]
+        edited = list(words)
+        edited[30], edited[60] = "changed", "altered"
+        self.assertFalse(dd.same_text(" ".join(words), " ".join(edited)))
+        self.assertTrue(dd.same_text("", ""))
+        # digit grouping is no difference; a decimal point is
+        filler = " ".join(f"w{chr(97 + i % 26)}{chr(97 + i // 26)}" for i in range(80))
+        self.assertTrue(dd.same_text("Total 1,000 cases. " + filler,
+                                     "Total 1000 cases. " + filler))
+        self.assertTrue(dd.same_text("Total 1,250,000 " + filler, "Total 1250000 " + filler))
+        self.assertFalse(dd.same_text("Total 1.250 cases. " + filler,
+                                      "Total 1250 cases. " + filler))
+        self.assertFalse(dd.same_text("Total 1,000 cases. " + filler,
+                                      "Total 2,000 cases. " + filler))
+
+    def test_the_delta_paths_never_group(self):
+        """Grouping is the full dedup's alone; the delta's layer
+        pass and record pass write chunks and never clusters."""
+        for name in ("follow.py", "record_pass.py"):
+            source = (ROOT / "operating/embed" / name).read_text()
+            for call in ("write_groups", "exact_copies", "dd.groups", "dup_group"):
+                self.assertNotIn(call, source, (name, call))
+
 
 # --------------------------------------------------------------------------- providers
 
@@ -1432,9 +1537,7 @@ class PostgresTests(unittest.TestCase):
         writer.write(chunks)
         report = dedup(self.conn, None)
         self.assertEqual((report["chunks_in_groups"], report["groups"]), (2, 1))
-        groups = self.conn.execute("SELECT count(DISTINCT chunk_id) FROM search.chunks WHERE "
-                                   "dup_group IS NOT NULL").fetchone()[0]
-        self.assertEqual(groups, 2)
+        self.assertEqual(len(self.clusters()), 2)
         self.assertEqual(writer.delete_units({"mail:box-b"}), 1)
         writer = self.st.ChunkWriter(self.conn)
         writer.write(chunks[:2])
@@ -1443,6 +1546,59 @@ class PostgresTests(unittest.TestCase):
         writer = self.st.ChunkWriter(self.conn)
         writer.write(chunks[:6])
         self.assertEqual(writer.delete_stale(["mail"]), {"mail": {"deleted": 1}})
+
+    def copy_chunk(self, n, body, header="Source: x\nTitle: Shared"):
+        from operating.chunking import make_chunk
+        return make_chunk(kind="mail", parts=("mail:box-a", f"c{n}", "0"),
+                          source_handle=f"fx://c{n}", object_id=f"C{n}", title="Shared",
+                          author_role=None, occurred_at="2026-10-01T00:00:00Z", header=header,
+                          body=body, linked_ids=[], audience_key="mail:box-a", markings=())
+
+    def clusters(self):
+        """object_id -> dup_group of every chunk in a cluster."""
+        return dict(self.conn.execute("SELECT object_id, dup_group FROM search.chunks "
+                                      "WHERE dup_group IS NOT NULL").fetchall())
+
+    def test_the_delta_writer_groups_nothing_and_a_rewrite_leaves_its_cluster(self):
+        """Grouping inside the delta cost minutes a layer (non-HOT
+        dup_group updates through every index of search.chunks, the HNSW ones included).
+        The delta's writer groups nothing; only the full dedup does; a rewritten chunk
+        leaves its old cluster in the same upsert (no extra statement)."""
+        from operating.embed.__main__ import dedup
+        body = "The cartons for PO 5280 ship Friday by truck from the Toronto plant. " * 4
+        writer = self.st.ChunkWriter(self.conn)
+        writer.write([self.copy_chunk(1, body), self.copy_chunk(2, body),
+                      self.copy_chunk(3, "A distinct note about lavender soap, lot 12.")])
+        self.assertEqual(self.clusters(), {})          # the writer (the delta) groups none
+        dedup(self.conn, None)
+        group = self.clusters()
+        self.assertTrue(group["C1"] and group["C1"] == group["C2"])
+        self.assertNotIn("C3", group)
+        # the delta writes a third copy, two copies of a new text and a rewrite of C2
+        other = "Receiving moved the dock slot for PO 6100 to Monday at nine. " * 4
+        writer = self.st.ChunkWriter(self.conn)
+        writer.write([self.copy_chunk(4, body), self.copy_chunk(5, other),
+                      self.copy_chunk(6, other), self.copy_chunk(2, body + " Revised.")])
+        self.assertEqual(self.clusters(), {"C1": group["C1"]})   # nothing joined; C2 left
+        dedup(self.conn, None)
+        group = self.clusters()
+        self.assertEqual(group["C4"], group["C1"])
+        self.assertTrue(group["C5"] and group["C5"] == group["C6"] != group["C1"])
+
+    def test_dedup_cardinality(self):
+        from operating.embed.__main__ import dedup
+        body = "Same text of the shipping notice for lot {k}, trucks leave at noon. " * 4
+        for n in (1, 10, 60):
+            self.conn.execute("TRUNCATE search.chunks")
+            self.conn.commit()
+            self.st.ChunkWriter(self.conn).write(
+                [self.copy_chunk(i, body.format(k=i % 3)) for i in range(n)])
+            report = dedup(self.conn, None)
+            expect = 0 if n == 1 else n
+            self.assertEqual(report["rows_changed"], expect, n)
+            rows = self.conn.execute("SELECT count(*), count(DISTINCT dup_group) FROM "
+                                     "search.chunks WHERE dup_group IS NOT NULL").fetchone()
+            self.assertEqual(rows, (expect, 0 if n == 1 else 3), n)
 
     def test_rows_a_parallel_shard_wrote_are_kept_by_the_full_pass(self):
         chunks = [self.chunk(i, f"Distinct body {i} about lavender soap.") for i in range(6)]

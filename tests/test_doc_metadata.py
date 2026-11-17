@@ -45,7 +45,7 @@ def ao_packet(ao, erp, oe, customer, bulk):
         f"ERP CODE: {erp} OE:{' ' + oe if oe else ''}\n"
         f"CUSTOMER: {customer} PO: REQUIRED DATE:\n",
         "ASSEMBLY ORDER - SHOP FLOOR\nForm #072B\nDAMAGES P-0121 07\n",
-        f"FINISHED GOODS INSPECTION / RELEASE SHEET\nForm #010\nshipment released\n",
+        "FINISHED GOODS INSPECTION / RELEASE SHEET\nForm #010\nshipment released\n",
     ]
     text, rows = "", []
     for number, page in zip((1, 3, 11), pages):

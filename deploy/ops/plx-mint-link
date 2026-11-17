@@ -7,6 +7,13 @@
 #   sudo plx-mint-link --person VAR [TTL_MINUTES]    another reader's claims variable (e.g. the
 #                                                    full-read person's): a person at a
 #                                                    terminal only, never an agent script
+#   sudo plx-mint-link --canary [TTL_MINUTES]        the live Ask canary's service session
+#                                                    (operating/ask_canary.py): the owner
+#                                                    reader's claims, ticket marked ops_canary
+#                                                    (served /api/me and /api/ask only, no
+#                                                    work log, no memory), written to the
+#                                                    caller's ~/.config/plx/ask-canary-access-link
+#                                                    and never to the owner's link file
 #
 # Reads only root's files, never the caller's environment or env files: the secret from
 # /etc/plx/live-session.env (root 0600), reader claims from /etc/plx/mint-readers.env (root
@@ -27,7 +34,14 @@ CALLER=${SUDO_USER:-}
 [ -n "$CALLER" ] && [ "$CALLER" != root ] || die "run through sudo from your own account"
 
 VAR=PLX_EVAL_READER
-if [ "${1:-}" = "--person" ]; then
+OUT_NAME=workbench-access-link
+SERVICE=()
+if [ "${1:-}" = "--canary" ]; then
+  # names fixed here, never the caller's: the canary cannot pick a reader or a path
+  OUT_NAME=ask-canary-access-link
+  SERVICE=(--service ops_canary)
+  shift
+elif [ "${1:-}" = "--person" ]; then
   VAR=${2:?--person needs the reader variable}
   shift 2
   # a person's link is made by that person or the owner at a terminal (owner rule: agents
@@ -107,15 +121,15 @@ sys.path.insert(0, sys.argv[1])
 sys.argv = ["console_ticket"] + sys.argv[2:]
 runpy.run_module("operator_api.workspace.console_ticket", run_name="__main__", alter_sys=True)
 ' "$(readlink -f "$RELEASE")" mint --state-dir "$STATE" --host-config "$work/host/$(basename "$HOST_CONFIG")" \
-  --reader-env "$VAR" --ttl-minutes "$TTL" --out "$work/ticket.url" >/dev/null
+  --reader-env "$VAR" --ttl-minutes "$TTL" "${SERVICE[@]}" --out "$work/ticket.url" >/dev/null
 secrets=(); excl=""
 url=$(cat "$work/ticket.url")
 home=$(getent passwd "$CALLER" | cut -d: -f6)
-out="$home/.config/plx/workbench-access-link"
+out="$home/.config/plx/$OUT_NAME"
 # written by the caller, not root: a path the caller controls (a planted symlink) can never
 # make root write the link anywhere else
 printf 'https://%s/#ticket=%s\n' "$APP_HOST" "${url#*#access=}" \
   | runuser -u "$CALLER" -- sh -c 'umask 077; mkdir -p "$(dirname "$1")" && cat > "$1"' - "$out"
 url=""
-logger -t plx-mint-link "link minted for $VAR (ttl ${TTL}m) asked by $CALLER" || true
+logger -t plx-mint-link "link minted for $VAR${SERVICE[1]:+ (service ${SERVICE[1]})} (ttl ${TTL}m) asked by $CALLER" || true
 echo "access link written to $out (expires in $TTL min)"

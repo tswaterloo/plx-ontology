@@ -98,7 +98,7 @@ def _schema() -> Any:
 
 @functools.lru_cache(maxsize=1)
 def _graphs() -> tuple[dict[str, Any], ...]:
-    from .ontology_tools_process import load_graphs
+    from .ontology_tools_process_graphs import load_graphs
     return tuple(load_graphs().values())
 
 
@@ -120,9 +120,10 @@ def _billing_types() -> list[str]:
 def party_types() -> frozenset[str]:
     """Types an order is placed with that an invoice is also billed to."""
     links = _schema().link_types.values()
-    ordered = {link["to"] for link in links if link["from"] in order_types()}
-    billed = {link["to"] for link in links if link["from"] in _billing_types()}
-    return frozenset((ordered & billed) - order_types())
+    orders, bills = order_types(), frozenset(_billing_types())   # once, not once per link
+    ordered = {link["to"] for link in links if link["from"] in orders}
+    billed = {link["to"] for link in links if link["from"] in bills}
+    return frozenset((ordered & billed) - orders)
 
 
 @functools.lru_cache(maxsize=1)
@@ -261,7 +262,7 @@ class _Card:
         into the card; a lead (or any other weaker or unknown tier) is read only to be
         named as a match to confirm, never into blockers or facts; a contradicted one is
         not read at all."""
-        from .ontology_tools import _IDENTITY_TIERS
+        from .ontology_tools_policy import _IDENTITY_TIERS
 
         edges = [e for e in root.answer.get("identity") or ()
                  if str(e.get("link_type", "")).endswith(".same_record_as")
@@ -823,7 +824,7 @@ def card_for_reference(call: Callable[[str, dict[str, Any]], dict[str, Any]],
     matches read as one record only when each other one is a verified or strong
     same-record copy of the first at a tier the card merges (verified or reviewed). Otherwise the answer is
     ``ambiguous`` with the count and no card, never a pick."""
-    from operating.ontology_tools import _IDENTITY_TIERS, ROOT_REASONS
+    from operating.ontology_tools_policy import _IDENTITY_TIERS, ROOT_REASONS
 
     day = as_of or po_status.business_today()
     base = {"schema": SCHEMA, "reference": reference, "as_of": day.isoformat()}
@@ -1105,6 +1106,7 @@ def main(argv: Sequence[str] | None = None, *, environ: Mapping[str, str] | None
     from integrations.source_mirror import AudienceMap
 
     from . import case_workspace_live as live
+    from . import case_workspace_live_projection
 
     parser = argparse.ArgumentParser(prog="python3 -m operating.status_card",
                                      description=__doc__.split("\n\n")[0])
@@ -1145,7 +1147,7 @@ def main(argv: Sequence[str] | None = None, *, environ: Mapping[str, str] | None
     projection = live.projection_file(args.state_dir, args.tenant)
     rendered = []
     try:
-        live.project_state(args.state_dir, projection, tenant=args.tenant)
+        case_workspace_live_projection.project_state(args.state_dir, projection, tenant=args.tenant)
         summary["blocked_upstream"] = live.upstream_parts(live.portal_upstream(args.state_dir))
         for actor in (investigator, *readers):
             session = live._Session(runtime, actor, audience, projection,

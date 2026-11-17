@@ -299,7 +299,7 @@ from operating.answer_contract import (  # noqa: F401 - the scorer's answer cont
     ANSWER_FORMAT, ANSWERABILITY, ACTION_TOOL, _JSON_FENCE, MAX_VALUES, MAX_CITATIONS,
     CALCULATION_OPS, MAX_CALCULATION_INPUTS, canonical, answer_candidate, parse_answer,
     answer_problems, calculation_problem, NUMERIC_OPS, ZeroDenominator, calendar_day,
-    computed_claim)
+    computed_claim, computed_value, Dimension, MixedDimensions)
 
 from operating.time_window import written_days
 TRANSCRIPT_FORMAT = "plx-eval-transcript/v1"
@@ -790,7 +790,7 @@ def _quotable(cite: Mapping[str, Any]) -> bool:
     field ``ORIGINAL_TEXT_FIELDS`` of an ``ORIGINAL_SCHEMES`` record), where a quote must
     stand in the text unnegated (``_quote_refusal``). Any other field is a structured
     cell, which must hold a quote verbatim."""
-    from operating.claim_checks import ORIGINAL_SCHEMES, ORIGINAL_TEXT_FIELDS, PAGE_TEXT
+    from operating.claim_checks_grammar import ORIGINAL_SCHEMES, ORIGINAL_TEXT_FIELDS, PAGE_TEXT
     field = cite["field_path"]
     return field == PAGE_TEXT or (field in ORIGINAL_TEXT_FIELDS and
                                   cite["l1_handle"].partition("://")[0] in ORIGINAL_SCHEMES)
@@ -805,8 +805,8 @@ def _quote_holds(value: str, quote: str, cited: Any = None) -> bool:
     text cell or page) prints that day in another form inside an occurrence of the quote
     (``8 Jan 2026``), by the gate's own printed-date rule
     (``claim_checks._printed_date_problem``, scorer /25); with no cited text, never."""
-    from operating.claim_checks import _ISO_DAY, _negated, _normalised, \
-        _printed_date_problem, _spans
+    from operating.claim_checks_grammar import _ISO_DAY
+    from operating.claim_checks_text import _negated, _normalised, _printed_date_problem, _spans
     want, text = _normalised(value), _normalised(quote)
     return any(not _negated(want, text, at) for at in _spans(want, text)) or bool(
         isinstance(cited, str) and _ISO_DAY.fullmatch(value) and _printed_date_problem(
@@ -851,8 +851,10 @@ def _quote_refusal(text: str, number: bool, quote: str, cite: Mapping[str, Any],
     unnegated on token boundaries, a text cell verbatim on token boundaries, a number cell
     only as that one number. Anything else (a record not re-read, a cell that is no text
     or number, a path the record lacks) fails closed."""
-    from operating.claim_checks import NUMBER, _negated, _normalised, _spans, number_value, \
-        value_form
+    from operating.claim_checks_cells import value_form
+    from operating.claim_checks_grammar import NUMBER
+    from operating.claim_checks_parse import number_value
+    from operating.claim_checks_text import _negated, _normalised, _spans
     said = _normalised(quote)
     view = rows(cite["l1_handle"])
     field = cite["field_path"]
@@ -1008,7 +1010,11 @@ def gate(answer: Mapping[str, Any], evidence: Mapping[str, Any],
     ``claim_uncited`` failure (unless the item sets ``citations_required: false``):
     an uncited number is never a silent pass, expected or not."""
     from operating import claim_checks
-    from operating.claim_checks import _PLAIN_NUMBER, ROLES, check_items, parse_value_claims
+    from operating import claim_checks_grammar
+    from operating import claim_checks_text
+    from operating.claim_checks import check_items
+    from operating.claim_checks_grammar import _PLAIN_NUMBER, ROLES
+    from operating.claim_checks_parse import parse_value_claims
     from ontology.types import ValidationError
     if contracts is None:
         from operating.source_units import SourceUnitContracts
@@ -1042,8 +1048,8 @@ def gate(answer: Mapping[str, Any], evidence: Mapping[str, Any],
             claim: dict[str, Any] = {"value": text, "citation": cite["l1_handle"],
                                      "field": cite["field_path"]}
             if quote is not None and _PLAIN_NUMBER.match(text) and (
-                    cite["field_path"] == claim_checks.PAGE_TEXT
-                    or claim_checks.text_field(cite["field_path"])):
+                    cite["field_path"] == claim_checks_grammar.PAGE_TEXT
+                    or claim_checks_text.text_field(cite["field_path"])):
                 # A figure of prose (a page's text, a record's free text): the quote, which
                 # holds the value and is held by the cited text (``_quote_refusal`` above),
                 # pins the occurrence, as the gate pins it (only figures inside the quote
@@ -1154,7 +1160,8 @@ def _calculation_claims(index: int, value: Mapping[str, Any], text: str | None,
     result as a recorded calculation the gate recomputes (so the prose may state it).
     Not recomputable: no claim, the value fails on its ``calculation`` code.
     ``reference``: the days the question writes in full (a ``days`` value's ``day``)."""
-    from operating.claim_checks import MAX_CLAIMS, ROLES, parse_value_claims
+    from operating.claim_checks_grammar import MAX_CLAIMS, ROLES
+    from operating.claim_checks_parse import parse_value_claims
     from ontology.types import ValidationError
     calc = value["calculation"]
     result = recompute(calc, evidence, value, reference)
@@ -1421,6 +1428,10 @@ def recompute(calc: Mapping[str, Any], evidence: Mapping[str, Any],
                 return {**out, "code": "calculation_input_unresolved"}
             days.append(day)
         return {**out, "value": Decimal((days[0] - days[1]).days)}
+    if calc["op"] == "add_days":
+        # a calendar day, no figure: this harness recomputes figures only (the claim gate
+        # recomputes the day, ``claim_checks._check_add_days``)
+        return {**out, "code": "calculation_not_recomputable"}
     if calc["op"] == "count_distinct":
         # Its value is a tool's count of distinct values over records it cites a sample
         # of: nothing the harness re-reads recomputes it.
@@ -1428,6 +1439,7 @@ def recompute(calc: Mapping[str, Any], evidence: Mapping[str, Any],
     rows = _rows(evidence)
     numbers: list[Decimal] = []
     units, currencies, sources = set(), set(), set()
+    dimensions: list[Dimension] = []
     # A sum or a count reads each record once; any other op each cell once (a difference
     # of two fields of one line).
     by_cell = calc["op"] in NUMERIC_OPS and calc["op"] != "sum"
@@ -1458,6 +1470,9 @@ def recompute(calc: Mapping[str, Any], evidence: Mapping[str, Any],
         out["cells"].append(cell)
         units.add(_unit_key(given.get("unit") or None))
         currencies.add(given.get("currency") or None)
+        dimensions.append(Dimension(money=bool(given.get("currency")),
+                                    currency=given.get("currency") or None,
+                                    unit=_unit_key(given.get("unit") or None)))
         sources.add("sage" if identity[0] == "api" and identity[1].startswith("sage.")
                     else identity[0])
     if len(units) > 1:
@@ -1476,7 +1491,9 @@ def recompute(calc: Mapping[str, Any], evidence: Mapping[str, Any],
         try:
             holds, value = computed_claim(
                 calc["op"], None if isinstance(claimed, bool) else to_decimal(claimed),
-                numbers, percent)
+                numbers, percent, dimensions=dimensions)
+        except MixedDimensions as mixed:
+            return {**out, "code": _MIXED_CODES[mixed.code]}
         except ZeroDenominator:
             return {**out, "code": "calculation_zero_denominator"}
         except (ValueError, ArithmeticError):
@@ -1492,9 +1509,22 @@ def recompute(calc: Mapping[str, Any], evidence: Mapping[str, Any],
     else:
         given = calc["inputs"][0]
         out.update(unit=given.get("unit") or None, currency=currencies.pop())
-        out["value"] = (sum(numbers, Decimal(0)) if calc["op"] == "sum"
-                        else len(set(numbers)) == 1)
+        if calc["op"] == "sum":
+            try:
+                out["value"] = computed_value("sum", numbers, dimensions=dimensions)
+            except MixedDimensions as mixed:
+                return {**out, "code": _MIXED_CODES[mixed.code]}
+        else:
+            out["value"] = len(set(numbers)) == 1
     return out
+
+
+# The scorer's code for each way a calculation's inputs fail to share one dimension
+# (``answer_contract.dimension_problem``).
+_MIXED_CODES = {"mixed_currency": "calculation_currency_mismatch",
+                "missing_currency": "calculation_currency_mismatch",
+                "money_with_non_money": "calculation_currency_mismatch",
+                "mixed_unit": "calculation_unit_mismatch"}
 
 
 def _claim_ok(result: Mapping[str, Any]) -> bool:
@@ -1770,8 +1800,10 @@ def document_text(field: Any) -> bool:
     or a record's free text (``claim_checks.text_field``), the only fields whose quote
     says what the document states (the own-document path, scorer /24)."""
     from operating import claim_checks
-    return isinstance(field, str) and (field == claim_checks.PAGE_TEXT
-                                       or claim_checks.text_field(field))
+    from operating import claim_checks_grammar
+    from operating import claim_checks_text
+    return isinstance(field, str) and (field == claim_checks_grammar.PAGE_TEXT
+                                       or claim_checks_text.text_field(field))
 
 
 def own_document_evidence(item: Mapping[str, Any]) -> bool:
@@ -2441,7 +2473,7 @@ def handle_keys() -> tuple[re.Pattern[str], frozenset[str]]:
     (``$defs/handle``) and the keys that never carry a record handle, every property name
     the contracts declare and never type ``$defs/handle`` (alone, as array items or in a
     union): a gap ``subject``, ``searched.queries``, source text, object ids, values."""
-    from operating.ontology_tools import load_contracts
+    from operating.ontology_tools_policy import load_contracts
     contracts = load_contracts()
     defs = contracts["$defs"]
 

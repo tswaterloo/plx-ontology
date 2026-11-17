@@ -31,6 +31,8 @@ NOT_DECLARED = {
     "ontology/project_incremental.py", "ontology/delta.py", "ontology/reviews.py",
     "ontology/schema_migrate.py", "ontology/step_migrate.py", "ontology/store_ddl.py",
     "operating/ai_watcher.py", "operating/proactive_engine.py", "operating/pg/migrate.py",
+    # the proactive engine's Postgres read attach (``_attach_postgres``), split out of it
+    "operating/proactive_engine_inbox.py",
     # build-side projection stores added by migration-next (scratch SQLite the build writes and drops)
     "ontology/step_layer_workers.py", "ontology/store.py", "ontology/unit_layer_fit.py",
     # in-place step migration scratch: a run's local part stores (SQLite) and its per-run
@@ -39,22 +41,52 @@ NOT_DECLARED = {
     # the staged link apply's run-owned Postgres schema (the staged difference and its
     # undo rows), one per apply as step_staging's; never a served table
     "operating/pg/link_apply.py",
+    # a chunked migration's row log (undo_<run> schema: its tables, triggers and sequence),
+    # made for one migration and dropped after it is confirmed or undone; never a served table
+    "operating/pg/migrate_chunks.py",
+    # the kept link slice's shadow build (migration 0028's link_marks rebuilt beside the
+    # delta layers): its staging, next and catch-up tables are made for one build and
+    # dropped by it; its one-row build record (failed_at, kept_at) is Postgres migration
+    # 0032's, made here only on a database without it, and dropped by ``undo``
+    "operating/pg/link_marks.py",
+    # the identifier re-parse's stage (a scratch SQLite file the stage writes and the apply
+    # reads, one per run); its served rows go through migrate_chunks' row log
+    "operating/pg/identifier_reparse.py",
+    # the timestamp re-zone's stage (C-09: a scratch SQLite file of one run's changing cells,
+    # events and chunk marks, written by the stage and read by the apply and undo); never a
+    # store the Workbench opens
+    "operating/pg/timestamp_rezone.py",
+    # CC-C-04's mention collapse undo log (Postgres, ontology schema: the folded rows' images,
+    # kept for verify and undo and dropped by ``retire``); never a SQLite store
+    "operating/pg/mention_collapse.py",
     # a one-off proof over a scratch copy of a generation it builds itself; never a store
     # the Workbench opens
     "scripts/stamp_sighting_proof.py",
     # Postgres partitions of ontology.link_rows built beside the served ones (no SQLite store)
     "operating/pg/link_partitions.py", "scripts/rehearse_link_partitions.py",
+    "scripts/rehearse_link_pack.py",
     # GA-F3's one-time history collapse: Postgres DDL (its sightings, handle map and batch
     # plan in the ontology schema, kept for a resumable run), not a SQLite store
     "operating/pg/f3_collapse.py",
+    # GA-F13's compaction of ontology.value_cells: the new table built beside the served
+    # one, its change logs, marks and state (Postgres, dropped by finish or undo)
+    "operating/pg/value_cells_compact.py", "scripts/rehearse_value_cells_compact.py",
     # the per-box SharePoint lookup (GA-F10): a cache file named by a digest of its own DDL
     # and writers (``case_tools_host._lookup_code``), so a schema change is a new file and
     # the old one is pruned; nothing is ever migrated in place, so no step is declared
-    "operating/case_tools_host.py",
+    "operating/case_tools_host.py", "operating/case_tools_host_index.py",
     # the mail store's pack of small body blobs (GA-F16): one table versioned by the file's
     # user_version (another version is refused, never altered), kept in integrations, which
     # may not import operating.declared_schema (tools/layer_contract.py)
     "integrations/blob_pack.py",
+    # the attachment fetcher's work queue, readings and stored-content index (SQLite files of
+    # its own run state, CREATE IF NOT EXISTS), kept in integrations like blob_pack, which
+    # may not import operating.declared_schema (tools/layer_contract.py)
+    "integrations/attach_fetch.py",
+    # Postgres DDL, not a SQLite store: the change feed's cycles, rows and consumer cursors
+    # (AUD-03, migration 0026), the chunked loader's checkpoint table, and the ETL copies'
+    # per-run undo tables (CREATE TABLE ... AS, dropped with the run)
+    "operating/pg/change_feed.py", "operating/pg/chunked.py", "operating/pg/etl_copies.py",
 }
 
 

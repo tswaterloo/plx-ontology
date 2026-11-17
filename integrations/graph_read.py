@@ -79,7 +79,7 @@ import os
 import re
 import sys
 from typing import Any, Callable, Container, Iterator, Mapping, Sequence
-from urllib.parse import quote, unquote, urlencode, urlsplit
+from urllib.parse import quote, unquote, urlsplit
 
 from ontology.core import Actor
 
@@ -2193,7 +2193,7 @@ def probe_block(part: str, op: str, exc: BaseException) -> dict[str, Any] | None
     ``missing_permission``, cause ``host_misconfiguration``, the permission ``op`` needs)
     of a probe read that failed with ``exc``, or None unless Graph answered it 403 with
     a ``PERMISSION_REFUSALS`` code."""
-    from .capture_mail import graph_block
+    from .capture_mail_standing import graph_block
 
     status = getattr(exc, "http_status", None)
     if not isinstance(exc, SourceUnavailable) or status != 403 \
@@ -2220,7 +2220,7 @@ def mail_block(exc: BaseException, transport: GuardedTransport) -> dict[str, Any
     (``mail.people_exclusion``, later_ask ``excluded-people-oids``; codes only); one whose
     directory listing Graph refused is that refusal (``mail.user_listing``), and any other
     unresolved guard is no block."""
-    from .capture_mail import REFUSED_PARTS
+    from .capture_mail_standing import REFUSED_PARTS
 
     if isinstance(exc, people_exclusion.ExclusionUnavailable):
         cause = exc.__cause__
@@ -2439,7 +2439,8 @@ def library_columns_probe(environ: Mapping[str, str] | None = None, *, sender=No
         raise ValueError("max_items must be 1..1000")
     names = None
     if registry is not None:
-        from .capture_sharepoint import CaptureError, registry_site_names
+        from .capture_sharepoint import CaptureError
+        from .capture_sharepoint_report import registry_site_names
         try:
             names = registry_site_names(registry)
         except (CaptureError, OSError, ValueError):
@@ -2480,6 +2481,11 @@ def library_columns_probe(environ: Mapping[str, str] | None = None, *, sender=No
     report["requests_sent"] = transport.requests_sent
     return report
 
+
+# The captures whose budget checks honour a drain request (``integrations.drain``); any
+# other command keeps SIGTERM's default (it ends at once, as before).
+DRAINING_COMMANDS = frozenset({"mail-capture", "sharepoint-capture", "teams-capture",
+                               "meetings-capture"})
 
 def main(argv: Sequence[str] | None = None, *, environ: Mapping[str, str] | None = None,
          sender=None) -> int:
@@ -2548,6 +2554,11 @@ def main(argv: Sequence[str] | None = None, *, environ: Mapping[str, str] | None
     from .mail_directory_scope import add_cli_arguments as add_every_arguments
     add_every_arguments(every)
     args = parser.parse_args(argv)
+    if args.command in DRAINING_COMMANDS:
+        # SIGTERM (the ingest host stopping or yielding) ends the run at its next budget
+        # check, cursors kept, report printed (integrations.drain).
+        from . import drain
+        drain.install()
     try:
         if args.command == "mail-capture":
             from .capture_mail import run_cli

@@ -418,7 +418,7 @@ export function AskBox({
           "group relative flex flex-col bg-bg transition-shadow",
           sm
             ? "rounded-lg border border-control focus-within:border-fg"
-            : "rounded-2xl shadow-[var(--lift),0_8px_24px_-12px_rgb(0_0_0/0.12)] focus-within:shadow-[var(--lift),0_0_0_1px_color-mix(in_srgb,var(--accent)_45%,transparent),0_0_0_4px_color-mix(in_srgb,var(--accent)_12%,transparent)]",
+            : "rounded-xl shadow-[var(--lift)] focus-within:shadow-[0_0_0_1px_var(--accent)]",
           big ? "p-2.5" : sm ? "p-0.5" : "p-2",
         )}
       >
@@ -586,7 +586,7 @@ export function AskBox({
               className={cn("flex min-h-11 cursor-pointer items-center gap-3 rounded-lg px-2 py-1.5 text-[13px]", i === active ? "bg-hover" : "")}
               data-type={s.type}
             >
-              <span className="flex size-7 shrink-0 items-center justify-center rounded-md bg-surface-2 text-muted" aria-hidden>
+              <span className="flex size-5 shrink-0 items-center justify-center text-muted" aria-hidden>
                 <Icon className="size-3.5" strokeWidth={2} />
               </span>
               <span className="min-w-0 flex-1">

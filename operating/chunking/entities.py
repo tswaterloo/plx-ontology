@@ -59,6 +59,13 @@ TITLED_ONLY = frozenset({"TeamsChat", "TeamsChannel", "MCTask", "PlannerTask",
 CODE_PROPS = {"SalesInvoice": ("invoice_number",), "Receipt": ("sage_receipt_number",),
               "Shipment": ("sage_shipment_number",),
               "CertificateOfAnalysis": ("document_number",)}
+# A record named by a text value of its own when it holds no identifier the entity may
+# carry (an identifier needs a digit as a number field; a lot written as words has none).
+# Every such record is still its own entity, keyed by its object id, never one row per
+# lot number: the same lot received on several lines is several records (the Lot type).
+# The bare text is an alias only when it holds a digit; the labelled form always is.
+TEXT_NAMES = {"Lot": ("lot_text", "Lot")}
+_PLACEHOLDERS = frozenset({"NA", "N/A", "NONE", "NULL", "-", "--", "?", "TBD", "UNKNOWN"})
 CODE_LABELS = {"SalesInvoice": "Invoice", "Receipt": "Receipt", "Shipment": "Shipment",
                "CertificateOfAnalysis": "CoA"}
 # The record's own values people describe an entity by (place, category, short name,
@@ -127,6 +134,7 @@ def entities(conn: Any, counts: Counts | None = None, types: Sequence[str] | Non
     produced = 0
     for object_type, (etype, name_props) in sorted(ENTITY_TYPES.items()):
         code_props = CODE_PROPS.get(object_type, ())
+        text_name = TEXT_NAMES.get(object_type)
         kind_props = KIND_PROPS.get(object_type, {})
         if types is not None and etype not in types \
                 and not set(kind_props.values()) & set(types):
@@ -158,6 +166,7 @@ def entities(conn: Any, counts: Counts | None = None, types: Sequence[str] | Non
                     "AND +property IN (SELECT value FROM json_each(?))",
                     (ids, json.dumps(list(name_props) + list(ATTRIBUTE_PROPS)
                                      + list(_PERSON_KEYS) + list(code_props)
+                                     + ([text_name[0]] if text_name else [])
                                      + [prop for prop, _value in kind_props]))):
                 if not (isinstance(r["value"], str) and r["value"].strip()):
                     continue
@@ -167,6 +176,12 @@ def entities(conn: Any, counts: Counts | None = None, types: Sequence[str] | Non
                 if r["property"] in _PERSON_KEYS:
                     if etype in PERSON_TYPES:
                         addresses.setdefault(r["object_id"], []).append(r["value"].strip())
+                    continue
+                if text_name and r["property"] == text_name[0]:
+                    text = re.sub(r"\s+", " ", r["value"]).strip()
+                    if text.upper() not in _PLACEHOLDERS and len(text) <= 60:
+                        codes.setdefault(r["object_id"], []).append(
+                            (text_name[1], text, r["markings"]))
                     continue
                 if r["property"] in code_props:
                     code = _code_value(r["value"])
@@ -320,7 +335,8 @@ def _entity(row: Any, etype: str, latest: str, names: list[tuple[str, str]],
     own_codes = [(label, code) for label, code, value_marks in codes
                  if (held := parse_markings(value_marks)) is not None and set(held) <= marks]
     for label, code in own_codes:
-        alias.extend([code, f"{label} {code}"])
+        alias.extend([code, f"{label} {code}"] if re.search(r"\d", code)
+                     else [f"{label} {code}"])
     if name is None:
         primary = next((r for r in idents if (h := parse_markings(r["markings"])) is not None
                         and set(h) <= marks), None)

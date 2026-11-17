@@ -279,7 +279,7 @@ class Caller:
 
     def __init__(self, served: Any, actor: Any, report: dict[str, Any],
                  deadline: float | None, monotonic: Callable[[], float]) -> None:
-        from operating.ontology_tools import load_contracts
+        from operating.ontology_tools_policy import load_contracts
         self.served, self.actor, self.report = served, actor, report
         self.deadline, self.monotonic = deadline, monotonic
         self.contracts = load_contracts()
@@ -324,7 +324,7 @@ def schema_check(call: Callable[..., dict], schema: Any) -> dict[str, Any]:
         if not cursor:
             complete = completeness.get("complete") is True
             break
-    from operating.ontology_tools import schema_offers_type
+    from operating.ontology_tools_identity import schema_offers_type
     types = schema.object_types
     names = {"object_types": ("id",), "link_types": ("from", "to"),
              "event_types": ("object_type",), "action_types": ("target",)}
@@ -448,7 +448,8 @@ def bc_bound_types(schema: Any, cycles: Sequence[Sequence[str]]) -> set[str]:
 def plan_families(schema: Any, types: set[str]) -> dict[str, Mapping[str, Any]]:
     """{plan id: plan document} of every plan the host loads (``load_plans``; a broken
     plan raises) with a root type in ``types``."""
-    from operating.ontology_tools_investigate import load_plans, plan_root_types
+    from operating.ontology_tools_investigate import load_plans
+    from operating.ontology_tools_investigate_plans import plan_root_types
     return {pid: plan.doc for pid, plan in sorted(load_plans(schema=schema).items())
             if types.intersection(plan_root_types(plan.doc, schema))}
 
@@ -524,7 +525,7 @@ def pinned_books(books: str | None, environ: Mapping[str, str]) -> dict[str, str
 def root_sets(schema: Any, plan: Mapping[str, Any], cycles: Sequence[Sequence[str]]
               ) -> set[str]:
     """The captured BC entity sets that bind the plan's root types."""
-    from operating.ontology_tools_investigate import plan_root_types
+    from operating.ontology_tools_investigate_plans import plan_root_types
     sets = {s for cycle in cycles for s in cycle}
     return {b["relation"] for t in plan_root_types(plan, schema)
             for b in (schema.object_types.get(t) or {}).get("bindings", ())
@@ -549,7 +550,7 @@ def _step_links(plan: Mapping[str, Any], schema: Any) -> dict[str, str]:
     """{link type: id of the first plan step walking it}: a gap whose subject names the
     link is that step's (``stage_gaps``); a hop naming a link by its navigation name walks
     the link it names on each root type."""
-    from operating.ontology_tools_investigate import plan_root_types
+    from operating.ontology_tools_investigate_plans import plan_root_types
     from operating.ontology_tools_traverse import navigation_hops
     links: dict[str, str] = {}
     types = sorted(plan_root_types(plan, schema)) if schema is not None else []
@@ -592,7 +593,7 @@ def investigate_check(report: dict[str, Any], reader: Callable[..., dict],
     stop keeps what ran). ``ages``: the previous run's ``families_age``; ``empty``: the
     plan's root types are bound only by entity sets BC answered empty; ``schema`` resolves
     a plan's root ``links`` and hops named by navigation name."""
-    from operating.ontology_tools_investigate import plan_root_types
+    from operating.ontology_tools_investigate_plans import plan_root_types
     report.update({"families": {}, "families_run": list(families), "claim_uncited": 0,
                    "roots_failed": 0, "roots_investigated": 0, "outsider_probed": 0,
                    "outsider_leaks": 0, "outsider_states": {},
@@ -625,7 +626,7 @@ def inline_check(report: dict[str, Any], reader: Callable[..., dict],
     """``plx.investigate`` with each example's inline plan on sampled roots, as the reader
     and the outsider, into ``report`` as it goes; ``empty`` and ``schema`` as for
     ``investigate_check``."""
-    from operating.ontology_tools_investigate import plan_root_types
+    from operating.ontology_tools_investigate_plans import plan_root_types
     report.update({"plans": {}, "plans_run": [e["plan"]["id"] for e in examples],
                    "plans_unexpected": 0, "claim_uncited": 0, "roots_failed": 0,
                    "roots_investigated": 0, "outsider_probed": 0, "outsider_leaks": 0,
@@ -656,7 +657,7 @@ def inline_check(report: dict[str, Any], reader: Callable[..., dict],
 
 def inline_examples() -> list[dict[str, Any]]:
     """The worked inline plans and the outcome each expects (``INLINE_EXAMPLES``)."""
-    from operating.ontology_tools_investigate import INLINE_EXAMPLES
+    from operating.ontology_tools_investigate_plans import INLINE_EXAMPLES
     return json.loads(INLINE_EXAMPLES.read_text("utf-8"))["examples"]
 
 
@@ -786,7 +787,7 @@ def run(check: str, state: Path, cycles: Sequence[Sequence[str]], *,
     from ontology.core import Actor
     from ontology.schema import load_schema
     from operating import host as hm
-    from operating.ontology_tools import SchemaView
+    from operating.ontology_tools_identity import SchemaView
 
     started = monotonic()
     env = os.environ if environ is None else environ

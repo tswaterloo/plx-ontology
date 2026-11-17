@@ -24,8 +24,9 @@ import unittest
 
 from verify import live_verify as lv
 from integrations import graph_read
-from integrations.capture_mail import CaptureScope, MailCapture, MailCaptureStore
-from integrations.capture_sharepoint import CaptureScope as DriveScope
+from integrations.capture_mail import MailCapture, MailCaptureStore
+from integrations.capture_mail_scope import CaptureScope
+from integrations.capture_sharepoint_scope import CaptureScope as DriveScope
 from integrations.graph_read import GraphMailReader, quick_xor_hash
 from integrations.http import SourceHttpError
 from integrations.live_source_guard import BoundedBackoff, LiveSourceAudience

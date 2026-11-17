@@ -54,9 +54,11 @@ from ontology.mentions import page_citation
 from ontology.project import MailCaptures, SharePointCaptures, build_store
 from ontology.types import Actor
 from operating import ontology_tools as ot
+from operating import ontology_tools_results
 from operating import ontology_tools_aggregate as oa
 from operating import ontology_tools_evidence as ev
 from operating import ontology_tools_investigate as oi
+from operating import ontology_tools_investigate_plans
 from operating import ontology_tools_review as rt
 from operating.session_identity import (CHANNEL_AUTHOR, CHANNEL_CONSOLE, PROOF_CONFIGURED,
                                         SessionIdentity)
@@ -85,7 +87,7 @@ LATER = dt.datetime(2026, 10, 6, 12, 0, tzinfo=dt.timezone.utc)
 INVOICE = ("PROFORMA INVOICE\nPI No: PI-60311\nDate: 2026-09-14\nQuantity: {qty} pcs\n"
            "Unit Price: USD 0.04125/pc\nTotal Amount: USD 16,500.00\n")
 SAYS = "The PI quantity is 40,000 pcs, not 400,000."
-PLAN = {"$schema": "_plan.schema.json", "format": oi.PLAN_FORMAT, "id": "value_read",
+PLAN = {"$schema": "_plan.schema.json", "format": ontology_tools_investigate_plans.PLAN_FORMAT, "id": "value_read",
         "families": ["value-read"], "title": "t", "description": "d",
         "root": {"object_types": ["SupplierConfirmation"]}, "step_budget": 4,
         "steps": [{"id": "read", "tool": "plx.object", "from": "root", "bind": "object_id"}],
@@ -276,7 +278,7 @@ class ValueReviewTests(unittest.TestCase):
                     world: World | None = None) -> dict[str, dict]:
         """The answer entries by name of one ``plx.investigate`` run for ``actor``."""
         table: dict = {}
-        ot.register(table, (world or self.world).tools(self, self.review_file, clock))
+        ontology_tools_results.register(table, (world or self.world).tools(self, self.review_file, clock))
         self.assertEqual(oi.check_plan(PLAN, ot.SchemaView.from_compiled(
             schema_loader.load_schema()), CONTRACTS, ENGINES), [])
         tools = oi.InvestigateTools(table, plans={"value_read": oi.Plan(

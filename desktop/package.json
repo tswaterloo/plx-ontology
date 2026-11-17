@@ -1,0 +1,31 @@
+{
+  "name": "plx-workbench-desktop",
+  "version": "0.1.0",
+  "private": true,
+  "description": "PLX Workbench desktop app: the same Workbench, in its own window, with notifications and updates.",
+  "author": "PLX",
+  "main": "src/main.js",
+  "desktopName": "plx-workbench.desktop",
+  "engines": {
+    "node": "^22.22.2 || ^24.15.0 || >=26"
+  },
+  "scripts": {
+    "start": "electron .",
+    "test": "node --test test/*.test.js",
+    "pack": "electron-builder --dir",
+    "dist:linux": "electron-builder --linux AppImage tar.gz --publish never",
+    "dist:win": "electron-builder --win nsis zip --publish never",
+    "dist:win:zip": "electron-builder --win zip --publish never",
+    "dist:mac": "electron-builder --mac dmg zip --x64 --arm64 --publish never",
+    "dist:mac:zip": "electron-builder --mac zip --x64 --arm64 --publish never",
+    "dist:win:signed": "node scripts/check-signing.js win && electron-builder --win nsis zip --publish never --config electron-builder.signed.yml",
+    "dist:mac:signed": "node scripts/check-signing.js mac && electron-builder --mac dmg zip --x64 --arm64 --publish never --config electron-builder.signed.yml"
+  },
+  "dependencies": {
+    "electron-updater": "^6.8.11"
+  },
+  "devDependencies": {
+    "electron": "^45.3.1",
+    "electron-builder": "^26.18.0"
+  }
+}

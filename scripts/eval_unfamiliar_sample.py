@@ -212,7 +212,7 @@ from evals.oracle.source import SOURCE_FAILURE_CAUSES, read_failure_label
 from evals.oracle.three_way import ASPECTS
 from evals.score import canonical, row_identity
 from integrations.bc_read import bc_entity_sets, capture_unit, company_key
-from integrations.source_mirror import upstream_failures
+from integrations.source_mirror_values import upstream_failures
 from scripts.eval_oracle_dev import mail_scope_target
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -581,8 +581,9 @@ def roots_exactly(candidate: Mapping[str, Any], identifier: str, grammar: Any) -
     comparison for its kind, a scoped kind only within its one scope). Anything else is a
     lead."""
     from operating import ontology_tools as ot
+    from operating import ontology_tools_identity
 
-    return ot.roots_exactly(candidate, identifier, grammar)
+    return ontology_tools_identity.roots_exactly(candidate, identifier, grammar)
 
 
 def score_item(product: Product, item: Item, deadline: Deadline | None = None
@@ -827,9 +828,19 @@ def open_product(store_path: str | Path, *, tenant: str = EVAL_TENANT,
     if "plx.find" not in table:
         reader.conn.close()
         return Product(None, {**details, "status": "find_tool_missing"})
+    def close() -> None:
+        # plx.changes primes its kept index on a background thread that writes beside the
+        # store file: stop and join it before the store goes (a product's close is the end
+        # of everything it started).
+        from operating import ontology_tools_changes
+        try:
+            ontology_tools_changes.close_tools(table)
+        finally:
+            reader.conn.close()
+
     product = Product(call, {**details, "status": "available"}, audience_keys=keys,
                       complete_relations=complete_relations, upstream_failed=upstream_failed,
-                      close=reader.conn.close)
+                      close=close)
     product.grammar = grammar
     return product
 
@@ -912,7 +923,8 @@ def build_projection(client: Any, directory: Path, relations: Sequence[str], *,
     ``peak_rss_mib``)."""
     from contextlib import ExitStack
 
-    from integrations.source_mirror import AudienceMap, MirrorError, SourceMirror
+    from integrations.source_mirror import AudienceMap, SourceMirror
+    from integrations.source_mirror_values import MirrorError
     from ontology.project import MirrorCaptures, capture_source
     from ontology.project_incremental import build_generation
     from ontology.schema import load_schema
@@ -2035,7 +2047,8 @@ def scope_target(path: Path) -> tuple[str, list[str], dict[str, int]]:
     ``max_content_bytes`` bound the SharePoint kind's reads. A scope the capture refuses,
     a site or discovery target, or more than one target is a ValueError, so the kind
     never reads a drive the scope does not name exactly."""
-    from integrations.capture_sharepoint import CaptureError, CaptureScope
+    from integrations.capture_sharepoint import CaptureError
+    from integrations.capture_sharepoint_scope import CaptureScope
 
     scope = CaptureScope.from_file(path)
     if len(scope.targets) != 1 or scope.discover is not None \

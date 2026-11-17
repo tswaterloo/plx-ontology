@@ -65,6 +65,8 @@ ACTION_WORDS = {
     "supplier", "invoice_send": "Draft the invoice email", "routine_update": "Draft the "
     "recurring update", "invoice_entry": "Prepare the invoice entry", "shipment_posting":
     "Prepare the shipment posting", "cash_application": "Prepare the cash application",
+    "collection_draft": "Draft the payment reminder to the customer",
+    "ap_invoice_entry": "Match the supplier invoice and prepare its coded entry",
     "supplier_eta": "Update the expected date", "desk": "Prepare an answer",
     "answer_request": "Draft the answer with documents", "delay_impact": "Show the delay's "
     "impact and draft the replies", "approval_recommendation": "Recommend approve or hold",

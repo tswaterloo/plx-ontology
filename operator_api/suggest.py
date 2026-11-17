@@ -12,6 +12,7 @@ import time
 from typing import Any, Callable, Iterable, Mapping, Optional, Sequence
 
 from . import models as m
+from .errors import RecordNotFound
 from .serving import (object_url, plain)
 from .answers import (normalize, words_of)
 
@@ -306,5 +307,5 @@ def resolve_object(view: Any, object_type: str, object_id: str) -> str:
              if isinstance((c.get("object") or {}).get("object_id"), str)
              and str(c["object"].get("object_type", "")).lower() == wanted]
     if len(found) != 1:
-        raise KeyError("object_not_found")   # never merged: two matches are no page
+        raise RecordNotFound()   # never merged: two matches are no page
     return found[0]

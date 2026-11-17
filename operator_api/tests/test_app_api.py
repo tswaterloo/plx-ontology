@@ -7,6 +7,7 @@ import contextlib
 import io
 import json
 from pathlib import Path
+import time
 import unittest
 from datetime import date
 
@@ -210,6 +211,43 @@ class AccessLink(unittest.TestCase):
         self.assertEqual((denied.status_code, denied.json()["error"]["code"]), (403, "no_workbench_access"))
 
 
+    def test_the_sign_in_kind_says_access_link_only_for_a_live_ticket(self):
+        """AUDIT4-03: the app says "Demo sign-in" only for mock/fixture or a configured test
+        identity; a console session ticket over live state is the access link."""
+        import dataclasses
+        from operating.session_identity import PROOF_TICKET
+        from operator_api.auth import sign_in_kind
+        from operator_api.server import mock_ticket
+        fixture = fixture_identity("plx", ["staff:demo"])
+        proxied = {"Host": "127.0.0.1:8796", "X-Forwarded-Host": "127.0.0.1:3097",
+                   "Origin": "http://127.0.0.1:3097"}
+        from operating.employee_permissions import EmployeePrincipal
+        person = EmployeePrincipal("00000000-0000-4000-8000-000000000001",
+                                   "00000000-0000-4000-8000-000000000002")
+        signed = lambda: dataclasses.replace(fixture(), proof=PROOF_TICKET, employee=person,
+                                             principals=frozenset({person.principal}),
+                                             expires_at=4102444800,
+                                             identities=frozenset({person.object_id}))
+        for mode, identity, kind in (("dev", mock_ticket("good-ticket-0123456789", signed), "access_link"),
+                                     ("mock", mock_ticket("good-ticket-0123456789", fixture), "demo")):
+            client = TestClient(create_app(MockBackend(), DevAuth(ticket_identity=identity, mode=mode),
+                                           secure_cookie=False), base_url="http://testserver")
+            self.assertEqual(client.get("/api/auth/config").json()["sign_in"],
+                             "access_link" if mode == "dev" else "demo")
+            ok = client.post("/api/auth/dev-login", json={"ticket": "good-ticket-0123456789"},
+                             headers=proxied)
+            self.assertEqual(ok.status_code, 200, ok.text)
+            self.assertEqual(client.get("/api/me").json()["sign_in"], kind, mode)
+        # a configured test identity (no ticket) stays demo; an unknown proof is never a sign-in
+        client = TestClient(create_app(MockBackend(), DevAuth(identity=fixture, mode="dev"),
+                                       secure_cookie=False), base_url="http://testserver")
+        self.assertEqual(client.get("/api/auth/config").json()["sign_in"], "demo")
+        self.assertEqual(sign_in_kind("dev", "fixture"), "demo")
+        self.assertEqual(sign_in_kind("mock", PROOF_TICKET), "demo")
+        self.assertEqual(sign_in_kind("entra", "something_new"), "demo")
+        self.assertEqual(sign_in_kind("entra", "entra_access_token"), "microsoft")
+
+
 class SessionLength(unittest.TestCase):
     """A demo session lasts a working day of use: 8 h idle, sliding, never past 24 h."""
 
@@ -332,6 +370,125 @@ class AskStream(unittest.TestCase):
             self.assertNotIn("Traceback", text)
             self.assertNotIn("RuntimeError", text)
         self.assertIn("incident", home.json()["error"]["message"])
+
+    def test_a_keyerror_in_a_record_read_is_an_incident_not_a_missing_record(self):
+        """serve-1115d V-19: every record route answers 404 only for ``RecordNotFound``; a
+        plain KeyError (a bug) out of the read is a 500 incident, nothing of it shown."""
+        from operator_api.errors import RecordNotFound
+
+        class Broken(MockBackend):
+            error: Exception = KeyError("secret_key_name")
+
+        for name in ("object_page", "explore", "record_history", "record_as_of",
+                     "object_section", "object_impact"):
+            setattr(Broken, name, lambda self, *a, **k: (_ for _ in ()).throw(self.error))
+        backend = Broken()
+        client = TestClient(create_app(backend, DevAuth(
+            fixture_identity("plx", ["staff:demo"]), mode="mock"), secure_cookie=False),
+            raise_server_exceptions=False)
+        client.post("/api/auth/dev-login", json={})
+        paths = ("/api/object/PurchaseOrder/90412", "/api/explore/PurchaseOrder/90412",
+                 "/api/history/PurchaseOrder/90412",
+                 "/api/as-of/PurchaseOrder/90412?at=2026-10-01",
+                 "/api/object-section/late/PurchaseOrder/90412",
+                 "/api/object-impact/why/PurchaseOrder/90412")
+        for error, status in ((KeyError("secret_key_name"), 500),
+                              (LookupError("secret_key_name"), 500),
+                              (RecordNotFound(), 404)):
+            backend.error = error
+            for path in paths:
+                with contextlib.redirect_stderr(io.StringIO()):
+                    got = client.get(path)
+                self.assertEqual(got.status_code, status, (path, error))
+                self.assertEqual(got.json()["error"]["code"],
+                                 "internal" if status == 500 else "not_found", path)
+                self.assertNotIn("secret_key_name", got.text)
+                self.assertNotIn("KeyError", got.text)
+
+    def test_source_and_feedback_routes_answer_404_only_for_a_not_found(self):
+        """followups-1115: /api/source, /api/source/records, /api/feedback and the feedback
+        status route caught any KeyError (or LookupError) as "not found", so a bug inside
+        the read was a missing source or answer. Only ``RecordNotFound`` (and, on the
+        source routes, a refusal that names no source: a malformed handle, a family no
+        host serves here) is a 404 now; anything else is a logged 500, nothing of it
+        shown."""
+        from unittest import mock
+
+        from operator_api.errors import RecordNotFound
+
+        class Store:
+            def set_status(self, fid, status, by):
+                raise Broken.error
+
+        class Broken(MockBackend):
+            error: Exception = KeyError("secret_key_name")
+            feedback_store = Store()
+
+        def fail(self, *args, **kwargs):
+            raise self.error
+
+        for name in ("source", "source_records", "answer_context"):
+            setattr(Broken, name, fail)
+        backend = Broken()
+        client = TestClient(create_app(backend, DevAuth(
+            fixture_identity("plx", ["staff:demo"]), mode="mock"), secure_cookie=False),
+            raise_server_exceptions=False)
+        client.post("/api/auth/dev-login", json={})
+        calls = (("GET", "/api/source", {"params": {"handle": "bc://demo/x/1"}}),
+                 ("GET", "/api/source/records", {"params": {"handle": "bc://demo/x/1"}}),
+                 ("POST", "/api/feedback", {"json": {"answer_id": "a1", "rating": 1}}),
+                 ("POST", "/api/feedback/f1/status", {"json": {"status": "fixed"}}))
+        sources = calls[:2]
+        cases = [(KeyError("secret_key_name"), 500, calls),
+                 (LookupError("secret_key_name"), 500, calls),
+                 (ValueError("secret_key_name"), 500, sources),
+                 (RuntimeError("secret_key_name"), 500, calls),
+                 (RecordNotFound("answer_not_found"), 404, calls),
+                 (ValueError("l1_citation_handle_required"), 404, sources),
+                 (ValueError("citation_scheme_not_granted: no host grant"), 404, sources),
+                 (LookupError("source_reader_not_configured"), 404, sources),
+                 # a plain KeyError named like a refusal is still a bug's
+                 (KeyError("citation_unresolvable_for_actor"), 500, sources)]
+        with mock.patch("operator_api.feedback.is_admin", return_value=True):
+            for error, status, which in cases:
+                Broken.error = error
+                for method, path, kw in which:
+                    with contextlib.redirect_stderr(io.StringIO()):
+                        got = client.request(method, path, **kw)
+                    self.assertEqual(got.status_code, status, (path, repr(error)))
+                    self.assertEqual(got.json()["error"]["code"],
+                                     "internal" if status == 500 else "not_found", path)
+                    self.assertNotIn("secret_key_name", got.text)
+                    self.assertNotIn("KeyError", got.text)
+
+    def test_a_malformed_record_id_is_not_found_and_a_cut_read_timed_out(self):
+        """harden-1114: a record id malformed for its type raised ValueError
+        ("object_id_invalid") out of the page read: a 500 incident in the 11-13 log. It
+        reads as not found (as an unseen record does); a store read stopped at its time
+        limit ("interrupted") as a timeout (504), not "the server failed"."""
+        import sqlite3
+
+        class Odd(MockBackend):
+            def object_page(self, reader, object_type, object_id, *, quick=False):
+                raise ValueError("object_id_invalid")
+
+            def home(self, reader):
+                raise sqlite3.OperationalError("interrupted")
+
+        client = TestClient(create_app(Odd(), DevAuth(
+            fixture_identity("plx", ["staff:demo"]), mode="mock"), secure_cookie=False),
+            raise_server_exceptions=False)
+        client.post("/api/auth/dev-login", json={})
+        page = client.get("/api/object/RelSageArStcuso/RelSageArStcuso:x%7CTAKE%20%20%20")
+        self.assertEqual((page.status_code, page.json()["error"]["code"]), (404, "not_found"))
+        home = client.get("/api/home")
+        self.assertEqual((home.status_code, home.json()["error"]["code"]), (504, "timeout"))
+        self.assertNotIn("incident", home.text)
+        # a read that waited past the API role's lock_timeout (behind a schema change)
+        Odd.home = lambda self, reader: (_ for _ in ()).throw(sqlite3.OperationalError(
+            "postgres: LockNotAvailable: canceling statement due to lock timeout"))
+        home = client.get("/api/home")
+        self.assertEqual((home.status_code, home.json()["error"]["code"]), (504, "timeout"))
 
 
 class AskBodySize(unittest.TestCase):
@@ -593,6 +750,88 @@ class CredentialsMasked(unittest.TestCase):
         self.assertIn("password: [secret]", sent[0]["body"])
         self.assertEqual(sent[0]["body"], preview["payload"]["body"])
 
+class CardNumbersNeverServed(unittest.TestCase):
+    """A payment card number in captured text (a filled authorisation form in a mail or its
+    OCR reading) is served as its last four digits, its CVV and expiry masked: in a page,
+    in an Ask answer (its four groups streamed as four words), in a drafted message (the
+    preview hash and the send carry the masked text) and in an exported CSV. A PO number
+    beside it is served as it is. (The networks' published test number, never a real one.)"""
+
+    CARD = "4111 1111 1111 1111"
+    FORM = f"Card Number: {CARD} Exp: 09/28 CVV: 737 for PO 4500123456"
+
+    def test_pages_answers_drafts_and_exports_never_carry_a_card(self):
+        from integrations.graph_send import ActionSender
+        from operating.session_identity import CHANNEL_CONSOLE, fixture_session
+        form, sent = self.FORM, []
+
+        class Leaky(MockBackend):
+            def home(self, reader):
+                return super().home(reader).model_copy(update={"greeting_name": form})
+
+            def ask(self, reader, request):
+                for event, payload in super().ask(reader, request):
+                    if event == "token":
+                        continue
+                    if event == "answer":
+                        payload = payload.model_copy(update={"direct_answer": form})
+                        for word in form.split(" "):
+                            yield "token", m.TokenEvent(text=word + " ")
+                    yield event, payload
+
+            def suggestions(self, reader):
+                found = super().suggestions(reader)
+                for card in found.items:
+                    if card.kind == "vendor_chase" and card.draft and card.draft.to:
+                        card.draft.body = f"{card.draft.body}\n{form}"
+                return found
+
+            def my_work_order_import(self, reader, item_id):
+                return "order.csv", f"line,note\n1,{form}\n".encode("utf-8")
+
+        class Recording(ActionSender):
+            def dispatch(self, kind, sender, payload):
+                sent.append(dict(payload))
+                return super().dispatch(kind, sender, payload)
+
+        backend = Leaky()
+        backend.actions_environ = {"PLX_EXCLUDED_PEOPLE_OIDS":
+                                   "22222222-2222-4222-8222-222222222222"}
+        backend.action_sender = Recording(backend.actions_environ)
+        session = fixture_session("plx", ["staff:demo"], channel=CHANNEL_CONSOLE,
+                                  subject_email="vince@plx.example",
+                                  subject_oid="11111111-1111-4111-8111-111111111111")
+        client = TestClient(create_app(backend, DevAuth(lambda: session, mode="mock"),
+                                       secure_cookie=False), base_url="http://testserver")
+        self.assertEqual(client.post("/api/auth/dev-login", json={}).status_code, 200)
+        home = client.get("/api/home")
+        streamed = client.post("/api/ask", json={"question": "is PO 90412 late"}).text
+        card = next(c for c in client.get("/api/suggestions").json()["items"]
+                    if c["kind"] == "vendor_chase" and c["draft"]["to"]["address"])
+        ask = {"card_id": card["id"], "kind": "send_email"}
+        preview = client.post("/api/actions/preview", json=ask).json()
+        result = client.post("/api/actions/confirm", json={
+            **ask, "confirm": True, "idempotency_key": "dialog-card-0123456789",
+            "payload_hash": preview["payload_hash"]})
+        self.assertEqual(result.json()["status"], "dry_run", result.text)
+        exported = client.get("/api/my-work/x/order-import")
+        self.assertEqual(exported.status_code, 200, exported.text)
+        shown = "\u2022\u2022\u2022\u2022 " * 3 + "1111"
+        for text in (home.text, streamed, json.dumps(card), json.dumps(preview), result.text,
+                     json.dumps(sent), exported.text):
+            self.assertNotIn(self.CARD, text)
+            self.assertNotIn(self.CARD.replace(" ", ""), text)
+        answer = events(streamed)
+        tokens = "".join(data["text"] for name, data in answer if name == "token")
+        self.assertEqual(len(sent), 1)
+        masked = f"Card Number: {shown} Exp: \u2022\u2022/\u2022\u2022 CVV: \u2022\u2022\u2022 " \
+                 "for PO 4500123456"
+        for text in (home.json()["greeting_name"], tokens, sent[0]["body"], exported.text):
+            self.assertIn(masked, text)
+        self.assertIn(shown, sent[0]["body"])
+        self.assertEqual(sent[0]["body"], preview["payload"]["body"])
+
+
 if __name__ == "__main__":
     unittest.main()
 
@@ -775,8 +1014,28 @@ class HealthShowsThePolicyInForce(unittest.TestCase):
             # the last good policy stays in force; health says so and why
             self.assertEqual((shown["state"], shown["digest"], shown["alarm_error"]),
                              ("kept_last_good", digest, None))
-            self.assertTrue(shown["reload_error"])
+            # public health names the refusal by a code, never the parser's text
+            # (AUDIT4-13): the file's own words stay off the unauthenticated route
+            self.assertEqual(shown["reload_error"], "employee_policy_unreadable")
             self.assertTrue(shown["refused_since"])
+            self.assertEqual(set(shown), {"digest", "reload_error", "reloads", "state",
+                                          "refused_since", "alarm_error"})
+            self.assertTrue(resolver.policy_status()["reload_error"])
+            self.assertNotEqual(resolver.policy_status()["reload_error"],
+                                "employee_policy_unreadable")
+            path.unlink()                     # a missing file: its own code stays shown
+            with self.assertLogs("operating.employee_permissions.policy", "ERROR"):
+                shown = client.get("/api/health").json()["employee_policy"]
+            self.assertEqual(shown["reload_error"], "employee_policy_missing")
+        from operator_api.app import public_policy_status
+        for bad in ({"reload_error": "sam@x.com in line 3", "alarm_error": "a b",
+                     "state": "weird", "extra": "x"}, {"reload_error": 7}):
+            with self.subTest(bad=bad):
+                got = public_policy_status(bad)
+                self.assertEqual(got["reload_error"], "employee_policy_unreadable")
+                self.assertNotIn("extra", got)
+                self.assertNotIn("sam@", json.dumps(got))
+        self.assertIsNone(public_policy_status("x"))
 
         def broken(self):
             raise RuntimeError("x")
@@ -784,3 +1043,69 @@ class HealthShowsThePolicyInForce(unittest.TestCase):
         got = TestClient(create_app(MockBackend(), auth, secure_cookie=False)).get(
             "/api/health").json()
         self.assertEqual((got["status"], got["employee_policy"]), ("ok", None))
+
+
+class StreamKeepAlive(unittest.TestCase):
+    """harden-1114: an Ask whose server froze or restarted mid-answer left the app
+    waiting for ever (no byte ever came). While nothing new is ready the stream says it is
+    alive every KEEP_ALIVE_SECONDS (an SSE comment), so the app can tell a long answer from
+    a dead server; closing the stream closes its source, and a failure still surfaces."""
+
+    def test_silence_is_filled_with_keep_alives_and_events_pass_through(self):
+        from operator_api import app as app_module
+
+        def slow():
+            yield "event: status\ndata: {}\n\n"
+            time.sleep(0.35)
+            yield "event: answer\ndata: {}\n\n"
+
+        got = list(app_module.kept_alive(slow(), every=0.1))
+        self.assertEqual(got[0], "event: status\ndata: {}\n\n")
+        self.assertEqual(got[-1], "event: answer\ndata: {}\n\n")
+        self.assertGreaterEqual(got.count(app_module.KEEP_ALIVE), 2)
+        self.assertTrue(app_module.KEEP_ALIVE.startswith(":"))   # a comment parsers skip
+
+    def test_an_early_close_closes_the_source_and_a_failure_surfaces(self):
+        from operator_api import app as app_module
+        closed = []
+
+        def source():
+            try:
+                for i in range(1000):
+                    yield f"event: token\ndata: {i}\n\n"
+                    time.sleep(0.01)
+            finally:
+                closed.append(True)
+
+        stream = app_module.kept_alive(source(), every=0.1)
+        next(stream)
+        stream.close()
+        deadline = time.time() + 5
+        while not closed and time.time() < deadline:
+            time.sleep(0.02)
+        self.assertEqual(closed, [True])
+
+        def broken():
+            yield "event: status\ndata: {}\n\n"
+            raise RuntimeError("boom")
+
+        with self.assertRaises(RuntimeError):
+            list(app_module.kept_alive(broken(), every=0.1))
+
+
+
+class MockWorkload(unittest.TestCase):
+    """The fixture backend answers Team's workload reads (the app walk read 500 there)."""
+
+    def test_workload_counts_teams_and_the_readers_own_row(self):
+        body = signed_in().get("/api/workload").json()
+        self.assertTrue(body["teams"])
+        self.assertIn("PUR", body["granted_teams"])
+        self.assertEqual([p["person"] for p in body["people"] if p["self"]], ["demo-0"])
+        # a team of fewer than three gives no reply count (it would name one person)
+        small = [t for t in body["teams"] if t["team"] in ("QA", "FIN")]
+        self.assertTrue(small and all(t["awaiting_reply"] is None for t in small))
+
+    def test_grant_sheet_is_the_owners_only(self):
+        response = signed_in().get("/api/workload/grants")
+        self.assertEqual(response.status_code, 403, response.text)

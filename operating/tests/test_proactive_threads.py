@@ -165,16 +165,17 @@ class GatewayNotices(unittest.TestCase):
 
     def test_notice_above_the_greeting_is_not_the_senders_text(self) -> None:
         from operating import autopilot as ap
+        from operating import autopilot_events
         from operating import inbox_triage as it
         mine, recipients = {"owner@plx.example"}, ["sam@plx.example", "owner@plx.example"]
         tip = ("You don\u2019t often get email from clerk@agency.example. Learn why this is "
                "important\r\nHi Sam\r\n\r\nPlease submit the yearly report.")
-        self.assertTrue(ap.addressed_other(pt._own(tip), mine, recipients))
+        self.assertTrue(autopilot_events.addressed_other(pt._own(tip), mine, recipients))
         invoice = ("This email seems to contain an invoice or purchase order. Verify it is "
                    "authentic directly with the vendor using your organization's trusted "
                    "contact list before paying or taking further action.\r\n\r\n"
                    "Dear Sam,\r\n\r\nThe goods ship Friday.")
-        self.assertTrue(ap.addressed_other(pt._own(invoice), mine, recipients))
+        self.assertTrue(autopilot_events.addressed_other(pt._own(invoice), mine, recipients))
         self.assertTrue(pt._own(invoice).lstrip().startswith("Dear Sam"))
         for banner in ("CAUTION: This email originated from outside the organization. "
                        "Do not click links.\nHi Sam", "[EXTERNAL] Hi Sam"):

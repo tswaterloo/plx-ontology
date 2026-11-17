@@ -136,6 +136,10 @@ def catalog(conn) -> dict:
     }
 
 
+# Migrations after the inline scripts (each adds to what live databases hold).
+LATER_MIGRATIONS = ["0003_declared", "0004_workspace"]
+
+
 @unittest.skipIf(_DSN is None, "no scratch Postgres")
 class JobqMigrations(unittest.TestCase):
     def setUp(self) -> None:
@@ -146,6 +150,8 @@ class JobqMigrations(unittest.TestCase):
     def inline_catalog(self) -> dict:
         self.q.conn.execute(INLINE_QUEUE)
         self.q.conn.execute(INLINE_EVENTS)
+        for later in LATER_MIGRATIONS:   # what came after the inline scripts
+            self.q.conn.execute((schema.MIGRATIONS_DIR / f"{later}.sql").read_text())
         self.q.conn.execute("CREATE TABLE IF NOT EXISTS jobq.migrations (k int)")
         made = catalog(self.q.conn)
         self.q.conn.execute("DROP SCHEMA jobq CASCADE")
@@ -155,7 +161,7 @@ class JobqMigrations(unittest.TestCase):
         expected = self.inline_catalog()
         self.q.init()
         self.assertEqual(catalog(self.q.conn), expected)
-        self.assertEqual(schema.status(self.q.conn)["applied"], ["0001_jobq", "0002_events"])
+        self.assertEqual(schema.status(self.q.conn)["applied"], ["0001_jobq", "0002_events", *LATER_MIGRATIONS])
         self.assertEqual(schema.apply(self.q.conn), [])
         events = ev.EventQueue(_DSN, topic="t")
         self.addCleanup(events.close)
@@ -171,7 +177,7 @@ class JobqMigrations(unittest.TestCase):
             "max_attempts) VALUES ('c', 'unit', 'k', 1, 0, 0, 'queued', 1)")
         self.q.conn.execute(
             "INSERT INTO jobq.event_handled (topic, handler, event_id) VALUES ('t', 'h', 'e')")
-        self.assertEqual(schema.apply(self.q.conn), ["0001_jobq", "0002_events"])
+        self.assertEqual(schema.apply(self.q.conn), ["0001_jobq", "0002_events", *LATER_MIGRATIONS])
         self.assertEqual(catalog(self.q.conn), expected)
         self.assertEqual(self.q.conn.execute("SELECT idem_key FROM jobq.jobs").fetchone(),
                          {"idem_key": "k"})
@@ -190,7 +196,7 @@ class JobqMigrations(unittest.TestCase):
             shutil.copy(path, tmp / path.name)
         run = lambda: migrate.migrate(self.q.conn, values={}, directory=tmp,
                                       ledger=schema.LEDGER, lock_key=schema.LOCK_KEY)
-        self.assertEqual(run(), ["0001_jobq", "0002_events"])
+        self.assertEqual(run(), ["0001_jobq", "0002_events", *LATER_MIGRATIONS])
         edited = tmp / "0002_events.sql"
         edited.write_text(edited.read_text() + "\n-- edited\n")
         with self.assertRaisesRegex(migrate.MigrationError, "migration_drift:0002_events"):

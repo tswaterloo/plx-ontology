@@ -19,6 +19,16 @@ from integrations.tests.test_partial_and_legacy_extraction import XLSX, doc, row
 QUALITY, OUTSIDER = tsp.QUALITY, tsp.OUTSIDER
 
 
+def blank_png() -> bytes:
+    """A valid 64x64 white PNG: tesseract reads it (no text), where a stub of the PNG
+    signature alone exits ``recognize_exit``, which the re-read now offers again."""
+    import io
+    from PIL import Image
+    out = io.BytesIO()
+    Image.new("L", (64, 64), 255).save(out, "PNG")
+    return out.getvalue()
+
+
 class ReaderRereadTests(tsp.CaptureCase):
     def seed(self, n: int) -> list[str]:
         ids = []
@@ -27,8 +37,7 @@ class ReaderRereadTests(tsp.CaptureCase):
                             workbook([("Ledger", rows(3_000, label=f"L{i}"))]), mime=XLSX)
             ids.append(f"01W{i:03d}")
         self.drive.file("01DOC", "po.doc", "01AOS", doc(), mime="application/msword")
-        self.drive.file("01PNG", "logo.png", "01AOS", b"\x89PNG\r\n\x1a\n" + bytes(40),
-                        mime="image/png")
+        self.drive.file("01PNG", "logo.png", "01AOS", blank_png(), mime="image/png")
         return ids + ["01DOC"]
 
     def old_reader_capture(self) -> None:
@@ -72,17 +81,16 @@ class ReaderRereadTests(tsp.CaptureCase):
                 for i in ids:
                     current = self.store.current(tsp.DRIVE, i)
                     self.assertEqual(current["text_status"], ct.TEXT_EXTRACTED, i)
-                # An image is now OCR-read locally (tesseract): the fixture's PNG is no
-                # real image, so its re-read ends in a typed OCR failure (no engine: a
-                # typed ocr_unavailable), never extracted text and never re-offered below.
+                # An image is OCR-read locally (tesseract): a blank one reads no text, and
+                # with no engine its OCR waits (``ocr_unavailable``); never offered below.
                 from integrations.document_understanding import local_image_ocr_available
                 self.assertEqual(self.store.current(tsp.DRIVE, "01PNG")["text_status"],
-                                 f"{ct.OCR_FAILED}:recognize_exit"
-                                 if local_image_ocr_available() else ct.OCR_UNAVAILABLE)
+                                 ct.OCR_NO_TEXT if local_image_ocr_available()
+                                 else ct.OCR_UNAVAILABLE)
                 with fresh_memos():
                     row = self.store.resolve(self.handle(ids[0]), QUALITY,
                                              tsp.reader_audience())
-                    self.assertIn(f"A1=L0-1 |", row["row"]["content_text"])
+                    self.assertIn("A1=L0-1 |", row["row"]["content_text"])
                     self.assertIsNone(self.store.resolve(self.handle(ids[0]), OUTSIDER,
                                                          tsp.reader_audience()))
                 # Offered once per generation: the next walk reads nothing again.

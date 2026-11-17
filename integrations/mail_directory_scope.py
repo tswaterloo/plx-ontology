@@ -154,7 +154,7 @@ class DirectoryScope:
 
     def __init__(self, *, folders: Iterable[str], window_days: int, deny: DenyList,
                  internal_domains: Iterable[str] | None = None) -> None:
-        from .capture_mail import CaptureScope
+        from .capture_mail_scope import CaptureScope
 
         if not isinstance(deny, DenyList):
             raise DirectoryScopeError("deny_list_required")
@@ -282,7 +282,7 @@ class RequestLog:
 def _people_part(people: PeopleExclusion, exc: ExclusionUnavailable) -> dict[str, Any]:
     """The guard's refusal: a refused listing (401/403) is the source's, else the
     guard's own code (``excluded_people_oids_absent`` ...)."""
-    from .capture_mail import graph_block
+    from .capture_mail_standing import graph_block
 
     cause = exc.__cause__
     if isinstance(cause, SourceUnavailable):
@@ -428,6 +428,7 @@ def run_cli(args: argparse.Namespace, *, environ: Mapping[str, str] | None = Non
     """Enumerate once, capture ``--runs`` times, read the store back as the capture
     actor, a withheld actor and one mailbox's owner. Counts, booleans and enums only."""
     from . import capture_mail as cm
+    from . import capture_mail_standing
     from .graph_read import GraphMailReader, build_graph
     from .live_source_guard import BoundedBackoff
     from .people_exclusion import from_api
@@ -475,7 +476,7 @@ def run_cli(args: argparse.Namespace, *, environ: Mapping[str, str] | None = Non
         except ExclusionUnavailable as exc:
             blocked = [_people_part(people, exc)]
         except SourceUnavailable as exc:
-            part = cm.graph_block(LISTING_PART, "graph.users", LISTING_PERMISSION,
+            part = capture_mail_standing.graph_block(LISTING_PART, "graph.users", LISTING_PERMISSION,
                                   getattr(exc, "http_status", None))
             if part is None:
                 raise

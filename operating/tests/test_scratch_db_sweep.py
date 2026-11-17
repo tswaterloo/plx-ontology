@@ -82,3 +82,26 @@ class TestCluster(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ByteOrder(unittest.TestCase):
+    def test_only_c_posix_or_builtin_databases_order_by_bytes(self):
+        for provider, collate, want in (("c", "C", True), ("c", "C.UTF-8", True),
+                                        ("c", "POSIX", True), ("b", "en_US.utf8", True),
+                                        ("c", "en_US.utf8", False), ("i", "C", False),
+                                        ("c", None, False)):
+            self.assertEqual(scratch_db._byte_order(provider, collate), want,
+                             (provider, collate))
+
+    def test_a_scratch_database_orders_key_ranges_by_bytes_on_any_cluster(self):
+        # sb4ec's test cluster is en_US.utf8: there 'probe:zz-new' sorted past 'probe;'
+        # and '...@x#page=2' past '...@x' + U+10FFFF (11-15).
+        from operating.tests import pg_testdb
+        import psycopg
+        name, dsn = pg_testdb.create_db()
+        self.addCleanup(pg_testdb.drop_db, name)
+        with psycopg.connect(dsn, autocommit=True) as conn:
+            got = conn.execute("SELECT 'probe:zz-new' < 'probe;', "
+                               "'graph-mail://box/1@x#page=2' < %s",
+                               ("graph-mail://box/1@x" + chr(0x10FFFF),)).fetchone()
+        self.assertEqual(tuple(got), (True, True))

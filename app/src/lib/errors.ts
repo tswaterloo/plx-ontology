@@ -23,7 +23,7 @@ const BY_CODE: Record<string, string> = {
   unauthenticated: "Your session has ended. Sign in again to continue.",
   no_workbench_access: "You're signed in, but your account doesn't have Workbench access yet. Ask your manager or IT to grant it.",
   insufficient_scope: "Your sign-in doesn't include Workbench access. Sign out and sign in again.",
-  dev_ticket_required: "This demo sign-in needs the access link you were given.",
+  dev_ticket_required: "Signing in here needs the access link you were given.",
   dev_ticket_not_accepted: "This demo sign-in doesn't take an access link. Leave it empty.",
   access_link_refused: "This access link has expired or isn't valid. Ask for a new one.",
   dev_login_not_served: "Demo sign-in is off here. Sign in with Microsoft.",
@@ -39,6 +39,7 @@ const BY_CODE: Record<string, string> = {
   forbidden: "You don't have access to this. Ask the owner or your team lead if you need it.",
   rate_limited: "Too many questions at once. Try again in a few seconds.",
   timeout: "Timed out. Try a narrower question, or try again in a moment.",
+  read_timeout: "The Workbench took too long to answer. Try again in a moment.",
   upstream_unavailable: "One of the business systems isn't answering right now. Try again in a few minutes.",
   stream_interrupted: "The answer was cut off. Ask again to get the full answer.",
   network: "Can't reach the Workbench. Check your connection and try again.",
@@ -47,7 +48,9 @@ const BY_CODE: Record<string, string> = {
 };
 
 /** Errors a second try cannot change (the record is missing, or the reader may not see it). */
-export const FINAL_ERRORS: ReadonlySet<string> = new Set([BY_CODE.not_found, BY_CODE.forbidden, BY_CODE.alerts_not_read]);
+export const FINAL_ERRORS: ReadonlySet<string> = new Set([BY_CODE.not_found, BY_CODE.forbidden, BY_CODE.alerts_not_read, BY_CODE.view_as_refused]);
+/** Not a failure: a note on what this view covers (viewing as someone), said calmly, never in red. */
+export const ACCESS_NOTES: ReadonlySet<string> = new Set([BY_CODE.view_as_refused]);
 
 const BY_STATUS: Record<number, string> = {
   401: BY_CODE.sign_in_required,

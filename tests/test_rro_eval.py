@@ -483,13 +483,14 @@ class AmbiguousPageFigureTests(unittest.TestCase):
 
     def test_a_figure_printed_with_two_meanings_on_two_lines_is_refused_not_guessed(self):
         from operating import claim_checks
+        from operating import claim_checks_parse
         page = "original://doc#page=1"
         text = "Ordered 5,984 units\nSTAND 5,984 kits on hand\n"
 
         def checked(quote=None):
             claim = {"value": "5984", "citation": page, "field": "text",
                      **({"quote": quote} if quote else {})}
-            parsed = claim_checks.parse_value_claims([claim], [page], [])
+            parsed = claim_checks_parse.parse_value_claims([claim], [page], [])
             return claim_checks.check_items(
                 [{"id": "F1", "texts": [], "value_claims": parsed,
                   "citations": [{"handle": page, "status": "resolved"}]}],

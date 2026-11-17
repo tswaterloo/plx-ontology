@@ -8,6 +8,8 @@ import { WeeklyReview } from "@/components/meetings/weekly";
 import { MyActionItemsPanel } from "@/components/meetings/follow-up";
 import { Toolbar } from "@/components/ui/toolbar";
 import { cn } from "@/lib/cn";
+import { useAuth } from "@/components/auth";
+import { seesQuality } from "@/components/shell";
 
 const VIEWS = [
   { view: "upcoming", label: "Upcoming" },
@@ -25,6 +27,8 @@ function FollowUps({ person }: { person: string | null }) {
 function Meetings() {
   const params = useSearchParams();
   const view = VIEWS.find((v) => v.view === params.get("view"))?.view ?? "upcoming";
+  const { state } = useAuth();
+  const qc = seesQuality(state.status === "signed-in" ? state.me : null);
   return (
     <div className="flex min-h-0 flex-1 flex-col">
       <Toolbar heading title="Meetings" />
@@ -43,6 +47,10 @@ function Meetings() {
             {v.label}
           </Link>
         ))}
+        {/* the QC packs read like a meeting pack, for the morning quality meeting */}
+        {qc && <Link href="/qc" className="ml-auto flex items-center text-[13px] text-muted hover:text-fg" data-testid="meetings-qc">
+          QC packs
+        </Link>}
       </nav>
       <div className="p-5" data-testid={`meetings-${view}`}>
         {view === "weekly" ? <WeeklyReview /> : view === "follow-ups" ? <FollowUps person={params.get("person")} /> : <Upcoming />}

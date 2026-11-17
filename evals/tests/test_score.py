@@ -2515,6 +2515,7 @@ class ComputedClaimAgreementTests(unittest.TestCase):
         """One shared example: the claim gate (``claim_checks``) and the scorer's recompute
         over the same three cells (100.50, 200.25, 0) pass and refuse the same values."""
         from operating import claim_checks
+        from operating import claim_checks_parse
         handles = [fx.handle("public.app_receipt", {"id": f"r-{n}"}, n + 1) for n in range(3)]
         rows = {h: {"relation": "public.app_receipt", "key": {"id": f"r-{n}"},
                     "row": {"id": f"r-{n}", "amount": amount}}
@@ -2538,7 +2539,7 @@ class ComputedClaimAgreementTests(unittest.TestCase):
                 gated = claim_checks.check_items(
                     [{"id": "F1", "texts": [], "citations": [
                         {"handle": h, "status": "resolved"} for h in cited],
-                      "value_claims": claim_checks.parse_value_claims([claim], cited, [])}],
+                      "value_claims": claim_checks_parse.parse_value_claims([claim], cited, [])}],
                     rows=rows.get)
                 stated = {"name": "v", "value": value, **({"unit": unit} if unit else {}),
                           "calculation": {"op": op, "inputs": [
@@ -2559,6 +2560,7 @@ class ComputedClaimAgreementTests(unittest.TestCase):
         """``days``: x0 - x1 in whole calendar days over two cited date cells, the same
         verdict in the gate and the scorer; a non-date cell recomputes nothing."""
         from operating import claim_checks
+        from operating import claim_checks_parse
         receipt = fx.handle("public.app_receipt", {"id": "r-1"}, 1)
         order = fx.handle("public.app_purchase_order", {"id": "po-1"}, 1)
         rows = {receipt: {"relation": "public.app_receipt", "key": {"id": "r-1"},
@@ -2578,7 +2580,7 @@ class ComputedClaimAgreementTests(unittest.TestCase):
                 gated = claim_checks.check_items(
                     [{"id": "F1", "texts": [], "citations": [
                         {"handle": h, "status": "resolved"} for h in handles],
-                      "value_claims": claim_checks.parse_value_claims([claim], handles, [])}],
+                      "value_claims": claim_checks_parse.parse_value_claims([claim], handles, [])}],
                     rows=rows.get)
                 calc = {"op": "days", "inputs": [{"l1_handle": h, "field_path": f}
                                                  for h, f in cited]}
@@ -2603,6 +2605,7 @@ class ComputedClaimAgreementTests(unittest.TestCase):
         reach one verdict; a day the question does not write recomputes nothing; the
         contract takes ``day`` only with one input; the session round trip keeps it."""
         from operating import claim_checks, agent_session
+        from operating import claim_checks_parse
         from datetime import datetime, timezone
         from operating.time_window import reference_days
         lot = fx.handle("public.app_lot", {"id": "l-1"}, 1)
@@ -2620,7 +2623,7 @@ class ComputedClaimAgreementTests(unittest.TestCase):
                 gated = claim_checks.check_items(
                     [{"id": "F1", "texts": [], "citations": [
                         {"handle": lot, "status": "resolved"}],
-                      "value_claims": claim_checks.parse_value_claims([claim], [lot], [])}],
+                      "value_claims": claim_checks_parse.parse_value_claims([claim], [lot], [])}],
                     rows=rows.get, returned={"reference_days": reference_days(
                         question, datetime(2026, 11, 11, 15, tzinfo=timezone.utc))})
                 calc = {"op": "days", "inputs": cite, "day": day}

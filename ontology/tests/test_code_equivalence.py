@@ -1,252 +1,477 @@
-"""Code proven equivalent to the commit that built generation 8 (``ontology/code_equivalence.py``).
+"""The code-equivalence tables (``ontology/code_equivalence.py``): the zstd held forms keep
+train 3's derivation, readings and document codes.
 
-What must hold, recomputed from that commit's own tree (``git archive``): the derivation
-code's value is that commit's while the files it covers differ from that commit's only
-as listed, each listed file only in the definitions this test names (none of which
-derives a record); the mail and SharePoint readers differ only in the listed definitions;
-any other difference gives the plain digest and no reader equivalence.
-"""
+What must hold, recomputed from the commits' own trees (``git archive``): the tree that
+made the change (e6640ecb53) digests as BASE_COMMIT's tree for the derivation code and the
+readings code, and any other difference gives the plain digest."""
 
 from __future__ import annotations
 
 import ast
-import os
+from collections import deque
+from functools import lru_cache
 from pathlib import Path
-import shutil
 import subprocess
-import sys
+import tarfile
 import tempfile
 import unittest
-from unittest import mock
 
-from ontology import build_adopt, build_keys, code_equivalence as ce, project
+from integrations import captured_text
+from ontology import code_equivalence as ce, project
 
-ROOT = build_keys._ROOT
-
-# path -> the top-level definitions that differ from BASE_COMMIT's, and why none of them
-# decides a documentFields or containerMembers record.
-DERIVATION_DEFINITIONS = {
-    # the digest itself (narrowed, build-speed5; this table), the generation's finish;
-    # the projector's object-by-object writes and object report parts:
-    # rows of records, no derived record
-    "ontology/project.py": {"_DERIVATION_DATA", "_IMPORT", "_NOT_DERIVATION", "__all__",
-                            "_derivation_digest", "derivation_code", "derivation_files",
-                            "document_code",
-                            "derivation_modules", "environment_digest",
-                            "finish_generation", "projected_counts",
-                            "Projector", "_Report", "object_unit",
-                            # the meetings capture source (another source's reader)
-                            "CAPTURE_SOURCES", "_meetings_captures",
-                            # the mail attachments read by mailbox ranges side by side:
-                            # the same rows in the same order (test_build_prints)
-                            "MailCaptures"},
-    # the mention step's per-document failures (a step, not a derivation)
-    "ontology/mentions.py": {"_memo_code", "_store_links", "read_ahead",
-                             "DOCUMENT_KINDS"},   # the meetings document kinds
-    # the capture-kind registry names the meetings kinds
-    "integrations/capture_store.py": {"ADAPTER_MODULES", "_load_adapters"},
-    # the meetings types' mention link rules
-    "ontology/schema.py": {"MEETINGS_MENTION_LINK_RULES", "MENTION_LINK_RULES"},
-    "ontology/document_failures.py": None,   # new: imported by the mention step only
-    # scheduling, spills, merge (an incremental build's into its seed, with its object
-    # parts), kept member views; _derive and _parse as they were
-    "ontology/project_parallel.py": {"DERIVED", "Result", "SPILL_BATCH", "_KEPT", "_Spill",
-                                     "_Spilled", "_hand_object_parts", "_kept_views",
-                                     "_merge_rows", "_run", "_spilled", "_with_spills",
-                                     "merge_part", "pieces", "project", "tasks"},
-    # the builder's resume checkpoint
-    "ontology/store.py": {"CHECKPOINT_META", "StoreBuilder", "VOLATILE_META"},
-    # out of memory re-raised (READER_CHANGES)
-    "operating/use_case_parts.py": {"_RESOURCE_WORDS", "_carried", "_is_package", "_mail",
-                                    "_member", "_mime_node", "_parser_failure", "_resource",
-                                    "_subject_name", "_zip"},
-}
+ROOT = Path(project.__file__).resolve().parents[1]
+CHANGED = "e6640ecb53"   # blob-zstd onto c387ba7453, with these tables
 
 
-def _base_tree(test: unittest.TestCase) -> Path:
-    scratch = Path(tempfile.mkdtemp())
-    test.addCleanup(shutil.rmtree, scratch, True)
+def _tree(test: unittest.TestCase, ref: str, into: Path) -> Path:
+    into.mkdir()
     try:
-        return build_adopt.materialize(ce.BASE_COMMIT, scratch / "tree")
-    except build_adopt.NotAdopted as why:   # a clone without that commit
-        test.skipTest(f"{ce.BASE_COMMIT} not readable: {why}")
+        data = subprocess.run(["git", "-C", str(ROOT), "archive", ref], check=True,
+                              capture_output=True, timeout=300).stdout
+    except (OSError, subprocess.SubprocessError) as why:
+        test.skipTest(f"{ref} not readable: {why}")
+    import io
+    with tarfile.open(fileobj=io.BytesIO(data)) as tar:
+        try:
+            tar.extractall(into, filter="data")
+        except TypeError:   # a Python without extraction filters (our own commit's tree)
+            tar.extractall(into)
+    return into
 
 
-def _definitions(path: Path) -> dict[str, str]:
-    tree = ast.parse(path.read_text(encoding="utf-8"))
-    build_keys._strip_docstrings(tree)
-    module = build_keys._Module.__new__(build_keys._Module)
-    module.defs, module.imports, module.root, module.name = {}, {}, ROOT, ""
-    module.package = ""
-    module._top(tree.body)
-    return {name: "\n".join(build_keys._dump(n) for n in nodes)
-            for name, nodes in module.defs.items()}
+class TreesTest(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls._dir = tempfile.TemporaryDirectory()
+        cls.scratch = Path(cls._dir.name)
+
+    @classmethod
+    def tearDownClass(cls) -> None:
+        cls._dir.cleanup()
+
+    def trees(self) -> tuple[Path, Path]:
+        base, now = self.scratch / "base", self.scratch / "now"
+        if not base.exists():
+            _tree(self, ce.BASE_COMMIT, base)
+        if not now.exists():
+            _tree(self, CHANGED, now)
+        return base, now
+
+    def test_the_derivation_code_is_the_base_commits_with_the_listed_changes(self):
+        base, now = self.trees()
+        files, then = project.derivation_files(now), project.derivation_files(base)
+        self.assertNotEqual(files, then)
+        diff = {p: (dict(then).get(p), s) for p, s in files if dict(then).get(p) != s}
+        self.assertEqual({p for p in diff if p != "ontology/code_equivalence.py"},
+                         set(ce._ZSTD))
+        for path, pair in ce._ZSTD.items():
+            self.assertEqual(diff[path], pair)
+        self.assertEqual(ce.earlier_files("derivation", files), then)
+        self.assertEqual(project._derivation_digest(now), project.environment_digest(then))
+        self.assertEqual(project._derivation_digest(now), project._derivation_digest(base))
+
+    def test_the_readings_code_is_the_base_commits(self):
+        base, now = self.trees()
+        self.assertEqual(captured_text.readings_code(root=now),
+                         captured_text.readings_code(root=base))
+        # only captured_text of the reading modules moved
+        moved = [m for m in captured_text.READING_MODULES if
+                 (now.joinpath(*m.split(".")).with_suffix(".py")).read_bytes() !=
+                 (base.joinpath(*m.split(".")).with_suffix(".py")).read_bytes()]
+        self.assertEqual(moved, ["integrations.captured_text"])
+
+    def test_document_codes_other_files_are_the_base_commits(self):
+        # document_code digests derivation_code, readings_code and these six whole files
+        base, now = self.trees()
+        for module in ("ontology/project.py", "ontology/mentions.py", "ontology/identifiers.py",
+                       "ontology/project_graph.py", "operating/doc_metadata_taxonomy.py",
+                       "integrations/captured_pages.py"):
+            self.assertEqual((now / module).read_bytes(), (base / module).read_bytes(), module)
 
 
-class DerivationEquivalenceTests(unittest.TestCase):
-    def test_the_derivation_code_is_the_base_commits_while_only_listed_files_differ(self):
-        tree = _base_tree(self)
-        files = project.derivation_files(ROOT)
-        diff = ce.derivation_differences(files)
-        active = all(ce.DERIVATION_CHANGES.get(p) == pair for p, pair in diff.items())
-        if not active:   # a listed file moved on: the plain digest, no equivalence
-            self.assertEqual(project.derivation_code(), project.environment_digest(files))
-            self.skipTest("a derivation file differs from the listed versions")
-        # That commit's own derivation_code, run from its tree with this Python.
-        env = {k: v for k, v in os.environ.items()
-               if not any(w in k.upper() for w in ("KEY", "TOKEN", "SECRET", "PASSWORD"))}
-        env["PYTHONDONTWRITEBYTECODE"] = "1"
-        done = subprocess.run(
-            [sys.executable, "-I", "-c", "import sys; sys.path.insert(0, sys.argv[1]); "
-             "from ontology.project import derivation_code; print(derivation_code())",
-             str(tree)], cwd=str(tree), capture_output=True, text=True, timeout=300,
-            env=env, check=False)
-        self.assertEqual(done.returncode, 0, done.stderr[-2000:])
-        self.assertEqual(project.derivation_code(), done.stdout.strip())
-        self.assertNotEqual(project.derivation_code(), project.environment_digest(files))
-        # Each differing file differs in the named definitions only.
-        self.assertEqual(sorted(diff), sorted(DERIVATION_DEFINITIONS))
-        for path, names in DERIVATION_DEFINITIONS.items():
-            then, now = tree / path, ROOT / path
-            if names is None:
-                self.assertFalse(then.exists(), path)
-                continue
-            old, new = _definitions(then), _definitions(now)
-            differing = {n for n in set(old) | set(new) if old.get(n) != new.get(n)}
-            self.assertEqual(differing, names, path)
-        for name in ("_derive", "_parse", "_parse_tasks", "_init_parse", "DocumentPool"):
-            self.assertEqual(_definitions(tree / "ontology/project_parallel.py")[name],
-                             _definitions(ROOT / "ontology/project_parallel.py")[name], name)
+class PlainDigestTest(unittest.TestCase):
+    def test_the_clock_property_group_is_the_one_commit_over_the_base(self):
+        # 328f87f04b (main): CaptureStore.clock, nothing else of
+        # capture_store; BASE_COMMIT's capture_store is the group's earlier version
+        (path, (then, now)), = ce._CLOCK.items()
+        try:
+            got = {ref: subprocess.run(["git", "-C", str(ROOT), "show", f"{ref}:{path}"],
+                                       check=True, capture_output=True, timeout=60).stdout
+                   for ref in (ce.BASE_COMMIT, "328f87f04b", "328f87f04b^")}
+        except (OSError, subprocess.SubprocessError) as why:
+            self.skipTest(f"commits not readable: {why}")
+        import hashlib
+        self.assertEqual(hashlib.sha256(got[ce.BASE_COMMIT]).hexdigest(), then)
+        self.assertEqual(hashlib.sha256(got["328f87f04b"]).hexdigest(), now)
+        import difflib
+        diff = [line for line in difflib.unified_diff(
+            got["328f87f04b^"].decode().splitlines(), got["328f87f04b"].decode().splitlines(),
+            lineterm="", n=0) if line[:1] in "+-" and line[:3] not in ("+++", "---")]
+        self.assertEqual([line for line in diff if line.startswith("-")], [])
+        self.assertEqual([line[1:].strip() for line in diff if line[1:].strip()],
+                         ["@property", "def clock(self) -> Callable[[], datetime]:",
+                          '"""The store clock itself, so another connection to the same '
+                          'file keeps it."""', "return self._clock"])
+
+    def test_each_group_is_undone_alone_and_the_groups_are_disjoint(self):
+        groups = ce.CHANGES["derivation"]
+        names = [name for group in groups for name in group]
+        self.assertEqual(len(names), len(set(names)))
+        then = {p: old for g in groups for p, (old, _) in g.items()}
+        base = [("integrations/a.py", "1" * 64), *((p, old) for p, old in sorted(then.items())
+                                                    if old is not None)]
+        zstd = [(p, ce._ZSTD[p][1] if p in ce._ZSTD else s) for p, s in base] + \
+            [(p, now) for p, (old, now) in ce._ZSTD.items() if old is None]
+        zstd.sort()
+        both = [(p, ce._CLOCK[p][1] if p in ce._CLOCK else s) for p, s in zstd]
+        clock = [(p, ce._CLOCK[p][1] if p in ce._CLOCK else s) for p, s in base]
+        for files in (zstd, both, clock):
+            self.assertEqual(sorted(ce.earlier_files("derivation", files)), sorted(base))
 
     def test_any_other_difference_gives_the_plain_digest(self):
+        listed = ce._ZSTD
+        files = [("integrations/a.py", "1" * 64), ("ontology/code_equivalence.py", "2" * 64),
+                 *((p, now) for p, (_, now) in sorted(listed.items()))]
+        undone = ce.earlier_files("derivation", files)
+        self.assertNotIn("ontology/code_equivalence.py", dict(undone))
+        self.assertNotIn("integrations/blob_zstd.py", dict(undone))
+        self.assertEqual(dict(undone)["integrations/captured_text.py"],
+                         listed["integrations/captured_text.py"][0])
+        self.assertEqual(dict(undone)["integrations/a.py"], "1" * 64)
+        self.assertIsNotNone(ce.equivalent_derivation_code(files))
+        # one listed file at another version: nothing undone, the plain digest
+        other = [(p, "3" * 64 if p == "integrations/captured_text.py" else s) for p, s in files]
+        self.assertEqual(ce.earlier_files("derivation", other),
+                         [f for f in other if f[0] != "ontology/code_equivalence.py"])
+        self.assertIsNone(ce.equivalent_derivation_code(other))
+        # one listed file missing: likewise
+        short = [f for f in files if f[0] != "integrations/blob_pack.py"]
+        self.assertIsNone(ce.equivalent_derivation_code(short))
+        # an unknown kind is never undone
+        self.assertEqual(ce.earlier_files("unknown", files),
+                         [f for f in files if f[0] != "ontology/code_equivalence.py"])
+
+    def test_the_readings_code_moves_with_another_version_of_captured_text(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            for module in captured_text.READING_MODULES:
+                path = root.joinpath(*module.split(".")).with_suffix(".py")
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_bytes((ROOT.joinpath(*module.split(".")).with_suffix(".py"))
+                                 .read_bytes())
+            same = captured_text.readings_code(root=root)
+            target = root / "integrations" / "captured_text.py"
+            target.write_bytes(target.read_bytes() + b"\n# edited\n")
+            self.assertNotEqual(captured_text.readings_code(root=root), same)
+
+    def test_memo_codes_are_kept_as_given(self):
+        for kind in ("mention_memo", "text_index_memo", "document_code", "unknown"):
+            self.assertEqual(ce.earlier_value(kind, "abc"), "abc")
+
+    def test_this_trees_derivation_code_is_its_plain_digest_or_the_undone_one(self):
         files = project.derivation_files(ROOT)
-        listed = next(iter(ce.DERIVATION_CHANGES))
-        for name, edited in (
-                ("a listed file in another version",
-                 [(p, "0" * 64 if p == listed else s) for p, s in files]),
-                ("an unlisted file changed",
-                 [(p, "1" * 64 if p == "ontology/document_fields.py" else s)
-                  for p, s in files]),
-                ("a module added", files + [("ontology/new_reader.py", "2" * 64)])):
-            with self.subTest(name):
-                self.assertIsNone(ce.equivalent_derivation_code(edited))
+        undone = ce.earlier_files("derivation", files)
+        expect = project.environment_digest(
+            undone if undone != [f for f in files if f[0] != "ontology/code_equivalence.py"]
+            else files)
+        self.assertEqual(project.derivation_code(), expect)
 
 
-# The step memo codes this test computes in a child, from a tree, with that tree's schema.
-_MEMO_SCRIPT = (
-    "import json, sys\n"
-    "sys.path.insert(0, sys.argv[1])\n"
-    "from ontology.schema import load_schema\n"
-    "from ontology import mentions, project, text_index\n"
-    "declared = mentions.mention_link_types(load_schema().link_types)\n"
-    "json.dump({'mention_memo': mentions._memo_code(declared),\n"
-    "           'text_index_memo': text_index._memo_code(),\n"
-    "           'document_code': project.document_code()}, sys.stdout)\n")
+# The image OCR reach guard: what the derivation, reading, member,
+# projection, delta and mention code can run, as a call graph over the repository's own
+# modules by name. A node per function, method, class body and module body (an
+# ``if __name__ == "__main__"`` block never runs on import); an edge for every name a body
+# uses that resolves through the module's imports, a module attribute or ``self.``/``cls.``,
+# and for a string naming an OCR reader (``getattr``). A class reached reaches every
+# method it has (its bases with it): a method called on an untyped object is a method of
+# a class some reached code named, or of an object a caller outside the entry points
+# made. Annotations never run and are skipped.
+IMAGE_OCR_READERS = frozenset({"integrations.document_understanding.local_image_text",
+                               "operating.use_case_parts.local_image_ocr"})
+# capture_text reads an image by OCR only when its caller passes ``image_ocr`` (anything
+# but False or None, or ``**kwargs``): such a call, or capture_text handed on as a value,
+# reaches the OCR; its own reference to local_image_text is that guarded one.
+GUARDED_OCR = {"integrations.captured_text.capture_text":
+               "integrations.document_understanding.local_image_text"}
 
 
-def _memo_codes(tree: Path) -> dict[str, str]:
-    import json
-    env = {k: v for k, v in os.environ.items()
-           if not any(w in k.upper() for w in ("KEY", "TOKEN", "SECRET", "PASSWORD"))}
-    env["PYTHONDONTWRITEBYTECODE"] = "1"
-    done = subprocess.run([sys.executable, "-I", "-c", _MEMO_SCRIPT, str(tree)],
-                          cwd=str(tree), capture_output=True, text=True, timeout=600,
-                          env=env, check=False)
-    if done.returncode != 0:
-        raise AssertionError(done.stderr[-2000:])
-    return json.loads(done.stdout)
+def repository_sources(root: Path) -> dict[str, bytes]:
+    """module -> source of every non-test module of the repository's packages."""
+    out = {}
+    for package in sorted(p for p in root.iterdir() if (p / "__init__.py").is_file()):
+        for path in sorted(package.rglob("*.py")):
+            rel = path.relative_to(root).with_suffix("")
+            if "tests" not in rel.parts:
+                out[".".join(rel.parts[:-1] if rel.name == "__init__" else rel.parts)] = \
+                    path.read_bytes()
+    return out
 
 
-class StepMemoEquivalenceTests(unittest.TestCase):
-    def test_the_step_memos_keep_the_base_commits_keys_while_only_listed_code_differs(self):
-        """The mention memo, the text index memo and the document group keys give the
-        base commit's values (what its build kept them under) for this code, and the
-        files they digest differ from that commit's only in the named definitions."""
-        tree = _base_tree(self)
-        then, now = _memo_codes(tree), _memo_codes(ROOT)
-        with mock.patch.object(ce, "earlier_value", lambda kind, value: value):
-            plain = _memo_codes_here()
-        for kind in ce.VALUE_EQUIVALENTS:
-            with self.subTest(kind):
-                if plain[kind] in ce.VALUE_EQUIVALENTS[kind]:
-                    self.assertEqual(now[kind], then[kind])
-                    self.assertNotEqual(plain[kind], then[kind])
-                else:   # code moved on (or another Python/libraries): its own value
-                    self.assertEqual(now[kind], plain[kind])
-        old = _definitions(tree / "ontology/text_index.py")
-        new = _definitions(ROOT / "ontology/text_index.py")
-        self.assertEqual({n for n in set(old) | set(new) if old.get(n) != new.get(n)},
-                         {"_base_index", "_memo_code", "store_text_index"})
-        for path in ("ontology/mention_memo.py", "ontology/reviews.py",
-                     "ontology/identifiers.py", "ontology/project_graph.py",
-                     "operating/doc_metadata_taxonomy.py", "integrations/captured_pages.py",
-                     "integrations/captured_text.py"):
-            listed = ce.STEP_FILE_CHANGES.get(path)
-            if listed is None:
-                self.assertEqual((tree / path).read_bytes(), (ROOT / path).read_bytes(), path)
+def entry_modules() -> set[str]:
+    from integrations import kept_members
+    root_modules = {p.relative_to(ROOT / "ontology").stem for p in (ROOT / "ontology").glob(
+        "project*.py")}
+    return (set(project.derivation_modules(ROOT)) | set(captured_text.READING_MODULES)
+            | set(kept_members.MEMBER_MODULES) | {f"ontology.{m}" for m in root_modules}
+            | {"ontology.delta", "integrations.kept_members", "ontology.mentions"})
+
+
+@lru_cache(maxsize=None)
+def _parsed(source: bytes, module: str) -> ast.Module:
+    return ast.parse(source, module)
+
+
+_WALKED: dict[int, list] = {}   # id of a node of a cached tree -> its nodes
+
+
+def _nodes(node) -> list:
+    if id(node) not in _WALKED:
+        _WALKED[id(node)] = list(_walk(node))
+    return _WALKED[id(node)]
+
+
+def _walk(node):
+    pending = [node]
+    while pending:
+        node = pending.pop()
+        yield node
+        for field, value in ast.iter_fields(node):
+            if field not in ("annotation", "returns"):
+                pending.extend(v for v in (value if isinstance(value, list) else [value])
+                               if isinstance(v, ast.AST))
+
+
+class CallGraph:
+    def __init__(self, sources: dict[str, bytes]):
+        self.sources = sources
+        self.packages = {m.rpartition(".")[0] for m in sources}
+        self.roots = {m.split(".")[0] for m in sources}
+        self.bodies: dict[str, list] = {}
+        self.owner: dict[str, tuple[str, str | None]] = {}
+        self.members: dict[str, set[str]] = {}
+        self.aliases: dict[str, dict[str, str]] = {}
+
+    def _load(self, module: str) -> None:
+        if module in self.aliases or module not in self.sources:
+            return
+        tree = _parsed(self.sources[module], module)
+        defs = (ast.FunctionDef, ast.AsyncFunctionDef)
+        self._add(f"{module}:<module>", [n for n in tree.body if not isinstance(
+            n, (*defs, ast.ClassDef)) and not (isinstance(n, ast.If) and "__name__" in {
+                x.id for x in ast.walk(n.test) if isinstance(x, ast.Name)})], module, None)
+        for node in tree.body:
+            if isinstance(node, defs):
+                self._add(f"{module}.{node.name}", [node], module, None)
+            elif isinstance(node, ast.ClassDef):
+                cls = f"{module}.{node.name}"
+                self._add(cls, [*node.bases, *node.keywords, *node.decorator_list,
+                                *(n for n in node.body if not isinstance(n, defs))], module, cls)
+                self.members[cls] = set()
+                for item in node.body:
+                    if isinstance(item, defs):
+                        self._add(f"{cls}.{item.name}", [item], module, cls)
+                        self.members[cls].add(f"{cls}.{item.name}")
+        aliases: dict[str, str] = {}
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                for alias in node.names:
+                    local = alias.asname or alias.name.split(".")[0]
+                    aliases[local] = alias.name if alias.asname else local
+            elif isinstance(node, ast.ImportFrom):
+                base = node.module or ""
+                if node.level:
+                    parts = module.split(".")[:None if module in self.packages else -1]
+                    parts = parts[:len(parts) - node.level + 1]
+                    base = ".".join(parts + ([base] if base else []))
+                for alias in node.names:
+                    aliases[alias.asname or alias.name] = f"{base}.{alias.name}"
+        self.aliases[module] = aliases
+
+    def _add(self, name, body, module, cls):
+        self.bodies[name] = body
+        self.owner[name] = (module, cls)
+
+    def _module_of(self, name: str) -> str | None:
+        while name and name not in self.sources:
+            name = name.rpartition(".")[0]
+        return name or None
+
+    def _symbol(self, qualified: str, depth: int = 0) -> set[str]:
+        """The nodes a dotted name names: a module's body, a def, a class with its
+        methods, or what a module re-exports under that name."""
+        module = self._module_of(qualified)
+        if module is None or depth > 8:
+            return set()
+        self._load(module)
+        if qualified == module:
+            return {f"{module}:<module>"}
+        if qualified in self.bodies:
+            return {qualified, *self.members.get(qualified, ())}
+        head, _, name = qualified.rpartition(".")
+        if head == module and name in self.aliases[module]:
+            return self._symbol(self.aliases[module][name], depth + 1)
+        return {f"{f}.{name}" for f in self._symbol(head, depth + 1)
+                if f"{f}.{name}" in self.bodies}   # a method of a re-exported class
+
+    def _resolve(self, node, module: str, cls: str | None) -> set[str]:
+        chain: list[str] = []
+        while isinstance(node, ast.Attribute):
+            chain.insert(0, node.attr)
+            node = node.value
+        if not isinstance(node, ast.Name):
+            return set()
+        if node.id in ("self", "cls") and cls and chain:
+            return self._symbol(f"{cls}.{chain[0]}")
+        if f"{module}.{node.id}" in self.bodies:
+            start = f"{module}.{node.id}"
+        elif node.id in self.aliases[module]:
+            start = self.aliases[module][node.id]
+            if start.split(".")[0] not in self.roots:
+                return set()   # an installed library: none of ours runs there
+        else:
+            return set()   # a local or builtin: what it holds was named where it was made
+        return self._symbol(".".join([start, *chain])) or self._symbol(start)
+
+    def edges(self, name: str) -> set[str]:
+        module, cls = self.owner[name]
+        out = {f"{module}:<module>"}
+        for body in self.bodies[name]:
+            nodes = _nodes(body)
+            plain = {id(n.func) for n in nodes if isinstance(n, ast.Call) and not any(
+                k.arg is None or k.arg == "image_ocr" and not (
+                    isinstance(k.value, ast.Constant) and k.value.value in (False, None))
+                for k in n.keywords)}
+            for node in nodes:
+                if isinstance(node, ast.Constant) and isinstance(node.value, str) and \
+                        node.value.replace(".", "").isidentifier():   # getattr, importlib
+                    out |= {r for r in IMAGE_OCR_READERS
+                            if node.value.rpartition(".")[2] == r.rpartition(".")[2]}
+                elif isinstance(node, (ast.Name, ast.Attribute)) and \
+                        isinstance(getattr(node, "ctx", None), ast.Load):
+                    found = self._resolve(node, module, cls)
+                    out |= found
+                    if id(node) not in plain:
+                        out |= {GUARDED_OCR[g] for g in found & GUARDED_OCR.keys()}
+        return out - {name, GUARDED_OCR.get(name)}
+
+    def reach(self, modules: set[str]) -> dict[str, list[str]]:
+        """OCR reader -> one path to it from an entry point of ``modules`` (every node of
+        theirs but the readers and capture_text themselves)."""
+        for module in modules:
+            self._load(module)
+        entries = [n for n, (m, _) in self.owner.items() if m in modules
+                   and n not in IMAGE_OCR_READERS and n not in GUARDED_OCR]
+        parent: dict[str, str | None] = dict.fromkeys(entries)
+        queue, found = deque(entries), {}
+        while queue:
+            node = queue.popleft()
+            if node in IMAGE_OCR_READERS:
+                path = [node]
+                while parent[path[-1]] is not None:
+                    path.append(parent[path[-1]])
+                found.setdefault(node, path[::-1])
                 continue
-            # differs only in the listed definitions, each of them changed
-            then_defs, now_defs = _definitions(tree / path), _definitions(ROOT / path)
-            self.assertEqual({n for n in set(then_defs) | set(now_defs)
-                              if then_defs.get(n) != now_defs.get(n)}, set(listed), path)
-        self.assertLessEqual(set(ce.STEP_FILE_CHANGES), {"integrations/captured_text.py",
-                                                     "ontology/identifiers.py"})
-        store_then = _definitions(tree / "ontology/store.py")
-        store_now = _definitions(ROOT / "ontology/store.py")
-        self.assertEqual(store_then["held_stretches"], store_now["held_stretches"])
-
-    def test_any_other_input_gives_the_codes_own_value(self):
-        from ontology import mentions, text_index
-        declared = {("Email", "Lot"): "Email.mentions_other"}
-        self.assertEqual(mentions._memo_code(declared), _plain(mentions._memo_code, declared))
-        self.assertNotIn(mentions._memo_code(declared),
-                         set(ce.VALUE_EQUIVALENTS["mention_memo"].values()))
-        with mock.patch.object(project, "derivation_code", lambda: "other derivation"):
-            code = project.document_code()
-        self.assertNotIn(code, set(ce.VALUE_EQUIVALENTS["document_code"].values()))
-        with mock.patch.object(text_index, "__file__", str(ROOT / "ontology" / "store.py")):
-            code = text_index._memo_code()
-        self.assertNotIn(code, set(ce.VALUE_EQUIVALENTS["text_index_memo"].values()))
+            for nxt in self.edges(node):
+                if nxt in self.bodies and nxt not in parent:
+                    parent[nxt] = node
+                    queue.append(nxt)
+        return found
 
 
-def _plain(function, *args):
-    with mock.patch.object(ce, "earlier_value", lambda kind, value: value):
-        return function(*args)
+class ImageOcrPinTest(unittest.TestCase):
+    """The image OCR group: document_understanding moved only in the
+    image OCR reading, and nothing that derives or reads a kept record runs it."""
 
+    IMAGE_OCR = {"local_image_text", "_image_for_ocr", "_plausible_dpi", "_png",
+                 "_reading_score", "_image_retries", "IMAGE_OCR_LONGEST", "IMAGE_OCR_SMALL",
+                 "IMAGE_OCR_MAX_ENLARGE", "_SURE_WORD", "_SURE_WORDS_MIN", "_ocr_frames",
+                 "_flattened", "_LIGHT_GLYPHS", "_downscaled", "IMAGE_OCR_MAX_SECONDS"}
 
-def _memo_codes_here() -> dict[str, str]:
-    from ontology import mentions, text_index
-    from ontology.schema import load_schema
-    declared = mentions.mention_link_types(load_schema().link_types)
-    return {"mention_memo": mentions._memo_code(declared),
-            "text_index_memo": text_index._memo_code(),
-            "document_code": project.document_code()}
+    def test_document_understanding_moved_only_in_the_image_reading(self):
+        import ast
+        import hashlib
+        path = "integrations/document_understanding.py"
+        (then, now), = ce._IMAGE_OCR.values()
+        try:
+            base = subprocess.run(["git", "-C", str(ROOT), "show", f"{ce.BASE_COMMIT}:{path}"],
+                                  check=True, capture_output=True, timeout=60).stdout
+        except (OSError, subprocess.SubprocessError) as why:
+            self.skipTest(f"base not readable: {why}")
+        self.assertEqual(hashlib.sha256(base).hexdigest(), then)
+        current = (ROOT / path).read_bytes()
+        if hashlib.sha256(current).hexdigest() != now:
+            self.skipTest("document_understanding moved past the pin: the plain digest holds")
 
+        def top(source: bytes) -> dict[str, str]:
+            out = {}
+            for node in ast.parse(source).body:
+                names = ([node.name] if isinstance(node, (ast.FunctionDef, ast.ClassDef))
+                         else [t.id for t in getattr(node, "targets", [getattr(node, "target",
+                                                                                None)])
+                               if isinstance(t, ast.Name)])
+                for name in names or [ast.dump(node)]:
+                    out[name] = ast.dump(node)
+            return out
+        before, after = top(base), top(current)
+        moved = {n for n in before.keys() | after.keys() if before.get(n) != after.get(n)}
+        self.assertTrue(moved)
+        self.assertEqual(moved - self.IMAGE_OCR, set())
 
-class ReaderEquivalenceTests(unittest.TestCase):
-    def test_mail_and_sharepoint_readers_differ_only_as_listed(self):
-        tree = _base_tree(self)
-        seen = set()
-        for cls in (project.MailCaptures, project.SharePointCaptures):
-            source = object.__new__(cls)
-            diff = ce.reader_differences(build_keys.reader_parts(source, tree),
-                                         build_keys.reader_parts(source))
-            self.assertTrue(diff, cls.__name__)   # they do differ: the table is needed
-            self.assertNotEqual(build_keys.reader_digest(source, tree),
-                                build_keys.reader_digest(source))
-            for key, pair in diff.items():
-                self.assertEqual(ce.READER_CHANGES.get(key), pair, key)
-            seen |= set(diff)
-            self.assertTrue(ce.reader_equivalent(source, tree), cls.__name__)
-        self.assertEqual(seen, set(ce.READER_CHANGES))   # no stale entry
+    def test_nothing_that_derives_reads_or_projects_reaches_the_image_reading(self):
+        # Every function, method and module body of the derivation, reading, member,
+        # projection, delta and mention modules is an entry point; nothing any of them
+        # can run, directly or through any repository module, may reach the image OCR.
+        graph = CallGraph(repository_sources(ROOT))
+        self.assertEqual(graph.reach(entry_modules()), {})
 
-        # Any other change to what a reader reaches: no equivalence.
-        edited = tree / "operating" / "use_case_parts.py"
-        edited.write_text(edited.read_text(encoding="utf-8") + "\nMAX_NAME_CHARS = 1\n",
-                          encoding="utf-8")
-        build_keys._MODULES.clear()
-        for cls in (project.MailCaptures, project.SharePointCaptures):
-            self.assertFalse(ce.reader_equivalent(object.__new__(cls), tree), cls.__name__)
+    def test_the_reach_guard_fails_on_an_injected_indirect_call(self):
+        sources = repository_sources(ROOT)
+        injected = {
+            # the delta -> a new helper module -> a capture function that opts in
+            "a capture helper two modules away": {
+                "ontology.delta": "\ndef _injected(c):\n    from integrations import zz_helper"
+                                  "\n    return zz_helper.pass_images(c)\n",
+                "integrations.zz_helper": "from integrations.capture_mail import zz_later\n"
+                                          "def pass_images(c):\n    return zz_later(c)\n",
+                "integrations.capture_mail": "\ndef zz_later(c):\n    return capture_text("
+                                             "c, {}, image_ocr=True)\n"},
+            # kept_members -> a method of a new class -> the OCR by a module alias
+            "a method through an import alias": {
+                "integrations.kept_members": "\nclass _Injected:\n    def read(self, c):\n"
+                                             "        import integrations.document_understanding"
+                                             " as d\n        return d.local_image_text(c)\n"},
+            # a reading module hands capture_text on: whoever calls it may opt in
+            "capture_text handed on": {
+                "integrations.captured_text": "\ndef _injected(c, read=None):\n"
+                                              "    return (read or capture_text)(c, {})\n"},
+            # the case intake's OCR reader, named by string
+            "the case reader by getattr": {
+                "ontology.mentions": "\ndef _injected():\n    import operating.use_case_parts"
+                                     " as p\n    return getattr(p, 'local_image_ocr')()\n"},
+        }
+        for case, patch in injected.items():
+            with self.subTest(case=case):
+                changed = dict(sources)
+                for module, tail in patch.items():
+                    changed[module] = changed.get(module, b"") + tail.encode()
+                reach = CallGraph(changed).reach(entry_modules())
+                self.assertTrue(reach, case)
+        # and the guard's one exception holds: capture_text without image OCR
+        changed = dict(sources)
+        changed["ontology.delta"] += (b"\ndef _plain(c):\n    from integrations.captured_text"
+                                      b" import capture_text\n    return capture_text(c, {},"
+                                      b" image_ocr=False)\n")
+        self.assertEqual(CallGraph(changed).reach(entry_modules()), {})
+
+    def test_this_trees_reading_codes_undo_the_image_reading(self):
+        files = project.derivation_files(ROOT)
+        path = "integrations/document_understanding.py"
+        (then, now), = ce._IMAGE_OCR.values()
+        if dict(files).get(path) != now:
+            self.skipTest("document_understanding moved past the pin")
+        self.assertEqual(dict(ce.earlier_files("derivation", files))[path], then)
+        module = "integrations.document_understanding"
+        self.assertEqual(dict(ce.earlier_files("readings_code", [(module, now)]))[module], then)
 
 
 if __name__ == "__main__":

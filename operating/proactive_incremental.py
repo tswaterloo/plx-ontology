@@ -13,6 +13,11 @@ the same rules and the same code, so what it folds equals what a full run would 
    is removed, and every current link at it): a record whose fingerprint is the one kept is
    unchanged (a compacted layer re-owning it changes nothing). Without a kept baseline for
    the served generation every owned record counts as changed (more work, never less).
+   On Postgres with the change feed (migration 0026, ``operating.pg.change_feed``) the
+   candidates are instead the records the applied cycles really changed past this pass's
+   cursor (``_feed``; the applied layers are marked taken unopened); a migration's scope
+   or more rows than ``FEED_LIMIT`` judge the rules whole; the first read and a gap read
+   the layers as above, then follow the feed. Without the feed nothing changes.
 2. **Subjects** (``plan``): per rule, the subjects whose declared inputs (``INPUTS``: the
    link types it reads, the hops from its subject, the identity links followed whole and
    the shared records it reads but never walks through) hold a changed record, by a walk
@@ -60,6 +65,7 @@ import os
 from pathlib import Path
 import resource
 import sqlite3
+import sys
 import time
 from typing import Any, Callable, Iterable, Mapping, Sequence
 
@@ -67,6 +73,7 @@ from ontology import store as ostore
 
 from . import po_status
 from . import proactive_engine as pe
+from . import proactive_engine_inbox
 from operating import declared_schema as _schemas
 from operating.declared_schema import proactive_incremental as _PROACTIVE_INCREMENTAL
 
@@ -241,16 +248,18 @@ def generation_digest(stamp: str | None) -> str | None:
 
 
 def layer_owned(store: Path, digest: str | None, ch: sqlite3.Connection,
-                applied: set[str] | None) -> tuple[set[str], list[str], bool]:
+                applied: set[str] | None, *, reread: bool = False
+                ) -> tuple[set[str], list[str], bool]:
     """(the records owned by the served layers not taken in yet, those layers, whether a
     layer is still waiting for Postgres): a layer of another generation is never read.
     ``applied``: the layers the store read holds (Postgres's applied ones; None: every
-    layer, a store built with them)."""
+    layer, a store built with them). ``reread``: the layers already taken in are read
+    again too (the change feed missed rows: ``feed_owned``)."""
     base, layers = _pointer(store)
     if base is None or base != digest:
         return set(), [], False
-    seen = {row[0] for row in ch.execute("SELECT layer FROM layers WHERE base_digest = ?",
-                                         (digest,))}
+    seen = set() if reread else {row[0] for row in ch.execute(
+        "SELECT layer FROM layers WHERE base_digest = ?", (digest,))}
     owned: set[str] = set()
     taken, waiting = [], False
     for layer in layers:
@@ -267,6 +276,40 @@ def layer_owned(store: Path, digest: str | None, ch: sqlite3.Connection,
             continue
         taken.append(layer)
     return owned, taken, waiting
+
+
+# The change feed (``operating.pg.change_feed``, migration 0026): with the engine on
+# Postgres, the records each applied cycle really changed, past this pass's cursor, instead
+# of every record the layers own (each owns every record changed since the generation).
+FEED_CONSUMER = "proactive_incremental"
+FEED_LIMIT = 4 * READ_CAP   # rows read at once; more: the rules are judged whole
+
+
+def _feed(digest: str | None, applied: set[str] | None) -> Any:
+    """The feed's rows past this pass's cursor for the generation ``digest`` when the
+    engine reads Postgres (``applied`` is its applied layers); None without the feed (not
+    migrated, unreadable): the layers are read as before."""
+    if applied is None or digest is None:
+        return None
+    from operating.pg import change_feed, ontology_reader
+    return change_feed.read(ontology_reader.dsn(), FEED_CONSUMER, generation=digest,
+                            limit=FEED_LIMIT)
+
+
+def feed_owned(store: Path, digest: str | None, ch: sqlite3.Connection,
+               applied: set[str], batch: Any) -> tuple[set[str], list[str], bool]:
+    """``layer_owned`` from a feed batch read ``ok``: its records, and the applied layers
+    not taken in yet marked taken without being opened (their changes are the feed's; the
+    delta's release rule reads them), whether a layer still waits for Postgres."""
+    base, layers = _pointer(store)
+    if base is None or base != digest:
+        return batch.ids(), [], False
+    seen = {row[0] for row in ch.execute("SELECT layer FROM layers WHERE base_digest = ?",
+                                         (digest,))}
+    taken = [layer for layer in layers
+             if layer not in seen and Path(layer).name in applied]
+    waiting = any(Path(layer).name not in applied for layer in layers)
+    return batch.ids(), taken, waiting
 
 
 class BaseUnreadable(RuntimeError):
@@ -519,6 +562,7 @@ def run_pass(store_path: Any, *, as_of: date | None = None,
                     _set_meta(ch, "digest", digest)
                 taken: list[str] = []
                 waiting = False
+                feed, whole_feed = None, False
                 applied = _applied(store) if holds_layers is None else None
                 reader = "postgres" if applied is not None else (
                     "store_with_layers" if holds_layers else "generation_only")
@@ -535,8 +579,20 @@ def run_pass(store_path: Any, *, as_of: date | None = None,
                     owned, taken, waiting = set(), [], bool(_pointer(store)[1])
                     prints, moved = {}, set()
                 elif changed is None:
-                    owned, taken, waiting = layer_owned(store, digest, ch, applied)
-                if changed is None and reader != "generation_only" and len(owned) > read_cap:
+                    feed = _feed(digest, applied)
+                    if feed is not None and feed.ready:
+                        owned, taken, waiting = feed_owned(store, digest, ch, applied, feed)
+                        # a migration rewrote a scope, or more rows than are read at once:
+                        # judged whole (as a flood)
+                        whole_feed = bool(feed.migrated) or feed.overflow
+                    else:
+                        # no feed, the first read of it, or rows missed (a gap: every
+                        # layer is read again, the newest owning all since the generation)
+                        owned, taken, waiting = layer_owned(
+                            store, digest, ch, applied,
+                            reread=feed is not None and feed.state == "gap")
+                if changed is None and reader != "generation_only" and (
+                        len(owned) > read_cap or whole_feed):
                     # more changed records than any scope may read (a catch-up layer,
                     # the first pass over layers kept from it): fingerprinting and
                     # planning them would hold GBs past the pass's memory bound and never
@@ -591,7 +647,7 @@ def run_pass(store_path: Any, *, as_of: date | None = None,
             busy = {rule: s for rule, s in subjects.items() if s}
             if busy:
                 found = pe.run(store, inbox, day, clock=clock, people=people,
-                               scope=pe.Scope(busy, frozenset(read), keys), locked=True)
+                               scope=proactive_engine_inbox.Scope(busy, frozenset(read), keys), locked=True)
                 ran["scoped"] = {"subjects": {r: len(s) for r, s in sorted(busy.items())},
                                  "read": len(read), "gaps_found": found.get("gaps_found"),
                                  "seconds": round(time.monotonic() - started, 2)}
@@ -620,6 +676,12 @@ def run_pass(store_path: Any, *, as_of: date | None = None,
             ch.execute("DELETE FROM passes WHERE pass_id NOT IN (SELECT pass_id FROM passes "
                        "ORDER BY pass_id DESC LIMIT ?)", (KEEP_PASSES,))
             ch.execute("COMMIT")
+            if feed is not None:
+                # what was judged is kept: the feed's cursor moves past it (a failed write
+                # reads the same rows again; their prints say they are unchanged)
+                from operating.pg import change_feed, ontology_reader
+                out["feed"] = {**feed.summary(),
+                               "committed": change_feed.commit_to(ontology_reader.dsn(), feed)}
     return out
 
 
@@ -661,6 +723,15 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = parser.parse_args(argv)
     if args.wait_seconds < 0:
         parser.error("--wait-seconds must not be negative")
+    try:   # a broken window lock never stops the job
+        from ontology import window_lock
+        held = window_lock.skip_report("proactive", state_dir=args.state_dir)
+    except Exception as exc:  # noqa: BLE001 - logged, the job runs
+        print(f"window check failed, running anyway: {exc}", file=sys.stderr)
+        held = None
+    if held:
+        print(json.dumps(held, indent=1, sort_keys=True))
+        return 0
     print(json.dumps(run_pass(projection_path(args.state_dir), as_of=args.as_of,
                               wait=True if args.wait else args.wait_seconds),
                      indent=1, sort_keys=True))

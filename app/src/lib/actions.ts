@@ -5,10 +5,11 @@
 import type { Shown } from "./status";
 import type { ActionKind, ActionPayload, ActionPreview, ActionResult } from "./types";
 
-/** The fields a person may edit, per action. `in_reply_to` is the card's, never edited. */
+/** The fields a person may edit, per action. `in_reply_to` is the card's, never edited;
+ * `attachments` are the card's files, which the person may only take off. */
 export const EDITABLE: Record<ActionKind, (keyof ActionPayload)[]> = {
-  send_email: ["to", "cc", "subject", "body"],
-  reply_in_thread: ["to", "cc", "body"],
+  send_email: ["to", "cc", "subject", "body", "attachments"],
+  reply_in_thread: ["to", "cc", "body", "attachments"],
   forward: ["to", "cc", "body"],
   teams_message: ["chat_id", "body"],
   create_follow_up: ["due", "note"],

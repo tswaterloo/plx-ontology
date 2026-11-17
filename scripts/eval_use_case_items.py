@@ -150,6 +150,7 @@ import re
 import sys
 from typing import Any, Callable, Mapping
 
+from ontology import tmp_root
 from operating import use_case_intake
 from operating.use_case_intake import IntakeState, outcome_statements, questions_in
 from evals.measure import CONFLICT_REASON
@@ -615,7 +616,6 @@ def _answers(files: IntakeState, batch: str, cards: list[dict[str, Any]],
     """Run the admitted items through the agent on seeded disposable hosts (module
     docstring); per-item results in three buckets."""
     import shutil
-    import tempfile
 
     from evals import runner
     from evals.score import outcome_of, outcome_summary
@@ -624,7 +624,7 @@ def _answers(files: IntakeState, batch: str, cards: list[dict[str, Any]],
     from operating.case_runtime import CASE_RUNTIME_DIR, MIRROR_FILE
 
     actor = Actor(ANSWER_TENANT, frozenset({reader}))
-    work = Path(tempfile.mkdtemp(prefix="plx-use-case-answers-"))
+    work = Path(tmp_root.mkdtemp(prefix="plx-use-case-answers-"))
     try:
         empty = work / "state"
         (empty / CASE_RUNTIME_DIR).mkdir(parents=True)

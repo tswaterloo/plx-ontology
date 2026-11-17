@@ -13,7 +13,6 @@ it from every reader once a person it names is excluded.
 from __future__ import annotations
 
 from contextlib import ExitStack
-import json
 import sqlite3
 import tempfile
 import unittest

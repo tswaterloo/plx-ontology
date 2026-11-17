@@ -1,4 +1,4 @@
-import { render, screen } from "@testing-library/react";
+import { fireEvent, render, screen } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 
 const api = vi.hoisted(() => ({ rows: null as unknown[] | null }));
@@ -49,5 +49,25 @@ describe("Activity", () => {
     const empty = await screen.findByTestId("activity-empty");
     expect(empty).toHaveTextContent("Nothing sent, approved or logged yet.");
     expect(empty.outerHTML).not.toMatch(/shadow-lift|rounded-full/);
+  });
+
+  it("filters the journal by what happened and names the records worked on most", async () => {
+    api.rows = [
+      row(1, "send_email", "sent", ago(1), ["a@x.example"]),
+      row(2, "reply_in_thread", "sent", ago(2), ["b@x.example"]),
+      row(3, "send_email", "dry_run", ago(3), ["c@x.example"], "SO 77120"),
+      { ...row(4, "send_email", "unknown", ago(4), ["d@x.example"], "SO 77120"), missing: ["supplier contact"] },
+      row(5, "snooze", "snoozed", ago(5)),
+    ];
+    render(<ActivityPage />);
+    expect(await screen.findByTestId("activity-busiest")).toHaveTextContent("Most worked on: PO 90412 3 · SO 77120 2");
+    expect(screen.getByRole("tab", { name: /^All\s*5$/ })).toHaveAttribute("aria-selected", "true");
+    expect(screen.queryByRole("tab", { name: /^Tasks/ })).toBeNull();
+    fireEvent.click(screen.getByRole("tab", { name: /^Needs a look\s*1$/ }));
+    const shown = screen.getAllByTestId("actions-log-row");
+    expect(shown).toHaveLength(1);
+    expect(shown[0]).toHaveTextContent("1 not on record");
+    fireEvent.click(screen.getByRole("tab", { name: /^Sent\s*2$/ }));
+    expect(screen.getAllByTestId("actions-log-row")).toHaveLength(2);
   });
 });

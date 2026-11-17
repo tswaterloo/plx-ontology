@@ -332,9 +332,9 @@ def main(argv: Sequence[str] | None = None, *, environ: Mapping[str, str] | None
     args = parser.parse_args(argv)
     phase = None   # the consumer's own phase, once the build succeeded
     try:
-        from ontology import schema as schema_loader  # L4
+        from ontology import schema as schema_loader
         from operating import ontology_tools as ot
-        from scripts import ontology_projection_probe as projection  # L7
+        from scripts import ontology_projection_probe as projection
 
         build_args = ["--db", args.db, "--store", args.store, "--build-only"]
         if args.budget_seconds is not None:

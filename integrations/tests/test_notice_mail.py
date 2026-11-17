@@ -299,3 +299,22 @@ class NoticeBuildExclusionTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class NoticeMessageLinkTest(unittest.TestCase):
+    """A notice links to the message it was read from (CT-D-12: no notice had an outgoing
+    link of its own), by the Graph message id both bindings carry."""
+
+    def test_a_notice_is_linked_to_its_message_by_the_graph_id(self):
+        from ontology.project import NOTICE_RELATION
+        from ontology.schema import load_schema
+        link = load_schema().link_types["Notice.read_from"]
+        self.assertEqual((link["from"], link["to"]), ("Notice", "Email"))
+        (fk,) = link["bindings"]
+        self.assertEqual((fk["kind"], fk["from_binding"], fk["to_binding"], fk["pairs"]),
+                         ("fk", "graph_mail.notices", "graph_mail.messages",
+                          [{"from": "message_id", "to": "id", "compare": "text_id"}]))
+        test = NoticeProjectionTest()
+        mc = test.captures([("box-a", CASES["payments"](1))], test.Usable())
+        (notice,) = mc._notice_records(NOTICE_RELATION)
+        self.assertEqual(notice.row["message_id"], "m0")   # the capture's Graph message id

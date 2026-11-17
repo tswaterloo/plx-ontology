@@ -21,7 +21,6 @@ from unittest import mock
 import zlib
 
 from integrations import blob_pack, captured_text as ct, graph_read
-from integrations.capture_mail import MailCaptureStore
 from integrations.tests import test_capture_mail as tm
 from integrations.tests.test_capture_mail_compact import CompactCase, OUTSIDER, READER
 

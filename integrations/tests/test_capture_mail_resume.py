@@ -21,7 +21,8 @@ from urllib.parse import unquote
 from verify import live_verify as lv
 from tests.spec_verdict import verdict
 from integrations import capture_mail, graph_read
-from integrations.capture_mail import CaptureScope, MailCapture, MailCaptureStore
+from integrations.capture_mail import MailCapture, MailCaptureStore
+from integrations.capture_mail_scope import CaptureScope
 from integrations.tests import test_capture_mail as base
 from integrations.tests.test_capture_mail import BOX_A, ENV, SCOPE, UPN_A
 

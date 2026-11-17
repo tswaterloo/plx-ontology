@@ -57,7 +57,7 @@ _TEXT = re.compile(r"^[^\x00-\x1f]{1,120}$")
 
 
 def _contracts() -> Mapping[str, Any]:
-    from .ontology_tools import load_contracts
+    from .ontology_tools_policy import load_contracts
     return load_contracts()
 
 

@@ -9,6 +9,7 @@ objects stand in for the engine and the runtime (no store); evidence label: isol
 from __future__ import annotations
 
 import gc
+import tempfile
 import tracemalloc
 import unittest
 import weakref
@@ -64,7 +65,10 @@ def _run(make_result, vendor_probe):
             mock.patch.object(pe, "served_behind", lambda s: False), \
             mock.patch.object(pe, "engine_marking_grants", lambda a: {}), \
             mock.patch.object(pe, "inbox_path", lambda s: Path("inbox")), \
+            tempfile.TemporaryDirectory() as locks, \
+            mock.patch.object(vw, "scheduled_lock_path", lambda d: Path(locks) / "pass"), \
             mock.patch.object(pe, "refresh", lambda *a, **k: make_result()), \
+            mock.patch.object(pe, "rule_groups", lambda rules, **k: [list(rules)]), \
             mock.patch.object(pe, "run", fake_run), \
             mock.patch("operating.meeting_followup.cycle", lambda *a, **k: {}):
         return vw.run_pass(Path("state"), config, seconds=100, bound=1,
@@ -90,6 +94,7 @@ class VendorStageRetention(unittest.TestCase):
             seen["live_runtimes"] = sum(not r.closed for r in Runtime.made)
 
         out = _run(make, probe)
+        self.assertEqual(out["full_refresh"]["state"], "ran")
         self.assertEqual(out["full_refresh"]["gaps_found"], 3)       # the counts are kept
         self.assertNotIn("gaps", out["full_refresh"])
         self.assertFalse(seen["result_alive"])
@@ -107,12 +112,13 @@ class VendorStageRetention(unittest.TestCase):
 
         tracemalloc.start()
         try:
-            _run(lambda: Big(detectors={}, gaps_found=0, seconds=0.0,
-                             rows=list(range(500_000))), probe)
+            out = _run(lambda: Big(detectors={}, gaps_found=0, seconds=0.0,
+                                   rows=list(range(500_000))), probe)
         finally:
             tracemalloc.stop()
         # one 8 MB runtime cache is live in the vendor stage, not that and the engine's
         # 8 MB runtime plus its 500k-row result (> 20 MB together)
+        self.assertEqual(out["full_refresh"]["state"], "ran")   # the engine path ran
         self.assertLess(peaks["held"], 12_000_000)
 
 

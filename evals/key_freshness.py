@@ -19,7 +19,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 import re
 import sqlite3
-from typing import Any, Iterable, Mapping, Sequence
+from typing import Any, Iterable, Mapping
 
 from evals import graph_walks as gw
 
@@ -136,7 +136,7 @@ def replay(conn: sqlite3.Connection, item: Mapping[str, Any], key: Mapping[str, 
     position = filter_position(item["question"]["text"], len(hops))
     # "mentions W" is read as the question reads: W anywhere in the name, case folded. The
     # generator's own filter demands a whole token, so a word cut from inside "image001.png"
-    # matched nothing there (see DECISIONS/open-eval-keys-word-filter.md).
+    # matched nothing there.
     needle = word.group(1).casefold()
     sets = [[start[0]]]
     for index, (link_type, direction) in enumerate(hops, start=1):

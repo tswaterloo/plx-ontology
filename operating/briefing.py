@@ -171,8 +171,6 @@ EVENT_TYPES: dict[str, dict[str, Any]] = {
     # the operations alerts (``operating.proactive_ops``): stalled work, ageing balances
     # (finance-marked), late or damaged production, Teams asks left unanswered (resting on
     # a person's chat: a reader who may not open one is never told it exists)
-    "mc_task_overdue": {"kinds": ("mc_task_overdue",), "label": "Mission Control task overdue",
-                        "departments": ("OPS", "PROD"), "check": ("mc_task_overdue",)},
     "mc_task_stuck": {"kinds": ("mc_task_stuck",), "label": "Mission Control task stuck",
                       "departments": ("OPS", "PROD"), "check": ("mc_task_stuck",)},
     "mc_approval_pending": {"kinds": ("mc_approval_pending",),
@@ -504,7 +502,48 @@ CHECK_WORDS = {"late_or_unconfirmed_po": "late purchase orders",
                "gl_posting_errors": "ledger batches that failed to post",
                "recurring_task_missed": "recurring checks that missed a cycle",
                "cash_application": "remittances matched to open invoices",
-               "statement_reconciliation": "supplier statements against our payables"}
+               "statement_reconciliation": "supplier statements against our payables",
+               # every other rule the scheduled run reports, so no check is ever named by
+               # its code name ("Rd_projects: partly checked") on Home or in the digest
+               "receipt_without_qc": "receipts with no quality check",
+               "expired_quote": "quotes past their expiry",
+               "conflicting_quantity": "quantities that disagree between systems",
+               "late_order": "late orders",
+               "order_without_customer_po": "orders without a customer PO",
+               "stock_out_risk": "items at risk of running out",
+               "overdue_receivable": "overdue customer invoices",
+               "unit_cost_jump": "unit cost jumps",
+               "mc_task_stuck": "stuck Mission Control tasks",
+               "mc_approval_pending": "Mission Control approvals waiting",
+               "portal_approval_pending": "Portal approvals waiting",
+               "planner_task_overdue": "overdue Planner tasks",
+               "aged_balance_worsening": "balances getting older",
+               "production_late": "late production",
+               "assembly_damage_spike": "damage spikes in assembly",
+               "teams_unanswered_ask": "unanswered asks in Teams",
+               "customer_demand_drop": "customers ordering much less",
+               "promise_date_slip": "promised dates slipping",
+               "supplier_reliability": "supplier reliability",
+               "shipped_not_invoiced": "shipped but not invoiced",
+               "duplicate_customer_order": "customer orders entered twice",
+               "recurring_component_damage": "components damaged again and again",
+               "customer_chase": "customers chasing their orders",
+               "quality_holds": "quality holds",
+               "expedite_requests": "requests to expedite",
+               "supplier_shortage": "supplier shortages",
+               "payment_chase": "suppliers chasing payment",
+               "commitments": "promises we made",
+               "needs_reply": "mail waiting on a reply",
+               "approvals_waiting": "approvals waiting in mail",
+               "chase_escalation": "chases escalating",
+               "party_chases": "customer and supplier chases nobody answered",
+               "internal_chases": "internal chases",
+               "inbox_triage": "replies owed",
+               "label_revisions": "label and artwork revisions",
+               "label_changes": "label and artwork changes",
+               "rd_projects": "R&D and sample projects",
+               "margin_erosion": "margins shrinking",
+               "card_rules": "attested document checks"}
 REASON_WORDS = {"time_budget": "time ran out", "event_bound": "only the most recent were read",
                 "impact_bound": "only the first ones were followed",
                 "card_bound": "only the first ones were read",
@@ -589,8 +628,6 @@ NEXT_ACTIONS = {
                             "the customer.", "late_order_ship_or_close"),
     "watcher_attention": ("Open the cited sources and decide whether anyone needs to act "
                           "(nothing is sent).", "watcher_review"),
-    "mc_task_overdue": ("Ask the task's owner for a new date or to hand it on, and update "
-                        "the task in Mission Control.", "mc_task_new_date"),
     "mc_task_stuck": ("Ask the task's owner what blocks it; move, reassign or cancel it in "
                       "Mission Control.", "mc_task_unblock"),
     "mc_approval_pending": ("Remind the approver to decide; never approve on their behalf.",
@@ -1163,13 +1200,61 @@ def _urgency(item: Item) -> int:
     return item.days
 
 
+def _rule(inbox: Mapping[str, Any], name: str) -> Mapping[str, Any]:
+    """The read's coverage of one check for this reader (``read_inbox``'s ``rules``)."""
+    for rule in inbox.get("rules") or ():
+        if isinstance(rule, Mapping) and rule.get("rule") == name:
+            return rule
+    return {}
+
+
+def _counts(rule: Mapping[str, Any]) -> tuple[int, int] | None:
+    """(records the check had to judge, records it judged) when both are given and add up;
+    None otherwise (never a made-up share)."""
+    checked, judged = rule.get("checked"), rule.get("judged")
+    if any(isinstance(v, bool) or not isinstance(v, int) for v in (checked, judged)):
+        return None
+    return (checked, judged) if 0 <= judged <= checked else None
+
+
+def share_words(checked: int, judged: int) -> str:
+    """"judged 1,234 of 1,500 (82%)": the percent rounded down, so a check that left one
+    record unjudged never reads 100%."""
+    pct = judged * 100 // checked if checked else 100
+    return f"judged {judged:,} of {checked:,} ({pct}%)"
+
+
+def _completed_words(rule: Mapping[str, Any]) -> tuple[str, str]:
+    """A check that ran to the end: "complete" only when it left nothing this reader may
+    know of unjudged; else "partial" with its judged share (to a reader shown every
+    record) or the count it left (to any other reader), or that some were left uncounted."""
+    counts = _counts(rule)
+    left = rule.get("not_evaluated", 0) if rule else 0
+    if counts is not None:
+        checked, judged = counts
+        if judged < checked:
+            return "partial", f"{share_words(checked, judged)}, {checked - judged:,} could not be judged"
+        if left is None or (isinstance(left, int) and left > 0):
+            return "partial", "checked; some records could not be judged (how many is not known)"
+        return "complete", ("checked (nothing to check)" if checked == 0
+                            else f"checked all {checked:,}")
+    if left is None:
+        return "partial", "checked; some records could not be judged (how many is not known)"
+    if isinstance(left, bool) or not isinstance(left, int) or left < 0:
+        return "partial", "checked; whether every record was judged is not known"
+    if left > 0:
+        return "partial", f"checked; {left:,} record{'' if left == 1 else 's'} could not be judged"
+    return "complete", "checked"
+
+
 def _check_state(inbox: Mapping[str, Any], name: str) -> tuple[str, str]:
-    """A check's state this run and its words: never a silent gap."""
+    """A check's state this run and its words: never a silent gap, and never "complete"
+    while it left records unjudged (``_completed_words``)."""
     status = (inbox.get("detectors") or {}).get(name)
     why = [REASON_WORDS.get(r, "") for r in (inbox.get("detector_reasons") or {}).get(name)
            or ()]
     if status == "complete":
-        return "complete", "checked"
+        return _completed_words(_rule(inbox, name))
     if status == "truncated":
         return "partial", "partly checked this run" + (
             f" ({'; '.join(w for w in why if w)})" if any(why) else "")
@@ -1236,11 +1321,21 @@ def _types(inbox: Mapping[str, Any]) -> list[dict[str, Any]]:
             continue   # a check switched off is not this reader's briefing
         states = [_check_state(inbox, d) for d in spec["check"]]
         state = min((s for s, _ in states), key=order.index)
+        # the type's judged share: over its checks' counts when every one gave them
+        counts = [_counts(_rule(inbox, d)) for d in spec["check"]]
+        known = all(c is not None for c in counts) and all(
+            (inbox.get("detectors") or {}).get(d) == "complete" for d in spec["check"])
+        checked = sum(c[0] for c in counts) if known else None
+        judged = sum(c[1] for c in counts) if known else None
         quiet = HIDDEN_POLICY[name] == "none"
         first = None if quiet else _first_found(name, kinds)
         out.append({"event_type": name, "label": spec["label"], "status": state,
                     "words": f"{spec['label']}: " + "; ".join(dict.fromkeys(
                         w for _, w in states)),
+                    "checked": checked, "judged": judged,
+                    "judged_share": None if checked is None else (
+                        # rounded down: one record unjudged never reads as all
+                        judged * 10000 // checked / 10000 if checked else 1.0),
                     "found_live": None if quiet else first is not None,
                     "first_found": None if first is None else first[:10]})
     return out
@@ -1362,7 +1457,9 @@ def build(inbox: Mapping[str, Any], *, routing: Routing, hidden: Mapping[str, in
             "hidden": None if hidden_by_type is None else sum(hidden_by_type.values()),
             "hidden_by_type": hidden_by_type or {}, "last_visit": last_visit,
             "checks": checks, "types": types,
-            "complete": bool(inbox.get("complete")) and not inbox.get("more"),
+            # never complete while a check left records unjudged (``_check_state``)
+            "complete": bool(inbox.get("complete")) and not inbox.get("more")
+            and not any(c["status"] == "partial" for c in checks),
             "not_run": sorted((inbox.get("not_run") or {}).keys()),
             # checks whose findings are of older data than served now: not listed until
             # they run over it (``proactive_engine.read_inbox``)
@@ -1385,6 +1482,7 @@ def read(inbox: Any, store: Any, *, reader: str, may_read: Any, held: Iterable[s
     may not see as counts, and its last visit; the reader's grant is ``may_read``/
     ``held``/``decide``."""
     from . import proactive_engine as pe
+    from . import proactive_engine_inbox
 
     from . import ai_watcher
 
@@ -1396,7 +1494,7 @@ def read(inbox: Any, store: Any, *, reader: str, may_read: Any, held: Iterable[s
                                       decide=decide, reader=reader)
     hidden = pe.hidden_counts(inbox, store, kinds=EVENT_KINDS, may_read=may_read, held=held,
                               decide=decide) if found.get("status") == "read" else None
-    return build(found, routing=routing, hidden=hidden, last_visit=pe.last_visit(inbox, reader),
+    return build(found, routing=routing, hidden=hidden, last_visit=proactive_engine_inbox.last_visit(inbox, reader),
                  limit=limit, since_visit=since_visit, involved=involved, enabled=enabled)
 
 
@@ -1554,7 +1652,6 @@ TODAY_WORDS = {
     "overdue_receivable": ("customer invoice", "customer invoices", "went overdue",
                            "overdue"),
     "unit_cost_jump": ("purchase cost", "purchase costs", "jumped", "jumped"),
-    "mc_task_overdue": ("task", "tasks", "went overdue", "overdue"),
     "mc_task_stuck": ("task", "tasks", "stalled", "stalled"),
     "mc_approval_pending": ("approval", "approvals", "is waiting", "waiting"),
     "portal_approval_pending": ("requisition", "requisitions", "is waiting for approval",
@@ -1634,9 +1731,9 @@ TODAY_WORDS = {
     "twins_disagree": ("record", "records", "has systems disagreeing", "disagreeing"),
     "source_stale": ("source", "sources", "was not updated lately", "not updated lately"),
     "sync_missing": ("record", "records", "is not in its other system",
-                     "not in its other system"),
+                     "not in their other system"),
     "sync_mismatch": ("record", "records", "differs in its other system",
-                      "different in its other system"),
+                      "different in their other system"),
     "inventory_adjustment": ("item", "items", "was written down by hand", "written down"),
     "blocked_account_activity": ("blocked account", "blocked accounts", "has open orders",
                                  "with open orders"),
@@ -1660,7 +1757,7 @@ TODAY_WORDS = {
     "priority_order_unfilled": ("priority-listed order", "priority-listed orders",
                                 "is late or unscheduled", "late or unscheduled"),
 }
-TODAY_PARTS = 3   # the line names the worst types; the rest are "and N more"
+TODAY_PARTS = 3   # the line names the worst types, after how many kinds there are
 
 
 def today_line(briefing: Mapping[str, Any]) -> str:
@@ -1679,7 +1776,7 @@ def today_line(briefing: Mapping[str, Any]) -> str:
     new = [i for i in items if i.get(mark)]
 
     def parts(members: Sequence[Mapping[str, Any]], fresh: bool,
-              counts: Mapping[str, int] | None = None) -> list[str]:
+              counts: Mapping[str, int] | None = None, at: str = "") -> str:
         out: list[str] = []
         types = list(dict.fromkeys(i["event_type"] for i in members
                                    if i.get("event_type") in TODAY_WORDS))
@@ -1694,11 +1791,10 @@ def today_line(briefing: Mapping[str, Any]) -> str:
                 words += (" (one expires today)" if soon == 0 else
                           f" (the first in {soon} day{'' if soon == 1 else 's'})")
             out.append(words.strip())
-        shown = out[:TODAY_PARTS]
-        if len(out) > TODAY_PARTS:
-            more = len(out) - TODAY_PARTS
-            shown.append(f"{more} more kind{'' if more == 1 else 's'}")
-        return shown
+        # more kinds than the line names: it says how many first and names the worst,
+        # never a cut list ending "N more kinds" (Watching lists them all)
+        head = f"{len(out)} kinds, worst first: " if len(out) > TODAY_PARTS else ""
+        return head + at + "; ".join(out[:TODAY_PARTS])
 
     hidden = int(briefing.get("hidden") or 0)
     # what the reader can't open is a count only (``HIDDEN_POLICY``), never which kind
@@ -1714,7 +1810,7 @@ def today_line(briefing: Mapping[str, Any]) -> str:
                    "check, marked with when it was last checked.")
     if new:
         lead = "Since your last visit: " if visit else "In the latest check: "
-        return lead + "; ".join(parts(new, True)) + "." + behind
+        return lead + parts(new, True) + "." + behind
     if not items and behind:
         return "Checking against the latest data." + behind
     if not items:
@@ -1727,7 +1823,7 @@ def today_line(briefing: Mapping[str, Any]) -> str:
     counts = ({g["event_type"]: int(g["count"]) - int(g.get("acknowledged") or 0)
                for g in briefing.get("groups") or ()} if briefing.get("more") else None)
     return ("Nothing new " + ("since your last visit" if visit else "in the latest check")
-            + f"; still open: {at_least}" + "; ".join(parts(items, False, counts))
+            + "; still open: " + parts(items, False, counts, at_least)
             + unopened + "." + behind)
 
 

@@ -38,6 +38,7 @@ import sys
 import time
 from typing import Any, Iterator, Sequence
 
+from ontology import parent_watch
 from integrations import captured_text as ct
 from integrations import kept_members as km
 
@@ -133,8 +134,8 @@ def prime(state_dir: str | Path, projection_dir: str | Path | None = None, *,
         kept.flush()
         chunks = [todo[i:i + CHUNK] for i in range(0, len(todo), CHUNK)]
         pool = multiprocessing.get_context("spawn").Pool(
-            max(1, workers), initializer=_init,
-            initargs=(str(kept.path), kept.code), maxtasksperchild=TASKS_PER_WORKER)
+            max(1, workers), **parent_watch.pool_init(_init, (str(kept.path), kept.code)),
+            maxtasksperchild=TASKS_PER_WORKER)
         try:
             for done, (read, new) in enumerate(pool.imap_unordered(_read, chunks), 1):
                 kept.absorb([], new)

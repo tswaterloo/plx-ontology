@@ -1,6 +1,70 @@
 {
   "components": {
     "schemas": {
+      "ActionAttachment": {
+        "additionalProperties": false,
+        "description": "A file a message carries: named by its upload (the reader's own kept file); the\nname, type, size and SHA-256 are read from the file itself, never from an edit.",
+        "properties": {
+          "content_type": {
+            "anyOf": [
+              {
+                "maxLength": 200,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Content Type"
+          },
+          "name": {
+            "anyOf": [
+              {
+                "maxLength": 255,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Name"
+          },
+          "sha256": {
+            "anyOf": [
+              {
+                "maxLength": 64,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Sha256"
+          },
+          "size": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Size"
+          },
+          "upload_id": {
+            "maxLength": 80,
+            "minLength": 1,
+            "title": "Upload Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "upload_id"
+        ],
+        "title": "ActionAttachment",
+        "type": "object"
+      },
       "ActionCitation": {
         "additionalProperties": false,
         "properties": {
@@ -285,6 +349,22 @@
             ],
             "description": "Assign to: a colleague's address (kept in the Workbench only).",
             "title": "Assignee"
+          },
+          "attachments": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/ActionAttachment"
+                },
+                "maxItems": 5,
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The files the message carries (a filled form's reply): only the card's own; an edit may take one off, never add one.",
+            "title": "Attachments"
           },
           "body": {
             "anyOf": [
@@ -2043,6 +2123,16 @@
             "title": "Mode",
             "type": "string"
           },
+          "sign_in": {
+            "description": "How people sign in here: microsoft, access_link (a console session ticket over live state) or demo.",
+            "enum": [
+              "microsoft",
+              "access_link",
+              "demo"
+            ],
+            "title": "Sign In",
+            "type": "string"
+          },
           "sign_in_available": {
             "title": "Sign In Available",
             "type": "boolean"
@@ -2139,6 +2229,17 @@
             },
             "title": "Notes",
             "type": "array"
+          },
+          "outcomes": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/AutopilotOutcomes"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Accepted / edited / rejected / ignored / waiting per prepared item this reader may see (counts only); absent when nothing was prepared."
           },
           "owner": {
             "title": "Owner",
@@ -2806,6 +2907,39 @@
         "title": "AutopilotDraftKept",
         "type": "object"
       },
+      "AutopilotDraftUse": {
+        "additionalProperties": false,
+        "description": "What the draft was written with: ``memory`` (shown as \"used for this draft\") holds\nonly the entries that changed the draft; ``related`` the entries read for it that\nchanged nothing (\"related, not applied\").",
+        "properties": {
+          "memory": {
+            "items": {
+              "$ref": "#/components/schemas/AutopilotMemoryUse"
+            },
+            "title": "Memory",
+            "type": "array"
+          },
+          "related": {
+            "description": "Memory read for this draft that did not change it.",
+            "items": {
+              "$ref": "#/components/schemas/AutopilotMemoryUse"
+            },
+            "title": "Related",
+            "type": "array"
+          },
+          "template": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/AutopilotTemplateUse"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "title": "AutopilotDraftUse",
+        "type": "object"
+      },
       "AutopilotGate": {
         "additionalProperties": false,
         "description": "The write gate's reading of one workflow: held-out (fresh) replay when scored, else\nthe tuning replay; ``passed`` only from the fresh gate.",
@@ -3039,6 +3173,17 @@
             "title": "Today",
             "type": "boolean"
           },
+          "used_for_draft": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/AutopilotDraftUse"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The memory entries that changed the draft, those read but not applied, and the template."
+          },
           "workflow": {
             "title": "Workflow",
             "type": "string"
@@ -3059,6 +3204,45 @@
           "state"
         ],
         "title": "AutopilotItem",
+        "type": "object"
+      },
+      "AutopilotMemoryUse": {
+        "additionalProperties": false,
+        "description": "One memory entry an autopilot draft read (``operator_api.autopilot_context``).",
+        "properties": {
+          "id": {
+            "title": "Id",
+            "type": "integer"
+          },
+          "kind": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Set only for the person whose memory it is, while they still keep it.",
+            "title": "Kind"
+          },
+          "text": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "As it stands now in your memory; empty for anyone else, or once you deleted or changed it.",
+            "title": "Text"
+          }
+        },
+        "required": [
+          "id"
+        ],
+        "title": "AutopilotMemoryUse",
         "type": "object"
       },
       "AutopilotModeRequest": {
@@ -3232,6 +3416,138 @@
           "on"
         ],
         "title": "AutopilotOptInRequest",
+        "type": "object"
+      },
+      "AutopilotOutcomeCounts": {
+        "additionalProperties": false,
+        "description": "What became of prepared items (``operating.autopilot_outcomes``): each item in one\nclass, so the five counts sum to ``items``; shares (percent, one decimal, as text) are\nover ``decided`` (every class but waiting), null with none decided.",
+        "properties": {
+          "accepted": {
+            "title": "Accepted",
+            "type": "integer"
+          },
+          "decided": {
+            "title": "Decided",
+            "type": "integer"
+          },
+          "edited": {
+            "title": "Edited",
+            "type": "integer"
+          },
+          "ignored": {
+            "title": "Ignored",
+            "type": "integer"
+          },
+          "items": {
+            "title": "Items",
+            "type": "integer"
+          },
+          "rejected": {
+            "title": "Rejected",
+            "type": "integer"
+          },
+          "shares": {
+            "additionalProperties": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "title": "Shares",
+            "type": "object"
+          },
+          "waiting": {
+            "title": "Waiting",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "items",
+          "decided",
+          "accepted",
+          "edited",
+          "rejected",
+          "ignored",
+          "waiting"
+        ],
+        "title": "AutopilotOutcomeCounts",
+        "type": "object"
+      },
+      "AutopilotOutcomes": {
+        "additionalProperties": false,
+        "description": "Counts only, over the prepared items (open and settled) this reader may see.",
+        "properties": {
+          "accepted": {
+            "title": "Accepted",
+            "type": "integer"
+          },
+          "by_autopilot": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/AutopilotOutcomeCounts"
+            },
+            "title": "By Autopilot",
+            "type": "object"
+          },
+          "decided": {
+            "title": "Decided",
+            "type": "integer"
+          },
+          "edited": {
+            "title": "Edited",
+            "type": "integer"
+          },
+          "ignored": {
+            "title": "Ignored",
+            "type": "integer"
+          },
+          "ignored_reasons": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "title": "Ignored Reasons",
+            "type": "object"
+          },
+          "items": {
+            "title": "Items",
+            "type": "integer"
+          },
+          "rejected": {
+            "title": "Rejected",
+            "type": "integer"
+          },
+          "shares": {
+            "additionalProperties": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "title": "Shares",
+            "type": "object"
+          },
+          "waiting": {
+            "title": "Waiting",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "items",
+          "decided",
+          "accepted",
+          "edited",
+          "rejected",
+          "ignored",
+          "waiting"
+        ],
+        "title": "AutopilotOutcomes",
         "type": "object"
       },
       "AutopilotPauseRequest": {
@@ -3710,6 +4026,44 @@
         "title": "AutopilotSwitches",
         "type": "object"
       },
+      "AutopilotTemplateUse": {
+        "additionalProperties": false,
+        "description": "The template an autopilot draft used (its closing block).",
+        "properties": {
+          "doc_type": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Doc Type"
+          },
+          "id": {
+            "title": "Id",
+            "type": "integer"
+          },
+          "name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Set only when you may use the template.",
+            "title": "Name"
+          }
+        },
+        "required": [
+          "id"
+        ],
+        "title": "AutopilotTemplateUse",
+        "type": "object"
+      },
       "AutopilotWorkflowDetail": {
         "additionalProperties": false,
         "description": "One workflow as the studio shows it: what starts it, what it checks and does, its\ngate, its mode, per role its row, what it caught and missed, and its history.",
@@ -4080,21 +4434,6 @@
           "on"
         ],
         "title": "AutopilotWorkflowRow",
-        "type": "object"
-      },
-      "AutopilotWorkflowSwitch": {
-        "additionalProperties": false,
-        "properties": {
-          "on": {
-            "description": "false: the workflow is switched off for everyone (nothing is performed, not even a dry run); true: back on. Switching it on never makes it act for anyone: each person does that.",
-            "title": "On",
-            "type": "boolean"
-          }
-        },
-        "required": [
-          "on"
-        ],
-        "title": "AutopilotWorkflowSwitch",
         "type": "object"
       },
       "Brief": {
@@ -4871,6 +5210,19 @@
         "additionalProperties": false,
         "description": "One event type: its checks' state this run and whether a recorded run over this data\nhas found one of this type.",
         "properties": {
+          "checked": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Records its checks had to judge in their last run; null when not counted or when your access does not show every record the run read.",
+            "title": "Checked"
+          },
           "event_type": {
             "enum": [
               "po_late",
@@ -4913,7 +5265,6 @@
               "price_below_typical",
               "price_below_cost",
               "customer_price_drop",
-              "mc_task_overdue",
               "mc_task_stuck",
               "mc_approval_pending",
               "portal_approval_pending",
@@ -4980,6 +5331,33 @@
             ],
             "description": "Null where that is withheld.",
             "title": "Found Live"
+          },
+          "judged": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Of those, the records judged.",
+            "title": "Judged"
+          },
+          "judged_share": {
+            "anyOf": [
+              {
+                "maximum": 1.0,
+                "minimum": 0.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "judged / checked, rounded down (never 1 while one is left unjudged); null when not counted.",
+            "title": "Judged Share"
           },
           "label": {
             "title": "Label",
@@ -5065,7 +5443,6 @@
               "price_below_typical",
               "price_below_cost",
               "customer_price_drop",
-              "mc_task_overdue",
               "mc_task_stuck",
               "mc_approval_pending",
               "portal_approval_pending",
@@ -5291,7 +5668,6 @@
               "price_below_typical",
               "price_below_cost",
               "customer_price_drop",
-              "mc_task_overdue",
               "mc_task_stuck",
               "mc_approval_pending",
               "portal_approval_pending",
@@ -5539,7 +5915,6 @@
               "price_below_typical",
               "price_below_cost",
               "customer_price_drop",
-              "mc_task_overdue",
               "mc_task_stuck",
               "mc_approval_pending",
               "portal_approval_pending",
@@ -6621,6 +6996,37 @@
         "title": "DevLoginResponse",
         "type": "object"
       },
+      "DocFigure": {
+        "additionalProperties": false,
+        "description": "One figure of a document row, as the sheet or the records state it: ``value`` an\nexact decimal string (never a float), ``unit`` its unit or currency when stated.",
+        "properties": {
+          "label": {
+            "title": "Label",
+            "type": "string"
+          },
+          "unit": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Unit"
+          },
+          "value": {
+            "title": "Value",
+            "type": "string"
+          }
+        },
+        "required": [
+          "label",
+          "value"
+        ],
+        "title": "DocFigure",
+        "type": "object"
+      },
       "DocFillRequest": {
         "additionalProperties": false,
         "description": "Fill this form for this record: the file (base64), the record (an identifier such\nas \"PO 1234\" or a record id), and optionally the SharePoint file it came from (the\nfilled copy goes beside it) or the email it came in (a reply is prepared).",
@@ -6674,6 +7080,186 @@
           "record"
         ],
         "title": "DocFillRequest",
+        "type": "object"
+      },
+      "DocList": {
+        "additionalProperties": false,
+        "description": "One document list on a record's page: the rows of one ``business_documents`` view\nnarrowed to the record, with what was left out counted (never shown).",
+        "properties": {
+          "complete": {
+            "default": true,
+            "description": "False: the read was cut or could not decide everything, so rows may be missing.",
+            "title": "Complete",
+            "type": "boolean"
+          },
+          "error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Why the list could not be read at all.",
+            "title": "Error"
+          },
+          "needs": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The access the whole list needs and the reader lacks (e.g. 'finance'): nothing of the list was read.",
+            "title": "Needs"
+          },
+          "reading": {
+            "description": "True when this screen's first read for this reader is still going on: nothing of it is shown yet (its lists are empty and its counts zero, never a finding); ask again shortly for the page.",
+            "title": "Reading",
+            "type": "boolean"
+          },
+          "rows": {
+            "items": {
+              "$ref": "#/components/schemas/DocRow"
+            },
+            "title": "Rows",
+            "type": "array"
+          },
+          "stale_since": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Set when the server serves the last page it read for this same reader instead of reading it now: when that page was read (ISO). It is read again in the background.",
+            "title": "Stale Since"
+          },
+          "title": {
+            "title": "Title",
+            "type": "string"
+          },
+          "view": {
+            "enum": [
+              "supplier_issues",
+              "forecasts",
+              "forecast_accuracy",
+              "price_sheets",
+              "answer_bank"
+            ],
+            "title": "View",
+            "type": "string"
+          },
+          "withheld": {
+            "default": 0,
+            "description": "Rows left out because they cite a record the reader may not read or need a marking they lack.",
+            "title": "Withheld",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "view",
+          "title"
+        ],
+        "title": "DocList",
+        "type": "object"
+      },
+      "DocRow": {
+        "additionalProperties": false,
+        "description": "One row of a document list (``operating.business_documents``), read as this reader:\nshown only when the reader may read every record it cites and holds its markings.",
+        "properties": {
+          "dated": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The document's or message's day (ISO).",
+            "title": "Dated"
+          },
+          "detail": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Source text (a questionnaire answer, an issue's own words): shown as written.",
+            "title": "Detail"
+          },
+          "figures": {
+            "items": {
+              "$ref": "#/components/schemas/DocFigure"
+            },
+            "title": "Figures",
+            "type": "array"
+          },
+          "records": {
+            "description": "The customers, suppliers, items and lots the row names that the reader may open.",
+            "items": {
+              "$ref": "#/components/schemas/ObjectRef"
+            },
+            "title": "Records",
+            "type": "array"
+          },
+          "source": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ObjectRef"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The document, mail, task or message the row was read from."
+          },
+          "status": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The row's state in words the list filters on (an issue's kind, a price sheet's match or mismatch, a forecast's over or under, an answer's scope).",
+            "title": "Status"
+          },
+          "title": {
+            "title": "Title",
+            "type": "string"
+          },
+          "tone": {
+            "anyOf": [
+              {
+                "enum": [
+                  "bad",
+                  "warn",
+                  "good"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Tone"
+          }
+        },
+        "required": [
+          "title"
+        ],
+        "title": "DocRow",
         "type": "object"
       },
       "DocumentsPending": {
@@ -6923,6 +7509,292 @@
           "scopes"
         ],
         "title": "EntraConfig",
+        "type": "object"
+      },
+      "EntryConfirm": {
+        "additionalProperties": false,
+        "description": "One value the person enters or confirms: a record (``record``) for the customer,\nsupplier or item; a number (``value``) for a quantity; a number and ``currency`` for\na price.",
+        "properties": {
+          "currency": {
+            "anyOf": [
+              {
+                "maxLength": 8,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Currency"
+          },
+          "key": {
+            "maxLength": 40,
+            "title": "Key",
+            "type": "string"
+          },
+          "record": {
+            "anyOf": [
+              {
+                "maxLength": 400,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Record"
+          },
+          "value": {
+            "anyOf": [
+              {
+                "maxLength": 40,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Value"
+          }
+        },
+        "required": [
+          "key"
+        ],
+        "title": "EntryConfirm",
+        "type": "object"
+      },
+      "EntryField": {
+        "additionalProperties": false,
+        "description": "One value the BC entry needs: cited (from the records or the document), a check\nthe person settles, or confirmed by the person (who and when).",
+        "properties": {
+          "confirmed_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Confirmed At"
+          },
+          "confirmed_by": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Confirmed By"
+          },
+          "currency": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Currency"
+          },
+          "field": {
+            "enum": [
+              "customer",
+              "supplier",
+              "item",
+              "quantity",
+              "unit_price"
+            ],
+            "title": "Field",
+            "type": "string"
+          },
+          "key": {
+            "description": "``customer``, ``supplier`` or ``line:<n>:item|quantity|unit_price``: what ``EntryConfirm.key`` names.",
+            "title": "Key",
+            "type": "string"
+          },
+          "label": {
+            "title": "Label",
+            "type": "string"
+          },
+          "line": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Line"
+          },
+          "options": {
+            "items": {
+              "$ref": "#/components/schemas/EntryOption"
+            },
+            "title": "Options",
+            "type": "array"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason"
+          },
+          "status": {
+            "enum": [
+              "cited",
+              "check",
+              "confirmed"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "value": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Value"
+          }
+        },
+        "required": [
+          "key",
+          "field",
+          "label",
+          "status"
+        ],
+        "title": "EntryField",
+        "type": "object"
+      },
+      "EntryHold": {
+        "additionalProperties": false,
+        "description": "An order or PO held until every check is settled (``/api/entries/{entry_id}``):\nonly the person preparing it sees and confirms it. Confirming writes nothing to BC:\nonce ``open`` is 0 the entry goes to the write desk (``write``), where a colleague\nwho holds the write grant approves it.",
+        "properties": {
+          "entry_id": {
+            "title": "Entry Id",
+            "type": "string"
+          },
+          "fields": {
+            "items": {
+              "$ref": "#/components/schemas/EntryField"
+            },
+            "title": "Fields",
+            "type": "array"
+          },
+          "kind": {
+            "enum": [
+              "order",
+              "purchase_order"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
+          "label": {
+            "title": "Label",
+            "type": "string"
+          },
+          "open": {
+            "description": "Checks still to settle.",
+            "title": "Open",
+            "type": "integer"
+          },
+          "write": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/InstructWrite"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "entry_id",
+          "kind",
+          "label",
+          "fields",
+          "open"
+        ],
+        "title": "EntryHold",
+        "type": "object"
+      },
+      "EntryOption": {
+        "additionalProperties": false,
+        "description": "A suggested value for a held field, from a record the reader opens: picking it\nfills the confirm form; it is never used until the person confirms it.",
+        "properties": {
+          "basis": {
+            "title": "Basis",
+            "type": "string"
+          },
+          "currency": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Currency"
+          },
+          "date": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Date"
+          },
+          "record": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The record to send back as ``EntryConfirm.record`` (customer, supplier, item).",
+            "title": "Record"
+          },
+          "unit": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Unit"
+          },
+          "value": {
+            "title": "Value",
+            "type": "string"
+          }
+        },
+        "required": [
+          "value",
+          "basis"
+        ],
+        "title": "EntryOption",
         "type": "object"
       },
       "ErrorBody": {
@@ -7848,11 +8720,31 @@
       },
       "FillReply": {
         "additionalProperties": false,
-        "description": "The filled copy as a reply to the email the form came in: prepared, never sent from\nhere (``missing`` says what a send with a file needs).",
+        "description": "The filled copy as a reply to the email the form came in, carrying the file: never\nsent from here. ``card_id`` opens it in the action dialog (``/api/actions/preview``),\nwhere the reader previews the exact message and file and confirms the send themselves;\n``not_available`` (with ``missing``) when no such reply can be prepared.",
         "properties": {
+          "actions": {
+            "description": "The sends that carry the file.",
+            "items": {
+              "$ref": "#/components/schemas/CardActionOffer"
+            },
+            "title": "Actions",
+            "type": "array"
+          },
           "attachment": {
             "title": "Attachment",
             "type": "string"
+          },
+          "card_id": {
+            "anyOf": [
+              {
+                "maxLength": 200,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Card Id"
           },
           "missing": {
             "items": {
@@ -7862,7 +8754,10 @@
             "type": "array"
           },
           "status": {
-            "const": "not_available",
+            "enum": [
+              "ready",
+              "not_available"
+            ],
             "title": "Status",
             "type": "string"
           },
@@ -7886,6 +8781,259 @@
           "missing"
         ],
         "title": "FillReply",
+        "type": "object"
+      },
+      "FormulaComponent": {
+        "additionalProperties": false,
+        "description": "One line of a formula sheet as the sheet states it (``operating.composition_lines``):\nnever filled in, never a price. ``item`` is the one raw-material record the part code\nnames (null: the code names no record, or several).",
+        "properties": {
+          "check": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The sheet's share x size check for this line, when it fails or cannot be made.",
+            "title": "Check"
+          },
+          "description": {
+            "default": "",
+            "title": "Description",
+            "type": "string"
+          },
+          "item": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ObjectRef"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "last_price": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/FormulaPrice"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "What the raw material's newest priced purchase order line paid, when this reader may read it."
+          },
+          "no": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "No"
+          },
+          "part": {
+            "title": "Part",
+            "type": "string"
+          },
+          "quantity": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Quantity"
+          },
+          "share_percent": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The share the sheet states, as written (exact decimal text, percent).",
+            "title": "Share Percent"
+          },
+          "supplier_items": {
+            "default": 0,
+            "description": "Supplier items of the raw material this reader may read (their prices stay on them).",
+            "title": "Supplier Items",
+            "type": "integer"
+          },
+          "unit": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Unit"
+          }
+        },
+        "required": [
+          "part"
+        ],
+        "title": "FormulaComponent",
+        "type": "object"
+      },
+      "FormulaPrice": {
+        "additionalProperties": false,
+        "description": "A raw material's last PO price (``business_documents`` view ``item_po_prices``).",
+        "properties": {
+          "currency": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Currency"
+          },
+          "dated": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Dated"
+          },
+          "po": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ObjectRef"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "price": {
+            "description": "Exact decimal text, per ``uom``.",
+            "title": "Price",
+            "type": "string"
+          },
+          "uom": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Uom"
+          }
+        },
+        "required": [
+          "price"
+        ],
+        "title": "FormulaPrice",
+        "type": "object"
+      },
+      "FormulaSheet": {
+        "additionalProperties": false,
+        "description": "A formula sheet of the product: the document it is read from, the formula number it\nstates and its lines in sheet order.",
+        "properties": {
+          "basis": {
+            "description": "code: the sheet states one of the product's codes; name: it states no code and its product name is this product's.",
+            "enum": [
+              "code",
+              "name"
+            ],
+            "title": "Basis",
+            "type": "string"
+          },
+          "components": {
+            "items": {
+              "$ref": "#/components/schemas/FormulaComponent"
+            },
+            "title": "Components",
+            "type": "array"
+          },
+          "dated": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Dated"
+          },
+          "document": {
+            "$ref": "#/components/schemas/ObjectRef"
+          },
+          "formula_code": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Formula Code"
+          },
+          "material_cost": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/MaterialCost"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Omitted when no line's raw material has a price this reader may read."
+          },
+          "missing_lines": {
+            "default": 0,
+            "title": "Missing Lines",
+            "type": "integer"
+          },
+          "share_total": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Share Total"
+          },
+          "status": {
+            "description": "partial: some lines could not be read (``missing_lines``); never filled in.",
+            "enum": [
+              "complete",
+              "partial"
+            ],
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "document",
+          "basis",
+          "status"
+        ],
+        "title": "FormulaSheet",
         "type": "object"
       },
       "Freshness": {
@@ -9009,6 +10157,17 @@
             "title": "Documents",
             "type": "array"
           },
+          "entry": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/EntryHold"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "An order or PO held until you settle its checks."
+          },
           "files": {
             "description": "The files this instruction read (never their content): continuing it needs them attached again.",
             "items": {
@@ -9250,7 +10409,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "title": "Intent Id"
           },
           "label": {
@@ -10491,6 +11649,88 @@
         "title": "LatePo",
         "type": "object"
       },
+      "LearnedTemplate": {
+        "additionalProperties": false,
+        "description": "A kind of document learned from the reader's own sent documents.",
+        "properties": {
+          "ask": {
+            "description": "The words that ask for one; the record it is for goes after them.",
+            "title": "Ask",
+            "type": "string"
+          },
+          "documents": {
+            "description": "How many of your documents it was learned from.",
+            "title": "Documents",
+            "type": "integer"
+          },
+          "kind": {
+            "title": "Kind",
+            "type": "string"
+          },
+          "label": {
+            "title": "Label",
+            "type": "string"
+          },
+          "last_sent": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The latest of them (ISO date).",
+            "title": "Last Sent"
+          }
+        },
+        "required": [
+          "kind",
+          "label",
+          "documents",
+          "ask"
+        ],
+        "title": "LearnedTemplate",
+        "type": "object"
+      },
+      "LearnedTemplates": {
+        "additionalProperties": false,
+        "description": "Templates learned from your documents (re-learned daily). ``none``: nothing learned\nfor you yet; ``unavailable``: the people exclusion could not be read, so none is\nlisted.",
+        "properties": {
+          "learned_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Learned At"
+          },
+          "status": {
+            "enum": [
+              "read",
+              "none",
+              "unavailable"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "templates": {
+            "items": {
+              "$ref": "#/components/schemas/LearnedTemplate"
+            },
+            "title": "Templates",
+            "type": "array"
+          }
+        },
+        "required": [
+          "status"
+        ],
+        "title": "LearnedTemplates",
+        "type": "object"
+      },
       "LinkGroup": {
         "additionalProperties": false,
         "properties": {
@@ -10690,6 +11930,56 @@
         "title": "LogoutResponse",
         "type": "object"
       },
+      "MaterialCost": {
+        "additionalProperties": false,
+        "description": "A sheet's raw-material cost per kg of the product: each line's share times its raw\nmaterial's last PO price per kg, summed (exact Decimal, one currency). Never filled in:\na line with no price, another currency or a unit not convertible to kg is named in\n``missing`` and the cost is ``complete`` false.",
+        "properties": {
+          "complete": {
+            "default": false,
+            "title": "Complete",
+            "type": "boolean"
+          },
+          "currency": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Currency"
+          },
+          "missing": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Missing",
+            "type": "array"
+          },
+          "per_kg": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Per Kg"
+          },
+          "priced_share": {
+            "description": "The share of the formula (percent) priced.",
+            "title": "Priced Share",
+            "type": "string"
+          }
+        },
+        "required": [
+          "priced_share"
+        ],
+        "title": "MaterialCost",
+        "type": "object"
+      },
       "MaterialRow": {
         "additionalProperties": false,
         "properties": {
@@ -10841,6 +12131,24 @@
           "proof": {
             "description": "How the identity was proven (entra_access_token, configured_employee, fixture).",
             "title": "Proof",
+            "type": "string"
+          },
+          "roles": {
+            "description": "The reader's own work roles from the team snapshot (purchasing, customer_service, quality, rnd, ...): the app's per-role defaults. Empty when unknown.",
+            "items": {
+              "type": "string"
+            },
+            "title": "Roles",
+            "type": "array"
+          },
+          "sign_in": {
+            "description": "How this reader signed in: microsoft, access_link (console session ticket) or demo (mock, fixture or a configured test identity).",
+            "enum": [
+              "microsoft",
+              "access_link",
+              "demo"
+            ],
+            "title": "Sign In",
             "type": "string"
           },
           "tenant": {
@@ -11015,6 +12323,18 @@
             "title": "Confidence",
             "type": "number"
           },
+          "due": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "A commitment's due day (YYYY-MM-DD, US Eastern) as its words say it, read against when it was said; None when they name no day.",
+            "title": "Due"
+          },
           "id": {
             "title": "Id",
             "type": "integer"
@@ -11084,6 +12404,164 @@
           "available"
         ],
         "title": "MemoryItems",
+        "type": "object"
+      },
+      "MemoryPeople": {
+        "additionalProperties": false,
+        "description": "The people you work with and your conversations going, from your own mailbox.",
+        "properties": {
+          "available": {
+            "description": "False when your mail or the people exclusion cannot be read now (nothing is guessed).",
+            "title": "Available",
+            "type": "boolean"
+          },
+          "people": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/MemoryPerson"
+            },
+            "title": "People",
+            "type": "array"
+          },
+          "reading": {
+            "default": false,
+            "description": "True while your mail is still being read: ask again in a few seconds.",
+            "title": "Reading",
+            "type": "boolean"
+          },
+          "threads": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/MemoryThread"
+            },
+            "title": "Threads",
+            "type": "array"
+          }
+        },
+        "required": [
+          "available"
+        ],
+        "title": "MemoryPeople",
+        "type": "object"
+      },
+      "MemoryPerson": {
+        "additionalProperties": false,
+        "properties": {
+          "address": {
+            "title": "Address",
+            "type": "string"
+          },
+          "inside": {
+            "description": "An address of the company's own domains.",
+            "title": "Inside",
+            "type": "boolean"
+          },
+          "last_at": {
+            "title": "Last At",
+            "type": "string"
+          },
+          "last_subject": {
+            "description": "Empty when it carries pay or finance.",
+            "title": "Last Subject",
+            "type": "string"
+          },
+          "name": {
+            "description": "Read from the address's own parts.",
+            "title": "Name",
+            "type": "string"
+          },
+          "received": {
+            "description": "Messages they sent you in the last 90 days.",
+            "title": "Received",
+            "type": "integer"
+          },
+          "sent": {
+            "description": "Messages you sent them in the last 90 days.",
+            "title": "Sent",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "address",
+          "name",
+          "inside",
+          "sent",
+          "received",
+          "last_at",
+          "last_subject"
+        ],
+        "title": "MemoryPerson",
+        "type": "object"
+      },
+      "MemorySave": {
+        "additionalProperties": false,
+        "description": "Something to remember in your own words, or a correction of one of your items.",
+        "properties": {
+          "kind": {
+            "enum": [
+              "instruction",
+              "preference",
+              "commitment",
+              "fact"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
+          "text": {
+            "maxLength": 1000,
+            "minLength": 1,
+            "title": "Text",
+            "type": "string"
+          }
+        },
+        "required": [
+          "kind",
+          "text"
+        ],
+        "title": "MemorySave",
+        "type": "object"
+      },
+      "MemoryThread": {
+        "additionalProperties": false,
+        "properties": {
+          "last_at": {
+            "title": "Last At",
+            "type": "string"
+          },
+          "messages": {
+            "title": "Messages",
+            "type": "integer"
+          },
+          "others": {
+            "description": "Who else is on it (up to six addresses).",
+            "items": {
+              "type": "string"
+            },
+            "title": "Others",
+            "type": "array"
+          },
+          "subject": {
+            "title": "Subject",
+            "type": "string"
+          },
+          "turn": {
+            "description": "yours: the last message came to you; theirs: you wrote last.",
+            "enum": [
+              "yours",
+              "theirs"
+            ],
+            "title": "Turn",
+            "type": "string"
+          }
+        },
+        "required": [
+          "subject",
+          "others",
+          "messages",
+          "last_at",
+          "turn"
+        ],
+        "title": "MemoryThread",
         "type": "object"
       },
       "Money": {
@@ -11754,12 +13232,34 @@
             ],
             "description": "A customer's revenue, orders and contacts (customers only)."
           },
+          "documents": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/RecordDocuments"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "A customer's, supplier's or item's document lists (the documents section)."
+          },
           "facts": {
             "items": {
               "$ref": "#/components/schemas/Fact"
             },
             "title": "Facts",
             "type": "array"
+          },
+          "formula": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ProductFormula"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "A product's: what its formula sheets say it is made of (the formula section)."
           },
           "freshness": {
             "$ref": "#/components/schemas/Freshness"
@@ -11808,11 +13308,30 @@
             "type": "array"
           },
           "linked": {
+            "description": "Messages and documents linked to the record that this reader may open; each with its title and source.",
             "items": {
               "$ref": "#/components/schemas/LinkedItem"
             },
             "title": "Linked",
             "type": "array"
+          },
+          "linked_counted_all": {
+            "default": true,
+            "description": "False when the counts stopped at their page bound: each is then a lower bound.",
+            "title": "Linked Counted All",
+            "type": "boolean"
+          },
+          "linked_unavailable": {
+            "default": 0,
+            "description": "Linked documents this reader may see whose source has no reader set up here yet: counted only, never titled or cited.",
+            "title": "Linked Unavailable",
+            "type": "integer"
+          },
+          "linked_withheld": {
+            "default": 0,
+            "description": "Linked documents this reader is not permitted to open: counted only, never titled or cited. Documents the people exclusion withholds are never counted.",
+            "title": "Linked Withheld",
+            "type": "integer"
           },
           "links": {
             "description": "The records one hop away, one group per link kind the schema declares for this record's type, each record with the evidence the link was read from.",
@@ -12002,6 +13521,28 @@
             "title": "Applies",
             "type": "boolean"
           },
+          "documents": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/RecordDocuments"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "documents: on a customer's, supplier's or item's page, its lists from what customers and suppliers sent (issues, forecasts, forecast accuracy, price sheets, questionnaire answers)."
+          },
+          "formula": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ProductFormula"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "formula: on a product's page, its formula sheets' lines, each part linked to the raw material it names."
+          },
           "knows": {
             "anyOf": [
               {
@@ -12104,7 +13645,9 @@
               "landed_cost",
               "trail",
               "margin",
-              "knows"
+              "knows",
+              "documents",
+              "formula"
             ],
             "title": "Section",
             "type": "string"
@@ -12934,6 +14477,50 @@
         "title": "ProactiveSuggestion",
         "type": "object"
       },
+      "ProductFormula": {
+        "additionalProperties": false,
+        "description": "What a product is made of, read from its formula sheets as this reader may read\nthem (``plx.aggregate`` mode ``business_documents`` view ``formula_lines``: the people\nexclusion first). The Portal's own formula lines are not served, so sheets are the\nonly source and say so (``portal_lines_served`` false).",
+        "properties": {
+          "complete": {
+            "default": false,
+            "description": "False: some sheets or lines were not read (budget, row cap or unreadable lines).",
+            "title": "Complete",
+            "type": "boolean"
+          },
+          "other_products": {
+            "default": 0,
+            "description": "Sheets found by name that state another product's code (never this product's).",
+            "title": "Other Products",
+            "type": "integer"
+          },
+          "portal_lines_served": {
+            "default": false,
+            "title": "Portal Lines Served",
+            "type": "boolean"
+          },
+          "sheets": {
+            "items": {
+              "$ref": "#/components/schemas/FormulaSheet"
+            },
+            "title": "Sheets",
+            "type": "array"
+          },
+          "unresolved_parts": {
+            "default": 0,
+            "description": "Lines whose part code names no record.",
+            "title": "Unresolved Parts",
+            "type": "integer"
+          },
+          "withheld": {
+            "default": 0,
+            "description": "Sheets, lines or supplier items this reader may not read (counted, never shown).",
+            "title": "Withheld",
+            "type": "integer"
+          }
+        },
+        "title": "ProductFormula",
+        "type": "object"
+      },
       "ProductMargin": {
         "additionalProperties": false,
         "description": "One item's margin over the customer's checked order lines of the period.",
@@ -13755,6 +15342,11 @@
             "type": "array"
           },
           "customer": {
+            "description": "The customer's record handle (open it to read the name): the threads' one settled customer link, else the one customer record stating the sender. A thread of a supplier, or of a company no record names, is no project.",
+            "title": "Customer",
+            "type": "string"
+          },
+          "customer_name": {
             "anyOf": [
               {
                 "type": "string"
@@ -13763,8 +15355,8 @@
                 "type": "null"
               }
             ],
-            "description": "The customer's record handle (open it to read the name); null when the threads' mail is linked to no single customer.",
-            "title": "Customer"
+            "description": "The customer's name as this reader reads its record; none when it is not readable (the app shows the handle).",
+            "title": "Customer Name"
           },
           "days": {
             "title": "Days",
@@ -13848,18 +15440,6 @@
             "title": "Owner Is You",
             "type": "boolean"
           },
-          "party": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "description": "Then the one outside domain of the threads (a customer or a supplier: not known which).",
-            "title": "Party"
-          },
           "status": {
             "enum": [
               "waiting_on_us",
@@ -13888,6 +15468,7 @@
         },
         "required": [
           "id",
+          "customer",
           "kind",
           "status",
           "days",
@@ -14048,6 +15629,21 @@
           "at"
         ],
         "title": "RecordAsOf",
+        "type": "object"
+      },
+      "RecordDocuments": {
+        "additionalProperties": false,
+        "description": "The documents section of a record's page: what customers and suppliers sent in\nsheets, mail and tasks that names this record (quality issues, forecasts and their\naccuracy, price sheets against what was billed, past questionnaire answers).",
+        "properties": {
+          "lists": {
+            "items": {
+              "$ref": "#/components/schemas/DocList"
+            },
+            "title": "Lists",
+            "type": "array"
+          }
+        },
+        "title": "RecordDocuments",
         "type": "object"
       },
       "RecordHistory": {
@@ -15731,6 +17327,14 @@
             },
             "title": "Trend",
             "type": "array"
+          },
+          "weeks": {
+            "description": "The weekly tracker: the last four Monday weeks, the current one last.",
+            "items": {
+              "$ref": "#/components/schemas/TeamTrackerWeek"
+            },
+            "title": "Weeks",
+            "type": "array"
           }
         },
         "required": [
@@ -15783,6 +17387,81 @@
           "person"
         ],
         "title": "TeamPersonDetail",
+        "type": "object"
+      },
+      "TeamTrackerWeek": {
+        "additionalProperties": false,
+        "description": "One week of a person's tracker (internal; the owner never appears).",
+        "properties": {
+          "closed": {
+            "default": 0,
+            "description": "Their alerts closed that week.",
+            "title": "Closed",
+            "type": "integer"
+          },
+          "done": {
+            "default": 0,
+            "description": "Everything they sent or did: mail sent, Teams messages, meetings and each system's recorded actions.",
+            "title": "Done",
+            "type": "integer"
+          },
+          "partial": {
+            "default": false,
+            "description": "The week is not over yet.",
+            "title": "Partial",
+            "type": "boolean"
+          },
+          "received": {
+            "default": 0,
+            "description": "Mail they received.",
+            "title": "Received",
+            "type": "integer"
+          },
+          "replies": {
+            "default": 0,
+            "title": "Replies",
+            "type": "integer"
+          },
+          "reply_minutes": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Median minutes to reply that week.",
+            "title": "Reply Minutes"
+          },
+          "saved_minutes": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Minutes the Workbench saved them (the work log's estimate); null when not counted.",
+            "title": "Saved Minutes"
+          },
+          "to": {
+            "description": "Its last day counted (the snapshot's day for the current week).",
+            "title": "To",
+            "type": "string"
+          },
+          "week": {
+            "description": "The week's Monday (ISO date, US Eastern).",
+            "title": "Week",
+            "type": "string"
+          }
+        },
+        "required": [
+          "week",
+          "to"
+        ],
+        "title": "TeamTrackerWeek",
         "type": "object"
       },
       "TeamView": {
@@ -16450,7 +18129,7 @@
       },
       "TemplateSuggestion": {
         "additionalProperties": false,
-        "description": "A template offered for the document you are starting: one you saved or that is\nshared with you (``template``), or the layout learned from the documents of this kind\nyou sent (``learned``: ``ask`` is the one-box line that makes it).",
+        "description": "A template offered for the document you are starting: one you saved or that is\nshared with you (``template``), or the layout learned from the documents of this kind\nyou sent (``learned``: ``ask`` is the one-box line that makes it), or mail you keep\nsending in near the same words (``repeated``: ``body`` to save as a template).",
         "properties": {
           "ask": {
             "anyOf": [
@@ -16462,6 +18141,17 @@
               }
             ],
             "title": "Ask"
+          },
+          "body": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Body"
           },
           "detail": {
             "default": "",
@@ -16490,7 +18180,8 @@
           "kind": {
             "enum": [
               "saved",
-              "learned"
+              "learned",
+              "repeated"
             ],
             "title": "Kind",
             "type": "string"
@@ -17056,7 +18747,7 @@
       },
       "TrustFreshness": {
         "additionalProperties": false,
-        "description": "One source system: the newest capture taken from it, the newest capture the served\ndata holds, and the lag between them.",
+        "description": "One source system: the newest capture taken from it, the newest capture the served\ndata holds, and the age of the newest capture.",
         "properties": {
           "capture": {
             "anyOf": [
@@ -17090,7 +18781,7 @@
                 "type": "null"
               }
             ],
-            "description": "captured_at - served_at; absent when either is unknown.",
+            "description": "The age of captured_at now; absent when no capture time is known.",
             "title": "Lag Seconds"
           },
           "served_at": {
@@ -17341,232 +19032,6 @@
           "checked_at"
         ],
         "title": "TruthFlag",
-        "type": "object"
-      },
-      "UatFeedback": {
-        "additionalProperties": false,
-        "description": "The MRP UAT feedback lists read as you may read them: totals per class, open items per\npriority word, and the items (open first, then priority, then newest change). Items you\nmay not open are counted (``withheld``), never listed. Read only.",
-        "properties": {
-          "as_of": {
-            "title": "As Of",
-            "type": "string"
-          },
-          "cut": {
-            "default": false,
-            "title": "Cut",
-            "type": "boolean"
-          },
-          "items": {
-            "items": {
-              "$ref": "#/components/schemas/UatItem"
-            },
-            "title": "Items",
-            "type": "array"
-          },
-          "lists": {
-            "items": {
-              "type": "string"
-            },
-            "title": "Lists",
-            "type": "array"
-          },
-          "matched": {
-            "default": 0,
-            "title": "Matched",
-            "type": "integer"
-          },
-          "open_priorities": {
-            "items": {
-              "$ref": "#/components/schemas/UatPriorityCount"
-            },
-            "title": "Open Priorities",
-            "type": "array"
-          },
-          "read_at": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "description": "Set when this page is the one read for this same reader a moment ago, served as kept: when it was read (ISO). Other people's decisions and actions it shows are as of then.",
-            "title": "Read At"
-          },
-          "reading": {
-            "description": "True when this screen's first read for this reader is still going on: nothing of it is shown yet (its lists are empty and its counts zero, never a finding); ask again shortly for the page.",
-            "title": "Reading",
-            "type": "boolean"
-          },
-          "sent": {
-            "const": 0,
-            "default": 0,
-            "title": "Sent",
-            "type": "integer"
-          },
-          "served": {
-            "default": true,
-            "description": "False when the reading could not be made here.",
-            "title": "Served",
-            "type": "boolean"
-          },
-          "stale_since": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "description": "Set when the server serves the last page it read for this same reader instead of reading it now: when that page was read (ISO). It is read again in the background.",
-            "title": "Stale Since"
-          },
-          "status": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Status"
-          },
-          "total": {
-            "default": 0,
-            "title": "Total",
-            "type": "integer"
-          },
-          "totals": {
-            "additionalProperties": {
-              "type": "integer"
-            },
-            "title": "Totals",
-            "type": "object"
-          },
-          "withheld": {
-            "default": 0,
-            "title": "Withheld",
-            "type": "integer"
-          },
-          "writes": {
-            "const": 0,
-            "default": 0,
-            "title": "Writes",
-            "type": "integer"
-          }
-        },
-        "required": [
-          "as_of"
-        ],
-        "title": "UatFeedback",
-        "type": "object"
-      },
-      "UatItem": {
-        "additionalProperties": false,
-        "description": "One UAT feedback item (a SharePoint list item) as the list words it.",
-        "properties": {
-          "age_days": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "description": "Days since the last change; open items only.",
-            "title": "Age Days"
-          },
-          "list": {
-            "title": "List",
-            "type": "string"
-          },
-          "modified": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Modified"
-          },
-          "priority": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Priority"
-          },
-          "record": {
-            "title": "Record",
-            "type": "string"
-          },
-          "resolution_word": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Resolution Word"
-          },
-          "status": {
-            "title": "Status",
-            "type": "string"
-          },
-          "status_word": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Status Word"
-          },
-          "title": {
-            "default": "",
-            "title": "Title",
-            "type": "string"
-          }
-        },
-        "required": [
-          "record",
-          "list",
-          "status"
-        ],
-        "title": "UatItem",
-        "type": "object"
-      },
-      "UatPriorityCount": {
-        "additionalProperties": false,
-        "properties": {
-          "count": {
-            "title": "Count",
-            "type": "integer"
-          },
-          "word": {
-            "title": "Word",
-            "type": "string"
-          }
-        },
-        "required": [
-          "word",
-          "count"
-        ],
-        "title": "UatPriorityCount",
         "type": "object"
       },
       "UnderstandingEvent": {
@@ -18827,6 +20292,12 @@
             "title": "Alerts",
             "type": "array"
           },
+          "complete": {
+            "default": true,
+            "description": "False when some alerts could not be read just now (``not_read`` says which): the list may be short, never read as \"no alerts\".",
+            "title": "Complete",
+            "type": "boolean"
+          },
           "configured": {
             "title": "Configured",
             "type": "boolean"
@@ -18836,6 +20307,18 @@
               "$ref": "#/components/schemas/WatchFollow"
             },
             "title": "Follows",
+            "type": "array"
+          },
+          "not_read": {
+            "description": "What could not be read: the stored alerts' records, or the inbox your signal rules read.",
+            "items": {
+              "enum": [
+                "alerts_not_read",
+                "inbox_not_read"
+              ],
+              "type": "string"
+            },
+            "title": "Not Read",
             "type": "array"
           },
           "rules": {
@@ -19450,6 +20933,84 @@
         "title": "Workload",
         "type": "object"
       },
+      "WorkloadGrantPerson": {
+        "additionalProperties": false,
+        "properties": {
+          "in_snapshot": {
+            "default": true,
+            "title": "In Snapshot",
+            "type": "boolean"
+          },
+          "name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "From the team snapshot; null when they are in the grants but not in the snapshot.",
+            "title": "Name"
+          },
+          "oid": {
+            "description": "Their Entra object id (the owner's sheet only).",
+            "title": "Oid",
+            "type": "string"
+          },
+          "sees": {
+            "description": "The teams whose people they see one by one on Workload.",
+            "items": {
+              "type": "string"
+            },
+            "title": "Sees",
+            "type": "array"
+          },
+          "team": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Team"
+          }
+        },
+        "required": [
+          "oid"
+        ],
+        "title": "WorkloadGrantPerson",
+        "type": "object"
+      },
+      "WorkloadGrantSheet": {
+        "additionalProperties": false,
+        "description": "The owner's workload grant editor: the people the exclusion clears, each with their\nteam and the teams they see per person. ``held_back`` counts grant entries for people the\nsheet never shows (the owner, the hidden list, the excluded); saving keeps them.",
+        "properties": {
+          "held_back": {
+            "default": 0,
+            "title": "Held Back",
+            "type": "integer"
+          },
+          "people": {
+            "items": {
+              "$ref": "#/components/schemas/WorkloadGrantPerson"
+            },
+            "title": "People",
+            "type": "array"
+          },
+          "teams": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Teams",
+            "type": "array"
+          }
+        },
+        "title": "WorkloadGrantSheet",
+        "type": "object"
+      },
       "WorkloadGrants": {
         "additionalProperties": false,
         "description": "The owner's assignment: each person's team, and the teams each manager sees per\nperson (Entra object ids, team codes in capitals).",
@@ -19485,6 +21046,18 @@
           "awaiting_reply": {
             "title": "Awaiting Reply",
             "type": "integer"
+          },
+          "name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "From the team snapshot; null when the snapshot does not name them.",
+            "title": "Name"
           },
           "person": {
             "title": "Person",
@@ -20011,7 +21584,7 @@
     }
   },
   "info": {
-    "description": "Read-only Workbench API for the web app. Every route but auth/config, auth/dev-login and health needs a signed-in reader. Errors are {error:{code,message}}.",
+    "description": "Workbench API for the web app. Every route but auth/config, auth/dev-login and health needs a signed-in reader. Errors are {error:{code,message}}. Generated from operator_api/models.py by `python3 -m operator_api openapi --write`; never edit openapi.json by hand.",
     "title": "PLX Workbench app API",
     "version": "1.0.0"
   },
@@ -21399,97 +22972,6 @@
         "tags": [
           "actions"
         ]
-      },
-      "post": {
-        "description": "Switch a workflow off for everyone, or back on. Owner only (403 for every other\nreader). Nobody switches a workflow on to act for someone else: each person does\nthat for themselves (``/api/autopilot/opt-in``).",
-        "operationId": "autopilot_workflow_api_autopilot_workflows__workflow__post",
-        "parameters": [
-          {
-            "in": "path",
-            "name": "workflow",
-            "required": true,
-            "schema": {
-              "title": "Workflow",
-              "type": "string"
-            }
-          }
-        ],
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/AutopilotWorkflowSwitch"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/AutopilotArea"
-                }
-              }
-            },
-            "description": "Successful Response"
-          },
-          "401": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            },
-            "description": "Unauthorized"
-          },
-          "403": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            },
-            "description": "Forbidden"
-          },
-          "404": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            },
-            "description": "Not Found"
-          },
-          "409": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            },
-            "description": "Conflict"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            },
-            "description": "Unprocessable Entity"
-          }
-        },
-        "summary": "Autopilot Workflow",
-        "tags": [
-          "actions"
-        ]
       }
     },
     "/api/autopilot/workflows/{workflow}/mode": {
@@ -22040,7 +23522,6 @@
                 "price_below_typical",
                 "price_below_cost",
                 "customer_price_drop",
-                "mc_task_overdue",
                 "mc_task_stuck",
                 "mc_approval_pending",
                 "portal_approval_pending",
@@ -22454,6 +23935,202 @@
         "summary": "Doc Fill",
         "tags": [
           "actions"
+        ]
+      }
+    },
+    "/api/entries/{entry_id}": {
+      "get": {
+        "description": "An order or PO you prepared that is held until its checks are settled: each\nvalue it needs, cited, confirmed by you or still a check with its suggestions.",
+        "operationId": "entry_view_api_entries__entry_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "entry_id",
+            "required": true,
+            "schema": {
+              "title": "Entry Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EntryHold"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Forbidden"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unprocessable Entity"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Service Unavailable"
+          }
+        },
+        "summary": "Entry View",
+        "tags": [
+          "writes"
+        ]
+      }
+    },
+    "/api/entries/{entry_id}/confirm": {
+      "post": {
+        "description": "Enter or confirm one value of your held entry (recorded as yours, with when).\nNothing is written to BC: with no check left the entry goes to the write desk,\nwhere a colleague who holds the write grant approves it.",
+        "operationId": "entry_confirm_api_entries__entry_id__confirm_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "entry_id",
+            "required": true,
+            "schema": {
+              "title": "Entry Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/EntryConfirm"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EntryHold"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Forbidden"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unprocessable Entity"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Service Unavailable"
+          }
+        },
+        "summary": "Entry Confirm",
+        "tags": [
+          "writes"
         ]
       }
     },
@@ -23663,6 +25340,98 @@
         "tags": [
           "work-log"
         ]
+      },
+      "post": {
+        "description": "Tell the Workbench something to remember in your own words: a standing\ninstruction, a preference, a commitment or a fact. Used in every answer of yours,\nnever anyone else's. Pay and finance, and anything naming someone the Workbench\nleaves out, are refused.",
+        "operationId": "memory_write_api_memory_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MemorySave"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MemoryItem"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unprocessable Entity"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Service Unavailable"
+          }
+        },
+        "summary": "Memory Write",
+        "tags": [
+          "work-log"
+        ]
+      }
+    },
+    "/api/memory/people": {
+      "get": {
+        "description": "The people you work with most and your conversations going (whose turn it is),\nread from your own mailbox for the last 90 days; nothing stored. Only yours.",
+        "operationId": "memory_people_api_memory_people_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MemoryPeople"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          }
+        },
+        "summary": "Memory People",
+        "tags": [
+          "work-log"
+        ]
       }
     },
     "/api/memory/{item_id}": {
@@ -23724,6 +25493,152 @@
           }
         },
         "summary": "Memory Forget",
+        "tags": [
+          "work-log"
+        ]
+      },
+      "put": {
+        "description": "Correct one of your items in your own words: the new text replaces it, and\nnothing the Workbench learns later writes over it. Another person's reads as not\nfound.",
+        "operationId": "memory_correct_api_memory__item_id__put",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "item_id",
+            "required": true,
+            "schema": {
+              "minimum": 1,
+              "title": "Item Id",
+              "type": "integer"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MemorySave"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MemoryItem"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unprocessable Entity"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Service Unavailable"
+          }
+        },
+        "summary": "Memory Correct",
+        "tags": [
+          "work-log"
+        ]
+      }
+    },
+    "/api/memory/{item_id}/done": {
+      "post": {
+        "description": "Mark one of your commitments done: it leaves Today and your memory, and your\nmemory log keeps that it was done. Another person's reads as not found.",
+        "operationId": "memory_done_api_memory__item_id__done_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "item_id",
+            "required": true,
+            "schema": {
+              "minimum": 1,
+              "title": "Item Id",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MemoryForgotten"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Memory Done",
         "tags": [
           "work-log"
         ]
@@ -24063,7 +25978,9 @@
                 "landed_cost",
                 "trail",
                 "margin",
-                "knows"
+                "knows",
+                "documents",
+                "formula"
               ],
               "title": "Section",
               "type": "string"
@@ -24599,7 +26516,7 @@
     },
     "/api/team": {
       "get": {
-        "description": "Per person: activity in every captured system over 7 and 28 days, open work,\nmedian reply time, a daily trend and busiest hours. The owner and the named Team\nreaders see everyone; every other reader only their own row.",
+        "description": "Per person: activity in every captured system over 7 and 28 days, open work,\nmedian reply time, a daily trend and busiest hours. The owner and the named Team\nreaders see everyone; every other reader only their own row. Each row carries a\nweekly tracker (done, received, closed, reply time, time saved).",
         "operationId": "team_view_api_team_get",
         "responses": {
           "200": {
@@ -24852,6 +26769,99 @@
           }
         },
         "summary": "Templates Create",
+        "tags": [
+          "templates"
+        ]
+      }
+    },
+    "/api/templates/answer-bank": {
+      "get": {
+        "description": "The questionnaire answers we gave that any customer may get, as you may read\nthem (read only), each with the document it came from; ranked against ``question``\nwhen given. An answer specific to one customer is on that customer's page.",
+        "operationId": "templates_answer_bank_api_templates_answer_bank_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "question",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 700,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Question"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DocList"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Templates Answer Bank",
+        "tags": [
+          "templates"
+        ]
+      }
+    },
+    "/api/templates/learned": {
+      "get": {
+        "description": "The kinds of document learned from your own sent documents (daily), each with\nthe words that ask Ask for one.",
+        "operationId": "templates_learned_api_templates_learned_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LearnedTemplates"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          }
+        },
+        "summary": "Templates Learned",
         "tags": [
           "templates"
         ]
@@ -25474,66 +27484,6 @@
         "summary": "Trust Page",
         "tags": [
           "trust"
-        ]
-      }
-    },
-    "/api/uat-feedback": {
-      "get": {
-        "description": "The MRP UAT feedback lists as you may read them (read only): totals per class,\nopen items per priority and the items, open first. Items you may not open are\ncounted, never shown. ``status`` is open, fixed, answered or unknown.",
-        "operationId": "uat_feedback_api_uat_feedback_get",
-        "parameters": [
-          {
-            "in": "query",
-            "name": "status",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "title": "Status"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/UatFeedback"
-                }
-              }
-            },
-            "description": "Successful Response"
-          },
-          "401": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            },
-            "description": "Unauthorized"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            },
-            "description": "Unprocessable Entity"
-          }
-        },
-        "summary": "Uat Feedback",
-        "tags": [
-          "actions"
         ]
       }
     },
@@ -26569,8 +28519,68 @@
       }
     },
     "/api/workload/grants": {
+      "get": {
+        "description": "The owner's grant editor: each person the exclusion clears, their team and the\nteams they see per person. Owner only (403 for every other reader).",
+        "operationId": "workload_grant_sheet_api_workload_grants_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WorkloadGrantSheet"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Forbidden"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Service Unavailable"
+          }
+        },
+        "summary": "Workload Grant Sheet",
+        "tags": [
+          "actions"
+        ]
+      },
       "post": {
-        "description": "The owner assigns each person's team and the teams each manager sees per\nperson (kept in the Workbench's own data directory).",
+        "description": "The owner assigns each person's team and the teams each manager sees per\nperson (kept in the Workbench's own data directory). Entries for people the grant\nsheet never shows are kept as they are.",
         "operationId": "assign_workload_grants_api_workload_grants_post",
         "requestBody": {
           "content": {
@@ -26622,6 +28632,16 @@
               }
             },
             "description": "Unprocessable Entity"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Service Unavailable"
           }
         },
         "summary": "Assign Workload Grants",

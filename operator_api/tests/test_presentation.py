@@ -299,9 +299,9 @@ class PeriodNoticeTest(unittest.TestCase):
             m.FreshnessSource(system="Email", as_of="2026-11-05T20:34:00Z"),
             m.FreshnessSource(system="Teams", as_of="2026-10-30T02:18:00Z")])
         self.assertEqual(period_notice("What did the supplier send today?", fresh, now),
-                         "Note: the data runs to 5 Nov, 3:34 p.m. (Teams to 29 Oct).")
+                         "Note: the data runs to 5 Nov, 3:34 p.m. (some records last read: Teams 29 Oct).")
         self.assertEqual(period_notice("What was invoiced last month?", fresh, now),
-                         "Note: Teams to 29 Oct only.")
+                         "Note: Some records last read: Teams 29 Oct.")
         # A settled answer citing only mail: Teams lagging does not bear on it.
         self.assertEqual(period_notice("What did the supplier send today?", fresh, now,
                                        cited={"Email"}),
@@ -311,7 +311,7 @@ class PeriodNoticeTest(unittest.TestCase):
         # Not settled: what is missing may be in the lagging source, so it is named.
         self.assertEqual(period_notice("What was invoiced last month?", fresh, now,
                                        cited={"Email"}, settled=False),
-                         "Note: Teams to 29 Oct only.")
+                         "Note: Some records last read: Teams 29 Oct.")
         # Sources read to about the data's own cut-off are not listed beside it, however
         # far that cut-off is from the period's end: only one lagging the rest.
         stale = m.Freshness(as_of="2026-11-04T06:51:00Z", sources=[
@@ -319,7 +319,7 @@ class PeriodNoticeTest(unittest.TestCase):
             m.FreshnessSource(system="BC", as_of="2026-11-04T06:51:00Z"),
             m.FreshnessSource(system="Teams", as_of="2026-10-30T02:18:00Z")])
         self.assertEqual(period_notice("What came in this week?", stale, now),
-                         "Note: the data runs to 4 Nov, 1:51 a.m. (Teams to 29 Oct).")
+                         "Note: the data runs to 4 Nov, 1:51 a.m. (some records last read: Teams 29 Oct).")
         self.assertIsNone(period_notice("Who buys for the customer?", fresh, now))
         self.assertIsNone(period_notice("What is due next week?", fresh, now))  # not read
         current = m.Freshness(as_of="2026-11-05T21:55:00Z", sources=[

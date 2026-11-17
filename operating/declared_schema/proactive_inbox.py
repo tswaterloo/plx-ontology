@@ -39,7 +39,12 @@ CREATE TABLE IF NOT EXISTS kind_history (kind TEXT NOT NULL, run_at TEXT NOT NUL
 """
 
 STORE = "proactive_inbox"
-STEPS = ((1, "initial", (_INBOX_DDL,)),)
+# Step 2: per rule, how many records its last run had to judge (``checked``: judged plus
+# left unjudged) and how many it judged; NULL when the rule does not count them. The
+# briefing's judged share per alert type is read from it.
+_CHECKED_DDL = ("CREATE TABLE IF NOT EXISTS detector_checked (detector TEXT PRIMARY KEY, "
+                "checked INTEGER, judged INTEGER, run_at TEXT NOT NULL)")
+STEPS = ((1, "initial", (_INBOX_DDL,)), (2, "detector_checked", (_CHECKED_DDL,)))
 
 
 # Created when a reader first marks its briefing seen (``record_visit``), not at open.

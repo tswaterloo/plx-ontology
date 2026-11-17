@@ -160,15 +160,36 @@ from ontology.json_contract import validate
 from ontology.text_index import chunk_text, query_terms
 from ontology.types import Actor
 from operating import ontology_tools as ot
+from operating import ontology_tools_identity
+from operating import ontology_tools_policy
+from operating import ontology_tools_results
 from operating import ontology_tools_traverse as tt
 from operating.capability_guards import read_field, value_state
 from operating.captured_originals import (WITHHELD_GATE_DENIED, WITHHELD_UNKNOWN_ACL,
                                           holds_words, vocabulary)
-from operating.ontology_tools import (_IDENTITY_TIERS, LIVE_LOOKUP_HINT, OntologyTools,
-                                      ToolError, _completeness, _error, _gap, _parse_time)
+from operating.excluded_people import people_excluded, strings
+
+from operating.ontology_tools import OntologyTools
+from operating.ontology_tools_identity import LIVE_LOOKUP_HINT, ToolError, _error, _gap
+from operating.ontology_tools_policy import _IDENTITY_TIERS, _parse_time
+from operating.ontology_tools_results import _completeness
 from operating.playbook_originals import extraction_skipped
 
 TOOL_NAMES = ("plx.identity", "plx.documents", "plx.read")
+
+
+
+class MailWithheld(LookupError):
+    """A message (or an attachment of one) the mail capture holds that the people exclusion
+    withholds from every reader now (an excluded or uncleared participant): refused, never
+    read live in its place, and said so with a gap that names nobody."""
+
+
+PARTICIPANTS_GAP = ("a person on this message is excluded or not cleared by the people "
+                    "exclusion, so the message and its attachments are withheld from every "
+                    "reader")
+# A captured message's recipient fields (``graph_read``: Bcc on the sender's copy only).
+MAIL_RECIPIENT_FIELDS = ("to", "cc", "bcc")
 # plx.read arguments only the case host serves (operating/case_tools_host.PagedRead).
 PAGING_ARGUMENTS = ("text_offset", "column_offset", "line", "find")
 TIER_ORDER = tt.TIER_ORDER
@@ -311,31 +332,8 @@ def _json_list(text: Any) -> list:
     return tt._json_list(text)
 
 
-def _strings(value: Any) -> list[str]:
-    """Every string inside a captured value (a sender, a membership), shape-agnostic."""
-    if isinstance(value, str):
-        return [value]
-    if isinstance(value, Mapping):
-        return [s for v in value.values() for s in _strings(v)]
-    if isinstance(value, (list, tuple)):
-        return [s for v in value for s in _strings(v)]
-    return []
-
-
-def people_excluded(guard: Any, identities: Iterable[Any]) -> bool:
-    """Whether a captured record naming ``identities`` is withheld from every reader now
-    by the people exclusion (``integrations.people_exclusion``). A capture keeps what it
-    read before a person was excluded, so the guard is re-checked whenever a mail or
-    Teams capture is served. An object id is decided always; an address only by a bound
-    guard (offline nothing else says whose it is). A missing or unavailable guard
-    withholds every record (fail closed)."""
-    from integrations.people_exclusion import PeopleExclusion, is_object_id
-    if not isinstance(guard, PeopleExclusion) or guard.unavailable:
-        return True
-    values = {v.strip().lower() for v in _strings(list(identities)) if v.strip()}
-    # An address is decided by a bound guard or one the attached directory maps.
-    return guard.excluded(v for v in values if guard.bound or is_object_id(v)
-                          or guard.decides(v))
+# The people exclusion's rule (its own module: ``employee_permissions`` applies it too).
+_strings = strings
 
 
 # --------------------------------------------------------------------------- citation reader
@@ -423,7 +421,7 @@ class RuntimeCitations(CitationReader):
 
     def tenant_domains(self) -> frozenset[str] | None:
         """The case mail scope's internal domains and every domain of a captured
-        mailbox's addresses (as ``_sender_excluded`` reads them), less shared mail
+        mailbox's addresses, less shared mail
         providers' (``ontology.mentions.own_mail_domains``: a mailbox with a gmail.com
         alias never makes every gmail.com sender ours); None when none is known."""
         domains = {d.lower() for d in getattr(getattr(self.runtime, "mail_scope", None),
@@ -655,7 +653,11 @@ class RuntimeCitations(CitationReader):
                     "inaccessible", refusal, "graph_mail",
                     "the people exclusion cannot decide on this host, so no captured "
                     "message is served")])
-        captured = self._read_mail_capture(handle, gated, audience, content=content)
+        try:
+            captured = self._read_mail_capture(handle, gated, audience, content=content)
+        except MailWithheld:
+            return self._out("withheld", "participants_not_cleared", gaps=[_gap(
+                "inaccessible", "participants_not_cleared", "graph_mail", PARTICIPANTS_GAP)])
         if captured is not None:
             return captured
         from ontology.people_directory import parse_person_handle
@@ -726,38 +728,52 @@ class RuntimeCitations(CitationReader):
         return (guard.unavailable if isinstance(guard, PeopleExclusion)
                 else "excluded_people_oids_absent")
 
-    def _address_guard(self) -> Any:
-        """A guard that decides addresses (``CaseRuntime.address_exclusion``), or None."""
-        bound = getattr(self.runtime, "address_exclusion", None)
-        return bound() if callable(bound) else None
-
-    def _sent_by_excluded(self, store: Any, senders: Sequence[Any],
-                          memo: dict | None = None) -> bool:
-        """Whether a captured message's sender is, or may be, an excluded person now
-        (then nobody is served it). An object id is decided by the guard; an address by
-        the object ids the capture recorded beside it for a mailbox it holds, else by a
-        guard bound to the directory (``_address_guard``). Offline an address no captured
-        mailbox names cannot be resolved to a person: one in a tenant domain (the case
-        mail scope's internal domains and every domain of a captured mailbox's
-        addresses) may be an excluded colleague's and is withheld (fail closed); one in
-        no tenant domain is not a member's. A sender that is neither is withheld.
-        ``memo`` (one search call's, ``CaptureCaseHostTools._mail_search_gate``; else the
-        tool call's, ``capture_mail.call_memo``): the captured mailboxes' identities are
-        read once per store and each sender set is decided once per call (the guard and
-        the store do not change within one call)."""
+    def people_directory(self, store: Any, memo: dict | None = None) -> Any:
+        """The people directory every mail decision of this reader uses
+        (``operating.people_graph.PeopleDirectory`` over ``store``, the people guard, the
+        case mail scope's internal domains and the bound address guard), built once per
+        tool call (``memo``: ``capture_mail.call_memo``); None when it cannot be built
+        (every message is then withheld)."""
         from integrations.capture_mail import call_memo
-        from integrations.people_exclusion import PeopleExclusion, is_object_id
+        from .people_graph import PeopleDirectory
         if memo is None:
-            memo = call_memo()   # one tool call's per-handle checks decide each once
-        guard = self._people()
-        if not isinstance(guard, PeopleExclusion) or guard.unavailable:
+            memo = call_memo()
+        key = ("people_directory", str(getattr(store, "path", id(store))), id(self._people()))
+        if memo is not None and key in memo:
+            return memo[key]
+        try:
+            directory = PeopleDirectory.from_store(self.runtime, store)
+        except Exception:  # noqa: BLE001 - no directory: every participant undecided
+            directory = None
+        if memo is not None:
+            memo[key] = directory
+        return directory
+
+    def participants_withheld(self, store: Any, senders: Sequence[Any],
+                              recipients: Sequence[Any], memo: dict | None = None) -> bool:
+        """Whether a captured message is withheld from every reader now by the people
+        exclusion: unless its sender and every To/Cc/Bcc recipient is cleared
+        (``operating.excluded_people.participants_withheld``: the rule of the people graph
+        and vendor terms engines; an excluded person, a tenant address nothing can decide,
+        a malformed address or no sender at all withholds it; an external address does
+        not). The one check of the mail item gate (``mail_capture``) and the search gate
+        (``CaptureCaseHostTools._mail_search_gate``), so every tool, plan and engine that
+        reaches a message through a gate inherits it. ``memo``: one call's (else
+        ``capture_mail.call_memo``); each participant set is decided once per call."""
+        from integrations.capture_mail import call_memo
+        from .excluded_people import participants_withheld
+        if memo is None:
+            memo = call_memo()
+        if self._exclusion_refusal():
             return True
-        values = {v.strip().lower() for v in _strings(list(senders)) if v.strip()}
-        decided = ("sent_by_excluded", str(getattr(store, "path", id(store))),
-                   frozenset(values))
+        sent = tuple(strings(list(senders)))
+        named = tuple(strings(list(recipients)))
+        decided = ("participants_withheld", str(getattr(store, "path", id(store))),
+                   frozenset(sent), frozenset(named))
         if memo is not None and decided in memo:
             return memo[decided]
-        result = self._sender_excluded(store, guard, values, is_object_id, memo)
+        result = participants_withheld(self.people_directory(store, memo), named,
+                                       sender=sent, sender_required=True)
         if memo is not None:
             memo[decided] = result
         return result
@@ -777,30 +793,6 @@ class RuntimeCitations(CitationReader):
         if memo is not None:
             memo[key] = out
         return out
-
-    def _sender_excluded(self, store: Any, guard: Any, values: set[str],
-                         is_object_id: Callable[[str], bool], memo: dict | None) -> bool:
-        ids = {v for v in values if is_object_id(v)}
-        addresses = values - ids
-        if any(a.count("@") != 1 or not a.rsplit("@", 1)[1] for a in addresses):
-            return True
-        domains = {d.lower() for d in getattr(getattr(self.runtime, "mail_scope", None),
-                                              "internal_domains", ()) if isinstance(d, str)}
-        unresolved = set(addresses)
-        if addresses:
-            for identities, owner in self._mailbox_identities(store, is_object_id, memo):
-                domains |= {i.rsplit("@", 1)[1] for i in identities if i.count("@") == 1}
-                if owner and addresses & identities:
-                    ids |= owner
-                    unresolved -= identities
-        if guard.excluded(ids):
-            return True
-        if not addresses:
-            return False
-        bound = self._address_guard()
-        if bound is not None:
-            return bound.excluded(addresses)
-        return any(a.rsplit("@", 1)[1] in domains for a in unresolved)
 
     def _mailbox_served(self, handle: str, gated: Actor, audience: Any) -> bool:
         """Whether this host's mail capture serves this reader the mailbox ``handle``
@@ -865,8 +857,10 @@ class RuntimeCitations(CitationReader):
         capture's current version of a superseded message (else None). ``text``: an
         attachment's row carries its text (``content_text``; a cited page's only, and
         None when the attachment has no such page: ``MailCaptureStore.resolve``). A
-        version of an excluded person's mailbox, or one an excluded person sent, is None
-        for every reader, whenever it was captured (``people_excluded``).
+        version of an excluded person's mailbox is None for every reader, whenever it was
+        captured (``people_excluded``); one whose sender or any recipient is not cleared
+        (``participants_withheld``) raises ``MailWithheld`` for every reader, so no caller
+        reads it live in its place.
         ``page_exists``: a cited page is told present by its reading's kept page count,
         its text not decoded (``MailCaptureStore.resolve``)."""
         if self.mail_capture_dir is None:
@@ -901,9 +895,12 @@ class RuntimeCitations(CitationReader):
                 return None
             mailbox, message_id, record = found[0], found[1], json.loads(found[2])
             # The mailbox identities recorded at capture, as the reader may see them.
-            if self._visible_mailbox(store, mailbox, gated, audience) is None \
-                    or self._sent_by_excluded(store, [record.get("from"), record.get("sender")]):
+            if self._visible_mailbox(store, mailbox, gated, audience) is None:
                 return None
+            if self.participants_withheld(store, [record.get("from"), record.get("sender")],
+                                          [record.get(k) for k in MAIL_RECIPIENT_FIELDS]):
+                # held, and withheld: never None, which would send the read live
+                raise MailWithheld("participants_not_cleared")
             current = None
             if resolved.get("superseded_at") and resolved["relation"] == "graph-mail.message":
                 latest = store.current_version(mailbox, message_id)
@@ -1430,6 +1427,19 @@ class EvidenceTools:
         edges.sort(key=lambda e: (_TIER_RANK[e["tier"]], e["link_id"]))
         if len(edges) > MAX_EDGES:
             edges, truncated = edges[:MAX_EDGES], True
+        # an identity link still live whose end its source no longer holds at T (a
+        # soft-deleted Portal card beside its BC customer): labelled, as plx.object labels
+        # the record, so the edge is never read as a live copy
+        from operating.ontology_tools_identity import removal_gap
+        ends = sorted({e for e in (end for edge in edges for end in (edge["from"], edge["to"]))})
+        removed = self.store.removals(ends, scope.t) if ends else {}
+        gaps.extend(removal_gap(basis, since, oid) for oid, (basis, since)
+                    in sorted(removed.items())[:5])
+        if len(removed) > 5:
+            gaps.append(_gap("absent_in_source", "missing_from_source",
+                             f"{len(removed)} records at an end of these links",
+                             f"{len(removed) - 5} more records at an end of these links are no "
+                             "longer held by their sources at T (deleted or missing)"))
 
         near, near_gaps, near_cut = self._near_misses(scope, roots, joined, lineages)
         gaps.extend(near_gaps)
@@ -1521,7 +1531,7 @@ class EvidenceTools:
         strict = self.traverse._visible_ids(scope, candidates)
         idents = {(r["object_id"], r["l1_handle"], r["field_path"]): r
                   for entry in found.values() for r in (entry["root_ident"], *entry["rows"])}
-        scopes = ot.identity_scopes(
+        scopes = ontology_tools_identity.identity_scopes(
             self.store, self.base.grammar, self.base._binding_relations, scope.held,
             [(r["object_id"], r["l1_handle"], r["field_path"], r["identifier_kind"], r["raw"])
              for r in idents.values()])
@@ -2012,7 +2022,7 @@ class EvidenceTools:
         addresses: set[str] = set()
         domains: set[str] = set()
         cut = False
-        if ot._OBJECT_ID.match(participant.strip()):
+        if ontology_tools_policy._OBJECT_ID.match(participant.strip()):
             root = participant.strip()
             self._visible_or_raise(scope, root, actor)
             twins, cut = self._firm_twins(scope, [root])
@@ -2035,7 +2045,7 @@ class EvidenceTools:
         else:
             raise ToolError("invalid_input", "participant must be an e-mail address, a "
                             "domain (@example.com) or an object_id")
-        if not ot._OBJECT_ID.match(participant.strip()) and len(text) > 254:
+        if not ontology_tools_policy._OBJECT_ID.match(participant.strip()) and len(text) > 254:
             raise ToolError("invalid_input", "participant is longer than an e-mail address "
                             "may be (254 characters)")
         # An address longer than any valid one (254 characters) is never searched.
@@ -2582,7 +2592,7 @@ class EvidenceTools:
         out: set[str] = set()
         # a payroll or HR-confidential document's text is never read for a reader without
         # finance and pii (``operating.search.document_marks.readable_text``)
-        for row in ot._readable_text(self.store, scope, rows[:DOC_SCAN_CAP]):
+        for row in ontology_tools_policy._readable_text(self.store, scope, rows[:DOC_SCAN_CAP]):
             if _family(row["audience_key"]) not in families:
                 continue
             out.add(row["object_id"])
@@ -3531,7 +3541,7 @@ def _scope_apart(scopes: Mapping[tuple[str, str, str], tuple[Any, str, Any]],
     if left is not None and left == right:
         return None
     same_space = left is not None and right is not None and left[0] == right[0]
-    return {"feature": ot.SCOPE_FEATURE, "agrees": False if same_space else None}
+    return {"feature": ontology_tools_policy.SCOPE_FEATURE, "agrees": False if same_space else None}
 
 
 def _cite(row: Mapping[str, Any]) -> dict[str, Any] | None:
@@ -3869,7 +3879,7 @@ def tool_specs(contracts: Mapping[str, Any] | None = None) -> list[dict[str, Any
     """MCP tool listings (name, description, inputSchema) for these tools."""
     contracts = contracts or ot.load_contracts()
     return [{"name": name, "description": contracts["tools"][name]["description"],
-             "inputSchema": ot._inline_defs(contracts["tools"][name]["input"], contracts),
+             "inputSchema": ontology_tools_results._inline_defs(contracts["tools"][name]["input"], contracts),
              "annotations": {"readOnlyHint": True}}
             for name in TOOL_NAMES]
 

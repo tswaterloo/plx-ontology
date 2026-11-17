@@ -20,10 +20,11 @@ const row = (n: number): LatePo => ({
 });
 
 /** /api/late over `n` orders, paged as the server pages them (an order may repeat across pages). */
-function serve(n: number) {
-  const all = Array.from({ length: n }, (_, i) => row(i + 1));
+function serve(n: number, suggestions: unknown[] = [], over: (p: LatePo) => LatePo = (p) => p) {
+  const all = Array.from({ length: n }, (_, i) => over(row(i + 1)));
   const f = vi.fn(async (url: string) => {
     const u = new URL(String(url), "http://x");
+    if (u.pathname === "/api/suggestions") return new Response(JSON.stringify({ status: "read", items: suggestions }), { status: 200 });
     const offset = Number(u.searchParams.get("offset")), limit = Number(u.searchParams.get("limit"));
     const items = all.slice(Math.max(0, offset - 1), offset + limit); // overlaps the last page by one
     return new Response(JSON.stringify({ total: n, offset, items, more: offset + limit < n, next_offset: Math.min(n, offset + limit), as_of: null }), { status: 200 });
@@ -43,7 +44,7 @@ describe("late list", () => {
     await screen.findByTestId("late-table");
     expect(rows()).toHaveLength(n);
     expect(new Set(rows().map((r) => r.textContent)).size).toBe(n);
-    expect(f).toHaveBeenCalledTimes(Math.ceil(n / 100));
+    expect(f.mock.calls.filter((c) => String(c[0]).includes("/api/late")).length).toBe(Math.ceil(n / 100));
     expect(screen.getByTestId("late-all-count")).toHaveTextContent(n === 1 ? "1 PO" : `${n} POs`);
     // the page leads with the figures: how many, the oldest, and how long
     expect(screen.getByTestId("late-header")).toHaveTextContent("Late POs");
@@ -90,5 +91,37 @@ describe("late list", () => {
     expect(value(rows()[6])).toHaveTextContent("No value");
     expect(screen.getByLabelText("Sort by")).toHaveValue("value");
     expect(screen.getByRole("button", { name: "Sorted largest or latest first" })).toBeTruthy();
+  });
+
+  it("gives each row what a buyer chases with, sums the list by supplier and currency, and filters by what blocks it", async () => {
+    const sugg = {
+      id: "s1", kind: "vendor_chase", rank: 1, headline: "", new: false, acknowledged: false, confidence: {}, subject: { object_id: "PurchaseOrder:6", type: "PurchaseOrder", label: "PO 100006" },
+      action: { text: "Confirm the 4 Nov date still holds with the vendor", rule: "x", suggestion_only: true },
+      eta: { answer: "yes", in_mail: true, text: "", when: "2026-11-04", source: { system: "Email", handle: "h", label: "mail", as_of: "2026-10-21T15:00:00Z" } },
+      draft: { audience: "vendor", body: "", channel: "email", subject: "", sent: false, status: "draft_not_sent", to: { name: "Jordan Lee", basis: "last sender" } },
+      impact: { orders_at_risk: 2, orders: [{ object_id: "SalesOrder:77120", type: "SalesOrder", label: "77120", open_url: "" }, { object_id: "AssemblyOrder:7712", type: "AssemblyOrder", label: "AO-7712", open_url: "" }] },
+    };
+    serve(6, [sugg], (p) => ({ ...p, confirmation: p.object_id === "PurchaseOrder:6" ? "confirmed" : Number(p.object_id.split(":")[1]) % 2 ? "none_found" : "found_unverified", open_lines: 2 }));
+    render(<LatePage />);
+    await screen.findByTestId("late-table");
+    const first = rows()[0];
+    expect(po(first)).toBe("PO 100006");
+    await within(first).findByText(/promised 4 Nov/);
+    expect(within(first).getByTestId("late-chase")).toHaveTextContent("promised 4 Nov · last word 21 Oct, Email · ask Jordan Lee · holds SO 77120 +1 · 2 open lines");
+    expect(within(first).getByTestId("late-next")).toHaveTextContent("Confirm the 4 Nov date still holds with the vendor");
+    // a row with no drafted follow-up still says its state and the next step from it
+    expect(within(rows()[1]).getByTestId("late-chase")).toHaveTextContent(/^no supplier date · 2 open lines$/);
+    expect(within(rows()[1]).getByTestId("late-next")).toHaveTextContent("ask the supplier");
+    const glance = screen.getByTestId("late-glance");
+    expect(glance).toHaveTextContent("2 suppliers");
+    expect(glance).toHaveTextContent("$6,000.00 CAD in 2 POs"); // 1 + 5 thousand: CAD rows 1 and 5
+    expect(glance).toHaveTextContent("$3,000.00 USD in 1 PO");
+    expect(glance).toHaveTextContent("3 without a trusted value");
+    expect(glance).toHaveTextContent("3 no supplier date");
+    expect(glance).toHaveTextContent("2 date to check");
+    fireEvent.change(screen.getByLabelText("Supplier date"), { target: { value: "no_date" } });
+    expect(rows().map(po)).toEqual(["PO 100005", "PO 100003", "PO 100001"]);
+    expect(screen.getByTestId("late-glance")).toHaveTextContent("3 no supplier date");
+    expect(screen.getByTestId("late-glance")).not.toHaveTextContent("date to check");
   });
 });

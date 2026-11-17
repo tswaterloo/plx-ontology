@@ -216,6 +216,18 @@ export function plural(n: number, one: string, many = `${one}s`): string {
   return `${n} ${n === 1 ? one : many}`;
 }
 
+/** Every name in one phrase: "A", "A and B", "A, B and C". */
+export function listNames(names: string[]): string {
+  if (names.length <= 1) return names[0] ?? "";
+  return `${names.slice(0, -1).join(", ")} and ${names[names.length - 1]}`;
+}
+
+/** Names in a line: each one when there are at most `max`, else their count ("5 people"),
+ *  never a list cut short by a count ("A, B and 3 more"). */
+export function namesOrCount(names: string[], one: string, many = `${one}s`, max = 3): string {
+  return names.length <= max ? listNames(names) : plural(names.length, one, many);
+}
+
 export const SYSTEM_LABEL: Record<SourceSystem, string> = {
   BC: "Business Central",
   Portal: "Customer Portal",
@@ -391,9 +403,14 @@ export function readable(text: string | null | undefined): string {
   );
 }
 
+/** Business Central's OData escapes ("Sales_x0020_Shipment", a blank "_x0020_") decoded as UTF-16 code units. */
+export function decodeEscapes(text: string): string {
+  return text.replace(/_x([0-9A-Fa-f]{4})_/g, (_m, hex: string) => String.fromCharCode(parseInt(hex, 16)));
+}
+
 /** A record field's value as shown: lists joined, escapes decoded, dates as dates. */
 export function fieldValue(key: string, value: string): string {
-  let v = withoutFloatNoise(value).replace(/_x([0-9A-Fa-f]{4})_/g, (_m, hex: string) => String.fromCharCode(parseInt(hex, 16))).trim();
+  let v = decodeEscapes(withoutFloatNoise(value)).trim();
   if (/^\[.*\]$/s.test(v)) {
     try {
       const list = JSON.parse(v);

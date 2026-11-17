@@ -21,7 +21,7 @@ root. These steps protect the API and the code from each other and from the owne
 They do not protect anything from root.
 
 Run the steps in order. Each step can be rolled back on its own. Times are ET. Nothing here
-changes Postgres data or any business system.
+changes Postgres data or any business system. The `sudo` lines are the operator's.
 
 ## 0.
 - No ingest build is running. Builds are off.
@@ -44,10 +44,13 @@ sudo systemctl reload postgresql
 psql -X -d 'postgresql:///plx?user=plx_api' -Atc 'select current_user'          # plx_api
 ```
 The API logs in as the role through `PGUSER`. `PLX_PG_DSN` is set in three env files, and
-an env file overrides `Environment=`, so the DSN is left as it is:
+an env file overrides `Environment=`; the role's DSN comes from `/etc/plx/api-pg-dsn.env`,
+loaded last (`zzzz-pg-dsn.conf`), so the per-Ask tools host that receives the DSN logs in as the role too:
 ```sh
 python3 /data/OntologyProject/deploy/render.py --api-user --out /tmp/plx-units
 sudo install -m 644 /tmp/plx-units/plx-api.service.d/zy-pg-role.conf /etc/systemd/system/plx-api.service.d/
+printf 'PLX_PG_DSN=postgresql://plx_api@/plx\n' | sudo tee /etc/plx/api-pg-dsn.env   # the role in the DSN too (ASK-FIX 11-15)
+sudo install -m 644 /tmp/plx-units/plx-api.service.d/zzzz-pg-dsn.conf /etc/systemd/system/plx-api.service.d/
 sudo systemctl daemon-reload && sudo systemctl restart plx-api
 sudo grep 'permission denied' /var/log/postgresql/postgresql-17-main.log      # after Home, a record, Ask
 ```

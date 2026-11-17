@@ -94,8 +94,54 @@ def high_degree(n):
     return fx.build(extra=extra)
 
 
+class _PreSplitTools(types.ModuleType):
+    """``operating.ontology_tools`` as the base commits import it: every name they read
+    from it, wherever the module split put its definition. A name the entry module still
+    holds comes from there; any other comes from the one sibling that holds it (two
+    different objects under one name fail rather than guess)."""
+
+    def __init__(self):
+        super().__init__("operating.ontology_tools")
+
+    def __getattr__(self, name):
+        import importlib
+        import pkgutil
+        import operating
+        if hasattr(ot, name):
+            return getattr(ot, name)
+        found = {}
+        for info in pkgutil.iter_modules(operating.__path__):
+            part = info.name.removeprefix("ontology_tools_")
+            if part != info.name:
+                sibling = importlib.import_module(f"operating.ontology_tools_{part}")
+                if name in vars(sibling):
+                    found[id(vars(sibling)[name])] = vars(sibling)[name]
+        if len(found) != 1:
+            raise AttributeError(f"operating.ontology_tools has no single {name!r} "
+                                 f"({len(found)} candidates)")
+        return next(iter(found.values()))
+
+
+def _pre_split_builtins():
+    """Builtins whose ``__import__`` hands old code the pre-split entry module, also
+    for the imports its functions run at call time."""
+    import builtins
+    proxy = _PreSplitTools()
+    real = builtins.__import__
+
+    def _import(name, globals=None, locals=None, fromlist=(), level=0):
+        if level == 0 and name == "operating.ontology_tools" and fromlist:
+            return proxy
+        return real(name, globals, locals, fromlist, level)
+
+    table = dict(vars(builtins))
+    table["__import__"] = _import
+    return table
+
+
 def base_module(sha=BASE_SHA):
-    """The traverse module as of ``sha``, imported under its own name."""
+    """The traverse module as of ``sha``, imported under its own name. Its imports
+    from ``operating.ontology_tools`` resolve as before the module split."""
     try:
         source = subprocess.run(
             ["git", "show", f"{sha}:operating/ontology_tools_traverse.py"], cwd=ROOT,
@@ -105,6 +151,7 @@ def base_module(sha=BASE_SHA):
     name = f"_base_ontology_tools_traverse_{sha[:12]}"
     module = sys.modules.setdefault(name, types.ModuleType(name))
     if not hasattr(module, "TraverseTools"):
+        module.__dict__["__builtins__"] = _pre_split_builtins()
         exec(compile(source, f"{sha[:12]}:operating/ontology_tools_traverse.py",
                      "exec"), module.__dict__)
     return module

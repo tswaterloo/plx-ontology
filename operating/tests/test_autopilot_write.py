@@ -16,6 +16,8 @@ import unittest
 
 from integrations.people_exclusion import PeopleExclusion
 from operating import autopilot as ap
+from operating import autopilot_engine
+from operating import autopilot_queue
 from operating import autopilot_write as aw
 from operating import autopilot_write_adapters as wa
 
@@ -38,7 +40,8 @@ def guard(unavailable: bool = False) -> PeopleExclusion:
 
 
 def mc_item(n: int = 1, *, reason: str = "Launch the nightly lint agent",
-            scope: dict | None = None, rec: str = "approve") -> dict:
+            scope: dict | None = None, rec: str = "approve",
+            risk: str | None = "low") -> dict:
     scope = {"kind": "launch", "lane": "lint", "promptHash": "ab12"} if scope is None else scope
     return {"item_id": f"it_mc_{n}", "autopilot": "approval_request", "owner": OWNER,
             "title": f"Approval requested for TASK-{n}", "citations": [f"mc://ops/approvals/g{n}@1"],
@@ -50,7 +53,8 @@ def mc_item(n: int = 1, *, reason: str = "Launch the nightly lint agent",
                                   "recommendation": rec, "gaps": [],
                                   "action": {"kind": "mc_approval", "gate": f"gate_{n}",
                                              "task_id": f"TASK-{n}",
-                                             "requested_by": "sp_mcp_agent", "scope": scope}}}}
+                                             "requested_by": "sp_mcp_agent", "scope": scope,
+                                             "proposal": {"action": reason, "risk": risk}}}}}
 
 
 def po_item(*, price: bool = False, draft: bool = True) -> dict:
@@ -98,7 +102,9 @@ class Base(unittest.TestCase):
 
     def executor(self, env: dict | None = None, *, g=None, rules: Path | None = None,
                  **adapters) -> aw.Executor:
-        env = {"PLX_AUTOPILOT_BC_COMPANY_ID": BC_COMPANY, **(env or {})}
+        # the gate writes BC in the sandbox only (BC Production: test_autopilot_write_e2e)
+        env = {"PLX_AUTOPILOT_BC_COMPANY_ID": BC_COMPANY,
+               "PLX_BC_SANDBOX_ENVIRONMENT": "Sandbox2", **(env or {})}
         found = {**wa.default_adapters(env),
                  "mc_approval": wa.MCApprovalAdapter(self.mc, environ=env),
                  "bc_write": wa.BCAdapter(self.bc, environ=env)}
@@ -113,7 +119,7 @@ class Base(unittest.TestCase):
                   workflows=("internal_approval", "customer_order_intake")) -> Path:
         run = Path(self.tmp.name) / f"gen1-until-x{time.monotonic_ns()}"
         (run / "slug").mkdir(parents=True)
-        (run / ap.GATE_FILE).write_text(json.dumps({"schema": ap.GATE_SCHEMA, "roles": {
+        (run / autopilot_engine.GATE_FILE).write_text(json.dumps({"schema": autopilot_engine.GATE_SCHEMA, "roles": {
             ROLE: {"members": [OWNER], "workflows": {
                 w: {"judged": judged, "matched": matched} for w in workflows}}}}))
         (run / "slug" / "result.json").write_text(json.dumps(
@@ -134,11 +140,20 @@ class Base(unittest.TestCase):
                              aw.WriteGate(self.state / aw.WRITE_GATE_FILE, rules),
                              OWNER, workflow, on, by, NOW)
 
+    def flag(self, *systems: str) -> None:
+        """The owner's go-live files (``live-<system>``) in the control directory."""
+        folder = aw.control_dir(self.state, {})
+        folder.mkdir(parents=True, exist_ok=True)
+        for system in systems:
+            (folder / aw.LIVE_FLAG.format(system=system)).write_text("")
+
     def go_live(self, workflows=("internal_approval",)) -> dict:
-        """The gate passed and the item's person switched each workflow on themselves."""
+        """The gate passed, the item's person switched each workflow on themselves and
+        the owner placed every system's go-live file."""
         self.pass_gate()
         for w in workflows:
             self.opt_in(w)
+        self.flag(*sorted(set(aw.FLAG_SYSTEM.values())))
         return {aw.MASTER_ENV: "1"}
 
 
@@ -165,6 +180,12 @@ class GateAndFlags(Base):
         self.assertEqual(self.executor().run(mc_item(), NOW)[0]["reasons"],
                          [f"master_switch_off:{aw.MASTER_ENV}"])
         self.assertEqual(self.mc.calls, [])
+        # master switch on, but MC's go-live file is absent: still a dry run per system
+        self.flag("bc", "planner")
+        r = self.executor({aw.MASTER_ENV: "1"}).run(mc_item(), NOW)[0]
+        self.assertEqual((r["status"], r["reasons"]), ("dry_run", ["system_not_live:live-mc"]))
+        self.assertEqual(self.mc.calls, [])
+        self.flag("mc")
         r = self.executor({aw.MASTER_ENV: "1"}).run(mc_item(), NOW)[0]
         self.assertEqual((r["status"], r["mode"]), ("done", "live"))
         self.assertEqual(len(self.mc.calls), 1)
@@ -308,6 +329,7 @@ class PersonOptIn(Base):
             json.dumps({"live": [f"{ROLE}:internal_approval"]}))
         env = {aw.MASTER_ENV: "1", "PLX_AUTOPILOT_WRITES_LIVE": f"{ROLE}:internal_approval"}
         ex = self.executor(env)
+        self.flag("mc")             # the owner's go-live file turns nobody's workflow on
         self.assertEqual(ex.live_kinds(mc_item()), [])
         r = ex.run(mc_item(), NOW)[0]
         self.assertEqual((r["status"], r["reasons"]), ("dry_run", ["not_switched_on_by_person"]))
@@ -446,12 +468,19 @@ class Routine(Base):
             "no_scope": mc_item(7, scope={}),
             "no_precedent": mc_item(8, rec="review"),
             "new_vendor": mc_item(9, reason="Set up a new vendor in the books"),
+            "high_risk": mc_item(11, risk="high"),
+            "critical_risk": mc_item(12, risk="critical"),
+            "risk_unstated": mc_item(13, risk=None),
         }
         for name, item in cases.items():
             (status, reasons), = self.status_of(item, env)
             self.assertEqual(status, "not_routine", name)
+            if name.endswith("_risk") or name == "risk_unstated":
+                self.assertTrue(any(str(r).startswith("mc_risk_not_routine") for r in reasons),
+                                (name, reasons))
         self.assertEqual(self.mc.calls, [])
         self.assertEqual(self.status_of(mc_item(10), env)[0][0], "done")
+        self.assertEqual(self.status_of(mc_item(14, risk="medium"), env)[0][0], "done")
 
     def test_money_price_unknown_ops_and_contested_never_routine(self):
         env = self.go_live(("customer_order_intake",))
@@ -524,7 +553,7 @@ class Safety(Base):
         (self.state / aw.KILL_FILE).touch()
         self.assertEqual(self.executor(env).run(mc_item(), NOW)[0]["status"], "killed")
         (self.state / aw.KILL_FILE).unlink()
-        self.assertEqual(self.executor({**env, ap.KILL_ENV: "1"}).run(mc_item(), NOW)[0]
+        self.assertEqual(self.executor({**env, autopilot_queue.KILL_ENV: "1"}).run(mc_item(), NOW)[0]
                          ["status"], "killed")
         off = {**env, aw.WORKFLOW_KILL_ENV: "internal_approval"}
         self.assertEqual(self.executor(off).run(mc_item(), NOW)[0]["reasons"],
@@ -664,7 +693,8 @@ class Safety(Base):
         (the next one is killed) or after an action was checked but before its attempt
         row (that action is killed, nothing sent)."""
         env = {**self.go_live(("customer_order_intake",)),
-               "PLX_AUTOPILOT_BC_COMPANY_ID": BC_COMPANY}
+               "PLX_AUTOPILOT_BC_COMPANY_ID": BC_COMPANY,
+               "PLX_BC_SANDBOX_ENVIRONMENT": "Sandbox2"}
         mail = Transport()
         state = self.state
 

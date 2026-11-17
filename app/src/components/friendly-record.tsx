@@ -8,7 +8,7 @@ import { suggest } from "@/lib/api";
 import { recordLabel, safeHref, SYSTEM_LABEL, typeLabel } from "@/lib/format";
 import type { Suggestion } from "@/lib/types";
 import { MissingActions, ObjectView } from "./object-view";
-import { arrange, type Arranged } from "./ask-box";
+import { arrange } from "./ask-box";
 import { SystemCode } from "./ui/glyphs";
 
 /** The record type each friendly path opens: /po/106093, /customer/DIVE11, /supplier/V06110, /ao/AO-26253A. */
@@ -58,13 +58,6 @@ export function startingWith(list: Suggestion[], type: string, ref: string) {
   return arrange(list, ref)
     .filter((s) => fam(s.type) === fam(type))
     .filter((s) => ` ${fold(s.label)}`.includes(` ${want}`));
-}
-
-/** Who a suggestion is about, for its tile: a party's own name, else the name its facts give ("DSM (V06110)"). */
-function partyOf(s: Arranged): string | null {
-  if (/^(Customer|Supplier|Vendor)$/.test(s.type)) return s.label;
-  const named = (s.facts ?? "").split(" · ").find((f) => /[A-Za-z]{2,}\s+[A-Za-z(]/.test(f));
-  return named ? named.replace(/\s*\(.*\)\s*$/, "") : null;
 }
 
 /** Shown when a friendly path finds no one record: the records of that name the reader may see, to pick from. */

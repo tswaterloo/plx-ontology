@@ -541,7 +541,7 @@ def shipped(status: object) -> bool:
 FM_ITEM_SETTLED = frozenset({"COMPLETE", "OVERPO", "CANCEL"})
 FM_LOT_REFUSED = frozenset({"REJECTED"})
 TRUTH_RULES_CITE = ("owner 2026-11-06, /data/scratch/late-po-audit/REPORT.md root causes 1-6; "
-                    "devloop/DECISIONS/open-proactive-truth-custorder-sage-complete.md")
+                    "devloop/DECISIONS/2026-11-15-proactive-truth-custorder-sage-complete.md")
 
 
 def fm_item_received(item: Mapping[str, Any]) -> bool | None:

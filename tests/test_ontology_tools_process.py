@@ -26,6 +26,9 @@ from ontology.json_contract import validate
 from ontology.types import Actor
 from operating import ontology_tools as ot
 from operating import ontology_tools_process as op
+from operating import ontology_tools_process_answer
+from operating import ontology_tools_process_graphs
+from operating import ontology_tools_process_helpers
 from operating import ontology_tools_traverse as tt
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -433,7 +436,7 @@ class GraphDataTests(unittest.TestCase):
         self.assertEqual(sorted(GRAPHS), ["ao_packet", "manufacturing_order", "po_delivery_window",
                                           "purchase_to_invoice", "sales_order_lifecycle"])
         for graph in GRAPHS.values():
-            self.assertEqual(op.check_graph(graph, SCHEMA), [])
+            self.assertEqual(ontology_tools_process_graphs.check_graph(graph, SCHEMA), [])
 
     def test_sales_graph_mirrors_the_portal_rail_status_sets_and_skips(self):
         g = GRAPHS["sales_order_lifecycle"]
@@ -463,13 +466,13 @@ class GraphDataTests(unittest.TestCase):
     def test_loader_refuses_a_graph_naming_an_undeclared_link_or_role_mismatch(self):
         bad = copy.deepcopy(GRAPHS["purchase_to_invoice"])
         bad["stages"][1]["evidence"][0]["paths"][0][0]["link"] = "Receipt.not_a_link"
-        self.assertTrue(any("undeclared link type" in p for p in op.check_graph(bad, SCHEMA)))
+        self.assertTrue(any("undeclared link type" in p for p in ontology_tools_process_graphs.check_graph(bad, SCHEMA)))
         bad = copy.deepcopy(GRAPHS["purchase_to_invoice"])
         bad["quantity_checks"][0]["sides"][1]["quantity"] = "bc_unit_cost"
-        self.assertTrue(any("not a quantity property" in p for p in op.check_graph(bad, SCHEMA)))
+        self.assertTrue(any("not a quantity property" in p for p in ontology_tools_process_graphs.check_graph(bad, SCHEMA)))
         bad = copy.deepcopy(GRAPHS["purchase_to_invoice"])
         bad["quantity_checks"][0]["sides"][0]["role"] = "received"
-        problems = op.check_graph(bad, SCHEMA)
+        problems = ontology_tools_process_graphs.check_graph(bad, SCHEMA)
         self.assertTrue(any("has role ordered, not received" in p for p in problems), problems)
         # a due date is a declared planned date column of the type its paths reach
         for due, problem in (
@@ -479,24 +482,24 @@ class GraphDataTests(unittest.TestCase):
             bad = copy.deepcopy(GRAPHS["manufacturing_order"])
             stage = next(s for s in bad["stages"] if s["id"] == "filling")
             stage["due"] = dict({"object_type": "AssemblyOrder", "paths": [[]]}, **due)
-            problems = op.check_graph(bad, SCHEMA)
+            problems = ontology_tools_process_graphs.check_graph(bad, SCHEMA)
             self.assertTrue(any(problem in p for p in problems), (due, problems))
 
     def test_loader_refuses_a_file_that_breaks_the_format(self):
         import tempfile
         with tempfile.TemporaryDirectory() as tmp:
             Path(tmp, "_process.schema.json").write_text(
-                op.FORMAT_PATH.read_text("utf-8"), "utf-8")
+                ontology_tools_process_graphs.FORMAT_PATH.read_text("utf-8"), "utf-8")
             doc = copy.deepcopy(GRAPHS["purchase_to_invoice"])
             doc["stages"][0]["evidence"][0]["predicate"] = {"kind": "status", "property": "status",
                                                             "quantifier": "all"}
             Path(tmp, "purchase_to_invoice.json").write_text(json.dumps(doc), "utf-8")
-            with self.assertRaises(op.ProcessGraphError):
+            with self.assertRaises(ontology_tools_process_graphs.ProcessGraphError):
                 op.load_graphs(tmp, schema=SCHEMA)
 
     def test_module_has_no_process_or_kind_specific_names(self):
-        source = (ROOT / "operating/ontology_tools_process.py").read_text("utf-8")
-        code = source.split('"""', 2)[2]  # skip the module docstring
+        code = "".join(path.read_text("utf-8").split('"""', 2)[2]  # past each module docstring
+                       for path in sorted((ROOT / "operating").glob("ontology_tools_process*.py")))
         for name in ("SalesOrder", "PurchaseOrder", "ShipRelease", "AssemblyOrder", "FULFILLED",
                      "COMPLETED", "manufacturing_order", "three_way", "DISTRIBUTE", "Receipt"):
             self.assertNotIn(name, code, name)
@@ -1298,10 +1301,10 @@ class ManufacturingTests(Mixin, unittest.TestCase):
         self.assertEqual((due["filling"]["overdue"], due["filling"]["days_overdue"]), (True, 27))
         # a due day has passed once it has ended in ET (decided 2026-10-28), not UTC:
         # 2099-01-21T04:59Z is still Jan 20 in ET (EST), 05:00Z is Jan 21
-        self.assertEqual(op._business_date(dt.datetime(2099, 1, 21, 4, 59,
+        self.assertEqual(ontology_tools_process_answer._business_date(dt.datetime(2099, 1, 21, 4, 59,
                                                        tzinfo=dt.timezone.utc)),
                          dt.date(2099, 1, 20))
-        self.assertEqual(op._business_date(dt.datetime(2099, 1, 21, 5, tzinfo=dt.timezone.utc)),
+        self.assertEqual(ontology_tools_process_answer._business_date(dt.datetime(2099, 1, 21, 5, tzinfo=dt.timezone.utc)),
                          dt.date(2099, 1, 21))
 
     def test_a_date_a_document_contradicts_or_could_contradict_is_never_overdue(self):
@@ -1435,7 +1438,7 @@ class DependencyTests(Mixin, unittest.TestCase):
         # every stage owner is a Portal Department code, never a role such as MANAGER
         from operating.employee_permissions import PORTAL_DEPARTMENT_CODES
         departments = set(PORTAL_DEPARTMENT_CODES.values())
-        self.assertEqual(set(op.load_format()["$defs"]["owner_role"]["enum"]), departments)
+        self.assertEqual(set(ontology_tools_process_graphs.load_format()["$defs"]["owner_role"]["enum"]), departments)
         owners = {s["owner_role"] for g in GRAPHS.values() for s in g["stages"]}
         self.assertLessEqual(owners, departments)
         self.assertNotIn("MANAGER", owners)
@@ -1482,7 +1485,7 @@ class DependencyTests(Mixin, unittest.TestCase):
             self.assertEqual(stage["prerequisites"], "undecided", world)
             (entry,) = stage["blockers"]
             self.assertEqual((entry.get("object"), entry["missing"]["reason"],
-                              op.not_pegged_waits_on(entry["missing"])),
+                              ontology_tools_process_helpers.not_pegged_waits_on(entry["missing"])),
                              (None, "dependency_not_pegged", "met"), world)
         # a PO whose line records goods its receipts do not hold: two measures disagree,
         # read as the purchase graph reads it (rule C), so never a proven blocker
@@ -1564,13 +1567,13 @@ class DependencyTests(Mixin, unittest.TestCase):
             for key in path[:-1]:
                 target = target[key]
             target[path[-1]] = value
-            with self.assertRaises(op.ProcessGraphError, msg=value):
+            with self.assertRaises(ontology_tools_process_graphs.ProcessGraphError, msg=value):
                 load(bad)
         bad = copy.deepcopy(kitting)
         bad.update(root_type="AssemblyOrder")
         bad["stages"][0]["evidence"][0]["object_type"] = "AssemblyOrder"
         bad["stages"][0]["prerequisites"] = [unpegged]
-        with self.assertRaises(op.ProcessGraphError) as refused:
+        with self.assertRaises(ontology_tools_process_graphs.ProcessGraphError) as refused:
             load(bad)
         self.assertIn("pegged_by goes with proves_dependency", str(refused.exception))
 
@@ -2322,7 +2325,7 @@ class PermissionMonotonicityTests(unittest.TestCase):
         stage = next(s for s in graphs["sales_order_lifecycle"]["stages"]
                      if s["id"] == "shipment")
         stage["requires"] = {"make": ["condition:release_clears_pick"]}
-        self.assertEqual(op.check_graph(graphs["sales_order_lifecycle"], SCHEMA), [])
+        self.assertEqual(ontology_tools_process_graphs.check_graph(graphs["sales_order_lifecycle"], SCHEMA), [])
         worlds = {"make_variant_marked": self.variant_world(False),
                   "make_variant_clear": self.variant_world(False, mode_marked=False)}
         checked, decided = self.assert_monotone(worlds, graphs)

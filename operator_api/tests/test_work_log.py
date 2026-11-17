@@ -16,6 +16,7 @@ from unittest import mock
 from fastapi.testclient import TestClient
 
 from operating import autopilot as ap
+from operating import autopilot_queue
 from operating import usage_review as ur
 from operator_api import feedback as fb
 from operator_api import work_log as wl
@@ -782,7 +783,7 @@ class TimeSaved(unittest.TestCase):
         ana, owner = client_for(backend, "staff:ana"), client_for(backend, "staff:owner")
         ask(ana, "which orders are late")
         ask(owner, "which orders are late")
-        self.store.clock = lambda: datetime.now(timezone.utc)
+        self.store.clock = lambda: self.now
         mine = ana.get("/api/time-saved").json()
         self.assertTrue(mine["available"])
         self.assertEqual([(p["mine"], p["weeks"][-1]["minutes"]) for p in mine["people"]],
@@ -960,7 +961,7 @@ class TheReplayNeverReadsTheLog(replay_fixture.World):
 
                 st = pe._Store(self.dir / "s.sqlite", threads=1)
                 try:
-                    with mock.patch.dict("os.environ", {ap.WORK_LOG_ENV: str(log_dir)}), \
+                    with mock.patch.dict("os.environ", {autopilot_queue.WORK_LOG_ENV: str(log_dir)}), \
                             mock.patch.object(ap.Queue, "work_log_path", spy):
                         out = rp.replay(st, replay_fixture.people(), role=f"person:{OURS}",
                                         out=self.dir / "out", since=replay_fixture.DAY,
@@ -991,7 +992,7 @@ class TheReplayNeverReadsTheLog(replay_fixture.World):
                     body = json.loads(queue.conn.execute(
                         "SELECT body FROM events WHERE json_extract(body, '$.event_type') = "
                         "'message.received' LIMIT 1").fetchone()[0])
-                    with mock.patch.dict("os.environ", {ap.WORK_LOG_ENV: str(log_dir)}):
+                    with mock.patch.dict("os.environ", {autopilot_queue.WORK_LOG_ENV: str(log_dir)}):
                         self.assertTrue(queue.answered_in_workbench(
                             {OURS}, body, replay_fixture.DAY + timedelta(days=1)))
                 finally:

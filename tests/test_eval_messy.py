@@ -22,6 +22,11 @@ from scripts import eval_case_cards as cards
 from scripts import eval_messy as messy
 from scripts import eval_retrieval as retrieval
 
+# what the served API reads under (``eval_retrieval.served_path``): Postgres only and a
+# people exclusion in effect (a made-up object id; the committed config holds none)
+OID = "11111111-2222-3333-4444-555555555555"
+SERVED_PATH = {"PLX_ONTOLOGY_PG": "only", "PLX_EXCLUDED_PEOPLE_OIDS": OID}
+
 NOW = "2026-10-29T00:00:00Z"
 _COMPILED: list = []
 
@@ -485,7 +490,8 @@ class GatedBackendTest(unittest.TestCase):
             config = Path(tmp) / "host.json"
             config.write_text(json.dumps({"tenant": "plx", "entra_directory": True}), "utf-8")
             environ = {"PLX_WORKBENCH_STATE_DIR": tmp, "MICROSOFT_GRAPH_CLIENT_ID": "id",
-                       "MICROSOFT_GRAPH_CLIENT_SECRET": "s", "OTHER_SECRET": "x"}
+                       "MICROSOFT_GRAPH_CLIENT_SECRET": "s", "OTHER_SECRET": "x",
+                       **SERVED_PATH}
             with mock.patch("scripts.eval_real_agent.reader_identity",
                             return_value=({"uid": "u"}, None)), \
                     mock.patch("scripts.eval_real_agent.LiveHost", Live):
@@ -496,13 +502,45 @@ class GatedBackendTest(unittest.TestCase):
                                                 "MICROSOFT_GRAPH_CLIENT_SECRET": "s"})
         self.assertEqual(made[-1], "closed")
 
+    def test_a_run_off_the_served_path_stops_before_any_host_starts(self):
+        # 11-15: PLX_ONTOLOGY_PG=1 scoped the reader to the record tables, and no people
+        # exclusion failed the scope closed (0 of 124 mail units, no Teams): each measured
+        # a narrower reader than the API's, so each is refused, never measured
+        made = []
+        with tempfile.TemporaryDirectory() as tmp:
+            config = Path(tmp) / "host.json"
+            config.write_text(json.dumps({"tenant": "plx"}), "utf-8")
+            base = {"PLX_WORKBENCH_STATE_DIR": tmp}
+            cases = {"PLX_ONTOLOGY_PG=unset": {**base, "PLX_EXCLUDED_PEOPLE_OIDS": OID},
+                     "PLX_ONTOLOGY_PG=1": {**base, **SERVED_PATH, "PLX_ONTOLOGY_PG": "1"},
+                     "PLX_ONTOLOGY_PG=sqlite": {**SERVED_PATH, **base,
+                                                "PLX_ONTOLOGY_PG": "sqlite"},
+                     "people_exclusion:excluded_people_oids_absent": {
+                         **base, "PLX_ONTOLOGY_PG": "only"},
+                     "people_exclusion:excluded_people_oids_invalid": {
+                         **base, "PLX_ONTOLOGY_PG": "only",
+                         "PLX_EXCLUDED_PEOPLE_OIDS": "not-an-id"},
+                     "people_exclusion:excluded_people_file_unreadable": {
+                         **base, **SERVED_PATH,
+                         "PLX_EXCLUDED_PEOPLE_FILE": str(Path(tmp) / "missing.json")}}
+            with mock.patch("scripts.eval_real_agent.reader_identity",
+                            return_value=({"uid": "u"}, None)), \
+                    mock.patch("scripts.eval_real_agent.LiveHost",
+                               lambda *a, **k: made.append(k)):
+                for reason, environ in cases.items():
+                    with self.subTest(reason), \
+                            self.assertRaises(retrieval.RetrievalError) as raised:
+                        retrieval.live_host(environ, config)
+                    self.assertIn(f"not_served_path:{reason}", str(raised.exception))
+        self.assertEqual(made, [])
+
     def test_a_backend_without_the_tools_host_is_refused(self):
         with tempfile.TemporaryDirectory() as tmp, \
                 contextlib.redirect_stderr(io.StringIO()) as err, \
                 contextlib.redirect_stdout(io.StringIO()):
             code = retrieval.main(["--out", str(Path(tmp) / "o.json"), "--search",
                                    "hybrid", "--limit", "1"],
-                                  environ={})
+                                  environ=dict(SERVED_PATH))
             self.assertEqual(code, 1)
             self.assertIn("host_unavailable", err.getvalue())
             self.assertFalse((Path(tmp) / "o.json").exists())

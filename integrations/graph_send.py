@@ -55,9 +55,42 @@ def _recipients(addresses: Any) -> list[dict[str, Any]]:
     return [{"emailAddress": {"address": a}} for a in addresses or ()]
 
 
+FILE_ATTACHMENT = "#microsoft.graph.fileAttachment"
+
+
+def _attachments(files: Any) -> list[dict[str, Any]]:
+    """Graph file attachments of a message's files: with the bytes (``content``) for the
+    send, as name, type and size only for a preview (``contentBytes`` never shown)."""
+    out = []
+    for f in files or ():
+        entry = {"@odata.type": FILE_ATTACHMENT, "name": f["name"],
+                 "contentType": f["content_type"]}
+        if isinstance(f.get("content"), bytes):
+            entry["contentBytes"] = base64.b64encode(f["content"]).decode("ascii")
+        else:
+            entry["size"] = f.get("size")
+        out.append(entry)
+    return out
+
+
+def shown(request: Mapping[str, Any]) -> dict[str, Any]:
+    """The request as a person or the journal may see it: each attachment's bytes replaced
+    by its size (the bytes go only to Graph)."""
+    message = (request.get("body") or {}).get("message")
+    if not isinstance(message, Mapping) or not message.get("attachments"):
+        return dict(request)
+    files = [{k: v for k, v in a.items() if k != "contentBytes"}
+             | ({"size": len(base64.b64decode(a["contentBytes"]))} if "contentBytes" in a
+                else {}) for a in message["attachments"]]
+    return {**request, "body": {**request["body"],
+                                "message": {**message, "attachments": files}}}
+
+
 def request_for(kind: str, sender: str, payload: Mapping[str, Any]) -> dict[str, Any]:
     """The exact Graph request of one action: ``{"method", "url", "body"}``. A reply and a
-    forward name the cited message in the sender's own mailbox (``message_id``)."""
+    forward name the cited message in the sender's own mailbox (``message_id``). A new
+    email and a reply carry ``payload["attachments"]`` (``card_actions.attachment_files``)
+    as file attachments of the message; a forward and a Teams note carry none."""
     # plain path parts: the guard refuses any '%' (an address or id needing encoding)
     user = quote(sender.lower(), safe="@+'")
     if kind == "send_email":
@@ -66,6 +99,8 @@ def request_for(kind: str, sender: str, payload: Mapping[str, Any]) -> dict[str,
                    "toRecipients": _recipients(payload.get("to"))}
         if payload.get("cc"):
             message["ccRecipients"] = _recipients(payload["cc"])
+        if payload.get("attachments"):
+            message["attachments"] = _attachments(payload["attachments"])
         return {"method": "POST", "url": f"{GRAPH}/users/{user}/sendMail",
                 "body": {"message": message, "saveToSentItems": True}}
     if kind == "reply_in_thread":
@@ -74,9 +109,13 @@ def request_for(kind: str, sender: str, payload: Mapping[str, Any]) -> dict[str,
             message["subject"] = payload["subject"]
         if payload.get("cc"):
             message["ccRecipients"] = _recipients(payload["cc"])
+        if payload.get("attachments"):
+            message["attachments"] = _attachments(payload["attachments"])
         return {"method": "POST", "url": f"{GRAPH}/users/{user}/messages/"
                 f"{quote(payload['message_id'], safe='=')}/reply",
                 "body": {"message": message, "comment": payload["body"]}}
+    if payload.get("attachments") and kind not in ("send_email", "reply_in_thread"):
+        raise ValueError("action_kind_takes_no_attachment")
     if kind == "forward":
         return {"method": "POST", "url": f"{GRAPH}/users/{user}/messages/"
                 f"{quote(payload['message_id'], safe='=')}/forward",
@@ -185,13 +224,15 @@ class ActionSender:
         "request": ..., "http_status"}``. ``failed``: Graph refused it (4xx) or the guard
         stopped it before I/O; ``unknown``: a 5xx or a transport failure after the request
         left, so it may have gone out. Nothing is ever retried."""
-        request = request_for(kind, sender or "me@unknown", payload)
+        wire = request_for(kind, sender or "me@unknown", payload)
+        request = shown(wire)   # what is returned and journalled: never the files' bytes
         missing, token = self.gate(kind, sender)
         if token is None:
             return {"status": "dry_run", "missing": missing, "request": request,
                     "http_status": None}
-        body = json.dumps(request["body"], separators=(",", ":"),
+        body = json.dumps(wire["body"], separators=(",", ":"),
                           ensure_ascii=False).encode("utf-8")
+        del wire
         try:
             status, _headers, _raw = self._post(request["url"], guard.Secret(token), body)
         except guard.ReadOnlyGuardError as error:

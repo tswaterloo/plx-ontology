@@ -15,6 +15,7 @@ import tempfile
 import unittest
 
 from verify import live_verify
+from verify import live_verify_policy
 from evals import runner, score
 from evals.tests import fixtures as fx
 from scripts import eval_case_cards as tool
@@ -1140,7 +1141,7 @@ class SpecTest(unittest.TestCase):
         self.assertEqual(spec["expect_blocked"]["json_equals"]["card_sets"], 13)
         self.assertIn("cases_age", spec["record_keys"])
         self.assertIs(spec["carry_previous_measured"], True)   # a timeout keeps the rotation
-        self.assertIn(live_verify.DAILY_REPORT_ARG, spec["command"])
+        self.assertIn(live_verify_policy.DAILY_REPORT_ARG, spec["command"])
         self.assertIn("PLX_WORKBENCH_SESSION_SECRET", spec["optional_env"])
 
 

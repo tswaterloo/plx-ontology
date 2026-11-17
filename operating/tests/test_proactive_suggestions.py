@@ -215,7 +215,7 @@ class Cardinality(unittest.TestCase):
                 items.append(item(2 * i + 1, oid=oid, days=n - i))
                 items.append(item(2 * i + 2, "vendor_no_reply", oid=oid))   # merged
                 items.append(item(1000 + i, "lot_on_hold", oid=f"Lot:t:{i}"))
-            items.append(item(5000, "po_late", oid=f"PurchaseOrder:t:0", acknowledged=True))
+            items.append(item(5000, "po_late", oid="PurchaseOrder:t:0", acknowledged=True))
             out = ps.build(items, labels={}, trails={}, late_drafts={}, top=n)
             self.assertEqual(out["total"], n)
             self.assertEqual(out["collapsed"], {"lot_on_hold": n})

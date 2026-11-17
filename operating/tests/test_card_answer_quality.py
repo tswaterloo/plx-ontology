@@ -828,7 +828,7 @@ class GateScorerAgreementTests(SharePointHostCase):
 
     def test_a_currency_sent_through_mcp_is_checked(self):
         from operating import answer_gate
-        from operating.mcp_server import _VALUE_CLAIMS
+        from operating.mcp_server_catalog import _VALUE_CLAIMS
         self.assertIn("currency", _VALUE_CLAIMS["items"]["properties"])
         handle = self.handle(STATEMENT)
         cite = {"l1_handle": handle, "field_path": "row.content_text"}

@@ -714,7 +714,7 @@ def _decided_evidence(cited: Mapping[str, str], labels: Mapping[str, str],
 
 
 def _plan_title(family: Any) -> str | None:
-    from operating.ontology_tools_investigate import PLAN_DIR
+    from operating.ontology_tools_investigate_plans import PLAN_DIR
     if not isinstance(family, str) or not re.fullmatch(r"[A-Za-z][A-Za-z0-9_-]{0,63}", family):
         return None
     try:

@@ -265,6 +265,9 @@
   "Email": {
    "role": "document"
   },
+  "ExpenseReceipt": {
+   "role": "record"
+  },
   "FgItem": {
    "role": "record"
   },
@@ -517,6 +520,12 @@
     },
     "updated_at": {
      "role": "when"
+    },
+    "completed_at": {
+     "role": "when"
+    },
+    "estimate": {
+     "role": "other"
     },
     "due_date": {
      "role": "aging"
@@ -1191,6 +1200,9 @@
      "role": "other"
     }
    }
+  },
+  "VendorInvoiceEntry": {
+   "role": "record"
   },
   "Warehouse": {
    "role": "record"

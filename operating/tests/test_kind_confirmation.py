@@ -26,7 +26,7 @@ from operating.tests import test_case_live_citations as live_citations
 from operating.tests import test_playbook_originals as originals
 from operating.tests.test_case_live_citations import SP_BASE, j
 from operating.tests.test_employee_case_runtime import RICARDO_PERMS
-from operating.tests.test_playbook_originals import AO, EMPLOYEE, EMPLOYEE_P, PORTAL_PO, PROFORMA
+from operating.tests.test_playbook_originals import EMPLOYEE, EMPLOYEE_P, PORTAL_PO, PROFORMA
 
 ELICITING = {"elicitation": {}}
 DOWNLOAD = f"{SP_HOST}/sites/QCQA/_layouts/15/download.aspx"

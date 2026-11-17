@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'">
+<title>PLX Workbench</title>
+<style>
+  :root { color-scheme: light dark; font: 14px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif; }
+  body { margin: 0; min-height: 100vh; display: grid; place-items: center; background: Canvas; color: CanvasText; }
+  main { width: min(30rem, 90vw); }
+  h1 { font-size: 1.25rem; margin: 0 0 .25rem; font-weight: 600; letter-spacing: -.01em; }
+  p { margin: 0 0 1rem; opacity: .75; }
+  label { display: block; font-weight: 500; margin-bottom: .25rem; }
+  input { box-sizing: border-box; width: 100%; padding: .55rem .6rem; font: inherit; border: 1px solid GrayText; border-radius: 4px; background: Field; color: FieldText; }
+  button { margin-top: .75rem; padding: .5rem 1rem; font: inherit; font-weight: 500; border: 0; border-radius: 4px; background: AccentColor; color: AccentColorText; cursor: pointer; }
+  #err { margin-top: .75rem; color: #b00020; min-height: 1.5em; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Where is your Workbench?</h1>
+  <p>Enter the address you normally open in your browser. You are asked once; File &gt; Change server lets you change it. Next you sign in as you do in the browser.</p>
+  <form id="f">
+    <label for="u">Workbench address</label>
+    <input id="u" name="u" type="url" placeholder="https://workbench.example.com" autocomplete="off" autofocus required>
+    <button type="submit">Continue</button>
+    <p id="err" role="alert"></p>
+  </form>
+</main>
+<script>
+  document.getElementById("f").addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const btn = e.target.querySelector("button");
+    const err = document.getElementById("err");
+    btn.disabled = true;
+    btn.textContent = "Checking…";
+    err.textContent = "";
+    const out = await window.plxDesktop.saveServer(document.getElementById("u").value);
+    btn.disabled = false;
+    btn.textContent = "Continue";
+    if (out && out.error) err.textContent = out.error;
+  });
+</script>
+</body>
+</html>

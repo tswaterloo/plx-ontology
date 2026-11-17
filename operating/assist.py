@@ -20,6 +20,11 @@ edited and copied by the person; sending goes through the gated write path elsew
   the line's topic, else their main contact there (``MAIN_HALF_LIFE``). "The team" or a role: the
   members of the reader's role (the autopilot's roles file). Every candidate passes the
   exclusion; an excluded person is never a recipient and never named (``withheld``).
+* **Replies** (``resolve_reply``): the one recipient path for the autopilot's drafted
+  replies and notices too (``autopilot._recipients``): the thread's sender and others
+  (``reply_base``) or a record's stated address, on the same exclusion, the reader's own
+  addresses and learned lessons as ``resolve``, at most ``REPLY_ALL_MAX`` others a line,
+  every address cited; anything unsure is asked.
 * **Facts** (``questions``): one Ask per record named (the line itself when the fast path
   takes it, else "status of <record>"), answered by the caller's Ask path as this reader.
   A record written in a short form ("OR 120001") is asked by the full form the reader's
@@ -169,6 +174,7 @@ class Recipients:
     # first (every one cleared by the exclusion), ``mention``, ``why``
     ask: list[dict[str, Any]] = field(default_factory=list)
     basis: dict[str, str] = field(default_factory=dict)        # filled-in address -> why
+    sources: dict[str, str] = field(default_factory=dict)      # filled-in address -> citation
 
 
 def _parts(address: str) -> list[str]:
@@ -603,14 +609,149 @@ def resolve(intent: Intent, *, me: str, people: Any, sent: Sequence[Mapping[str,
     return out
 
 
+# --------------------------------------------------------------------------- replies
+
+# how many others a reply keeps on its To and on its Cc line (the autopilot's drafted replies
+# and notices); past them the reader is asked who else goes on it, never a silent drop
+REPLY_ALL_MAX = 10
+
+
+def reply_base(sender: str, to: Sequence[str], cc: Sequence[str], own: Iterable[str]
+               ) -> dict[str, list[str]]:
+    """Who else a reply to this mail goes to, as people answer: the message's other To
+    recipients and its Cc, never the person's own addresses or the sender (who leads the
+    To line), each once, in the message's order, all of them (the base ``resolve_reply``
+    decides from and caps). Measured on DEV days 2026-10-13..27, five roles: the
+    person's own reply had the same To and Cc as the drafted one 4 times in 43 when a draft
+    went to the sender alone, 24 in 43 with the other recipients kept."""
+    skip = {str(a).lower() for a in own} | {str(sender).lower()}
+    more = list(dict.fromkeys(str(a).lower() for a in to if str(a).lower() not in skip))
+    copied = list(dict.fromkeys(str(a).lower() for a in cc
+                                if str(a).lower() not in skip and str(a).lower() not in more))
+    return {"to": more, "cc": copied}
+
+
+def resolve_reply(*, sender: Any, to: Sequence[Any] = (), cc: Sequence[Any] = (), me: str,
+                  people: Any, own: Iterable[str] = (),
+                  learned: Mapping[str, str] | None = None,
+                  sources: Mapping[str, str] | None = None, source: Optional[str] = None,
+                  cap: int = REPLY_ALL_MAX) -> Recipients:
+    """The recipients of a reply (or of a notice to one stated address), decided the way
+    ``resolve`` decides a new message's: the same people exclusion, the same learned
+    lessons, the same refusal when the exclusion is unavailable. ``sender``: who the reply
+    answers (or the address a record states), first on To; ``to``/``cc``: the message's
+    other recipients (``reply_base`` of the thread, its order kept); ``me``: the reader's
+    object id, whose own addresses (the directory's, and ``own``) are never on it;
+    ``sources``: address -> the citation it was read from (``source`` for any other).
+
+    * The people exclusion (``people.identity_clear``) clears every address, ``sender``
+      too: an excluded person, or an address of ours the directory cannot decide, is left
+      off and never named (``withheld``). An uncleared ``sender`` leaves no recipient at
+      all: the reply is not drafted to the others instead.
+    * ``learned`` (address -> ``never`` / ``to`` / ``cc``: the reader took them off drafts,
+      or put them on that line): a ``never`` is never kept nor offered, except the
+      ``sender``, who the reply answers (an address the reader typed outranks a lesson in
+      ``resolve`` too); a ``to`` on the Cc line moves to To, a ``cc`` on To moves to Cc.
+      A lesson never adds someone who is not on the thread.
+    * ``cap`` (``REPLY_ALL_MAX``) others a line: past it the rest are asked
+      (``Recipients.ask``, ``pick`` any; ``ASK_MAX`` shown, ``more`` counts the others),
+      never filled in.
+    * A ``sender`` that is no address, or the reader's own, is ``unresolved`` with nothing
+      filled in; an automated one (no-reply, a notification box) is asked, not filled in.
+
+    ``Recipients.basis`` says why each filled-in address is there (``sender``, ``to``,
+    ``cc``, ``learned_to``, ``learned_cc``) and ``Recipients.sources`` the citation each
+    was read from; ``ask`` holds every question instead of a guess."""
+    if people is None or getattr(people, "unavailable", None) or \
+            not getattr(people, "directory", None):
+        raise AssistRefused("people_exclusion_unavailable")
+    me = str(me or "").lower()
+    if not me or not people.identity_clear(me):
+        raise AssistRefused("not_an_employee")
+    directory = {str(a).lower(): str(o).lower() for a, o in people.directory.items()}
+    internal = tuple(getattr(people, "internal", ()) or ())
+    mine = {a for a, o in directory.items() if o == me} | {str(a).lower() for a in own}
+    lessons = {str(a).lower(): str(v) for a, v in (learned or {}).items()}
+    cites = {str(a).lower(): str(c) for a, c in (sources or {}).items() if c}
+    out = Recipients()
+    barred: set[str] = set()
+
+    def inside(address: str) -> bool:
+        domain = address.rsplit("@", 1)[-1]
+        return any(domain == d or domain.endswith("." + d) for d in internal)
+
+    def one(raw: Any) -> str:
+        found = _addresses(raw) if isinstance(raw, str) else []
+        return found[0] if len(found) == 1 and found[0] == str(raw).strip().lower() else ""
+
+    def clear(address: str) -> bool:
+        if people.identity_clear(address):
+            return True
+        if address not in barred:
+            barred.add(address)
+            out.withheld += 1
+        return False
+
+    def fill(address: str, where: list[str], why: str) -> None:
+        where.append(address)
+        out.basis[address] = why
+        if cites.get(address) or source:
+            out.sources[address] = cites.get(address) or str(source)
+        if _label(address):
+            out.names[address] = _label(address)
+        out.outside = out.outside or not inside(address)
+
+    primary = one(sender)
+    if not primary or primary in mine:
+        out.unresolved.append("sender")
+        return out
+    if not clear(primary):
+        return out
+    if _AUTOMATED.search(primary.split("@")[0]):
+        out.ask.append({"field": "to", "pick": "one", "mention": None,
+                        "candidates": [primary], "why": "an automated address"})
+        return out
+    fill(primary, out.to, "sender")
+    seen = {primary}
+    lines: dict[str, list[tuple[str, str]]] = {"to": [], "cc": []}
+    for field_, raw in (("to", to), ("cc", cc)):
+        for item in raw or ():
+            address = one(item)
+            if not address or address in seen or address in mine:
+                continue
+            seen.add(address)
+            if lessons.get(address) == "never" or not clear(address):
+                continue
+            moved = lessons.get(address)
+            if moved in ("to", "cc") and moved != field_:
+                lines[moved].append((address, f"learned_{moved}"))
+            else:
+                lines[field_].append((address, field_))
+    for field_, where in (("to", out.to), ("cc", out.cc)):
+        # the learned placements first on their line, then the thread's order
+        ranked = sorted(lines[field_], key=lambda x: not x[1].startswith("learned"))
+        for address, why in ranked[:cap]:
+            fill(address, where, why)
+        rest = [a for a, _w in ranked[cap:]]
+        if rest:
+            out.ask.append({"field": field_, "pick": "any", "mention": None,
+                            "candidates": rest[:ASK_MAX],
+                            "why": f"more on the thread than a reply keeps ({cap})",
+                            **({"more": len(rest) - ASK_MAX} if len(rest) > ASK_MAX else {})})
+    return out
+
+
 # --------------------------------------------------------------------------- facts
 
 def questions(intent: Intent) -> list[str]:
     """The Ask questions whose gated answers give the draft its facts: the line's topic
-    when the fast path takes it whole, else one status question per record named."""
+    when the fast path takes it whole, or when it is a question of a known shape the agent
+    answers (``fast_answer.routed``: on hand, balance due, shipped, a PO's status), so the
+    agent is asked for the fact the line names, not a record's status; else one status
+    question per record named."""
     from . import fast_answer
     if intent.topic and len(intent.records) == 1 and not intent.read_as \
-            and fast_answer.serves(intent.topic):
+            and (fast_answer.serves(intent.topic) or fast_answer.routed(intent.topic)):
         return [intent.topic]
     return [f"status of {token}" for token in intent.records]
 
@@ -994,18 +1135,10 @@ def _addresses(raw: Any) -> list[str]:
                               re.findall(r"[\w.+'-]+@[\w-]+(?:\.[\w-]+)+", text)))
 
 
-def capture_sent(state_dir: Any, oid: str, own: set[str], *, until: str | None = None
-                 ) -> list[dict[str, Any]]:
-    """``sent_rows`` of the reader's own mailbox in the mail capture (read-only; the
-    reader's own mailbox only, so nothing of anyone else's mail is read)."""
-    return capture_history(state_dir, oid, own, until=until, received=False)
-
-
 def capture_history(state_dir: Any, oid: str, own: set[str], *, until: str | None = None,
                     received: bool = True, limit: int = 6000) -> list[dict[str, Any]]:
     """The reader's own mailbox in the mail capture, sent and received (``sent_rows``):
     who they write to and who writes to them, by subject; their own mailbox only."""
-    import json
     import sqlite3
     from pathlib import Path
     path = Path(state_dir) / "mail-capture" / "capture.db"

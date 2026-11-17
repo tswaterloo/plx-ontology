@@ -72,7 +72,8 @@
       {
        "binding": "gen.public.app_approval_record",
        "path": "approved_at",
-       "parser": "iso_timestamp"
+       "parser": "iso_timestamp",
+       "naive_zone": "UTC"
       }
      ]
     },
@@ -105,7 +106,8 @@
       {
        "binding": "gen.public.app_approval_record",
        "path": "created_at",
-       "parser": "iso_timestamp"
+       "parser": "iso_timestamp",
+       "naive_zone": "UTC"
       }
      ]
     },
@@ -509,7 +511,8 @@
       {
        "binding": "gen.public.app_fg_item",
        "path": "created_at",
-       "parser": "iso_timestamp"
+       "parser": "iso_timestamp",
+       "naive_zone": "UTC"
       }
      ]
     },
@@ -748,7 +751,8 @@
       {
        "binding": "gen.public.app_fg_item",
        "path": "updated_at",
-       "parser": "iso_timestamp"
+       "parser": "iso_timestamp",
+       "naive_zone": "UTC"
       }
      ]
     }
@@ -1002,7 +1006,8 @@
       {
        "binding": "gen.public.app_product",
        "path": "created_at",
-       "parser": "iso_timestamp"
+       "parser": "iso_timestamp",
+       "naive_zone": "UTC"
       }
      ]
     },
@@ -1057,7 +1062,8 @@
       {
        "binding": "gen.public.app_product",
        "path": "date_created",
-       "parser": "iso_timestamp"
+       "parser": "iso_timestamp",
+       "naive_zone": "UTC"
       }
      ]
     },
@@ -1068,7 +1074,8 @@
       {
        "binding": "gen.public.app_product",
        "path": "deleted_at",
-       "parser": "iso_timestamp"
+       "parser": "iso_timestamp",
+       "naive_zone": "UTC"
       }
      ]
     },
@@ -1134,7 +1141,8 @@
       {
        "binding": "gen.public.app_product",
        "path": "fda_approval_date",
-       "parser": "iso_timestamp"
+       "parser": "iso_timestamp",
+       "naive_zone": "UTC"
       }
      ]
     },
@@ -1167,7 +1175,8 @@
       {
        "binding": "gen.public.app_product",
        "path": "first_inventory_date",
-       "parser": "iso_timestamp"
+       "parser": "iso_timestamp",
+       "naive_zone": "UTC"
       }
      ]
     },
@@ -1547,7 +1556,8 @@
       {
        "binding": "gen.public.app_product",
        "path": "updated_at",
-       "parser": "iso_timestamp"
+       "parser": "iso_timestamp",
+       "naive_zone": "UTC"
       }
      ]
     },
@@ -1701,7 +1711,8 @@
       {
        "binding": "gen.public.app_supplier_product",
        "path": "created_at",
-       "parser": "iso_timestamp"
+       "parser": "iso_timestamp",
+       "naive_zone": "UTC"
       }
      ]
     },
@@ -1949,7 +1960,8 @@
       {
        "binding": "gen.public.app_supplier_product",
        "path": "updated_at",
-       "parser": "iso_timestamp"
+       "parser": "iso_timestamp",
+       "naive_zone": "UTC"
       }
      ]
     }
@@ -2048,7 +2060,8 @@
       {
        "binding": "gen.public.app_supplier_product_tier",
        "path": "created_at",
-       "parser": "iso_timestamp"
+       "parser": "iso_timestamp",
+       "naive_zone": "UTC"
       }
      ]
     },
@@ -2070,7 +2083,8 @@
       {
        "binding": "gen.public.app_supplier_product_tier",
        "path": "effective_from",
-       "parser": "iso_timestamp"
+       "parser": "iso_timestamp",
+       "naive_zone": "UTC"
       }
      ]
     },
@@ -2139,7 +2153,8 @@
       {
        "binding": "gen.public.app_supplier_product_tier",
        "path": "updated_at",
-       "parser": "iso_timestamp"
+       "parser": "iso_timestamp",
+       "naive_zone": "UTC"
       }
      ]
     }
@@ -2265,7 +2280,8 @@
       {
        "binding": "gen.public.bulk_product",
        "path": "audittimestampmodified",
-       "parser": "iso_timestamp"
+       "parser": "iso_timestamp",
+       "wall_clock_zone": "America/New_York"
       }
      ]
     },
@@ -2555,7 +2571,8 @@
       {
        "binding": "gen.public.finished_product",
        "path": "audittimestampmodified",
-       "parser": "iso_timestamp"
+       "parser": "iso_timestamp",
+       "wall_clock_zone": "America/New_York"
       }
      ]
     },
@@ -3113,7 +3130,8 @@
       {
        "binding": "gen.public.finished_product_item",
        "path": "audittimestampmodified",
-       "parser": "iso_timestamp"
+       "parser": "iso_timestamp",
+       "wall_clock_zone": "America/New_York"
       }
      ]
     },
@@ -3509,7 +3527,8 @@
       {
        "binding": "gen.public.packaging",
        "path": "audittimestampmodified",
-       "parser": "iso_timestamp"
+       "parser": "iso_timestamp",
+       "wall_clock_zone": "America/New_York"
       }
      ]
     },
@@ -3912,7 +3931,8 @@
       {
        "binding": "gen.public.packaging_supplier",
        "path": "audittimestampmodified",
-       "parser": "iso_timestamp"
+       "parser": "iso_timestamp",
+       "wall_clock_zone": "America/New_York"
       }
      ]
     },
@@ -4309,7 +4329,8 @@
       {
        "binding": "gen.public.raw_material",
        "path": "audittimestampmodified",
-       "parser": "iso_timestamp"
+       "parser": "iso_timestamp",
+       "wall_clock_zone": "America/New_York"
       }
      ]
     },
@@ -4891,7 +4912,8 @@
       {
        "binding": "gen.public.raw_material_supplier",
        "path": "audittimestampmodified",
-       "parser": "iso_timestamp"
+       "parser": "iso_timestamp",
+       "wall_clock_zone": "America/New_York"
       }
      ]
     },
@@ -6549,7 +6571,8 @@
       {
        "binding": "gen.silver.bulk_products",
        "path": "updated_at",
-       "parser": "iso_timestamp"
+       "parser": "iso_timestamp",
+       "wall_clock_zone": "America/New_York"
       }
      ]
     }
@@ -6876,7 +6899,8 @@
       {
        "binding": "gen.silver.finished_product_items",
        "path": "updated_at",
-       "parser": "iso_timestamp"
+       "parser": "iso_timestamp",
+       "wall_clock_zone": "America/New_York"
       }
      ]
     }
@@ -7142,7 +7166,8 @@
       {
        "binding": "gen.silver.finished_products",
        "path": "updated_at",
-       "parser": "iso_timestamp"
+       "parser": "iso_timestamp",
+       "wall_clock_zone": "America/New_York"
       }
      ]
     }
@@ -7416,7 +7441,8 @@
       {
        "binding": "gen.silver.packaging",
        "path": "updated_at",
-       "parser": "iso_timestamp"
+       "parser": "iso_timestamp",
+       "wall_clock_zone": "America/New_York"
       }
      ]
     },
@@ -7671,7 +7697,8 @@
       {
        "binding": "gen.silver.packaging_suppliers",
        "path": "updated_at",
-       "parser": "iso_timestamp"
+       "parser": "iso_timestamp",
+       "wall_clock_zone": "America/New_York"
       }
      ]
     }
@@ -7948,7 +7975,8 @@
       {
        "binding": "gen.silver.raw_material_suppliers",
        "path": "updated_at",
-       "parser": "iso_timestamp"
+       "parser": "iso_timestamp",
+       "wall_clock_zone": "America/New_York"
       }
      ]
     }
@@ -8365,7 +8393,8 @@
       {
        "binding": "gen.silver.raw_materials",
        "path": "updated_at",
-       "parser": "iso_timestamp"
+       "parser": "iso_timestamp",
+       "wall_clock_zone": "America/New_York"
       }
      ]
     },

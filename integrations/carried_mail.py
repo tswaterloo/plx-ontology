@@ -367,10 +367,9 @@ def _blob_head(blobs: Any, digest: str, size: int = 4096) -> bytes | None:
     None when neither is held."""
     import zlib
     from integrations import blob_pack
-    from integrations.captured_text import COMPRESSED_SUFFIX, blob_path
+    from integrations.captured_text import COMPRESSED_SUFFIX
     try:
-        with open(blob_path(blobs, digest), "rb") as handle:
-            return handle.read(size)
+        return blob_pack.head(blobs, digest, size)   # as they are, or their .zst
     except OSError:
         pass
     try:

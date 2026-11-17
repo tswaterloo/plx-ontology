@@ -63,6 +63,7 @@ from typing import Any, Callable, Iterable, Mapping, Sequence
 
 from ontology.mentions import sent_from_own_domain
 from operating import ontology_tools as ot
+from operating import ontology_tools_policy
 
 SOURCE = "graph_mail"
 RELATION = "messages"
@@ -344,7 +345,7 @@ def live_refresh_at(db: Any) -> str | None:
     states it for a build): the stalest last run of a folder it still reads (a folder
     with a terminal reason is never read again and leaves freshness to the rest); None
     when no folder has run."""
-    from integrations.capture_mail import terminal_reason
+    from integrations.capture_mail_standing import terminal_reason
     runs = [run for reason, run in db.execute("SELECT reason, last_run_at FROM folders")
             if run and not terminal_reason(reason)]
     return min(runs) if runs else None
@@ -392,7 +393,7 @@ def _plan(tools: Any, arguments: Mapping[str, Any], actor: Any, policy: Any,
             row = tools.store.conn.execute(
                 "SELECT value FROM store_meta WHERE key = 'source_freshness'").fetchone()
         pin = pinned_capture_id(row[0] if row else None)
-        keys, held, _sets, _sources = ot.reader_grants(tools, policy, actor,
+        keys, held, _sets, _sources = ontology_tools_policy.reader_grants(tools, policy, actor,
                                                        tools.store.audience_keys())
     except (sqlite3.Error, AttributeError, TypeError, ValueError):
         return None
@@ -483,7 +484,7 @@ def literal_participants(participant: Any) -> list[str] | None:
     ``@``); None for anything else (a record's id: its addresses are read from the
     record, under the reader's grants, by the projected search alone)."""
     from operating.ontology_tools_evidence import _ADDRESS, _DOMAIN
-    if not isinstance(participant, str) or ot._OBJECT_ID.match(participant.strip()):
+    if not isinstance(participant, str) or ontology_tools_policy._OBJECT_ID.match(participant.strip()):
         return None
     text = participant.strip().lower()
     if len(text) > 254:

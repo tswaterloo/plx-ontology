@@ -5,7 +5,7 @@ import Link from "next/link";
 import { useEffect, useState } from "react";
 import { getSourceRecords } from "@/lib/api";
 import { ApiError } from "@/lib/errors";
-import { recordLabel, safeHref, typeLabel } from "@/lib/format";
+import { listNames, plural, recordLabel, safeHref, typeLabel } from "@/lib/format";
 import type { SourceRecords } from "@/lib/types";
 
 type Row = NonNullable<SourceRecords["records"]>[number];
@@ -26,15 +26,21 @@ export function useSourceRecords(handle: string): SourceRecords | null | "failed
   return got;
 }
 
-/** "Read into PO 90412 and 2 more records": the one line under a source's title. */
+/** The one line under a source's title: the record it was read into, then what links to that
+ *  ("Read into PO 90412; linked to Maple Leaf Soapworks and SO 77120"), each named when there
+ *  are at most three, else counted ("linked to 14 records"); the panel lists every one. */
 export function citedLine(got: SourceRecords): string | null {
   const rows = got.records ?? [];
   if (!got.served || rows.length === 0) return null;
-  const own = rows.find((r) => r.how === "from") ?? rows[0];
-  const name = recordLabel(own.record.type, own.record.label);
-  const more = rows.length - 1;
-  const lead = own.how === "from" ? `Read into ${name}` : `Linked to ${name}`;
-  return more > 0 ? `${lead} and ${more} more record${more === 1 ? "" : "s"}${got.truncated ? " (first 40 listed)" : ""}` : lead;
+  const named = (r: Row) => recordLabel(r.record.type, r.record.label);
+  const from = rows.filter((r) => r.how === "from");
+  const linked = rows.filter((r) => r.how !== "from");
+  const atLeast = got.truncated ? "at least " : "";
+  const part = (verb: string, list: Row[]) =>
+    list.length === 0 ? null : list.length > 3 ? `${verb} ${atLeast}${plural(list.length, "record")}` : `${verb} ${listNames(list.map(named))}`;
+  const lead = part(from.length ? "Read into" : "Linked to", from.length ? from : linked);
+  const tail = from.length ? part("linked to", linked) : null;
+  return tail ? `${lead}; ${tail}` : lead;
 }
 
 function RecordRow({ row }: { row: Row }) {

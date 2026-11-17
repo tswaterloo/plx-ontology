@@ -33,7 +33,7 @@ reads the links confirmed here back from the console's review store, read only.
 from __future__ import annotations
 
 import re
-from typing import Any, Callable, Mapping, Sequence
+from typing import Any, Callable, Mapping
 
 Call = Callable[[str, Mapping[str, Any]], Mapping[str, Any]]
 
@@ -210,7 +210,7 @@ def _documents(call: Call, schema: Any, text: str, types: set[str]
     ``plx.find`` matches as an identifier (``ROOT_REASONS``, ``LINKED_REASON``; a display
     text or filter match is a lead, never the record a person named);
     ``document_not_found`` / ``document_ambiguous`` otherwise."""
-    from .ontology_tools import LINKED_REASON, ROOT_REASONS
+    from .ontology_tools_policy import LINKED_REASON, ROOT_REASONS
 
     if _type_of(text) in schema.object_types and ":" in text:
         if _type_of(text) not in types:

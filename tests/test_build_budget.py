@@ -87,7 +87,7 @@ class JoinSizeTest(unittest.TestCase):
         seen = []
 
         class Pool:
-            def __init__(self, max_workers, mp_context):
+            def __init__(self, max_workers, mp_context, **parent_watch_init):
                 seen.append(max_workers)
 
             def __enter__(self):

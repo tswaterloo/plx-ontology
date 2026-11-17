@@ -14,10 +14,11 @@ from datetime import datetime, timedelta, timezone
 import hashlib
 import json
 from pathlib import Path
-import tempfile
 from typing import Any, Optional
 
+from ontology import tmp_root
 from operating import autopilot as ap
+from operating import autopilot_engine
 from operating import autopilot_write as aw
 
 from . import models as m
@@ -194,15 +195,15 @@ def seed(root: Path, now: Optional[datetime] = None) -> None:
     q.close()
 
     def doc(scores: dict) -> dict:
-        return {"schema": ap.GATE_SCHEMA, "roles": {
+        return {"schema": autopilot_engine.GATE_SCHEMA, "roles": {
             role: {"members": [oid for oid in PEOPLE if _role(oid) == role],
                    "workflows": {f: {"judged": j, "matched": k} for f, (j, k) in flows.items()}}
             for role, flows in scores.items()}}
-    (qpath.parent / ap.GATE_FILE).write_text(json.dumps(doc(DEV_SCORES)))
+    (qpath.parent / autopilot_engine.GATE_FILE).write_text(json.dumps(doc(DEV_SCORES)))
     state = root / "autopilot-write"
     run = root / "fresh-run"
     run.mkdir(parents=True)
-    (run / ap.GATE_FILE).write_text(json.dumps(doc(FRESH_SCORES)))
+    (run / autopilot_engine.GATE_FILE).write_text(json.dumps(doc(FRESH_SCORES)))
     for n, role in enumerate(FRESH_SCORES):
         (run / f"r{n}").mkdir()
         (run / f"r{n}" / "result.json").write_text(json.dumps(
@@ -218,7 +219,7 @@ def seed(root: Path, now: Optional[datetime] = None) -> None:
 def install(backend: Any) -> StudioDemo:
     """Seed a temp state and point ``backend``'s autopilot hooks at it (the demo reader is
     the owner; no adapter, so nothing is performed)."""
-    root = Path(tempfile.mkdtemp(prefix="plx-demo-studio-"))
+    root = Path(tmp_root.mkdtemp(prefix="plx-demo-studio-"))
     seed(root)
     demo = StudioDemo(root)
     backend.studio_demo = demo

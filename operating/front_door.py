@@ -159,6 +159,8 @@ class _Session:
         """Send one user message; the result text, or None (ended, timed out)."""
         if self.proc.poll() is not None:
             return None
+        from operating.card_text import mask_served
+        text = mask_served(text)   # no card number or credential reaches the model
         try:
             self.proc.stdin.write(json.dumps(   # type: ignore[union-attr]
                 {"type": "user", "message": {"role": "user", "content": text}}) + "\n")
@@ -304,6 +306,7 @@ class FrontDoor:
         self._starting = 0
         self._busy = 0   # sessions reading a question now
         self._settling = 0   # sessions reading a late reply before their next question
+        self._closed = False   # ``close``: no session is started or kept again
 
     @staticmethod
     def enabled() -> bool:
@@ -322,6 +325,8 @@ class FrontDoor:
     def warm(self) -> None:
         """Start sessions in the background until ``size`` are free or starting."""
         with self._lock:
+            if self._closed:
+                return
             missing = (self.size - self._free.qsize() - self._starting - self._busy
                        - self._settling)
             self._starting += max(0, missing)
@@ -335,7 +340,7 @@ class FrontDoor:
             session = self._spawn(self.argv(), agent_environment(os.environ))
             ready = _parse(session.turn(self.primer(), 60.0))
             if ready and ready.get("ready"):
-                self._free.put(session)
+                self._keep(session)
             else:
                 session.close()
         except Exception:  # noqa: BLE001 - a session that cannot start is no session
@@ -372,6 +377,8 @@ class FrontDoor:
     def reply(self, message: dict[str, Any]) -> Optional[dict[str, Any]]:
         """One turn of a warm session: ``message`` as JSON in, the JSON object it replies
         with out, or None (no free session in time, no reply in time, not JSON)."""
+        if self._closed:
+            return None
         self.warm()   # a session that ended is replaced; never more than the pool
         try:
             # questions beyond the pool wait their turn for a warm session
@@ -396,7 +403,7 @@ class FrontDoor:
             with self._lock:
                 self._busy -= 1
             if keep and session.turns < self.turns_kept:
-                self._free.put(session)
+                self._keep(session)
             elif not keep and getattr(session, "owed", 0) > 0 and session.turns < self.turns_kept:
                 # Timed out, not ended: the warm session reads its late reply on its own
                 # thread and serves again, rather than a cold one starting in its place.
@@ -416,10 +423,44 @@ class FrontDoor:
         with self._lock:
             self._settling -= 1
         if settled:
-            self._free.put(session)
+            self._keep(session)
         else:
             session.close()
             self.warm()
+
+    def _keep(self, session: Any) -> None:
+        """``session`` back on the free queue, or closed once the front door is."""
+        with self._lock:
+            if not self._closed:
+                self._free.put(session)
+                return
+        session.close()
+
+    def ready(self, seconds: float) -> bool:
+        """Wait up to ``seconds`` for the whole pool to be warm (a caller that must not
+        route its first questions as typed only because the sessions were still starting:
+        the scoreboard); whether it is."""
+        deadline = time.monotonic() + seconds
+        while self._free.qsize() < self.size and time.monotonic() < deadline:
+            if self._closed:
+                return False
+            time.sleep(0.2)
+        return self._free.qsize() >= self.size
+
+    def close(self) -> None:
+        """Close every free session and any that comes back from a question, a late reply
+        or a start; no session is started again (a run that owns the front door, ends)."""
+        with self._lock:
+            self._closed = True
+        while True:
+            try:
+                session = self._free.get_nowait()
+            except queue.Empty:
+                return
+            try:
+                session.close()
+            except Exception:  # noqa: BLE001 - one session's close never stops the rest
+                pass
 
 
 __all__ = ["FrontDoor", "Reading", "RULES", "grounded", "open_point"]

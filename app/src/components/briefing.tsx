@@ -9,7 +9,7 @@ import { useListKeys } from "@/lib/list-keys";
 import { EvidenceTrailCard } from "@/components/evidence-trail";
 import { getBriefing, getBriefingItems, setWatcherItemState } from "@/lib/api";
 import { cn } from "@/lib/cn";
-import { formatDate, money, objectHref, plural, readable, recordLabel, safeHref } from "@/lib/format";
+import { formatDate, listNames, money, objectHref, plural, readable, recordLabel, safeHref } from "@/lib/format";
 import { briefingKind } from "@/lib/status";
 import type { Briefing, BriefingGroup, BriefingItem, BriefingItems, BriefingView, LatePo } from "@/lib/types";
 import { DataNotes } from "./data-notes";
@@ -108,7 +108,7 @@ function ItemRow({ item, latePo, grouped, testId }: { item: BriefingItem; latePo
       const done = await setWatcherItemState(item.id, state);
       setAside(done.state === "open" ? null : { state: done.state, until: done.until });
     } catch {
-      setFailed(state === "open" ? "Couldn't undo. Try again." : "Couldn't save that. Try again.");
+      setFailed(state === "open" ? "Couldn't undo that; try again" : "Couldn't save that; try again");
     } finally {
       setBusy(false);
     }
@@ -305,6 +305,20 @@ function Group({ group, top, view, loadItems, byId }: { group: BriefingGroup; to
   );
 }
 
+/** The checks a run did not make whole, each by name and grouped by what happened ("Not run
+ *  this time: supplier replies and order margins; partly read: late purchase orders"): a count
+ *  alone ("8 checks didn't run") tells the reader nothing to act on. */
+export function checksLine(checks: { label: string; status: string }[]): string {
+  const named = (status: string[]) => listNames([...new Set(checks.filter((c) => status.includes(c.status)).map((c) => c.label))]);
+  const parts = [
+    [named(["failed"]), "failed this run"],
+    [named(["not_checked"]), "not run this time"],
+    [named(["partial"]), "partly read"],
+  ].filter(([names]) => names).map(([names, what]) => `${what}: ${names}`);
+  const line = parts.join("; ");
+  return line ? line[0].toUpperCase() + line.slice(1) : "";
+}
+
 /** Why the briefing has fewer items than it might: unchecked kinds, other teams, places you can't open. */
 export function BriefingCounts({ briefing, compact: _compact = false }: { briefing: Briefing; compact?: boolean }) {
   const w = useReaderWords();
@@ -319,7 +333,7 @@ export function BriefingCounts({ briefing, compact: _compact = false }: { briefi
         <details className="group/checks">
           <summary className="flex cursor-pointer list-none items-center gap-1 hover:text-fg [&::-webkit-details-marker]:hidden">
             <ChevronRight className="size-3.5 shrink-0 transition-transform group-open/checks:rotate-90" aria-hidden />
-            {unchecked.length} checks didn&apos;t finish this run
+            {checksLine(unchecked)}
           </summary>
           <div className="mt-1 space-y-1 pl-[18px]">{lines}</div>
         </details>
@@ -459,7 +473,7 @@ export function BriefingCard({
 
       <section className="min-w-0 bg-list pb-8 lg:col-start-1 lg:row-span-2 lg:row-start-1" aria-label="Open items" ref={listRef}>
         <div className="sticky top-[52px] z-20 border-b border-border bg-list">
-          <div className="flex h-10 gap-4 overflow-x-auto px-5 [mask-image:linear-gradient(to_right,#000_calc(100%-40px),transparent)] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden" role="tablist" aria-label="Show">
+          <div className="flex h-10 gap-4 overflow-x-auto px-5 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden" role="tablist" aria-label="Show">
             <button type="button" role="tab" aria-selected={!sinceVisit && tab === "all"} onClick={() => (setTab("all"), choose("all"))} className={cn(TAB, !sinceVisit && tab === "all" ? TAB_ON : "text-muted hover:text-fg")}>
               All <span className="text-[12px] font-normal num text-faint">{briefing.count}</span>
             </button>

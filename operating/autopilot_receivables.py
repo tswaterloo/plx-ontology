@@ -27,11 +27,12 @@ from __future__ import annotations
 from collections import Counter, defaultdict
 from datetime import date, timedelta
 from decimal import ROUND_HALF_UP, Decimal
-import json
 import re
 from typing import Any, Mapping, Sequence
 
 from . import autopilot as ap
+from . import autopilot_handlers
+from . import autopilot_records
 
 CENT = Decimal("0.01")
 SHIP_HEAD = ("sage_shipment_number", "ship_date", "customer_po")
@@ -113,9 +114,9 @@ def order_lines(ctx: Any, order: str) -> dict[str, Any]:
     out = {}
     for oid in ids:
         r = rows.get(oid) or {}
-        out[oid] = {"oid": oid, "line": _line_no(oid), "item": ap._v(r, "sage_item_code").strip(),
-                              "ordered": ap._decimal(ap._v(r, "ordered_quantity")),
-                              "price": ap._decimal(ap._v(r, "unit_price")), "row": r,
+        out[oid] = {"oid": oid, "line": _line_no(oid), "item": autopilot_records._v(r, "sage_item_code").strip(),
+                              "ordered": autopilot_records._decimal(autopilot_records._v(r, "ordered_quantity")),
+                              "price": autopilot_records._decimal(autopilot_records._v(r, "unit_price")), "row": r,
                               "product": items.get(oid)}
     return out
 
@@ -151,7 +152,7 @@ def shipped_lines(ctx: Any, shipment: str) -> list[dict[str, Any]]:
     rows = ctx.read(ids, SHIP_LINE)
     items = _items(ctx, ids, "ShipmentLine.for_item")
     return [{"oid": o, "line": _line_no(o), "product": items.get(o),
-             "qty": ap._decimal(ap._v(rows.get(o), "shipped_quantity")),
+             "qty": autopilot_records._decimal(autopilot_records._v(rows.get(o), "shipped_quantity")),
              "row": rows.get(o) or {}} for o in ids]
 
 
@@ -189,14 +190,14 @@ def keyer(ctx: Any, customer: str | None, before: date, people: Any) -> str | No
     directory, _addresses_of, domains = ap._people_maps(people)
     ids = [o for o in ctx.linked(customer, ("SalesInvoice.billed_to",))
            if o.startswith("SalesInvoice:") and _accounting(o)]
-    rows = ap._read(ctx.st, ids, ("invoice_date", "invoice_number"))
-    dated = sorted((d, ap._v(r, "invoice_number").strip()) for r in rows.values()
-                   if (d := _day(ap._v(r, "invoice_date"))) and d < before)
+    rows = autopilot_records._read(ctx.st, ids, ("invoice_date", "invoice_number"))
+    dated = sorted((d, autopilot_records._v(r, "invoice_number").strip()) for r in rows.values()
+                   if (d := _day(autopilot_records._v(r, "invoice_date"))) and d < before)
     for _d, number in reversed(dated[-KEYER_LOOKBACK:]):
         found = ctx.find("RelSageArIbh", "idinvc", number) if number else []
         if len(found) != 1:
             continue
-        code = ap._v(ctx.read(found, ("enteredby",)).get(found[0]) or {}, "enteredby")
+        code = autopilot_records._v(ctx.read(found, ("enteredby",)).get(found[0]) or {}, "enteredby")
         oid = user_code_person(code, directory, domains)
         if oid and people.identity_clear(oid):
             return oid
@@ -215,18 +216,18 @@ def invoice_entry_events(st: Any, registry: Mapping[str, Any], as_of: date,
     window = int((spec.get("params") or {}).get("window_days", 1))
     ids = [o for o in _due_ids(st, "Shipment.sage_shipped", "Shipment",
                                as_of - timedelta(days=window - 1), as_of) if _accounting(o)]
-    ctx = ap.Ctx(st, as_of, float("inf"), ())
+    ctx = autopilot_handlers.Ctx(st, as_of, float("inf"), ())
     heads = ctx.read(ids, SHIP_HEAD)
     due: dict[tuple[str, date], list[tuple[str, str]]] = defaultdict(list)
     for oid in ids:
         head = heads.get(oid) or {}
-        number = ap._v(head, "sage_shipment_number").strip()
-        shipped = _day(ap._v(head, "ship_date"))
+        number = autopilot_records._v(head, "sage_shipment_number").strip()
+        shipped = _day(autopilot_records._v(head, "ship_date"))
         order = _one(ctx, oid, "Shipment.ships", "SalesOrder")
         if not number or shipped is None or order is None:
             continue
         known = [i for i, r in invoices_of(ctx, order).items()
-                 if (d := _day(ap._v(r, "invoice_date"))) and shipped <= d < as_of]
+                 if (d := _day(autopilot_records._v(r, "invoice_date"))) and shipped <= d < as_of]
         if known:
             continue                                   # invoiced already
         due[(order, shipped)].append((number, oid))
@@ -240,7 +241,7 @@ def invoice_entry_events(st: Any, registry: Mapping[str, Any], as_of: date,
         number, oid = group[0]
         customer = _one(ctx, oid, "Shipment.shipped_to", "Customer", CUSTOMERS)
         event = _event("invoice_entry", oid, "Shipment", shipped.isoformat(),
-                       ap._types(st, [oid]).get(oid, ("", ""))[1],
+                       autopilot_records._types(st, [oid]).get(oid, ("", ""))[1],
                        [c["l1_handle"] for _n, o in group for c in (heads.get(o) or {}).values()
                         if c.get("l1_handle")],
                           {"shipment_number": number, "ship_date": shipped.isoformat(),
@@ -267,12 +268,12 @@ def _terms(ctx: Any, customer: str | None, before: date) -> tuple[int | None, An
         return None, None
     ids = [o for o in ctx.linked(customer, ("SalesInvoice.billed_to",))
            if o.startswith("SalesInvoice:") and _accounting(o)]
-    rows = ap._read(ctx.st, ids, ("invoice_date", "invoice_number"))
-    dated = sorted((d, ap._v(r, "invoice_number").strip()) for r in rows.values()
-                   if (d := _day(ap._v(r, "invoice_date"))) and d < before)
+    rows = autopilot_records._read(ctx.st, ids, ("invoice_date", "invoice_number"))
+    dated = sorted((d, autopilot_records._v(r, "invoice_number").strip()) for r in rows.values()
+                   if (d := _day(autopilot_records._v(r, "invoice_date"))) and d < before)
     for _d, number in reversed(dated[-3:]):
         doc = _open_doc(ctx, number)
-        issued, due = _day(ap._v(doc, "dateinvc")), _day(ap._v(doc, "datedue"))
+        issued, due = _day(autopilot_records._v(doc, "dateinvc")), _day(autopilot_records._v(doc, "datedue"))
         if issued and due and due >= issued:
             return (due - issued).days, doc
     return None, None
@@ -288,8 +289,8 @@ def shipped_in_parts(ctx: Any, order: str, shipments: Sequence[str], day: date,
     a shipment of the whole order was invoiced as prepared 90 of 95 times, a part 22 of 76."""
     ids = [o for o in ctx.linked(order, ("Shipment.ships",)) if o.startswith("Shipment:")
            and _accounting(o) and o not in shipments]
-    heads = ap._read(ctx.st, ids, ("ship_date",))
-    if any((d := _day(ap._v(heads.get(s), "ship_date"))) is None or d <= day for s in ids):
+    heads = autopilot_records._read(ctx.st, ids, ("ship_date",))
+    if any((d := _day(autopilot_records._v(heads.get(s), "ship_date"))) is None or d <= day for s in ids):
         return True
     this: Counter = Counter()
     for sl in (sl for oid in shipments for sl in shipped_lines(ctx, oid)):
@@ -300,7 +301,7 @@ def shipped_in_parts(ctx: Any, order: str, shipments: Sequence[str], day: date,
             this[ol["oid"]] += sl["qty"]
     return any(ol["ordered"] is None or this.get(ol["oid"], Decimal(0)) != ol["ordered"]
                for ol in by_line.values()
-               if ap._v(ol["row"], "line_type").strip() != MISC_LINE)
+               if autopilot_records._v(ol["row"], "line_type").strip() != MISC_LINE)
 
 
 def prepare_invoice(ctx: Any, shipment: str, order: str | None = None,
@@ -308,13 +309,13 @@ def prepare_invoice(ctx: Any, shipment: str, order: str | None = None,
     """The invoice entry for one shipment (and ``with_``: the same order's other shipments
     of that day, billed on the same invoice), or ``{"skip": reason}``."""
     head = ctx.read([shipment], SHIP_HEAD).get(shipment) or {}
-    number = ap._v(head, "sage_shipment_number").strip()
-    shipped = _day(ap._v(head, "ship_date"))
+    number = autopilot_records._v(head, "sage_shipment_number").strip()
+    shipped = _day(autopilot_records._v(head, "ship_date"))
     order = order or _one(ctx, shipment, "Shipment.ships", "SalesOrder")
     if not number or shipped is None or order is None:
         return {"skip": "shipment_unread"}
     ohead = ctx.read([order], ORDER_HEAD).get(order) or {}
-    currency = ap._v(ohead, "currency").strip()
+    currency = autopilot_records._v(ohead, "currency").strip()
     if not currency:
         return {"skip": "currency_unknown"}
     by_line = order_lines(ctx, order)
@@ -327,10 +328,10 @@ def prepare_invoice(ctx: Any, shipment: str, order: str | None = None,
     for oid in dict.fromkeys(o for o in with_ if o != shipment):
         # only a shipment of the same order and the same day (never a guess at another)
         if _one(ctx, oid, "Shipment.ships", "SalesOrder") == order and \
-                _day(ap._v(others.get(oid), "ship_date")) == shipped:
+                _day(autopilot_records._v(others.get(oid), "ship_date")) == shipped:
             together.append(oid)
         else:
-            left.append(f"shipment {ap._v(others.get(oid), 'sage_shipment_number').strip() or '?'}"
+            left.append(f"shipment {autopilot_records._v(others.get(oid), 'sage_shipment_number').strip() or '?'}"
                         ": not this order's shipment of the day, not billed here")
 
     def bill(oid: str) -> tuple[list[tuple[dict, dict, Decimal]], str | None]:
@@ -374,21 +375,21 @@ def prepare_invoice(ctx: Any, shipment: str, order: str | None = None,
     # the order's charge lines (freight and the like): named, never priced, since the
     # order's record does not state their amount; the person keys it (a gap)
     charges = sorted({ol["item"] or "charge" for ol in by_line.values()
-                      if ap._v(ol["row"], "line_type").strip() == MISC_LINE})
+                      if autopilot_records._v(ol["row"], "line_type").strip() == MISC_LINE})
     heads = {shipment: head, **others}
     for oid in together:
         ctx.cite(heads.get(oid) or {}, "sage_shipment_number", "ship_date")
-    number = ap._v(heads.get(together[0]), "sage_shipment_number").strip() or number
+    number = autopilot_records._v(heads.get(together[0]), "sage_shipment_number").strip() or number
     ctx.cite(ohead, "order_number", "currency")
     customer = _one(ctx, shipment, "Shipment.shipped_to", "Customer", CUSTOMERS)
     days, doc = _terms(ctx, customer, shipped)
     if doc:
         ctx.cite(doc, "dateinvc", "datedue")
-    po = ap._v(ohead, "customer_po").strip() or ap._v(head, "customer_po").strip()
+    po = autopilot_records._v(ohead, "customer_po").strip() or autopilot_records._v(head, "customer_po").strip()
     entry = {"kind": "ar_invoice", "shipment": number,
-             **({"with_shipments": [ap._v(heads.get(o), "sage_shipment_number").strip()
+             **({"with_shipments": [autopilot_records._v(heads.get(o), "sage_shipment_number").strip()
                                     for o in together[1:]]} if len(together) > 1 else {}),
-             "order": ap._v(ohead, "order_number"),
+             "order": autopilot_records._v(ohead, "order_number"),
              "customer_po": po or None, "invoice_date": shipped.isoformat(),
              "currency": currency, "lines": lines, "subtotal": _money(subtotal),
              "charges": [{"charge": c, "amount": None} for c in charges],
@@ -418,14 +419,14 @@ def h_invoice_entry(ctx: Any, event: Mapping[str, Any]) -> dict[str, Any]:
 def _first_shipment_whole(ctx: Any, order: str) -> tuple[date, date | None, bool] | None:
     """(order date, its first shipment's date or None, whether that shipment shipped every
     item line's ordered quantity); None when the order date is unread."""
-    head = ap._read(ctx.st, [order], ("order_date",)).get(order)
-    ordered_on = _day(ap._v(head, "order_date"))
+    head = autopilot_records._read(ctx.st, [order], ("order_date",)).get(order)
+    ordered_on = _day(autopilot_records._v(head, "order_date"))
     if ordered_on is None:
         return None
     ids = [o for o in ctx.linked(order, ("Shipment.ships",)) if o.startswith("Shipment:")
            and _accounting(o)]
-    heads = ap._read(ctx.st, ids, ("ship_date",))
-    days = {s: _day(ap._v(heads.get(s), "ship_date")) for s in ids}
+    heads = autopilot_records._read(ctx.st, ids, ("ship_date",))
+    days = {s: _day(autopilot_records._v(heads.get(s), "ship_date")) for s in ids}
     if not days or None in days.values():
         return ordered_on, None, False         # none, or one unread: never judged whole
     dated = sorted((d, s) for s, d in days.items())
@@ -439,7 +440,7 @@ def _first_shipment_whole(ctx: Any, order: str) -> tuple[date, date | None, bool
             got[ol["oid"]] += sl["qty"]
     whole = all(ol["ordered"] is not None and got.get(ol["oid"], Decimal(0)) == ol["ordered"]
                 for ol in by_line.values()
-                if ap._v(ol["row"], "line_type").strip() != MISC_LINE)
+                if autopilot_records._v(ol["row"], "line_type").strip() != MISC_LINE)
     return ordered_on, dated[0][0], whole
 
 
@@ -451,8 +452,8 @@ def ships_whole(ctx: Any, customer: str | None, before: date) -> bool:
         return False
     ids = [o for o in ctx.linked(customer, ("SalesOrder.ordered_by",))
            if o.startswith("SalesOrder:") and _accounting(o)]
-    heads = ap._read(ctx.st, ids, ("order_date",))
-    days = {o: _day(ap._v(heads.get(o), "order_date")) for o in ids}
+    heads = autopilot_records._read(ctx.st, ids, ("order_date",))
+    days = {o: _day(autopilot_records._v(heads.get(o), "order_date")) for o in ids}
     if None in days.values():
         return False                           # an order of unread date may be the latest
     cut = before - timedelta(days=POSTING_AFTER + 1)
@@ -482,23 +483,23 @@ def shipment_posting_events(st: Any, registry: Mapping[str, Any], as_of: date
     window = int((spec.get("params") or {}).get("window_days", 1))
     ids = [o for o in _due_ids(st, "SalesOrder.ordered", "SalesOrder",
                                as_of - timedelta(days=window - 1), as_of) if _accounting(o)]
-    ctx = ap.Ctx(st, as_of, float("inf"), ())
+    ctx = autopilot_handlers.Ctx(st, as_of, float("inf"), ())
     heads = ctx.read(ids, ORDER_HEAD)
     steady: dict[str | None, bool] = {}        # customer -> ships_whole, once per day
     out = []
     for oid in ids:
         head = heads.get(oid) or {}
-        ordered_on = _day(ap._v(head, "order_date"))
+        ordered_on = _day(autopilot_records._v(head, "order_date"))
         if ordered_on is None or ordered_on > as_of:
             continue
         items = [ol for ol in order_lines(ctx, oid).values()
-                 if ap._v(ol["row"], "line_type").strip() != MISC_LINE]
+                 if autopilot_records._v(ol["row"], "line_type").strip() != MISC_LINE]
         if len(items) != 1:
             continue
-        shipped = ap._read(st, [s for s in ctx.linked(oid, ("Shipment.ships",))
+        shipped = autopilot_records._read(st, [s for s in ctx.linked(oid, ("Shipment.ships",))
                                 if s.startswith("Shipment:") and _accounting(s)],
                            ("ship_date",))
-        if any((d := _day(ap._v(r, "ship_date"))) is None or d < as_of
+        if any((d := _day(autopilot_records._v(r, "ship_date"))) is None or d < as_of
                for r in shipped.values()):
             continue                                  # shipped before: not a new order
         customer = _one(ctx, oid, "SalesOrder.ordered_by", "Customer", CUSTOMERS)
@@ -507,9 +508,9 @@ def shipment_posting_events(st: Any, registry: Mapping[str, Any], as_of: date
         if not steady[customer]:
             continue
         out.append(_event("shipment_posting", oid, "SalesOrder", ordered_on.isoformat(),
-                          ap._types(st, [oid]).get(oid, ("", ""))[1],
+                          autopilot_records._types(st, [oid]).get(oid, ("", ""))[1],
                           [c["l1_handle"] for c in head.values() if c.get("l1_handle")],
-                          {"order_number": ap._v(head, "order_number").strip(),
+                          {"order_number": autopilot_records._v(head, "order_number").strip(),
                            "order_date": ordered_on.isoformat()}))
     return out
 
@@ -519,10 +520,10 @@ def shipped_before(ctx: Any, order: str, day: date, lines: Mapping[str, dict]
     """order line -> quantity shipped on the order's shipments dated before ``day``."""
     ids = [o for o in ctx.linked(order, ("Shipment.ships",)) if o.startswith("Shipment:")
            and _accounting(o)]
-    heads = ap._read(ctx.st, ids, ("ship_date",))
+    heads = autopilot_records._read(ctx.st, ids, ("ship_date",))
     done: Counter = Counter()
     for sid in ids:
-        d = _day(ap._v(heads.get(sid), "ship_date"))
+        d = _day(autopilot_records._v(heads.get(sid), "ship_date"))
         if d is None or d >= day:
             continue
         for sl in shipped_lines(ctx, sid):
@@ -535,14 +536,14 @@ def shipped_before(ctx: Any, order: str, day: date, lines: Mapping[str, dict]
 def prepare_posting(ctx: Any, order: str) -> dict[str, Any]:
     """The shipment posting for an order ready to ship: its outstanding lines."""
     ohead = ctx.read([order], ORDER_HEAD).get(order) or {}
-    number = ap._v(ohead, "order_number").strip()
+    number = autopilot_records._v(ohead, "order_number").strip()
     if not number:
         return {"skip": "order_unread"}
     by_line = order_lines(ctx, order)
     done = shipped_before(ctx, order, ctx.as_of, by_line)
     lines = []
     for ol in sorted(by_line.values(), key=lambda x: (len(x["line"]), x["line"], x["oid"])):
-        if ap._v(ol["row"], "line_type").strip() == MISC_LINE:
+        if autopilot_records._v(ol["row"], "line_type").strip() == MISC_LINE:
             continue                          # a charge line ships nothing
         if ol["ordered"] is None or not ol["item"]:
             return {"skip": "order_line_unread"}
@@ -616,13 +617,13 @@ def _receipt_lines(st: Any) -> list[tuple[str, tuple[str, str], str, str]]:
     from .day_coverage import _scan
 
     def load() -> list[tuple[str, tuple[str, str], str, str]]:
-        payer = {(ap._v(r, "cntbtch").strip(), ap._v(r, "cntitem").strip()):
-                 ap._v(r, "idcust").strip().upper()
+        payer = {(autopilot_records._v(r, "cntbtch").strip(), autopilot_records._v(r, "cntitem").strip()):
+                 autopilot_records._v(r, "idcust").strip().upper()
                  for _oid, r in _scan(st, "RelSageArTcr", ("cntbtch", "cntitem", "idcust"))}
         out = []
         for _oid, r in _scan(st, "RelSageArTcp", ("cntbtch", "cntitem", "idcust", "audtdate")):
-            k = (ap._v(r, "cntbtch").strip(), ap._v(r, "cntitem").strip())
-            d, cust = ap._v(r, "audtdate").strip(), ap._v(r, "idcust").strip().upper()
+            k = (autopilot_records._v(r, "cntbtch").strip(), autopilot_records._v(r, "cntitem").strip())
+            d, cust = autopilot_records._v(r, "audtdate").strip(), autopilot_records._v(r, "idcust").strip().upper()
             if cust and len(d) == 8 and d.isdigit():
                 out.append((d, k, cust, payer.get(k, "")))
         return sorted(out)
@@ -671,9 +672,9 @@ def _receipts_by_customer(st: Any) -> dict[str, list[tuple[str, str]]]:
     def load() -> dict[str, list[tuple[str, str]]]:
         out: dict[str, list[tuple[str, str]]] = defaultdict(list)
         for _oid, r in _scan(st, "RelSageArTcr", ("audtdate", "enteredby", "idcust")):
-            cust, day = ap._v(r, "idcust").strip().upper(), ap._v(r, "audtdate").strip()
+            cust, day = autopilot_records._v(r, "idcust").strip().upper(), autopilot_records._v(r, "audtdate").strip()
             if cust and len(day) == 8 and day.isdigit():
-                out[cust].append((day, ap._v(r, "enteredby")))
+                out[cust].append((day, autopilot_records._v(r, "enteredby")))
         return {c: sorted(v) for c, v in out.items()}
     memo = getattr(st, "memo", None)
     return memo("receivables:receipt_keyers", load) if memo else load()
@@ -717,7 +718,7 @@ def cash_application_events(st: Any, registry: Mapping[str, Any], as_of: date,
         plan = receipt_plan(st, rows, as_of)
         for parties, payer in plan:
             out.append(_event("cash_application", source["object_id"], "Attachment",
-                              got.isoformat(), ap._types(st, [source["object_id"]]).get(
+                              got.isoformat(), autopilot_records._types(st, [source["object_id"]]).get(
                                   source["object_id"], ("", ""))[1], [source["l1_handle"]],
                               {"remittance": key[:16], "table": table,
                                "receipts": len(plan)},
@@ -808,5 +809,3 @@ def due_events(st: Any, registry: Mapping[str, Any], as_of: date, people: Any
             + cash_application_events(st, registry, as_of, people))
 
 
-def entry_json(work: Mapping[str, Any]) -> str:
-    return json.dumps(work.get("entry") or {}, sort_keys=True)

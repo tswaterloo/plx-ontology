@@ -1,10 +1,9 @@
 """Injected contract tests for the deployed Portal Workbench API."""
 
 import copy
-import re
 import threading
 import unittest
-from urllib.parse import parse_qs, unquote, urlsplit
+from urllib.parse import parse_qs, urlsplit
 from unittest.mock import patch
 
 from integrations.http import SourceHttpError, SourceUnavailable
@@ -372,7 +371,7 @@ class RetiredPagedImportTests(unittest.TestCase):
 
     def test_import_surfaces_are_gone(self):
         import importlib.util
-        from operating.mcp_server import TOOLS
+        from operating.mcp_server_catalog import TOOLS
         names = {tool["name"] for tool in TOOLS}
         self.assertFalse(names & {"plx.investigate_workbench_api_named",
                                   "plx.lookup_workbench_api_named",

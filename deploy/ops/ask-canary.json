@@ -1,0 +1,6 @@
+{
+ "question": "Where is TASK-1436 at?",
+ "expect": ["TASK-1436", "merged"],
+ "max_seconds": 90,
+ "why": "Retrieval of one stable record: a Mission Control task merged on 2026-10-09 whose stage was recorded once and never changed (read-only check of ontology.object_values on 11-15), owned by the owner, naming no excluded person, in no eval item. Fast path task_status (no model step): 4.5 s median, 14.9 s p90 in the 11-15 router eval; a live agent Ask is 110 s median, so 90 s passes the fast path and flags a fall-through. Replace the file in /etc/plx to change it; install never overwrites it."
+}

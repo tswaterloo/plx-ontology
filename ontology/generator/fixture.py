@@ -112,6 +112,14 @@ def _put(row: dict[str, Any], path: str, value: Any) -> None:
     row[parts[-1]] = value
 
 
+def _get(row: Mapping[str, Any], path: str) -> Any:
+    for part in path.split("."):
+        if not isinstance(row, Mapping):
+            return None
+        row = row.get(part)
+    return row
+
+
 def _row(spec: Mapping[str, Any], i: int, version: int) -> dict[str, Any] | None:
     row: dict[str, Any] = {}
     ident = 1000 + i
@@ -142,7 +150,11 @@ def _row(spec: Mapping[str, Any], i: int, version: int) -> dict[str, Any] | None
         elif op == "in":
             _put(row, predicate["path"], value[0])
         elif op == "not_in":
-            _put(row, predicate["path"], None)
+            # a value already there (a ``present`` placeholder or a property) that is
+            # not excluded satisfies the predicate; nulling it would fail a ``present``
+            # beside it and the binding would hold no record at all
+            if _get(row, predicate["path"]) in (None, *value):
+                _put(row, predicate["path"], None)
         elif op == "prefix":
             _put(row, predicate["path"], f"{value}{ident}")
         elif op == "gte":

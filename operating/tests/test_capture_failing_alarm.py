@@ -50,7 +50,7 @@ class CaptureFailingAlarmTest(unittest.TestCase):
             fake_table(self.script, "mail"),
             {"mail": {"mode": mode, "min_interval_seconds": 0.01}}, self.root,
             {"PATH": "/usr/bin:/bin", forever.ENV_IDS: "0e0e0e0e-0000-4000-8000-00000000e0e1"},
-            grace=1, parallel=1, refresh=lambda batch, reason, ex: done.extend([1] * len(batch)),
+            grace=1, parallel=1, refresh=lambda batch, reason: done.extend([1] * len(batch)),
             should_stop=stop).run()
         held = json.loads((self.root / "host" / forever.RUNS_FILE).read_text())
         self.assertEqual(held["schema"], forever.RUNS_SCHEMA)

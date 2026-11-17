@@ -495,6 +495,10 @@ def _apply(pg: Any, cur: Any, s: str, rehearse: float | None) -> dict[str, Any]:
                         f"{s}.links WHERE link_type = %s", (kind,))
             cur.execute(f"INSERT INTO {s}.applied VALUES (%s, %s)",
                         (kind, json.dumps(bit)))
+            # the change feed (migration 0026): the ends of this kind's changed links
+            from operating.pg import change_feed
+            change_feed.record_link_ends(cur, f"links:{record['id']}:{kind}", s, (kind,),
+                                         step_column="link_type")
             pg.commit()
         out["kinds"][kind] = bit
     if rehearse is not None:
@@ -577,7 +581,11 @@ def undo(dsn: str) -> dict[str, Any]:
             cur.execute("DELETE FROM ontology.schema_migrations WHERE id = %s",
                         ("links:" + record["id"],))
         cur.execute(f"SELECT link_type FROM {s}.applied ORDER BY link_type DESC")
+        from operating.pg import change_feed
         for (kind,) in cur.fetchall():
+            # the change feed (migration 0026): the ends of the links taken back, read first
+            change_feed.record_link_ends(cur, f"links-undo:{record['id']}:{kind}", s,
+                                         (kind,), step_column="link_type")
             cur.execute(f"DELETE FROM ontology.link_rows l USING {s}.undo_inserted u WHERE "
                         "u.link_type = %s AND l.link_id = u.link_id", (kind,))
             removed = cur.rowcount
@@ -629,6 +637,9 @@ def main(argv: Sequence[str] | None = None) -> int:
             out = stage(args.dsn or config.dsn(), Path(args.layer))
         elif args.command == "apply":
             out = apply(args.dsn or config.dsn(), rehearse=args.rehearse)
+            if args.rehearse is None:
+                from operating.pg import link_marks
+                link_marks.after_apply(args.dsn or config.dsn(), "link_apply")
         else:
             out = undo(args.dsn or config.dsn())
     except Refused as refused:

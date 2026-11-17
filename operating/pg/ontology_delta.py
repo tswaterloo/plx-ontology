@@ -30,6 +30,7 @@ Stdlib and psycopg.
 
 from __future__ import annotations
 
+from contextlib import closing
 import argparse
 import json
 import os
@@ -279,7 +280,20 @@ def apply_layer(layer: str | Path, dsn: str, *, newer: Sequence[str | Path] = ()
             cur.execute("SET LOCAL jit = off")   # many short statements: no JIT
             # no statement of the apply spills past the budget (a disk-full guard: it fails)
             cur.execute(f"SET LOCAL temp_file_limit = '{_APPLY_TEMP_LIMIT}'")
+            # the change feed (migration 0026; ``operating.pg.change_feed``): the owned
+            # records' signatures before the apply, and after it, in this transaction,
+            # the ones it really changed (a layer re-owning a record unchanged adds none)
+            from operating.pg import change_feed, link_marks
+            # the link slice kept in Postgres (migration 0028): current before this
+            # layer writes, it is carried over the layer below (``link_marks.fold_layer``);
+            # a build under way beside the layers counts this one in (its catch-up)
+            marks_start = link_marks.layer_start(cur)
+            feed = change_feed.snapshot(cur)
             report.update(_replace(conn, str(layer), cur, ids, dsn))
+            if feed:
+                report["feed"] = change_feed.record_delta(
+                    cur, f"delta:{layer.name}", digest,
+                    (_stage_schema(), _link_step(digest, layer.name)))
             ontology_migrate.log_owned(cur, layer.name, owned)
             if not held_out:   # under the served schema: no longer to be projected again
                 ontology_migrate.done(cur)
@@ -291,6 +305,17 @@ def apply_layer(layer: str | Path, dsn: str, *, newer: Sequence[str | Path] = ()
                         "('delta_layers', %s) ON CONFLICT (name) DO UPDATE SET value = "
                         "ontology.load_state.value || excluded.value, updated_at = now()",
                         (json.dumps([layer.name]),))
+            report["link_marks_folded"] = link_marks.fold_layer(cur, marks_start)
+        if not marks_start["current"] and not marks_start["build"]:
+            # committed: the kept link slice was not current before this layer (a train, a
+            # purge) and no build counts it in: one rebuild started in a process of its own
+            # (``link_marks.start_rebuild``), never in this cycle, which goes on at once
+            try:
+                report["link_marks_rebuild"] = link_marks.start_rebuild(dsn)
+            except Exception as error:  # noqa: BLE001 - readers read link_rows meanwhile
+                report["link_marks_rebuild"] = f"failed: {type(error).__name__}"
+        # committed: the mention repeats of the pairs it touched marked again
+        report["mention_repeats"] = refresh_repeats(dsn, owned)
         # committed: the traverse facts of the version it made, folded from the layer
         # (``fold_layer_facts``), so no host reads them in full on a request
         from operating import ontology_tools_traverse
@@ -811,6 +836,10 @@ def _diff_versions(conn: sqlite3.Connection, path: str, cur: Any, ids: str,
                 "count(DISTINCT src))")
     cur.execute("DELETE FROM diff_smatch x WHERE NOT EXISTS (SELECT 1 FROM diff_vmatch m "
                 "WHERE m.lver = x.lver)")
+    # the item gate's recorded decisions (migration 0027) of every object whose versions
+    # change here: decided by the gate again (``item_audiences.invalidate_staged``)
+    from .item_audiences import invalidate_staged
+    report["invalidated.item_acl_state"] = invalidate_staged(cur)
     cur.execute("UPDATE ontology.object_versions v SET superseded_at = m.superseded_at FROM "
                 "diff_vmatch m WHERE v.ver = m.ver AND v.superseded_at IS DISTINCT FROM "
                 "m.superseded_at")
@@ -989,6 +1018,16 @@ STAGE_SCHEMA = os.environ.get("PLX_DELTA_STAGE_SCHEMA", "delta_stage")
 UNDO_KEEP = int(os.environ.get("PLX_DELTA_UNDO_KEEP", "48"))
 _LINK_RUN = "delta"   # the stage schema's run key (one follower: every layer the same)
 _LINK_BATCH = 5_000   # owned objects whose links are compared at once
+# the served links at one end of each object of a batch (``%s``: the batch), each read on
+# that end's index (``OFFSET 0``: the planner keeps the per-object read)
+# a link from no owned record: an anti-join on ``owned``'s key, never ``NOT IN`` (11-15 live:
+# 741k owned ids (~270 bytes each) outgrow hash_mem, so ``NOT IN`` planned an unhashed
+# subplan scanning the spilled owned list for every candidate row: ~10 min per 5k batch,
+# 16 GB of temp; the anti-join takes 0.4 s). Same rows: both ends are NOT NULL, ``owned``
+# keyed.
+_NOT_OWNED_FROM = "NOT EXISTS (SELECT 1 FROM owned w WHERE w.object_id = l.from_object)"
+_PER_OWNED = ("unnest(%s::text[]) AS o(owned_id) CROSS JOIN LATERAL (SELECT * FROM "
+              "ontology.link_rows l WHERE l.{end} = o.owned_id OFFSET 0) l")
 _BITS = ("undo_deleted", "undo_inserted", "staged", "applied", "links", "gone")
 
 
@@ -1046,18 +1085,27 @@ def _links_staged(conn: sqlite3.Connection, cur: Any, ids: str, name: str
     owned = json.loads(ids)
     out = {k: 0 for k in ("deleted.link_rows", "written.link_rows", "replaced.link_rows",
                           "kept.link_rows", "copied.link_rows", "undo.link_rows")}
+    owned_set = set(owned)
+    at_from = store_ddl.LINK_COLUMNS.index("from_object")
     for part, k in enumerate(range(0, len(owned), _LINK_BATCH)):
         batch = owned[k:k + _LINK_BATCH]
+        b = json.dumps(batch)
+        # the links from the batch, then those to it from no owned record; the owned test
+        # in Python (11-15: SQLite parsed and indexed the whole owned list per batch)
         rows = [tuple(_clean(v) for v in row) for row in conn.execute(
             f"SELECT {cols} FROM links WHERE from_object IN (SELECT value FROM json_each(:b)) "
-            f"AND {_whole_steps.sqlite_excluded()} UNION ALL SELECT {cols} FROM links WHERE "
-            f"to_object IN (SELECT value FROM json_each(:b)) AND from_object NOT IN {_OWNED} "
-            f"AND {_whole_steps.sqlite_excluded()}", {"b": json.dumps(batch), "ids": ids})]
-        held = step_staging.served_rows(
-            cur, f"l.from_object = ANY(%s::text[]) AND {excluded}", [batch])
-        step_staging.served_rows(
-            cur, f"l.to_object = ANY(%s::text[]) AND l.from_object NOT IN {_OWNED_PG} AND "
-                 f"{excluded}", [batch], held=held)
+            f"AND {_whole_steps.sqlite_excluded()}", {"b": b})]
+        rows += [tuple(_clean(v) for v in row) for row in conn.execute(
+            f"SELECT {cols} FROM links WHERE to_object IN (SELECT value FROM json_each(:b)) "
+            f"AND {_whole_steps.sqlite_excluded()}", {"b": b}) if row[at_from] not in owned_set]
+        # the served ones read per owned record on its end's index (11-15 live: the
+        # ``= ANY(batch)`` forms were planned as bitmap and sequential scans of whole
+        # partitions, the owned test hashed again for each of the 13)
+        held = step_staging.served_rows(cur, excluded, [batch], source=_PER_OWNED.format(
+            end="from_object"))
+        step_staging.served_rows(cur, f"{_NOT_OWNED_FROM} AND {excluded}",
+                                 [batch], held=held,
+                                 source=_PER_OWNED.format(end="to_object"))
         # a served link of a layer link's id with no owned end (its ends moved): replaced
         elsewhere = [r[0] for r in rows if r[0] not in held]
         for m in range(0, len(elsewhere), 20_000):
@@ -1178,6 +1226,10 @@ def apply_listed(stores: Sequence[str | Path], dsn: str, *, log: Any = None
     """Apply every layer of a delta pointer's list (``stores``, newest first) Postgres has
     not applied, oldest first, each with the layers above it as ``newer``."""
     stores = [str(s) for s in stores]
+    # the change feed's last cycle before these layers: the bare mentions refresh, once per
+    # cycle after everything readers wait on, reads the records changed since
+    # (``refresh_bare_cycle``)
+    bare_since = _feed_mark(dsn)
     results = []
     for index in range(len(stores) - 1, -1, -1):
         result = apply_layer(stores[index], dsn, newer=stores[:index])
@@ -1189,14 +1241,98 @@ def apply_listed(stores: Sequence[str | Path], dsn: str, *, log: Any = None
            "owned": sum(r.get("owned", 0) for r in newly),
            "refused": sorted({r.get("reason") for r in results
                               if not r.get("applied") and r.get("reason")
-                              != "already_applied"} - {None})}
+                              != "already_applied"} - {None}),
+           "bare_since": bare_since,
+           "applied_layers": sorted({str(r.get("layer")) for r in newly})}
     out["whole_steps"] = recompute_whole_steps(dsn, log=log)
+    if newly and isinstance(out["whole_steps"], dict) and out["whole_steps"] != {
+            "pending": False} and "error" not in out["whole_steps"]:
+        # the whole-store steps re-judged links over the layers: the layers' pairs again
+        owned = _layers_owned(stores, {r.get("layer") for r in newly})
+        out["mention_repeats"] = refresh_repeats(dsn, sorted(owned))
     stalled = [r for r in results if r.get("reason") in STALLS]
     if stalled:
         out["stalled"] = stall(stalled[0])
         print(f"ONTOLOGY DELTA STALLED: {json.dumps(out['stalled'], sort_keys=True)}",
               file=sys.stderr, flush=True)
     return out
+
+
+def refresh_repeats(dsn: str, objects: Sequence[str]) -> dict[str, Any]:
+    """CC-C-04: ``operating.pg.mention_repeats.refresh`` of the pairs with an end at
+    ``objects``, in its own transaction after the apply committed. A failure is reported
+    and alarmed, never raised: the layer stays applied, and a stale marker only shows a
+    repeat (the reader hides a row only while its keeper stands in its place)."""
+    try:
+        from operating.pg import mention_repeats
+        return mention_repeats.refresh(dsn, objects)
+    except Exception as exc:   # the apply is committed: report, alarm, go on
+        error = f"{type(exc).__name__}: {str(exc)[:300]}"
+        print(f"ONTOLOGY MENTION REPEATS FAILED: {error}", file=sys.stderr, flush=True)
+        return {"error": error}
+
+
+def _layers_owned(stores: Sequence[str | Path], names: set) -> set[str]:
+    """The records the listed layers named ``names`` own (their ``delta_owned``)."""
+    owned: set[str] = set()
+    for path in stores:
+        if Path(path).name in names:
+            with closing(sqlite3.connect(f"file:{path}?mode=ro", uri=True)) as layer:
+                owned.update(r[0] for r in layer.execute("SELECT object_id FROM delta_owned"))
+    return owned
+
+
+def _feed_mark(dsn: str) -> int | None:
+    """The change feed's newest cycle id (0 when it holds none); None without the feed
+    (migration 0026 not applied) or when it cannot be read."""
+    try:
+        import psycopg
+        with psycopg.connect(dsn, autocommit=True) as conn:
+            if conn.execute("SELECT to_regclass('ontology.change_cycles')").fetchone()[0] is None:
+                return None
+            return int(conn.execute("SELECT coalesce(max(cycle_id), 0) FROM "
+                                    "ontology.change_cycles").fetchone()[0])
+    except Exception:  # noqa: BLE001 - no mark: the refresh falls back to the owned records
+        return None
+
+
+def refresh_bare_cycle(dsn: str, listed: Mapping[str, Any], stores: Sequence[str | Path]
+                       ) -> dict[str, Any] | None:
+    """Row 14: the bare mentions refresh of one cycle (``apply_listed``'s report
+    ``listed``), run ONCE per cycle by its driver after the facts are kept (``_keep_facts``,
+    ``keep_layer_facts``), never before anything a reader waits on. It reads the records the
+    change feed holds past the cycle's mark (layers and whole steps alike); without the
+    feed, the owned records of the layers applied now. Bounded (``bare_mentions.MAX_MAILS``,
+    ``MAIL_SECONDS``, ``MAX_TARGETS``, ``STATEMENT_SECONDS``); its report and seconds go in
+    the cycle's record. None when the cycle applied nothing and no feed mark was taken."""
+    if not isinstance(listed, Mapping) or "bare_since" not in listed:
+        return None
+    since = listed.get("bare_since")
+    if since is not None:
+        return refresh_bare(dsn, since_cycle=int(since))
+    names = set(listed.get("applied_layers") or ())
+    if not names:
+        return None
+    try:
+        owned = _layers_owned(stores, names)
+    except Exception as exc:  # noqa: BLE001 - never fails the cycle: the nightly build
+        return {"error": f"{type(exc).__name__}: {str(exc)[:300]}"}
+    return refresh_bare(dsn, sorted(owned))
+
+
+def refresh_bare(dsn: str, objects: Sequence[str] = (), *, since_cycle: int | None = None
+                 ) -> dict[str, Any]:
+    """Row 14: ``operating.pg.bare_mentions.refresh`` (``refresh_bare_cycle``). A failure
+    is reported and alarmed, never raised: the layers stay applied."""
+    try:
+        from operating.pg import bare_mentions
+        return bare_mentions.refresh(dsn, objects, since_cycle=since_cycle)
+    # the apply is committed: report, alarm, go on (SystemExit too: the people exclusion
+    # not loaded refuses the refresh, never the delta cycle)
+    except (Exception, SystemExit) as exc:
+        error = f"{type(exc).__name__}: {str(exc)[:300]}"
+        print(f"ONTOLOGY BARE MENTIONS FAILED: {error}", file=sys.stderr, flush=True)
+        return {"error": error}
 
 
 def recompute_whole_steps(dsn: str, *, log: Any = None) -> dict[str, Any]:
@@ -1359,8 +1495,21 @@ def follow(state_dir: str | Path, dsn: str, *, reload: bool = True, workers: int
     stores = [item["store"] for item in body.get("layers") or []]   # newest first
     report["layers"] = apply_listed(stores, dsn, log=log)
     _keep_facts(dsn, report, projection / "ontology.sqlite", log)
+    # after the facts: the bare mentions of the records the cycle changed (bounded)
+    report["bare_mentions"] = refresh_bare_cycle(dsn, report["layers"], stores)
+    # what a capture run withheld after it was projected: out of Postgres at once (raises
+    # when it cannot read the journal: the follow fails loudly)
+    report["exclusion_purge"] = purge_exclusion_journal(state_dir, dsn)
     report["state"] = "stalled" if report["layers"].get("stalled") else "current"
     return report
+
+
+def purge_exclusion_journal(state_dir: str | Path, dsn: str) -> dict[str, Any]:
+    """The rows of mail a capture run withheld after it was projected, out of Postgres
+    (``operating.mail_exclusion_purge.purge_journalled``; raises when it cannot read the
+    journal or Postgres). Here for the delta cycle (``ontology.delta``) and ``follow``."""
+    from operating import mail_exclusion_purge
+    return mail_exclusion_purge.purge_journalled(Path(state_dir), dsn)
 
 
 def reload_room(state_dir: Path, source: Path, *, held_bytes: int, in_place: bool,
@@ -1427,6 +1576,15 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(json.dumps(undo_layer(dsn, args.undo_links), sort_keys=True), flush=True)
         return 0
     if args.follow:
+        try:   # a broken window lock never stops the job
+            from ontology import window_lock
+            held = window_lock.skip_report("pg-follow", state_dir=args.follow)
+        except Exception as exc:  # noqa: BLE001 - logged, the job runs
+            print(f"window check failed, running anyway: {exc}", file=sys.stderr)
+            held = None
+        if held:
+            print(json.dumps(held, sort_keys=True), flush=True)
+            return 0
         out = follow(args.follow, dsn, reload=not args.no_reload, workers=args.workers,
                      min_free=int(args.min_free_gb * 1024 ** 3))
         print(json.dumps(out, sort_keys=True,

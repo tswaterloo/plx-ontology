@@ -582,7 +582,7 @@ def link_issued_sends(sends: Mapping[str, Any], renders: Mapping[str, Any],
 
 
 def _scan_label(scan: Mapping[str, Any]) -> dict[str, Any]:
-    from integrations.source_mirror import scan_label
+    from integrations.source_mirror_query import scan_label
     return scan_label(scan)
 
 

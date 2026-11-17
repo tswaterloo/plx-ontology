@@ -29,6 +29,8 @@ from ontology.core import Actor
 from ontology.project import build_store
 from ontology.schema import load_schema
 from operating import ontology_tools as ot
+from operating import ontology_tools_policy
+from operating import ontology_tools_results
 
 ROOT = Path(__file__).resolve().parents[2]
 BC_BASE = f"/v2.0/{TENANT_ID}/Production/api/v2.0"
@@ -671,7 +673,7 @@ class CorroborationTests(ResolveTestCase):
             candidate = self.candidate(out, oid)
             # No second identifier is compared between two orders: values never
             # decide identity, so the verdict stays unverifiable.
-            self.assertEqual(ot.corroboration_verdict(candidate), "unverifiable")
+            self.assertEqual(ontology_tools_results.corroboration_verdict(candidate), "unverifiable")
             self.assertNotIn("no_visible_counterpart", self.features(candidate))
             # Both subtotals are declared without tax: compared.
             total = self.value_feature(candidate, "row.subtotal")
@@ -696,7 +698,7 @@ class CorroborationTests(ResolveTestCase):
         self.assertEqual(out["status"], "ambiguous")
         for oid in (self.PORTAL, self.BC_SO):
             candidate = self.candidate(out, oid)
-            self.assertEqual(ot.corroboration_verdict(candidate), "unverifiable")
+            self.assertEqual(ontology_tools_results.corroboration_verdict(candidate), "unverifiable")
             total = self.value_feature(candidate, "row.subtotal")
             self.assertEqual((total["feature"], total["agrees"]), ("value_differs", False))
             self.assertEqual(sorted(c["field_path"] for c in total["citations"]),
@@ -725,7 +727,7 @@ class CorroborationTests(ResolveTestCase):
         date = self.value_feature(portal, "row.order_date")
         self.assertEqual((date["feature"], date["agrees"]), ("value_not_comparable", None))
         self.assertNotIn("value_differs", self.features(portal))
-        self.assertEqual(ot.corroboration_verdict(portal), "unverifiable")
+        self.assertEqual(ontology_tools_results.corroboration_verdict(portal), "unverifiable")
 
     def test_an_absent_or_unreadable_counterpart_is_unverifiable_never_a_conflict(self):
         self.bc_records[CO_A]["salesOrders"] = []
@@ -738,7 +740,7 @@ class CorroborationTests(ResolveTestCase):
         for out in (absent, unreadable):
             self.assertEqual(out["status"], "found", out)
             (portal,) = out["candidates"]
-            self.assertEqual(ot.corroboration_verdict(portal), "unverifiable")
+            self.assertEqual(ontology_tools_results.corroboration_verdict(portal), "unverifiable")
             features = self.features(portal)
             self.assertIsNone(features["corroboration"]["agrees"])
             self.assertIn("no_visible_counterpart", features)
@@ -752,7 +754,7 @@ class CorroborationTests(ResolveTestCase):
         absent = self.find()
         self.assertEqual(withheld["status"], "found")
         (portal,) = withheld["candidates"]
-        self.assertEqual(ot.corroboration_verdict(portal), "unverifiable")
+        self.assertEqual(ontology_tools_results.corroboration_verdict(portal), "unverifiable")
         text = json.dumps(withheld)
         for leaked in ("bc://", "aaaaaaaa", "bc.sales_orders", "totalAmountIncludingTax"):
             self.assertNotIn(leaked, text)
@@ -767,13 +769,13 @@ class CorroborationTests(ResolveTestCase):
         portal_id = 'SalesOrder:portal.app_sales_order:{"id":"so-2"}'
         portal = self.candidate(self.find("SO100305", **args), portal_id)
         features = self.features(portal)
-        self.assertEqual(ot.corroboration_verdict(portal), "agree")
+        self.assertEqual(ontology_tools_results.corroboration_verdict(portal), "agree")
         customer = features["corroboration_customer_number"]
         self.assertEqual([c["field_path"] for c in customer["citations"]],
                          ["row.customerNumber", "row.erp_code"])
         self.bc_records[CO_A]["salesInvoices"][0]["customerNumber"] = "C0002"
         conflict = self.candidate(self.find("SO100305", **args), portal_id)
-        self.assertEqual(ot.corroboration_verdict(conflict), "conflict")
+        self.assertEqual(ontology_tools_results.corroboration_verdict(conflict), "conflict")
         # A reader who may not read customers cannot compare: unverifiable, and the
         # customer record is neither read nor cited.
         before = len(self.fake.row_requests("public.app_customer"))
@@ -781,7 +783,7 @@ class CorroborationTests(ResolveTestCase):
             "api:*": {"staff:sales"}, "api:public.app_customer": set(),
             "bc:*": {"staff:sales"}})
         hidden = self.candidate(self.find("SO100305", policy=policy, **args), portal_id)
-        self.assertEqual(ot.corroboration_verdict(hidden), "unverifiable")
+        self.assertEqual(ontology_tools_results.corroboration_verdict(hidden), "unverifiable")
         self.assertEqual(len(self.fake.row_requests("public.app_customer")), before)
         self.assertNotIn("app_customer", json.dumps(hidden))
 
@@ -791,7 +793,7 @@ class CorroborationTests(ResolveTestCase):
         (candidate,) = out["candidates"]
         self.assertEqual(candidate["object"]["object_id"],
                          'SalesOrder:portal.app_sales_order:{"id":"so-2"}')
-        self.assertEqual(candidate["reason"], ot.LINKED_REASON)
+        self.assertEqual(candidate["reason"], ontology_tools_policy.LINKED_REASON)
         self.assertEqual((candidate["matched"]["binding"], candidate["matched"]["property"]),
                          ("portal.app_shipment", "shipment_number"))
         link = self.features(candidate)["linked_record"]
@@ -1165,3 +1167,83 @@ class SchemaIndexTests(unittest.TestCase):
                 compared += got[0]
         self.assertGreater(compared, 0)
         self.assertIsNone(resolve.binding_spec(schema, "no.such_binding"))
+
+    def test_indexed_link_hops_equal_a_scan_of_every_link_per_pair(self):
+        """``link_hops`` and ``linking_bindings`` read from the per-schema hop index give
+        what a scan of every link for one pair gives (the pre-index algorithm, here as the
+        reference), with and without a digest; two schema objects of one digest used in
+        turn each keep their own index."""
+        import random
+        schema = ot.default_schema()
+
+        def reference(from_binding, to_binding):
+            out = []
+            for lid in sorted(schema.link_types):
+                link = schema.link_types[lid]
+                for lb in link.get("bindings", ()):
+                    if lb.get("kind") not in resolve.FOLLOWED_LINK_KINDS \
+                            or len(lb.get("pairs") or ()) != 1:
+                        continue
+                    pair = lb["pairs"][0]
+                    ends = (lb.get("from_binding"), lb.get("to_binding"))
+                    if ends == (from_binding, to_binding):
+                        forward, paths = True, (pair.get("from"), pair.get("to"))
+                    elif ends == (to_binding, from_binding):
+                        forward, paths = False, (pair.get("to"), pair.get("from"))
+                    else:
+                        continue
+                    single = (lb["kind"] == "same_record"
+                              or link.get("cardinality") == "1:1"
+                              or (forward and link.get("cardinality") == "N:1"))
+                    if single and all(isinstance(p, str) and "." not in p for p in paths):
+                        out.append(resolve.Hop(lid, paths[0], paths[1], forward, lb["kind"]))
+            return out
+
+        class Scanned:   # no content digest: never indexed
+            object_types, link_types = schema.object_types, schema.link_types
+        linked = sorted({lb.get(end) for link in schema.link_types.values()
+                         for lb in link.get("bindings", ()) for end in ("from_binding",
+                                                                        "to_binding")} - {None})
+        sample = random.Random(11).sample(linked, min(40, len(linked)))
+        hops = 0
+        for a in sample:
+            for b in sample:
+                want = reference(a, b)
+                self.assertEqual(resolve.link_hops(schema, a, b), want, (a, b))
+                self.assertEqual(resolve.link_hops(Scanned(), a, b), want, (a, b))
+                hops += len(want)
+        self.assertGreater(hops, 0)
+        targets = sample[:12]
+        want = {}
+        for spec in schema.object_types.values():
+            for binding in spec.get("bindings", ()):
+                reach = [t for t in sorted(set(targets))
+                         if t != binding.get("id") and reference(binding.get("id"), t)]
+                if reach:
+                    want[binding.get("id")] = reach
+        self.assertEqual(resolve.linking_bindings(schema, targets), want)
+        self.assertEqual(resolve.linking_bindings(Scanned(), targets), want)
+        # a caller changing what it was given never changes the next answer
+        resolve.linking_bindings(schema, targets).clear()
+        self.assertEqual(resolve.linking_bindings(schema, targets), want)
+        other = ot.default_schema()   # a second object of the same digest
+        self.assertEqual(other.digest, schema.digest)
+        first, second = resolve._schema_index(schema), resolve._schema_index(other)
+        self.assertIsNot(first, second)
+        self.assertIs(resolve._schema_index(schema), first)
+        self.assertIs(resolve._schema_index(other), second)
+
+    def test_two_schemas_used_in_turn_keep_their_index_at_the_cache_cap(self):
+        """At the cache's cap a new schema object drops the least recently used index,
+        never the one used just before (clearing the lot made the outcome depend on how
+        many schemas earlier tests had indexed)."""
+        held = [ot.default_schema() for _ in range(resolve._INDEXES_KEPT)]
+        for one in held:
+            resolve._schema_index(one)
+        schema, other = ot.default_schema(), ot.default_schema()
+        first = resolve._schema_index(schema)
+        second = resolve._schema_index(other)
+        self.assertIsNot(first, second)
+        self.assertIs(resolve._schema_index(schema), first)
+        self.assertIs(resolve._schema_index(other), second)
+        self.assertLessEqual(len(resolve._INDEXES), resolve._INDEXES_KEPT)

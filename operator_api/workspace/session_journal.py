@@ -56,6 +56,7 @@ import sqlite3
 import sys
 from typing import Any, Mapping, Sequence
 from operating.declared_schema.session_journal import _DDL
+from operating.session_identity import SERVICE_JTI_PREFIX
 
 
 JOURNAL_FILE = "console-journal.sqlite"
@@ -114,6 +115,11 @@ MAX_AUDIT_BYTES = 16 * 1024 * 1024
 # How a session was proven (``operating.session_identity`` PROOF_*); anything else "other".
 PROOF_ENTRA = "entra_access_token"
 _PROOFS = frozenset({"signed_session_ticket", PROOF_ENTRA, "configured_employee", "fixture"})
+# A service session (``session_identity.SERVICE_CANARY``: the Ask canary) is journalled as
+# that service, in place of its proof, and as no employee: it reads under the claims of
+# the reader its ticket names but is nobody's own request (its ticket's mint row in
+# ``AUDIT_FILE`` names that reader).
+_SERVICES = frozenset(SERVICE_JTI_PREFIX)
 # Routes kept as they are; a path under one of the prefixes is kept as the prefix (its
 # tail is a case identifier); anything else is "other".
 _ROUTES = frozenset({"/api/session", "/api/cases", "/api/objects", "/api/object",
@@ -345,6 +351,9 @@ class SessionJournal:
         session_ref = getattr(session, "session_ref", None)
         employee = getattr(getattr(session, "employee", None), "principal", None)
         proof = getattr(session, "proof", None)
+        service = getattr(session, "service", None)
+        if service is not None:   # a service session: the service, never the employee
+            employee, proof = None, service if service in _SERVICES else "other"
         # Served under a declared full-read grant: its enum code (SessionIdentity.access).
         access = getattr(session, "access", None)
         access = access if isinstance(access, str) and _ACCESS.match(access) else None
@@ -358,7 +367,8 @@ class SessionJournal:
                refusal if isinstance(refusal, str) and _CODE.match(refusal) else
                (None if refusal is None else "other"),
                object_type_of(object_id), None if panels is None else json.dumps(panels),
-               None if session is None else proof if proof in _PROOFS else "other", access)
+               None if session is None else proof if proof in _PROOFS | _SERVICES
+               else "other", access)
         with closing(sqlite3.connect(self.path, timeout=LOCK_WAIT_SECONDS)) as db, db:
             cursor = db.execute("INSERT INTO request(at, session_ref, employee, method, route, "
                                 "status, refusal, object_type, panels, proof, access) "

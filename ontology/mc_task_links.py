@@ -70,6 +70,7 @@ import json
 import re
 from typing import Any, Callable, Iterable, Iterator, Mapping, Sequence
 
+from ontology import mention_occurrences as MO
 from ontology import mentions
 
 TASK_TYPE = "MCTask"
@@ -423,7 +424,7 @@ def firm_links(conn: Any) -> tuple[list[dict[str, Any]], Counter]:
     for row in current_values(conn, TEXT_PROPERTIES, (TASK_TYPE,)):
         texts[(row["l1_handle"], row["field_path"])] = row["value"]
     groups: dict[tuple[str, str], list[tuple[Any, Mapping[str, Any]]]] = defaultdict(list)
-    for lead in task_leads(conn):
+    for lead in MO.views(task_leads(conn)):   # a collapsed row: each occurrence
         reason = json.loads(lead["reason"] or "[]")
         mention = next((f for f in reason if isinstance(f, dict)
                         and f.get("feature") == "identifier_mention"), None)
@@ -467,7 +468,8 @@ def _firm_row(lead: Any) -> dict[str, Any]:
             "link_contract": None, "reason": _canon(reason), "why_not": "[]",
             "evidence_handles": lead["evidence_handles"], "reviewed_by": None,
             "reviewed_at": None, "review_action_id": None, "markings": lead["markings"],
-            "recorded_at": lead["recorded_at"], "superseded_at": None}
+            "recorded_at": lead["recorded_at"], "superseded_at": None,
+            **({MO.OCCURRENCE: lead[MO.OCCURRENCE]} if MO.OCCURRENCE in lead.keys() else {})}
 
 
 # ------------------------------------------------------------------------ the steps
@@ -493,8 +495,12 @@ def task_ids_step(builder: Any, projector: Any) -> dict[str, Any]:
     rejected = set()
     for task in sorted({r["from_object"] for r in rows}):
         rejected |= {(task, *pair) for pair in _rejected(builder.connection, task)}
-    kept = [r for r in rows if (r["from_object"], r["to_object"], r["link_type"]) not in rejected]
-    counts["rejected"] = len(rows) - len(kept)
+    allowed = [r for r in rows
+               if (r["from_object"], r["to_object"], r["link_type"]) not in rejected]
+    kept = MO.one_per_lead(allowed)   # one per lead (``ontology.mention_occurrences``)
+    counts["rejected"] = len(rows) - len(allowed)
+    if len(allowed) != len(kept):   # a folded store's views of one lead, not rejections
+        counts["occurrence_duplicates"] = len(allowed) - len(kept)
     _write(builder, FIRM_PREFIX, kept)
     return {"counts": dict(counts), "link_tiers": {FIRM: len(kept)} if kept else {}}
 

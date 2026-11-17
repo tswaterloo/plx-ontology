@@ -91,7 +91,7 @@ from __future__ import annotations
 
 from collections import Counter
 from dataclasses import dataclass, field
-from datetime import date, timedelta
+from datetime import date
 from decimal import Decimal, InvalidOperation
 import functools
 import hashlib
@@ -100,6 +100,8 @@ import re
 from typing import Any, Callable, Container, Iterable, Mapping, Sequence
 
 from . import sales_order_status as so_status
+from operating.prose_style import some_of
+from . import time_window
 
 ENGINE = "impact_chain"
 FIRM_TIERS = ("verified", "reviewed", "corroborated")
@@ -171,8 +173,7 @@ LINE_SELLS = "SalesOrderLine.for_item"
 MARGIN_LINK_TYPES = (ORDER_LINE, LINE_SELLS, *ITEM_TWINS, ORDER_TWIN)
 REVENUE_PROP = "line_total"           # SalesOrderLine, finance, excluding tax
 QUANTITY_PROP = "ordered_quantity"    # SalesOrderLine, with its unit
-# The unit cost a margin rests on:
-# the landed-cost engine's per-unit total of the sold
+# The unit cost a margin rests on (decided): the landed-cost engine's per-unit total of the sold
 # item when it has one (actual, else its labelled estimate), else BC Item.unitCost (CAD per
 # base unit), which leaves freight and duty out (ERP-D-015). Each basis keeps its label; a
 # margin over more than one basis names each one (never mixed silently).
@@ -290,10 +291,7 @@ def _type_of(object_id: str) -> str:
 def _day(raw: Any) -> date | None:
     if not isinstance(raw, str):
         return None
-    try:
-        return date.fromisoformat(raw.strip()[:10])
-    except ValueError:
-        return None
+    return time_window.business_day(raw)
 
 
 def _number(value: Any) -> Decimal | None:
@@ -951,8 +949,7 @@ def break_gap(reasons: Mapping[str, list[Break]], reason: str, *, complete: bool
     types, source = BREAKS.get(reason, ((), "unknown"))
     known = complete and bool(types) and all(covers(t) for t in types) \
         and reason not in ("lateness_undetermined", "link_lead_only")
-    subjects = ", ".join(sorted({b.subject for b in found})[:MAX_GAP_SUBJECTS])
-    more = len({b.subject for b in found}) - MAX_GAP_SUBJECTS
+    subjects = some_of(sorted({b.subject for b in found}), MAX_GAP_SUBJECTS)
     detail = (f"{reason}: {len(found)} chain(s) stop here; the source that would hold the "
               f"link: {source}"
               + ("; the walk read every such link this reader may see" if known else
@@ -960,7 +957,7 @@ def break_gap(reasons: Mapping[str, list[Break]], reason: str, *, complete: bool
                  "proof that none is recorded")
               + "; no link is inferred from a shared code, date or amount")
     return {"state": "absent_in_source" if known else "unknown", "reason": reason,
-            "subject": (subjects + (f" and {more} more" if more > 0 else ""))[:700],
+            "subject": subjects[:700],
             "detail": detail[:600]}
 
 
@@ -1074,6 +1071,14 @@ class _Reread:
                 continue
             return _number(raw) is not None and _number(raw) == _number(entry.get("value"))
         return False
+
+
+# plx.object's gap on a sales order whose header total its lines contradict
+# (``operating.order_value.CHECK_REASONS``)
+DISPUTED_TOTAL = "order_total_disagrees_with_lines"
+# ... and whose header total is the value still to ship: the derived value stands, the
+# header's total is no order value
+OUTSTANDING_TOTAL = "order_total_is_value_still_to_ship"
 
 
 def order_value(members: Sequence[str], amounts: Mapping[str, Sequence[Mapping[str, Any]]],
@@ -1504,9 +1509,7 @@ def _plan_margins(args: Mapping[str, Any], evidence: Mapping[str, Sequence[Mappi
     for reason in sorted(why):
         subjects = sorted(why[reason])
         gaps.append({"state": "unknown", "reason": reason,
-                     "subject": (", ".join(subjects[:MAX_GAP_SUBJECTS])
-                                 + (f" and {len(subjects) - MAX_GAP_SUBJECTS} more"
-                                    if len(subjects) > MAX_GAP_SUBJECTS else ""))[:700],
+                     "subject": some_of(subjects, MAX_GAP_SUBJECTS)[:700],
                      "detail": (f"{reason}: no margin at stake is stated for "
                                 f"{len(subjects)} order(s) at risk; "
                                 + MARGIN_WHY.get(reason, "see the reason"))[:600]})
@@ -1737,11 +1740,22 @@ def scan(st: Any, call: Callable[[str, Mapping[str, Any]], Any], *, bound: int =
         for order in found.at_risk:
             amounts: dict[str, list[Mapping[str, Any]]] = {}
             currencies: dict[str, list[Mapping[str, Any]]] = {}
+            disputed = False
             for member in order.members:
                 answer = value(member)
+                # a header total its own lines contradict is no order value
+                # (``operating.order_value``: plx.object says so in a gap)
+                disputed = disputed or isinstance(answer, Mapping) and any(
+                    isinstance(g, Mapping) and g.get("reason") == DISPUTED_TOTAL
+                    for g in answer.get("gaps") or ())
+                outstanding = isinstance(answer, Mapping) and any(
+                    isinstance(g, Mapping) and g.get("reason") == OUTSTANDING_TOTAL
+                    for g in answer.get("gaps") or ())
                 for v in (answer or {}).get("values") or () if isinstance(answer, Mapping) \
                         else ():
                     if not isinstance(v, Mapping) or v.get("value") is None:
+                        continue
+                    if outstanding and v.get("property") == "total_amount":
                         continue
                     named = {"total_amount": amounts, "currency": currencies}.get(
                         v.get("property"))
@@ -1754,7 +1768,7 @@ def scan(st: Any, call: Callable[[str, Mapping[str, Any]], Any], *, bound: int =
                         amounts.setdefault(member, []).append(d)
             amount, currency, _used, _why = order_value(order.members, amounts, currencies,
                                                         lambda _e: True)
-            if amount is not None:
+            if amount is not None and not disputed:
                 with_value += 1
                 totals[currency] = totals.get(currency, Decimal(0)) + amount
     margins: dict[str, Margin] = {}

@@ -372,11 +372,22 @@ def audience_resources(key: str) -> tuple[str, ...]:
     return MC_KIND.resources(path) + _item_resources(path, {"meta": {"project": project}})
 
 
+def signals_new(path: tuple[str, ...], payload: Mapping[str, Any]) -> bool:
+    """``SourceKind.signals``: a new version of an approval gate still requested (status
+    ``pending``, no decision), so the autopilot's fast feed (``operating.autopilot_fast``)
+    reads it at once; the fast poll re-reads the tasks whose gates are open."""
+    row = payload.get("row") if isinstance(payload, Mapping) else None
+    return (len(path) == 3 and path[1] == "approvals" and isinstance(row, Mapping)
+            and str(row.get("status") or "").strip().lower() == "pending"
+            and not row.get("decidedAt") and not row.get("decidedBy"))
+
+
 MC_KIND = register_source_kind(SourceKind(
     name=KIND, scheme=SCHEME, path_parts=3, canonical_path=_path,
     unit=lambda path: f"mc:{path[0]}/{path[1]}",
     resources=lambda path: (f"mc:{path[0]}:{path[1]}",),
-    key=lambda path: {"id": path[2]}, item_resources=_item_resources))
+    key=lambda path: {"id": path[2]}, item_resources=_item_resources,
+    signals=signals_new))
 
 
 # ---------------------------------------------------------------- clients
@@ -1071,6 +1082,11 @@ class McSourcesCapture:
             intent = _INTENT.match(reason) if isinstance(reason, str) else None
             row = {**gate, "task_id": task_id,
                    "workbench_intent_id": intent.group(1) if intent else None}
+            if gate.get("scope") is not None:
+                # the gate's own MC scope ({kind: launch|merge|flags, ...}, mc_request_approval
+                # since 90d15cb): kept as ``gate_scope``, since the row's ``scope`` names the
+                # operator scope the record is keyed by (``_record``)
+                row["gate_scope"] = gate["scope"]
             out.append(self._record(spec, "approvals", gate_id, row,
                                     {"tool": "mc_get_task", "arguments": {"id": task_id},
                                      "ids": {"task_id": task_id, "gate_id": gate_id}},

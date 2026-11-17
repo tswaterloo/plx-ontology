@@ -297,7 +297,8 @@ class OneDefinitionTest(unittest.TestCase):
         for rule in window["open_when"]["rules"]:
             self.assertEqual(set(rule), {"binding", "property"})
 
-    CALLERS = ("operating/process_lateness.py", "operating/proactive_engine.py",
+    # the engine is read whole: operating/proactive_engine.py and its split modules
+    CALLERS = ("operating/process_lateness.py", "operating/proactive_engine*.py",
                "scripts/eval_packaging_oracle_check.py")
 
     def test_no_caller_keeps_a_twin_line_or_promise_collector(self):
@@ -310,7 +311,9 @@ class OneDefinitionTest(unittest.TestCase):
                                 r"_read|_Read|_lines|_lines_spec|_values)\b"
                                 r"|^(PO_LINE_LINK|LINE_PAGES)\s*=", re.M)
         for name in self.CALLERS:
-            text = (ROOT / name).read_text("utf-8")
+            files = sorted(ROOT.glob(name))
+            self.assertTrue(files, name)
+            text = "".join(path.read_text("utf-8") for path in files)
             self.assertEqual(links.findall(text), [], name)
             self.assertEqual(collectors.findall(text), [], name)
             self.assertIn("po_status.read(" if "scripts/" in name or "engine" in name

@@ -1,0 +1,23 @@
+# The Sparks' health (operating.spark_worker health): one ssh probe per host over the tailnet
+# (CPUs, load, memory, disk, the test sandbox, the GPU), written to
+# <state>/spark/health.json for the worker that sends suites and embedding passes there and
+# falls back to this box when no host is fit. Counts only; no address, no credential.
+[Unit]
+Description=PLX Spark hosts health probe
+
+[Service]
+Type=oneshot
+User=@PLX_USER@
+Group=@PLX_GROUP@
+WorkingDirectory=@PLX_CURRENT@
+EnvironmentFile=/etc/plx/ingest.env
+# optionally PLX_SPARK_HOSTS, PLX_SPARK_SSH_CONFIG
+EnvironmentFile=-/etc/plx/spark.env
+UnsetEnvironment=AZURE_CLIENT_SECRET BC_CLIENT_SECRET MICROSOFT_GRAPH_CLIENT_SECRET MC_MCP_API_KEY PLX_WORKBENCH_API_KEY AZURE_STORAGE_KEY AZURE_DOC_INTEL_KEY PLX_WORKBENCH_SESSION_SECRET
+Environment=PATH=/data/venv/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart=/data/venv/bin/python3 -m operating.spark_worker health --state ${PLX_INGEST_STATE}
+Nice=10
+CPUWeight=20
+MemoryMax=256M
+TimeoutStartSec=3min
+UMask=0077

@@ -29,6 +29,7 @@ from fastapi.testclient import TestClient
 from operating import eval_results as results_file
 from integrations.people_exclusion import PeopleExclusion
 from operating import autopilot as ap
+from operating import autopilot_engine
 from operating import autopilot_write as aw
 from operating.session_identity import CHANNEL_CONSOLE, fixture_session
 from operator_api import models as m
@@ -61,7 +62,7 @@ class DraftConfig(unittest.TestCase):
         with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as f:
             f.write(doc if isinstance(doc, str) else json.dumps(doc))
         self.addCleanup(os.unlink, f.name)
-        return {ap.DRAFT_ENV: f.name}
+        return {autopilot_engine.DRAFT_ENV: f.name}
 
     def test_the_default_config_drafts_the_three_workflows_and_never_other_external(self):
         found = ap.load_draft({})
@@ -70,7 +71,7 @@ class DraftConfig(unittest.TestCase):
         self.assertNotIn("other_external", {f for v in found.values() for f in v})
 
     def test_an_unknown_or_forbidden_workflow_refuses_the_whole_file(self):
-        good = {"schema": ap.DRAFT_SCHEMA, "people": {TEAM[0]: [FLOW]}}
+        good = {"schema": autopilot_engine.DRAFT_SCHEMA, "people": {TEAM[0]: [FLOW]}}
         self.assertEqual(ap.load_draft(self.write(good)), {TEAM[0]: [FLOW]})
         for bad in ({**good, "people": {TEAM[0]: [FLOW], OTHER[0]: ["no_such_flow"]}},
                     {**good, "people": {TEAM[0]: [FLOW, "other_external"]}},
@@ -79,14 +80,14 @@ class DraftConfig(unittest.TestCase):
                     "{not json", [good]):
             with self.subTest(bad=bad):
                 self.assertEqual(ap.load_draft(self.write(bad)), {})
-        self.assertEqual(ap.load_draft({ap.DRAFT_ENV: "/nonexistent/draft.json"}), {})
+        self.assertEqual(ap.load_draft({autopilot_engine.DRAFT_ENV: "/nonexistent/draft.json"}), {})
 
     def test_draft_prepares_for_the_named_person_only_and_keeps_the_gate_for_others(self):
         directory = {TEAM[0]: TEAM[1], OTHER[0]: OTHER[1]}
         drafted = ap.draft_owners({TEAM[0]: [FLOW], "nobody@plx.example": [FLOW]},
                                   directory, People(directory))
         self.assertEqual(drafted, {TEAM[1]: frozenset({FLOW})})
-        gate, _ = ap.gate_of(None)                        # nothing passed
+        gate, _ = autopilot_engine.gate_of(None)                        # nothing passed
         drafted_gate = ap.with_draft(gate, drafted)
         self.assertTrue(drafted_gate(TEAM[1], FLOW))
         self.assertTrue(drafted_gate(TEAM[1].upper(), FLOW))
@@ -122,8 +123,8 @@ def scorer_run(root: Path, role: str, *, status="complete", start="2026-11-06T07
         "window": [start, "2026-11-12T07:00:00Z"], "data_end": "2026-11-15T07:00:00Z",
         "days_done": days, "splits": {},
         "workflows": {FLOW: {"judged": judged + 5, "matched": matched, "prepared": 20}}}))
-    gate = run / ap.GATE_FILE
-    doc = json.loads(gate.read_text()) if gate.exists() else {"schema": ap.GATE_SCHEMA,
+    gate = run / autopilot_engine.GATE_FILE
+    doc = json.loads(gate.read_text()) if gate.exists() else {"schema": autopilot_engine.GATE_SCHEMA,
                                                               "roles": {}}
     doc["roles"][role] = {"members": list(members),
                           "workflows": {FLOW: {"judged": judged, "matched": matched}}}
@@ -143,17 +144,17 @@ class TrustAndDraft(unittest.TestCase):
         with q.conn:
             q.add_item({**queued("ap_secret_item", TEAM[1]), "title": "PO P-77 secret title"})
         q.close()
-        (path.parent / ap.GATE_FILE).write_text(json.dumps({"schema": ap.GATE_SCHEMA, "roles": {
+        (path.parent / autopilot_engine.GATE_FILE).write_text(json.dumps({"schema": autopilot_engine.GATE_SCHEMA, "roles": {
             ROLE: {"members": [TEAM[1]], "workflows": {FLOW: {"judged": 33, "matched": 29}}},
             "receivables": {"members": [OTHER[1]],
                             "workflows": {"ar_collections": {"judged": 20, "matched": 15}}}}}))
         draft = root / "draft.json"
-        draft.write_text(json.dumps({"schema": ap.DRAFT_SCHEMA,
+        draft.write_text(json.dumps({"schema": autopilot_engine.DRAFT_SCHEMA,
                                      "people": {TEAM[0]: [FLOW, "teams_chat"]}}))
         guard = PeopleExclusion(["99999999-9999-4999-8999-999999999999"])
         guard.attach_directory([(o, a, []) for a, o in (OWNER, TEAM, OTHER)])
         b = self.backend = MockBackend()
-        b.writes_environ = {ap.DRAFT_ENV: str(draft)}
+        b.writes_environ = {autopilot_engine.DRAFT_ENV: str(draft)}
         b.autopilot_queue = path
         b.autopilot_write_state = self.state
         b.autopilot_grant = (lambda aud: True, frozenset(), lambda hs: {h: None for h in hs})
@@ -223,15 +224,23 @@ class TrustAndDraft(unittest.TestCase):
         self.assertIn("no workflow acts", words)
 
     def test_freshness_answers_alerts_and_switches(self):
+        captured = datetime(2026, 11, 11, 18, tzinfo=timezone.utc)
+        before = int((datetime.now(timezone.utc) - captured).total_seconds())
         page = self.client(OWNER).get("/api/trust").json()
+        after = int((datetime.now(timezone.utc) - captured).total_seconds())
         fresh = {r["system"]: r for r in page["freshness"]}
-        self.assertEqual((fresh["BC"]["captured_at"], fresh["BC"]["served_at"],
-                          fresh["BC"]["lag_seconds"]),
-                         ("2026-11-11T18:00:00Z", "2026-11-11T16:00:00Z", 7200))
+        self.assertEqual((fresh["BC"]["captured_at"], fresh["BC"]["served_at"]),
+                         ("2026-11-11T18:00:00Z", "2026-11-11T16:00:00Z"))
+        # the lag is the newest capture's age now (AUD-16), never captured minus served
+        self.assertGreaterEqual(fresh["BC"]["lag_seconds"], before)
+        self.assertLessEqual(fresh["BC"]["lag_seconds"], after)
         self.assertTrue(fresh["Email"]["stale"])
         # a system is as fresh as its least fresh source: SharePoint's lists at 12:00
-        self.assertEqual((fresh["File"]["captured_at"], fresh["File"]["served_at"],
-                          fresh["File"]["lag_seconds"]), ("2026-11-11T12:00:00Z", None, None))
+        self.assertEqual((fresh["File"]["captured_at"], fresh["File"]["served_at"]),
+                         ("2026-11-11T12:00:00Z", None))
+        # nothing served still has a lag: the capture's age now (6 h older than BC's)
+        self.assertGreaterEqual(fresh["File"]["lag_seconds"], before + 6 * 3600)
+        self.assertLessEqual(fresh["File"]["lag_seconds"], after + 6 * 3600)
         # no results file: no set, the page says held-out is not measured
         self.assertEqual(page["answers"], [])
         self.assertIn("Held-out answer scores: not measured yet.",
@@ -529,10 +538,10 @@ class DraftPrepares(Fixture):
         queue = self.dir / name / ap.QUEUE_FILE
         queue.parent.mkdir()
         conf = self.dir / f"{name}-draft.json"
-        conf.write_text(json.dumps({"schema": ap.DRAFT_SCHEMA, "people": draft}))
+        conf.write_text(json.dumps({"schema": autopilot_engine.DRAFT_SCHEMA, "people": draft}))
         out = io.StringIO()
         with contextlib.redirect_stdout(out), \
-                mock.patch.dict(os.environ, {ap.DRAFT_ENV: str(conf)}), \
+                mock.patch.dict(os.environ, {autopilot_engine.DRAFT_ENV: str(conf)}), \
                 mock.patch.object(ap, "window_ids", return_value=ids), \
                 mock.patch.object(ap, "layer_ids", return_value=(set(ids), [], 0)), \
                 mock.patch.object(ap, "_utcnow", return_value=NOW), \
@@ -546,16 +555,21 @@ class DraftPrepares(Fixture):
         finally:
             q.close()
         self.assertTrue(all(r[0] == OURS_OID for r in rows), rows)
+        summary = json.loads(out.getvalue()[out.getvalue().index("{"):])
+        if command == "follow" and summary.get("status") != "off":
+            # each live cycle logs what became of the prepared items (row 22): all waiting
+            logged = summary["outcomes"]
+            self.assertEqual((logged["items"], logged["waiting"]), (len(rows), len(rows)))
         return len(rows)
 
     def test_draft_prepares_only_the_configured_workflows(self):
         texts = ("Please send the COA for lot 9.", "Where is order SO-2? When will it ship?")
         flows = sorted({wf.of_item("customer_request", {"subject": "PO", "text": t,
                                                         "side": "customer"}) for t in texts}
-                       - ap.DRAFT_NEVER)
+                       - autopilot_engine.DRAFT_NEVER)
         self.assertTrue(flows)
         self.assertGreater(self.run_into("drafted", {OURS: flows}), 0)
-        other = sorted(wf.names() - set(flows) - ap.DRAFT_NEVER)[0]
+        other = sorted(wf.names() - set(flows) - autopilot_engine.DRAFT_NEVER)[0]
         self.assertEqual(self.run_into("other", {OURS: [other]}), 0)
         self.assertEqual(self.run_into("nobody", {"nobody@plx.example": flows}), 0)
         # the same draft in a replay prepares nothing into the shared queue
@@ -577,7 +591,7 @@ class FollowReadsTheLayers(Fixture):
         ids = [self.message(90 + n, t) for n, t in enumerate(texts)]
         flows = sorted({wf.of_item("customer_request", {"subject": "PO", "text": t,
                                                         "side": "customer"}) for t in texts}
-                       - ap.DRAFT_NEVER)
+                       - autopilot_engine.DRAFT_NEVER)
         store = self.w.build(self.dir / "s.sqlite")
         with sqlite3.connect(store) as conn:
             digest = conn.execute("SELECT value FROM store_meta WHERE key = "
@@ -595,7 +609,7 @@ class FollowReadsTheLayers(Fixture):
             "format": "plx-delta/v1", "base_digest": digest, "store": layers[0]["store"],
             "layers": layers}))
         conf = self.dir / "draft.json"
-        conf.write_text(json.dumps({"schema": ap.DRAFT_SCHEMA, "people": {OURS: flows}}))
+        conf.write_text(json.dumps({"schema": autopilot_engine.DRAFT_SCHEMA, "people": {OURS: flows}}))
         version, applied, seen = [100], set(), []
         real_meta = pe._Store.meta
 
@@ -606,7 +620,7 @@ class FollowReadsTheLayers(Fixture):
         def follow(queue: Path, reads_postgres: bool, *, now=NOW, window=()) -> dict:
             out = io.StringIO()
             with contextlib.redirect_stdout(out), \
-                    mock.patch.dict(os.environ, {ap.DRAFT_ENV: str(conf)}), \
+                    mock.patch.dict(os.environ, {autopilot_engine.DRAFT_ENV: str(conf)}), \
                     mock.patch.object(ap, "_utcnow", return_value=now), \
                     mock.patch.object(ap, "window_ids", lambda _st, _r, since, until:
                                       seen.append((since, until)) or list(window)), \

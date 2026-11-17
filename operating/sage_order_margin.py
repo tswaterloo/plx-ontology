@@ -43,7 +43,7 @@ from typing import Any, Callable, Mapping, Sequence
 
 from ontology.units import unit_token
 from operating.landed_cost import ISO_4217, _canon, _dec_str, _sha
-from operating.order_margin import _binding, _number, _Run as _BcRun
+from operating.order_margin import _binding, _Run as _BcRun
 
 ENGINE = "sage_order_margin"
 PROPERTY_ROLES = ("order_number", "order_type", "line_type", "line_item", "outstanding",
@@ -432,7 +432,7 @@ def plan_run(args: Mapping[str, Any], evidence: Mapping[str, Sequence[Mapping[st
     steps = [f"{c[0]}: revenue {_money(c[1], home)}, cost {_money(c[2], home)}"
              for c in computed[:TOTAL_STEP_LINES]]
     if len(computed) > TOTAL_STEP_LINES:
-        steps.append(f"and {len(computed) - TOTAL_STEP_LINES} more item(s), each its own "
+        steps.append(f"the other {len(computed) - TOTAL_STEP_LINES} item(s): each is its own "
                      "entry")
     steps.append(f"order: revenue {_money(revenue, home)} - cost {_money(cost, home)} = "
                  f"margin {_money(values['margin'], home)} (before any credit note; Sage "

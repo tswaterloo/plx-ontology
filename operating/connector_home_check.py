@@ -60,7 +60,8 @@ def _stdio(server: Any, calls: Sequence[tuple[str, dict[str, Any]]] | None = Non
            ) -> list[dict[str, Any]]:
     """initialize, initialized, tools/list and plx.find's home question over
     ``serve_stdio`` (or ``calls``, numbered from 3)."""
-    from .mcp_server import PROTOCOL_VERSION, serve_stdio
+    from .mcp_server import serve_stdio
+    from .mcp_server_evidence import PROTOCOL_VERSION
 
     calls = [("plx.find", {"query": QUESTION})] if calls is None else calls
     requests = [
@@ -228,10 +229,12 @@ def _portfolio_run(server: Callable[[], Any], host: Any, gated: Any,
 
 def main(argv: Sequence[str] | None = None, *, environ: Mapping[str, str] | None = None,
          host_options: Mapping[str, Any] | None = None, graph_sender: Any = None) -> int:
-    from integrations.source_mirror import AudienceMap, MirrorError
+    from integrations.source_mirror import AudienceMap
+    from integrations.source_mirror_values import MirrorError
     from ontology.core import Actor
 
     from . import case_workspace_live as live
+    from . import case_workspace_live_projection
     from . import customer_po_coverage, proactive_engine
     from .mcp_server import MCPServer
 
@@ -281,7 +284,7 @@ def main(argv: Sequence[str] | None = None, *, environ: Mapping[str, str] | None
     projection = live.projection_file(args.state_dir, args.tenant)
     rendered = []
     try:
-        live.project_state(args.state_dir, projection, tenant=args.tenant)
+        case_workspace_live_projection.project_state(args.state_dir, projection, tenant=args.tenant)
         summary["blocked_upstream"] = live.upstream_parts(live.portal_upstream(args.state_dir))
         # The scheduled engine's run (as operating.proactive_engine): the inbox the home
         # mode reads; plx.find never scans on the request.

@@ -75,6 +75,9 @@ class Record:
     object_type: str
     values: dict[str, dict[str, Any]]
     withheld_properties: int = 0
+    # a sales order whose header total its own lines contradict (plx.object's gap
+    # ``order_total_disagrees_with_lines``): its total is left out of ``values``
+    total_disputed: bool = False
 
     def get(self, *names: str) -> dict[str, Any] | None:
         """The first of ``names`` that carries a value: ``{"property", "value",
@@ -235,9 +238,14 @@ class CitedReads:
             # ``order_value``), cited by its first input; never in place of a source value
             if isinstance(d, Mapping) and d.get("inputs") and d.get("property") not in values:
                 values[d["property"]] = {**d, "citation": d["inputs"][0]}
+        disputed = any(isinstance(g, Mapping) and g.get("reason") ==
+                       "order_total_disagrees_with_lines" for g in out.get("gaps") or ())
+        if disputed:
+            # never shown as the order's amount (``operating.order_value``)
+            values.pop("total_amount", None)
         obj = out.get("object") or {}
         record = Record(obj.get("object_id", object_id), obj.get("object_type", ""), values,
-                        held if isinstance(held, int) else 0)
+                        held if isinstance(held, int) else 0, disputed)
         self._cache[key] = record
         return record
 

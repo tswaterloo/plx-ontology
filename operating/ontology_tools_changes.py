@@ -67,9 +67,10 @@ from typing import Any, Callable, Iterable, Mapping, MutableMapping, Sequence
 
 from ontology.json_contract import validate
 
-from .ontology_tools import (_AUDIENCE_SOURCE, _ITEM_ACL_AUDIENCES, Actor, OntologyTools,
-                             ToolError, _envelope_bytes, _error,
-                             _format_time, _gap, _parse_time, _value_out)
+from .ontology_tools import Actor, OntologyTools, _value_out
+from .ontology_tools_identity import ToolError, _error, _gap
+from .ontology_tools_policy import (_AUDIENCE_SOURCE, _ITEM_ACL_AUDIENCES, _envelope_bytes,
+                                    _format_time, _parse_time)
 from operating.declared_schema.changes_index import _INDEX_DDL, _INDEX_INDEXES
 
 TOOL_NAME = "plx.changes"
@@ -1025,7 +1026,7 @@ _SOURCES = _AUDIENCE_SOURCE
 
 
 def _contract() -> Mapping[str, Any]:
-    from .ontology_tools import load_contracts
+    from .ontology_tools_policy import load_contracts
     return load_contracts()["tools"][TOOL_NAME]
 
 

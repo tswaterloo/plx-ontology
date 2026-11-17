@@ -1,6 +1,6 @@
 // The autopilot area's words and views: labels for roles, systems, workflows and states,
 // and the filter/split over prepared items (pure, so the views are tested without a page).
-import type { AutopilotActionResult, AutopilotArea, AutopilotCountdown, AutopilotItem, AutopilotOptIn, AutopilotScoreBar, AutopilotWorkflowRow } from "./types";
+import type { AutopilotActionResult, AutopilotArea, AutopilotAuditRow, AutopilotCountdown, AutopilotItem, AutopilotOptIn, AutopilotScoreBar, AutopilotWorkflowRow } from "./types";
 import type { Status } from "./status";
 
 const ROLE: Record<string, string> = {
@@ -296,4 +296,19 @@ export function outcomeWords(outcome: string, reasons: string[], system: string,
       if (!NOT_RUN.has(outcome)) return `. Could not confirm what happened (${words([outcome])}). Check ${system} before trying again.`;
       return `. Recorded; the write path would not perform it (${words([outcome, ...reasons])}), so nothing was sent or written.`;
   }
+}
+
+/** An audit row's event in words (the audit log and the Related panel's run log). */
+export function auditWhat(r: AutopilotAuditRow): string {
+  if (r.event === "switch") return "Switch changed";
+  if (r.event === "gate_passed") return "Gate passed";
+  if (r.event === "gate_lost") return "Gate lost: back to dry run";
+  if (r.event === "owner_notified") return "Owner told of the pass";
+  if (r.event === "opt_in") return r.status === "on" ? "Turned on by the person" : "Turned off by the person";
+  if (r.event === "opt_in_paused") return r.status === "paused" ? "Paused everything" : "Resumed";
+  if (r.event === "opt_in_suspended") return "Turned off by itself: under the bar";
+  if (r.event === "reconciled") return `Checked by a person: ${r.status}`;
+  const s = (r.status ?? "").replace(/_/g, " ");
+  if (r.mode === "live") return r.event === "attempt" ? "Live attempt" : `Live: ${s}`;
+  return s ? s.charAt(0).toUpperCase() + s.slice(1) : r.event;
 }

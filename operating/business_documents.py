@@ -28,6 +28,10 @@ sent, written or changed; every row cites the records and sheet cells it comes f
   more than ``PRICE_TOLERANCE`` off is a ``mismatch``. Finance-marked: a reader without
   ``finance`` gets no row (``withheld_finance``). A sheet stating no currency is compared
   only when the invoices are in one currency (``currency_basis: assumed_invoice``).
+* ``subject`` on ``forecasts``, ``forecast_accuracy`` and ``price_sheets`` narrows them to
+  one customer's rows (its identity cluster) or one item's (its code group); a subject of
+  any other kind keeps no row (``subject_not_customer_or_item``). On ``supplier_issues`` a
+  supplier or item subject takes its same-record twins too.
 * ``compliance_pack`` (``subject``: an item or a lot): its certificates of analysis, specs,
   safety data sheets, allergen and other statements and certificates: documents whose name
   holds one of its codes (item code, lot number) and a document kind word (``PACK_KINDS``),
@@ -62,6 +66,20 @@ sent, written or changed; every row cites the records and sheet cells it comes f
   stock and never added to it: one row per sheet at its latest dated reading with its
   quantity, unit, day, cell and ``fresh`` (within ``ON_HAND_FRESH_DAYS``), citing the sheet's
   record and the product. People first, as every view.
+* ``item_po_prices`` (``items``: up to ``MAX_PRICE_ITEMS`` item codes, each with the cost a
+  sheet states for it, or item records; ``currency``: the stated costs' currency): per item
+  what its purchase orders paid: the last price (the newest priced line by its order's
+  date) and the quantity-weighted average per currency and unit, exact Decimal, never
+  across currencies or units; one order's copies in several systems
+  (``PurchaseOrder.same_record_as``) counted once. A stated cost gets a verdict
+  (``_cost_verdict``): a $0 cost a PO paid for is ``zero_but_bought``, a $0 cost no PO
+  paid for ``zero_never_bought`` (as a customer-supplied item reads), else within
+  ``COST_TOLERANCE`` of the last or the average price or ``differs``; a PO line the reader
+  may not read makes it ``lines_withheld`` (that line could be the last price or the
+  purchase), never a verdict. Each row cites the item and the last price's line and order
+  and carries the prices' own markings. A code naming no item and one naming an item the
+  reader may not read are both ``codes_not_found`` (no oracle); a code several items carry
+  is ``codes_ambiguous``, never one item's prices.
 * ``uat_feedback``: SharePoint list items of a list whose address names user acceptance
   testing or feedback (``UAT_WORDS``), each item's status read as ``open``, ``answered`` or
   ``fixed`` (``STATUS_CLASS``); an unknown status word is ``unknown`` (counted, never guessed).
@@ -78,21 +96,23 @@ from __future__ import annotations
 
 from collections import Counter, defaultdict
 from datetime import date, timedelta
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 import json
 import re
 import sqlite3
 import time
 from typing import Any, Callable, Mapping, MutableMapping, Sequence
 
+from . import document_memo
 from . import document_tables as dt
+from .document_memo import StillReading, reader_key
 
 TOOL_NAME = "plx.aggregate"
 MODE = "business_documents"
 FORMAT = "plx-business-documents/v1"
 VIEWS = ("forecasts", "forecast_accuracy", "priority_fill", "price_sheets",
          "compliance_pack", "answer_bank", "supplier_issues", "uat_feedback",
-         "formula_lines", "item_on_hand_sheets")
+         "formula_lines", "item_on_hand_sheets", "item_po_prices")
 MAX_ROWS = 200
 FINANCE = "finance"
 
@@ -147,6 +167,17 @@ INVOICE_LINE_OF = "SalesInvoiceLine.line_of"
 BILLED_TO = "SalesInvoice.billed_to"
 ITEM_TYPES = ("Product", "FgItem")
 ITEM_TWINS = "Product.same_record_as"
+PO_LINE_ITEM = "PurchaseOrderLine.for_item"
+PO_LINE_OF = "PurchaseOrderLine.line_of"
+PO_TWINS = "PurchaseOrder.same_record_as"
+# A PO line's unit price, in the order its systems state it (Portal, BC, FileMaker).
+PO_PRICE_PROPS = ("unit_price", "bc_direct_unit_cost", "fm_item_cost")
+# A stated cost differs from a PO price past this share of the PO price.
+COST_TOLERANCE = Decimal("0.05")
+# Units a stated per-each cost can be compared with (a PO line stating none is compared
+# and says so: ``uom_unstated``).
+EACH_UNITS = frozenset({"ea", "each", "pc", "pcs", "piece", "pieces", "unit", "units", "u"})
+MAX_PRICE_ITEMS = MAX_ROWS
 ORDER_TYPES = ("SalesOrder", "CustomerPurchaseOrder")
 _QUESTION = re.compile(r"\?\s*$")
 _LABEL = re.compile(r"^([A-Za-z][A-Za-z0-9 /()._-]{1,65}): (.{1,150}) \[Sheet .*\]$")
@@ -162,6 +193,7 @@ class Answer:
         self.counts: Counter = Counter()
         self.withheld: Counter = Counter()
         self.complete = True
+        self.reader: str | None = None   # the memo's reader key (``reader_key``)
 
     def add(self, row: dict[str, Any], cited: Sequence[str], markings: Sequence[str] = ()
             ) -> bool:
@@ -187,6 +219,18 @@ class Answer:
                "complete": self.complete, "draft": False}
         out.update(extra)
         return out
+
+
+# ------------------------------------------------------------------- the reader's memo
+# (``operating.document_memo``): each view's whole-company step kept per reader
+
+MEMO = document_memo.Memo(lambda gate, view: Answer(gate, view))
+# the views whose whole-company steps are kept (``MEMO``): a customer's or item's lists
+KEPT_VIEWS = ("forecasts", "forecast_accuracy", "price_sheets", "answer_bank")
+
+
+STILL_READING_NOTE = ("This list is still being read and is incomplete; do not say none were "
+                      "found. Ask again in a minute.")
 
 
 def _cite(gate: dt.Gate, oid: str) -> dict[str, Any]:
@@ -235,8 +279,13 @@ def _words_in(name: str, words: Sequence[str]) -> bool:
 
 # --------------------------------------------------------------------------- forecasts
 
-def _customers(conn, gate: dt.Gate) -> dt.Parties:
-    return dt.Parties(conn, "Customer", CUSTOMER_TWINS, getattr(gate.guard, "internal", ()))
+def _customers(conn, gate: dt.Gate, ans: Answer | None = None) -> dt.Parties:
+    def read(_scratch: Answer) -> dt.Parties:
+        return dt.Parties(conn, "Customer", CUSTOMER_TWINS,
+                          getattr(gate.guard, "internal", ())).unbound()
+    # the kept value holds data only: each request reads through its own connection
+    return MEMO.step(ans.reader, "customers", ans, read, conn).bound(conn) if ans is not None \
+        else read(ans).bound(conn)
 
 
 _FROM = re.compile(r"(?im)^\s*\*?From:\*?\s*(?:[^<\n]*<)?([\w.+'-]+@[\w-]+(?:\.[\w-]+)+)")
@@ -464,7 +513,12 @@ class CustomerOf:
 
 def forecast_lines(conn, gate: dt.Gate, ans: Answer) -> list[dict[str, Any]]:
     """Dated forecast lines (module doc): customer, item, (year, month), quantity, unit,
-    the document's day and the cited records and cell."""
+    the document's day and the cited records and cell; kept per reader (``MEMO``)."""
+    return MEMO.step(ans.reader, "forecast_lines", ans,
+                     lambda scratch: _forecast_lines(conn, gate, scratch), conn)
+
+
+def _forecast_lines(conn, gate: dt.Gate, ans: Answer) -> list[dict[str, Any]]:
     resolve = dt.Resolver(conn)
     out = []
     docs = _docs(conn, gate, FORECAST_WORDS, ans,
@@ -534,8 +588,31 @@ def _newest(lines: Sequence[dict[str, Any]]) -> dict[tuple, dict[str, Any]]:
     return best
 
 
+def _subject_filter(conn, ans: Answer, subject: Any
+                    ) -> Callable[[str, Sequence[str]], bool] | None:
+    """``subject`` narrows a per-customer-and-item view (forecasts, their accuracy, price
+    sheets) to one record's rows: a customer's (its identity cluster: every same-record
+    twin) or an item's (any record of its code group). None: no subject, every row. Any
+    other kind of record keeps no row (counted ``subject_not_customer_or_item``), never
+    every row."""
+    if not subject:
+        return None
+    kind = str(subject).split(":", 1)[0]
+    if kind == "Customer":
+        members = dt.cluster(conn, subject, CUSTOMER_TWINS) | {subject}
+        return lambda customer, _items: customer in members
+    if kind in ITEM_TYPES:
+        members = dt.cluster(conn, subject, ITEM_TWINS) | {subject}
+        return lambda _customer, items: bool(members.intersection(items))
+    ans.counts["subject_not_customer_or_item"] += 1
+    return lambda _customer, _items: False
+
+
 def view_forecasts(conn, gate, ans, args, as_of) -> None:
+    keep = _subject_filter(conn, ans, args.get("subject"))
     for (customer, item, period), line in sorted(_newest(forecast_lines(conn, gate, ans)).items()):
+        if keep is not None and not keep(customer, line["members"]):
+            continue
         d = line["doc"]
         ans.add({"customer": customer, "customer_basis": line["customer_basis"],
                  "item": item, "period": period,
@@ -576,8 +653,11 @@ def _orders(conn, customer: str, items: Sequence[str], parties: dt.Parties
 
 
 def view_forecast_accuracy(conn, gate, ans, args, as_of) -> None:
+    keep = _subject_filter(conn, ans, args.get("subject"))
     newest = _newest(forecast_lines(conn, gate, ans))
-    parties = _customers(conn, gate)
+    if keep is not None:
+        newest = {k: v for k, v in newest.items() if keep(k[0], v["members"])}
+    parties = _customers(conn, gate, ans)
     pairs: dict[tuple[str, str], list[dict[str, Any]]] = defaultdict(list)
     current = f"{as_of.year:04d}-{as_of.month:02d}"
     for (customer, item, period), line in newest.items():
@@ -720,17 +800,31 @@ def _document_number(raw: str) -> bool:
 
 # --------------------------------------------------------------------------- prices
 
-def _invoice_prices(conn, customer: str, items: Sequence[str], since: date | None,
-                    until: date, parties: dt.Parties
-                    ) -> list[tuple[date, Decimal, str | None, str | None, str, str]]:
+def _billed_lines(conn, customer: str, parties: dt.Parties) -> dict[str, list[tuple[str, str]]]:
+    """item record -> (line, invoice) of every invoice line billed to the customer (any
+    record of it: ``Parties.members``) whose one invoice it is; read once per customer,
+    from the customer's invoices (an item's lines over every customer: 1,600 and more)."""
     members = parties.members(customer)
-    lines = sorted({l for ls in dt.links_to(conn, items, INVOICE_LINE_ITEM).values()
-                    for l in ls})
-    head = {l: (hs[0] if len(hs) == 1 else None)
-            for l, hs in dt.links_from(conn, lines, INVOICE_LINE_OF).items()}
-    invoices = sorted({h for h in head.values() if h})
-    who = dt.links_from(conn, invoices, BILLED_TO)
-    mine = {i for i in invoices if set(who.get(i, [])) & members}
+    invoices = {i for got in dt.links_to(conn, members, BILLED_TO).values() for i in got}
+    lines = sorted({l for got in dt.links_to(conn, invoices, INVOICE_LINE_OF).values()
+                    for l in got})
+    head = {l: hs[0] for l, hs in dt.links_from(conn, lines, INVOICE_LINE_OF).items()
+            if len(hs) == 1 and hs[0] in invoices}
+    out: dict[str, list[tuple[str, str]]] = defaultdict(list)
+    for line, items in dt.links_from(conn, sorted(head), INVOICE_LINE_ITEM).items():
+        for item in dict.fromkeys(items):
+            out[item].append((line, head[line]))
+    return out
+
+
+def _invoice_prices(conn, billed: Mapping[str, Sequence[tuple[str, str]]],
+                    items: Sequence[str], since: date | None, until: date
+                    ) -> list[tuple[date, Decimal, str | None, str | None, str, str]]:
+    """The net unit prices of the customer's invoice lines (``billed``: ``_billed_lines``)
+    of the item (``items``: every record of its code) between ``since`` and ``until``."""
+    head = dict(sorted({line: inv for item in dict.fromkeys(items)
+                        for line, inv in billed.get(item, ())}.items()))
+    mine = set(head.values())
     days = dt.values(conn, mine, ("posting_date", "invoice_date", "status"))
     amounts = dt.values(conn, [l for l, h in head.items() if h in mine],
                         ("invoiced_quantity", "amount_excluding_tax", "extended_amount",
@@ -773,10 +867,24 @@ def view_price_sheets(conn, gate, ans, args, as_of) -> None:
     if FINANCE not in gate.held:
         ans.withheld["withheld_finance"] += 1
         return
+    newest, groups = MEMO.step(ans.reader, "sheet_prices", ans,
+                               lambda scratch: _sheet_prices(conn, gate, scratch), conn)
+    parties = _customers(conn, gate, ans)
+    keep = _subject_filter(conn, ans, args.get("subject"))
+    if keep is not None:
+        newest = {k: v for k, v in newest.items() if keep(k[0], groups[k[1]])}
+    else:
+        newest = dict(newest)
+    _compare_prices(conn, gate, ans, newest, groups, parties, as_of)
+
+
+def _sheet_prices(conn, gate: dt.Gate, ans: Answer
+                  ) -> tuple[dict[tuple[str, str], tuple[dt.Doc, dt.Cell, Decimal, str | None]],
+                             dict[str, list[str]]]:
+    """Every price sheet's newest price per (customer, item) and each item's code group."""
     resolve = dt.Resolver(conn)
     docs = _docs(conn, gate, PRICE_WORDS, ans, require=lambda n: _words_in(n, PRICE_WORDS))
     newest: dict[tuple[str, str], tuple[dt.Doc, dt.Cell, Decimal, str | None]] = {}
-    parties = _customers(conn, gate)
     customer_of = CustomerOf(conn, gate, ans)
     groups: dict[str, list[str]] = {}
     for d in docs:
@@ -809,10 +917,18 @@ def view_price_sheets(conn, gate, ans, args, as_of) -> None:
                 if prev is None or (d.day or date.min, d.object_id) > \
                         (prev[0].day or date.min, prev[0].object_id):
                     newest[key] = (d, pc, m[0], currency)
+    return newest, groups
+
+
+def _compare_prices(conn, gate: dt.Gate, ans: Answer, newest, groups, parties: dt.Parties,
+                    as_of: date) -> None:
     ans.counts["sheet_prices"] = len(newest)
+    billed_to: dict[str, dict[str, list[tuple[str, str]]]] = {}
     for (customer, item), (d, pc, price, currency) in sorted(newest.items()):
         until = min(as_of, d.day + timedelta(days=PRICE_WINDOW_DAYS)) if d.day else as_of
-        billed = _invoice_prices(conn, customer, groups[item], d.day, until, parties)
+        if customer not in billed_to:
+            billed_to[customer] = _billed_lines(conn, customer, parties)
+        billed = _invoice_prices(conn, billed_to[customer], groups[item], d.day, until)
         # only lines this reader may open (the line and its invoice) give any figure,
         # count or worst price; the rest are counted as withheld, never used
         gate.load(o for b in billed for o in b[4:6])
@@ -1110,6 +1226,35 @@ def _specific(text: str, customer_of: "CustomerOf", source: str | None = None) -
     return bool(words & customer_of.all_name_words())
 
 
+def _answer_pairs(conn, gate: dt.Gate, ans: Answer) -> list[tuple]:
+    """Every answer we gave a customer in a questionnaire the reader may read: (document,
+    question, answer, cell, customer, basis, evidence, specific), whoever the draft is for
+    (``view_answer_bank`` narrows it); a supplier's or an unknown party's counted."""
+    customer_of = CustomerOf(conn, gate, ans)
+    suppliers = dt.Parties(conn, "Supplier", "Supplier.same_record_as",
+                           getattr(gate.guard, "internal", ()))
+    out: list[tuple] = []
+    for d in _docs(conn, gate, QUESTIONNAIRE_WORDS, ans,
+                   require=lambda n: _words_in(n, QUESTIONNAIRE_WORDS)):
+        pairs = qa_pairs(d.text or "")
+        if not pairs:
+            continue
+        customer, basis, evidence = customer_of(d)
+        outside = [d.sender] + d.recipients if d.sender else d.recipients
+        supplier = next((x for x in (suppliers.of(o) for o in outside
+                                     if not suppliers.internal_address(o)) if x), None)
+        if customer is None or supplier is not None:
+            reason = "supplier_questionnaire" if supplier else "party_unknown"
+            ans.counts[reason] += len(pairs)
+            continue
+        for q, a, cell in pairs:
+            # shared only when the question is a declared company fact AND the answer
+            # passes every specific check; everything else stays with its customer
+            specific = fact_category(q) is None or _specific(a, customer_of, customer)
+            out.append((d, q, a, cell, customer, basis, evidence, specific))
+    return out
+
+
 def view_answer_bank(conn, gate, ans, args, as_of) -> None:
     """Past questionnaire answers as a cited draft (module doc). Each answer is marked with
     whose questionnaire it came from (``party``: a customer's, a supplier's, or unknown) and
@@ -1129,36 +1274,19 @@ def view_answer_bank(conn, gate, ans, args, as_of) -> None:
         ans.withheld["withheld_not_readable"] += 1
         return
     want = _tokens(question) if isinstance(question, str) else set()
-    customer_of = CustomerOf(conn, gate, ans)
-    suppliers = dt.Parties(conn, "Supplier", "Supplier.same_record_as",
-                           getattr(gate.guard, "internal", ()))
     entries = []
-    for d in _docs(conn, gate, QUESTIONNAIRE_WORDS, ans,
-                   require=lambda n: _words_in(n, QUESTIONNAIRE_WORDS)):
-        pairs = qa_pairs(d.text or "")
-        if not pairs:
+    for d, q, a, cell, customer, basis, evidence, specific in MEMO.step(
+            ans.reader, "answer_pairs", ans, lambda scratch: _answer_pairs(conn, gate, scratch),
+            conn):
+        if specific and customer not in target_members:
+            ans.counts["specific_to_another_customer" if target_members
+                       else "specific_needs_customer"] += 1
             continue
-        customer, basis, evidence = customer_of(d)
-        outside = [d.sender] + d.recipients if d.sender else d.recipients
-        supplier = next((x for x in (suppliers.of(o) for o in outside
-                                     if not suppliers.internal_address(o)) if x), None)
-        if customer is None or supplier is not None:
-            reason = "supplier_questionnaire" if supplier else "party_unknown"
-            ans.counts[reason] += len(pairs)
+        score = len(want & _tokens(q)) / len(want) if want else 0.0
+        if want and score == 0:
             continue
-        for q, a, cell in pairs:
-            # shared only when the question is a declared company fact AND the answer
-            # passes every specific check; everything else stays with its customer
-            specific = fact_category(q) is None or _specific(a, customer_of, customer)
-            if specific and customer not in target_members:
-                ans.counts["specific_to_another_customer" if target_members
-                           else "specific_needs_customer"] += 1
-                continue
-            score = len(want & _tokens(q)) / len(want) if want else 0.0
-            if want and score == 0:
-                continue
-            entries.append((score, d.day or date.min, d, q, a, cell, customer, basis,
-                            evidence, specific))
+        entries.append((score, d.day or date.min, d, q, a, cell, customer, basis,
+                        evidence, specific))
     ans.counts["answers"] = len(entries)
     entries.sort(key=lambda e: (-e[0], -e[1].toordinal(), e[2].object_id))
     for score, day, d, q, a, cell, customer, basis, evidence, specific in entries:
@@ -1290,6 +1418,11 @@ def view_supplier_issues(conn, gate, ans, args, as_of) -> None:
     trend: dict[str, Counter] = defaultdict(Counter)
     reported: dict[str, Counter] = defaultdict(Counter)
     subject = args.get("subject")
+    # a supplier's or an item's page holds the issues of every same-record twin of it
+    kind = str(subject).split(":", 1)[0] if subject else ""
+    twins = ("Supplier.same_record_as" if kind == "Supplier" else
+             ITEM_TWINS if kind in ITEM_TYPES else None)
+    wanted = (dt.cluster(conn, subject, twins) | {subject}) if subject else set()
     for oid in seen:
         otype, matched = found[oid]
         v = vals.get(oid) or {}
@@ -1334,8 +1467,7 @@ def view_supplier_issues(conn, gate, ans, args, as_of) -> None:
         month = f"{when.year:04d}-{when.month:02d}" if when else "undated"
         for s in suppliers:
             trend[s][month] += 1
-        if subject and subject not in suppliers and subject not in items \
-                and subject not in lots and subject != reporter:
+        if subject and not wanted & (suppliers | items | lots | {reporter}):
             continue
         if reporter:
             reported[reporter][month] += 1
@@ -1373,10 +1505,16 @@ def view_uat_feedback(conn, gate, ans, args, as_of) -> None:
     # served store), never through the value word index: on Postgres the word rows do not
     # join value_cells by rowid, so that query raised and the view answered nothing there
     rows = conn.execute(
-        "SELECT object_id FROM object_values WHERE superseded_at IS NULL AND "
+        "SELECT object_id, value FROM object_values WHERE superseded_at IS NULL AND "
         "property = 'web_url' AND object_id LIKE 'SharePointListItem:%' AND "
         "value LIKE '%/Lists/%'").fetchall()
-    ids = sorted({r[0] for r in rows})
+    # only items on a UAT list get their fields read and their gate decided (SP-01, 11-15:
+    # 311 of the served 10,549 list items; reading all of them took 3.5 s a page); the loop
+    # below still decides each by its own first address, so this only drops work
+    def on_uat_list(url: Any) -> bool:
+        m = re.search(r"/Lists/([^/]+)/", str(url or ""))
+        return bool(m) and _words_in(m.group(1).replace("%20", " "), UAT_WORDS)
+    ids = sorted({r[0] for r in rows if on_uat_list(r[1])})
     vals = dt.values(conn, ids, ("web_url", "fields", "last_modified_date_time",
                                  "sharepoint_ids_list_id"))
     gate.load(ids)
@@ -1556,6 +1694,224 @@ def view_item_on_hand_sheets(conn, gate, ans, args, as_of) -> None:
                  "not_added_to_records_stock": True}, [f["object_id"], subject])
 
 
+def _decimal(raw: Any) -> Decimal | None:
+    """A stated number as an exact Decimal (never a float); None for none or text."""
+    if raw is None or isinstance(raw, bool):
+        return None
+    try:
+        value = Decimal(str(raw).replace(",", "").replace("$", "").strip())
+    except (InvalidOperation, ValueError):
+        return None
+    return value if value.is_finite() else None
+
+
+def _price_line(conn, gate, line: str, po: str, vals, po_vals) -> dict[str, Any] | None:
+    """One PO line's price fact (price, quantity, unit, currency, order day, markings)."""
+    rows = vals.get(line) or {}
+    price, marks = None, set()
+    for prop in PO_PRICE_PROPS:
+        for row in rows.get(prop) or ():
+            got = _decimal(row["value"])
+            if got is not None:
+                price, read = got, dt._marks(row["markings"])
+                if read is None:
+                    return None
+                marks |= read
+                break
+        if price is not None:
+            break
+    head = po_vals.get(po) or {}
+    for row in head.get("currency") or ():
+        read = dt._marks(row["markings"])
+        if read is None:
+            return None
+        marks |= read
+    return {"line": line, "po": po, "price": price,
+            "quantity": _decimal(dt.first(rows, "ordered_quantity")),
+            "received": _decimal(dt.first(rows, "received_quantity")),
+            "uom": (str(dt.first(rows, "uom") or "").strip().lower() or None),
+            "currency": (str(dt.first(head, "currency") or "").strip().upper() or None),
+            "day": dt.day_of(dt.first(head, "order_date")),
+            "po_number": dt.first(head, "po_number", "fm_po_number", "sage_po_number"),
+            "markings": sorted(marks)}
+
+
+def view_item_po_prices(conn, gate, ans, args, as_of) -> None:
+    """Per item: what its purchase orders paid (``item_po_prices``, module doc)."""
+    items = args.get("items")
+    if items is None and isinstance(args.get("subject"), str):
+        items = [{"item": args["subject"]}]
+    if not isinstance(items, list) or not items:
+        ans.counts["items_required"] += 1
+        return
+    currency = args.get("currency")
+    resolve = dt.Resolver(conn)
+    for i, entry in enumerate(items):
+        if i >= MAX_PRICE_ITEMS:
+            ans.counts["items_not_read"] += len(items) - i
+            ans.complete = False
+            break
+        code = entry.get("code") if isinstance(entry, Mapping) else None
+        stated = _decimal(entry.get("cost")) if isinstance(entry, Mapping) else None
+        if isinstance(entry, Mapping) and entry.get("item"):
+            subject = entry["item"]
+            if not isinstance(subject, str) or not subject.startswith(
+                    tuple(t + ":" for t in ITEM_TYPES)):
+                ans.counts["item_not_an_item"] += 1
+                continue
+            members = sorted(dt.cluster(conn, subject, ITEM_TWINS))
+        else:
+            members = resolve.group(code, ITEM_TYPES, ITEM_TWINS) \
+                if isinstance(code, str) else []
+        gate.load(members)
+        visible = [m for m in members if gate.visible(m)]
+        if not visible:
+            # a code naming no item and one naming an item this reader may not read read
+            # the same (no oracle)
+            ans.counts["code_not_found"] += 1
+            if isinstance(code, str):
+                ans.extra.setdefault("codes_not_found", []).append(code[:60])
+            continue
+        if len({dt.root(conn, m, ITEM_TWINS) for m in visible}) > 1:
+            # the code is several readable items' (no settled link makes them one): never
+            # one's prices for the other's
+            ans.counts["code_ambiguous"] += 1
+            ans.extra.setdefault("codes_ambiguous", []).append(
+                (code if isinstance(code, str) else str(entry.get("item")))[:60])
+            continue
+        item = visible[0]
+        same = sorted(dt.cluster(conn, item, ITEM_TWINS))   # this item's own records only
+        lines = sorted({ln for m in same for ln in dt.links_to(conn, [m], PO_LINE_ITEM)
+                        .get(m, [])})
+        heads = dt.links_from(conn, lines, PO_LINE_OF)
+        gate.load([*lines, *(h for hs in heads.values() for h in hs)])
+        orphan = [ln for ln in lines if len(heads.get(ln) or ()) != 1 and gate.visible(ln)]
+        if orphan:
+            ans.counts["po_line_without_one_order"] += len(orphan)
+        seen = [ln for ln in lines if ln not in orphan and gate.visible(ln)
+                and len(heads.get(ln) or ()) == 1 and gate.visible(heads[ln][0])]
+        hidden = len(lines) - len(seen) - len(orphan)
+        if hidden:
+            ans.withheld["po_line_not_readable"] += hidden
+        vals = dt.values(conn, seen, (*PO_PRICE_PROPS, "ordered_quantity",
+                                      "received_quantity", "uom"))
+        pos = sorted({heads[ln][0] for ln in seen})
+        po_vals = dt.values(conn, pos, ("currency", "order_date", "po_number",
+                                        "fm_po_number", "sage_po_number"))
+        # one purchase order's copies in several systems are one order: the lines of its
+        # least-id copy count, the copies' lines never added again
+        facts, by_root, copies, unreadable = [], {}, 0, 0
+        for ln in seen:
+            po = heads[ln][0]
+            by_root.setdefault(dt.root(conn, po, PO_TWINS), {}).setdefault(po, []).append(ln)
+        for root_po, members_po in sorted(by_root.items()):
+            keep = min(members_po)
+            copies += sum(len(v) for k, v in members_po.items() if k != keep)
+            for ln in members_po[keep]:
+                fact = _price_line(conn, gate, ln, keep, vals, po_vals)
+                if fact is None:   # its markings could not be read: never shown
+                    ans.withheld["po_line_markings_unreadable"] += 1
+                    unreadable += 1
+                elif not frozenset(fact["markings"]) <= gate.held:
+                    # real builds mark the price VALUES (purchasing_prices on unit_price),
+                    # not the line: a line whose price this reader may not read is a hidden
+                    # line, no price, average or verdict from it (no oracle)
+                    ans.withheld["po_line_price_not_readable"] += 1
+                    hidden += 1
+                else:
+                    facts.append(fact)
+        if copies:
+            ans.counts["po_copy_lines_not_added"] += copies
+        priced = [f for f in facts if f["price"] is not None and f["price"] > 0]
+        zero = [f for f in facts if f["price"] is not None and f["price"] == 0]
+        # the last price: the priced lines of the newest order day; two different prices
+        # that day name no last price (never one picked)
+        newest = max((f["day"] or date.min for f in priced), default=None)
+        that_day = [f for f in priced if (f["day"] or date.min) == newest]
+        last = that_day[0] if len({(f["price"], f["currency"], f["uom"])
+                                   for f in that_day}) == 1 else None
+        two_on_one_day = bool(priced and last is None)
+        averages: dict[tuple, list[Decimal]] = {}
+        for f in priced:
+            if f["quantity"] is None or f["quantity"] <= 0:
+                continue
+            key = (f["currency"], f["uom"])
+            total = averages.setdefault(key, [Decimal(0), Decimal(0), Decimal(0)])
+            total[0] += f["price"] * f["quantity"]
+            total[1] += f["quantity"]
+            total[2] += 1
+        average = [{"currency": cur, "uom": uom, "lines": int(n),
+                    "quantity": format(q.normalize(), "f"),
+                    "price": format((amount / q).quantize(Decimal("0.0001")), "f")}
+                   for (cur, uom), (amount, q, n) in sorted(
+                       averages.items(), key=lambda kv: (str(kv[0][0]), str(kv[0][1])))]
+        verdict = _cost_verdict(stated, currency, last, average, priced)
+        if hidden or unreadable:
+            # a PO line this reader may not read (or whose markings could not be read)
+            # could be the last price, or the purchase a $0 cost lacks: never judged
+            verdict = "lines_withheld"
+        elif orphan and verdict in ("zero_never_bought", "never_bought"):
+            verdict = "lines_unlinked"   # a line with no one order may be the purchase
+        cited = [item] + ([last["line"], last["po"]] if last else [])
+        # every stated price read (a $0 line's too: its existence is a price fact)
+        marks = sorted({m for f in facts if f["price"] is not None for m in f["markings"]})
+        row = {"kind": "item_prices", "item": item, "code": str(code)[:60] if code else None,
+               "po_lines": len(facts), "priced_lines": len(priced), "zero_price_lines": len(zero),
+               "received_lines": sum(1 for f in priced if f["received"] and f["received"] > 0),
+               "last": {"price": format(last["price"], "f"), "currency": last["currency"],
+                        "uom": last["uom"], "po": last["po"], "po_number": last["po_number"],
+                        "line": last["line"],
+                        "dated": last["day"].isoformat() if last["day"] else None}
+               if last else None,
+               "average": average[:10], "verdict": verdict, "lines_withheld": hidden,
+               "lines_unlinked": len(orphan),
+               "stated_cost": format(stated, "f") if stated is not None else None}
+        if ans.add(row, cited, marks):
+            # counted only for a row shown: a count of a withheld row's verdict would tell
+            # what its hidden prices are
+            ans.counts["verdict_" + verdict] += 1
+            if two_on_one_day:
+                ans.counts["last_price_two_on_one_day"] += 1
+
+
+def _cost_verdict(stated: Decimal | None, currency: Any, last, average, priced) -> str:
+    """A stated cost against what the item's POs paid: ``zero_but_bought`` (stated 0, a PO
+    paid more than 0), ``zero_never_bought`` (stated 0 and no priced PO line: as a
+    customer-supplied item reads), ``matches_last`` / ``matches_average``, ``differs``
+    (past ``COST_TOLERANCE`` of both), or why no comparison was made (``no_cost_stated``,
+    ``never_bought``, ``currency_not_stated``, ``currency_differs``, ``units_differ``)."""
+    if stated is None:
+        return "no_cost_stated" if priced else "never_bought"
+    if stated == 0:
+        return "zero_but_bought" if priced else "zero_never_bought"
+    if not priced:
+        return "never_bought"
+    if not isinstance(currency, str) or not currency:
+        return "currency_not_stated"
+    want = currency.upper()
+
+    def close(price: Decimal) -> bool:
+        return abs(stated - price) <= COST_TOLERANCE * price
+
+    comparable = False
+    if last is not None and last["currency"] == want and (
+            last["uom"] is None or last["uom"] in EACH_UNITS):
+        comparable = True
+        if close(last["price"]):
+            return "matches_last"
+    for avg in average:
+        if avg["currency"] == want and (avg["uom"] is None or avg["uom"] in EACH_UNITS):
+            comparable = True
+            if close(Decimal(avg["price"])):
+                return "matches_average"
+    if comparable:
+        return "differs"
+    if (last is None or last["currency"] != want) and all(
+            a["currency"] != want for a in average):
+        return "currency_differs"
+    return "units_differ"
+
+
 # --------------------------------------------------------------------------- serving
 
 VIEW_FUNCS: dict[str, Callable] = {
@@ -1563,15 +1919,18 @@ VIEW_FUNCS: dict[str, Callable] = {
     "priority_fill": view_priority_fill, "price_sheets": view_price_sheets,
     "compliance_pack": view_compliance_pack, "answer_bank": view_answer_bank,
     "supplier_issues": view_supplier_issues, "uat_feedback": view_uat_feedback,
-    "formula_lines": view_formula_lines, "item_on_hand_sheets": view_item_on_hand_sheets}
+    "formula_lines": view_formula_lines, "item_on_hand_sheets": view_item_on_hand_sheets,
+    "item_po_prices": view_item_po_prices}
 
 
 def answer(conn, *, view: str, may_read: Callable[[str], bool], held: frozenset[str],
            guard: Any, as_of: date, args: Mapping[str, Any] | None = None,
-           readings: Any = None) -> dict[str, Any]:
-    """One view for one reader (module doc). ``readings``: the sheet readings file."""
+           readings: Any = None, reader: str | None = None) -> dict[str, Any]:
+    """One view for one reader (module doc). ``readings``: the sheet readings file;
+    ``reader``: the reader's memo key (``reader_key``; None: nothing kept)."""
     gate = dt.Gate(conn, may_read=may_read, held=held, guard=guard)
     ans = Answer(gate, view)
+    ans.reader = reader
     ans.readings = readings
     ans.extra = {}
     if view not in VIEW_FUNCS:
@@ -1581,7 +1940,20 @@ def answer(conn, *, view: str, may_read: Callable[[str], bool], held: frozenset[
         out["complete"] = False
         return out
     started = time.monotonic()
-    VIEW_FUNCS[view](conn, gate, ans, dict(args or {}), as_of)
+    if reader and view in KEPT_VIEWS:
+        # a record page reads these lists one after another: their steps start together
+        steps = [("forecast_lines", lambda scratch: _forecast_lines(conn, gate, scratch)),
+                 ("answer_pairs", lambda scratch: _answer_pairs(conn, gate, scratch))]
+        if FINANCE in gate.held:
+            steps.append(("sheet_prices", lambda scratch: _sheet_prices(conn, gate, scratch)))
+        MEMO.prefetch(reader, conn, gate, view, steps)
+    try:
+        VIEW_FUNCS[view](conn, gate, ans, dict(args or {}), as_of)
+    except StillReading:
+        # read in the background for the next request; this one says so, never "none"
+        ans.rows, ans.complete = [], False
+        ans.counts["still_reading"] = 1
+        ans.extra["note"] = STILL_READING_NOTE
     out = ans.done(**ans.extra)
     out["draft"] = view == "answer_bank"
     out["seconds"] = round(time.monotonic() - started, 1)
@@ -1616,6 +1988,27 @@ class BusinessDocumentsTool:
                 return _error("invalid_input", f"{key} must be a string")
             if v is not None:
                 args[key] = v
+        items = arguments.get("items")
+        if items is not None:
+            # item_po_prices: the items to price, each a code (with the cost a sheet
+            # states for it) or an item record; anything else is refused, never guessed
+            if view != "item_po_prices" or not isinstance(items, list) or not items \
+                    or len(items) > MAX_PRICE_ITEMS or not all(
+                        isinstance(e, dict) and set(e) <= {"code", "cost", "item"}
+                        and (isinstance(e.get("code"), str) and 0 < len(e["code"]) <= 60
+                             or isinstance(e.get("item"), str) and 0 < len(e["item"]) <= 700)
+                        and (e.get("cost") is None or (not isinstance(e["cost"], bool)
+                             and isinstance(e["cost"], (str, int))
+                             and _decimal(e["cost"]) is not None))
+                        for e in items):
+                return _error("invalid_input", "items must be 1-%d objects {code (or item), "
+                              "cost as decimal text}" % MAX_PRICE_ITEMS)
+            args["items"] = items
+        currency = arguments.get("currency")
+        if currency is not None:
+            if not isinstance(currency, str) or not re.fullmatch(r"[A-Za-z]{3}", currency):
+                return _error("invalid_input", "currency must be a 3-letter code")
+            args["currency"] = currency.upper()
         offset = arguments.get("offset")
         if offset is not None:
             if isinstance(offset, bool) or not isinstance(offset, int) or offset < 0:
@@ -1627,16 +2020,18 @@ class BusinessDocumentsTool:
         except (TypeError, ValueError):
             return _error("invalid_input", "as_of must be a date (YYYY-MM-DD)")
         policy = self.base.policy
+        held = frozenset(policy.held_markings(actor))
+        guard = self.guard()
         return _checked(answer(self.base.store.conn, view=view,
                                may_read=lambda key: policy.may_read(actor, key),
-                               held=frozenset(policy.held_markings(actor)),
-                               guard=self.guard(), as_of=day, args=args,
-                               readings=_readings_file(self.base)))
+                               held=held, guard=guard, as_of=day, args=args,
+                               readings=_readings_file(self.base),
+                               reader=reader_key(actor, held, guard)))
 
 
 def _checked(result: dict[str, Any]) -> dict[str, Any]:
     from ontology.json_contract import validate
-    from .ontology_tools import load_contracts
+    from .ontology_tools_policy import load_contracts
 
     contracts = load_contracts()
     schema = contracts["$defs"]["business_documents_answer" if "error" not in result

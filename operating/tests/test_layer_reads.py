@@ -118,13 +118,14 @@ if __name__ == "__main__":
 class SchemaMemoByValueTest(__import__("unittest").TestCase):
     def test_two_unpickled_copies_of_one_schema_share_the_memo(self):
         from operating import ontology_tools as t
+        from operating import ontology_tools_identity
         built = []
         class S:
             def __init__(self, d): self.digest = d
         d = "sha256:" + "ab" * 32
         a, b = S("".join(list(d))), S("".join(list(d)))
         self.assertIsNot(a.digest, b.digest)
-        if not t._CONTENT_DIGEST.match(a.digest):
+        if not ontology_tools_identity._CONTENT_DIGEST.match(a.digest):
             self.skipTest("digest shape differs")
         t._schema_memo(a, "k-test", lambda: built.append(1) or 1)
         t._schema_memo(b, "k-test", lambda: built.append(1) or 1)

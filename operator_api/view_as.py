@@ -32,6 +32,7 @@ from datetime import datetime, timezone
 import hashlib
 import json
 import os
+from operating.file_modes import keep_shared
 from pathlib import Path
 import threading
 import time
@@ -95,6 +96,7 @@ class Audit:
                 return
             self.path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
             fd = os.open(self.path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+            keep_shared(self.path, 0o600)
             with os.fdopen(fd, "a", encoding="utf-8") as handle:
                 handle.write(json.dumps(row, sort_keys=True) + "\n")
 

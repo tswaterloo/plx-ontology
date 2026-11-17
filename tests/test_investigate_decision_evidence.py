@@ -33,7 +33,9 @@ from ontology.types import Actor
 from operating import decision_evidence as de
 from operating.case_runtime import CaseRuntime, LiveReaders
 from operating import ontology_tools as ot
+from operating import ontology_tools_results
 from operating import ontology_tools_investigate as oi
+from operating import ontology_tools_investigate_host
 from operating import ontology_tools_traverse as tt
 from operating.ontology_tools_traverse import with_leads
 
@@ -228,10 +230,10 @@ class DecisionEvidenceTests(unittest.TestCase):
                                 grammar=None, contracts=CONTRACTS, clock=lambda: NOW,
                                 reviews=self.reviews if reviews else None)
         table: dict = {}
-        ot.register(table, base)
+        ontology_tools_results.register(table, base)
         traverse = tt.TraverseTools(base)
         tt.register(table, traverse)
-        oi.register(table, oi.InvestigateTools(table, rows=self.rows, scope=oi.read_scope(base),
+        oi.register(table, oi.InvestigateTools(table, rows=self.rows, scope=ontology_tools_investigate_host.read_scope(base),
                                                clock=lambda: NOW,
                                                reviews=traverse.review if reviews else None))
         return table

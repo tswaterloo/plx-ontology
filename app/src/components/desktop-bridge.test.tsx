@@ -7,10 +7,11 @@ const push = vi.fn();
 vi.mock("next/navigation", () => ({ useRouter: () => ({ push }) }));
 const open = vi.fn();
 vi.mock("./feedback-dialog", () => ({ useFeedbackDialog: () => ({ open }) }));
-const api = vi.hoisted(() => ({ items: [] as unknown[], alarms: [] as unknown[] }));
+const api = vi.hoisted(() => ({ items: [] as unknown[], alarms: [] as unknown[], memory: [] as unknown[] }));
 vi.mock("@/lib/api", () => ({
   getAutopilot: () => Promise.resolve({ items: api.items }),
   getOpsAlarms: () => Promise.resolve({ open: api.alarms }),
+  getMemory: () => Promise.resolve({ available: true, items: api.memory }),
 }));
 
 import { DesktopBridge } from "./desktop-bridge";
@@ -27,6 +28,8 @@ function fakeDesktop() {
   return { notify, send: (m: unknown) => menu?.(m) };
 }
 afterEach(() => {
+  api.memory = [];
+  window.localStorage.clear();
   delete (window as unknown as { plxDesktop?: unknown }).plxDesktop;
   vi.useRealTimers();
   push.mockReset();
@@ -82,5 +85,18 @@ describe("DesktopBridge", () => {
     await act(async () => { await vi.advanceTimersByTimeAsync(10); });
     await act(async () => { await vi.advanceTimersByTimeAsync(120_000); });
     expect(d.notify).not.toHaveBeenCalled();
+  });
+
+  it("reminds of the reader's own overdue commitment when the app opens, once", async () => {
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval", "setTimeout", "clearTimeout"] });
+    auth.state = signedIn();
+    api.items = [];
+    api.memory = [{ id: 4, kind: "commitment", source: "ask", at: "2026-11-01T15:00:00Z", text: "Remind me to call Northwind", records: [], importance: 0.85, confidence: 0.8, due: "2026-11-02" }];
+    const d = fakeDesktop();
+    render(<DesktopBridge />);
+    await act(async () => { await vi.advanceTimersByTimeAsync(10); });
+    expect(d.notify.mock.calls.map((c) => c[0])).toEqual([{ title: "Overdue: you said you would", body: "Call Northwind", href: "/" }]);
+    await act(async () => { await vi.advanceTimersByTimeAsync(11 * 60_000); });
+    expect(d.notify).toHaveBeenCalledTimes(1);
   });
 });

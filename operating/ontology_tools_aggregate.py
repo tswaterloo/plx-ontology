@@ -149,29 +149,14 @@ from ontology.types import Actor
 from ontology.units import is_unit_price, same_denominator, unit_token, value_basis
 from operating.absence_claims import ABSENT, traversal_problem
 from ontology.measure import exact_sum
-from operating.claim_checks import _plain, to_decimal
-from operating.ontology_tools import (  # noqa: F401 (origin_rank: re-exported)
-    origin_rank,
-    LIVE_LOOKUP_HINT,
-    OntologyTools,
-    REMOVAL_REASONS,
-    property_hint,
-    ToolError,
-    _HANDLE,
-    _IDENTITY_TIERS,
-    _compare_key,
-    _envelope,
-    _envelope_bytes,
-    _error,
-    _gap,
-    _inline_defs,
-    _markings,
-    _source_of,
-    _to_ms,
-    _value_out,
-    unit_out,
-    units_text,
-)
+from operating.claim_checks_parse import _plain, to_decimal
+from operating.ontology_tools_aggregate_parties import AggregateParties
+from operating.ontology_tools import OntologyTools, property_hint, _envelope, _value_out
+from operating.ontology_tools_identity import (origin_rank, LIVE_LOOKUP_HINT, REMOVAL_REASONS,
+                                               ToolError, _compare_key, _error, _gap, _source_of)
+from operating.ontology_tools_policy import (_HANDLE, _IDENTITY_TIERS, _envelope_bytes, _markings,
+                                             _to_ms)
+from operating.ontology_tools_results import _inline_defs, unit_out, units_text
 from operating.ontology_tools_traverse import (
     CAPTURED_AFTER,
     SET_INCOMPLETE,
@@ -356,7 +341,7 @@ class _Gaps:
 
 # --------------------------------------------------------------------------- tools
 
-class AggregateTools:
+class AggregateTools(AggregateParties):
     """``plx.aggregate`` and ``plx.compare`` over one projection store.
 
     ``base``: the host's L8 ``OntologyTools`` (store, policy, item gate, schema,
@@ -542,7 +527,7 @@ class AggregateTools:
                                                    [f for f in filters if f not in links])
             if links:
                 linked, hidden = base._linked_ids(found, object_type, links)
-                from operating.ontology_tools import _target_marks
+                from operating.ontology_tools_results import _target_marks
                 marked = _target_marks(hidden)   # the targets' set provenance (QUERY-005)
                 hidden = set(hidden) - marked
                 unsure = set(unsure) | marked
@@ -554,7 +539,7 @@ class AggregateTools:
             gaps += base.unsourced_filter_gaps(object_type, filters, members=ids)
             kept += [oid for oid in ids if oid in passing]
         if undecided:
-            from operating.ontology_tools import _filter_gaps
+            from operating.ontology_tools_results import _filter_gaps
             gaps.extend(_filter_gaps(next(iter(by_type)) if len(by_type) == 1
                                      else None, undecided))
         return {"ids": kept, "gaps": gaps}
@@ -895,7 +880,7 @@ class AggregateTools:
 
     def _base_scope(self, scope: Any) -> Any:
         """This call's read scope as the base tools read it (the same grants)."""
-        from operating.ontology_tools import _Scope as _BaseScope
+        from operating.ontology_tools_policy import _Scope as _BaseScope
         return _BaseScope(scope.actor, scope.audience_keys, scope.held, scope.marking_sets,
                           scope.sources, scope.at)
 
@@ -1267,7 +1252,7 @@ class AggregateTools:
                 raise ToolError("invalid_input", "a filter on a link keeps an object_type's "
                                 "records, never a set's", "plx.query: traverse the link, "
                                 "then where")
-            from operating.ontology_tools import _withheld_filter_gap
+            from operating.ontology_tools_results import _withheld_filter_gap
             checked = base._checked_filters(object_type, filters)
             passing, undecided = base._filter_objects(found_scope, ids, checked)
             kept |= set(passing)
@@ -1312,7 +1297,7 @@ class AggregateTools:
             if not truncated:
                 break
             from operating import call_limits
-            from operating.ontology_tools import SCAN_MARGIN_SECONDS
+            from operating.ontology_tools_policy import SCAN_MARGIN_SECONDS
             left = call_limits.seconds_left()
             if left is not None and left < SCAN_MARGIN_SECONDS:
                 gaps.append(_gap("unknown", "scan_cap", subject,
@@ -1327,7 +1312,7 @@ class AggregateTools:
                 break
             start = position
         if undecided:
-            from operating.ontology_tools import _filter_gaps
+            from operating.ontology_tools_results import _filter_gaps
             gaps.extend(_filter_gaps(object_type, undecided))
         system = arguments.get("system")
         gaps += base.unsourced_filter_gaps(
@@ -1696,6 +1681,16 @@ class AggregateTools:
         # A group mixing them shows no value and says why; the others stand (11-06 q42:
         # unit prices by item, one item bought in CAD and USD, refused every item). Only a
         # single group, or every group mixing, refuses the answer.
+        parties = self._parties(scope, dim_types, group_by, groups.values()) \
+            if group_by else {}
+        if prop is not None and op in ("sum", "min", "max") and parties:
+            # amounts whose documents state no currency read in the counterparty's
+            # (its Business Central record, now), said so as currency_basis
+            for group in groups.values():
+                filled = self._counterparty_rows(group["rows"],
+                                                 self._party_currency(group, parties))
+                if filled is not None:
+                    group["rows"], group["currency_basis"] = filled, "counterparty_record"
         if prop is not None and op in ("sum", "min", "max", "count_distinct"):
             mixed = {key: refused for key, group in groups.items()
                      if (refused := _mixing(group["rows"], op, self._basis, self._rate))
@@ -1718,6 +1713,7 @@ class AggregateTools:
                     if count > 1:
                         groups[key]["twins"] += count
         out_groups: list[dict[str, Any]] = []
+        systems: dict[int, set[str]] = {}
         for key in sorted(groups, key=_sort_key):
             group = groups[key]
             # Without group_by the one group surely lacks every left-out member, so it
@@ -1742,6 +1738,8 @@ class AggregateTools:
                     twins = self._twins_cited(scope, group["members"], versions, allowed)
                     if twins:
                         out["twins_cited"] = twins
+            if parties:   # the systems its members come from (``_party_names``)
+                systems[id(out)] = {record_system(m) for m in group["members"]} - {None}
             out_groups.append(out)
         if not groups and not group_by:
             # An empty readable set: a count is 0, any other measure has no value. Members
@@ -1772,6 +1770,8 @@ class AggregateTools:
             if truncated else None}
         if not complete:
             completeness["reason"] = "partial_inputs" if partial else "group_page"
+        if parties:
+            self._party_names(shown_groups, parties, limit, systems)
         result: dict[str, Any] = {"groups": shown_groups, "partial": partial,
                                   "gaps": gaps.out(), "completeness": completeness,
                                   "meta": meta}
@@ -1907,6 +1907,7 @@ class AggregateTools:
                         source_text=_envelope(first["unit"], first["l1_handle"], None, 600))
             if first["value_type"] == "money":
                 out["currency"] = first["currency"]
+                out["currency_basis"] = group.get("currency_basis", "document")
                 if self._basis(first) == "unknown":
                     # One source column of unknown basis combines (it is one basis,
                     # whatever it is) but is never shown as a net or gross total.

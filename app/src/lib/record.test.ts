@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { missingText } from "@/components/answer-parts";
-import { factMap, factValue, groupLinked, groupRelated, groupTimeline, isBlocked, linkSections, recordHead } from "./record";
+import { factMap, factValue, groupLinked, groupRelated, groupTimeline, isBlocked, linkSections, moneyText, recordHead } from "./record";
 import type { LinkedItem, LinkGroup, LinkRef, ObjectPage, Source } from "./types";
 
 const bc = (field: string): Source => ({ system: "BC", handle: "bc://production/c/purchaseOrders/1@e", label: "BC production", fields: { [field]: "x" } });
@@ -173,6 +173,15 @@ describe("factValue", () => {
     expect(factValue("25,113.600 USD")).toBe("$25,113.60 USD");
     expect(factValue("Foo 28, 2026")).toBe("Foo 28, 2026");
   });
+
+  it("decodes Business Central escapes the way a field value does, and a blank enum reads empty", () => {
+    expect(factValue("Sales_x0020_Shipment")).toBe("Sales Shipment");
+    expect(factValue("Purchase_x0020_Receipt")).toBe("Purchase Receipt");
+    expect(factValue("_x0020_")).toBe("");
+    expect(factValue("_x0032_026-06-24")).toBe("24 Jun 2026");
+    expect(factValue("Sales_x00zz_X")).toBe("Sales_x00zz_X");
+    expect(factValue("P-008864")).toBe("P-008864");
+  });
 });
 
 describe("messages and documents", () => {
@@ -284,5 +293,15 @@ describe("links by link kind", () => {
     const obj = { object_id: "SalesOrder:bc.sales_orders:so1", type: "SalesOrder", label: "SO-1", summary: "", status: { state: "read", text: "", sources: [] }, facts: [{ text: "External document number: PO-55", sources: [src], check: "read_from_record" }] } as unknown as ObjectPage;
     const fact = recordHead(obj).keyFacts.find((k) => k.value === "PO-55");
     expect(fact?.source).toEqual(src);
+  });
+});
+
+describe("an amount whose currency the document does not state", () => {
+  it("keeps the server's wording and never adds a currency", () => {
+    expect(moneyText("1,234.50 $ (currency not stated)", "CAD")).toBe("1,234.50 $ (currency not stated)");
+    expect(moneyText("1,234.50 USD (from vendor record)", "CAD")).toBe("1,234.50 USD (from vendor record)");
+  });
+  it("leaves a bare amount bare", () => {
+    expect(moneyText("1993.33")).toBe("1993.33");
   });
 });

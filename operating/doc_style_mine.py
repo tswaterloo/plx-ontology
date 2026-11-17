@@ -127,10 +127,10 @@ def _blob(state: Path, doc: Mapping[str, Any]) -> bytes:
         from integrations.capture_mail import MailCaptureStore
         return MailCaptureStore.open_read_only(state).blob(doc["digest"])
     from integrations import blob_pack
-    from integrations.captured_text import COMPRESSED_SUFFIX, blob_path, inflate
+    from integrations.captured_text import COMPRESSED_SUFFIX, inflate
     root = Path(doc["db"]).parent / "blobs" / "sha256"
     try:
-        return blob_path(root, doc["digest"]).read_bytes()
+        return blob_pack.read(root, doc["digest"])   # as they are, or their .zst
     except FileNotFoundError:
         return inflate(blob_pack.read(root, doc["digest"], COMPRESSED_SUFFIX))
 
@@ -182,6 +182,12 @@ def learn(state: Path, out: Path, *, before: Optional[str] = None, workers: int 
     templates = ds.learn_all((d["author"], d["kind"], member) for d, member in read)
     exemplars = out / "exemplars"
     exemplars.mkdir(parents=True, exist_ok=True, mode=0o700)
+    # The API runs as its own user, in the state directory's group (plx-state): the
+    # templates and exemplars are that group's to read (0640, directories 0750), the
+    # ones learned before this too.
+    gid = Path(state).stat().st_gid
+    for directory in (out, exemplars):
+        ds.share(directory, 0o750, gid)
     by_digest = {d["digest"]: d for d, _m in read}
     for t in templates:
         target = exemplars / t["exemplar"]["digest"]
@@ -189,7 +195,9 @@ def learn(state: Path, out: Path, *, before: Optional[str] = None, workers: int 
             fd = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
             with os.fdopen(fd, "wb") as handle:
                 handle.write(_blob(state, by_digest[t["exemplar"]["digest"]]))
-    ds.save(out / "templates.json", templates, dt.datetime.now(dt.timezone.utc).isoformat())
+        ds.share(target, 0o640, gid)
+    ds.save(out / "templates.json", templates, dt.datetime.now(dt.timezone.utc).isoformat(),
+            gid=gid)
     return {"documents": len(docs), "read": len(read), "templates": len(templates)}
 
 

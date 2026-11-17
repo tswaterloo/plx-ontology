@@ -235,12 +235,14 @@ def _wrap(memo: Any) -> None:
     original = memo.read
 
     def read(key: Any, reader: Callable[[], Any],
-             present: Callable[[], bool] | None = None) -> Any:
+             present: Callable[[], bool] | None = None, scope: Any = None) -> Any:
+        # every argument of ReadingMemo.read passes through (scope: the blob root a hit
+        # must come from, DOC-001)
         budget = current()
         digest = _digest(key)
         if budget is None or digest is None:
-            return original(key, reader, present)
-        return original(key, _bounded(budget, digest, reader), present)
+            return original(key, reader, present, scope=scope)
+        return original(key, _bounded(budget, digest, reader), present, scope=scope)
     memo.read = read
     memo._budget_wrapped = True
 

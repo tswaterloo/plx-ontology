@@ -1,4 +1,4 @@
-import { render, screen, within } from "@testing-library/react";
+import { fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ObjectView } from "./object-view";
 
@@ -40,12 +40,66 @@ describe("a customer order's page", () => {
     expect(within(f).getByText(/PSI-9/).closest("a")?.getAttribute("href")).toContain("SalesInvoice");
     expect(within(f).getByTestId("link-evidence")).toHaveTextContent("Email");
     expect(f).toHaveTextContent("Suggested link"); // the shipment read from a reference
-    expect(f).toHaveTextContent("and 11 more"); // 12 counted, 1 shown; the possible one never counted
-    expect(f).toHaveTextContent("and 2 more possibly related");
+    expect(f).toHaveTextContent("11 other records not listed here"); // 12 counted, 1 shown; the possible one never counted
+    expect(f).toHaveTextContent("2 possibly related records not listed here");
+    expect(f).not.toHaveTextContent(/and \d+ more/);
     const linked = screen.getByTestId("related");
     expect(linked).toHaveTextContent("Weekly ops");
     expect(linked).not.toHaveTextContent("Acme Foods"); // the header names the customer
     // a detail opens the record it is read from
     expect(screen.getByTitle("From BC sales order")).toHaveTextContent("PO-55");
+  });
+  it("opens a long link group in place and says what the page never loaded apart, with no 'and N more' line", async () => {
+    for (const loaded of [1, 10, 60]) {
+      const ships = Array.from({ length: loaded }, (_, n) => ref("Shipment", `s${n}`, `SH-${n}`, { tier: "verified" }));
+      const page = { ...PAGE, links: PAGE.links.map((g) => (g.name === "shipments" ? { ...g, count: loaded + 5, possible: 0, records: ships } : g)) };
+      vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify(page), { status: 200 })));
+      const view = render(<ObjectView type="SalesOrder" id={SO} />);
+      await screen.findByTestId("object-title");
+      const group = screen.getByTestId("link-group-Shipment.ships");
+      const rows = () => within(group).queryAllByText(/^SH-\d+$/).length;
+      const shown = Math.min(loaded, 8);
+      expect(rows()).toBe(shown);
+      expect(group).toHaveTextContent("5 other records not listed here");
+      expect(group).not.toHaveTextContent(/and \d+ more/);
+      if (loaded > 8) {
+        fireEvent.click(within(group).getByRole("button", { name: `Show ${loaded - 8} more` }));
+        expect(rows()).toBe(loaded); // every loaded row once, none lost or doubled
+        expect(group).toHaveTextContent("5 other records not listed here");
+        fireEvent.click(within(group).getByRole("button", { name: "Show fewer" }));
+        expect(rows()).toBe(8);
+      } else {
+        expect(within(group).queryByTestId("show-more")).toBeNull();
+      }
+      view.unmount();
+      vi.unstubAllGlobals();
+    }
+  });
+});
+
+describe("a record's linked messages and documents", () => {
+  it("lists the ones the reader may open by title and only counts the rest", async () => {
+    const page = { ...PAGE, links: [], linked: [{ kind: "email", label: "Order confirmation from Acme", source: mail }], linked_withheld: 2 };
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify(page), { status: 200 })));
+    render(<ObjectView type="SalesOrder" id={SO} />);
+    const linked = await screen.findByTestId("linked");
+    expect(linked).toHaveTextContent("Order confirmation from Acme");
+    expect(within(linked).getByTestId("linked-withheld")).toHaveTextContent("Not listed: 2 linked documents you can't open.");
+  });
+
+  it("still says what is there when the reader may open none of them", async () => {
+    const page = { ...PAGE, links: [], linked: [], linked_withheld: 1 };
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify(page), { status: 200 })));
+    render(<ObjectView type="SalesOrder" id={SO} />);
+    expect(await screen.findByTestId("linked-withheld")).toHaveTextContent("Not listed: 1 linked document you can't open.");
+  });
+
+  it("words a source with no reader set up as not available yet, and a cut count as at least", async () => {
+    const page = { ...PAGE, links: [], linked: [], linked_withheld: 0, linked_unavailable: 3, linked_counted_all: false };
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify(page), { status: 200 })));
+    render(<ObjectView type="SalesOrder" id={SO} />);
+    expect(await screen.findByTestId("linked-unavailable")).toHaveTextContent("Not listed: at least 3 linked documents not available yet.");
+    expect(screen.queryByTestId("linked-withheld")).toBeNull();
+    expect(screen.getByTestId("linked")).not.toHaveTextContent("can't open");
   });
 });

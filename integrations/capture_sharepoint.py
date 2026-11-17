@@ -247,7 +247,7 @@ timeout, a body cut short) is retried once while the budget lasts
 ``unavailable:<detail>``, counted (``contents_unavailable``) and retried by a later run.
 
 Named items first (``named_items``; ``--named-originals``: every item a case original
-under ``<state-dir>/case-originals`` names, ``operating.captured_originals
+under ``<state-dir>/case-originals`` names, ``integrations.case_original_receipts
 .sharepoint_items``). A cold walk of the estate takes days, and a captured original is
 served only through its item's current captured version
 (``operating.captured_originals``), so a run first captures the named items, before any
@@ -391,16 +391,18 @@ from operating import doc_metadata_taxonomy as taxonomy
 
 from . import live_source_grammar as grammar
 from . import people_exclusion
-from .capture_mail import (COMPLETE, DROP_ORIGINALS_ABOVE, FRONTIER, PENDING,
-                           PERSISTENT_STATE_ASK, TERMINAL, CaptureError, MailCaptureStore,
-                           assert_outside_git, budget_cut_block, check_state_dir,
-                           schedule_units, terminal_reason)
+from .capture_mail import (DROP_ORIGINALS_ABOVE, MailCaptureStore, budget_cut_block,
+                           keep_store_modes, private_mode)
+from .capture_mail_scope import CaptureError, assert_outside_git, check_state_dir
+from .capture_mail_standing import (COMPLETE, FRONTIER, PENDING, PERSISTENT_STATE_ASK, TERMINAL,
+                                    schedule_units, terminal_reason)
 from .captured_text import (COMPRESSED_SUFFIX, DROPPED_SUFFIX, OCR_DEFERRED,  # noqa: F401
-                            OCR_FAILED, OCR_NO_TEXT, OCR_UNAVAILABLE, TEXT_EXTRACTED,
+                            OCR_FAILED, OCR_NO_TEXT, OCR_UNAVAILABLE, TEXT_BINARY, TEXT_EXTRACTED,
                             TEXT_OCR, TEXT_READ, TEXT_UNREAD, UNTYPED_OCR_FAILURES, blob_path,
                             capture_text, captured_text, file_type, inflate, member_view,
                             ocr_digest, read_blob, read_dropped, reading_key, readings_of,
                             split_member, write_dropped)
+from .text_formats import terminal_class
 from .capture_store import (SourceKind, register_source_kind, sqlite_bytes,
                             checkpoint, wal_journal)
 from .live_source_guard import MAX_CONTENT_BYTES as MAX_DOWNLOAD_BYTES
@@ -409,23 +411,25 @@ from .live_source_guard import (LiveSourceAudience, NotVisible, SourceNotFound,
                                 unavailable_detail)
 from operating import declared_schema as _schemas
 from operating.declared_schema import capture_sharepoint as _CAPTURE_SHAREPOINT
+from .capture_sharepoint_scope import (
+    CaptureScope, CaptureTarget, _in_root, MAX_CONTENT_BYTES, MAX_DECLARED_CONTENT_BYTES,
+    PERMISSION_REREAD_HOURS, _under)
+from .capture_sharepoint_report import (
+    blocked_scope, BUDGET_CUT_CAUSES, CAPTURE_PRINCIPAL, CHECK_STATE, credit_readback,
+    folder_only_audience, NO_ACCESS_GAPS, registry_site_names, _report_run, _root_reasons, _spread,
+    STATE_NAME, state_name_dir)
 
-SCOPE_SCHEMA = "plx-sharepoint-capture-scope/v1"
+
 STORE_DIR = "sharepoint-capture"
 DB_FILE = "capture.db"
 LINEAGE = "sharepoint"
 SCHEME = "sharepoint"
 REPO_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_SCOPE = REPO_ROOT / "integrations" / "sharepoint_capture_scope.json"
-FULL_WALK_HOURS = 24
-PERMISSION_REREAD_HOURS = 24   # the default bound on a root's skipped permission re-reads
-MAX_CONTENT_BYTES = 20_000_000   # a scope's default content cap: the document extractor's bound
 # The store's default bound (SQLite file plus blobs; ``SharePointCaptureStore``, the CLI's
 # ``--max-store-bytes``): a blob past it ends its root ``store_full``.
 MAX_STORE_BYTES = 50_000_000_000
 STALE_HOURS = 7 * 24   # a root's last full walk older than this reads ``stale`` (CLI)
-# The largest content cap a scope may declare: the guard's one-download bound.
-MAX_DECLARED_CONTENT_BYTES = MAX_DOWNLOAD_BYTES
 LIST_PAGE_SIZE = 200
 LIST_MAX_PAGES = 50
 LIST_MAX_ITEMS = 5000
@@ -438,6 +442,12 @@ MAX_ACL_READS = LIST_MAX_ITEMS
 # is ``resolve_check.index_truncated`` and the check is never ok over it.
 INDEX_LIMIT = 100_000
 REPAIRS_PER_ROOT = 100
+# The text re-read of originals already held (or of a type classified by its name alone)
+# reads no source: it is bounded per root and call by the work only (a read and a stored
+# text), not by the 100 downloads REPAIRS_PER_ROOT allows. At 100 a root a round the
+# 2026-11-10 generation had reached 38 of 2,225 .xml files in four days.
+REREAD_STORED_PER_ROOT = 1000
+REREAD_NAMED_PER_ROOT = 5000
 # A text re-read whose refetch fails for that file alone is tried again after
 # REREAD_BACKOFF_HOURS * 2**(tries - 1) and, after REREAD_MAX_ATTEMPTS tries, recorded as
 # a named gap (``SharePointCaptureStore.reread_gaps``), never retried forever.
@@ -506,7 +516,6 @@ MOVED_OUT = "moved_out_of_scope"
 _UNAVAILABLE = "unavailable:"
 # A site's library listing answered HTTP 423 Locked (``unavailable_detail``).
 LOCKED_DETAILS = frozenset({"http_423", "retried.http_423"})
-_TARGET_ID = re.compile(r"^[a-z0-9][a-z0-9.-]{0,63}$")
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 # Fields of a listed drive-item record kept on a version (graph_read.SharePointReader
 # ._record); the source ACL and resource keys are kept beside it, never in it.
@@ -578,16 +587,6 @@ def _keys(drive_id: str, path: str, is_folder: bool) -> list[str]:
     return keys
 
 
-def _under(path: str, root: str) -> bool:
-    return root == "/" or path == root or path.startswith(root.rstrip("/") + "/")
-
-
-def _in_root(path: str, root: str) -> bool:
-    """Whether a listed path lies under a scope root (SharePoint paths are
-    case-insensitive; the scope may spell the root in another case)."""
-    return _under(path.casefold(), root.casefold())
-
-
 def _page_number(value: Any) -> int | None:
     if isinstance(value, str) and re.fullmatch(r"[1-9][0-9]{0,3}", value):
         return int(value)
@@ -595,202 +594,6 @@ def _page_number(value: Any) -> int | None:
 
 
 # ------------------------------------------------------------------ scope
-
-class CaptureTarget:
-    def __init__(self, entry: Mapping[str, Any]) -> None:
-        allowed = {"id", "drive_id", "site", "folders", "max_depth", "max_folders", "note"}
-        if not isinstance(entry, Mapping) or set(entry) - allowed:
-            raise CaptureError("scope_target_invalid")
-        self.id = entry.get("id")
-        if not isinstance(self.id, str) or _TARGET_ID.fullmatch(self.id) is None:
-            raise CaptureError("scope_target_invalid")
-        drive, site = entry.get("drive_id"), entry.get("site")
-        if (drive is None) == (site is None):
-            raise CaptureError("scope_target_drive_or_site")
-        if drive is not None and not grammar.TYPES["drive_id"].valid(drive):
-            raise CaptureError("scope_drive_invalid")
-        if site is not None and not grammar.TYPES["site_name"].valid(site):
-            raise CaptureError("scope_site_invalid")
-        self.drive_id, self.site = drive, site
-        folders = entry.get("folders", ["/"])
-        if isinstance(folders, (str, bytes)) or not isinstance(folders, Sequence) \
-                or not folders or len(folders) > 50:
-            raise CaptureError("scope_folders_invalid")
-        roots: list[str] = []
-        for folder in folders:
-            if not isinstance(folder, str) or not (
-                    folder == "/" or grammar.TYPES["drive_path"].valid(folder)):
-                raise CaptureError("scope_folders_invalid")
-            if folder in roots:
-                raise CaptureError("scope_folders_invalid")
-            roots.append(folder)
-        if any(a != b and _under(b, a) for a in roots for b in roots):
-            raise CaptureError("scope_folders_nested")
-        self.folders = tuple(roots)
-        self.max_depth = self._bound(entry.get("max_depth", 3), 0, 20)
-        self.max_folders = self._bound(entry.get("max_folders", 200), 1, 5000)
-
-    @staticmethod
-    def _bound(value: Any, low: int, high: int) -> int:
-        if isinstance(value, bool) or not isinstance(value, int) or not low <= value <= high:
-            raise CaptureError("scope_bound_invalid")
-        return value
-
-
-def _library_name_ok(value: Any) -> bool:
-    return (isinstance(value, str) and 0 < len(value) <= 128 and value == value.strip()
-            and not any(ord(c) < 32 or ord(c) == 127 for c in value))
-
-
-class DiscoveryRule:
-    """The estate discovery of a scope (``discover``): every document library of every
-    site the application may read on the configured host, each walked from ``/`` with
-    the given bounds, except what ``exclude`` names. An exclusion is data: ``site`` (a
-    site URL name: the whole site, its libraries never listed), ``library`` (a library
-    name on every site) or both (that library of that site), matched case-insensitively."""
-
-    def __init__(self, entry: Mapping[str, Any]) -> None:
-        allowed = {"max_sites", "max_libraries_per_site", "max_depth", "max_folders",
-                   "exclude", "note"}
-        if not isinstance(entry, Mapping) or set(entry) - allowed:
-            raise CaptureError("scope_discover_invalid")
-        bound = CaptureTarget._bound
-        self.max_sites = bound(entry.get("max_sites", 500), 1, 5000)
-        self.max_libraries = bound(entry.get("max_libraries_per_site", 50), 1, 500)
-        self.max_depth = bound(entry.get("max_depth", 8), 0, 20)
-        self.max_folders = bound(entry.get("max_folders", 5000), 1, 5000)
-        rules = entry.get("exclude", [])
-        if isinstance(rules, (str, bytes)) or not isinstance(rules, Sequence) or len(rules) > 200:
-            raise CaptureError("scope_exclude_invalid")
-        self.exclude: list[tuple[str | None, str | None]] = []
-        for rule in rules:
-            if (not isinstance(rule, Mapping) or set(rule) - {"site", "library", "note"}
-                    or not ({"site", "library"} & set(rule))
-                    or ("site" in rule and not grammar.TYPES["site_name"].valid(rule["site"]))
-                    or ("library" in rule and not _library_name_ok(rule["library"]))):
-                raise CaptureError("scope_exclude_invalid")
-            self.exclude.append((rule["site"].casefold() if "site" in rule else None,
-                                 rule["library"].casefold() if "library" in rule else None))
-
-    def site_excluded(self, name: str | None) -> bool:
-        site = (name or "").casefold()
-        return any(s == site and lib is None for s, lib in self.exclude)
-
-    def library_excluded(self, site_name: str | None, library: str | None) -> bool:
-        site, name = (site_name or "").casefold(), (library or "").casefold()
-        return any(lib == name and s in (None, site) for s, lib in self.exclude
-                   if lib is not None)
-
-
-class LibraryClass:
-    """One ``library_security_classes`` entry: the security class of the library a
-    ``drive_id`` names, or of the library called ``library`` (on ``site``, else on
-    every site), matched case-insensitively."""
-
-    def __init__(self, entry: Mapping[str, Any]) -> None:
-        if (not isinstance(entry, Mapping)
-                or set(entry) - {"drive_id", "site", "library", "class", "note"}
-                or ("drive_id" in entry) == ("library" in entry)
-                or ("site" in entry and "library" not in entry)
-                or entry.get("class") not in taxonomy.SECURITY_CLASSES
-                or ("drive_id" in entry and not grammar.TYPES["drive_id"].valid(entry["drive_id"]))
-                or ("site" in entry and not grammar.TYPES["site_name"].valid(entry["site"]))
-                or ("library" in entry and not _library_name_ok(entry["library"]))):
-            raise CaptureError("scope_library_class_invalid")
-        self.drive_id = entry.get("drive_id")
-        self.site = entry["site"].casefold() if "site" in entry else None
-        self.library = entry["library"].casefold() if "library" in entry else None
-        self.security_class = entry["class"]
-
-
-class CaptureScope:
-    """Which drives/sites and folders are captured, how deep and how large, plus the
-    optional estate discovery (:class:`DiscoveryRule`), the classes of its libraries
-    (:class:`LibraryClass`) and the SharePoint columns kept per version. Configuration,
-    never a grant: the capture actor still needs the live-source audience."""
-
-    def __init__(self, targets: Sequence[Mapping[str, Any]], *,
-                 max_content_bytes: int = MAX_CONTENT_BYTES,
-                 full_walk_hours: int = FULL_WALK_HOURS,
-                 permission_reread_hours: int = PERMISSION_REREAD_HOURS,
-                 census_max_age_hours: int | None = None,
-                 discover: Mapping[str, Any] | None = None,
-                 library_security_classes: Sequence[Mapping[str, Any]] = (),
-                 list_item_columns: Sequence[str] = ()) -> None:
-        self.discover = None if discover is None else DiscoveryRule(discover)
-        if isinstance(library_security_classes, (str, bytes)) or not isinstance(
-                library_security_classes, Sequence) or len(library_security_classes) > 200:
-            raise CaptureError("scope_library_class_invalid")
-        self.library_classes = tuple(LibraryClass(e) for e in library_security_classes)
-        if list_item_columns == taxonomy.CAPTURE_COLUMNS:
-            list_item_columns = tuple(column["name"] for column in taxonomy.COLUMNS)
-        if (isinstance(list_item_columns, (str, bytes))
-                or not isinstance(list_item_columns, Sequence) or len(list_item_columns) > 20
-                or not all(grammar.column_name_ok(c) for c in list_item_columns)
-                or len(set(list_item_columns)) != len(list_item_columns)):
-            raise CaptureError("scope_list_item_columns_invalid")
-        if not set(list_item_columns) <= set(taxonomy.COLUMN_BY_NAME):
-            # The Portal's column set is consumed, never forked (QA-06).
-            raise CaptureError("scope_list_item_column_not_in_taxonomy")
-        self.list_item_columns = tuple(list_item_columns)
-        if isinstance(targets, (str, bytes)) or not isinstance(targets, Sequence) or (
-                not targets and self.discover is None):
-            raise CaptureError("scope_empty")
-        self.targets = tuple(CaptureTarget(t) for t in targets)
-        if len({t.id for t in self.targets}) != len(self.targets):
-            raise CaptureError("scope_target_duplicate")
-        if isinstance(max_content_bytes, bool) or not isinstance(max_content_bytes, int) \
-                or not 1 <= max_content_bytes <= MAX_DECLARED_CONTENT_BYTES:
-            raise CaptureError("scope_max_content_bytes_invalid")
-        self.max_content_bytes = max_content_bytes
-        self.full_walk_hours = CaptureTarget._bound(full_walk_hours, 1, 720)
-        self.permission_reread_hours = CaptureTarget._bound(permission_reread_hours, 1, 720)
-        # How long the host's coverage census may be carried across calls (its own window,
-        # for a check that runs less often than the full walk); default full_walk_hours.
-        self.census_max_age_hours = (
-            self.full_walk_hours if census_max_age_hours is None
-            else CaptureTarget._bound(census_max_age_hours, 1, 720))
-
-    def library_class(self, drive_id: str, site: str | None, library: str | None
-                      ) -> str | None:
-        """The class the scope gives this library: by drive id, else by name on its
-        site, else by name on every site; None when it gives none."""
-        site_key, name = (site or "").casefold(), (library or "").casefold()
-        for match in (lambda e: e.drive_id == drive_id,
-                      lambda e: library is not None and e.library == name
-                      and e.site is not None and e.site == site_key,
-                      lambda e: library is not None and e.library == name and e.site is None):
-            found = {e.security_class for e in self.library_classes if match(e)}
-            if found:
-                # Two classes for one library: nobody may read it.
-                return found.pop() if len(found) == 1 else taxonomy.UNRESOLVED_CLASS
-        return None
-
-    @classmethod
-    def from_json(cls, document: Any) -> "CaptureScope":
-        allowed = {"schema", "note", "targets", "max_content_bytes", "full_walk_hours",
-                   "permission_reread_hours", "census_max_age_hours", "discover",
-                   "library_security_classes", "list_item_columns"}
-        if (not isinstance(document, dict) or document.get("schema") != SCOPE_SCHEMA
-                or set(document) - allowed or not isinstance(document.get("targets"), list)):
-            raise CaptureError("scope_document_invalid")
-        return cls(document["targets"],
-                   max_content_bytes=document.get("max_content_bytes", MAX_CONTENT_BYTES),
-                   full_walk_hours=document.get("full_walk_hours", FULL_WALK_HOURS),
-                   permission_reread_hours=document.get("permission_reread_hours",
-                                                        PERMISSION_REREAD_HOURS),
-                   census_max_age_hours=document.get("census_max_age_hours"),
-                   discover=document.get("discover"),
-                   library_security_classes=document.get("library_security_classes", []),
-                   list_item_columns=document.get("list_item_columns", []))
-
-    @classmethod
-    def from_file(cls, path: str | Path) -> "CaptureScope":
-        try:
-            document = json.loads(Path(path).read_text(encoding="utf-8"))
-        except (OSError, ValueError):
-            raise CaptureError("scope_unreadable") from None
-        return cls.from_json(document)
 
 
 # ------------------------------------------------------------------ store
@@ -835,14 +638,15 @@ class SharePointCaptureStore:
         state.mkdir(parents=True, exist_ok=True, mode=0o700)
         self.blobs.mkdir(parents=True, exist_ok=True, mode=0o700)
         for directory in (self.root, self.root / "blobs", self.blobs):  # ours only
-            os.chmod(directory, 0o700)
+            os.chmod(directory, private_mode(directory, 0o700))
         self.path = self.root / DB_FILE
         self._clock = clock
         self.max_store_bytes = max_store_bytes
+        keep_store_modes(self.path)   # before SQLite makes -wal/-shm from the store's mode
         self.db = sqlite3.connect(self.path, timeout=30)
-        os.chmod(self.path, 0o600)
         self.db.row_factory = sqlite3.Row
         wal_journal(self.db)
+        keep_store_modes(self.path)   # a new store and its WAL, just made under the umask
         _schemas.apply(self.db, _CAPTURE_SHAREPOINT)
         with self.db:
             self.db.execute("INSERT OR IGNORE INTO meta VALUES ('schema_version', ?)",
@@ -1639,31 +1443,57 @@ class SharePointCaptureStore:
         blob_path(self.blobs, digest).unlink(missing_ok=True)
         return "dropped"
 
-    def reader_stale_rows(self, drive_id: str, root_path: str, limit: int
-                          ) -> list[dict[str, Any]]:
+    def reader_stale_rows(self, drive_id: str, root_path: str, limit: int, *,
+                          needs: str | None = None) -> list[dict[str, Any]]:
         """Current versions under a root whose text an earlier reader could not read
-        (``failed``/``unsupported``) and the current one reads
-        (``captured_text.REREAD_GENERATION``): each is offered until it is read or given
-        up once per generation (an ``item_events`` row ``text_reread:<generation>``), not
-        while its backoff runs (``text_reread_attempts.next_at``). Never tried first, then
-        those with a try counted (fewest first), then those only the source failed (no try
-        counted), each the least recently tried first, then the oldest version: a file
-        that keeps failing never stands before the others."""
-        from .captured_text import REREAD_GENERATION, REREAD_SUFFIXES
-        names = " OR ".join("lower(json_extract(i.record, '$.name')) LIKE ?"
-                            for _ in REREAD_SUFFIXES)
+        (``failed``/``unsupported``, an image whose OCR exited ``recognize_exit``) and the
+        current one reads or classifies (``captured_text.REREAD_GENERATION``): each is
+        offered until it is read or given up once per generation (an ``item_events`` row
+        ``text_reread:<generation>``), not while its backoff runs
+        (``text_reread_attempts.next_at``). Never tried first, then those with a try
+        counted (fewest first), then those only the source failed (no try counted), each
+        the least recently tried first, then the oldest version: a file that keeps
+        failing never stands before the others.
+
+        ``needs`` splits the work by what it costs, each part chosen in SQL so one never
+        hides another behind its limit: ``name`` (a type that holds no text: classified
+        by its name, no bytes read), ``stored`` (the original is held) and ``refetch``
+        (the original was dropped: one guarded GET each); None: all of them."""
+        from .captured_text import IMAGE_OCR_SUFFIXES, REREAD_GENERATION, REREAD_SUFFIXES
+        from .text_formats import NAME_ONLY_SUFFIXES
+        named = NAME_ONLY_SUFFIXES
+        low = "lower(json_extract(i.record, '$.name'))"
+
+        def like(suffixes: tuple[str, ...]) -> tuple[str, list[str]]:
+            parts = ["instr(substr(" + low + ", 2), '.') = 0" if suffix == ""
+                     else low + " LIKE ?" for suffix in suffixes]
+            return "(" + " OR ".join(parts) + ")", [f"%{x}" for x in suffixes if x]
+
+        names, name_args = like(REREAD_SUFFIXES)
+        by_name, by_name_args = like(named)
+        images, image_args = like(IMAGE_OCR_SUFFIXES)
+        dropped = ("i.content_sha256 IN (SELECT sha256 FROM blobs WHERE dropped_at IS NOT "
+                   "NULL)")
+        kind, kind_args = "", []
+        if needs == "name":
+            kind, kind_args = f" AND {by_name}", by_name_args
+        elif needs == "stored":
+            kind, kind_args = f" AND NOT {by_name} AND NOT {dropped}", by_name_args
+        elif needs == "refetch":
+            kind, kind_args = f" AND NOT {by_name} AND {dropped}", by_name_args
         return [dict(r) for r in self.db.execute(
             "SELECT i.* FROM items i LEFT JOIN text_reread_attempts a "
             "ON a.l1_handle = i.l1_handle AND a.generation = ? "
             "WHERE i.drive_id=? AND i.root_path=? AND i.superseded_at IS NULL "
-            "AND i.content_status=? AND i.text_status IN ('failed', 'unsupported') "
-            f"AND ({names}) AND i.l1_handle NOT IN (SELECT l1_handle FROM item_events "
+            "AND i.content_status=? AND (i.text_status IN ('failed', 'unsupported') "
+            f"OR (i.text_status = 'ocr_failed:recognize_exit' AND {images})) "
+            f"AND {names}{kind} AND i.l1_handle NOT IN (SELECT l1_handle FROM item_events "
             "WHERE event = ?) AND (a.next_at IS NULL OR a.next_at <= ?) "
             "ORDER BY a.l1_handle IS NOT NULL, COALESCE(a.attempts, 0) = 0, "
             "a.attempts, a.last_at, "
             "i.version_id LIMIT ?",
-            (str(REREAD_GENERATION), drive_id, root_path, CAPTURED,
-             *(f"%{suffix}" for suffix in REREAD_SUFFIXES),
+            (str(REREAD_GENERATION), drive_id, root_path, CAPTURED, *image_args,
+             *name_args, *kind_args,
              f"text_reread:{REREAD_GENERATION}", self.now(), limit)).fetchall()]
 
     def mark_reread(self, handle: str) -> None:
@@ -2471,6 +2301,13 @@ class SharePointCapture:
         # The handles that first pass tried this run: each is retried at most once a run,
         # so a root's own :meth:`_repair` skips them.
         self.first_tried: set[str] = set()
+        # The items whose bytes a read failed this run (walk, named pass or retry): a
+        # sliced walk's next slice starts with a repair (:meth:`_repair`), which never reads
+        # them again this run (each failed read is retried at most once a run, by a later
+        # run once the run's own try failed)
+        self.failed_reads: set[str] = set()
+        # (drive id, root) -> versions its repairs read again this run (REPAIRS_PER_ROOT)
+        self.repaired: dict[tuple[str, str], int] = {}
         # A caller's named items, (drive id, item id), each run captures first
         # (:meth:`_named_pass`); the last run's item failures (drive id, item id, outcome),
         # kept on the capture, never in the run's result (which callers print).
@@ -2517,7 +2354,8 @@ class SharePointCapture:
         """The run's own budget spent (a root's slice aside)."""
         if now is None and self._deadline is not None:
             now = self._checked_at = self._monotonic()
-        return self._deadline is not None and now >= self._deadline
+        from . import drain   # a drain request (the ingest host's SIGTERM) spends it
+        return drain.requested() or (self._deadline is not None and now >= self._deadline)
 
     def _throttled(self, call: Callable[[], Any]) -> Any:
         """``call()``; when the source refused it with 429 or 503 and its own Retry-After
@@ -2600,7 +2438,8 @@ class SharePointCapture:
         whose process died, is ``extraction_timed_out`` / ``extraction_crashed``."""
         if not self.extraction_processes:
             return capture_text(content, record, defer_ocr=defer_ocr, image_ocr=True)
-        from .capture_mail import EXTRACT_SECONDS, OCR_EXTRACT_SECONDS, _Extractors
+        from .capture_mail import EXTRACT_SECONDS, OCR_EXTRACT_SECONDS
+        from .capture_mail_extract import _Extractors
 
         with self._extractors_lock:
             if self._extractors is None:
@@ -2653,6 +2492,7 @@ class SharePointCapture:
                     "text_status": "not_read"}, record, None
         except SourceUnavailable as exc:
             counts["contents_unavailable"] += 1
+            self.failed_reads.add(str(record.get("id")))
             return {"content_status": _UNAVAILABLE + (unavailable_detail(exc) or "unclassified"),
                     "text_status": "not_read"}, record, None
         if read.get("content_status") != "read" or not isinstance(read.get("content"), bytes):
@@ -2843,9 +2683,26 @@ class SharePointCapture:
 
         extraction = _Extraction(self.extract_workers, self._read_text)
         try:
-            for row in self.store.reader_stale_rows(drive_id, root, REPAIRS_PER_ROOT):
+            def offered() -> Iterator[Mapping[str, Any]]:
+                # by cost: a name alone, then held bytes, then (a download each) dropped
+                # originals, each part within its own limit
+                for needs, limit in (("name", REREAD_NAMED_PER_ROOT),
+                                     ("stored", REREAD_STORED_PER_ROOT),
+                                     ("refetch", REPAIRS_PER_ROOT)):
+                    for found in self.store.reader_stale_rows(drive_id, root, limit,
+                                                              needs=needs):
+                        yield {**found, "_needs": needs}
+
+            for row in offered():
                 if self._spent() or (until is not None and self._checked_at >= until):
                     break
+                if row["_needs"] == "name":
+                    # a type that holds no text: classified by its name, nothing read
+                    self.store.fill_text(row["l1_handle"], terminal_class(
+                        json.loads(row["record"]).get("name") or "", b"") or TEXT_BINARY, None)
+                    self.store.mark_reread(row["l1_handle"])
+                    counts["texts_reread"] += 1
+                    continue
                 try:
                     content: bytes | None = self.store.blob(row["content_sha256"])
                 except (CaptureError, OSError):
@@ -2984,7 +2841,10 @@ class SharePointCapture:
                 share: float | None = None) -> None:
         """Retry the bytes of current versions whose read failed (bounded per walk), each
         at most once a run (``first_tried``: the first pass's, :meth:`_retry_first`, and
-        this one's). ``share``: none starts once that share of the budget left at the
+        this one's), with ``share`` (a slice's opening repair) none whose read already failed
+        this run (``failed_reads``: a sliced walk's earlier slice), at most ``REPAIRS_PER_ROOT`` a root a run however
+        often its walk is sliced, and none the first pass selects (``retry_first``: its
+        own, within its share, so the walk advances). ``share``: none starts once that share of the budget left at the
         call is spent (a walk's first step, as :meth:`_reextract`): a walk that spends
         the budget never reaches its end-of-walk repair, and a file listed unchanged is
         never read again, so without it a failed read stayed failed until the file changed."""
@@ -2992,13 +2852,24 @@ class SharePointCapture:
         if share is not None and self._deadline is not None:
             now = self._monotonic()
             until = now + share * max(0.0, self._deadline - now)
-        rows = self.store.degraded(drive_id, root, REPAIRS_PER_ROOT + len(self.first_tried))
-        rows = [r for r in rows if r["l1_handle"] not in self.first_tried]
-        for row in rows[:REPAIRS_PER_ROOT]:
+        left = REPAIRS_PER_ROOT - self.repaired.get((drive_id, root), 0)
+        if left <= 0:
+            return   # this run's repairs of the root are spent (a sliced walk repairs twice)
+        # A slice's opening repair (``share``) never re-reads what this run's earlier slice
+        # just failed on, so the walk advances; the end-of-walk repair retries it once.
+        failed = self.failed_reads if share is not None else frozenset()
+        rows = self.store.degraded(drive_id, root, left + len(self.first_tried) + len(failed))
+        rows = [r for r in rows if r["l1_handle"] not in self.first_tried
+                and r["item_id"] not in failed]
+        for row in rows[:left]:
+            record = json.loads(row["record"])
+            if self.retry_first is not None and self.retry_first(record):
+                continue   # the first pass's (within its share), never a walk's budget
             if self._spent() or (until is not None and self._checked_at >= until):
                 return   # the rest waits for a later run
             self.first_tried.add(row["l1_handle"])
-            self._retry_bytes(reader, row, json.loads(row["record"]), counts)
+            self.repaired[(drive_id, root)] = self.repaired.get((drive_id, root), 0) + 1
+            self._retry_bytes(reader, row, record, counts)
 
     def _retry_bytes(self, reader: Any, row: Mapping[str, Any], record: Mapping[str, Any],
                      counts: dict[str, int]) -> None:
@@ -3726,7 +3597,7 @@ class SharePointCapture:
         named = self._named_pass(plans)
         # The capture scheduler's order (capture_mail.schedule_units, shared with mail).
         ordered = schedule_units(plans, lambda plan: self._standing(plan[2], plan[3]))
-        self.first_tried = set()
+        self.first_tried, self.failed_reads, self.repaired = set(), set(), {}
         if self.retry_first is not None:
             self._retry_first(ordered)
         feeds = self._feeds(ordered, scope.full_walk_hours)
@@ -4032,34 +3903,6 @@ class SharePointCapture:
 
 # ------------------------------------------------------------------ CLI (counts only)
 
-CAPTURE_PRINCIPAL = "svc:sharepoint-capture"
-# The host state directory of the capture check (``default_state_dir``), below the host's
-# state base: the pattern of ``capture_teams`` and ``eval.heldout``.
-CHECK_STATE = ("plx-workbench", "sharepoint-capture-check")
-
-
-def default_state_dir(env: Mapping[str, str], *, injected: bool) -> Path:
-    """The host's state directory of the capture check, kept across its runs
-    (:func:`capture_mail.check_state_dir`): ``$PLX_WORKBENCH_STATE_DIR/sharepoint-capture-check``,
-    else ``$XDG_STATE_HOME/plx-workbench/sharepoint-capture-check``, else under
-    ``$HOME/.local/state``, never in Git. An injected transport gets its own
-    subdirectory, so a fixture run never shares the live store. None set to an absolute
-    path: refused, never a store in a place nobody chose."""
-    return check_state_dir(env, CHECK_STATE[-1], injected=injected)[0]
-
-
-STATE_NAME = re.compile(r"[a-z0-9][a-z0-9-]{0,47}")
-
-
-def state_name_dir(env: Mapping[str, str], name: Any, *, injected: bool
-                   ) -> tuple[Path, Path, str]:
-    """:func:`capture_mail.check_state_dir` for the named store ``sharepoint-capture-
-    check-<name>`` (``--state-name``); a name that is not 1..48 lowercase letters, digits
-    and hyphens is refused (``ValueError``) before any directory is made."""
-    if not isinstance(name, str) or STATE_NAME.fullmatch(name) is None:
-        raise ValueError("state_name_invalid")
-    return check_state_dir(env, f"{CHECK_STATE[-1]}-{name}", injected=injected)
-
 
 def incomplete_scope(run: Mapping[str, Any], scope: "CaptureScope", *,
                      persisted: bool) -> list[dict[str, Any]]:
@@ -4088,33 +3931,6 @@ def incomplete_scope(run: Mapping[str, Any], scope: "CaptureScope", *,
                         "later_ask": PERSISTENT_STATE_ASK if resumable and not persisted
                         else None})
     return out
-
-
-def blocked_scope(entries: Sequence[Mapping[str, Any]], gaps: Sequence[str] = (), *,
-                  carried: bool | None = None) -> list[dict[str, Any]]:
-    """The verifier's ``blocked_upstream`` parts (cause ``later_ask``) of an
-    :func:`incomplete_scope` that only a human step settles, by the one rule of
-    :func:`capture_mail.budget_cut_block`: every incomplete root is cut by the time
-    budget alone and its resume has no kept store. One root incomplete any other way,
-    a discovery gap (``gaps``), or a cut that resumes over a kept store (it finishes by
-    itself, the check fails until it has), yields no part: the check fails, never
-    blocked. ``carried``: the store was carried into this run (default: any entry's
-    ``persisted``; pass it when only discovery gaps may be named)."""
-    units = [(f"{e['target']}.root{e['root']}", e["reasons"]) for e in entries]
-    units += [("estate.discovery", [gap]) for gap in gaps]
-    if carried is None:
-        carried = any(e["persisted"] for e in entries)
-    return budget_cut_block(units, carried=carried)
-
-
-def _spread(items: Sequence[Any], sample: int | None) -> list[Any]:
-    """``items``, or at most ``sample`` of them evenly spread (first and last kept)."""
-    if sample is None or len(items) <= sample:
-        return list(items)
-    if sample < 1:
-        raise ValueError("verify_sample must be at least 1")
-    step = (len(items) - 1) / max(1, sample - 1)
-    return [items[round(n * step)] for n in range(sample)]
 
 
 def add_cli_arguments(parser: argparse.ArgumentParser) -> None:
@@ -4160,13 +3976,6 @@ def add_cli_arguments(parser: argparse.ArgumentParser) -> None:
                              "within the scope and the people exclusion only)")
 
 
-def _root_reasons(root: Mapping[str, Any]) -> set[str]:
-    return set(filter(None, (root["reason"] or "").split(",")))
-
-
-BUDGET_CUT_CAUSES = ("unreached", "start_cut", "walk_cut", "finish_cut")
-
-
 def budget_cut_causes(run: Mapping[str, Any]) -> dict[str, dict[str, int]]:
     """Every root the time budget cut (reason ``time_budget``) by its root class
     (``personal``: a discovered OneDrive library, ``site``: a discovered site library,
@@ -4195,21 +4004,6 @@ def budget_cut_causes(run: Mapping[str, Any]) -> dict[str, dict[str, int]]:
             row = out.setdefault(kind, {c: 0 for c in BUDGET_CUT_CAUSES})
             row[cause] += 1
     return dict(sorted(out.items()))
-
-
-def registry_site_names(path: str | Path) -> list[str]:
-    """The site URL names of a source registry's ``sharepoint`` ``site`` entries (names
-    already committed there, so a report naming them discloses nothing new). Anything
-    malformed is refused."""
-    doc = json.loads(Path(path).read_text(encoding="utf-8"))
-    entries = doc.get("entries") if isinstance(doc, dict) else None
-    if not isinstance(entries, list) or not all(isinstance(e, Mapping) for e in entries):
-        raise CaptureError("registry_invalid")
-    names = [e.get("name") for e in entries
-             if e.get("system") == "sharepoint" and e.get("kind") == "site"]
-    if not all(isinstance(n, str) and grammar.TYPES["site_name"].valid(n) for n in names):
-        raise CaptureError("registry_invalid")
-    return names
 
 
 def registry_site_outcomes(run: Mapping[str, Any], names: Sequence[str]
@@ -4273,9 +4067,6 @@ def registry_site_outcomes(run: Mapping[str, Any], names: Sequence[str]
     return out
 
 
-NO_ACCESS_GAPS = ("not_visible", "source_error:http_401", "source_error:http_403")
-
-
 def registry_site_readback(run: Mapping[str, Any], names: Sequence[str],
                            outcomes: Mapping[str, Any], store: SharePointCaptureStore,
                            actor: Actor, audience: LiveSourceAudience) -> dict[str, Any]:
@@ -4322,59 +4113,6 @@ def registry_site_readback(run: Mapping[str, Any], names: Sequence[str],
         out[name] = {"libraries": len(planned), "items_listed": read + withheld,
                      "items_read": read, "withheld": withheld, "reason": reason}
     return out
-
-
-def credit_readback(outcomes: dict[str, Any], readback: Mapping[str, Any]) -> None:
-    """A site whose libraries were all walked but which holds no file read nothing: it
-    moves from ``captured`` to ``unexercised`` with its typed reason, so the registry
-    never credits an empty site as read."""
-    for name in list(outcomes["captured"]):
-        if not readback[name]["items_read"]:
-            outcomes["captured"].remove(name)
-            outcomes["unexercised"].append(name)
-            outcomes["reasons"][name] = readback[name]["reason"]
-    outcomes["unexercised"].sort()
-
-
-def _report_run(number: int, run: Mapping[str, Any]) -> dict[str, Any]:
-    targets = []
-    for entry in run["targets"]:
-        roots = [{"status": r["status"], "complete": r["complete"], "reason": r["reason"],
-                  "round": r["round"], "full_walk_reason": r["full_walk_reason"],
-                  "walk_position": r["walk_position"], "counts": dict(r["counts"])}
-                 for r in entry["roots"]]
-        targets.append({"index": entry["index"], "status": entry["status"],
-                        "complete": entry["complete"], "roots": roots,
-                        "discovered": bool(entry.get("discovered"))})
-    report = {"run": number, "complete": run["complete"], "targets": targets,
-              "complete_bound": run["complete_bound"], "bound_total": run["bound_total"],
-              "incomplete_reasons": run["incomplete_reasons"]}
-    if "discovery" in run:
-        report["discovery"] = {"status": run["discovery"]["status"],
-                               "complete": run["discovery"]["complete"],
-                               "gaps": sorted(set(run["discovery"]["gaps"])),
-                               "counts": dict(run["discovery"]["counts"])}
-    if "named_items" in run:   # counts and typed outcomes only, never an item
-        named = run["named_items"]
-        report["named_items"] = {"named": named["named"],
-                                 "outcomes": {k: v for k, v in named["outcomes"].items() if v},
-                                 "counts": {k: v for k, v in named["counts"].items() if v}}
-    return report
-
-
-def folder_only_audience(audience: LiveSourceAudience, principal: str,
-                         roots: Sequence[tuple[str, str]]) -> LiveSourceAudience:
-    """``principal`` granted the captured root folders (``(drive id, root)``) and
-    everything under them, with the item permissions required on those drives and no
-    source identity: the live shape of an employee whose folder grant is wider than
-    the files shared with them."""
-    grants: dict[str, list[str]] = {}
-    for drive_id, root in roots:
-        grants[f"sharepoint:{drive_id}:{root}"] = [principal]
-        grants[f"sharepoint:{drive_id}:{root.rstrip('/')}/*"] = [principal]
-    return LiveSourceAudience(grants, tenant=audience.tenant,
-                              source_acl_required=sorted({f"sharepoint:{d}:*"
-                                                          for d, _ in roots}))
 
 
 def _progress_marks(store: SharePointCaptureStore, actor: Actor,
@@ -4510,7 +4248,7 @@ def run_cli(args: argparse.Namespace, *, environ: Mapping[str, str] | None = Non
                                     extraction_processes=True)
         capture.retry_first = retry_first
         if getattr(args, "named_originals", False):
-            from operating.captured_originals import sharepoint_items
+            from integrations.case_original_receipts import sharepoint_items
             capture.named_items = sharepoint_items(state_dir)
         before = _progress_marks(store, actor, audience)
         started_at = store.now()   # a version recorded from here on is new to this run
@@ -4772,7 +4510,7 @@ def main(argv: Sequence[str] | None = None) -> int:
 
 
 __all__ = ["ABSENT", "CAPTURE_PRINCIPAL", "CaptureScope", "CaptureTarget", "DISCOVERY_COUNTS",
-           "CONTENT_NOT_READ", "CONTENT_SKIPPED", "DiscoveryRule", "EXCEEDS_CAP", "MAX_STORE_BYTES", "PRUNED",
+           "CONTENT_NOT_READ", "CONTENT_SKIPPED", "EXCEEDS_CAP", "MAX_STORE_BYTES", "PRUNED",
            "FOLDER_COUNTS", "MOVED_OUT", "OCR_FAILED", "OCR_UNAVAILABLE", "SHAREPOINT_KIND",
            "SharePointCapture", "SharePointCaptureStore", "TEXT_OCR", "add_cli_arguments",
            "compact_cli", "folder_only_audience", "main", "run_cli", "store_exists",

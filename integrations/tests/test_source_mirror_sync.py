@@ -21,14 +21,15 @@ from urllib.error import HTTPError
 from urllib.parse import parse_qs, urlsplit
 
 from integrations.http import SourceHttpError, SourceUnavailable, get_json, retry_after_seconds
-from integrations.source_mirror import (LINEAGES, MAX_ROWS_PER_RELATION_CAP, MirrorError,
-    SourceMirror, _matches, _sql_prefilter, full_coverage_probe, load_ingest_config,
-    make_citation, mirror_options)
+from integrations.source_mirror import (SourceMirror, full_coverage_probe, load_ingest_config,
+                                        make_citation)
+from integrations.source_mirror_query import _matches, _sql_prefilter, mirror_options
+from integrations.source_mirror_rules import LINEAGES, MAX_ROWS_PER_RELATION_CAP
+from integrations.source_mirror_values import MirrorError
 from integrations.tests.test_source_mirror import (ALL, BASE, KEY, OPS, OUTSIDER, FakeWorkbench,
     MirrorTestCase)
 from integrations.capture_store import wal_bytes
 from integrations.workbench_read_api import WorkbenchReadApiClient
-from ontology.core import Actor
 
 
 def generated_relation(fake, name, count, *, since=True, start=0):

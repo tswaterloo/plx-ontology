@@ -190,8 +190,9 @@ def plan_relations(schema: Any, families: Iterable[str]) -> list[str] | None:
     likewise of every process graph its ``plx.process`` steps run (from the plan and graph
     files and the curated schema alone, never a list). None when a family has no plan:
     its walk may read any reachable relation."""
-    from operating.ontology_tools_investigate import load_plans, plan_root_types
-    from operating.ontology_tools_process import load_graphs
+    from operating.ontology_tools_investigate import load_plans
+    from operating.ontology_tools_investigate_plans import plan_root_types
+    from operating.ontology_tools_process_graphs import load_graphs
     plans = {family: plan.doc for plan in load_plans().values()
              for family in plan.doc["families"]}
     wanted = list(families)
@@ -515,7 +516,8 @@ def pin_sync(client: Any, mirror_file: Path, audience: Path, relations: Sequence
     run pins of items the oracle drew earlier find a capture completed after their time:
     ``{"relations", "complete"}`` counts (``complete``: captured by this sync), plus ``error_code`` when the Portal failed the
     sync (the pins then drift as before, counted, never hidden)."""
-    from integrations.source_mirror import MirrorError, SourceMirror
+    from integrations.source_mirror import SourceMirror
+    from integrations.source_mirror_values import MirrorError
     from ontology.types import Actor
 
     out: dict[str, Any] = {"relations": len(relations), "complete": 0}
@@ -562,7 +564,8 @@ def build_product(client: Any, work: Path, relations: Sequence[str], *,
     as each phase starts (``mirror_sync``, ``mirror_copy``, ``bc_capture``, ``projection``).
     ``incremental``: project as a generation (``ontology.project_incremental``) a held-out
     variant's delta build reuses (``Product.generation``), not a store built whole."""
-    from integrations.source_mirror import MirrorError, SourceMirror
+    from integrations.source_mirror import SourceMirror
+    from integrations.source_mirror_values import MirrorError
     from ontology.project import MirrorCaptures, build_store, capture_source
     from ontology.project_incremental import build_generation
     from ontology.schema import load_schema

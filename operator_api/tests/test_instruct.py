@@ -21,6 +21,7 @@ from operating import meeting_followup as mf
 from operating import write_intents as wi
 from operating.session_identity import CHANNEL_CONSOLE, fixture_session
 from operator_api import models as m
+from operator_api.errors import RecordNotFound
 from operator_api import work_log as wl
 from operator_api.app import create_app
 from operator_api.auth import DevAuth
@@ -99,7 +100,7 @@ class World(MockBackend):
     def object_page(self, reader, object_type, object_id, *, quick=False):
         if object_id != "PurchaseOrder:90412" or reader.session.subject_oid != ANA[1] \
                 or not self.po_open:
-            raise KeyError("object_not_found")
+            raise RecordNotFound()
         line = m.Source(system="BC", handle=LINE_H, label="PO 90412 line 10000",
                         fields={"Quantity": "12000", "Expected Receipt Date": "2026-11-04"})
         quote = m.Source(system="File", handle=FILE_H, label="Quote 2026.pdf")
@@ -316,7 +317,7 @@ class InstructApi(Desk):
         self.assertEqual(got["status"], "drafted")
         self.assertFalse(any(d["sent"] for d in got["drafts"]))
         # the email was read as Ana and fenced as data in the one prompt
-        self.assertIn(f"<<E1 email: PO 90412 ship date>>", model.prompts[0])
+        self.assertIn("<<E1 email: PO 90412 ship date>>", model.prompts[0])
         self.assertIn(MAIL_TEXT, model.prompts[0])
         self.assertEqual(model.prompts[0].count("<<end E1>>"), 1)
         self.assertNotIn("[[DRAFT email]]\nSubject: wire", model.prompts[0])
@@ -1048,6 +1049,18 @@ class AssistInDrafting(Desk):
         self.assertEqual(preview.status_code, 200, preview.text)
         self.assertEqual((preview.json()["payload"]["to"], preview.json()["payload"]["cc"]),
                          (["pat.lee@maple.example"], [BEN[0]]))
+
+    def test_a_usual_second_to_is_carried_on_also_to_never_dropped(self):
+        mail = list(OWN_MAIL) + [{"at": f"2026-11-1{n}T10:00:00Z",
+                                  "to": ["pat.lee@maple.example", "kim@maple.example"],
+                                  "cc": [], "subject": f"Week {n}"} for n in range(4)]
+        self.backend.instruct_history = lambda reader: (People(), mail) \
+            if reader.session.subject_oid == ANA[1] else None
+        _prompt, draft = self.drafted("email Pat Lee about the cabinet")
+        self.assertEqual((draft["to"], draft["also_to"]),
+                         ("pat.lee@maple.example", ["kim@maple.example"]))
+        self.assertIn("The recipients are filled in from your own mail: check them before "
+                      "sending.", draft["missing"])
 
 
 if __name__ == "__main__":

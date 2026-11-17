@@ -48,7 +48,8 @@ from ontology.core import Actor, ValidationError
 from .capability_guards import _number, number_state, read_field, value_state
 from .cases import _digest as _citation_digest
 from .cases import effect_outcome, effect_values
-from .claim_checks import case_items, check_items
+from .claim_checks import check_items
+from .claim_checks_wording import case_items
 
 SCHEMA = "plx-case-verification/v1"
 _MAX_REFERENCES = 10

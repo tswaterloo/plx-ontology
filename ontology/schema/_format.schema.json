@@ -614,6 +614,10 @@
           "minItems": 1,
           "maxItems": 8
         },
+        "rest_to_generated": {
+          "description": "This binding takes only the rows its `where` selects (one predicate: present, eq or in; any further predicate only the complement of another rest_to_generated binding's first one on the relation, so the two take disjoint rows, and the loader refuses two that may share a row) and leaves every other row of its relation to the generated raw type bound to it: that type is not shadowed, and its binding takes the rows this one does not (absent, not_in), so one record is one object (CT-D-08: a SharePoint list item stating DocDate is an ExpenseReceipt, one stating InvoiceDate and no DocDate a VendorInvoiceEntry, every other item stays a SharePointListItem).",
+          "type": "boolean"
+        },
         "stands_for": {
           "description": "This binding stands in for a record of another binding of the same type that the source no longer serves (BC deletes a sales order once it is shipped and invoiced; its posted documents keep the order number). One object per company and key (the pairs' `from` paths of this binding, compared as the `to` paths of `binding`), cited to the first-recorded record naming it, and only where no record of `binding`, nor of a binding listed before this one that stands in for it, holds that key: one identity, never a second object of one record. Not projected while the source says it does not hold `binding` whole (`capture_gap`). Every binding standing in for one binding compares the same `to` paths in the same way.",
           "type": "object",
@@ -872,6 +876,16 @@
             "post_project"
           ],
           "description": "identifier = the normalizer of the property's identifier_kind (ontology/identifiers.py). post_project = not read by the projector: a build_store post_project step writes the value (a fact the Workbench records about this record version, e.g. a person's confirmation; lineage workbench), citing this path of the version it binds to. Default as_is."
+        },
+        "naive_zone": {
+          "type": "string",
+          "enum": ["UTC"],
+          "description": "iso_timestamp only: a value without a zone is an instant in this zone (Prisma writes UTC into timestamp without time zone columns); C-09."
+        },
+        "wall_clock_zone": {
+          "type": "string",
+          "enum": ["America/New_York"],
+          "description": "iso_timestamp only: the source writes this zone's local wall clock whatever offset its text carries (the Portal's FileMaker ETL stores Eastern wall time labelled UTC); the offset is dropped and the wall time read in the zone. Never with naive_zone; C-09."
         },
         "unit": {
           "type": "string",
@@ -2104,6 +2118,10 @@
           "description": "A to-one binding (N:1/1:1) links only where exactly one clean candidate answers in the company: an ambiguous key stays unresolved instead of being capped to a lead guess.",
           "type": "boolean"
         },
+        "unique_keys": {
+          "description": "A same_record binding whose stored keys must each name one record on either side: an agreeing pair value that more than one record of the from binding or of the to binding holds at an overlapping time (within one BC company for a BC end) caps the link at lead (why_not non_unique_key). A non-unique code yields candidates, never a merge.",
+          "type": "boolean"
+        },
         "key": {
           "description": "A key join (ontology/key_links.py, the key_joins build step; only on a mention binding): the from record's identifier of kind `from` equals the to record's identifier of kind `to` (default `from`), or its BC system id (`to`: system_id). `from_field`/`to_field` keep one field's values; `company` same_bc_company joins within one BC company; `party` adds the party both records reach along a link path (`~` reads a link backwards) closed under the `twin` link; `targets` one (one record is corroborated, two or three are leads) or same_party (each record of the same party is corroborated); `min_digits` (default 3) is the digits a value needs.",
           "type": "object",
@@ -2179,6 +2197,8 @@
           "type": "string",
           "enum": [
             "supply_pegging",
+            "twins_contacts",
+            "with_formula_lines",
             "with_owners"
           ]
         },
@@ -2334,6 +2354,28 @@
               }
             }
           }
+        },
+        {
+          "if": {
+            "required": [
+              "unique_keys"
+            ]
+          },
+          "then": {
+            "properties": {
+              "kind": {
+                "const": "same_record"
+              }
+            },
+            "required": [
+              "pairs"
+            ],
+            "not": {
+              "required": [
+                "via"
+              ]
+            }
+          }
         }
       ]
     },
@@ -2456,6 +2498,16 @@
                 "yyyymmdd_date",
                 "iso_timestamp"
               ]
+            },
+            "naive_zone": {
+              "type": "string",
+              "enum": ["UTC"],
+              "description": "iso_timestamp only: a value without a zone is an instant in this zone (Prisma writes UTC into timestamp without time zone columns); C-09."
+            },
+            "wall_clock_zone": {
+              "type": "string",
+              "enum": ["America/New_York"],
+              "description": "iso_timestamp only: the source writes this zone's local wall clock whatever offset its text carries (the Portal's FileMaker ETL stores Eastern wall time labelled UTC); the offset is dropped and the wall time read in the zone. Never with naive_zone; C-09."
             }
           }
         },

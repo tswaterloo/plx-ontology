@@ -87,6 +87,11 @@ FAKE = textwrap.dedent("""
         deadline = time.time() + 300
         while not os.path.exists(os.path.join(state, "release")) and time.time() < deadline:
             time.sleep(0.05)
+    if mode == "gated":   # finishes once the test drops <state>/gate-<name> (bounded)
+        deadline = time.time() + 300
+        while not os.path.exists(os.path.join(state, "gate-" + name)) \
+                and time.time() < deadline:
+            time.sleep(0.02)
     if mode in ("busy", "long"):   # marks itself running for one or three seconds
         marker = os.path.join(store, "running")
         open(marker, "w").close()
@@ -299,7 +304,7 @@ class IngestModeTest(unittest.TestCase):
                                    "PLX_INGEST_CPU_TOTAL": "8"},
                                   table["mail"], self.state)
         self.assertEqual(child, {"FAKE_SOURCE_TOKEN": "x", "PATH": "p",
-                                 "PLX_INGEST_CPU_BUDGET": "4",
+                                 "PLX_INGEST_CPU_BUDGET": "4", "PLX_INGEST_DRAIN": "1",
                                  "PLX_WORKBENCH_STATE_DIR": str(self.state)})
 
     def test_cursors_persist_across_cycles_under_the_host_check(self) -> None:
@@ -688,9 +693,9 @@ class CpuBudgetTest(unittest.TestCase):
 class ConcurrentIngestTest(unittest.TestCase):
     """Sources read concurrently (2026-10-27: one cycle of seven sources one after another
     took about 2.5 h before the projection showed anything). A cycle runs its children
-    at once; the continuous mode (``serve``) refreshes the projection as each source
-    finishes, re-runs a fast source while a slow one reads, and stops on its stop file
-    or low disk; one failing source never stops the others."""
+    at once; the continuous mode (``serve``) records each source as it finishes (never
+    building a projection), re-runs a fast source while a slow one reads, and stops on its
+    stop file or low disk; one failing source never stops the others."""
 
     setUp, config, main, run_cycle, ran, ledger = (
         IngestModeTest.setUp, IngestModeTest.config, IngestModeTest.main,
@@ -749,8 +754,11 @@ class ConcurrentIngestTest(unittest.TestCase):
                               retry=BoundedBackoff(sleep=lambda s: None),
                               entity_sets=("purchaseReceipts",))
         table = fake_table(self.script, "bc", "slow", "broken", projected={"bc": "bc"})
+        # The slow source ends when the test releases it, never by its timeout: at load
+        # 70-150 the fast source's three runs and their projections took past 60 s, the
+        # slow one was cut and refreshed as failed (generation 0), batch 1114072152.
         config = self.config({"bc": {"min_interval_seconds": 1},
-                              "slow": {"mode": "slow", "timeout_seconds": 60},
+                              "slow": {"mode": "slow", "timeout_seconds": 1800},
                               "broken": {"mode": "fail", "min_interval_seconds": 1}})
         host, stop_file, reports = self.host(config, table), self.tmp / "stop", []
         summary: list[dict] = []
@@ -758,18 +766,19 @@ class ConcurrentIngestTest(unittest.TestCase):
             stop_file=stop_file, on_refresh=reports.append)))
         runner.start()
         self.addCleanup(lambda: (stop_file.touch(), runner.join(60)))
-        # The slow source still reads while the fast one is projected and runs again.
-        self.until(lambda: any("bc" in r["sources"] and r["projection"]["state"] == "built"
-                               for r in reports), "no projection after the first finisher")
+        # The slow source still reads while the fast one is recorded and runs again.
+        self.until(lambda: any("bc" in r["sources"] for r in reports),
+                   "no refresh after the first finisher")
         self.until(lambda: self.runs("bc") >= 3, "the fast source waited for the slow one")
         self.assertTrue((self.state / "fake-slow" / "started").is_file())
         self.assertNotIn("slow", {n for r in reports for n in r["sources"]})
-        self.assertTrue(host_module.projection_path(self.state).is_file())
         with self.assertRaises(host_module.HostError) as held:   # one writer meanwhile
             self.host(config, table).cycle()
         self.assertEqual(held.exception.code, "host_cycle_running")
         (self.state / "release").touch()
         self.until(lambda: any("slow" in r["sources"] for r in reports), "slow never refreshed")
+        slow = [r["sources"]["slow"] for r in reports if "slow" in r["sources"]]
+        self.assertEqual([o["state"] for o in slow], ["captured"], slow)
         # the failing source's backoff is seen over three of its runs (waited for, never
         # raced against the clock)
         self.until(lambda: sum("broken" in r["sources"] for r in reports) >= 3,
@@ -794,15 +803,10 @@ class ConcurrentIngestTest(unittest.TestCase):
         self.assertGreaterEqual(len(starts), 3)
         for failures, (before, after) in enumerate(zip(starts, starts[1:]), 1):
             self.assertGreaterEqual(after - before, 2 ** failures, (failures, starts))
-        # Each refresh is one ledger cycle with its own generation, chained, incremental
-        # after the first; none overlapped another.
-        built = [r["projection"] for r in reports if r["projection"]["state"] == "built"]
-        self.assertEqual([p["generation"] for p in built], [r["cycle"] for r in reports
-                                                            if r["projection"]["state"]
-                                                            == "built"])
-        self.assertEqual([p["previous_generation"] for p in built[1:]],
-                         [p["generation"] for p in built[:-1]])
-        self.assertEqual({p["mode"] for p in built[1:]}, {"incremental"})
+        # Each refresh is one ledger cycle; none built a generation, none overlapped another.
+        self.assertEqual({(r["projection"]["state"], tuple(r["projection"]["reasons"]))
+                          for r in reports}, {("skipped", ("builds_off",))})
+        self.assertFalse(host_module.projection_path(self.state).exists())
         self.assertEqual(host_module.cycle_overlaps(host)["cycles_overlapping"], 0)
         rows = dict(self.ledger("SELECT source, generation FROM source_state"))
         self.assertEqual(rows["slow"], 1)
@@ -1065,11 +1069,9 @@ class ConcurrentIngestTest(unittest.TestCase):
                                                     "incremental": {"needed_bytes": 7}}}}),
             7 + margin + 5)
         cannot = mock.patch("ontology.project_incremental._rewritable", return_value=False)
-        with other, cannot, mock.patch.object(host_module, "build_projection") as build, \
-                mock.patch.object(host_module.Host, "snapshot_inputs") as copies:
+        with other, cannot, mock.patch.object(host_module, "build_projection") as build:
             skipped = host.cycle()
         build.assert_not_called()   # nothing fingerprinted
-        copies.assert_not_called()  # no input copies taken
         projection = skipped["projection"]
         self.assertEqual((projection["state"], projection["reasons"],
                           projection["generation"]),
@@ -1095,38 +1097,12 @@ class ConcurrentIngestTest(unittest.TestCase):
                           waited["projection"]["waits_for_bytes"]),
                          (["disk_low"], cold + margin))
         self.assertEqual(host_module.build_wait(self.state)["mode"], "cold")
-        # The continuous ingest asks every DISK_WAIT_POLL_SECONDS, not every poll.
-        clock = [1000.0]
-        host.monotonic = lambda: clock[0]
-        self.assertFalse(host.build_due())   # not free yet
+        # Room again and the served schema: the build goes on, and nothing waits after it.
         host.disk_free = lambda path: cold + margin
-        self.assertFalse(host.build_due())   # asked again too soon
-        clock[0] += host_module.DISK_WAIT_POLL_SECONDS
-        self.assertTrue(host.build_due())
-        # The served schema again: the build goes on, and nothing waits after it.
         built = host.cycle()
         self.assertEqual(built["projection"]["state"], "built", built)
         self.assertIsNone(host.disk_wait)
         self.assertIsNone(host_module.build_wait(self.state))
-
-    def test_continuous_ingest_builds_when_the_waited_space_is_free(self) -> None:
-        """After a build skipped for space, the continuous ingest builds once the host
-        says the space is free (``build_due``), with no source finishing first."""
-        table = fake_table(self.script, "fast")
-        batches: list[list[str]] = []
-        asked = []
-
-        def due() -> bool:
-            asked.append(len(batches))
-            return len(batches) == 1
-
-        forever.Continuous(
-            table, {"fast": {"min_interval_seconds": 3600}}, self.state, self.env,
-            grace=1, parallel=1, refresh=lambda batch, reason, ex: batches.append(
-                sorted(batch)), should_stop=lambda: None, max_refreshes=2,
-            build_due=due).run()
-        self.assertEqual(batches, [["fast"], []])   # the source ran once; then the build
-        self.assertIn(1, asked)
 
     def test_continuous_sources_at_cardinality(self) -> None:
         """1, 10 and 60 sources, 7 at a time: each run once and refreshed exactly once."""
@@ -1140,7 +1116,7 @@ class ConcurrentIngestTest(unittest.TestCase):
                 done = forever.Continuous(
                     table, {name: {"min_interval_seconds": 7200} for name in names}, state,
                     self.env, grace=1, parallel=forever.max_parallel({}, n),
-                    refresh=lambda batch, reason, exclusion: refreshed.extend(
+                    refresh=lambda batch, reason: refreshed.extend(
                         name for name, o in batch.items() if o["state"] == "captured"),
                     should_stop=lambda: "done" if len(refreshed) >= n else None).run()
                 self.assertLess(time.monotonic() - started, 10 + n)
@@ -1148,162 +1124,70 @@ class ConcurrentIngestTest(unittest.TestCase):
                 self.assertEqual((done["reason"], done["runs"]), ("done", dict.fromkeys(names, 1)))
 
 
-@unittest.skipUnless(sys.platform.startswith("linux"), "process priorities: Linux")
-class BuildPriorityTest(unittest.TestCase):
-    """Gen 8: SharePoint and mail captures took 420% and 90% CPU at the build workers'
-    own nice (load 46-51 on 16 CPUs). While a build runs, a capture child running when it
-    starts and one started during it run at nice 19; the build (the host's process, whose
-    workers it forks) keeps the host's priority, and a capture after the build starts at
-    the host's again."""
-
-    setUp = IngestModeTest.setUp
-
-    def test_captures_run_below_the_build(self) -> None:
-        host_nice = os.getpriority(os.PRIO_PROCESS, 0)
-        table = fake_table(self.script, "slow", "fast")
-        pids: dict[str, int] = {}
-        seen: dict[str, int] = {}
-
-        class Children:
-            def add(self, pid, name):
-                pids[name] = pid
-                seen[name + "@start"] = os.getpriority(os.PRIO_PROCESS, pid)
-
-            def remove(self, pid):
-                pass
-
-        refreshes: list[dict] = []
-
-        def refresh(batch, reason, exclusion):
-            if not refreshes:   # the first build: "slow" is still running
-                seen["slow@build"] = os.getpriority(os.PRIO_PROCESS, pids["slow"])
-                seen["build"] = os.getpriority(os.PRIO_PROCESS, 0)
-                seen["building"] = forever.PRIORITY.building()
-                started = forever.PRIORITY.building() and subprocess.Popen(
-                    [sys.executable, "-c", "import time; time.sleep(5)"],
-                    start_new_session=True)
-                try:
-                    forever.PRIORITY.started(started.pid)
-                    seen["during@start"] = os.getpriority(os.PRIO_PROCESS, started.pid)
-                finally:
-                    forever.PRIORITY.ended(started.pid)
-                    started.kill()
-                    started.wait()
-                (self.state / "release").touch()
-            refreshes.append(dict(batch))
-
-        sections = {"slow": {"mode": "slow", "min_interval_seconds": 7200},
-                    "fast": {"min_interval_seconds": 7200}}
-        forever.Continuous(
-            table, sections, self.state, self.env,
-            grace=1, parallel=2, refresh=refresh, children=Children(),
-            should_stop=lambda: "done" if len(refreshes) >= 2 else None).run()
-        self.assertFalse(forever.PRIORITY.building())
-        after = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(5)"],
-                                 start_new_session=True)
-        try:
-            forever.PRIORITY.started(after.pid)
-            seen["after@start"] = os.getpriority(os.PRIO_PROCESS, after.pid)
-        finally:
-            forever.PRIORITY.ended(after.pid)
-            after.kill()
-            after.wait()
-        self.assertEqual(seen, {
-            "slow@start": host_nice, "fast@start": host_nice, "slow@build": 19,
-            "build": host_nice, "building": True, "during@start": 19,
-            "after@start": host_nice})
-        with mock.patch.object(forever.sys, "platform", "darwin"):
-            self.assertFalse(forever.lower(os.getpid()))   # elsewhere: nothing changes
-
-
-class BuildExclusionTest(unittest.TestCase):
-    """Live 2026-10-27, repeated: under ``serve`` the Portal mirror capture wrote while a
-    build held its read snapshot, so its WAL could not be checkpointed and grew 4-6 GB
-    per overlap until builds failed or skipped on a 15 GB disk. A capture of a store the
-    build reads never overlaps a build; the build waits for it, checkpoints its store,
-    then builds; a capture of a store the build does not read still overlaps."""
+class NoBuildTest(unittest.TestCase):
+    """The continuous ingest never builds a projection generation (docs/no-builds.md): the
+    retired settings that once built (``builds`` ``on``, ``build_inputs`` ``snapshot``) or
+    anything else in them build nothing and never stop capture (a refused key held the
+    ingest in a restart loop for 23 h, 2026-11-07); no capture waits for a refresh, and the
+    stores' WAL is still cut back between refreshes."""
 
     setUp, config = IngestModeTest.setUp, IngestModeTest.config
     host, until = ConcurrentIngestTest.host, ConcurrentIngestTest.until
 
-    def running(self, name: str) -> bool:
-        return (self.state / f"fake-{name}" / "running").exists()
+    def test_every_retired_setting_records_captures_and_never_builds(self) -> None:
+        table = fake_table(self.script, "fast")
+        for extra, warned in (({}, []), ({"builds": "off"}, []),
+                              ({"build_inputs": "live"}, []),
+                              ({"builds": "on"}, ["ingest.builds_retired"]),
+                              ({"builds": "sometimes"}, ["ingest.builds_retired"]),
+                              ({"build_inputs": "snapshot"}, ["ingest.build_inputs_retired"]),
+                              ({"builds": "on", "build_inputs": "snapshot"},
+                               ["ingest.build_inputs_retired", "ingest.builds_retired"])):
+            with self.subTest(**{k: str(v) for k, v in extra.items()}):
+                ingest = {"mode": forever.MODE, "grace_seconds": 1, **extra}
+                warnings: list[str] = []
+                settings = forever.ingest_settings(ingest, warnings)
+                self.assertEqual(warnings, warned)
+                self.assertNotIn("builds", settings)
+                self.state = self.tmp / f"state-{len(list(self.tmp.iterdir()))}"
+                host = self.host(self.config({"fast": {"min_interval_seconds": 1}},
+                                             ingest=ingest), table)
+                reports: list[dict] = []
+                with mock.patch.object(host_module, "build_projection",
+                                       side_effect=AssertionError("built")), \
+                        mock.patch.object(host_module.Host, "_project",
+                                          side_effect=AssertionError("built")):
+                    done = host.ingest_continuous(stop_file=self.tmp / "stop",
+                                                  max_refreshes=2, on_refresh=reports.append)
+                self.assertEqual(done["refreshes"], 2)
+                self.assertEqual({(r["projection"]["state"], tuple(r["projection"]["reasons"]))
+                                  for r in reports}, {("skipped", ("builds_off",))})
+                self.assertEqual({n for r in reports for n in r["sources"]}, {"fast"})
+                self.assertFalse(any("build_exclusion" in r for r in reports))
+        # A known key with a bad value is still refused.
+        with self.assertRaises(forever.IngestError):
+            forever.ingest_settings({"mode": forever.MODE, "grace_seconds": 0})
 
-    def scheduler(self, build_reads, refreshes: int = 6):
-        """Continuous over a ``mirror`` capture (writes a store ``build_reads`` may
-        name), an ``other`` one (writes a store no build reads) and a ``fast`` one that
-        finishes often; each refresh is a 0.3 s build that notes which captures ran at
-        its start and its end."""
-        read_store, other_store = self.tmp / "read.sqlite", self.tmp / "other.sqlite"
-        table = fake_table(self.script, "mirror", "other", "fast", writes={
-            "mirror": lambda state: (read_store,), "other": lambda state: (other_store,)})
-        sections = {"mirror": {"mode": "busy", "min_interval_seconds": 0},
-                    "other": {"mode": "long", "min_interval_seconds": 0},
-                    "fast": {"min_interval_seconds": 0.2}}
-        builds: list[dict] = []
-
-        def refresh(batch, reason, exclusion):
-            seen = {n for n in ("mirror", "other") if self.running(n)}
-            time.sleep(0.3)
-            seen |= {n for n in ("mirror", "other") if self.running(n)}
-            builds.append({"ran": seen, "batch": set(batch), **exclusion})
-
-        done = forever.Continuous(
-            table, sections, self.state, self.env, grace=1, parallel=3, refresh=refresh,
-            should_stop=lambda: "done" if len(builds) >= refreshes else None,
-            build_reads=lambda: build_reads(read_store)).run()
-        return done, builds
-
-    def test_a_build_never_overlaps_a_capture_of_a_store_it_reads(self) -> None:
-        done, builds = self.scheduler(lambda store: [store, self.tmp / "unrelated"])
-        self.assertEqual(done["reason"], "done")
-        self.assertEqual([b for b in builds if "mirror" in b["ran"]], [])
-        self.assertTrue(any("other" in b["ran"] for b in builds), builds)  # still overlaps
-        self.assertTrue(any(b["waited_for"] == ["mirror"] and b["wait_seconds"] > 0
-                            for b in builds), builds)
-        self.assertTrue(all(b["exclusive"] == sorted({"mirror"} & b["batch"])
-                            for b in builds), builds)
-        self.assertGreater(done["runs"]["mirror"], 1)   # it ran again between builds
-        # Not vacuous: when the build reads no store of it, the mirror capture overlaps.
-        self.state = self.tmp / "control"
-        _, builds = self.scheduler(lambda store: [])
-        self.assertTrue(any("mirror" in b["ran"] for b in builds), builds)
-        self.assertEqual({w for b in builds for w in b["waited_for"]}, set())
-        # Unknown fails closed: a build_reads that raises makes every writer exclusive.
-        table = fake_table(self.script, "mirror", "other", "fast", writes={
-            "mirror": lambda state: (self.tmp / "a",), "other": lambda state: (self.tmp / "b",)})
-
-        def broken():
-            raise OSError("ledger")
-        self.assertEqual(forever.Continuous(
-            table, {n: {} for n in table}, self.state, self.env, grace=1, parallel=1,
-            refresh=print, should_stop=lambda: "x", build_reads=broken).exclusive(),
-            {"mirror", "other"})
-
-    def test_every_real_capture_writes_a_store_the_host_build_reads(self) -> None:
-        """Every store a build opens, checked: each capture of the real table writes
-        one, so none overlaps a build (the Portal mirror among them)."""
-        host = host_module.Host(self.state, None, environ=self.env)
-        scheduler = forever.Continuous(
-            forever.SOURCES, {n: {} for n in forever.SOURCES}, self.state, self.env,
-            grace=1, parallel=1, refresh=print, should_stop=lambda: "x",
-            build_reads=host.build_reads)
-        self.assertEqual(scheduler.exclusive(), set(forever.SOURCES))
-        self.assertIn(str(forever.portal_mirror(self.state).resolve()),
-                      {str(p.resolve()) for p in host.build_reads()})
-        # Builds off (the host the delta cycle serves): no build, so no capture is held
-        # for one; the Teams capture waited 2 hours for SharePoint's run (2026-11-13).
-        table = fake_table(self.script, "mirror", writes={
+    def test_a_capture_of_a_served_store_runs_on_while_others_are_refreshed(self) -> None:
+        """No build exclusion: the Portal mirror capture (it writes a store every build
+        once read) keeps reading while the sources that finished meanwhile are refreshed,
+        and is never held back; each refresh's report says nothing of a build wait."""
+        table = fake_table(self.script, "mirror", "fast", writes={
             "mirror": lambda state: (forever.portal_mirror(state),)})
-        for builds, held in (("off", set()), ("on", {"mirror"})):
-            built = self.host(self.config({"mirror": {}}, ingest={
-                "mode": forever.MODE, "grace_seconds": 1, "builds": builds}), table)
-            self.assertEqual(forever.Continuous(
-                table, {"mirror": {}}, self.state, self.env, grace=1, parallel=1,
-                refresh=print, should_stop=lambda: "x",
-                build_reads=built.build_reads).exclusive(), held, builds)
+        sections = {"mirror": {"mode": "busy", "min_interval_seconds": 0},
+                    "fast": {"min_interval_seconds": 0.2}}
+        overlapped: list[bool] = []
 
-    def test_the_host_checkpoints_the_waited_store_and_reports_the_wait(self) -> None:
+        def refresh(batch, reason):
+            overlapped.append((self.state / "fake-mirror" / "running").exists())
+        done = forever.Continuous(
+            table, sections, self.state, self.env, grace=1, parallel=2, refresh=refresh,
+            should_stop=lambda: "done" if len(overlapped) >= 6 else None).run()
+        self.assertEqual(done["reason"], "done")
+        self.assertTrue(any(overlapped), overlapped)
+        self.assertGreater(done["runs"]["mirror"], 1)   # it ran again between refreshes
+
+    def test_the_host_cuts_back_each_stores_wal_between_refreshes(self) -> None:
         from integrations.capture_store import wal_bytes
 
         mirror = forever.portal_mirror(self.state)
@@ -1315,181 +1199,15 @@ class BuildExclusionTest(unittest.TestCase):
             writer.execute("CREATE TABLE t (x BLOB)")
             writer.executemany("INSERT INTO t VALUES (randomblob(4096))", [()] * 30)
         self.assertGreater(wal_bytes(mirror), 0)
-        table = fake_table(self.script, "mirror", "fast", writes={
-            "mirror": lambda state: (forever.portal_mirror(state),)})
-        config = self.config({"mirror": {"mode": "busy", "min_interval_seconds": 7200},
-                              "fast": {"min_interval_seconds": 7200}})
+        table = fake_table(self.script, "fast")
+        config = self.config({"fast": {"min_interval_seconds": 7200}})
         reports: list[dict] = []
         self.host(config, table).ingest_continuous(
             stop_file=self.tmp / "stop", max_refreshes=1, on_refresh=reports.append)
-        exclusions = [r["build_exclusion"] for r in reports]
-        self.assertEqual(sorted(n for r in reports for n in r["sources"]), ["fast", "mirror"])
-        # fast finished first and its build waited for mirror; one batch then holds both.
-        (first,) = [e for e in exclusions if "mirror" in e["exclusive"]]
-        self.assertEqual(first["waited_for"], ["mirror"])
-        self.assertEqual(first["checkpoint"]["mirror"]["state"], "truncated", first)
-        self.assertGreater(first["checkpoint"]["mirror"]["wal_bytes_before"], 0)
+        (report,) = reports
+        self.assertGreater(report["wal"]["wal_bytes_before"], 0)
         self.assertEqual(wal_bytes(mirror), 0)
-        self.assertNotIn(str(self.state), json.dumps(exclusions))   # names, never paths
-
-
-class SnapshotBuildTest(unittest.TestCase):
-    """``ingest.build_inputs`` ``snapshot`` (2026-10-31): a cold build took 9 h and every
-    capture writing a store it reads waited for it, so mail got 2 h in each 11.5 h. A
-    build opens consistent copies of the stores made as it starts, runs on its own
-    thread, and every capture keeps reading beside it, one writer per store."""
-
-    setUp, config = IngestModeTest.setUp, IngestModeTest.config
-    host, until = ConcurrentIngestTest.host, ConcurrentIngestTest.until
-
-    def test_captures_run_beside_a_build_that_reads_only_copies(self) -> None:
-        from integrations import bc_read
-        from integrations.live_source_guard import BoundedBackoff
-        from integrations.tests.test_bc_capture import BOOKS, ENV, Clock, FakeBc
-
-        store = host_module.state_capture_paths(self.state)["bc"]
-        store.parent.mkdir(parents=True)
-        bc_read.capture_probe(ENV, sender=FakeBc({"purchaseReceipts": 3}), db=store,
-                              page_size=2, passes=1, books=BOOKS, monotonic=Clock().monotonic,
-                              retry=BoundedBackoff(sleep=lambda s: None),
-                              entity_sets=("purchaseReceipts",))
-        before = store.read_bytes()
-        table = fake_table(self.script, "bc", "fast", projected={"bc": "bc"},
-                           writes={"bc": lambda state: (host_module.state_capture_paths(
-                               state)["bc"],)})
-        config = self.config({"bc": {"mode": "busy", "min_interval_seconds": 1},
-                              "fast": {"min_interval_seconds": 1}},
-                             ingest={"mode": forever.MODE, "grace_seconds": 1,
-                                     "build_inputs": "snapshot"})
-        host = self.host(config, table)
-        inputs = self.state / host_module.HOST_DIR / host_module.BUILD_INPUTS_DIR
-        self.assertTrue(all(inputs in p.parents for p in host.build_reads()))
-        builds: list[dict] = []
-        real = host_module.build_projection
-
-        def build(state_dir, sources, **kwargs):
-            opened = [Path(getattr(s, "path")) for s in sources.values() if hasattr(s, "path")]
-            began = self.ran_count("bc")
-            time.sleep(2.5)   # a capture of the store it reads runs meanwhile
-            builds.append({"opened": opened, "bc_runs": self.ran_count("bc") - began})
-            return real(state_dir, sources, **kwargs)
-        reports: list[dict] = []
-        with mock.patch.object(host_module, "build_projection", build):
-            done = host.ingest_continuous(stop_file=self.tmp / "stop", max_refreshes=3,
-                                          on_refresh=reports.append)
-        self.assertEqual(done["refreshes"], 3)
-        built = [r["projection"] for r in reports if r["projection"]["state"] == "built"]
-        self.assertTrue(built, reports)
-        self.assertEqual({p["inputs"]["kind"] for p in built}, {"snapshot"})
-        # The build opened only its copies, never a live store; the live store is intact.
-        self.assertTrue(all(inputs in p.parents for b in builds for p in b["opened"]), builds)
-        self.assertTrue(any(b["opened"] for b in builds), builds)
-        self.assertEqual(store.read_bytes()[:100], before[:100])
-        # The capture of a store the build reads started again while it built (with
-        # live inputs it waits: BuildExclusionTest); no capture waited for a build.
-        self.assertTrue(any(b["bc_runs"] > 0 for b in builds), builds)
-        self.assertEqual({w for r in reports for w in r["build_exclusion"]["waited_for"]},
-                         set())
-        self.assertNotIn(str(self.state), json.dumps(built))   # counts, never paths
-        self.assertEqual(host_module.cycle_overlaps(host)["cycles_overlapping"], 0)
-
-    def test_builds_off_records_captures_and_never_builds(self) -> None:
-        """``ingest.builds`` ``off`` (docs/pg-cutover.md): the host captures and records,
-        the served generation stays, no generation is built."""
-        table = fake_table(self.script, "fast")
-        config = self.config({"fast": {"min_interval_seconds": 1}},
-                             ingest={"mode": forever.MODE, "grace_seconds": 1,
-                                     "builds": "off"})
-        host = self.host(config, table)
-        reports: list[dict] = []
-        with mock.patch.object(host_module, "build_projection",
-                               side_effect=AssertionError("built")):
-            done = host.ingest_continuous(stop_file=self.tmp / "stop", max_refreshes=2,
-                                          on_refresh=reports.append)
-        self.assertEqual(done["refreshes"], 2)
-        self.assertEqual({r["projection"]["state"] for r in reports}, {"skipped"})
-        self.assertEqual({tuple(r["projection"]["reasons"]) for r in reports},
-                         {("builds_off",)})
-        with self.assertRaises(forever.IngestError):
-            forever.ingest_settings({"mode": forever.MODE, "builds": "sometimes"})
-
-    def ran_count(self, name: str) -> int:
-        path = self.state / f"fake-{name}" / "ran"
-        return len(path.read_text().splitlines()) if path.is_file() else 0
-
-    def test_a_snapshot_never_writes_through_to_a_live_store(self) -> None:
-        """Two stores side by side: each is copied before anything beside it is
-        linked, so no link ever stands where a copy is written."""
-        config = self.config({"fast": {}}, ingest={"mode": forever.MODE, "grace_seconds": 1,
-                                                   "build_inputs": "snapshot"})
-        host = self.host(config, fake_table(self.script, "fast"))
-        paths = host_module.state_capture_paths(self.state)
-        for name in ("teams", "graph_mail"):
-            paths[name].parent.mkdir(parents=True, exist_ok=True)
-            with sqlite3.connect(paths[name]) as conn:
-                conn.execute("PRAGMA journal_mode=WAL")
-                conn.execute("CREATE TABLE t (x)")
-                conn.execute("INSERT INTO t VALUES (?)", (name,))
-            conn.close()
-        (paths["graph_mail"].parent / "blobs").mkdir()
-        live = {n: paths[n].read_bytes() for n in ("teams", "graph_mail")}
-        made = host.snapshot_inputs(None)
-        self.assertEqual(made["stores"], 2)
-        for name in ("teams", "graph_mail"):
-            copy = made["root"] / paths[name].relative_to(self.state)
-            self.assertFalse(copy.is_symlink())
-            self.assertEqual(sqlite3.connect(copy).execute("SELECT x FROM t").fetchall(),
-                             [(name,)])
-            self.assertEqual(paths[name].read_bytes(), live[name])
-        blobs = made["root"] / "mail-capture" / "blobs"
-        self.assertTrue(blobs.is_symlink())
-        # The copies on disk are not asked for again by the build's disk check.
-        (paths["graph_mail"].parent / "blobs" / "big").write_bytes(b"x" * 100_000)
-        self.assertNotIn("snapshot_bytes", host.build_disk()["estimate"])
-        self.assertEqual(blobs.resolve(), (paths["graph_mail"].parent / "blobs").resolve())
-
-
-    def test_an_unchanged_store_keeps_its_copy_so_its_fingerprints_are_kept(self) -> None:
-        """Snapshot copies are new files, so a watermark of file marks never matched and
-        every build fingerprinted every source in full (846-946 s, cycles 5-6). A store
-        whose files did not change keeps its copy, the same file; a written one is copied
-        again and a removed one leaves no copy behind."""
-        config = self.config({"fast": {}}, ingest={"mode": forever.MODE, "grace_seconds": 1,
-                                                   "build_inputs": "snapshot"})
-        host = self.host(config, fake_table(self.script, "fast"))
-        paths = host_module.state_capture_paths(self.state)
-        for name in ("teams", "graph_mail"):
-            paths[name].parent.mkdir(parents=True, exist_ok=True)
-            with closing(sqlite3.connect(paths[name])) as conn, conn:
-                conn.execute("PRAGMA journal_mode=WAL")
-                conn.execute("CREATE TABLE t (x)")
-                conn.execute("INSERT INTO t VALUES (?)", (name,))
-            with closing(sqlite3.connect(paths[name].as_uri() + "?mode=ro", uri=True)) as conn:
-                conn.execute("SELECT 1 FROM t").fetchall()   # as a capture, a -wal stays
-
-        def identity(made, name):
-            st = (made["root"] / paths[name].relative_to(self.state)).stat()
-            return st.st_ino, st.st_mtime_ns
-
-        first = host.snapshot_inputs(None)
-        self.assertEqual((first["stores"], first["kept"]), (2, 0))
-        self.assertEqual(host.snapshot_inputs(None)["kept"], 2)
-        with closing(sqlite3.connect(paths["graph_mail"])) as conn, conn:
-            conn.execute("INSERT INTO t VALUES ('later')")
-        mail = paths["graph_mail"].as_uri() + "?mode=ro"
-        with closing(sqlite3.connect(mail, uri=True)) as conn:
-            conn.execute("SELECT 1 FROM t").fetchall()
-        second = host.snapshot_inputs(None)
-        self.assertEqual((second["stores"], second["kept"]), (1, 1))
-        self.assertEqual(identity(second, "teams"), identity(first, "teams"))
-        copy = second["root"] / paths["graph_mail"].relative_to(self.state)
-        with closing(sqlite3.connect(copy)) as conn:
-            self.assertEqual(conn.execute("SELECT x FROM t ORDER BY rowid").fetchall(),
-                             [("graph_mail",), ("later",)])
-        paths["teams"].unlink()
-        third = host.snapshot_inputs(None)
-        self.assertEqual((third["stores"], third["kept"]), (0, 1))
-        self.assertFalse((third["root"] / paths["teams"].relative_to(self.state)).exists())
+        self.assertNotIn(str(self.state), json.dumps(report["wal"]))   # names, never paths
 
 
 class LiveCycleRepairTest(unittest.TestCase):
@@ -1530,72 +1248,133 @@ class LiveCycleRepairTest(unittest.TestCase):
         with self.assertRaises(forever.IngestError):
             forever.section_options(forever.SOURCES["bc"], {}, self.state, {})
 
-    def test_mail_backlog_passes_ride_the_mail_child_and_lengthen_its_time_limit(self) -> None:
-        # Under continuous ingest the host holds the cycle lock for its whole run, so the
-        # deferred-attachment and image-OCR backlogs are read by the mail child itself
-        # (2026-11-13: 221,842 deferred PDFs, the stand-alone commands never ran).
-        spec = forever.SOURCES["mail"]
+    def test_the_list_capture_gets_its_budget_and_its_cli_takes_it(self) -> None:
+        # 11-16: with only a hard timeout, a slow pass was killed at 2,100 s mid-list and
+        # recorded failed; a budget lets it stop itself between pages, resumable
+        import argparse
+        from integrations import capture_sharepoint_lists as csl
+        spec = forever.SOURCES["sharepoint_lists"]
+        audience = {"live_audience": str(ROOT / "examples" / "ingest_all.capture-audience.json")}
+        options = forever.section_options(spec, {"budget_seconds": 1500}, self.state,
+                                          audience)
+        argv = spec.argv(self.state, options)
+        self.assertEqual(argv[argv.index("--budget-seconds") + 1], "1500")
+        parser = argparse.ArgumentParser()
+        csl.add_cli_arguments(parser)
+        parsed = parser.parse_args(argv[argv.index("sharepoint-list-capture") + 1:])
+        self.assertEqual(parsed.budget_seconds, 1500.0)
+        self.assertNotIn("--budget-seconds", spec.argv(self.state, forever.section_options(
+            spec, {}, self.state, audience)))
+        with self.assertRaises(forever.IngestError):
+            forever.section_options(spec, {"budget_seconds": "soon"}, self.state,
+                                    audience)
+
+    def test_mail_backlog_passes_are_their_own_child_never_the_mail_capture(self) -> None:
+        # 2026-11-13: the backlog passes ran inside the mail child, so a 2 h 22 min
+        # deferred pass held fresh mail back. They are the ``mail_backlog`` source now:
+        # the mail child never gets a pass flag, whatever its section says.
+        spec, backlog = forever.SOURCES["mail"], forever.SOURCES["mail_backlog"]
         audience = str(ROOT / "examples" / "ingest_all.capture-audience.json")
-        options = forever.section_options(spec, {
+        warnings: list[str] = []
+        legacy = forever.section_options(spec, {
+            "budget_seconds": 600, "deferred_attachments_seconds": 1800,
+            "image_ocr_seconds": 300}, self.state, {"live_audience": audience}, warnings,
+            "mail")
+        argv = spec.argv(self.state, legacy)
+        self.assertFalse([a for a in argv if "deferred" in a or "image-ocr" in a
+                          or "apply-fetched" in a], argv)
+        self.assertEqual(sorted(warnings), ["mail.deferred_attachments_seconds",
+                                            "mail.image_ocr_seconds"])
+        options = forever.section_options(backlog, {
             "budget_seconds": 600, "deferred_attachments_seconds": 1800,
             "deferred_workers": 16, "deferred_extract_workers": 4,
             "deferred_min_free_gb": 30, "image_ocr_seconds": 300,
             "image_ocr_workers": 8}, self.state, {"live_audience": audience})
-        argv = spec.argv(self.state, options)
+        argv = backlog.argv(self.state, options)
+        self.assertEqual(argv[1:4], ["-m", "integrations.capture_mail", "backlog"])
+        self.assertIn("--host-child", argv)
         for flag, value in (("--deferred-attachments-seconds", "1800"),
                             ("--deferred-workers", "16"), ("--deferred-extract-workers", "4"),
-                            ("--deferred-min-free-gb", "30"),
+                            ("--deferred-min-free-gb", "30"), ("--budget-seconds", "600"),
                             ("--image-ocr-seconds", "300"), ("--image-ocr-workers", "8")):
             self.assertEqual(argv[argv.index(flag) + 1], value, flag)
-        plain = spec.argv(self.state, {"live_audience": audience})
-        self.assertFalse([a for a in plain if "deferred" in a or "image-ocr" in a])
-        self.assertNotIn("--deferred-attachments-seconds", forever.SOURCES["sharepoint"].argv(
-            self.state, {**options, "live_audience": audience}))
-        # A bad value is refused when the config loads, never by every mail child.
-        floor = forever.section_options(spec, {"deferred_min_free_gb": 0.5}, self.state,
-                                        {"live_audience": audience})
-        self.assertIn("--deferred-min-free-gb", spec.argv(self.state, floor))
+        self.assertEqual((backlog.yields_to, backlog.writes(self.state)),
+                         (("mail",), spec.writes(self.state)))
+        # A bad value is refused when the config loads, never by every child; the
+        # backlog's budget is required (its hard deadline).
         for bad in ({"deferred_workers": 17}, {"image_ocr_workers": 0},
                     {"deferred_min_free_gb": -1}, {"deferred_min_free_gb": True},
                     {"deferred_attachments_seconds": 0}, {"deferred_workers": True},
                     {"image_ocr_seconds": "60"}):
             with self.assertRaises(forever.IngestError, msg=bad):
-                forever.section_options(spec, bad, self.state, {"live_audience": audience})
-        # The child's limit is its budget, the passes' seconds and the tail of work in
-        # flight (one reading's time) plus the grace.
-        self.state.mkdir(parents=True, exist_ok=True)
-        script = self.state / "slow_child.py"
-        script.write_text("import time\ntime.sleep(6)\nprint('{}')\n", encoding="utf-8")
-        slow = SourceSpec("mail", "fake-source", lambda state, opts: [sys.executable,
-                                                                      str(script)],
-                          summarize_mail, dict(spec.fields))
-        env = {"PATH": os.environ.get("PATH", "")}
-        cut = forever.run_source(slow, {"budget_seconds": 1}, self.state, env, grace=0.5)
-        self.assertEqual(cut.get("error_code"), "child_timeout")
-        with mock.patch.object(forever, "AFTER_CAPTURE_TAIL_SECONDS", 0):
-            kept = forever.run_source(slow, {"budget_seconds": 1, "image_ocr_seconds": 4,
-                                             "deferred_attachments_seconds": 4}, self.state,
-                                      env, grace=0.5)
-            self.assertNotEqual(kept.get("error_code"), "child_timeout", kept)
-            short = forever.run_source(slow, {"budget_seconds": 1,
-                                              "deferred_attachments_seconds": 0.5},
-                                       self.state, env, grace=0.5)
-            self.assertEqual(short.get("error_code"), "child_timeout")
-        with mock.patch.object(forever, "AFTER_CAPTURE_TAIL_SECONDS", 8):
-            tail = forever.run_source(slow, {"budget_seconds": 1,
-                                             "deferred_attachments_seconds": 0.5},
-                                      self.state, env, grace=0.5)
-            self.assertNotEqual(tail.get("error_code"), "child_timeout", tail)
-        # each pass set has its own tail
-        with mock.patch.object(forever, "AFTER_CAPTURE_TAIL_SECONDS", 4.3):
-            one = forever.run_source(slow, {"budget_seconds": 1,
-                                            "deferred_attachments_seconds": 0.1},
-                                     self.state, env, grace=0.2)
-            self.assertEqual(one.get("error_code"), "child_timeout")
-            both = forever.run_source(slow, {"budget_seconds": 1, "image_ocr_seconds": 0.1,
-                                             "deferred_attachments_seconds": 0.1},
-                                      self.state, env, grace=0.2)
-            self.assertNotEqual(both.get("error_code"), "child_timeout", both)
+                forever.section_options(backlog, {"budget_seconds": 60, **bad}, self.state,
+                                        {"live_audience": audience})
+        with self.assertRaises(forever.IngestError):
+            forever.section_options(backlog, {"image_ocr_seconds": 60}, self.state,
+                                    {"live_audience": audience})
+        # A config written before the split keeps its passes, moved off the capture.
+        moved: list[str] = []
+        document = forever.split_mail_backlog({"mail": {
+            "scope": "s.json", "budget_seconds": 900, "min_interval_seconds": 60,
+            "image_ocr_seconds": 120, "apply_fetched_seconds": 240,
+            "apply_fetched_dir": "/x"}}, forever.SOURCES, moved)
+        self.assertEqual(document["mail"], {"scope": "s.json", "budget_seconds": 900,
+                                            "min_interval_seconds": 60})
+        self.assertEqual(document["mail_backlog"], {
+            "image_ocr_seconds": 120, "apply_fetched_seconds": 240, "apply_fetched_dir": "/x",
+            "budget_seconds": 360, "min_interval_seconds": 60})
+        self.assertEqual(moved, ["mail.backlog_keys_moved"])
+        given = {"mail": {"image_ocr_seconds": 1}, "mail_backlog": {"budget_seconds": 9}}
+        self.assertIs(forever.split_mail_backlog(given, forever.SOURCES, []), given)
+
+    def test_the_backlog_report_is_one_unit_per_pass(self) -> None:
+        judge = lambda report: forever._judge(forever._base(forever.SOURCES["mail_backlog"]),
+                                              forever.summarize_backlog(report))
+        done = judge({"ok": True, "passes": {"image_ocr": {"read": 3},
+                                             "apply_fetched": {"applied": 2}}})
+        self.assertEqual((done["status"], done["units"]), ("complete", 2))
+        cut = judge({"ok": True, "passes": {"image_ocr": {"budget_spent": 1}}})
+        self.assertEqual((cut["status"], cut["reasons"]), ("partial", ["budget_spent"]))
+        drained = judge({"ok": True, "drained": True,
+                         "passes": {"deferred_attachments": {"budget_spent": 1,
+                                                             "abandoned": 2}}})
+        self.assertEqual(drained["reasons"], ["drained"])
+        refused = judge({"ok": True, "passes": {"image_ocr": {
+            "error": "people_exclusion_unavailable"}}})
+        self.assertEqual((refused["status"], refused["blocked"][0]["later_ask"]),
+                         ("blocked", "excluded-people-oids"))
+
+    def test_a_bc_hand_list_missing_capture_sets_is_a_config_warning(self) -> None:
+        """CT-D-04: the live config listed BC sets by hand and three capture sets
+        (projects, plxCustomerShipTos, contactsInformation) never ran, silently. Each set
+        the CLI captures by default that the list leaves out is a config warning (the Home
+        ``config_keys_ignored`` breach); no list, or a full one, warns of nothing."""
+        from integrations.bc_read import CAPTURE_ENTITY_SETS, PARTY_CONTACT_SET
+
+        spec = forever.SOURCES["bc"]
+        audience = {"live_audience": str(ROOT / "examples" / "ingest_all.capture-audience.json")}
+        left_out = ["projects", "plxCustomerShipTos", PARTY_CONTACT_SET]
+        listed = [s for s in CAPTURE_ENTITY_SETS if s not in left_out]
+        warnings: list[str] = []
+        options = forever.section_options(spec, {"entity_sets": listed}, self.state,
+                                          audience, warnings, "bc")
+        self.assertEqual(warnings, [f"bc.entity_sets:unlisted:{s}" for s in
+                                    ("projects", "plxCustomerShipTos", PARTY_CONTACT_SET)])
+        # the list is still passed as given: a warning, never a silent widening
+        argv = spec.argv(self.state, options)
+        self.assertNotIn("projects", argv)
+        for section in ({}, {"entity_sets": list(CAPTURE_ENTITY_SETS)},
+                        {"entity_sets": list(reversed(CAPTURE_ENTITY_SETS))}):
+            warnings = []
+            forever.section_options(spec, section, self.state, audience, warnings, "bc")
+            self.assertEqual(warnings, [], section)
+        # an empty list is refused, never a capture of nothing
+        with self.assertRaises(forever.IngestError):
+            forever.section_options(spec, {"entity_sets": []}, self.state, audience, [], "bc")
+        # the committed all-sources config lists every set: no warning from it
+        config = host_module.HostConfig.from_file(ROOT / "examples" / "ingest_all_sources.json",
+                                                  capture_sources=forever.SOURCES)
+        self.assertEqual([w for w in config.config_warnings if ":unlisted:" in w], [])
 
     def test_named_originals_is_a_flag_the_sharepoint_child_gets_only_when_true(self) -> None:
         spec = forever.SOURCES["sharepoint"]
@@ -1672,7 +1451,7 @@ class LiveCycleRepairTest(unittest.TestCase):
                "PLX_MEETINGS_GRAPH_CREDENTIALS": "AZURE", "BC_CLIENT_SECRET": "b",
                "MC_MCP_API_KEY": "m", "PATH": "p"}
         child = forever.child_env(env, spec, self.state)
-        self.assertEqual(set(child) - {"PLX_WORKBENCH_STATE_DIR"},
+        self.assertEqual(set(child) - {"PLX_WORKBENCH_STATE_DIR", "PLX_INGEST_DRAIN"},
                          {"AZURE_TENANT_ID", "AZURE_CLIENT_ID", "AZURE_CLIENT_SECRET",
                           "PLX_MEETINGS_GRAPH_CREDENTIALS", "PATH"})
         summary = forever.summarize_meetings({"runs": [{
@@ -1717,7 +1496,7 @@ class LiveCycleRepairTest(unittest.TestCase):
         # SharePoint (business rule everything, 2026-10-27): every document library of every
         # site is discovered and none is left out, no named folder narrows a library, and
         # a cut root stays a gap rather than a smaller scope.
-        from integrations.capture_sharepoint import CaptureScope
+        from integrations.capture_sharepoint_scope import CaptureScope
         sharepoint = CaptureScope.from_file(config.sources["sharepoint"]["scope"])
         self.assertIsNotNone(sharepoint.discover)
         self.assertEqual((sharepoint.discover.exclude, list(sharepoint.targets)), ([], []))
@@ -1726,6 +1505,660 @@ class LiveCycleRepairTest(unittest.TestCase):
         # Teams: the census reaches every chat (the largest cap; past it, it rotates).
         teams = json.loads(Path(config.sources["teams"]["scope"]).read_text())
         self.assertEqual(teams["census"]["max_chats"], 100000)
+
+class DrainAndFreshnessTest(unittest.TestCase):
+    """2026-11-13/14: mail capture went stale three times in one night. A post-capture
+    pass inside the mail child held fresh mail back 2 h 22 min; restarts killed every
+    capture in flight, so deploys waited for a gap a back-to-back mail source never left;
+    and nothing in the host kept mail within a freshness target. The scheduler now drains
+    (never kills) on a stop, lets a heavy pass give way to the source it yields to, and
+    starts sources by staleness against their target with a slot kept for them."""
+
+    def setUp(self) -> None:
+        self.tmp = Path(tempfile.mkdtemp(prefix="drain-"))
+        self.addCleanup(lambda: __import__("shutil").rmtree(self.tmp, ignore_errors=True))
+        self.events: list[tuple[str, str, float]] = []
+        self.lock = threading.Lock()
+
+    def note(self, name: str, what: str) -> None:
+        with self.lock:
+            self.events.append((name, what, time.monotonic()))
+
+    def fake_run(self, spec, options, state, environ, **kwargs):
+        """A capture child: ``quick`` ends at once; ``hold`` reads until it is drained
+        (a clean end, its report kept) or cancelled (killed)."""
+        self.note(spec.name, "start")
+        try:
+            if options.get("mode") == "hold":
+                deadline = time.monotonic() + 20
+                while time.monotonic() < deadline:
+                    if kwargs.get("cancel") is not None and kwargs["cancel"].is_set():
+                        return {**forever._base(spec), "status": "failed",
+                                "error_code": forever.STOPPED}
+                    if kwargs.get("drain") is not None and kwargs["drain"].is_set():
+                        time.sleep(0.05)   # its next safe point
+                        return {**forever._base(spec), "status": "partial", "units": 1,
+                                "reasons": ["time_budget"], "drained": True}
+                    time.sleep(0.01)
+            return {**forever._base(spec), "status": "complete", "units": 1,
+                    "units_complete": 1}
+        finally:
+            self.note(spec.name, "end")
+
+    def table(self, *names: str, yields: dict | None = None) -> dict:
+        return {n: SourceSpec(n, "fake-source", lambda state, options: [], summarize_mail,
+                              {"mode": "str"}, budget_field=None,
+                              yields_to=(yields or {}).get(n, ()))
+                for n in names}
+
+    def run_until(self, table, sections, done, *, parallel: int, seconds: float = 20):
+        batches: list[dict] = []
+        stop_at = time.monotonic() + seconds
+
+        def should_stop():
+            if done(self.events):
+                return "stopped"
+            return "timeout" if time.monotonic() > stop_at else None
+        with mock.patch.object(forever, "_guarded_run", self.fake_run):
+            summary = forever.Continuous(
+                table, sections, self.tmp, {ENV_IDS: str(uuid.uuid4())}, grace=1,
+                parallel=parallel, should_stop=should_stop, drain_seconds=5,
+                refresh=lambda batch, reason: batches.append(dict(batch))).run()
+        self.assertEqual(summary["reason"], "stopped", (summary, self.events))
+        return summary, batches
+
+    def starts(self, name: str) -> list[float]:
+        return [t for n, what, t in self.events if n == name and what == "start"]
+
+    def test_a_stop_drains_the_running_children_and_records_what_they_captured(self) -> None:
+        # Old: a stop killed every child (STOPPED, nothing recorded) - so a restart lost
+        # the run in flight and deploys waited for a gap that never came.
+        table = self.table("mail")
+        summary, batches = self.run_until(table, {"mail": {"mode": "hold"}},
+                                          lambda ev: bool(ev), parallel=1)
+        self.assertEqual(summary["stopped_sources"], [])
+        recorded = [b["mail"] for b in batches if "mail" in b]
+        self.assertEqual([o["state"] for o in recorded], ["partial"])
+        self.assertTrue(recorded[0]["capture"]["drained"])
+
+    def test_the_mail_backlog_gives_way_to_mail_and_never_runs_beside_it(self) -> None:
+        table = self.table("mail", "mail_backlog", yields={"mail_backlog": ("mail",)})
+        sections = {"mail": {"mode": "quick", "min_interval_seconds": 0.4},
+                    "mail_backlog": {"mode": "hold", "min_interval_seconds": 0}}
+        summary, _ = self.run_until(table, sections,
+                                    lambda ev: len([e for e in ev if e[:2] == ("mail", "end")])
+                                    >= 3, parallel=4)
+        self.assertGreaterEqual(summary["preempted"].get("mail_backlog", 0), 1, self.events)
+        # One writer: never both at once (mail waits for the drained backlog to end).
+        live: set[str] = set()
+        for name, what, _t in self.events:
+            if what == "start":
+                live.add(name)
+                self.assertLessEqual(live, {"mail"} if name == "mail" else {"mail_backlog"},
+                                     self.events)
+            else:
+                live.discard(name)
+        # The backlog still ran in the gaps, and mail never waited long for it.
+        self.assertTrue(self.starts("mail_backlog"))
+        mail = self.starts("mail")
+        self.assertTrue(all(b - a < 3.0 for a, b in zip(mail, mail[1:])), mail)
+
+    def test_fresh_sources_start_first_and_keep_a_slot(self) -> None:
+        # Old: sources started in the order they fell due; two heavy walks took both
+        # slots and mail waited for one of them to end.
+        table = self.table("walk1", "walk2", "mail")
+        sections = {"walk1": {"mode": "hold"}, "walk2": {"mode": "hold"},
+                    "mail": {"mode": "quick", "min_interval_seconds": 0.1}}
+        self.run_until(table, sections,
+                       lambda ev: len([e for e in ev if e[:2] == ("mail", "start")]) >= 3,
+                       parallel=2, seconds=10)
+        firsts = [n for n, what, _t in self.events if what == "start"][:2]
+        self.assertEqual(firsts[0], "mail", self.events)
+        # the second slot is mail's between its runs: walk2 never took it
+        self.assertEqual(self.starts("walk2"), [], self.events)
+
+    def test_a_maintenance_gap_drains_the_captures_and_the_run_goes_on(self) -> None:
+        # 11-15: the daily mail exclusion purge needs the cycle lock, which the continuous
+        # ingest holds for its whole run: it was refused every day (host_cycle_running).
+        # Now a gap request drains the running capture (recorded), nothing starts during
+        # the gap, and the same run starts the captures again after it: no restart.
+        events = self.events
+        state = {"want": False, "gaps": 0}
+
+        class Gap:
+            def wanted(gap_self) -> bool:
+                return state["want"]
+
+            def give(gap_self) -> bool:
+                live = {n for n, what, _t in events if what == "start"} - {
+                    n for n, what, _t in events if what == "end"}
+                self.note("gap", "start")
+                self.assertFalse(live, events)   # nothing runs in the gap
+                time.sleep(0.2)
+                self.note("gap", "end")
+                state["want"], state["gaps"] = False, state["gaps"] + 1
+                return True
+        table = self.table("mail", "walk")
+        sections = {"mail": {"mode": "quick", "min_interval_seconds": 0.1},
+                    "walk": {"mode": "hold", "min_interval_seconds": 0}}
+
+        def should_stop():
+            if not state["gaps"] and len(self.starts("mail")) >= 2:
+                state["want"] = True
+            if state["gaps"] and self.starts("walk") and \
+                    self.starts("walk")[-1] > self.gap_end():
+                return "stopped"
+            return "timeout" if time.monotonic() > stop_at else None
+        stop_at = time.monotonic() + 20
+        batches: list[dict] = []
+        with mock.patch.object(forever, "_guarded_run", self.fake_run):
+            summary = forever.Continuous(
+                table, sections, self.tmp, {ENV_IDS: str(uuid.uuid4())}, grace=1,
+                parallel=2, should_stop=should_stop, drain_seconds=5, gap=Gap(),
+                refresh=lambda batch, reason: batches.append(dict(batch))).run()
+        self.assertEqual((summary["reason"], summary["gaps"]), ("stopped", 1), self.events)
+        # the walk was drained for the gap and its run recorded, not killed
+        walks = [b["walk"] for b in batches if "walk" in b]
+        self.assertTrue(walks and walks[0]["capture"]["drained"], batches)
+        self.assertEqual(summary["stopped_sources"], [])
+        # nothing started inside the gap; both ran again after it
+        g0 = [t for n, w, t in self.events if (n, w) == ("gap", "start")][0]
+        g1 = self.gap_end()
+        self.assertFalse([n for n, w, t in self.events
+                          if n != "gap" and w == "start" and g0 <= t <= g1])
+        self.assertTrue([t for t in self.starts("mail") if t > g1], self.events)
+
+    def test_a_gap_that_ends_without_the_lock_ends_the_run(self) -> None:
+        # Give() returns False when a stop came in the gap and the
+        # cycle lock was not taken back; the run ignored it and, had the stop cleared, would
+        # have started captures beside the step holding the lock. Now the run ends there.
+        state = {"want": False, "gaps": 0, "in_gap": False}
+
+        class Gap:
+            def wanted(gap_self) -> bool:
+                return state["want"]
+
+            def give(gap_self) -> bool:
+                self.note("gap", "start")
+                state["in_gap"] = True
+                state["want"], state["gaps"] = False, state["gaps"] + 1
+                self.note("gap", "end")
+                return False   # the stop seen inside, lock not held
+        table = self.table("mail")
+        sections = {"mail": {"mode": "quick", "min_interval_seconds": 0.1}}
+
+        def should_stop():
+            if not state["gaps"] and len(self.starts("mail")) >= 2:
+                state["want"] = True
+            # the stop is seen only inside the gap (a stop file removed at once)
+            return "timeout" if time.monotonic() > stop_at else None
+        stop_at = time.monotonic() + 5
+        with mock.patch.object(forever, "_guarded_run", self.fake_run):
+            summary = forever.Continuous(
+                table, sections, self.tmp, {ENV_IDS: str(uuid.uuid4())}, grace=1,
+                parallel=1, should_stop=should_stop, drain_seconds=5, gap=Gap(),
+                refresh=lambda batch, reason: None).run()
+        self.assertEqual((summary["reason"], summary["gaps"]),
+                         (forever.GAP_LOCK_NOT_HELD, 1), self.events)
+        self.assertFalse([t for t in self.starts("mail") if t > self.gap_end()], self.events)
+
+    def gap_end(self) -> float:
+        ends = [t for n, w, t in self.events if (n, w) == ("gap", "end")]
+        return ends[0] if ends else float("inf")
+
+    def test_the_hosts_cycle_gap_lets_a_waiting_step_take_the_lock_and_takes_it_back(self):
+        import fcntl
+        from integrations import capture_mail, cycle_gap
+
+        state = self.tmp / "state"
+        host_dir = state / "host"
+        host_dir.mkdir(parents=True)
+        held = open(host_dir / "cycle.lock", "a+")
+        self.addCleanup(held.close)
+        fcntl.flock(held, fcntl.LOCK_EX | fcntl.LOCK_NB)   # the continuous ingest's lock
+        gap = host_module.CycleGap(host_dir, held, should_stop=lambda: None, poll=0.02)
+        self.assertFalse(gap.wanted())
+        ran: list[bool] = []
+
+        class Store:
+            def close(self) -> None:
+                pass
+        out: list[str] = []
+        codes: list[int] = []
+
+        def step():
+            with mock.patch("builtins.print", side_effect=out.append):
+                codes.append(capture_mail._locked(
+                    str(state), lambda store: ran.append(True) or {"n": 1},
+                    open_store=lambda s: Store(), exists=lambda s: True,
+                    wait_seconds=10, purpose="test_purge", poll=0.02))
+        worker = threading.Thread(target=step)
+        worker.start()
+        deadline = time.monotonic() + 10
+        while not gap.wanted():
+            self.assertLess(time.monotonic(), deadline, "no gap request")
+            time.sleep(0.02)
+        self.assertEqual(cycle_gap.live(host_dir), ["test_purge"])
+        self.assertFalse(ran)   # it waits while the host holds the lock
+        self.assertTrue(gap.give())
+        worker.join(10)
+        self.assertEqual((codes, ran, json.loads(out[0])["n"]), ([0], [True], 1))
+        self.assertEqual(cycle_gap.live(host_dir), [])   # withdrawn
+        with open(host_dir / "cycle.lock", "a+") as other:   # the host holds it again
+            with self.assertRaises(BlockingIOError):
+                fcntl.flock(other, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        # without a gap answered in time the step is refused as before
+        out.clear()
+        with mock.patch("builtins.print", side_effect=out.append):
+            code = capture_mail._locked(str(state), lambda store: {"n": 1},
+                                        open_store=lambda s: Store(), exists=lambda s: True,
+                                        wait_seconds=0.1, poll=0.02)
+        self.assertEqual((code, json.loads(out[0])["error"]), (2, "host_cycle_running"))
+        self.assertEqual(cycle_gap.live(host_dir), [])
+
+    def test_a_stuck_or_dead_gap_request_never_holds_the_captures_off(self) -> None:
+        import fcntl
+        from integrations import cycle_gap
+
+        host_dir = self.tmp / "host"
+        host_dir.mkdir()
+        held = open(host_dir / "cycle.lock", "a+")
+        self.addCleanup(held.close)
+        fcntl.flock(held, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        # a request of a process that ended, or of a reused pid, is not live
+        dead = subprocess.Popen([sys.executable, "-c", "pass"])
+        dead.wait()
+        (host_dir / f"gap.{dead.pid}.request").write_text(json.dumps({"pid": dead.pid}))
+        (host_dir / f"gap.{os.getpid()}.request").write_text(
+            json.dumps({"pid": os.getpid(), "started": "1", "purpose": "reused"}))
+        self.assertEqual(cycle_gap.live(host_dir), [])
+        # a live request never withdrawn: the gap ends at its bound, then requests wait
+        path = cycle_gap.request(host_dir, purpose="stuck")
+        clock = [0.0]
+
+        def wait(seconds: float) -> None:
+            clock[0] += seconds
+        gap = host_module.CycleGap(host_dir, held, should_stop=lambda: None, wait=wait,
+                                   poll=1.0, max_seconds=30, monotonic=lambda: clock[0])
+        self.assertTrue(gap.wanted())
+        self.assertTrue(gap.give())
+        self.assertEqual(clock[0], 30.0)
+        self.assertFalse(gap.wanted())   # quiet for another bound
+        clock[0] += 31
+        self.assertTrue(gap.wanted())
+        cycle_gap.withdraw(path)
+        self.assertFalse(gap.wanted())
+        # a stop during the gap returns at once, without the lock
+        cycle_gap.request(host_dir, purpose="again")
+        stop = host_module.CycleGap(host_dir, held, should_stop=lambda: "stopped",
+                                    wait=wait, monotonic=lambda: clock[0])
+        self.assertFalse(stop.give())
+
+    def test_a_source_past_its_target_drains_a_heavy_run_for_its_slot(self) -> None:
+        table = self.table("walk", "mail")
+        sections = {"walk": {"mode": "hold"},
+                    "mail": {"mode": "quick", "min_interval_seconds": 0.1,
+                             "freshness_target_seconds": 0.3}}
+        summary, _ = self.run_until(
+            table, sections,
+            lambda ev: len([e for e in ev if e[:2] == ("mail", "start")]) >= 2, parallel=1)
+        self.assertEqual(summary["preempted"], {"walk": 1}, self.events)
+        order = [n for n, what, _t in self.events if what == "start"]
+        self.assertEqual(order[:3], ["mail", "walk", "mail"], self.events)
+
+    def test_run_source_drains_a_child_and_kills_one_past_its_bound(self) -> None:
+        script = self.tmp / "child.py"
+        script.write_text(textwrap.dedent("""
+            import json, signal, sys, time
+            sys.path.insert(0, sys.argv[2])
+            from integrations import drain
+            if sys.argv[1] == "ignore":
+                signal.signal(signal.SIGTERM, signal.SIG_IGN)
+            else:
+                assert drain.install()   # the host's environment asks for it
+            open(sys.argv[3], "w").close()   # ready: the handler is in place
+            deadline = time.time() + 30
+            while not drain.requested() and time.time() < deadline:
+                time.sleep(0.02)
+            if not drain.requested():   # its own 30 s loop ran out
+                open(sys.argv[3] + ".outlived", "w").close()
+            print(json.dumps({"drained": drain.requested(), "runs": [{"mailboxes": [
+                {"folders": [{"complete": False, "reason": "time_budget"}]}]}]}))
+        """), encoding="utf-8")
+
+        ready = self.tmp / "ready"
+
+        def spec(mode):
+            return SourceSpec("mail", "fake-source", lambda state, options: [
+                sys.executable, str(script), mode, str(ROOT), str(ready)], summarize_mail,
+                {}, budget_field=None)
+
+        def when_ready(event):   # drain once the child is in its loop, at any host load
+            deadline = time.monotonic() + 60
+            while not ready.exists() and time.monotonic() < deadline:
+                time.sleep(0.02)
+            event.set()
+        env = {"PATH": os.environ.get("PATH", "")}
+        for mode, bound in (("drain", 10.0), ("ignore", 1.0)):
+            event = threading.Event()
+            ready.unlink(missing_ok=True)
+            outlived = Path(str(ready) + ".outlived")
+            outlived.unlink(missing_ok=True)
+            threading.Thread(target=when_ready, args=(event,), daemon=True).start()
+            result = forever.run_source(spec(mode), {"timeout_seconds": 60}, self.tmp, env,
+                                        grace=1, drain=event, drain_seconds=bound)
+            if mode == "drain":
+                self.assertEqual((result["status"], result.get("drained")),
+                                 ("partial", True), result)
+            else:   # still running at the bound: killed, never recorded
+                self.assertEqual((result["error_code"], result.get("drain_overran")),
+                                 (forever.STOPPED, True), result)
+            # never the child's own 30 s loop: drained or killed before it ran out
+            self.assertFalse(outlived.exists(), mode)
+
+    def test_the_hosts_first_sigterm_drains_and_a_second_exits(self) -> None:
+        event = threading.Event()
+        with self.assertRaises(SystemExit) as ended:
+            with host_module._terminated_exits(event):
+                os.kill(os.getpid(), signal.SIGTERM)
+                deadline = time.monotonic() + 5
+                while not event.is_set() and time.monotonic() < deadline:
+                    time.sleep(0.01)
+                self.assertTrue(event.is_set())
+                os.kill(os.getpid(), signal.SIGTERM)
+                time.sleep(5)
+        self.assertEqual(ended.exception.code, 128 + signal.SIGTERM)
+
+    def test_an_exclusion_stop_is_its_own_state_and_alarms_at_once(self) -> None:
+        # 2026-11-10..12: mail and Teams failed closed two days on ExclusionUnavailable,
+        # one untyped failure among others. It is a typed block now, recorded as such,
+        # and the first one alarms.
+        from datetime import datetime, timezone
+        from operating import ops_health
+        spec = forever.SOURCES["teams"]
+        crashed = {**forever._base(spec), "status": "failed",
+                   "error_code": "ExclusionUnavailable"}
+        out = forever.surface_exclusion(spec, crashed)
+        self.assertEqual((out["status"], out["exclusion_unavailable"],
+                          out["blocked"][0]["error_code"], out["blocked"][0]["later_ask"]),
+                         ("blocked", True, forever.EXCLUSION_UNAVAILABLE, "excluded-people-oids"))
+        guard = forever.surface_exclusion(spec, {**forever._base(spec), "status": "blocked",
+                                                 "blocked": [{"part": "mail.people_exclusion",
+                                                              "error_code":
+                                                              "excluded_people_unresolved"}]})
+        self.assertTrue(guard["exclusion_unavailable"])
+        plain = {**forever._base(spec), "status": "failed", "error_code": "child_timeout"}
+        self.assertNotIn("exclusion_unavailable", forever.surface_exclusion(spec, plain))
+        runs = forever.SourceRuns(self.tmp, now=lambda: "2030-01-02T11:50:00Z")
+        runs.record("teams", out)
+        row = json.loads((self.tmp / "host" / forever.RUNS_FILE).read_text())["sources"]["teams"]
+        self.assertEqual((row["exclusion_unavailable_runs"],
+                          row["exclusion_unavailable_since"]), (1, "2030-01-02T11:50:00Z"))
+        ledger = self.tmp / "host" / "host.sqlite"
+        with closing(sqlite3.connect(ledger)) as db:
+            db.execute("CREATE TABLE source_state (source TEXT, configured INTEGER)")
+            db.execute("INSERT INTO source_state VALUES ('teams', 1)")
+            db.commit()
+        checks = ops_health.capture_run_checks(
+            self.tmp, datetime(2030, 1, 2, 12, 0, tzinfo=timezone.utc),
+            ops_health.DEFAULT_TARGETS)
+        (alarm,) = [c for c in checks if c["name"] == "capture_exclusion:teams"]
+        self.assertEqual(alarm["state"], "breach")
+        self.assertIn("people exclusion unavailable", alarm["detail"])
+        runs.record("teams", {**forever._base(spec), "status": "complete"})
+        checks = ops_health.capture_run_checks(
+            self.tmp, datetime(2030, 1, 2, 12, 5, tzinfo=timezone.utc),
+            ops_health.DEFAULT_TARGETS)
+        self.assertFalse([c for c in checks if c["name"].startswith("capture_exclusion:")])
+
+    def test_a_one_shot_cycle_never_runs_the_backlog_beside_mail(self) -> None:
+        # Review 7909fdfa28: read_sources (host run/check, the daily live check) started
+        # every source at once, so the backlog wrote the mail store beside the capture.
+        table = self.table("mail", "mail_backlog", "teams", yields={"mail_backlog": ("mail",)})
+        sections = {"mail": {}, "mail_backlog": {}, "teams": {}}
+
+        def run(spec, options, state, environ, **kwargs):
+            self.note(spec.name, "start")
+            if spec.name == "mail":
+                time.sleep(0.3)
+            self.note(spec.name, "end")
+            return {**forever._base(spec), "status": "complete", "units": 1,
+                    "units_complete": 1}
+        with mock.patch.object(forever, "_guarded_run", run):
+            out = forever.read_sources(table, sections, self.tmp,
+                                       {ENV_IDS: str(uuid.uuid4())}, grace=1, parallel=3)
+        self.assertEqual(set(out), {"mail", "mail_backlog", "teams"})
+        order = [(n, w) for n, w, _t in self.events]
+        self.assertLess(order.index(("mail", "end")), order.index(("mail_backlog", "start")),
+                        order)
+
+    def test_drain_seconds_is_an_ingest_setting(self) -> None:
+        self.assertEqual(forever.ingest_settings({"mode": forever.MODE})["drain_seconds"],
+                         forever.DEFAULT_DRAIN_SECONDS)
+        self.assertEqual(forever.ingest_settings({"mode": forever.MODE,
+                                                  "drain_seconds": 90})["drain_seconds"], 90)
+        for bad in (0, forever.MAX_DRAIN_SECONDS + 1, "60", True):
+            with self.assertRaises(forever.IngestError, msg=bad):
+                forever.ingest_settings({"mode": forever.MODE, "drain_seconds": bad})
+        env = forever.child_env({"PATH": "/bin"}, forever.SOURCES["mail"], self.tmp)
+        self.assertEqual(env["PLX_INGEST_DRAIN"], "1")
+
+
+class GraphNotificationWakeTest(unittest.TestCase):
+    """AUD-05 / ARCH-REVIEW L2: a Graph change notification (through Event Hubs) wakes the
+    mail or Teams delta capture early. Off unless ``ingest.graph_notifications``: without
+    it no wake is read and every source keeps its cadence."""
+
+    def setUp(self) -> None:
+        self.tmp = Path(tempfile.mkdtemp(prefix="wake-"))
+        self.addCleanup(lambda: __import__("shutil").rmtree(self.tmp, ignore_errors=True))
+        self.events: list[tuple[str, str]] = []
+        self.fail: set[str] = set()
+
+    def fake_run(self, spec, options, state, environ, **kwargs):
+        self.events.append((spec.name, "start"))
+        if spec.name in self.fail:
+            return {**forever._base(spec), "status": "failed", "error_code": "http_503"}
+        return {**forever._base(spec), "status": "complete", "units": 1, "units_complete": 1}
+
+    def run_with(self, wakes, *, wake_after_first_mail: bool, seconds: float = 4.0):
+        from integrations import graph_notifications as gn
+        names = ("mail", "teams")
+        table = {n: SourceSpec(n, "fake-source", lambda state, options: [], summarize_mail,
+                               {}, budget_field=None) for n in names}
+        sections = {n: {"min_interval_seconds": 7200} for n in names}
+        stop_at = time.monotonic() + seconds
+        woke: list[bool] = []
+
+        def should_stop():
+            if wake_after_first_mail and not woke and ("mail", "start") in self.events:
+                time.sleep(0.02)   # the notification comes after the run started
+                gn.wake(self.tmp, "mail")
+                woke.append(True)
+            if self.events.count(("mail", "start")) >= 2:
+                return "done"
+            return "timeout" if time.monotonic() > stop_at else None
+        with mock.patch.object(forever, "_guarded_run", self.fake_run), \
+                mock.patch.object(gn, "WAKE_MIN_GAP_SECONDS", 0.2):
+            return forever.Continuous(
+                table, sections, self.tmp, {ENV_IDS: str(uuid.uuid4())}, grace=1,
+                parallel=2, should_stop=should_stop, refresh=lambda batch, reason: None,
+                wakes=wakes).run()
+
+    def test_a_wake_starts_mail_again_soon_and_leaves_teams_on_its_cadence(self) -> None:
+        from integrations.graph_notifications import Wakes
+        summary = self.run_with(Wakes(self.tmp), wake_after_first_mail=True)
+        self.assertEqual(summary["reason"], "done", (summary, self.events))
+        self.assertEqual(summary["runs"], {"mail": 2, "teams": 1})
+        self.assertEqual(summary["woken"], {"mail": 1})
+
+    def test_unconfigured_reads_no_wake_and_changes_nothing(self) -> None:
+        summary = self.run_with(None, wake_after_first_mail=True, seconds=1.5)
+        self.assertEqual(summary["reason"], "timeout")
+        self.assertEqual(summary["runs"], {"mail": 1, "teams": 1})
+        self.assertNotIn("woken", summary)
+        self.assertFalse(forever.ingest_settings({"mode": forever.MODE})["graph_notifications"])
+        # a mistyped optional setting never refuses the whole host config (11-07 loop)
+        for text, want in (("true", True), ("False", False), (" TRUE ", True)):
+            self.assertIs(forever.ingest_settings(
+                {"mode": forever.MODE, "graph_notifications": text})["graph_notifications"], want)
+        for bad in ("yes", 1, None, [], {}):
+            warned: list[str] = []
+            got = forever.ingest_settings({"mode": forever.MODE, "graph_notifications": bad},
+                                          warned)
+            self.assertIs(got["graph_notifications"], False, bad)
+            self.assertEqual(warned, ["ingest.graph_notifications_invalid"], bad)
+        # the receiver's secrets never reach a capture child
+        from integrations import graph_notifications as gn
+        for name in ("mail", "teams"):
+            env = forever.child_env({gn.ENV_NAMESPACE: "x", gn.ENV_CLIENT_STATE: "y",
+                                     "PATH": "/bin"}, forever.SOURCES[name], self.tmp)
+            self.assertFalse({gn.ENV_NAMESPACE, gn.ENV_CLIENT_STATE} & set(env), name)
+
+    def test_default_off_touches_no_notification_code_and_keeps_the_summary_shape(self) -> None:
+        """No PLX_GRAPH_NOTIFY_* settings and ingest.graph_notifications false (the default):
+        the host never builds Wakes, the scheduler never reads one, and the run summary has
+        exactly the keys it had before the receiver existed."""
+        summary = self.run_with(None, wake_after_first_mail=True, seconds=1.5)
+        self.assertEqual(
+            {"reason", "runs", "gaps", "stopped_sources", "preempted", "drain_overran",
+             "unrefreshed"} - set(summary), set())
+        self.assertNotIn("woken", summary)
+        self.assertEqual(summary["runs"], {"mail": 1, "teams": 1})   # cadence only
+        self.assertFalse(forever.ingest_settings({"mode": forever.MODE})["graph_notifications"])
+        host = mock.MagicMock()
+        host.config.ingest = {"grace_seconds": 1}          # the setting absent
+        host.state_dir = self.tmp
+        seen: list = []
+
+        class Stub:
+            def __init__(self, *args, **kwargs):
+                seen.append(kwargs.get("wakes", "absent"))
+
+            def run(self):
+                return {}
+        with mock.patch.object(forever, "Continuous", Stub), \
+                mock.patch.object(forever, "budget_environ", return_value={}), \
+                mock.patch.object(forever, "max_parallel", return_value=1), \
+                mock.patch.object(host_module, "CycleGap"), \
+                mock.patch.object(host_module, "_notify_wakes",
+                                  side_effect=AssertionError("built wakes")), \
+                mock.patch.object(host_module.session_identity, "bind_state_dir"):
+            host_module.Host.ingest_continuous(host, stop_file=self.tmp / "stop")
+        self.assertEqual(seen, [None])
+
+    def test_a_wake_older_than_the_run_or_during_backoff_runs_nothing_extra(self) -> None:
+        from integrations import graph_notifications as gn
+        gn.wake(self.tmp, "mail", now=lambda: time.time() - 60)   # before the run began
+        summary = self.run_with(gn.Wakes(self.tmp), wake_after_first_mail=False, seconds=1.5)
+        self.assertEqual(summary["runs"], {"mail": 1, "teams": 1}, self.events)
+        self.events.clear()
+        self.fail.add("mail")   # a failing source keeps its backoff, woken or not
+        summary = self.run_with(gn.Wakes(self.tmp), wake_after_first_mail=True, seconds=1.5)
+        self.assertEqual(summary["runs"], {"mail": 1, "teams": 1}, self.events)
+
+    def test_the_host_reads_wakes_only_with_the_setting(self) -> None:
+        seen: list = []
+
+        class Stub:
+            def __init__(self, *args, **kwargs):
+                seen.append(kwargs.get("wakes"))
+
+            def run(self):
+                return {}
+        for setting, expect in ((False, type(None)), (True, __import__(
+                "integrations.graph_notifications", fromlist=["Wakes"]).Wakes)):
+            host = mock.MagicMock()
+            host.config.ingest = {"grace_seconds": 1, "graph_notifications": setting}
+            host.state_dir = self.tmp
+            with mock.patch.object(forever, "Continuous", Stub), \
+                    mock.patch.object(forever, "budget_environ", return_value={}), \
+                    mock.patch.object(forever, "max_parallel", return_value=1), \
+                    mock.patch.object(host_module, "CycleGap"), \
+                    mock.patch.object(host_module.session_identity, "bind_state_dir"):
+                host_module.Host.ingest_continuous(host, stop_file=self.tmp / "stop")
+            self.assertIsInstance(seen[-1], expect)
+
+
+class SourceStateWhileCycleRunsTest(unittest.TestCase):
+    """AUD-10 (audit A section 12): ``source_state`` was written when a cycle ended, so a
+    source whose child had ended read as old for the hours a build ran, and one whose child
+    a killer left running read as captured. Each source is recorded when its child ends, and
+    a source an interrupted holder left reading is unknown, not fresh."""
+
+    setUp, config = IngestModeTest.setUp, IngestModeTest.config
+    host, until = ConcurrentIngestTest.host, ConcurrentIngestTest.until
+    runs = ConcurrentIngestTest.runs
+
+    def generation(self, host: host_module.Host, name: str) -> int:
+        row = next((s for s in host.status()["sources"] if s["source"] == name), None)
+        return row["generation"] if row else 0
+
+    def test_a_source_that_captured_after_a_killed_holder_is_not_marked_unknown(self) -> None:
+        # the dead holder's mark is made when the lock is taken, before any capture: a
+        # capture recorded afterwards stands (continuous mode)
+        table = fake_table(self.script, "fast")
+        host = self.host(self.config({"fast": {"min_interval_seconds": 1}}), table)
+        with host._ledger() as db:
+            db.execute("INSERT INTO source_state VALUES ('fast', 1, 3, '2026-11-13T10:00:00Z',"
+                       " 'live', 1, '2026-11-13T10:00:00Z', NULL, NULL, NULL)")
+        (self.state / host_module.HOST_DIR / host_module.CHILDREN_FILE).write_text(json.dumps({
+            "schema": host_module.CHILDREN_SCHEMA, "children": [
+                {"pid": 4194000, "pgid": 4194000, "token": "gone", "source": "fast"}]}))
+        host.ingest_continuous(stop_file=self.tmp / "stop", max_refreshes=1)
+        (row,) = [r for r in host.status()["sources"] if r["source"] == "fast"]
+        self.assertIsNone(row["last_error"])
+        self.assertTrue(row["complete"])
+        self.assertIsNone(row["stale_since"])
+        self.assertGreater(row["generation"], 3)
+
+    def test_an_outcome_replaced_while_a_refresh_waits_is_still_recorded_once(self) -> None:
+        host = self.host(self.config({"fast": {}}), fake_table(self.script, "fast"))
+        first = {"state": "captured", "complete": True, "reasons": []}
+        second = {"state": "captured", "complete": True, "reasons": []}
+        host._record_early("fast", first)
+        host._record_early("fast", second)   # ends while the refresh of `first` is queued
+        with mock.patch.object(host_module.Host, "_project", lambda s_, c: {
+                "state": "skipped", "generation": None, "reasons": ["x"]}):
+            cycle_id, started = host._open_cycle("ingest")
+            host._finish(cycle_id, started, {"fast": first}, "ingest", {})
+        self.assertEqual(host.status()["sources"][0]["generation"], 2)
+
+    def test_a_source_a_killed_holder_left_reading_is_unknown_until_read_again(self) -> None:
+        table = fake_table(self.script, "fast")
+        config = self.config({"fast": {"min_interval_seconds": 1}})
+        host = self.host(config, table)
+        with host._ledger() as db:
+            db.execute("INSERT INTO source_state VALUES ('fast', 1, 3, '2026-11-13T10:00:00Z',"
+                       " 'live', 1, '2026-11-13T10:00:00Z', NULL, NULL, NULL)")
+            db.execute("INSERT INTO cycle(started_at, state, report) VALUES "
+                       "('2026-11-13T10:00:00Z', 'running', '{}')")
+        children = self.state / host_module.HOST_DIR / host_module.CHILDREN_FILE
+        children.write_text(json.dumps({"schema": host_module.CHILDREN_SCHEMA, "children": [
+            {"pid": 4194000, "pgid": 4194000, "token": "gone", "source": "fast"}]}))
+        with host._cycle_lock():
+            host._open_cycle("ingest")
+        (row,) = host.status()["sources"]
+        self.assertEqual((row["generation"], row["captured_at"]), (3, "2026-11-13T10:00:00Z"))
+        self.assertIsNone(row["complete"])
+        self.assertEqual((row["stale_since"], row["last_error"]),
+                         ("2026-11-13T10:00:00Z", "cycle_interrupted"))
+        # a source nobody was reading when the holder died keeps its state
+        with host._ledger() as db:
+            db.execute("UPDATE source_state SET complete=1, stale_since=NULL, error=NULL")
+        children.write_text(json.dumps({"schema": host_module.CHILDREN_SCHEMA,
+                                        "children": []}))
+        with host._cycle_lock():
+            host._open_cycle("ingest")
+        self.assertTrue(host.status()["sources"][0]["complete"])
+        # read again: recorded as captured, the marks gone
+        with host._ledger() as db:
+            host._record(db, "fast", {"state": "captured", "complete": True,
+                                      "reasons": []}, host.clock())
+        (row,) = host.status()["sources"]
+        self.assertEqual((row["generation"], row["stale_since"], row["last_error"],
+                          row["complete"]), (4, None, None, True))
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -47,6 +47,8 @@ class ProjectMcTests(unittest.TestCase):
         # MC's own due cells: a full day, its em dash for none, a day with no year
         for task, due in (("TASK-1", "2026-10-20"), ("TASK-2", "\u2014"), ("TASK-3", "Jun 12")):
             fake.tasks[task]["due"] = due
+        # MC's own completion time and size (its tools return no createdAt or updatedAt)
+        fake.tasks["TASK-1"].update(completedAt="2026-10-12T14:57:13.947Z", estimate="M")
         capture = Path(cls.tmp.name) / "mc.sqlite"
         with CaptureStore(capture, audience(), clock=Clock()) as store:
             McSourcesCapture(store, mc_client(fake)).capture(
@@ -117,6 +119,16 @@ class ProjectMcTests(unittest.TestCase):
         gaps = {g["code"]: g["count"] for g in self.report["gaps"]
                 if g["code"].startswith("parse_") and "due" in g["where"]}
         self.assertEqual(gaps, {"parse_not_iso_date": 1})
+
+    def test_a_task_carries_its_completion_time_and_size_as_mc_writes_them(self):
+        rows = self.conn.execute(
+            "SELECT json_extract(o.native_key, '$.id'), v.property, v.value FROM object_values v "
+            "JOIN objects o ON o.object_id = v.object_id WHERE o.object_type = 'MCTask' "
+            "AND v.property IN ('completed_at', 'estimate')").fetchall()
+        got = {(task, prop): value for task, prop, value in rows}
+        self.assertEqual(got[("TASK-1", "estimate")], "M")
+        self.assertTrue(str(got[("TASK-1", "completed_at")]).startswith("2026-10-12T14:57:13"))
+        self.assertNotIn(("TASK-2", "completed_at"), got)
 
     def test_a_retired_brain_items_unit_in_an_older_capture_is_neither_described_nor_projected(self):
         # A store captured before GOV-13 retired brain_items still holds its runs and
@@ -238,9 +250,16 @@ class ProjectMcTests(unittest.TestCase):
                      if c["link_type"] == "MCTask.mentions_purchase_order"})
 
         tasks = {n: self.object_id("MCTask", n) for n in ("TASK-1", "TASK-2", "TASK-3", "TASK-4")}
-        mentions = dict(self.conn.execute(
-            "SELECT from_object = ?, COUNT(*) FROM links WHERE link_type = "
-            "'MCTask.mentions_purchase_order' GROUP BY 1", (tasks["TASK-4"],)).fetchall())
+        # A task naming the order more than once is one link (CC-C-04: one per link type,
+        # ends and mentioning version, the first evidence handle), not one per occurrence.
+        rows = self.conn.execute(
+            "SELECT from_object, to_object, evidence_handles FROM links WHERE link_type = "
+            "'MCTask.mentions_purchase_order'").fetchall()
+        pairs = {(f, t, (json.loads(e or "[]") or [""])[0]) for f, t, e in rows}
+        self.assertGreater(len(rows), len(pairs))   # the fixture repeats a mention
+        mentions = {0: 0, 1: 0}
+        for f, _, _ in pairs:
+            mentions[f == tasks["TASK-4"]] += 1
         self.assertEqual(read(OPS), (set(tasks.values()), {
             "MCTask.mentions_purchase_order": mentions[0] + mentions[1]}))
         self.assertEqual(read(planner), ({tasks[n] for n in ("TASK-1", "TASK-2", "TASK-3")},

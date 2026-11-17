@@ -32,6 +32,7 @@ import inspect
 import multiprocessing
 from typing import Any, Mapping, Sequence
 
+from ontology import parent_watch
 from ontology import store, store_ddl
 
 # sha256 of the sources of ``StoreBuilder._add_links``, ``store.pack_link_texts`` and
@@ -122,7 +123,8 @@ class LinkWriter:
         if workers >= 2 and follows(builder):
             # spawned, not forked: the builder's process holds SQLite connections and
             # threads a forked child must not inherit
-            self._pool = multiprocessing.get_context("spawn").Pool(workers)
+            self._pool = multiprocessing.get_context("spawn").Pool(
+                workers, **parent_watch.pool_init())
         self.ahead = ahead if ahead is not None else 2 * max(1, workers)
         self.parallel = self._pool is not None
 

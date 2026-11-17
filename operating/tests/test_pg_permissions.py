@@ -8,8 +8,10 @@ withholds counts and drops personal sources. Every unknown or missing policy fai
 from __future__ import annotations
 
 import hashlib
+import os
 import random
 import unittest
+from unittest import mock
 
 from operating.tests import pg_testdb
 
@@ -17,7 +19,7 @@ try:
     import psycopg
     from integrations.people_exclusion import PeopleExclusion
     from ontology.types import Actor
-    from operating.ontology_tools import ReadPolicy
+    from operating.ontology_tools_policy import ReadPolicy
     from operating.pg import dense, migrate, permissions as perm
     from operating.pg.pool import search_defaults
 except ImportError:  # pragma: no cover
@@ -467,6 +469,72 @@ class DenseFilteredScanTest(unittest.TestCase):
                 dense.filtered_knn(self.conn, self.scope(self.ALLOWED_KEY), self.query, **bad)
         with self.assertRaises(ValueError):
             dense.filtered_knn(self.conn, self.scope(self.ALLOWED_KEY), [float("nan")] * DIM)
+
+    def test_bit_index_candidates_are_reranked_exactly_under_the_permission_filter(self) -> None:
+        # PLX_SEARCH_BQ: the bit index (migration 0034) is planned, the Hamming candidates
+        # (200 here: every allowed row) are re-ranked by exact cosine, no denied row.
+        scope = self.scope(self.ALLOWED_KEY)
+        with self.conn.transaction():
+            search_defaults(self.conn, local=True)
+            plan = "\n".join(r[0] for r in self.conn.execute(
+                "EXPLAIN SELECT chunk_id FROM search.chunks c WHERE " + scope.clause("c")
+                + " ORDER BY " + dense.bq_order("c.embedding", "%(q)s", DIM) + " LIMIT 200",
+                scope.params(q=vec(self.query))))
+        self.assertIn("chunks_embedding_bq_hnsw", plan)
+        with mock.patch.dict(os.environ, {dense.BQ_FLAG: "1"}):
+            out = dense.filtered_knn(self.conn, scope, self.query, self.K, ef_search=10)
+        self.assertEqual(out["path"], "index")
+        self.assertEqual([h[0] for h in out["hits"]], self.exact(scope))
+        self.assertEqual([h[1] for h in out["hits"]], sorted(h[1] for h in out["hits"]))
+        # the sparse scope (10 rows < k) still falls back to exactly its own rows
+        sparse = self.scope(self.SPARSE_KEY)
+        out = dense.filtered_knn(self.conn, sparse, self.query, self.K, bq=True)
+        self.assertEqual((out["path"], [h[0] for h in out["hits"]]),
+                         ("exact", self.exact(sparse)))
+        # the flag reads on only for 1/on/true; anything else keeps the halfvec index
+        for value, want in (("1", True), (" ON ", True), ("true", True), ("", False),
+                            ("0", False), ("off", False), ("yes", False), ("2", False)):
+            self.assertIs(dense.bq_enabled({dense.BQ_FLAG: value}), want, value)
+        self.assertFalse(dense.bq_enabled({}))
+        for need, want in ((1, 200), (20, 200), (150, 300), (200, 400), (600, 600),
+                           (1000, 1000)):
+            self.assertEqual(dense.bq_candidates(need), want, need)
+
+    def test_exact_fallback_is_time_boxed_and_leaves_the_callers_timeout(self) -> None:
+        scope = self.scope(self.SPARSE_KEY, self.ALLOWED_KEY)
+        self.conn.execute("SET statement_timeout = '7s'")
+        self.conn.commit()
+        # in a caller's transaction: the exact scan's 5 s box is put back afterwards
+        with self.conn.transaction():
+            out = dense.filtered_knn(self.conn, scope, self.query, self.K, ef_search=10,
+                                     max_scan_tuples=50)
+            self.assertEqual(out["path"], "exact")
+            self.assertEqual(self.conn.execute("SHOW statement_timeout").fetchone()[0], "7s")
+
+        class SlowExact:
+            """The connection, with the exact scan replaced by a 2 s sleep."""
+
+            def __init__(self, conn) -> None:
+                self.conn = conn
+
+            def __getattr__(self, name):
+                return getattr(self.conn, name)
+
+            def execute(self, query, params=None):
+                if ") + 0, c.chunk_id" in query:
+                    return self.conn.execute("SELECT pg_sleep(2)")
+                return self.conn.execute(query, params)
+
+        with mock.patch.object(dense, "EXACT_TIMEOUT_MS", 100):
+            starved = dense.filtered_knn(SlowExact(self.conn), scope, self.query, self.K,
+                                         ef_search=10, max_scan_tuples=50)
+        self.assertEqual(starved["path"], "partial")
+        self.assertLess(len(starved["hits"]), self.K)
+        allowed = {r[0] for r in self.conn.execute(
+            "SELECT chunk_id FROM search.chunks c WHERE " + scope.clause("c"),
+            scope.params())}
+        self.assertTrue(set(h[0] for h in starved["hits"]) <= allowed)
+        self.assertEqual(self.conn.execute("SHOW statement_timeout").fetchone()[0], "7s")
 
 
 if __name__ == "__main__":

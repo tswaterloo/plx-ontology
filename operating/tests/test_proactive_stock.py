@@ -379,20 +379,22 @@ class OpsAlerts(Engine):
         self.assertIn("assembly order start date", checks[ops.ASSEMBLY_RULE]["words"])
         import re
         from operating import mcp_server
+        from operating import mcp_server_home
         pattern = re.compile(r"[A-Za-z][A-Za-z0-9_]{0,63}")
         for rule in (ops.SLOW_RULE, ops.LOT_RULE, ops.ASSEMBLY_RULE):
             self.assertTrue(all(pattern.fullmatch(r) for r in reasons[rule]), reasons[rule])
-        self.assertTrue(set(ops.RULES) <= set(mcp_server._HOME_RULES))
+        self.assertTrue(set(ops.RULES) <= set(mcp_server_home._HOME_RULES))
 
     def test_every_new_kind_has_a_check_a_next_step_and_its_words(self):
         from operating import declared_inputs, mcp_server, vendor_watch
+        from operating import mcp_server_catalog
 
         for kind in ops.KINDS:
             with self.subTest(kind=kind):
                 self.assertIn(kind, briefing.EVENT_TYPES)
                 self.assertIn(kind, briefing.NEXT_ACTIONS)
                 self.assertIn(kind, briefing.TODAY_WORDS)
-                self.assertIn(kind, mcp_server.HOME_KINDS)
+                self.assertIn(kind, mcp_server_catalog.HOME_KINDS)
         for rule in ops.RULES:
             with self.subTest(rule=rule):
                 self.assertIn(rule, pe.DETECTORS)

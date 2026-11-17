@@ -51,6 +51,8 @@ class Fake:
             "max": 200, "clients": 40, "idle": 30, "idle_in_transaction": 0,
             "longest_idle_in_transaction_minutes": None}
         self.mem_gb, self.disk_gb = mem_gb, disk_gb
+        self.load = 3.0   # the 1-minute load average on a 16-core host
+        self.notes: list = []   # search.query_log notes, newest first
 
     def systemctl(self, scope, args):
         if self.units[scope] is None:
@@ -70,7 +72,8 @@ class Fake:
             systemctl=self.systemctl, pg=self.pg,
             meminfo=lambda: f"MemTotal: 1 kB\nMemAvailable: {int(self.mem_gb * 1024 ** 2)} kB\n",
             disk_free=lambda path: int(self.disk_gb * GB), pg_follow=False,
-            consumers=self.consumers)
+            consumers=self.consumers, loadavg=lambda: (self.load, self.load, self.load),
+            cpus=lambda: 16, search_notes=lambda dsn: list(self.notes))
 
     def consumers(self):
         self.consumer_reads = getattr(self, "consumer_reads", 0) + 1
@@ -92,7 +95,10 @@ class AlarmPassTest(unittest.TestCase):
     def setUp(self) -> None:
         self.tmp = tempfile.TemporaryDirectory()
         # the delta's last cycle stays fresh however far the passes below run
-        self.root = make_state(Path(self.tmp.name), delta_built="2030-01-02T13:00:00Z")
+        # mail captured 2 min before NOW: fresh past the last pass (+25 min) under the
+        # 30-minute mail bound (7909fdfa28), so only what a test breaks opens
+        self.root = make_state(Path(self.tmp.name), delta_built="2030-01-02T13:00:00Z",
+                               capture="2030-01-02T11:58:00Z")
         (self.root / "search").mkdir()
         (self.root / "search" / "follow.json").write_text(
             json.dumps({"updated_at": "2030-01-02T11:58:00+00:00"}))
@@ -108,7 +114,7 @@ class AlarmPassTest(unittest.TestCase):
 
     def test_each_kind_of_stop_opens_an_incident(self) -> None:
         stale = make_state(Path(self.tmp.name) / "stale", delta_built="2030-01-01T20:00:00Z",
-                           proactive="2030-01-01T12:00:00Z")
+                           proactive="2030-01-01T12:00:00Z", capture="2030-01-02T11:58:00Z")
         self.root = stale
         system = healthy_units()
         system[0] = unit("plx-backup.service", "failed", "failed", "exit-code",
@@ -167,7 +173,7 @@ class AlarmPassTest(unittest.TestCase):
         self.assertEqual(status["open"], [])
         self.assertEqual(status["recovered"][0]["closed_at"], "2030-01-02T12:20:00Z")
         self.assertEqual(set(status["recovered"][0]), {"key", "line", "opened_at",
-                                                       "last_seen_at", "closed_at"})
+                                                       "last_seen_at", "closed_at", "level"})
         # breaks again: a new incident
         fake.units["system"] = healthy_units() + [
             unit("plx-proactive.service", "failed", "failed", "exit-code")]
@@ -234,6 +240,68 @@ class AlarmPassTest(unittest.TestCase):
         self.assertNotIn("memory_available", [i["key"] for i in status["open"]])
         status = self.run_at(fake, 15)
         self.assertIn("memory_available", [i["key"] for i in status["open"]])
+
+    def test_load_over_twice_the_cores_opens_only_after_ten_minutes(self) -> None:
+        # AUDIT3-18 (11-14: load 130-216 on 16 cores, nothing said so): over 32 on every
+        # pass for 10 min opens it, high; a dip back under starts the count again.
+        fake = Fake()
+        fake.load = 40.0
+        for minute in (0, 5):
+            status = self.run_at(fake, minute)
+            self.assertNotIn("load_high", [i["key"] for i in status["open"]])
+        fake.load = 20.0                                 # a dip
+        self.run_at(fake, 10)
+        fake.load = 40.0
+        for minute in (15, 20):
+            status = self.run_at(fake, minute)
+            self.assertNotIn("load_high", [i["key"] for i in status["open"]])
+        status = self.run_at(fake, 25)
+        (opened,) = [i for i in status["open"] if i["key"] == "load_high"]
+        self.assertEqual(opened["line"],
+                         "Host overload: load 40/40/40 on 16 cores, over 32 for 10 min")
+        from operating import ops_notify
+        self.assertEqual(ops_notify.level_for("load_high"), ops_notify.LEVELS["high"])
+
+    def test_fast_feed_failing_runs_page_though_a_clean_run_comes_between(self) -> None:
+        # post-ops-1115f review: with the start limit gone (AUDIT3-04) a fast feed that
+        # crashes runs once per capture write; one clean run closes the unit's own failed
+        # alarm, so the failed runs seen within 30 min are counted: 3 open it, high.
+        def at(minute, result):
+            fast = unit("plx-autopilot-fast.service", "failed" if result != "success"
+                        else "inactive", "failed" if result != "success" else "dead", result,
+                        ExecMainExitTimestamp=f"@{STAMP + minute * 60 - 20}")
+            return Fake(system=healthy_units() + [fast])
+
+        def keys(status):
+            return [i["key"] for i in status["open"]]
+
+        self.run_at(at(0, "exit-code"), 0)
+        status = self.run_at(at(0, "exit-code"), 5)     # the same run seen again: once
+        self.assertNotIn("autopilot_fast_failing", keys(status))
+        self.run_at(at(10, "success"), 10)               # a clean run between
+        status = self.run_at(at(15, "exit-code"), 15)
+        self.assertNotIn("autopilot_fast_failing", keys(status))
+        status = self.run_at(at(20, "exit-code"), 20)
+        (opened,) = [i for i in status["open"] if i["key"] == "autopilot_fast_failing"]
+        self.assertEqual(opened["line"], "Autopilot fast feed failing: "
+                         "plx-autopilot-fast.service failed 3 runs in the last 30 min "
+                         "(last result: exit-code)")
+        self.assertEqual(opened["level"], "high")
+        # clean from here: the window empties and it closes after two passing runs
+        for minute in (40, 45, 50, 55):
+            status = self.run_at(at(minute, "success"), minute)
+        self.assertNotIn("autopilot_fast_failing", keys(status))
+
+    def test_fast_feed_failures_spread_over_the_window_never_page(self) -> None:
+        for minute in (0, 35, 70):
+            fast = unit("plx-autopilot-fast.service", "failed", "failed", "exit-code",
+                        ExecMainExitTimestamp=f"@{STAMP + minute * 60 - 20}")
+            status = self.run_at(Fake(system=healthy_units() + [fast]), minute)
+            self.assertNotIn("autopilot_fast_failing", [i["key"] for i in status["open"]])
+        # not installed: no check at all
+        status = self.run_at(Fake(), 75)
+        self.assertNotIn("autopilot_fast_failing",
+                         [c["name"] for c in status["checks"]])
 
     def test_memory_under_eight_gb_warns_at_once_naming_the_top_consumers(self) -> None:
         fake = Fake(mem_gb=9.0)
@@ -452,6 +520,119 @@ class AlarmPassTest(unittest.TestCase):
         self.assertEqual(ops_alarms.main(["run", "--state-dir", str(self.root / "no")]), 2)
 
 
+class DeltaCycleAlarmsTest(unittest.TestCase):
+    """``delta_apply_cost`` and ``delta_backlog`` from the delta's ``cycles.jsonl`` (11-15:
+    the apply ran 24-32 ms per record against 2-7 ms on 11-12, and a 500k backlog sat for
+    hours, both unnoticed)."""
+
+    setUp, tearDown, run_at = AlarmPassTest.setUp, AlarmPassTest.tearDown, AlarmPassTest.run_at
+
+    def cycles(self, *records, junk=False):
+        path = self.root / "projection" / "delta" / "cycles.jsonl"
+        lines = [json.dumps(r) for r in records]
+        if junk:
+            lines[1:1] = ["{torn", json.dumps(["not", "a", "record"]),
+                          json.dumps({"command": "compact", "owned": 1})]
+        path.write_text("\n".join(lines) + "\n")
+
+    @staticmethod
+    def run_record(hours_before, owned, seconds, deferred=None, applied=True):
+        at = (NOW - timedelta(hours=hours_before)).strftime("%Y-%m-%dT%H:%M:%SZ")
+        record = {"command": "run", "started_at": at, "owned": owned,
+                  "seconds": {"postgres": seconds}, "postgres": {"applied": applied}}
+        if deferred is not None:
+            record["deferred"] = deferred
+        return record
+
+    def opened(self, fake, minutes=0):
+        status = self.run_at(fake, minutes)
+        return {i["key"]: i["line"] for i in status["open"]}
+
+    def test_two_cycles_over_twice_the_best_open_it_and_one_does_not(self) -> None:
+        r = self.run_record
+        best = [r(30, 700_000, 1400.0, {}), r(20, 100_000, 300.0, {})]   # 2 ms, 3 ms
+        small = r(6, 5_000, 4000.0, {})        # fixed costs: never counted
+        old = r(24 * 20, 900_000, 90.0, {})    # 0.1 ms, out of the window
+        failed = r(5, 80_000, 9000.0, {}, applied=False)
+        self.cycles(old, *best, small, failed, r(4, 75_000, 2400.0, {}), junk=True)
+        self.assertNotIn("delta_apply_cost", self.opened(Fake()), "one slow cycle only")
+        self.cycles(old, *best, small, failed, r(4, 75_000, 2400.0, {}),
+                    r(2, 780_000, 25_000.0, {}), junk=True)
+        lines = self.opened(Fake(), 5)
+        self.assertIn("delta_apply_cost", lines)
+        self.assertIn("32.0 then 32.1 ms per record", lines["delta_apply_cost"])
+        self.assertIn("best 2.0 ms", lines["delta_apply_cost"])
+        # back under twice the best: closes after two passing runs
+        self.cycles(old, *best, r(1, 700_000, 2100.0, {}), r(0.5, 700_000, 2000.0, {}))
+        self.run_at(Fake(), 10)
+        status = self.run_at(Fake(), 15)
+        self.assertNotIn("delta_apply_cost", {i["key"] for i in status["open"]})
+
+    def test_the_cycles_bare_mentions_refresh_counts_in_the_apply_cost(self) -> None:
+        r = self.run_record
+        best = [r(30, 700_000, 1400.0, {}), r(20, 100_000, 300.0, {})]   # 2 ms, 3 ms
+        slow = [r(4, 100_000, 300.0, {}), r(2, 100_000, 300.0, {})]       # 3 ms apply ...
+        for record in slow:   # ... plus a 500 s refresh: 8 ms
+            record["seconds"]["bare_mentions"] = 500.0
+        self.cycles(*best, *slow)
+        self.assertIn("8.0 then 8.0 ms per record", self.opened(Fake())["delta_apply_cost"])
+
+    def test_too_few_cycles_say_nothing_and_unknown_inputs_never_pass(self) -> None:
+        checks = ops_alarms.delta_cycle_checks(self.root, NOW, ops_health.targets({}))
+        self.assertEqual(checks, [], "no cycle file: no delta here")
+        self.cycles(self.run_record(2, 50_000, "slow", {"mail": "many"}),
+                    {"command": "run", "started_at": "garbage", "owned": True,
+                     "seconds": [], "postgres": "yes", "deferred": []})
+        found = {c["name"]: c for c in ops_alarms.delta_cycle_checks(
+            self.root, NOW, ops_health.targets({}))}
+        self.assertEqual(found["delta_apply_cost"]["state"], "unknown")
+        self.assertEqual(found["delta_backlog"]["state"], "unknown", "no count deferred")
+
+    def test_a_backlog_carried_past_an_hour_opens_until_a_cycle_clears_it(self) -> None:
+        r = self.run_record
+        self.cycles(r(3, 20_000, 100.0, {}), r(0.9, 20_000, 100.0, {"graph_mail": 10}),
+                    r(0.5, 0, 0, None), r(0.2, 20_000, 100.0, {"graph_mail": 4, "bc": 1}))
+        self.assertNotIn("delta_backlog", self.opened(Fake()), "54 minutes")
+        lines = self.opened(Fake(), 10)
+        self.assertIn("delta_backlog", lines)
+        self.assertIn("5 records deferred", lines["delta_backlog"])
+        self.cycles(r(3, 20_000, 100.0, {}), r(0.9, 20_000, 100.0, {"graph_mail": 10}),
+                    r(0.1, 20_000, 100.0, {"graph_mail": 0}))
+        self.run_at(Fake(), 15)
+        status = self.run_at(Fake(), 20)
+        self.assertNotIn("delta_backlog", {i["key"] for i in status["open"]})
+
+    def test_a_cycle_that_followed_everything_writes_null_deferred_and_clears_it(self) -> None:
+        # the delta's real record shape (ontology.delta: ``deferred`` only when the cap cut
+        # the cycle, null otherwise); 11-16: 670 deferred at 12:35 AM, all followed at
+        # 2:46 AM, still paged "waiting since 25 h" at 1 PM
+        def cycle(hours_before, followed, deferred, **extra):
+            record = self.run_record(hours_before, 20_000, 100.0)
+            record.update(followed=followed, deferred=deferred, **extra)
+            return record
+        backlog = [cycle(26, {"sharepoint": 31_009}, {"sharepoint": 27_400}),
+                   cycle(13, {"sharepoint": 31_009}, {"sharepoint": 670})]
+        refused = {"command": "run", "started_at": "2030-01-02T11:00:00Z",
+                   "status": "postgres_behind", "followed": None, "deferred": None}
+        errored = {"started_at": "2030-01-02T11:10:00Z", "error": "Boom: x"}
+        skipped = {"command": "run", "skipped": "already_running",
+                   "started_at": "2030-01-02T11:20:00Z"}
+        self.cycles(*backlog, refused, skipped)
+        lines = self.opened(Fake())
+        self.assertIn("670 records deferred", lines["delta_backlog"],
+                      "a refused or skipped cycle says nothing: the backlog stays")
+        # a cycle under the cap whose counts are no numbers says nothing either
+        self.cycles(*backlog, cycle(11, {"sharepoint": "lots"}, None), errored)
+        self.assertIn("delta_backlog", self.opened(Fake(), 5))
+        self.cycles(*backlog, cycle(11, {"sharepoint": 5_251, "bc": 0}, None), refused)
+        self.run_at(Fake(), 10)
+        status = self.run_at(Fake(), 15)
+        self.assertNotIn("delta_backlog", {i["key"] for i in status["open"]})
+        check = {c["name"]: c for c in ops_alarms.delta_cycle_checks(
+            self.root, NOW, ops_health.targets({}))}["delta_backlog"]
+        self.assertEqual((check["state"], check["value"]), ("ok", 0))
+
+
 class MemoryConsumersTest(unittest.TestCase):
     """The top consumers read from a made-up /proc and cgroup tree."""
 
@@ -492,8 +673,12 @@ class MemoryConsumersTest(unittest.TestCase):
                 if os.geteuid() != 0:   # root reads a mode-0 file
                     self.assertEqual(names, ["postgresql@17-main.service",
                                              "plx-cache.service"])
+                else:   # so the unreadable 5000 MiB scope ranks first
+                    self.assertEqual(names, ["tmux-spawn-1.scope", "postgresql@17-main.service",
+                                             "plx-cache.service"])
                 self.assertNotIn("system.slice", names)
-                self.assertEqual(found["cgroups"][0]["gb"], round(3100 / 1024, 2))
+                pg = names.index("postgresql@17-main.service")
+                self.assertEqual(found["cgroups"][pg]["gb"], round(3100 / 1024, 2))
                 pids = [p["pid"] for p in found["processes"]]
                 self.assertEqual(pids, [999 + n - k for k in range(min(n, 3))])
                 self.assertEqual(found["processes"][0]["gb"], round(n / 1024, 2))
@@ -655,31 +840,113 @@ class JobQueueAlarmTest(unittest.TestCase):
 class CredentialExpiryTest(unittest.TestCase):
     NOW = datetime(2030, 1, 2, 12, 0, tzinfo=timezone.utc)
 
-    def check(self, items, checked="2030-01-02T06:00:00Z", write=True):
+    def checks(self, items, checked="2030-01-02T06:00:00Z", write=True):
         tmp = Path(tempfile.mkdtemp())
         (tmp / "ops-alarms").mkdir()
         if write:
             (tmp / "ops-alarms" / "expiry.json").write_text(
                 json.dumps({"checked_at": checked, "items": items}))
-        return ops_alarms.expiry_checks(tmp, self.NOW, ops_health.targets({}))[0]
+        return ops_alarms.expiry_checks(tmp, self.NOW, ops_health.targets({}))
 
-    def test_a_credential_inside_thirty_days_opens_and_names_the_nearest(self):
-        got = self.check([{"name": "Claude login", "days_left": 22.5},
-                          {"name": "AZURE_CLIENT_SECRET", "days_left": 9.0},
-                          {"name": "Portal key", "days_left": None},
-                          {"name": "TLS", "days_left": 80.0},
-                          {"name": "access token", "days_left": 0.1, "renews_itself": True}])
-        self.assertEqual((got["state"], got["value"]), ("breach", 9.0))
-        self.assertIn("AZURE_CLIENT_SECRET expires in 9 days and 1 more", got["detail"])
-        self.assertNotIn("access token", got["detail"])
+    def check(self, items, **kw):
+        return self.checks(items, **kw)[0]
+
+    def test_each_credential_inside_fourteen_days_is_its_own_incident_by_tier(self):
+        got = {c["name"]: c for c in self.checks(
+            [{"name": "Claude login", "days_left": 22.5},
+             {"name": "AZURE_CLIENT_SECRET", "days_left": 9.0},
+             {"name": "Portal snapshot", "days_left": 6.5},
+             {"name": "BC secret", "days_left": 1.5},
+             {"name": "Portal key", "days_left": None},
+             {"name": "TLS", "days_left": 80.0},
+             {"name": "access token", "days_left": 0.1, "renews_itself": True}])}
+        self.assertEqual(got["credential_expiry"]["state"], "ok")   # the list was read
+        self.assertEqual(set(got) - {"credential_expiry"},
+                         {"credential_expiry:AZURE_CLIENT_SECRET",
+                          "credential_expiry:Portal snapshot", "credential_expiry:BC secret"})
+        levels = {k: (c["state"], c["level"]) for k, c in got.items() if "level" in c}
+        self.assertEqual(levels, {"credential_expiry:AZURE_CLIENT_SECRET": ("breach", "warning"),
+                                  "credential_expiry:Portal snapshot": ("breach", "high"),
+                                  "credential_expiry:BC secret": ("breach", "critical")})
+        self.assertEqual(got["credential_expiry:AZURE_CLIENT_SECRET"]["detail"],
+                         "AZURE_CLIENT_SECRET expires in 9 days")
 
     def test_nothing_soon_is_ok_expired_breaches_and_a_missing_or_stale_list_is_unknown(self):
-        self.assertEqual(self.check([{"name": "TLS", "days_left": 80.0}])["state"], "ok")
-        self.assertIn("expired 2 days ago", self.check([{"name": "k", "days_left": -2.0}])["detail"])
+        self.assertEqual([c["state"] for c in self.checks([{"name": "TLS", "days_left": 80.0}])],
+                         ["ok"])
+        self.assertIn("expired 2 days ago",
+                      self.checks([{"name": "k", "days_left": -2.0}])[1]["detail"])
         self.assertEqual(self.check([], write=False)["state"], "unknown")
+        self.assertEqual(len(self.checks([{"name": "k", "days_left": 1}],
+                                         checked="2029-12-20T00:00:00Z")), 1)
         self.assertEqual(self.check([{"name": "k", "days_left": 1}],
                                     checked="2029-12-20T00:00:00Z")["state"], "unknown")
-        self.assertEqual(self.check([{"name": "k", "days_left": True}])["state"], "ok")
+        self.assertEqual(len(self.checks([{"name": "k", "days_left": True}])), 1)
+
+    def test_a_tier_step_escalates_and_an_unread_list_keeps_the_incident_open(self):
+        held = {}
+        for days, level in ((13.0, "warning"), (6.0, "high"), (1.0, "critical")):
+            held = ops_alarms.advance(held, self.checks([{"name": "k", "days_left": days}]),
+                                      self.NOW)
+            self.assertEqual(held["incidents"]["credential_expiry:k"]["level"], level)
+        for _ in range(3):   # the list is stale: not read, so not recovered
+            held = ops_alarms.advance(held, self.checks(
+                [], checked="2029-12-20T00:00:00Z"), self.NOW)
+        self.assertIn("credential_expiry:k", held["incidents"])
+        for _ in range(2):   # renewed
+            held = ops_alarms.advance(held, self.checks([{"name": "k", "days_left": 90}]),
+                                      self.NOW)
+        self.assertEqual(held["incidents"], {})
+
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class EntryHoldsNoteTest(unittest.TestCase):
+    """The held-entry note lives in the API user's folder; the alarm pass runs as the jobs'
+    user. A note it cannot open is one ``unknown`` check, and every other check of the
+    pass is still there (11-15 review: a PermissionError silenced every alarm)."""
+
+    def setUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.root = make_state(Path(self.tmp.name), delta_built="2030-01-02T13:00:00Z",
+                               capture="2030-01-02T11:58:00Z")
+
+    def collect(self):
+        checks, _samples = ops_alarms.collect(self.root, NOW, {}, Fake().probes(),
+                                              "dbname=x", [])
+        return checks
+
+    def test_a_note_this_user_cannot_open_leaves_every_other_check(self) -> None:
+        from operating import entry_confirm as ecf
+        base = self.collect()
+        names = sorted(c["name"] for c in base)
+        self.assertGreater(len(names), 5)
+        self.assertNotIn("entry_holds_unreadable", names)
+        entry = self.root / "entry"
+        entry.mkdir()
+        (entry / ecf.UNREADABLE_FILE).mkdir()     # opening it fails, even as root
+        cases = ["not a file"]
+        if os.geteuid() != 0:
+            cases.append("folder 0700 of another user")
+        for case in cases:
+            if case.startswith("folder"):
+                (entry / ecf.UNREADABLE_FILE).rmdir()
+                (entry / ecf.UNREADABLE_FILE).write_text("{}", "utf-8")
+                entry.chmod(0)
+                self.addCleanup(entry.chmod, 0o700)
+            checks = self.collect()
+            self.assertEqual(sorted(c["name"] for c in checks if
+                                    c["name"] != "entry_holds_unreadable"), names, case)
+            (note,) = [c for c in checks if c["name"] == "entry_holds_unreadable"]
+            self.assertEqual(note["state"], "unknown", case)
+            self.assertIn("cannot be opened", note["detail"], case)
+
+    def test_any_failure_of_the_entry_check_is_unknown_never_a_crash(self) -> None:
+        with mock.patch("operating.entry_confirm.unreadable", side_effect=RuntimeError):
+            checks = self.collect()
+        (note,) = [c for c in checks if c["name"] == "entry_holds_unreadable"]
+        self.assertEqual(note["state"], "unknown")
+        self.assertTrue(all(isinstance(c, dict) and "state" in c for c in checks))

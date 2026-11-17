@@ -776,7 +776,7 @@ def _pre_receipt_estimate(*, name: str, target: str | None, line_ids: Sequence[s
                             line=labels[oid], who=who)
                 duty_shares.append(rate * weight)
             if row_steps:
-                shown = row_steps[:10] + ([f"... {len(row_steps) - 10} more"]
+                shown = row_steps[:10] + ([f"{len(row_steps) - 10} further rows, not listed"]
                                           if len(row_steps) > 10 else [])
                 listed.append("assumption: duty at the FileMaker supplier row tariff (tariff_c "
                               "on the FileMaker replica supplier row of the order's own "
@@ -878,7 +878,7 @@ def _pre_receipt_estimate(*, name: str, target: str | None, line_ids: Sequence[s
     estimate = sum(line_totals, Decimal(0))
     steps = [f"{e['name']}: total {money_text(v, target)} {target}"
              for e, v in zip(lines, line_totals)]
-    steps = steps[:20] + ([f"... {len(steps) - 20} more line(s)"] if len(steps) > 20 else [])
+    steps = steps[:20] + ([f"{len(steps) - 20} further line(s), not listed"] if len(steps) > 20 else [])
     steps += [f"subtotal (goods + freight): {money_text(sub, target)} {target}",
               f"duty: {money_text(duty_total, target)} {target}", *listed,
               *([currency_step] if currency_step else [])]
@@ -928,7 +928,7 @@ def plan_check(args: Mapping[str, Any], doc: Mapping[str, Any], index: int,
     line_types = types_of(_LINE_ROLES)
     if len(line_types) > 1:
         out.append("unit_price, quantity and received must be read from one object type")
-    from .ontology_tools_investigate import plan_root_types
+    from .ontology_tools_investigate_plans import plan_root_types
     root_types = plan_root_types(doc, schema)
     line_link = links.get(args.get("line_link"))
     if schema is not None and (line_link is None or {line_link["from"]} != line_types or
@@ -1515,7 +1515,7 @@ def _fm_agreement(*, name: str, target: str | None, line_ids: Sequence[str],
         counts[outcome.split(" ", 1)[0]] += 1
         steps.append(f"{label}: {outcome}"[:MAX_STEP_CHARS])
         inputs.append(label)
-    shown = steps[:38] + ([f"... {len(steps) - 38} more line(s)"] if len(steps) > 38 else [])
+    shown = steps[:38] + ([f"{len(steps) - 38} further line(s), not listed"] if len(steps) > 38 else [])
     shown.append(f"counts: agree {counts['agree']}, differ {counts['differ']}, missing "
                  f"{counts['missing']} (within {_dec_str(FM_AGREEMENT_TOLERANCE * 100)}% of "
                  "FileMaker's recorded dlt_costlanded_c per unit, at the tier the ordered "

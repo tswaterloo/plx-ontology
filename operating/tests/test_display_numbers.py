@@ -6,6 +6,7 @@ from decimal import Decimal
 import unittest
 
 from operating import claim_checks
+from operating import claim_checks_parse
 from operating.display_numbers import display_number, display_text, for_display
 
 
@@ -18,7 +19,7 @@ class DisplayNumbersTests(unittest.TestCase):
                 self.assertEqual(display_number(raw), shown)
                 # the claim checks compare the exact stored value and accept this form
                 exact = claim_checks.to_decimal(raw)
-                self.assertTrue(claim_checks.rounded_from(Decimal(shown), [exact]))
+                self.assertTrue(claim_checks_parse.rounded_from(Decimal(shown), [exact]))
 
     def test_other_numbers_and_unknown_input_are_left_as_they_are(self):
         for raw in ("114.250", "1.5", "12345678901234567890", "0.123456789012345678",
@@ -45,7 +46,7 @@ class DisplayNumbersTests(unittest.TestCase):
         claim another value than the cited cell holds (a scorer re-checking the claim
         refuses it). Only the prose, the block's text and its gaps are shown rounded."""
         import json
-        from operating.claim_checks import to_decimal
+        from operating.claim_checks_parse import to_decimal
         from operating.display_numbers import display_reply
         block = {"format": "plx-eval-answer/v1", "answerability": "answerable",
                  "text": "paid 116.25000000000001 CAD", "gaps": [

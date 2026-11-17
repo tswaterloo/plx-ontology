@@ -6,6 +6,7 @@ Evidence label: ``isolated-fixture``."""
 from __future__ import annotations
 
 from pathlib import Path
+import re
 import unittest
 
 SYSTEMD = Path(__file__).resolve().parent.parent / "deploy" / "systemd"
@@ -71,6 +72,40 @@ class CaddyFeedTests(unittest.TestCase):
         self.assertIn("file_server", block)
         self.assertNotIn("reverse_proxy", block)
 
+    def test_the_feed_page_may_style_itself_and_nothing_else(self):
+        # the live walk found /desktop/'s download page unstyled: its inline <style> was refused
+        text = (SYSTEMD.parent / "Caddyfile").read_text()
+        block = text[text.find("handle_path /desktop/*"):text.find("# Everything else is the web app")]
+        csp = re.search(r'Content-Security-Policy "([^"]+)"', block).group(1)
+        self.assertIn("default-src 'none'", csp)
+        self.assertIn("style-src 'unsafe-inline'", csp)
+        self.assertNotIn("script-src", csp)
+        self.assertIn("frame-ancestors 'none'", csp)
+
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class DeltaConsumerOrderingTests(unittest.TestCase):
+    """11-15: plx-autopilot-follow's start job waited behind a delta cycle running back to
+    back (After=plx-delta.service), so the live feed ran no cycle for hours. The delta's
+    readers take in only the layers Postgres applied, each in one transaction, so they need
+    no ordering after the delta and must not wait on it."""
+    READERS = ("plx-autopilot-follow", "plx-autopilot-fast", "plx-proactive-inc",
+               "plx-ai-watcher", "plx-truth-check")
+    LONG = ("plx-delta.service", "plx-delta-compact.service")
+
+    def test_delta_readers_do_not_wait_for_a_delta_cycle(self):
+        for name in self.READERS:
+            with self.subTest(unit=name):
+                files = [SYSTEMD / f"{name}.service"]
+                drop = SYSTEMD / "host" / f"{name}.service.d"
+                files += sorted(drop.glob("*.conf")) if drop.is_dir() else []
+                after = []
+                for f in files:
+                    for raw in f.read_text().splitlines():
+                        key, _, value = raw.strip().partition("=")
+                        if key.strip() in ("After", "Requires", "BindsTo", "Requisite"):
+                            after += value.split()
+                self.assertFalse(set(after) & set(self.LONG), f"{name}: {after}")

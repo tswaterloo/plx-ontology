@@ -113,9 +113,11 @@ from ontology.store import instant, removed_at_sql
 from ontology.units import unit_token
 
 from . import kind_confirmation
-from .claim_checks import to_decimal
+from .claim_checks_parse import to_decimal
 from .ontology_tools_aggregate import _pick
-from .ontology_tools import OntologyTools, ToolError, _completeness, _error
+from .ontology_tools import OntologyTools
+from .ontology_tools_identity import ToolError, _error
+from .ontology_tools_results import _completeness
 
 TOOL_NAME = "plx.review"
 TOOL_NAMES = (TOOL_NAME,)
@@ -638,17 +640,41 @@ def _date(text: str) -> dt.date | None:
         return None
 
 
+def _evidence_handle(base: OntologyTools, item: Mapping[str, Any],
+                     record: Mapping[str, Any]) -> str | None:
+    """The L1 handle an evidence item cites: its own (``plx.review`` writes it), else the
+    handle of the cited version the review projection reads (``ontology.reviews.
+    _cited_version``: the record's version with the cited digest current at the decision;
+    a decision recorded straight into the store, such as the G/L crosswalk's 768, names
+    only the record and its digest). None: no such version is projected."""
+    handle = item.get("l1_handle")
+    if isinstance(handle, str):
+        return handle
+    if not isinstance(item.get("digest"), str):
+        return None
+    from ontology.reviews import _cited_version
+    version = _cited_version(base.store.conn, item, str(record.get("recorded_at") or ""))
+    return None if version is None else version["l1_handle"]
+
+
 def _readable(base: OntologyTools, scope: Any, record: Mapping[str, Any]) -> bool:
     """The reader may read the review: both ends and every cited record now, each cited
     version through its item ACL, and a value review's cited fields under their
     markings."""
+    evidence = record["evidence"]
+    if not all(isinstance(item, Mapping) and isinstance(item.get("object_id"), str)
+               for item in evidence):
+        return False   # an evidence item naming no record: nothing to check it by
+    handles = [_evidence_handle(base, item, record) for item in evidence]
+    if None in handles:
+        return False   # a cited version not projected: never readable on a guess
     ids = [record["subject"]] + ([record["target"]] if record.get("target") else []) + [
-        item["object_id"] for item in record["evidence"]]
+        item["object_id"] for item in evidence]
     visible = base._visible_versions(scope, ids)
     if not (all(oid in visible for oid in ids) and all(
-            base._item_allowed(scope.actor, item["l1_handle"]) for item in record["evidence"])):
+            base._item_allowed(scope.actor, handle) for handle in handles)):
         return False
-    fields = [(item["l1_handle"], item["field_path"]) for item in record["evidence"]
+    fields = [(handle, item["field_path"]) for handle, item in zip(handles, evidence)
               if "field_path" in item]
     if "value" not in record or not fields:
         return True

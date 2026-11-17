@@ -43,7 +43,10 @@ from ontology.schema import load_schema
 from ontology.types import Actor
 from operating import customer_profit as cp
 from operating import ontology_tools as ot
+from operating import ontology_tools_policy
+from operating import ontology_tools_results
 from operating import ontology_tools_investigate as oi
+from operating import ontology_tools_investigate_host
 from operating import ontology_tools_traverse as tt
 from tests.test_investigate_order_margin import fake_bc
 
@@ -193,10 +196,14 @@ class World:
         scratch = tempfile.TemporaryDirectory()
         test.addCleanup(scratch.cleanup)
         path = Path(scratch.name) / "ontology.sqlite"
+        # Built as the capture ends (the capture's own clock): store_meta.freshness then
+        # states the capture's true age at the build, not the age of the fixture's fixed
+        # capture time against today's clock (past the 36 h bound: every source stale, so
+        # no memo read could be shown complete).
         with BcCaptures(self.h.db) as source:
             build_store(path, load_schema(), {"bc": source,
                                               "portal_api": Static("portal_api", PORTAL)},
-                        normalizer=identifiers.normalize)
+                        normalizer=identifiers.normalize, clock=self.h.clock)
         self.path, self.audiences, self.markings = path, audiences, markings
         self.clock = clock
         self._open(test, self.h.store)
@@ -210,7 +217,7 @@ class World:
         base = ot.OntologyTools(reader, policy, schema=ot.default_schema(),
                                 grammar=ot.default_grammar(), clock=self.clock)
         table: dict = {}
-        ot.register(table, base)
+        ontology_tools_results.register(table, base)
         tt.register(table, tt.TraverseTools(base))
 
         # The margin reads fan orders out over the Ask pool, so the citation reader is
@@ -223,8 +230,8 @@ class World:
             with gate:
                 result = reader_store.resolve(handle, tb.SERVICE)
             return result if result.get("ok") else None
-        oi.register(table, oi.InvestigateTools(table, rows=rows, scope=oi.read_scope(base),
-                                               captured=oi.capture_claims(base)))
+        oi.register(table, oi.InvestigateTools(table, rows=rows, scope=ontology_tools_investigate_host.read_scope(base),
+                                               captured=ontology_tools_investigate_host.capture_claims(base)))
         self.table, self.base = table, base
         self.calls: list[str] = []
 
@@ -892,7 +899,7 @@ class SideBySideTests(unittest.TestCase):
             seen.append(scope.params()["at"])
             return original(store, scope, ids)
         with mock.patch.object(ot.StoreReader, "_visible_versions_read", counted), \
-                ot.snapshot_reads():
+                ontology_tools_policy.snapshot_reads():
             spread = cp.profitability(world.call, customer, today=TODAY,
                                       fan_out=self.spread(jobs, stopped, "full",
                                                           world.call, 3))
@@ -970,7 +977,7 @@ class RepeatLossActionTests(unittest.TestCase):
                          "item cost (SO2, SO1).")
         # more than five losses: the count and the five named agree, the rest counted
         self.assertEqual(self.text(["-1"] * 7), (
-            head + "the last 7 orders with it ran below item cost (SO7, SO6, SO5, SO4, SO3, "
-            "and 2 more).", ["o7", "o6", "o5", "o4", "o3"]))
+            head + "the last 7 orders with it ran below item cost (5 of 7: SO7, SO6, SO5, "
+            "SO4, SO3).", ["o7", "o6", "o5", "o4", "o3"]))
         # one loss is no repeat
         self.assertIsNone(self.text(["10", "-10"])[0])

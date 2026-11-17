@@ -38,7 +38,9 @@ from ontology.types import Actor
 from operating import people_graph as pg
 from operating.case_runtime import CaseRuntime, LiveReaders
 from operating import ontology_tools as ot
+from operating import ontology_tools_results
 from operating import ontology_tools_investigate as oi
+from operating import ontology_tools_investigate_host
 from operating import ontology_tools_traverse as tt
 
 CONTRACTS = ot.load_contracts()
@@ -313,10 +315,10 @@ class World:
                                 schema=ot.SchemaView.from_compiled(self.compiled),
                                 grammar=None, contracts=CONTRACTS, clock=lambda: NOW)
         table: dict = {"_reader": reader}
-        ot.register(table, base)
+        ontology_tools_results.register(table, base)
         tt.register(table, tt.TraverseTools(base))
         oi.register(table, oi.InvestigateTools(
-            table, rows=self.rows_of, scope=oi.read_scope(base), clock=lambda: NOW,
+            table, rows=self.rows_of, scope=ontology_tools_investigate_host.read_scope(base), clock=lambda: NOW,
             held_markings=policy.held_markings, people=people))
         return table
 

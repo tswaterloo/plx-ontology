@@ -83,7 +83,7 @@ export function ItemFeedback({
       ))}
       {failed && (
         <span role="alert" className="text-fg">
-          Couldn't save. Try again.
+          Couldn&apos;t save that; try again
         </span>
       )}
     </span>
@@ -143,7 +143,7 @@ export function WrongReason({ item, onMarked, onCancel }: { item: BriefingItem; 
       </button>
       {failed && (
         <span role="alert" className="text-[12px] text-fg">
-          Couldn't save. Try again.
+          Couldn&apos;t save your note; try again
         </span>
       )}
     </form>

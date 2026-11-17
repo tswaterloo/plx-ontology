@@ -27,12 +27,14 @@ from ontology.json_contract import validate
 from ontology.project import build_store
 from ontology.types import Actor
 from operating import ontology_tools as ot
+from operating import ontology_tools_results
 from operating import ontology_tools_investigate as oi
+from operating import ontology_tools_investigate_host
 from operating import ontology_tools_traverse as tt
 from operating import people_graph as pg
 from operating import tool_results
 from operating import vendor_terms as vt
-from operating.claim_checks import unit_word
+from operating.claim_checks_text import unit_word
 from tests import test_investigate_people_graph as base
 
 CONTRACTS = ot.load_contracts()
@@ -178,10 +180,10 @@ class World:
                                  schema=ot.SchemaView.from_compiled(self.compiled),
                                  grammar=None, contracts=CONTRACTS, clock=lambda: NOW)
         table: dict = {"_reader": reader}
-        ot.register(table, tools)
+        ontology_tools_results.register(table, tools)
         tt.register(table, tt.TraverseTools(tools))
         oi.register(table, oi.InvestigateTools(
-            table, scope=oi.read_scope(tools), clock=lambda: NOW,
+            table, scope=ontology_tools_investigate_host.read_scope(tools), clock=lambda: NOW,
             held_markings=policy.held_markings, people=people,
             documents=self.documents if documents else None))
         return table
@@ -557,7 +559,20 @@ class OnTheCaseHostTests(unittest.TestCase):
         self.assertNotIn("USD 2.99", dumped)
         self.assertNotRegex(dumped, r"(?<![\d:])2\.99(?!\d)")
         self.assertNotIn("MSG-3", dumped)
-        self.assertIn("participants_not_cleared", {g["reason"] for g in out["gaps"]})
+        # PRIV-1114-1: the shared mail gate withholds that message before any primitive
+        # returns it, so the engine never reads it; reading it says why, naming nobody.
+        held = MailCaptureStore(root / "mail")
+        try:
+            [cited] = [h for (h,) in held.db.execute(
+                "SELECT l1_handle FROM messages WHERE message_id='MSG-3'")]
+        finally:
+            held.close()
+        read = tool_results.result_value(server.handle({
+            "jsonrpc": "2.0", "id": 9, "method": "tools/call",
+            "params": {"name": "plx.read", "arguments": {"citation": cited}}})["result"])
+        self.assertEqual(read["status"], "withheld", read)
+        self.assertEqual([g["reason"] for g in read["gaps"]], ["participants_not_cleared"])
+        self.assertNotIn("2.99", json.dumps(read))
         follow = {e["name"]: e for e in ask("F28", 3)["answer"]}
         self.assertEqual(follow["follow_up"]["value"], 1, follow["follow_up"])
         self.assertGreaterEqual(follow["follow_up_1"]["value"], 19)

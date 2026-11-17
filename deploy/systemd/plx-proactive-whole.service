@@ -16,25 +16,31 @@ EnvironmentFile=-@PLX_HOME@/.config/plx/proactive.env
 Environment=PATH=/data/venv/bin:/usr/local/bin:/usr/bin:/bin
 # names its Postgres sessions after the unit (ARCH T2: pg_stat_activity, slow-query log)
 Environment=PGAPPNAME=%N
-# the tool-call rules on a pool of 3 workers whatever the host's free memory reads at the
+# the tool-call rules on a pool of 6 workers whatever the host's free memory reads at the
 # start (without it a loaded host sizes the pool to one, no pool: the margins, the orders at
-# risk and the cards are then read only up to their per-run bounds). Capped at 8G (was 16G)
+# risk and the cards are then read only up to their per-run bounds). Capped at 22G (was 8G)
 # since the vendor stage starts on a fresh runtime (operating.vendor_watch, AL-06): watch the
-# first pass's peak (plx-ops-memory) before raising it; the jobq class says the same 8
-Environment=PLX_PROACTIVE_WORKERS=3
+# first pass's peak (plx-ops-memory) before raising it; the jobq class says the same 22
+# 6 workers (2.5 GB each + ~6 GB engine = 21 GB; the host has 61 GB, Postgres ~18 GB),
+# MemoryHigh 20G / MemoryMax 22G. The pass's own budget (6300 s, the engine 5400 of it) sits
+# well inside TimeoutStartSec (10800 s): a pass stops at its budget and the next resumes its
+# checkpoint, so systemd never kills it (the whole and calling units both hit Result=timeout at 4800 s,
+# overrunning a 4200 s budget in the pre-detector store scans). Another scheduled pass
+# running (operating.vendor_watch.scheduled_lock_path): this one skips at once, exit 0.
+Environment=PLX_PROACTIVE_WORKERS=6
 # the store the incremental pass reads (plx-proactive-inc.service)
-Environment=PLX_ONTOLOGY_PG=1
+Environment=PLX_ONTOLOGY_PG=only
 # the engine's budget (each detector also stops at its own window), the vendor checks the rest
 ExecStart=/data/venv/bin/python3 -m operating.vendor_watch --state-dir /data/plx-state \
   --config @PLX_HOME@/.config/plx/workbench-host-vince/host.json \
-  --refresh whole --refresh-seconds 2700 --budget-seconds 4200 --bound 400
+  --refresh whole --refresh-seconds 5400 --budget-seconds 6300 --bound 400
 # serving keeps its share of the host: lower CPU and I/O weight than plx-api
 Nice=5
 CPUWeight=50
 IOSchedulingClass=best-effort
 IOSchedulingPriority=6
-MemoryHigh=7G
-MemoryMax=8G
+MemoryHigh=20G
+MemoryMax=22G
 MemorySwapMax=4G
-TimeoutStartSec=4800
+TimeoutStartSec=10800
 UMask=0077

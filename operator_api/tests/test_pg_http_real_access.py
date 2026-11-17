@@ -7,7 +7,6 @@ page, fact or cited value of it, whatever the request claims, and an excluded pe
 record is never suggested. Evidence: isolated fixture + scratch Postgres; no network."""
 from __future__ import annotations
 
-import dataclasses
 import json
 import os
 import shutil

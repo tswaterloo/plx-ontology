@@ -11,8 +11,12 @@ import { ReplyList } from "@/components/reply-list";
 import { TodayDetail, type QueueRow } from "@/components/today-detail";
 import { Pending, SlowNote } from "@/components/ui/skeleton";
 import { lateEdge, lateFigure, OpenRing } from "@/components/ui/glyphs";
+import { Glance } from "@/components/home-glance";
 import { LoadProblem, StaleNote } from "@/components/ui/notice";
 import { NeedsMe } from "@/components/needs-me";
+import { HomeStart } from "@/components/home-start";
+import { YourCommitments } from "@/components/your-commitments";
+import { YourTurn } from "@/components/memory-people";
 import { DataNotes } from "@/components/data-notes";
 import { SignedInFirstWeek } from "@/components/first-week";
 import { isPutAway } from "@/lib/actions";
@@ -21,7 +25,7 @@ import { getActionStates, getReplies, getBriefing, getBriefingItems, getSuggesti
 import { cn } from "@/lib/cn";
 import { noticeKind, plainError } from "@/lib/errors";
 import { formatDate, formatMoney, objectHref, readable, recordLabel, safeHref } from "@/lib/format";
-import { headline, keyOwner, refreshingLine, staleLine, yourMorning } from "@/lib/home";
+import { headline, keyOwner, refreshingLine, yourMorning } from "@/lib/home";
 import type { ReplyTriage, ActionResult, Briefing, BriefingItem, HomeResponse, LatePo, ProactiveSuggestion } from "@/lib/types";
 
 const TZ = "America/Toronto";
@@ -86,6 +90,9 @@ function PreparedWork({ items }: { items: { id: string; title: string; href: str
 
 const rankOf = (t: string) => (t === "po_undated" ? 999 : ORDER.indexOf(t) === -1 ? 500 : ORDER.indexOf(t));
 
+/** A late PO's supplier date, in the row's few words. */
+const CONFIRM_WORDS: Record<string, string> = { confirmed: "supplier confirmed", none_found: "no supplier date", found_unverified: "date unverified", needs_check: "check the confirmation" };
+
 function lateRow(p: LatePo, suggestion?: ProactiveSuggestion, item?: BriefingItem): QueueRow {
   return {
     key: p.object_id,
@@ -94,7 +101,11 @@ function lateRow(p: LatePo, suggestion?: ProactiveSuggestion, item?: BriefingIte
     objectId: p.object_id,
     title: recordLabel("PurchaseOrder", p.label),
     counterpart: p.supplier ?? null,
-    line: p.due_date ? `Needed ${formatDate(p.due_date, { short: true })}` : "No due date",
+    line: [
+      p.due_date ? `Needed ${formatDate(p.due_date, { short: true })}` : "No due date",
+      p.amount && !p.amount_suspect ? formatMoney(p.amount.amount, p.amount.currency) : p.amount_suspect ? "check the total" : null,
+      CONFIRM_WORDS[p.confirmation ?? ""] ?? null,
+    ].filter(Boolean).join(" · "),
     days: p.days_late ?? null,
     status: "late",
     href: safeHref(p.open_url) ?? objectHref("PurchaseOrder", p.object_id),
@@ -384,7 +395,6 @@ function Today() {
   const morning = yourMorning(briefing);
   const na = home?.needs_attention;
   const lateTotal = na?.status === "read" ? (na.late_total ?? (na.late_pos ?? []).length) : null;
-  const total = (briefing?.status === "read" ? briefing.count : null) ?? groups.reduce((n, g) => n + g.count, 0);
   const loading = !error && groups.length === 0 && (!home || !briefing || late === null);
   const refreshing = briefing?.refreshing || na?.refreshing;
   const done = (r: ActionResult) => setStates((prev) => ({ ...prev, [r.card_id]: r }));
@@ -436,19 +446,27 @@ function Today() {
         {new Date().toLocaleDateString("en-GB", { weekday: "long", day: "numeric", month: "long", timeZone: TZ })}
         {lateTotal ? ` · ${lateTotal} late` : head && lateTotal === 0 ? ` · ${head.text}` : ""}
       </p>
-      <div className="mt-3 flex h-10 shrink-0 border-b border-border px-5 lg:hidden">{tabs}</div>
+      {tabs ? <div className="mt-3 flex h-10 shrink-0 border-b border-border px-5 lg:hidden">{tabs}</div> : <div className="h-3 lg:hidden" aria-hidden />}
 
       {supplier && (
         <div className="flex shrink-0 items-center gap-2 px-5 pt-3" data-testid="supplier-filter">
           <span className="inline-flex h-7 min-w-0 items-center gap-2 rounded-[3px] bg-bg pr-1 pl-2 shadow-lift">
             <span className="truncate text-[12px] font-medium">{supplier}</span>
-            <button type="button" onClick={() => router.push("/")} aria-label="Show every supplier" className="flex size-5 items-center justify-center rounded-full text-muted hover:bg-hover hover:text-fg cursor-pointer">
+            <button type="button" onClick={() => router.push("/")} aria-label="Show every supplier" className="flex size-5 items-center justify-center rounded text-muted hover:bg-hover hover:text-fg cursor-pointer">
               <X className="size-3.5" aria-hidden />
             </button>
           </span>
         </div>
       )}
 
+      {!loading && !error && !supplier && (
+        <Glance
+          late={late?.length ? late : na?.status === "read" ? (na.late_pos ?? []) : []}
+          lateTotal={lateAll ?? lateTotal}
+          groups={groups}
+          replies={replies?.total ?? null}
+        />
+      )}
       <StaleNote since={home?.stale_since ?? briefing?.stale_since} className="px-5 py-1.5" />
       <div ref={listRef} className="min-h-0 flex-1 overflow-y-auto pb-4" data-testid="needs-you" {...((!briefing && !briefingError && !error) || !suggestionsRead ? { "data-pending": "" } : {})}>
         <SignedInFirstWeek />
@@ -466,6 +484,8 @@ function Today() {
           </div>
         )}
         <NeedsMe />
+        <YourCommitments />
+        <YourTurn />
         <PreparedWork items={[]} />
         {error ? (
           <div className="p-4">
@@ -541,6 +561,7 @@ function Today() {
         )}
         {na?.status === "read" && <div className="px-4 pt-2"><HiddenNotice hidden={na?.hidden} /></div>}
         {briefing?.status === "read" && <DataNotes notes={briefing.data_note_items} className="px-4 pt-3" />}
+        {!supplier && <HomeStart className="border-t border-border px-5 pt-5 pb-6 mt-5 lg:hidden" />}
       </div>
     </section>
   );
@@ -568,7 +589,10 @@ function Today() {
           ) : (
             <div className="flex flex-1 flex-col">
               <div className="h-[52px] shrink-0 border-b border-border" />
-              <div className="flex flex-1 items-center justify-center text-[13px] text-faint">{loading || error ? "" : visible.length ? "Choose an item on the left to open it here." : "To look up any record, use Search or ask at the top left."}</div>
+              <div className="flex-1 overflow-y-auto px-8 py-8">
+                <HomeStart />
+                {!loading && !error && visible.length > 0 && <p className="mt-8 text-[12px] text-faint">Choose an item on the left to open it here.</p>}
+              </div>
             </div>
           )}
         </div>

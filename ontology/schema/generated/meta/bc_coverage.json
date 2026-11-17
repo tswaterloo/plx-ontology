@@ -18,11 +18,11 @@
  },
  "counts": {
   "entity_sets_in_pin": 150,
-  "generated_entity_sets": 14,
+  "generated_entity_sets": 15,
   "curated_entity_sets": 27,
-  "object_types": 14,
-  "link_types": 30,
-  "properties": 175,
+  "object_types": 15,
+  "link_types": 31,
+  "properties": 189,
   "not_served_types": 7
  },
  "entity_sets": {
@@ -242,6 +242,10 @@
     "file": "domains/orders.json"
    }
   },
+  "salesShipmentLines": {
+   "object_type": "RelBcSalesShipmentLines",
+   "binding": "gen.bc.sales_shipment_lines"
+  },
   "salesCreditMemoLines": {
    "bound_by": {
     "object_type": "SalesCreditMemoLine",
@@ -284,9 +288,6 @@
    "not_captured": "served, outside the capture scope"
   },
   "paymentTerms": {
-   "not_captured": "served, outside the capture scope"
-  },
-  "salesShipmentLines": {
    "not_captured": "served, outside the capture scope"
   },
   "shipmentMethods": {
@@ -869,6 +870,7 @@
   "salesQuotes.totalAmountExcludingTax": "money: currency from the record's currencyCode column (finance-marked)",
   "salesQuotes.totalAmountIncludingTax": "money: currency from the record's currencyCode column (finance-marked)",
   "salesQuotes.totalTaxAmount": "money: currency from the record's currencyCode column (finance-marked)",
+  "salesShipmentLines.unitPrice": "finance-marked decimal: the name reads as money (Sage abbreviates amount as amt; doctotal is a Sage document total, extended/extcancel/extreceive its extended amounts, taxbase1-5 its tax bases; tax_c is the FileMaker PO tax); no measure or currency is declared",
   "bankAccounts.bankAccountNumber": "finance+l5-marked (relation_markings)",
   "bankAccounts.iban": "finance+l5-marked (relation_markings)",
   "fixedAssets.employeeNumber": "pii-marked (relation_markings)",

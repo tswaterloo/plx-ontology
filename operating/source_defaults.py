@@ -25,7 +25,7 @@ from __future__ import annotations
 
 from collections import Counter, defaultdict
 from datetime import date
-from typing import Any, Hashable, Iterable, Mapping
+from typing import Any, Hashable, Iterable
 
 DATE_SHARE = 0.10
 STATE_SHARE = 0.95
@@ -153,6 +153,3 @@ def state_defaults(pairs: Iterable[tuple[Hashable, Hashable]], *, share: float =
             if (found := bulk_values(values, share=share, minimum=minimum))}
 
 
-def is_state_default(defaults: Mapping[Hashable, frozenset], state: Hashable, value: Any
-                     ) -> bool:
-    return value in defaults.get(state, frozenset())

@@ -51,7 +51,7 @@ CREATE TABLE search.query_log (id bigserial PRIMARY KEY, at timestamptz NOT NULL
     actor text, question text, intent text, entities jsonb, rewrites jsonb, results jsonb,
     timings jsonb);
 """
-# Harmless when it exists.
+# The search code asks the permissions schema for this index (fuzzy retriever); harmless when it exists.
 EXTRA = "CREATE INDEX IF NOT EXISTS chunks_header_trgm ON search.chunks USING gin (header gin_trgm_ops);"
 
 

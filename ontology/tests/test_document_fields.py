@@ -27,13 +27,14 @@ import json
 import math
 import os
 from pathlib import Path
+import shutil
 import sqlite3
 import tempfile
 import unittest
 from unittest import mock
 from zipfile import ZipFile
 
-from integrations import graph_read
+from integrations import document_understanding as du, graph_read
 from integrations.capture_mail import MailCapture, MailCaptureStore
 from integrations.graph_read import GraphMailReader
 from integrations.live_source_guard import BoundedBackoff
@@ -830,6 +831,24 @@ class ClassStageTests(unittest.TestCase):
         self.assertEqual(whole["fields"]["po_reference"]["value"], "4500")
         self.assertNotIn("split_at_gap", whole["references"][0])
 
+    def test_a_compound_quantity_is_a_gap_never_its_first_unit(self):
+        """'10 kg/case' is a rate over a pack basis (DOC-002): no typed quantity, never 10 kg,
+        and a stored one never compares equal to a plain 10 kg; a benign qualifier stays."""
+        from operating import attested_conflicts
+        sheet = self.read_ocr(["ASSEMBLY ORDER", "Total Qty: 10 kg/case",
+                               "Filled Qty: 2000 kg per pallet", "Rejects: 3 kg net"])
+        for name in ("produced_quantity", "filled_quantity"):
+            self.assertEqual((sheet["fields"][name]["value"], sheet["fields"][name]["gap"]),
+                             (None, "compound_unit"), name)
+        rejected = sheet["fields"]["rejected_quantity"]
+        self.assertEqual((rejected["value"], rejected["unit"], rejected.get("qualifier")),
+                         ("3", "kg", "net"))
+        rate = {"value": "10", "unit": "kg", "qualifier": "/case"}
+        self.assertIsNone(attested_conflicts._same("quantity", rate,
+                                                   {"value": "10", "unit": "kg"}))
+        self.assertTrue(attested_conflicts._same("quantity", {"value": "10", "unit": "kg"},
+                                                 {"value": "10", "unit": "kg"}))
+
     def test_a_pos_own_terms_are_mentions_and_a_plx_po_stays_out(self):
         found = self.read(["PURCHASE ORDER", "PO Number: 4500000002",
                            "Required date: 2026-10-20", *self.TERMS])
@@ -1520,11 +1539,12 @@ class CoaLiveCheckTests(unittest.TestCase):
     def run_check(self, drive, floors=None):
         import argparse
         from integrations import capture_sharepoint as cs
+        from integrations import capture_sharepoint_scope
         from operating import sharepoint_host_check as check
         from scripts import eval_document_fields_live as live
         with tempfile.TemporaryDirectory() as tmp:
             scope_file, audience_file = Path(tmp) / "scope.json", Path(tmp) / "audience.json"
-            scope_file.write_text(json.dumps({"schema": cs.SCOPE_SCHEMA, "targets": [
+            scope_file.write_text(json.dumps({"schema": capture_sharepoint_scope.SCOPE_SCHEMA, "targets": [
                 {"id": "receiving", "drive_id": tsp.DRIVE, "folders": [tsp.QUALITY_FOLDER]}]}))
             audience_file.write_text(json.dumps({
                 "schema": "plx-live-source-audience/v1", "tenant": "plx",
@@ -2136,8 +2156,386 @@ class PlacedValuesTests(unittest.TestCase):
             row = {"content_sha256": digest, "mime_type": "application/pdf", "name": "i.pdf"}
             [(_, found, _, _)] = document_fields._documents(row, temp)
             self.assertEqual(found["fields"]["invoice_number"]["value"], "IN-77124")
-            self.assertIn((digest, "application/pdf", "i.pdf", None, None, False, True),
+            self.assertIn((os.path.abspath(temp),
+                           (digest, "application/pdf", "i.pdf", None, None, False, True)),
                           document_fields._FIELDS)
+
+
+_BOXES = importlib.util.find_spec("pypdf") and importlib.util.find_spec("reportlab") and \
+    shutil.which("pdftotext")
+
+
+def _gap_after(x, label, gap):
+    """The x a value drawn ``gap`` points right of ``label`` drawn at ``x`` starts at."""
+    from reportlab.pdfbase.pdfmetrics import stringWidth
+    return x + stringWidth(label, "Helvetica", 12) + gap
+
+
+class WordBoxPlacementTests(unittest.TestCase):
+    """AUD-07: a text-layer page is placed by its word boxes (``du.pdf_word_boxes``,
+    ``du.word_box_layout``): a value to the right of its label on the same line, else
+    below it in its column, never across another label or a table's other column, typed
+    per field; pypdf's layout view only when poppler gives no word box."""
+
+    def place(self, items, profile="supplier_invoice"):
+        content = placed_pdf(items)
+        found = document_fields.extract_fields(content, "application/pdf", filename="d.pdf")
+        self.assertEqual(found["profile"], profile)
+        page = dict(document_fields.read_text(content, "application/pdf",
+                                              filename="d.pdf").pages)[1]
+        for field in found["fields"].values():   # every citation resolves in the pinned text
+            for citation in field.get("citations", ()):
+                self.assertEqual(page[citation["start"]:citation["end"]], citation["text"])
+        return found
+
+    @unittest.skipUnless(_BOXES, "needs pypdf, reportlab and poppler's pdftotext")
+    def test_a_value_one_tab_stop_right_of_its_label_is_read(self):
+        # Labels in one column, values in the next, 8 pt apart (less than two characters):
+        # the values' shared left edge makes the gap a column gap.
+        at = _gap_after(60, "Invoice number", 8)
+        found = self.place([
+            (at, 742, "K7QX2ZPA-0042"), (at, 728, "April 12, 2031"), (at, 714, "Net 30"),
+            (300, 780, "Invoice"), (60, 742, "Invoice number"), (60, 728, "Invoice date"),
+            (60, 714, "Terms")])
+        values, fields = _values(found), found["fields"]
+        self.assertEqual(values["invoice_number"], "K7QX2ZPA-0042")
+        self.assertEqual(fields["invoice_number"]["placed"], "beside")
+        self.assertEqual(values["document_date"], "2031-04-12")
+        self.assertEqual(values["payment_terms"], "Net 30")
+
+    @unittest.skipUnless(_BOXES, "needs pypdf, reportlab and poppler's pdftotext")
+    def test_a_header_row_value_is_read_under_its_own_column_only(self):
+        # A table of order cells: each value under its header; the PO is the one under
+        # 'PO Number', never its neighbour's, and a header label is no value.
+        found = self.place([
+            (60, 686, "ACME7-DOCK"), (170, 686, "NORTH-1"), (280, 686, "PO10000077"),
+            (390, 686, "HS"), (300, 780, "Packing Slip"), (60, 700, "Ordered By"),
+            (170, 700, "Customer No."), (280, 700, "PO Number"), (390, 700, "Salesperson")],
+            profile="packing_slip")
+        self.assertEqual(found["fields"]["po_reference"]["value"], "PO10000077")
+        self.assertEqual(found["fields"]["po_reference"]["placed"], "below")
+
+    @unittest.skipUnless(_BOXES, "needs pypdf, reportlab and poppler's pdftotext")
+    def test_several_labels_on_one_line_each_take_their_own_value(self):
+        found = self.place([
+            (300, 780, "INVOICE"), (60, 742, "Invoice No.:INV-4411"),
+            (300, 742, "P. O. Number :PO10000002"), (60, 600, "Amount due"),
+            (200, 600, "USD"), (300, 600, "1,875.00")])
+        values, fields = _values(found), found["fields"]
+        self.assertEqual(values["invoice_number"], "INV-4411")
+        self.assertEqual(values["po_reference"], "PO10000002")
+        # A currency in a cell of its own between the label and the amount is the amount's,
+        # and both are cited.
+        self.assertEqual((values["amount"], fields["amount"]["currency"]), ("1875.00", "USD"))
+        self.assertEqual({c["text"] for c in fields["amount"]["citations"]},
+                         {"1,875.00", "USD"})
+
+    @unittest.skipUnless(_BOXES, "needs pypdf, reportlab and poppler's pdftotext")
+    def test_a_bracketed_currency_on_the_label_is_the_amounts(self):
+        at = _gap_after(300, "Amount Due (CAD):", 30)
+        found = self.place([(300, 780, "INVOICE"), (300, 600, "Amount Due (CAD):"),
+                            (at, 600, "$2,340.00")])
+        amount = found["fields"]["amount"]
+        self.assertEqual((amount["value"], amount["currency"]), ("2340.00", "CAD"))
+
+    @unittest.skipUnless(_BOXES, "needs pypdf, reportlab and poppler's pdftotext")
+    def test_a_far_cell_beside_a_party_label_leaves_the_value_below(self):
+        # 'BILL TO' across the page from 'INVOICE # 5150': the buyer is under 'BILL TO'.
+        found = self.place([(60, 700, "BILL TO"), (400, 700, "INVOICE # 5150"),
+                            (60, 686, "Northwind Traders"), (300, 780, "INVOICE")])
+        self.assertEqual(found["fields"]["buyer"]["value"], "Northwind Traders")
+        self.assertEqual(found["fields"]["invoice_number"]["value"], "5150")
+
+    def test_word_boxes_rebuild_lines_and_columns(self):
+        word = lambda top, left, text, width=None: (   # noqa: E731
+            top, top + 10, left, left + (width or 6 * len(text)), text)
+        # A tab-stop column (values sharing a left edge, 8 pt after their labels) is a
+        # column gap; a repeated label's next words sharing an edge are not.
+        text = du.word_box_layout([
+            word(0, 0, "Invoice"), word(0, 44, "number"), word(0, 88, "INV-1"),
+            word(14, 0, "Date"), word(14, 88, "2031-01-02"),
+            word(28, 0, "Terms"), word(28, 88, "Net"), word(28, 108, "30"),
+            word(80, 0, "Beneficiary"), word(80, 70, "Company"),
+            word(94, 0, "Beneficiary"), word(94, 70, "A/C"), word(94, 92, "Number"),
+            word(108, 0, "Beneficiary"), word(108, 70, "Bank")])
+        lines = text.split("\n")
+        self.assertRegex(lines[0], r"^Invoice number {2,}INV-1$")
+        self.assertRegex(lines[2], r"^Terms {2,}Net 30$")
+        self.assertIn("Beneficiary A/C Number", text)
+        self.assertEqual(lines[3], "")   # a vertical gap is a blank line
+        # A skewed scan line (its words' tops drift by 3 of 10 pt) stays one line.
+        skewed = du.word_box_layout([word(0, 0, "Lot"), word(1.5, 30, "No."),
+                                     word(3, 60, "31003C")])
+        self.assertEqual(skewed.count("\n"), 0)
+        self.assertEqual(du.word_box_layout([]), "")
+
+    def test_no_word_boxes_fail_closed_to_the_pypdf_view(self):
+        # Bytes poppler cannot read give no word box (never a partial page), and with no
+        # poppler at all the layout view is pypdf's.
+        self.assertIsNone(du.pdf_word_boxes(b"%PDF-1.4 not a pdf", 1, 1))
+        self.assertIsNone(du.pdf_word_boxes(b"%PDF-1.4", 2, 1))
+        if not (importlib.util.find_spec("pypdf") and importlib.util.find_spec("reportlab")):
+            self.skipTest("needs pypdf and reportlab")
+        content = placed_pdf([(300, 780, "INVOICE"), (60, 742, "Invoice Number"),
+                              (400, 742, "IN-77125")])
+        with mock.patch.object(du.shutil, "which", return_value=None):
+            view = du.pdf_layout_pages(content, [1])
+        self.assertRegex(view[1], r"Invoice Number +IN-77125")
+
+    def test_identifier_shapes_and_their_citations(self):
+        # A hyphen the text layer maps to NUL is found as the word box's literal; two
+        # cells the plain reading ran together are cited at their letter/digit change,
+        # never inside a run of digits.
+        pinned = "Invoice number K7QX2ZPA\x000042\nACME7-DOCK PO10000077NORTH-1 HS"
+        self.assertEqual(document_fields._locate(pinned, "K7QX2ZPA-0042", 0), (15, 28))
+        start = pinned.index("PO10000077")
+        self.assertEqual(document_fields._locate(pinned, "PO10000077", 0),
+                         (start, start + 10))
+        self.assertIsNone(document_fields._locate("No 4500123", "4500", 0))
+        text = "\n".join([
+            "INVOICE",
+            "  Invoice No.        |INV-77 >",
+            "  PO                 P.O. Box 1044",
+            "  Your PO            4500 123",
+        ])
+        found = document_fields.extract_fields(b"%PDF-scan", "application/pdf",
+                                               filename="scan.pdf", text=text)
+        fields = found["fields"]
+        # Noisy OCR edge marks are not part of the number; a postal box is no PO, and two
+        # numbers a space apart are none either.
+        self.assertEqual(fields["invoice_number"]["value"], "INV-77")
+        self.assertIsNone(fields["po_reference"].get("value"))
+        coa = document_fields.extract_fields(
+            b"%PDF-scan", "application/pdf", filename="coa.pdf",
+            text="Certificate of Analysis\nProduct: Balm\nLot Number: 31001A \u2013 31002B\n")
+        self.assertEqual(coa["profile"], "certificate_of_analysis")
+        self.assertEqual((coa["fields"]["lot"]["value"], coa["fields"]["lot"]["gap"]),
+                         (None, "several_values"))
+
+
+def _strings(node):
+    """Every string a reading's fields hold, keys included."""
+    if isinstance(node, str):
+        yield node
+    elif isinstance(node, dict):
+        for key, value in node.items():
+            yield key
+            yield from _strings(value)
+    elif isinstance(node, (list, tuple)):
+        for item in node:
+            yield from _strings(item)
+
+
+def _citations(node):
+    if isinstance(node, dict):
+        if "source_sha256" in node and isinstance(node.get("text"), str) and "start" in node:
+            yield node
+        for value in node.values():
+            yield from _citations(value)
+    elif isinstance(node, list):
+        for item in node:
+            yield from _citations(item)
+
+
+class LayoutViewHardeningTests(unittest.TestCase):
+    """AUD-07 review: no control character (NUL: Postgres text holds none) reaches a value
+    or citation while every citation still cuts from the pinned page text; the poppler
+    version keys what its views placed and a poppler timeout is never kept; an address,
+    contact or account line is no identifier."""
+
+    def nul_reading(self):
+        # A text layer that maps the hyphen of 'K7QX2ZPA-0042' to NUL, in the pinned text
+        # and in poppler's word boxes alike.
+        import dataclasses
+        at = _gap_after(60, "Invoice number", 8)
+        content = placed_pdf([(at, 742, "K7QX2ZPA-0042"), (at, 728, "April 12, 2031"),
+                              (300, 780, "Invoice"), (60, 742, "Invoice number"),
+                              (60, 728, "Invoice date")])
+        read = document_fields.read_text(content, "application/pdf", filename="d.pdf")
+        pinned = dict(read.pages)[1].replace("K7QX2ZPA-0042", "K7QX2ZPA\x000042")
+        self.assertIn("\x00", pinned)
+        return content, dataclasses.replace(read, pages=((1, pinned),)), pinned
+
+    @unittest.skipUnless(_BOXES, "needs pypdf, reportlab and poppler's pdftotext")
+    def test_a_nul_glyph_is_in_no_value_or_citation_and_citations_still_cut(self):
+        content, read, pinned = self.nul_reading()
+        boxes = du.pdf_word_boxes(content, 1, 1)
+        nul = {1: [(t, b, l, r, w.replace("-", "\x00")) for t, b, l, r, w in boxes[1]]}
+        with mock.patch.object(du, "pdf_word_boxes", return_value=nul):
+            views = du.pdf_layout_pages(content, [1])
+            found = document_fields._fields(read, None, layout=lambda: views)
+        self.assertEqual(views.readers, {1: "poppler"})
+        self.assertFalse(any("\x00" in text for text in views.values()))
+        self.assertFalse([s for s in _strings(found) if du.CONTROL_CHARACTERS.search(s)])
+        self.assertNotIn("\\u0000", json.dumps(found))
+        field = found["fields"]["invoice_number"]
+        self.assertEqual(field["value"], "K7QX2ZPA-0042")
+        self.assertEqual([c["text"] for c in field["citations"]], ["K7QX2ZPA", "0042"])
+        for citation in _citations(found):
+            self.assertEqual(pinned[citation["start"]:citation["end"]], citation["text"])
+
+    def test_a_control_character_in_a_labelled_read_is_cut_out_of_its_citation(self):
+        text = "INVOICE\nInvoice No: AB\x00\x1f123\nPO: 4500\x0012\nTotal: 10.00 USD\n"
+        found = document_fields.extract_fields(b"%PDF-scan", "application/pdf",
+                                               filename="scan.pdf", text=text)
+        self.assertEqual(found["profile"], "supplier_invoice")
+        self.assertFalse([s for s in _strings(found) if du.CONTROL_CHARACTERS.search(s)])
+        cited = list(_citations(found))
+        self.assertTrue(cited)
+        for citation in cited:
+            self.assertEqual(text[citation["start"]:citation["end"]], citation["text"])
+        self.assertEqual(document_fields._cited_runs(
+            {"source_sha256": "x", "start": 4, "end": 6, "text": "\x00\x00"}),
+            [{"source_sha256": "x", "start": 4, "end": 4, "text": ""}])
+
+    @unittest.skipUnless(_BOXES, "needs pypdf, reportlab and poppler's pdftotext")
+    def test_a_poppler_timeout_is_marked_and_never_kept(self):
+        import subprocess
+        content, read, _pinned = self.nul_reading()
+        real = du.child_process.run
+
+        def slow(command, **kwargs):
+            if "-bbox" in command:
+                raise subprocess.TimeoutExpired(command, kwargs.get("timeout"))
+            return real(command, **kwargs)
+
+        calls = []
+
+        def layout():
+            calls.append(1)
+            return du.pdf_layout_pages(content, [1])
+
+        with mock.patch.object(du.child_process, "run", side_effect=slow), \
+                mock.patch.object(document_fields, "_FIELDS", document_fields._FIELDS.empty()):
+            views = du.pdf_layout_pages(content, [1])
+            self.assertTrue(views.timed_out)
+            self.assertEqual(set(views.readers.values()), {"pypdf"})
+            key = ("d" * 64, "application/pdf", "d.pdf", None, None, False, True)
+            first = document_fields._fields_of(key, lambda: read, None, layout)
+            again = document_fields._fields_of(key, lambda: read, None, layout)
+        self.assertIn(document_fields.LAYOUT_VIEW_TIMED_OUT,
+                      [gap["reason"] for gap in first["gaps"]])
+        self.assertEqual(first, again)
+        self.assertEqual(len(calls), 2)   # read again, never served from the memo
+        # a page poppler reads in time is kept as any reading is
+        with mock.patch.object(document_fields, "_FIELDS", document_fields._FIELDS.empty()):
+            kept = document_fields._fields_of(key, lambda: read, None, layout)
+            document_fields._fields_of(key, lambda: read, None, layout)
+        self.assertEqual(len(calls), 3)
+        self.assertNotIn(document_fields.LAYOUT_VIEW_TIMED_OUT,
+                         [gap["reason"] for gap in kept["gaps"]])
+
+    def test_the_poppler_version_keys_the_extractor_and_the_kept_fields_only(self):
+        from ontology import project
+        seen = {}
+        with tempfile.TemporaryDirectory() as tmp:
+            for said in ("pdftotext 24.02.0", "pdftotext 25.01.0", "none"):
+                with mock.patch.object(du, "poppler_version", return_value=said), \
+                        document_fields.kept_fields(Path(tmp) / "f.sqlite", "code") as kept:
+                    seen[said] = (kept.code, document_fields.extractor_version(),
+                                  project.derivation_code())
+        self.assertEqual(len({code for code, _, _ in seen.values()}), 3)
+        # the derivation code (every derived relation's fingerprint) does not move with it
+        self.assertEqual(len({derivation for _, _, derivation in seen.values()}), 1)
+        self.assertTrue(seen["none"][1].endswith("+poppler@none"))
+        self.assertTrue(seen["pdftotext 24.02.0"][1].endswith("+poppler@24.02.0"))
+        du.poppler_version.cache_clear()
+        try:
+            with mock.patch.object(du.shutil, "which", return_value=None):
+                self.assertEqual(du.poppler_version(), "none")
+        finally:
+            du.poppler_version.cache_clear()
+
+    def test_the_mail_and_file_readers_reach_no_document_field_code(self):
+        # A document-field change (placement, layout views, poppler) re-derives document
+        # fields only: the capture sources' reader digests, which key every relation they
+        # give, reach none of it (``build_keys.READER_STOPS``), so mail and SharePoint are
+        # not read or fingerprinted again for it.
+        from ontology import build_keys
+        from ontology.project import MailCaptures, SharePointCaptures
+        for cls in (MailCaptures, SharePointCaptures):
+            parts = build_keys.reader_parts(cls.__new__(cls))
+            self.assertIsNotNone(parts)
+            reached = sorted(f"{m}.{n}" for m, n in parts if m == "ontology.document_fields"
+                             or n in ("pdf_layout_pages", "pdf_word_boxes", "word_box_layout",
+                                      "poppler_version", "_pypdf_layout_pages"))
+            self.assertEqual(reached, [], cls.__name__)
+
+    def test_a_timed_out_document_moves_its_relations_kept_print(self):
+        from ontology import project_incremental as pi
+        from ontology.project import CapturedRecord
+        late = {"evidence": {"gaps": [{"field": "pages", "reason":
+                                       document_fields.LAYOUT_VIEW_TIMED_OUT}]},
+                "content_sha256": "a" * 64}
+        fine = {"evidence": {"gaps": []}, "content_sha256": "b" * 64}
+        records = [CapturedRecord(source="s", relation="documentFields", record_key=k,
+                                  row=row, l1_handle="h", field_prefix="row", digest=k,
+                                  recorded_at="t", superseded_at=None, last_seen_at="t",
+                                  audience_key="a")
+                   for k, row in (("1", late), ("2", fine))]
+        marks = {"sp": {"mark": ["m"], "prints": {"documentFields": "p", "driveItems": "d"}},
+                 "bc": {"mark": ["n"], "prints": {"items": "i"}}}
+        document_fields.layout_timed_out(forget=True)
+        self.assertEqual(pi._with_layout_timeouts(marks), marks)   # none timed out
+        with mock.patch.object(document_fields, "captured_one",
+                               side_effect=lambda rec, blobs, issued: iter([rec])), \
+                mock.patch.object(document_fields, "_issued_by", return_value=None):
+            self.assertEqual(len(list(document_fields.captured(records, "/nonexistent"))), 2)
+        self.assertEqual(document_fields.layout_timed_out(), frozenset({"a" * 64}))
+        moved = pi._with_layout_timeouts(marks)
+        self.assertNotEqual(moved["sp"]["prints"]["documentFields"], "p")
+        self.assertEqual(moved["sp"]["prints"]["driveItems"], "d")
+        self.assertEqual(moved["sp"]["mark"], ["m"])
+        self.assertEqual(moved["bc"], marks["bc"])
+        self.assertEqual(document_fields.layout_timed_out(forget=True), frozenset({"a" * 64}))
+        self.assertEqual(document_fields.layout_timed_out(), frozenset())
+
+    @unittest.skipUnless(_BOXES, "needs pypdf, reportlab and poppler's pdftotext")
+    def test_an_address_contact_or_account_line_is_no_identifier(self):
+        def read(cell):
+            at = _gap_after(60, "Invoice Number", 30)
+            invoice = document_fields.extract_fields(placed_pdf([
+                (300, 780, "INVOICE"), (60, 742, "Invoice Number"), (at, 742, cell),
+                (60, 600, "Amount due"), (300, 600, "1,875.00")]),
+                "application/pdf", filename="d.pdf")
+            slip = document_fields.extract_fields(placed_pdf([
+                (300, 780, "Packing Slip"), (60, 700, "Ordered By"), (170, 700, "PO Number"),
+                (60, 686, "ACME7-DOCK"), (170, 686, cell)]),
+                "application/pdf", filename="d.pdf")
+            self.assertEqual((invoice["profile"], slip["profile"]),
+                             ("supplier_invoice", "packing_slip"))
+            return (invoice["fields"]["invoice_number"].get("value"),
+                    slip["fields"]["po_reference"].get("value"))
+
+        for cell in ("Suite 400", "Unit 12", "Phone 5551234", "Customer 10023",
+                     "Order 12345", "Account 778899", "Lot 4410", "Tel. 5551234"):
+            with self.subTest(cell=cell):
+                self.assertEqual(read(cell), (None, None))
+        # a code with a digit in its first part is still read beside and below
+        self.assertEqual(read("K7QX2ZPA 0042"), ("K7QX2ZPA 0042", "K7QX2ZPA 0042"))
+        self.assertFalse(document_fields._own_code(
+            {"labels": ["po number"]}, "Lot 4410"))
+        self.assertTrue(document_fields._own_code(
+            {"labels": ["invoice no"]}, "Invoice 0042"))
+
+    def test_an_address_word_list_that_is_not_vocabulary_fails_closed(self):
+        data = json.loads(document_fields.PROFILES_PATH.read_text(encoding="utf-8"))
+        for bad in ({"description": "", "words": []}, {"words": ["suite"]},
+                    {"description": "", "words": ["Suite"]}, None):
+            with self.subTest(bad=bad), tempfile.TemporaryDirectory() as tmp:
+                path = Path(tmp) / "p.json"
+                if bad is None:
+                    data.pop("address_words", None)
+                else:
+                    data["address_words"] = bad
+                path.write_text(json.dumps(data), encoding="utf-8")
+                document_fields.profiles.cache_clear()
+                try:
+                    with mock.patch.object(document_fields, "PROFILES_PATH", path), \
+                            self.assertRaisesRegex(ValueError, "address_words_invalid"):
+                        document_fields.profiles()
+                finally:
+                    document_fields.profiles.cache_clear()
 
 
 class DocumentLinkTypesTests(unittest.TestCase):
@@ -2202,3 +2600,32 @@ class MidLineLabelTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class DateWitnessAndCarrierNegationTests(unittest.TestCase):
+    """DOC-003: an impossible date is no witness of a writer's day/month order.
+    DOC-004: a carrier date in a sentence negated after the date is no promise."""
+
+    def test_an_impossible_date_is_no_order_witness(self):
+        for impossible in ("32/01/2024", "31/02/2024", "30/02/2025"):
+            text = f"Ref {impossible} and shipped 04/05/2024"
+            self.assertEqual(document_fields.date_order(text), {}, impossible)
+            token = document_fields._DATE_ORDER.set(document_fields.date_order(text))
+            try:
+                self.assertIsNone(document_fields._date("04/05/2024")[0], impossible)
+            finally:
+                document_fields._DATE_ORDER.reset(token)
+        self.assertEqual(document_fields.date_order("Dated 29/02/2024"), {"/": "day_first"})
+
+    def test_a_date_negated_after_it_is_not_stated(self):
+        promises = document_fields.carrier_promises(
+            "supplier_confirmation", "Hi,\nThe ETA 11/14/2026 is not confirmed.\nThanks",
+            dt.date(2026, 11, 1))
+        found = promises["delivery_date"]
+        self.assertIsNone(found["value"])
+        self.assertEqual(found["gap"], "not_stated")
+        self.assertEqual(found["citations"][0]["text"], "The ETA 11/14/2026 is not confirmed")
+        stated = document_fields.carrier_promises(
+            "supplier_confirmation", "The ETA 11/14/2026. It was not easy.",
+            dt.date(2026, 11, 1))["delivery_date"]
+        self.assertEqual(stated["value"], "2026-11-14")

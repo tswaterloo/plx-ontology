@@ -194,6 +194,7 @@ import fcntl
 import hashlib
 import json
 import os
+from operating.file_modes import keep_shared
 from pathlib import Path
 import re
 import shutil
@@ -235,6 +236,9 @@ CHILDREN_FILE, CHILDREN_SCHEMA = "cycle-children.json", "plx-host-cycle-children
 ORPHAN_STOP_SECONDS = 10.0
 HOST_RUNNER, INGEST_RUNNER = "host", "ingest"   # the ledger cycle's ``runner``
 CONTINUOUS_SCHEMA = "plx-host-ingest-continuous/v1"
+# A maintenance step's gap in the continuous ingest's cycle lock lasts at most this long
+# (``CycleGap``; the daily mail exclusion purge takes about 5 min).
+GAP_MAX_SECONDS = 1800.0
 STOP_FILE = "ingest.stop"   # <DIR>/host/ingest.stop: the continuous ingest mode stops
 MIN_FREE_BYTES = 4 * 1024 ** 3   # ... and when its file system has less free than this
 # A projection build needs room for what it writes beside the generation served: the
@@ -245,26 +249,20 @@ MIN_FREE_BYTES = 4 * 1024 ** 3   # ... and when its file system has less free th
 # most units changed or that needs less), else the other mode where that fits; only when
 # neither fits is it skipped (``disk_low``) and the previous generation stays served.
 # Checked before the build, before its captures are fingerprinted (hours on a large store)
-# and before its input copies are taken: the cold estimate when the build is known to be
+# the cold estimate when the build is known to be
 # cold or to change most units (``project_incremental.planned_need``: no generation, other
 # keys, other build code, another schema, or a changed share measured over the same base),
 # else the least any mode writes; then once the changed units are known (``disk.estimate``:
 # the mode checked, ``estimates``: both) and while it runs (free space below the margin
-# stops it, its files removed). A skip records ``waits_for_bytes``: the continuous ingest
-# builds again only once that much is free (``DISK_WAIT_POLL_SECONDS``), its captures going
-# on meanwhile; the operator API states it (``build_wait``).
+# stops it, its files removed). A skip records ``waits_for_bytes``; the operator API states
+# it (``build_wait``). Only a ``run``/``serve`` cycle of the host's own readers builds (tests,
+# checks, fixtures): the continuous ingest never does (``ingest_continuous``).
 BUILD_DISK_MARGIN_BYTES = 1024 ** 3
-DISK_WAIT_POLL_SECONDS = 300
 # How long the host's checkpoint between refreshes waits for each store's other
 # connections (a capture child's write, a short reader) before it reports ``busy``.
 CHECKPOINT_WAIT_MS = 2000
 PROJECTION_DIR, PROJECTION_FILE = "projection", "ontology.sqlite"
 BC_DIR, BC_FILE = "bc-capture", "capture.sqlite"
-# ``ingest.build_inputs`` ``snapshot``: the copies a build opens, ``<DIR>/host/build-inputs``
-# (``Host.snapshot_inputs``): ``state/`` mirrors the state directory's capture stores (each
-# store file copied, everything beside it linked), ``portal/`` the served Portal mirror.
-BUILD_INPUTS_DIR = "build-inputs"
-_STORE_FILE_TAILS = ("-wal", "-shm", "-journal")
 KEY_ENV, URL_ENV = "PLX_WORKBENCH_API_KEY", "PLX_WORKBENCH_API_URL"
 KEYCHAIN_SERVICE = "plx-workbench-api-key"
 DEFAULT_PRINCIPAL = "svc:workbench-host"
@@ -318,6 +316,12 @@ class HostError(Exception):
     def __init__(self, code: str) -> None:
         super().__init__(code)
         self.code = code
+
+
+def _notify_wakes(state_dir: Path) -> Any:
+    """The wakes of Graph change notifications (``ingest.graph_notifications``)."""
+    from integrations.graph_notifications import Wakes
+    return Wakes(state_dir)
 
 
 def _utc() -> datetime:
@@ -473,6 +477,8 @@ class HostConfig:
                     "principal": self.principal,
                     # the brain capture reads under the host's namespace authority
                     "namespaces": self.knowledge_namespaces}
+        document = ingest_forever.split_mail_backlog(document, self.capture_sources,
+                                                     self.config_warnings)
         for name, spec in self.capture_sources.items():
             if name not in document:
                 continue
@@ -572,6 +578,22 @@ def projection_path(state_dir: Path) -> Path:
     return state_dir / PROJECTION_DIR / PROJECTION_FILE
 
 
+def _serves_projection(state_dir: Path) -> bool:
+    """Whether the console is given the host's projection path as its store: the file is
+    there, or Postgres is the only store and the projection directory is (the path then
+    names the served generation, and the gap inbox and watchlists the proactive passes
+    write beside it). Without this, a Postgres-only host whose last SQLite generation was
+    deleted served a nominal ``<state>/ontology.sqlite`` with no inbox beside it, and
+    every alert read (approvals, replies, late orders) failed "could not be read"."""
+    path = projection_path(state_dir)
+    if path.is_file():
+        return True
+    if not path.parent.is_dir():
+        return False
+    from .pg import ontology_reader
+    return ontology_reader.pg_only()
+
+
 class DiskLow(Exception):
     """The disk guard stopped a projection build (``disk``: free, needed, estimate)."""
 
@@ -609,13 +631,8 @@ def build_projection(state_dir: Path, sources: Mapping[str, Any], *, tenant: str
                                   post_project=build_steps.post_project(state_dir, tenant),
                                   space=space, checkpoint=checkpoint, timings=timings)
     laid = time.monotonic()
-    timings.begin("store_facts")
-    primed = _prime_store_facts(generation.store)
-    timings["store_facts"] = round(time.monotonic() - laid, 3)
-    generation.seconds["store_facts"] = timings["store_facts"]
-    laid = time.monotonic()
     timings.begin("publish")
-    _publish(generation.store, path, facts=primed)
+    _publish(generation.store, path)
     timings["publish"] = round(time.monotonic() - laid, 3)
     generation.seconds["publish"] = timings["publish"]
     laid = time.monotonic()
@@ -653,71 +670,24 @@ def _profile_money(state_dir: Path) -> bool:
     return True
 
 
-def _prime_store_facts(store: Path) -> bool:
-    """The store facts every reader's ``plx.around`` / ``plx.timeline`` needs
-    (``ontology_tools_traverse.prime``), read once from a committed generation before it
-    is served, each fact by its own process (the build's worker count,
-    ``PLX_BUILD_WORKERS``), and kept beside its file: the first session over it starts
-    without reading them. Measurement aside, never fails a build: a store whose facts
-    cannot be read is served as before (its first reader reads them)."""
-    from ontology import project_parallel
-    from operating import ontology_tools_evidence, ontology_tools_traverse
-    try:
-        workers = project_parallel.workers(None)
-    except Exception:  # noqa: BLE001 - a refused count primes on one process
-        workers = 1
-    if store.stat().st_size < STORE_FACTS_PARALLEL_MIN_BYTES:
-        workers = 1
-    try:
-        return ontology_tools_traverse.prime_store_facts(
-            store, ontology_tools_evidence.STORE_DOCUMENT_FAMILIES, workers=workers)
-    except Exception:  # noqa: BLE001 - facts are an optimisation, never the build's
-        return False
-
-
-# Below this store size the facts are read by the build's own process.
-STORE_FACTS_PARALLEL_MIN_BYTES = 256 * 1024 * 1024
-
-
-def _publish(store: Path, path: Path, *, facts: bool = False) -> None:
+def _publish(store: Path, path: Path) -> None:
     """Serve a committed generation at ``path``: a hard link to it (a committed
     generation is never written again) swapped in by rename, so a reader opening
-    ``path`` gets a whole generation, the new one or the previous one. ``facts``: the
-    generation's store facts are kept beside it (``_prime_store_facts``), and are put
-    beside ``path`` before the swap, so its first reader finds them."""
+    ``path`` gets a whole generation, the new one or the previous one. Its store facts
+    are read by its first reader (``TraverseTools.prime_lazily``): no build primes them
+    any more (the served ontology is Postgres's; this path builds test fixtures)."""
     temp = path.with_name(f".{path.name}.publish")
     temp.unlink(missing_ok=True)
     try:
         os.link(store, temp)
     except OSError:  # a file system without hard links: a copy, same bytes
         shutil.copyfile(store, temp)
-    if facts:
-        from operating import ontology_tools_traverse
-        ontology_tools_traverse.share_facts(store, temp)
     os.replace(temp, path)
     fd = os.open(path.parent, os.O_RDONLY)
     try:
         os.fsync(fd)
     finally:
         os.close(fd)
-
-
-def _store_marks(path: Path) -> list[list[Any]] | None:
-    """The file marks of a store and its ``-wal`` (device, inode, size, modification and
-    change times; a write changes the change time, which no caller can set), or None when
-    the store cannot be read."""
-    out: list[list[Any]] = []
-    for name in (path, path.with_name(path.name + "-wal")):
-        try:
-            st = os.stat(name)
-        except FileNotFoundError:
-            out.append([name.name, None])
-            continue
-        except OSError:
-            return None
-        out.append([name.name, st.st_dev, st.st_ino, st.st_size, st.st_mtime_ns,
-                    st.st_ctime_ns])
-    return out
 
 
 def state_capture_paths(state_dir: str | Path) -> dict[str, Path]:
@@ -837,6 +807,52 @@ def _group_running(pgid: int) -> bool:
     return True
 
 
+
+class CycleGap:
+    """The continuous ingest's gap for a maintenance step (``integrations.cycle_gap``):
+    ``wanted()`` while a live request lies in ``host_dir``; ``give()`` (called by
+    ``ingest_forever.Continuous`` once no capture runs) lets go of the cycle lock held on
+    ``handle`` and takes it again once no live request is left and the lock is free, or
+    at once on a stop (the run then ends; the lock is let go on the way out). Capture
+    first: a gap lasts at most ``max_seconds`` (a step still holding the lock then is
+    waited for, never broken), after which requests are not answered for another
+    ``max_seconds`` (a stuck requester cannot hold the captures off). The lock is never
+    taken while another process holds it: one writer."""
+
+    def __init__(self, host_dir: Path, handle: Any, *,
+                 should_stop: Callable[[], str | None],
+                 wait: Callable[[float], Any] = time.sleep, poll: float = 1.0,
+                 max_seconds: float = GAP_MAX_SECONDS,
+                 monotonic: Callable[[], float] = time.monotonic) -> None:
+        self.host_dir, self.handle = host_dir, handle
+        self.should_stop, self.wait, self.poll = should_stop, wait, poll
+        self.max_seconds, self.monotonic = max_seconds, monotonic
+        self.quiet_until = 0.0
+
+    def wanted(self) -> bool:
+        from integrations import cycle_gap
+        return (self.handle is not None and self.monotonic() >= self.quiet_until
+                and bool(cycle_gap.live(self.host_dir)))
+
+    def give(self) -> bool:
+        """True when the lock is held again, False on a stop (not held)."""
+        from integrations import cycle_gap
+        fcntl.flock(self.handle, fcntl.LOCK_UN)
+        deadline = self.monotonic() + self.max_seconds
+        while True:
+            over = self.monotonic() >= deadline
+            if over or not cycle_gap.live(self.host_dir):
+                try:
+                    fcntl.flock(self.handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    if over:
+                        self.quiet_until = self.monotonic() + self.max_seconds
+                    return True
+                except BlockingIOError:
+                    pass
+            if self.should_stop() is not None:
+                return False
+            self.wait(self.poll)
+
 class CycleChildren:
     """The capture child processes of the running cycle, in ``<DIR>/host/
     cycle-children.json`` (0600, replaced whole): each one's pid, process group (a child
@@ -871,6 +887,7 @@ class CycleChildren:
         temporary = self.path.with_name(f".{self.path.name}.{os.getpid()}."
                                         f"{threading.get_ident()}")
         fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o600)
+        keep_shared(temporary, 0o600)
         with os.fdopen(fd, "w", encoding="utf-8") as handle:
             json.dump({"schema": CHILDREN_SCHEMA, "children": list(entries)}, handle)
             handle.flush()
@@ -995,9 +1012,13 @@ class Host:
             disk_free or (lambda path: shutil.disk_usage(path).free))
         self.min_free_bytes = MIN_FREE_BYTES
         # After a build skipped for disk space: the bytes free it waits for (None: none
-        # waits) and when the free space was last measured for it (``build_due``).
+        # waits).
         self.disk_wait: int | None = None
-        self._disk_polled: float | None = None
+        # id -> the outcome recorded when its child ended (``_record_early``); the
+        # cycle's ``_finish`` does not record that one again
+        self._early: dict[int, Mapping[str, Any]] = {}
+        self._orphans: list[str] = []   # sources a killed holder's children were reading
+        self._lock_handle: Any = None   # the cycle lock's file while this host holds it
         (self.state_dir / HOST_DIR).mkdir(parents=True, exist_ok=True)
         with self._ledger() as db:
             for statement in _LEDGER_DDL:
@@ -1030,8 +1051,27 @@ class Host:
             except BlockingIOError:
                 raise HostError("host_cycle_running") from None
             try:
-                yield self.children().recover(monotonic=self.monotonic, sleep=time.sleep)
+                # the sources a killed holder's children were reading: their state is
+                # unknown until they are read again (``_open_cycle``)
+                try:
+                    self._orphans = sorted({e.get("source") for e in self.children()._read()
+                                            if isinstance(e.get("source"), str)})
+                except HostError:
+                    self._orphans = []
+                recovered = self.children().recover(monotonic=self.monotonic, sleep=time.sleep)
+                # now, before any capture of this holder starts: a source it records
+                # afterwards is never overwritten by a dead holder's mark
+                if self._orphans:
+                    try:
+                        with self._ledger() as db:
+                            self._mark_unknown(db, self._orphans)
+                    except sqlite3.Error:
+                        pass
+                self._orphans = []
+                self._lock_handle = handle
+                yield recovered
             finally:
+                self._lock_handle = None
                 fcntl.flock(handle, fcntl.LOCK_UN)
 
     def children(self) -> "CycleChildren":
@@ -1182,6 +1222,14 @@ class Host:
                    # stored addresses the purge could not decide: withheld from every
                    # reader (ops_health ``capture_undecided_list`` alarms on their age)
                    "purge_undecided": run.get("purge_undecided", 0)}
+        coverage = run.get("graph_coverage")
+        if coverage:
+            # Graph's own folder counts against the store's and this run's re-lists of the
+            # short folders (counts only; ops_health ``capture_mail_coverage`` reads the
+            # store's per-folder record)
+            outcome["graph_coverage"] = {key: value for key, value in coverage.items()
+                                         if key != "statuses"} | {
+                "folders": dict(coverage.get("statuses") or {})}
         # Every bound mailbox refused (a missing grant): the source's outage, as Teams'.
         return _with_refusals(outcome, capture_mail.refused_parts(run))
 
@@ -1328,8 +1376,14 @@ class Host:
         if self.config is None:
             raise HostError("host_config_required")
         if self.config.ingest is None:
-            return self._cycle(lambda: {name: self._read(name) for name in SOURCES},
-                               HOST_RUNNER)
+            def read_each() -> dict[str, Any]:
+                out: dict[str, Any] = {}
+                for name in SOURCES:
+                    out[name] = self._read(name)
+                    self._record_early(name, out[name])
+                return out
+
+            return self._cycle(read_each, HOST_RUNNER)
         from . import ingest_forever
 
         return self._cycle(lambda: ingest_forever.read_sources(
@@ -1337,7 +1391,8 @@ class Host:
             ingest_forever.budget_environ(self.config.ingest, self.environ),
             grace=self.config.ingest["grace_seconds"], children=self.children(),
             parallel=ingest_forever.max_parallel(self.config.ingest,
-                                                 len(self.config.sources))),
+                                                 len(self.config.sources)),
+            on_outcome=self._record_early),
             INGEST_RUNNER)
 
     def _cycle(self, read: Callable[[], Mapping[str, Mapping[str, Any]]], runner: str
@@ -1370,6 +1425,8 @@ class Host:
         now = self.clock()
         with self._ledger() as db:
             for name, outcome in outcomes.items():
+                if self._early.pop(id(outcome), None) is outcome:
+                    continue   # recorded when its child ended
                 self._record(db, name, outcome, now)
         waiting = self._waiting() if skip_build is None else None
         if skip_build is not None or waiting is not None:
@@ -1474,11 +1531,11 @@ class Host:
         configured source on its own cadence, ``ingest.max_parallel`` children at once,
         under the one cycle lock held for the whole run (a ``run``, ``check`` or other
         ``serve`` is refused meanwhile). Each time sources finish they are one ledger
-        cycle (runner ``ingest``, ``continuous`` true): recorded, then the next
-        projection generation built from every capture store as it is now (incremental:
-        only the units whose captures changed) and published; readers keep the previous
-        generation until it is. Stops on ``stop_file``, low disk (no build then) or
-        ``stop``; returns the run's summary (counts and codes)."""
+        cycle (runner ``ingest``, ``continuous`` true): recorded, never built (its
+        projection ``skipped``, reason ``builds_off``, or ``draining`` on a signal's
+        drain: the row deltas keep Postgres current, docs/no-builds.md). Stops on
+        ``stop_file``, low disk or ``stop``; returns the run's summary (counts and
+        codes)."""
         if self.config is None or self.config.ingest is None:
             raise HostError("host_ingest_mode_required")
         from . import ingest_forever
@@ -1490,19 +1547,15 @@ class Host:
         with self._cycle_lock() as recovered:
             first = [dict(recovered)]
 
-            def refresh(outcomes: dict[str, dict[str, Any]], reason: str | None,
-                        exclusion: dict[str, Any]) -> None:
-                # No capture of a store this build reads runs now (``Continuous``): the
-                # WAL each one left moves into its file before the build's snapshot.
-                exclusion = {**exclusion, "checkpoint": self.checkpoint_written(
-                    exclusion["exclusive"])}
+            def refresh(outcomes: dict[str, dict[str, Any]], reason: str | None) -> None:
                 cycle_id, started = self._open_cycle(INGEST_RUNNER)
                 report = self._finish(
                     cycle_id, started, outcomes, INGEST_RUNNER,
                     first.pop() if first else {},
                     skip_build="low_disk" if reason == "low_disk" else (
-                        "builds_off" if self.config.ingest.get("builds") == "off" else None),
-                    extra={"continuous": True, "build_exclusion": exclusion})
+                        # a signal's drain records what the children captured
+                        "draining" if reason == "stopped" else "builds_off"),
+                    extra={"continuous": True})
                 if on_refresh is not None:
                     on_refresh(report)
 
@@ -1514,9 +1567,41 @@ class Host:
                                                      len(self.config.sources)),
                 refresh=refresh, should_stop=lambda: self.stop_reason(stop_file),
                 children=self.children(), max_refreshes=max_refreshes,
-                wait_idle=self.stop.wait, build_reads=self.build_reads,
-                background=self.snapshot_builds, build_due=self.build_due).run()
+                wait_idle=self.stop.wait,
+                drain_seconds=self.config.ingest.get(
+                    "drain_seconds", ingest_forever.DEFAULT_DRAIN_SECONDS),
+                on_outcome=self._record_early,
+                wakes=(_notify_wakes(self.state_dir)
+                       if self.config.ingest.get("graph_notifications") else None),
+                gap=CycleGap(self.state_dir / HOST_DIR, self._lock_handle,
+                             should_stop=lambda: self.stop_reason(stop_file),
+                             wait=self.stop.wait)).run()
         return {"schema": CONTINUOUS_SCHEMA, **summary}
+
+    def _record_early(self, name: str, outcome: Mapping[str, Any]) -> None:
+        """Record ``outcome`` of ``name`` now, when its child ended: the source's state
+        never waits for the other sources or the projection build behind them (a cycle
+        runs for hours). ``_finish`` then skips it."""
+        with self._ledger() as db:
+            self._record(db, name, outcome, self.clock())
+        self._early[id(outcome)] = outcome
+        while len(self._early) > 256:   # outcomes a later run replaced never reach _finish
+            del self._early[next(iter(self._early))]
+
+    def _mark_unknown(self, db: sqlite3.Connection, names: Sequence[str]) -> None:
+        """A source whose capture child a killed holder left running: its last good
+        capture stays served (``captured_at`` as it was) but its state is no longer
+        called complete (``complete`` NULL) and it is stale since that capture, with
+        ``last_error`` ``cycle_interrupted``, until it is read again."""
+        for name in names:
+            row = db.execute("SELECT captured_at, stale_since, configured FROM source_state "
+                             "WHERE source=?", (name,)).fetchone()
+            if row is None or not row["configured"]:
+                continue
+            db.execute("UPDATE source_state SET complete=NULL, stale_since=?, error=? "
+                       "WHERE source=?",
+                       (row["stale_since"] or row["captured_at"] or _iso(self.clock()),
+                        "cycle_interrupted", name))
 
     def _record(self, db: sqlite3.Connection, name: str, outcome: Mapping[str, Any],
                 now: datetime) -> None:
@@ -1555,26 +1640,21 @@ class Host:
             served = {r["source"]: r for r in db.execute("SELECT * FROM source_state")}
             previous = db.execute("SELECT MAX(generation) FROM projection").fetchone()[0]
         portal = served.get("portal")
-        # Before the captures are fingerprinted and copied: a build known to be cold
+        # Before the captures are fingerprinted: a build known to be cold
         # checks the cold estimate here, not hours later (``build_plan``).
         disk = self.build_plan(previous)
         if disk["free_bytes"] is None or disk["free_bytes"] < disk["needed_bytes"]:
             return {"state": "skipped", "generation": previous, "reasons": ["disk_low"],
                     "disk": disk, "waits_for_bytes": smallest_need(disk)}
-        snapshot: dict[str, Any] | None = None
         with ExitStack() as stack:
             sources: dict[str, Any] = {}
             try:
                 served_path = (Path(portal["served_path"]) if portal is not None
                                and portal["served_path"] else None)
-                captures = self.state_dir
-                if self.snapshot_builds:
-                    snapshot = self.snapshot_inputs(served_path)
-                    captures, served_path = snapshot["root"], snapshot["portal"]
                 if served_path is not None and served_path.is_file():
                     sources["portal_api"] = stack.enter_context(
                         project.MirrorCaptures(served_path))
-                sources.update(state_captures(captures, stack,
+                sources.update(state_captures(self.state_dir, stack,
                                               internal_domains=self._internal_domains()))
                 if not sources:
                     return {"state": "no_captures", "generation": previous}
@@ -1595,10 +1675,6 @@ class Host:
         report = {"state": "built", "generation": cycle_id, "previous_generation": previous,
                   "objects": objects, "sources": sorted(sources), **built["build"],
                   "disk": disk}
-        if snapshot is not None:
-            report["inputs"] = {"kind": "snapshot", "stores": snapshot["stores"],
-                                "kept": snapshot["kept"], "bytes": snapshot["bytes"],
-                                "seconds": snapshot["seconds"]}
         return report
 
     def _timings_sink(self, cycle_id: int) -> Callable[[Mapping[str, Any]], None]:
@@ -1673,19 +1749,6 @@ class Host:
                          "estimate": {"mode": "waiting"}},
                 "waits_for_bytes": self.disk_wait}
 
-    def build_due(self) -> bool:
-        """The continuous ingest's question while no source has finished: is the space a
-        skipped build waits for (``disk_wait``) free now? Measured at most every
-        ``DISK_WAIT_POLL_SECONDS``; False while none waits."""
-        if self.disk_wait is None:
-            return False
-        now = self.monotonic()
-        if self._disk_polled is not None and now - self._disk_polled < DISK_WAIT_POLL_SECONDS:
-            return False
-        self._disk_polled = now
-        free = self._free_for_build()
-        return free is not None and free >= self.disk_wait
-
     def build_disk(self, need: Mapping[str, Any] | None = None) -> dict[str, Any]:
         """The free bytes of the state directory's file system (None: it cannot say,
         never enough) and the bytes a build needs: ``need`` (a ``space_need`` estimate; by
@@ -1714,27 +1777,8 @@ class Host:
             kept = 0
         if free is not None:
             free += kept
-        copies = 0
-        if self.snapshot_builds:   # the build's copies of the stores (snapshot_inputs)
-            try:
-                portal = self.store_paths().get("portal")
-                copies = sum(p.stat().st_size for p in [*self._capture_stores(), portal]
-                             if p is not None and p.is_file())
-                # Copies already on disk (this build's, or the last one's it replaces)
-                # are counted in the free space already: only the rest is still needed.
-                inputs = self.state_dir / HOST_DIR / BUILD_INPUTS_DIR
-                held = sum(os.lstat(os.path.join(top, name)).st_size
-                           for top, _dirs, names in os.walk(inputs)   # links not followed
-                           for name in names
-                           if not os.path.islink(os.path.join(top, name)))
-                copies = max(0, copies - held)
-            except (OSError, sqlite3.Error):
-                copies = 0
-        if copies:
-            need = {**need, "snapshot_bytes": copies}
         return {"free_bytes": free,
-                "needed_bytes": int(need.get("needed_bytes") or 0) + BUILD_DISK_MARGIN_BYTES
-                + copies,
+                "needed_bytes": int(need.get("needed_bytes") or 0) + BUILD_DISK_MARGIN_BYTES,
                 "generation_bytes": served, "estimate": dict(need)}
 
     def _space_guard(self, need: Mapping[str, Any]) -> None:
@@ -1782,164 +1826,6 @@ class Host:
                 seen.add(path.resolve())
                 unique[name] = path
         return unique
-
-    def build_reads(self) -> list[Path]:
-        """Every store file the next build may open, held or not: the Portal mirror the
-        ledger serves, the host's working mirror (always: a Portal capture writes it and
-        its next record serves it), and every ``state_capture_paths`` store (SharePoint:
-        its drive and its list-item store). ``_project`` opens each one held, each with
-        one read snapshot until the build ends. With ``ingest.builds`` ``off`` none: no
-        build runs, so no capture waits for one (2026-11-13: every capture was held until
-        SharePoint's 2-hour run ended, Teams captured every 2 hours instead of 30 min)."""
-        from ontology import project
-
-        from .case_runtime import CASE_RUNTIME_DIR, MIRROR_FILE
-
-        if self.config is not None and self.config.ingest is not None \
-                and self.config.ingest.get("builds") == "off":
-            return []
-        if self.snapshot_builds:
-            # The build opens only its own copies, which no capture writes.
-            inputs = self.state_dir / HOST_DIR / BUILD_INPUTS_DIR
-            return [inputs / "portal" / MIRROR_FILE,
-                    *[inputs / "state" / p.relative_to(self.state_dir) for p in
-                      self._capture_stores()]]
-        paths = [self.state_dir / CASE_RUNTIME_DIR / MIRROR_FILE]
-        with self._ledger() as db:
-            row = db.execute("SELECT served_path FROM source_state WHERE source='portal'"
-                             ).fetchone()
-        if row is not None and row["served_path"]:
-            paths.append(Path(row["served_path"]))
-        for name, path in state_capture_paths(self.state_dir).items():
-            paths.extend(project.SharePointCaptures.stores(self.state_dir)
-                         if name == "sharepoint" else [path])
-        return paths
-
-    @property
-    def snapshot_builds(self) -> bool:
-        """Whether a build opens snapshots of the stores (``ingest.build_inputs``)."""
-        return bool(self.config is not None and self.config.ingest is not None
-                    and self.config.ingest.get("build_inputs") == "snapshot")
-
-    def _capture_stores(self) -> list[Path]:
-        """Every capture store file of the state directory a build may open (SharePoint:
-        its drive and list-item stores), held or not."""
-        from ontology import project
-
-        paths: list[Path] = []
-        for name, path in state_capture_paths(self.state_dir).items():
-            paths.extend(project.SharePointCaptures.stores(self.state_dir)
-                         if name == "sharepoint" else [path])
-        return paths
-
-    def snapshot_inputs(self, portal: Path | None) -> dict[str, Any]:
-        """Consistent copies of every capture store the next build opens, under
-        ``<DIR>/host/build-inputs``: each SQLite store copied by SQLite's online backup in
-        one step (one read transaction on the live store, so the copy is one committed
-        state while its capture keeps writing), every other entry beside a store (blob
-        directories, index files: content-addressed or replaced whole) linked, and the
-        served Portal mirror copied. The build then reads only these copies: no build
-        snapshot pins a live store's WAL, so no capture waits for a build.
-
-        A store whose files (main and ``-wal``: device, inode, size, modification and
-        change time, ``ontology.project._file_marks``) are as they were when its copy was
-        made is not copied again (``kept``): the copy stays the same file, so the build's
-        watermark of it is the last build's and its fingerprints are not read again
-        (``ontology.project_incremental``). Marks are recorded only for a copy no write
-        landed during (equal before and after), so a kept copy holds the live store's
-        state. Returns ``{"root", "portal", "stores", "kept", "bytes", "seconds"}`` (paths
-        for the build only, never reported)."""
-        from contextlib import closing
-
-        started = time.monotonic()
-        root = self.state_dir / HOST_DIR / BUILD_INPUTS_DIR
-        state = root / "state"
-        marks_file = root / "marks.json"
-        try:
-            held = json.loads(marks_file.read_text(encoding="utf-8"))
-        except (OSError, ValueError):
-            held = None
-        if not isinstance(held, dict):   # none recorded (or a snapshot cut short): anew
-            shutil.rmtree(root, ignore_errors=True)
-            held = {}
-        root.mkdir(parents=True, exist_ok=True, mode=0o700)
-        marks: dict[str, Any] = {}
-        copied, kept, total = 0, 0, 0
-
-        def copy(source: Path, target: Path) -> None:
-            nonlocal copied, kept, total
-            name = target.relative_to(root).as_posix()
-            before = _store_marks(source)
-            if before is not None and held.get(name) == before and target.is_file() \
-                    and not target.is_symlink():
-                marks[name] = before
-                kept += 1
-                total += target.stat().st_size
-                return
-            target.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-            if target.is_symlink():
-                target.unlink()
-            temp = target.with_name(f".{target.name}.copying")
-            temp.unlink(missing_ok=True)
-            with closing(sqlite3.connect(source.as_uri() + "?mode=ro", uri=True,
-                                         timeout=60)) as live, \
-                    closing(sqlite3.connect(temp)) as copied_store:
-                live.backup(copied_store)   # one step: one read transaction, one state
-                copied_store.execute("PRAGMA journal_mode=DELETE")
-            os.chmod(temp, 0o600)
-            os.replace(temp, target)
-            after = _store_marks(source)
-            marks[name] = before if before is not None and before == after else None
-            copied += 1
-            total += target.stat().st_size
-
-        marks_file.unlink(missing_ok=True)   # rewritten once every copy is in place
-        stores = [p for p in self._capture_stores() if p.is_file()]
-        for path in stores:   # every copy first: no link ever stands where a copy goes
-            copy(path, state / path.relative_to(self.state_dir))
-        skip = {p.parent / (p.name + tail) for p in stores for tail in ("", *_STORE_FILE_TAILS)}
-        for parent in {p.parent for p in stores}:
-            for entry in parent.iterdir():
-                link = state / entry.relative_to(self.state_dir)
-                if entry not in skip and not link.exists() and not link.is_symlink():
-                    link.symlink_to(entry)
-        served = None
-        if portal is not None and portal.is_file():
-            served = root / "portal" / portal.name
-            copy(portal, served)
-        for name in set(held) - set(marks):   # a store the state directory no longer holds
-            gone = root / name
-            if root.resolve() in gone.resolve().parents:
-                gone.unlink(missing_ok=True)
-        temp = marks_file.with_name(f".{marks_file.name}.tmp")
-        temp.write_text(json.dumps(marks, sort_keys=True), encoding="utf-8")
-        os.replace(temp, marks_file)
-        return {"root": state, "portal": served, "stores": copied, "kept": kept,
-                "bytes": total, "seconds": round(time.monotonic() - started, 1)}
-
-    def checkpoint_written(self, names: Sequence[str]) -> dict[str, Any]:
-        """``wal_checkpoint(TRUNCATE)`` of the stores the named capture sources write
-        (``SourceSpec.writes``), before a build opens them: per source its state and WAL
-        bytes before and after (names, never paths). Never raises."""
-        from integrations.capture_store import checkpoint_file, sqlite_code
-
-        out: dict[str, Any] = {}
-        sources = self.config.capture_sources if self.config else {}
-        for name in names:
-            spec = sources.get(name)
-            if spec is None or spec.writes is None:
-                continue
-            for index, path in enumerate(spec.writes(self.state_dir)):
-                try:
-                    result = checkpoint_file(path, wait_ms=CHECKPOINT_WAIT_MS)
-                except (OSError, sqlite3.Error) as exc:
-                    result = {"state": "failed", "error": (sqlite_code(exc) if isinstance(
-                        exc, sqlite3.Error) else type(exc).__name__)}
-                if result is not None:
-                    out[f"{name}{index or ''}"] = {
-                        k: result[k] for k in ("state", "error", "wal_bytes_before",
-                                               "wal_bytes") if k in result}
-        return out
 
     def checkpoint_stores(self) -> dict[str, Any]:
         """``wal_checkpoint(TRUNCATE)`` of every store (``store_paths``), each waiting at
@@ -2239,7 +2125,7 @@ class Host:
 def smallest_need(disk: Mapping[str, Any]) -> int:
     """The free bytes a skipped build waits for: the smallest mode that would run
     (``disk.estimate.estimates``: each mode's estimate; the build takes whichever fits),
-    with the same margin and input copies as the check (``needed_bytes``)."""
+    with the same margin as the check (``needed_bytes``)."""
     estimate = disk.get("estimate") or {}
     extra = int(disk["needed_bytes"]) - int(estimate.get("needed_bytes") or 0)
     needs = [int(e["needed_bytes"]) for e in (estimate.get("estimates") or {}).values()
@@ -2271,7 +2157,7 @@ def _measured(rows: Iterable[tuple[Any]], previous: int | None) -> float | None:
 def build_wait(state_dir: str | Path) -> dict[str, Any] | None:
     """What the next projection build waits for, read from the host ledger (read-only):
     after a ``disk_low`` skip with no build since, ``needed_bytes`` (the estimate plus the
-    margin and input copies), ``free_bytes`` and ``checked_at`` (the latest check), and
+    margin), ``free_bytes`` and ``checked_at`` (the latest check), and
     the estimate's ``mode`` and ``predicted`` reason; None while no build waits or the
     ledger cannot say."""
     ledger = Path(state_dir) / HOST_DIR / LEDGER_FILE
@@ -2324,8 +2210,8 @@ def build_reserve(state_dir: str | Path) -> dict[str, Any]:
     """The free space other writers on the state directory's file system (the Postgres
     ontology load and its follower, ``operating.pg``) keep for the next projection build:
     the next cold build's estimate (``space_need`` over the committed generation's measured
-    sizes) plus ``BUILD_DISK_MARGIN_BYTES`` and the input copies the latest check counted
-    (``snapshot_bytes``), or what a waiting build waits for (``build_wait``) when more.
+    sizes) plus ``BUILD_DISK_MARGIN_BYTES``, or what a waiting build waits for
+    (``build_wait``) when more.
     ``reserve_bytes`` is the total; the parts beside it."""
     from ontology.project_incremental import space_need
 
@@ -2334,25 +2220,12 @@ def build_reserve(state_dir: str | Path) -> dict[str, Any]:
         cold = space_need(state / PROJECTION_DIR)
     except (OSError, ValueError, sqlite3.Error):
         cold = {}
-    copies = 0
-    ledger = state / HOST_DIR / LEDGER_FILE
-    if ledger.is_file():
-        try:
-            with closing(sqlite3.connect(f"file:{ledger}?mode=ro", uri=True,
-                                         timeout=1)) as db:
-                row = db.execute(
-                    "SELECT json_extract(report, '$.projection.disk.estimate.snapshot_bytes') "
-                    "FROM cycle WHERE json_extract(report, '$.projection.disk.estimate.mode') "
-                    "NOT IN ('waiting') ORDER BY cycle_id DESC LIMIT 1").fetchone()
-            copies = int(row[0]) if row and isinstance(row[0], int) else 0
-        except sqlite3.Error:
-            copies = 0
     cold_bytes = int(cold.get("needed_bytes") or 0)
-    reserve = cold_bytes + BUILD_DISK_MARGIN_BYTES + copies
+    reserve = cold_bytes + BUILD_DISK_MARGIN_BYTES
     wait = build_wait(state)
     waits = wait["needed_bytes"] if wait else None
     return {"reserve_bytes": max(reserve, waits or 0), "cold_bytes": cold_bytes,
-            "margin_bytes": BUILD_DISK_MARGIN_BYTES, "snapshot_bytes": copies,
+            "margin_bytes": BUILD_DISK_MARGIN_BYTES,
             "waits_for_bytes": waits}
 
 
@@ -3130,6 +3003,7 @@ def _save_census(host: "Host", kept: Mapping[str, Any], *, drop: bool = False) -
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(".tmp")
     fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    keep_shared(tmp, 0o600)
     with os.fdopen(fd, "w", encoding="utf-8") as handle:
         json.dump(kept, handle, sort_keys=True)
     os.replace(tmp, path)
@@ -3335,6 +3209,8 @@ def mcp_arguments(host: Host, *, session_ticket_env: str | None,
     for marking, principals in sorted(grants.items()):
         argv += [arg for principal in sorted(principals)
                  for arg in ("--marking-grant", f"{marking}={principal}")]
+    # the MCP host refuses a store path with no file (mcp_server: "--ontology-store is not
+    # a file"); without one it reads Postgres through the GET-only readers
     if projection_path(host.state_dir).is_file():
         argv += ["--ontology-store", str(projection_path(host.state_dir))]
     return argv + _live_arguments(host)
@@ -3487,7 +3363,7 @@ def console_arguments(host: Host, port: int) -> list[str]:
     if "portal" in config.sources:
         argv += ["--host-captures-portal"]
     argv += _freshness_arguments(config)
-    if projection_path(host.state_dir).is_file():
+    if _serves_projection(host.state_dir):
         argv += ["--ontology-store", str(projection_path(host.state_dir))]
     return argv + _live_arguments(host)
 
@@ -3543,15 +3419,25 @@ def _freshness_arguments(config: "HostConfig") -> list[str]:
 
 
 @contextmanager
-def _terminated_exits() -> Iterator[None]:
+def _terminated_exits(drain: threading.Event | None = None) -> Iterator[None]:
     """SIGTERM as ``SystemExit(143)`` while a cycle may run on the main thread, so the
     cycle's capture children are stopped and unrecorded on the way out (a SIGKILL leaves
-    them to the next start's recovery, ``CycleChildren``). Off the main thread: as is."""
+    them to the next start's recovery, ``CycleChildren``). Off the main thread: as is.
+
+    ``drain`` (``serve`` in ingest mode: the host's ``stop``): the first SIGTERM sets it
+    instead, so the continuous ingest drains (``ingest_forever.Continuous``: no capture
+    starts, each running child ends its run at a safe point within
+    ``ingest.drain_seconds``, its cursor kept and its outcome recorded) and ``serve``
+    returns; a second SIGTERM is the exit above. A restart then loses no capture work
+    and never waits for a gap between captures."""
     if threading.current_thread() is not threading.main_thread():
         yield
         return
 
     def terminated(signum: int, _frame: Any) -> None:
+        if drain is not None and not drain.is_set():
+            drain.set()
+            return
         raise SystemExit(128 + signum)
 
     previous = signal.signal(signal.SIGTERM, terminated)
@@ -3715,7 +3601,7 @@ def main(argv: Sequence[str] | None = None, *, environ: Mapping[str, str] | None
                                   port=args.port, monotonic=monotonic, jwks=jwks, ready=ready)
         else:
             interval = args.interval_seconds or config.interval_seconds
-            with _terminated_exits():
+            with _terminated_exits(host.stop if config.ingest is not None else None):
                 host.serve(interval_seconds=interval, max_cycles=args.max_cycles,
                            on_cycle=_print, stop_file=args.stop_file)
             return 0
@@ -3776,6 +3662,8 @@ def record_serve_start(state_dir: Path, *, now: datetime, config: "HostConfig | 
                                   "failures": failures}
         if isinstance(held.get("stop"), dict):
             record["stop"] = held["stop"]
+        if error is not None and held.get("drain_seconds") is not None:
+            record["drain_seconds"] = held["drain_seconds"]
         if error is not None:
             record["failures"] = (failures + [{"at": _iso(now), "error": str(error)}]
                                   )[-_SERVE_FAILURES_KEPT:]
@@ -3786,6 +3674,10 @@ def record_serve_start(state_dir: Path, *, now: datetime, config: "HostConfig | 
             if config is not None:
                 record["turn_seconds"] = capture_turns(config)
                 record["config_warnings"] = list(config.config_warnings)
+                if config.ingest is not None:
+                    # this host drains on SIGTERM (``_terminated_exits``) within this
+                    # bound: a restart needs no gap (deploy/ops ingest_restart_when_idle)
+                    record["drain_seconds"] = config.ingest.get("drain_seconds")
         path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
         tmp = path.with_name(path.name + ".tmp")
         tmp.write_text(json.dumps(record, sort_keys=True), "utf-8")

@@ -6,7 +6,7 @@ from __future__ import annotations
 import json
 import os
 import tempfile
-from datetime import date, datetime, timezone
+from datetime import datetime, timezone
 from pathlib import Path
 import unittest
 from unittest import mock
@@ -193,10 +193,14 @@ class FeedbackLoop(unittest.TestCase):
 
     def test_rating_and_its_record_are_one_write(self):
         answer_id = asked(self.ana)
-        with mock.patch.object(self.backend, "feedback", side_effect=LookupError("down")):
+        with mock.patch.object(self.backend, "feedback", side_effect=LookupError("down")), \
+                self.assertLogs("operator_api", "ERROR"):
             failed = self.ana.post("/api/feedback", json={"answer_id": answer_id,
                                                           "rating": -1, "expected": "3"})
-        self.assertEqual(failed.status_code, 404)
+        # a backend that failed is the server's failure, never "no such answer"
+        # (followups-1115: only RecordNotFound is a 404)
+        self.assertEqual((failed.status_code, failed.json()["error"]["code"]),
+                         (500, "internal"))
         self.assertEqual(self.ana.get("/api/feedback").json()["total"], 0)   # no orphan
 
     def test_an_admin_reads_another_readers_answer_as_their_markings_allow(self):

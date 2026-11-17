@@ -39,9 +39,19 @@ class BackupRestoreTest(unittest.TestCase):
     def setUpClass(cls) -> None:
         if not shutil.which("pg_dump") and not Path("/usr/lib/postgresql/17/bin").is_dir():
             raise unittest.SkipTest("no pg_dump")
+        # The tools the scripts run: PG_BIN when set, else the packaged 17 (the tool's own
+        # default), else the pg_dump on PATH (a host whose Postgres is not the package).
+        cls.pg_bin = os.environ.get("PG_BIN") or (
+            "/usr/lib/postgresql/17/bin" if Path("/usr/lib/postgresql/17/bin").is_dir()
+            else str(Path(shutil.which("pg_dump")).resolve().parent))
         cls.db, cls.dsn = pg_testdb.create_db()
-        if os.environ.get("PGPORT"):   # the backup tool drops PG* variables: name the server
-            cls.dsn = psycopg.conninfo.make_conninfo(cls.dsn, port=os.environ["PGPORT"])
+        # The backup tool drops PG* variables and the scripts run in a clean environment:
+        # name the server (socket directory and port) in every DSN they get, or a run on a
+        # host whose test cluster has its own socket directory reaches the default server.
+        server = {k: os.environ[v] for k, v in (("host", "PGHOST"), ("port", "PGPORT"))
+                  if os.environ.get(v)}
+        cls.dsn = psycopg.conninfo.make_conninfo(cls.dsn, **server)
+        cls.admin_dsn = psycopg.conninfo.make_conninfo("dbname=postgres", **server)
         with psycopg.connect(cls.dsn) as conn:
             migrate.migrate(conn, values={"embed_model": "m", "embed_dim": 3})
             for i in range(5):
@@ -83,7 +93,8 @@ class BackupRestoreTest(unittest.TestCase):
                     "PLX_STATE_DIR": str(self.state),
                     "PLX_BACKUP_STATE_FILES": "case-runtime/cases.sqlite,label.json",
                     "PLX_BACKUP_EXTRA_FILES": "", "PLX_BACKUP_CONFIG_PATHS": str(self.config),
-                    "PLX_BACKUP_PG_SCHEMA_ONLY": "", "PLX_BACKUP_MIN_FREE_GB": "0"}
+                    "PLX_BACKUP_PG_SCHEMA_ONLY": "", "PLX_BACKUP_MIN_FREE_GB": "0",
+                    "PLX_RESTORE_ADMIN_DSN": self.admin_dsn, "PG_BIN": self.pg_bin}
 
     def migrations(self) -> int:
         with psycopg.connect(self.dsn) as conn:
@@ -150,7 +161,8 @@ class BackupRestoreTest(unittest.TestCase):
                          ["plx", "state", "config", "manifest"])
         self.assertTrue(all(Path(a).is_file() for a in args))  # the local set is kept
         # no database: the state and config are still kept, the run fails (6)
-        code, out = self.run_script("backup.sh", PLX_PG_DSN="dbname=plx_test_a_absent_db")
+        code, out = self.run_script("backup.sh", PLX_PG_DSN=psycopg.conninfo.make_conninfo(
+            self.dsn, dbname="plx_test_a_absent_db"))
         self.assertEqual((code, out["pg_problem"], out["state_files"]),
                          (6, "OperationalError", 2))
 
@@ -158,7 +170,7 @@ class BackupRestoreTest(unittest.TestCase):
         bin_dir = self.tmp / "bin"
         bin_dir.mkdir()
         log = self.tmp / "argv.log"
-        real = Path(os.environ.get("PG_BIN", "/usr/lib/postgresql/17/bin"))
+        real = Path(self.pg_bin)
         for tool in ("pg_dump", "pg_restore"):
             wrapper = bin_dir / tool
             wrapper.write_text(f'#!/bin/sh\necho "{tool} $*" >> {log}\n'
@@ -170,7 +182,7 @@ class BackupRestoreTest(unittest.TestCase):
         code, out = self.run_script("backup.sh", PLX_PG_DSN=dsn, PG_BIN=str(bin_dir))
         self.assertEqual(code, 0, out)
         code, out = self.run_script("restore_test.sh", PG_BIN=str(bin_dir),
-                                    PLX_RESTORE_ADMIN_DSN=f"dbname=postgres password={secret}",
+                                    PLX_RESTORE_ADMIN_DSN=f"{self.admin_dsn} password={secret}",
                                     PLX_BACKUP_DIR=self.env["PLX_BACKUP_DIR"])
         self.assertEqual((code, out["problems"]), (0, []))
         lines = log.read_text().splitlines()
@@ -372,6 +384,28 @@ class GuardAndAgeTest(unittest.TestCase):
             self.assertIn(rel, plx_backup.OPTIONAL_STATE_FILES)
         self.assertIn("${XDG_STATE_HOME:-~/.local/state}/plx-workbench-app",
                       plx_backup.EXTRA_FILES)
+
+
+class StopTest(unittest.TestCase):
+    """A stopped run (systemd's SIGTERM) unwinds through backup()'s cleanup and exits 143,
+    never 0: a killed night never reads as a backup taken."""
+
+    def test_sigterm_exits_143(self):
+        code = ("import importlib.util, os, signal, sys, time\n"
+                f"spec = importlib.util.spec_from_file_location('plx_backup', {str(BACKUP / 'plx_backup.py')!r})\n"
+                "m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)\n"
+                "def backup():\n"
+                "    try:\n"
+                "        os.kill(os.getpid(), signal.SIGTERM); time.sleep(30)\n"
+                "    except BaseException:\n"
+                "        print('cleaned', flush=True); raise\n"
+                "    return 0, {}\n"
+                "m.backup = backup\n"
+                "sys.exit(m.main(['backup']))\n")
+        r = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True,
+                           timeout=60)
+        self.assertEqual(r.returncode, 143, r.stderr)
+        self.assertIn("cleaned", r.stdout)
 
 
 if __name__ == "__main__":

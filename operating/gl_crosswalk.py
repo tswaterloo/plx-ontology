@@ -33,7 +33,7 @@ import sys
 import zipfile
 import xml.etree.ElementTree as ET
 from pathlib import Path
-from typing import Any, Iterable, Mapping, Sequence
+from typing import Any, Mapping, Sequence
 
 FORMAT = "plx-gl-crosswalk/v1"
 _NS = {"m": "http://schemas.openxmlformats.org/spreadsheetml/2006/main",
@@ -184,6 +184,31 @@ def links(crosswalk: Mapping[str, Any], sage_accounts: Mapping[str, str],
                                      "file": crosswalk["source"]["file"]}})
     return {"links": out, "unmatched": unmatched,
             "mapped": len(crosswalk["mapped"]), "added_to_chart": len(crosswalk["added_to_chart"])}
+
+
+def _account_key(raw: Any) -> str:
+    text = re.sub(r"[^0-9A-Z]", "", str(raw or "").upper())
+    return text.lstrip("0") or text
+
+
+def by_sage_account(crosswalk: Mapping[str, Any]) -> dict[str, list[dict[str, Any]]]:
+    """The crosswalk's rows by Sage account (formatted and plain number, punctuation, case
+    and leading zeros gone) -> [{sage_acctid, currency, bc_acctid or None, bc_name,
+    evidence}]: a mapped row names its BC account, an added-to-chart row none. Each
+    currency version is its own row; a reader picks the invoice's currency, never a guess."""
+    out: dict[str, list[dict[str, Any]]] = {}
+    evidence = {"crosswalk_sha256": (crosswalk.get("source") or {}).get("sha256"),
+                "file": (crosswalk.get("source") or {}).get("file")}
+    for kind in ("mapped", "added_to_chart"):
+        for item in crosswalk.get(kind) or ():
+            row = {"sage_acctid": item.get("sage_acctid"), "currency": item.get("currency"),
+                   "bc_acctid": item.get("bc_acctid") if kind == "mapped" else None,
+                   "bc_name": item.get("bc_name") if kind == "mapped" else None,
+                   "evidence": evidence}
+            keys = {_account_key(item.get("sage_formatted")), _account_key(item.get("sage_acctid"))}
+            for key in keys - {""}:
+                out.setdefault(key, []).append(row)
+    return out
 
 
 def _served(dsn: str | None) -> tuple[dict[str, str], dict[str, list[str]]]:

@@ -45,8 +45,8 @@ import zlib
 from integrations import captured_text as ct
 from integrations import blob_pack
 from integrations.captured_text import (COMPRESSED_SUFFIX, ContainerReading, Member,
-                                        READING_MODULES, blob_path, decode_reading,
-                                        encode_reading, readings_code)
+                                        READING_MODULES, decode_reading, encode_reading,
+                                        readings_code)
 from operating import declared_schema as _schemas
 from operating.declared_schema import kept_members as _KEPT_MEMBERS
 

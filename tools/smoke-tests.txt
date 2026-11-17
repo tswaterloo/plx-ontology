@@ -1,0 +1,55 @@
+# The landing smoke set: tools/land.sh runs these on every landing, beside the modules it is
+# given with -t (one module per line; '#' starts a comment). Budget: 10 minutes wall on this
+# host. Measured 2026-11-11 3:27 PM ET: 16 modules in 119 s wall with 8 workers at load
+# average 15-22 (slowest: answer_gate_one_path 115 s, access_control_proof 112 s).
+# Hard rules first; the full suite runs nightly (plx-suite).
+
+# No real case in product code; no AI-looking copy in the app.
+tests.test_no_hardcoded_cases
+tests.test_ui_copy_tics
+
+# The layer contract: no new upward import between the product's packages
+# (tools/layer_contract.py, frozen edges in tools/layer-contract-allowlist.json).
+tools.tests.test_layer_contract
+
+# No write or HTTP path outside the one GET-only client (the egress scan of the tree).
+tests.test_no_write_http_paths
+
+# The answer gate: claims are checked before an answer states them.
+operating.tests.test_structured_claims
+operating.tests.test_fast_answer
+evals.tests.test_answer_gate_one_path
+
+# Permissions and the people exclusion (employee ACLs, view-as, the access-control proof).
+operating.tests.test_employee_permissions
+operating.tests.test_pg_permissions
+integrations.tests.test_people_exclusion
+operator_api.tests.test_view_as
+tests.test_access_control_proof
+
+# Serving snapshots: kept pages and snapshot reads never cross readers.
+operator_api.tests.test_last_good_page
+operator_api.tests.test_brief_pages_kept
+tests.test_snapshot_reads
+
+# The write path: nothing executes without the confirm on the shown preview.
+operating.tests.test_write_intents
+operator_api.tests.test_write_intents_api
+
+# The data refresh (delta), including its people-exclusion guard.
+ontology.tests.test_delta
+
+# Whole-repo and deploy/ scans (main-red 11-15: lanes queue focused module sets, so a scan of
+# the whole tree never ran when a lane added code or deploy files it judges; main went red 3
+# times in one night). Every landing runs them.
+tests.test_deploy_release
+tools.tests.test_deploy_hygiene
+operating.tests.test_card_actions
+tools.tests.test_decision_citations
+tests.test_tmp_lint
+tests.test_pool_parent_watch_lint
+tests.test_dependency_manifest
+tests.test_adapters_retired
+tests.test_egress_retired
+tests.test_doc_backend_egress
+tests.test_objective_family_retired

@@ -16,12 +16,9 @@ export default function RdProjectsPage() {
   return (
     <div className="flex min-h-0 flex-1 flex-col">
       <Toolbar
+        pin="R&D and sample projects"
         heading
-        title={
-          <>
-            R&amp;D projects <span className="ml-2 rounded bg-hover px-1 text-[11px] font-normal">Early</span>
-          </>
-        }
+        title="R&D and sample projects"
       />
       <div className="mx-auto w-full max-w-3xl px-6 py-6">
         {error ? (

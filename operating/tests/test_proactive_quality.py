@@ -129,7 +129,8 @@ class QualityAlerts(Engine):
         self.assertNotIn("blocked or deleted", both_live["summary"])
 
     def test_duplicate_counts_per_system_pair_and_rejection_of_unknown_names(self):
-        from operating.proactive_engine import _Store, _cites, _gap, _result, _Skips
+        from operating.proactive_engine import _Store
+        from operating.proactive_engine_findings import _cites, _gap, _result, _Skips
 
         w = World()
         party(w, "Customer", "bc.customer", "SYNTH Alpha Ltd", bc_email="a@alpha.example")
@@ -182,7 +183,8 @@ class QualityAlerts(Engine):
                 self.assertEqual(pairs, {frozenset((c, d))})
 
     def test_two_bc_companies_are_two_entities_and_sibling_accounts_are_not_duplicates(self):
-        from operating.proactive_engine import _Store, _cites, _gap, _result, _Skips
+        from operating.proactive_engine import _Store
+        from operating.proactive_engine_findings import _cites, _gap, _result, _Skips
 
         w = World()
         one, two = "bc:aaaaaaaa-0000/customers", "bc:bbbbbbbb-0000/customers"
@@ -230,8 +232,8 @@ class QualityAlerts(Engine):
         w.obj("Product", {"code": "SYNTH-ITEM-2", "uom": "kg"}, audience="api:items")
         w.obj("Product", {"code": "SYNTH-ITEM-3", "deleted_at": "2026-01-01"},
               audience="api:items")
-        po = order(w, "PurchaseOrder", "portal.app_purchase_order", status="ORDERED",
-                   po_number="PO-SYN-1")      # open by the one PO status definition
+        order(w, "PurchaseOrder", "portal.app_purchase_order", status="ORDERED",
+              po_number="PO-SYN-1")      # open by the one PO status definition
         summary = self.run_rules(w, [q.FIELDS_RULE])
         self.assertEqual(summary["detectors"][q.FIELDS_RULE], "complete")
         gaps = {g["object_id"]: g for g in self.kinds(q.MISSING)}
@@ -371,7 +373,8 @@ class QualityAlerts(Engine):
         self.assertEqual(self.kinds(q.STALE, may_read=lambda k: k == "api:orders"), [])
 
     def test_unknown_or_unreadable_inputs_fail_closed(self):
-        from operating.proactive_engine import _Store, _cites, _gap, _result, _Skips
+        from operating.proactive_engine import _Store
+        from operating.proactive_engine_findings import _cites, _gap, _result, _Skips
 
         w = MetaWorld([{"source": "bc", "captured_at": "not a time"}, "junk"])
         w.obj("Customer", {"name": "SYNTH X"}, binding="bc.customer")
@@ -394,20 +397,22 @@ class QualityAlerts(Engine):
 
     def test_every_new_kind_has_a_check_a_next_step_and_its_words(self):
         from operating import declared_inputs, mcp_server, vendor_watch
+        from operating import mcp_server_catalog
+        from operating import mcp_server_home
 
         for kind in q.KINDS:
             with self.subTest(kind=kind):
                 self.assertIn(kind, briefing.EVENT_TYPES)
                 self.assertIn(kind, briefing.NEXT_ACTIONS)
                 self.assertIn(kind, briefing.TODAY_WORDS)
-                self.assertIn(kind, mcp_server.HOME_KINDS)
+                self.assertIn(kind, mcp_server_catalog.HOME_KINDS)
         for rule in q.RULES:
             with self.subTest(rule=rule):
                 self.assertIn(rule, pe.DETECTORS)
                 self.assertIn(rule, briefing.CHECK_WORDS)
                 self.assertIn(rule, vendor_watch.WHOLE_PASS)
                 self.assertIn(rule, declared_inputs.NOT_INCREMENTAL)
-                self.assertIn(rule, mcp_server._HOME_RULES)
+                self.assertIn(rule, mcp_server_home._HOME_RULES)
 
     def test_every_record_is_judged_once_at_1_10_and_60(self):
         for n in (1, 10, 60):

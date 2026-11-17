@@ -28,8 +28,8 @@ export function visibleText(source: string): string[] {
   const code = source.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "");
   for (const m of code.matchAll(/>([^<>{}]*[A-Za-z][^<>{}]*)</g)) {
     const text = m[1].trim();
-    // code between two tags (") : !rows ? (") is not text
-    if (text && !/[=;]|=>|\b(const|return|function)\b|^[)\s:]|\?\s*\(|&&|\|\||!\w/.test(text)) out.push(text);
+    // code between two tags (") : !rows ? (", "quiet(s) ? null :") is not text
+    if (text && !/[=;]|=>|\b(const|return|function)\b|^[)\s:]|\?\s*\(|\)\s*\?|&&|\|\||!\w/.test(text)) out.push(text);
   }
   for (const m of code.matchAll(/(["'`])((?:(?!\1)[^\\\n]|\\.)*)\1/g)) {
     const text = m[2];

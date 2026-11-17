@@ -1,4 +1,4 @@
-// PLX host job queue (devloop/DECISIONS/open-jobq.md): the queue worker, running as the PLX
+// PLX host job queue (devloop/DECISIONS/2026-11-15-jobq.md): the queue worker, running as the PLX
 // user, may start and stop exactly the services whose jobs it admits, and nothing else.
 // @PLX_USER@ is filled in by apply.sh.
 polkit.addRule(function(action, subject) {

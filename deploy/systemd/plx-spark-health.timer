@@ -1,0 +1,10 @@
+[Unit]
+Description=PLX Spark hosts health every 10 minutes
+
+[Timer]
+OnBootSec=4min
+OnUnitActiveSec=10min
+AccuracySec=1min
+
+[Install]
+WantedBy=timers.target

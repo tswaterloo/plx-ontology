@@ -74,6 +74,7 @@ from typing import Any, Callable, Iterable, Mapping, Sequence
 
 from . import order_value
 from ontology.units import unit_token
+from . import time_window
 
 STOCK_OUT = "stock_out_risk"
 OVERDUE = "overdue_receivable"
@@ -137,10 +138,7 @@ def _dec(raw: Any) -> Decimal | None:
 
 
 def _day(raw: Any) -> date | None:
-    try:
-        return date.fromisoformat(str(raw).strip()[:10])
-    except ValueError:
-        return None
+    return time_window.business_day(raw)
 
 
 def _one(rows: Sequence[Mapping[str, Any]] | None) -> Mapping[str, Any] | None:
@@ -178,7 +176,7 @@ def _currencies(st: Any, rows: Iterable[Mapping[str, Any]]) -> dict[tuple, str |
 
 
 def _currency(codes: Mapping[tuple, str | None], row: Mapping[str, Any]) -> str | None:
-    from .proactive_engine import currency_word
+    from .proactive_engine_cards import currency_word
 
     code = codes.get((row["object_id"], row["property"], row["l1_handle"]))
     return currency_word(code) if code else None

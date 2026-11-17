@@ -57,8 +57,12 @@ class Ticket:
     def __init__(self, queue: jq.Queue, class_name: str, *, key: str | None = None,
                  label: str | None = None, poll_s: float = POLL_S,
                  wait_timeout: float | None = None,
-                 say: Callable[[str], None] = _say):
+                 say: Callable[[str], None] = _say,
+                 declare: Mapping[str, Any] | None = None):
+        """`declare`: the job's own ``mem_gb``, ``cpus``, ``disk_gb``, ``disk_path`` and
+        ``workspace`` (``Queue.enqueue``), over its class's defaults."""
         self.queue = queue
+        self.declare = dict(declare or {})
         self.cls = queue.classes[class_name]
         self.key, self.label = key, label
         self.poll_s, self.wait_timeout, self.say = poll_s, wait_timeout, say
@@ -94,7 +98,8 @@ class Ticket:
         """Block until this job is admitted; the claimed row."""
         if self.job_id is None:
             job_id, what = self.queue.enqueue(self.cls.name, key=self.key, label=self.label,
-                                              kind="inline", waiter_pid=os.getpid())
+                                              kind="inline", waiter_pid=os.getpid(),
+                                              **self.declare)
             if what != "queued":
                 raise Duplicate(f"a {self.cls.name} job with key {self.key!r} is already queued"
                                 f" (job {job_id})")
@@ -113,7 +118,7 @@ class Ticket:
             row = self.queue.get(self.job_id)
             if row is None or row["state"] != "queued":
                 raise Cancelled(f"job {self.job_id} is {row['state'] if row else 'gone'}")
-            reason = decision.reason if decision.blocked else (
+            reason = decision.reason or (
                 "waiting for higher-priority jobs" if decision.reserved else
                 "waiting for a free slot in its class" if not decision.busy else None)
             if reason and reason != said:
@@ -215,13 +220,15 @@ def popen_kwargs() -> dict[str, Any]:
 def run(command: Sequence[str], class_name: str, *, key: str | None = None,
         label: str | None = None, environ: Mapping[str, str] = os.environ,
         queue: jq.Queue | None = None, spawn: Callable[..., subprocess.Popen] | None = None,
-        wait_timeout: float | None = None, say: Callable[[str], None] = _say) -> int:
+        wait_timeout: float | None = None, say: Callable[[str], None] = _say,
+        declare: Mapping[str, Any] | None = None) -> int:
     """Run `command` as an inline job of `class_name`; its exit status (a signal as 128 +
     its number). Raises Duplicate, Cancelled, WaitTimeout, or the queue's connection
     error (the caller decides whether to run without the queue)."""
     own = queue is None
     queue = queue or jq.Queue(environ=environ)
-    ticket = Ticket(queue, class_name, key=key, label=label, wait_timeout=wait_timeout, say=say)
+    ticket = Ticket(queue, class_name, key=key, label=label, wait_timeout=wait_timeout, say=say,
+                    declare=declare)
     spawn = spawn or (lambda cmd, env: subprocess.Popen(list(cmd), env=env, **popen_kwargs()))
     forwarded = {}
 

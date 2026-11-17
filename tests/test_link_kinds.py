@@ -30,6 +30,7 @@ from ontology import reviews, store_ddl
 from ontology import schema as schema_loader
 from ontology.json_contract import validate
 from operating import ontology_tools as ot
+from operating import ontology_tools_policy
 from operating import ontology_tools_aggregate as oa
 from operating import ontology_tools_evidence as ev
 from operating import ontology_tools_process as op
@@ -65,7 +66,7 @@ def object_ids(value):
         return {i for v in value.values() for i in object_ids(v)}
     if isinstance(value, list):
         return {i for v in value for i in object_ids(v)}
-    if isinstance(value, str) and ot._OBJECT_ID.match(value):
+    if isinstance(value, str) and ontology_tools_policy._OBJECT_ID.match(value):
         return {value}
     return set()
 

@@ -5,7 +5,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { getSource } from "@/lib/api";
 import { cn } from "@/lib/cn";
 import { ApiError, plainError } from "@/lib/errors";
-import { fieldLabel, fieldValue, formatDateTime, mailField, recordKind, SYSTEM_LABEL } from "@/lib/format";
+import { fieldLabel, formatDateTime, mailField, recordKind, SYSTEM_LABEL } from "@/lib/format";
 
 export { mailField };
 import type { SourceView } from "@/lib/types";

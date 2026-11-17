@@ -56,6 +56,30 @@ TIER_ORDER = ("verified", "reviewed", "corroborated", "stored_by_text_join", "le
 # from other step code are equal content)
 VOLATILE_META = frozenset({"built_at", "content_digest", "content_digest_parts",
                            "build_checkpoint", "steps_digest"})
+
+
+def _freshness_content(value: Any) -> Any:
+    """``store_meta.freshness`` as the content digest sees it: without what the build's
+    clock decides (an entry's ``lag_seconds`` and a ``stale`` that is only the capture's
+    age, ``Projector.freshness``), so two builds of the same captures digest alike. A
+    ``stale`` with a ``served_from`` (a copy served while the source was out) is content."""
+    try:
+        entries = json.loads(value)
+    except (TypeError, ValueError):
+        return value
+    if not isinstance(entries, list) or not all(isinstance(e, dict) for e in entries):
+        return value
+    out, changed = [], False
+    for entry in entries:
+        entry = dict(entry)
+        if entry.get("lag_seconds") is not None:
+            entry["lag_seconds"], changed = None, True
+        if entry.get("stale") and entry.get("served_from") in (None, "none"):
+            entry["stale"], changed = False, True
+        out.append(entry)
+    return json.dumps(out, sort_keys=True) if changed else value
+
+
 # ``store_meta`` key of a build file kept to resume (``StoreBuilder.keep_to_resume``): what
 # the build has done in it; never in a committed generation.
 CHECKPOINT_META = "build_checkpoint"
@@ -461,6 +485,8 @@ def _segment_texts(conn: sqlite3.Connection, table: str, order: str,
         for row in rows:
             if table == "store_meta" and row[0] in VOLATILE_META:
                 continue
+            if table == "store_meta" and row[0] == "freshness":
+                row = (row[0], _freshness_content(row[1]), *row[2:])
             if column is None:
                 segment = ""
             elif by == "object_id":

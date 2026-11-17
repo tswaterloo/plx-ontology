@@ -3,7 +3,7 @@ whose type the question writes beside that name (GW-0406 class: a Teams chat, it
 and the meeting's invitations all titled "Gleamin meeting prep")."""
 import unittest
 
-from operating.mcp_server import _found_on_question
+from operating.mcp_server_anchors import _found_on_question
 
 
 def _cand(oid, object_type, text):

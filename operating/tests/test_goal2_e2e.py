@@ -2486,9 +2486,10 @@ class AnswererTests(Goal2World):
             self.routed(who)
         # Process graphs that do not load declare no department: undeclared, never a guess.
         from operating import ontology_tools_process as process
+        from operating import ontology_tools_process_graphs
         broken = self.dir / "graphs"
         broken.mkdir()
-        shutil.copy(process.FORMAT_PATH, broken / "_process.schema.json")
+        shutil.copy(ontology_tools_process_graphs.FORMAT_PATH, broken / "_process.schema.json")
         (broken / "purchase_to_invoice.json").write_text("{", encoding="utf-8")
         with mock.patch.object(process, "PROCESS_DIR", broken):
             case_id, _iid = self.world.follow_up_intent(2)

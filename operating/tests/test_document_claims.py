@@ -20,6 +20,7 @@ import unittest
 from unittest import mock
 
 from operating import answer_gate, claim_checks
+from operating import claim_checks_parse
 
 QUOTE = "graph-mail://fixture-box/quote-msg"
 CHAT = "graph-mail://fixture-box/chat-msg"
@@ -143,7 +144,7 @@ class RateAndGluedCurrencyFigures(unittest.TestCase):
     def check(self, text, **claim):
         handle = "graph-mail://fixture-box/figures"
         row = _row(handle, text)
-        value_claims = claim_checks.parse_value_claims(
+        value_claims = claim_checks_parse.parse_value_claims(
             [{"citation": handle, "field": "row.body_text", **claim}], [handle], [])
         passed, failed, _ = answer_gate._check(
             [{"id": "c1", "lead": False, "citations": [handle],

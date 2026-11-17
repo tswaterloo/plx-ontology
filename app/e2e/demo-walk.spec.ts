@@ -64,14 +64,17 @@ async function shot(page: Page, name: string) {
 }
 
 /** No error state, no empty card, no skeleton, no raw float on what the page shows. */
-async function expectClean(page: Page, where: string) {
+async function expectClean(page: Page, where: string, emptyOk: string[] = []) {
   await expect(page.getByTestId("checking"), `${where}: sections still loading`).toHaveCount(0, { timeout: PAGE_TIMEOUT });
   await expect(page.locator('[data-testid^="section-loading-"]'), `${where}: skeleton left`).toHaveCount(0);
   // Next.js's route announcer is an alert that reads the page title: not an error.
   await expect(page.locator('[role="alert"]:not(#__next-route-announcer__)'), `${where}: error shown`).toHaveCount(0);
   await expect(page.getByTestId("checks-failed"), `${where}: a section failed`).toHaveCount(0);
   await expect(page.getByTestId("server-notice"), `${where}: server notice`).toHaveCount(0);
-  await expect(page.getByTestId("empty-state"), `${where}: empty state`).toHaveCount(0);
+  // an empty state the step names is the page's true answer (no rules kept yet), not a fault
+  let emptyStates = page.getByTestId("empty-state");
+  for (const t of emptyOk) emptyStates = emptyStates.filter({ hasNotText: t });
+  await expect(emptyStates, `${where}: empty state`).toHaveCount(0);
   const text = await page.locator("main").innerText();
   expect(text, `${where}: raw JSON`).not.toMatch(/\{\s*"(code|error|detail)"\s*:/);
   expect(text, `${where}: stack trace`).not.toMatch(/\bat \S+ \(.*:\d+:\d+\)|Unhandled Runtime Error|TypeError:|Traceback/);
@@ -110,8 +113,12 @@ async function signIn(page: Page) {
 /** Asks from Today's search-or-ask bar (a fresh conversation each time); the finished card and its time. */
 async function ask(page: Page, question: string): Promise<{ card: Locator; ms: number }> {
   await page.goto("/");
-  await page.keyboard.press("Control+k");
+  // the shortcut is wired once the page is live: pressed earlier it does nothing (as instrument.spec)
   const box = page.getByTestId("palette-input");
+  await expect(async () => {
+    if (!(await box.isVisible())) await page.keyboard.press("Control+k");
+    await expect(box).toBeVisible({ timeout: 2_000 });
+  }).toPass({ timeout: PAGE_TIMEOUT });
   await box.fill(question);
   const started = Date.now();
   await box.press("Enter");
@@ -148,10 +155,15 @@ test("demo walk: briefing, late PO, order at risk, margin, Ask", async ({ page }
   await shot(page, "today");
 
   // 2. Every alert kind, in Watching: what is on, what is off and why.
-  await page.getByTestId("see-all").click();
+  // Home links to Watching while items are left there; with every kind on Home (the fixture) the
+  // link is gone by design (e6d93923b9) and the sidebar's Alerts is the way in
+  const seeAll = page.getByTestId("see-all");
+  if (await seeAll.count()) await seeAll.click();
+  else await page.locator("aside a[href='/watching#alerts']").first().click();
   await expect(page).toHaveURL(/\/watching/);
   await expect(page.getByTestId("alert-kinds")).toBeVisible({ timeout: PAGE_TIMEOUT });
-  await expectClean(page, "watching");
+  // the demo reader keeps no alert rules, so "Your rules" says so (watching_count 0, e6d93923b9)
+  await expectClean(page, "watching", ["No rules yet."]);
   await shot(page, "watching");
 
   // 3. Late orders, from the Today tile.

@@ -45,6 +45,17 @@ describe("a filled template", () => {
   });
 });
 
+describe("copying a filled template", () => {
+  it("says when the clipboard refuses instead of failing silently", async () => {
+    const writeText = vi.fn(() => Promise.reject(new DOMException("denied", "NotAllowedError")));
+    Object.defineProperty(navigator, "clipboard", { value: { writeText }, configurable: true });
+    render(<TemplateFilledView filled={filled} />);
+    fireEvent.click(screen.getByTestId("template-copy"));
+    expect(await screen.findByText(/Couldn't copy here/)).toBeTruthy();
+    expect(screen.getByTestId("template-copy").textContent).toBe("Copy text");
+  });
+});
+
 describe("sharing", () => {
   it("reads addresses as people and other words as roles; empty keeps it private", () => {
     expect(sharesOf("Ben@plx.example, purchasing; customer service")).toEqual(["person:ben@plx.example", "role:purchasing", "role:customer_service"]);
@@ -90,6 +101,17 @@ describe("use template", () => {
     fireEvent.click(await screen.findByTestId("template-offer"));
     await waitFor(() => screen.getByTestId("template-filled"));
     expect(api.fillTemplate).toHaveBeenCalledWith(7, "SalesOrder:1");
+  });
+
+  it("offers to save mail the person keeps sending in near the same words", async () => {
+    const body = "Hi,\n\nThanks for your order.\n...\nLet me know if you need anything else.\n\nBest regards";
+    api.suggestTemplates.mockResolvedValue({ doc_type: "customer_email", suggestions: [{ kind: "repeated", doc_type: "customer_email", label: "Mail you sent 4 times", detail: "Thanks for your order.", body }] });
+    api.proposeTemplate.mockResolvedValue({ body, replaced: [], record: null });
+    api.getTemplates.mockResolvedValue({ available: true, templates: [], kinds: [], fields: [], share_roles: [] });
+    render(<UseTemplate docTypes={["customer_email"]} />);
+    expect((await screen.findByTestId("template-repeated")).textContent).toContain("Mail you sent 4 times");
+    fireEvent.click(screen.getByTestId("save-as-template"));
+    await waitFor(() => expect(api.proposeTemplate).toHaveBeenCalledWith(body, undefined));
   });
 
   it("shows nothing when there is no template for it", async () => {

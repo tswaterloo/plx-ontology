@@ -55,6 +55,33 @@ session lock throughout and runs every other chunk, ``final`` last, alone and in
 ``--stop-file`` stops a run between chunks. ``... measure`` compares without writing (one read-only transaction per chunk) and reports
 what each chunk would write.
 
+**Units first** (``apply LAYER --units-first``): every unit chunk, no ``final``: the
+units are committed and the served schema and step code stay as they were, so the steps
+(``ontology.pg_step_inplace steps``) can read the migrated units from committed Postgres
+before their layer exists (``migration_in_progress`` names the run, ``units_first``;
+``step_migration_required`` waits for the run that ends it). ``apply LAYER --steps STEPS``
+of that unit layer then takes the run over (its done unit chunks re-keyed to the combined
+run's key) and applies the step chunks and ``final``.
+
+**Undo** (``--undo-log SCHEMA`` on the first apply; ``undo --undo-log SCHEMA``): before
+the first chunk, statement triggers with transition tables are put on every table of the
+``ontology`` and ``search`` schemas; they log (``SCHEMA.t_<schema>__<table>``: statement
+sequence, ``d`` for a row as it was before a delete or update, ``i`` for a row inserted
+or updated, the row as ``jsonb``, so nothing depends on the served tables' row types)
+only in a session whose ``plx.undo_log`` names ``SCHEMA``: the chunks' (and the workers')
+own, never the readers' or the delta's. ``final`` drops the triggers in its transaction.
+``undo`` puts every logged primary key back as its first logged event found it (a row
+deleted or updated first: that row again; inserted first: gone), every table in one
+transaction under the delta's lock, after the triggers are dropped: the served rows, the
+digests, the migrations' records and the queue are as before the first chunk. Refused
+(nothing written) when the delta applied a layer since the log began
+(``delta_applied_since``): a row a later layer wrote would be lost.
+
+**Rehearsal** (``apply ... --rehearse F``): each chunk of a share ``F`` of the chunks (by
+layer rows; the heaviest always, the expensive path) applied as the run applies it, the
+undo log's triggers included when ``--undo-log`` is given, timed and rolled back;
+``projected_seconds`` scales their time to every chunk's rows. Nothing stays.
+
 Why a module of its own: ``operating.pg.ontology_migrate`` and ``ontology_delta`` are
 derivation code (the kept fields' key); nothing they cover imports this module.
 
@@ -66,6 +93,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 from pathlib import Path
 import re
 import sqlite3
@@ -73,6 +101,7 @@ import sys
 import time
 from typing import Any, Iterable, Iterator, Mapping, Sequence
 
+from ontology import parent_watch
 from operating.pg import ontology_migrate as om
 
 FLAG = "migration_in_progress"
@@ -116,7 +145,8 @@ def unit_groups(record: Mapping[str, Any]) -> list[dict[str, Any]]:
     return out
 
 
-def chunks(record: Mapping[str, Any] | None, steps: Mapping[str, Any] | None) -> list[str]:
+def chunks(record: Mapping[str, Any] | None, steps: Mapping[str, Any] | None,
+           units_first: bool = False) -> list[str]:
     out: list[str] = []
     if record is not None:
         out.append("events")
@@ -132,7 +162,8 @@ def chunks(record: Mapping[str, Any] | None, steps: Mapping[str, Any] | None) ->
             out.append("steps:values")
         if steps.get("text_marks"):
             out.append("steps:text_marks")
-    out.append("final")
+    if not units_first:
+        out.append("final")
     return out
 
 
@@ -142,10 +173,11 @@ def migration_key(record: Mapping[str, Any] | None, steps: Mapping[str, Any] | N
 
 # ----------------------------------------------------------------- links, compared
 
-def _served_links(cur: Any, where: str, params: Sequence[Any]) -> Iterator[tuple]:
+def _served_links(cur: Any, where: str, params: Sequence[Any],
+                  source: str = "ontology.link_rows l") -> Iterator[tuple]:
     """The served links ``where`` holds (on ``ontology.link_rows l``), as the ``links``
     view reads them (``step_migrate._read_links``'s formatting), as ``LINK_COLUMNS``
-    tuples."""
+    tuples. ``source``: the FROM giving ``l`` (its parameters first in ``params``)."""
     from ontology import step_migrate as sm
     from ontology import store_ddl
     ix = {c: i for i, c in enumerate(sm._RAW_LINK)}
@@ -159,7 +191,7 @@ def _served_links(cur: Any, where: str, params: Sequence[Any]) -> Iterator[tuple
     conn = cur.connection
     with conn.cursor(name=f"scope_links_{id(cur)}") as named:
         named.itersize = _BATCH
-        named.execute(f"SELECT {cols} FROM ontology.link_rows l WHERE {where}", params)
+        named.execute(f"SELECT {cols} FROM {source} WHERE {where}", params)
         while True:
             rows = named.fetchmany(_BATCH)
             if not rows:
@@ -512,6 +544,8 @@ def _unit_group(cur: Any, conn: sqlite3.Connection, layer: Path, record: Mapping
         "rows.deleted": sum(served[o][0] for o in owned)}
     if not write:
         return out
+    # before the deletes below (they drop the group's text fields): proven = none served
+    record = _text_paths_proven(cur, record)
     sel = ("SELECT o.object_id, o.binding_id, o.audience_key FROM ontology.objects o WHERE "
            "o.object_type = %s AND starts_with(o.object_id, %s)")
     params = (group["type"], group["prefix"])
@@ -548,6 +582,38 @@ def _unit_group(cur: Any, conn: sqlite3.Connection, layer: Path, record: Mapping
     return out
 
 
+#: (ops-train-1114, 11-14) bindings whose changed text paths an operator proved harmless:
+#: paths only ADDED to the binding's text values (``schema_migrate.binding_marks``
+#: ``text_paths``: a text held as a value is not indexed again, so the index can only
+#: lose fields) and no served text field on any of its objects (so there is nothing to
+#: drop). The second half is re-checked inside the applying transaction; a binding that
+#: holds a served text field is refused as before (``text_index_input``).
+TEXT_PATHS_PROVEN_ENV = "PLX_MIGRATE_TEXT_PATHS_PROVEN"
+
+
+def _text_paths_proven(cur: Any, record: Mapping[str, Any]) -> Mapping[str, Any]:
+    """``record`` with ``text_paths_changed`` cleared on the proven bindings
+    (:data:`TEXT_PATHS_PROVEN_ENV`, comma-separated ids) that hold no served text field."""
+    proven = {b for b in os.environ.get(TEXT_PATHS_PROVEN_ENV, "").split(",") if b}
+    bindings = record["delete"]["bindings"]
+    clear = set()
+    for bid in sorted(proven & set(bindings)):
+        spec = bindings[bid]
+        if not spec.get("text_paths_changed"):
+            continue
+        cur.execute("SELECT 1 FROM ontology.objects o JOIN ontology.text_fields f ON "
+                    "f.object_id = o.object_id WHERE (o.binding_id = %s OR (o.object_type = %s "
+                    "AND starts_with(o.object_id, %s))) LIMIT 1",
+                    (bid, spec["type"], spec["prefix"]))
+        if cur.fetchone() is None:
+            clear.add(bid)
+    if not clear:
+        return record
+    return {**record, "delete": {**record["delete"], "bindings": {
+        b: ({**v, "text_paths_changed": False} if b in clear else v)
+        for b, v in bindings.items()}}}
+
+
 def _preflight(cur: Any, conn: sqlite3.Connection | None, record: Mapping[str, Any] | None
                ) -> None:
     """The refusals of the plain apply found before any chunk is written."""
@@ -559,6 +625,7 @@ def _preflight(cur: Any, conn: sqlite3.Connection | None, record: Mapping[str, A
     if astray:   # an object of a rewritten binding outside the objects it deletes
         raise ChunkRefused(f"layer_objects_outside_their_binding:{astray}")
     texted = set(record.get("document_bindings") or ())
+    proven = _text_paths_proven(cur, record)["delete"]["bindings"]
     for spec in bindings.values():
         cur.execute("SELECT DISTINCT o.binding_id FROM ontology.objects o JOIN "
                     "ontology.text_fields f ON f.object_id = o.object_id WHERE "
@@ -566,7 +633,7 @@ def _preflight(cur: Any, conn: sqlite3.Connection | None, record: Mapping[str, A
                     (spec["type"], spec["prefix"]))
         texted |= {r[0] for r in cur.fetchall()}
     for bid in sorted(texted & set(bindings)):
-        if bindings[bid].get("text_paths_changed"):
+        if proven[bid].get("text_paths_changed"):
             raise ChunkRefused(f"text_index_input:{bid}:text_paths")
         if bindings[bid].get("marks") is None:
             raise ChunkRefused(f"text_index_markings:{bid}")
@@ -578,6 +645,160 @@ def _preflight(cur: Any, conn: sqlite3.Connection | None, record: Mapping[str, A
                     (bid, json.dumps(bindings)))
         if cur.fetchone() is not None:
             raise ChunkRefused(f"text_index_markings:{bid}")
+
+
+# ----------------------------------------------------------------- the undo log
+
+UNDO_GUC = "plx.undo_log"
+UNDO_SCHEMAS = ("ontology", "search")
+_UNDO_NAME = re.compile(r"[a-z][a-z0-9_]{0,40}")
+
+
+def _undo_name(schema: str) -> str:
+    if not _UNDO_NAME.fullmatch(schema or "") or schema in UNDO_SCHEMAS:
+        raise ChunkRefused(f"undo_log_name:{schema}")
+    return schema
+
+
+def _logged_tables(cur: Any) -> list[tuple[str, str, list[str]]]:
+    """(schema, table, primary key columns) of every table a chunk may write. A table
+    without a primary key refuses the log (its rows could not be put back one by one)."""
+    cur.execute(
+        "SELECT n.nspname, c.relname, ARRAY(SELECT a.attname FROM pg_index i, "
+        "unnest(i.indkey) WITH ORDINALITY k(attnum, o), pg_attribute a WHERE "
+        "i.indrelid = c.oid AND i.indisprimary AND a.attrelid = c.oid AND "
+        "a.attnum = k.attnum ORDER BY k.o) FROM pg_class c JOIN pg_namespace n ON "
+        "n.oid = c.relnamespace WHERE n.nspname = ANY(%s) AND c.relkind IN ('r', 'p') AND "
+        "NOT c.relispartition ORDER BY 1, 2", (list(UNDO_SCHEMAS),))
+    out = [(schema, table, list(pk)) for schema, table, pk in cur.fetchall()]
+    bare = [f"{schema}.{table}" for schema, table, pk in out if not pk]
+    if bare:
+        raise ChunkRefused("undo_needs_primary_key:" + ",".join(bare))
+    return out
+
+
+def _log_table(schema: str, table: str) -> str:
+    return f"t_{schema}__{table}"
+
+
+def install_undo_log(cur: Any, undo: str) -> dict[str, Any]:
+    """The undo log ``undo`` (module docstring) and its triggers, in ``cur``'s
+    transaction; its start mark is the delta's newest applied layer."""
+    undo = _undo_name(undo)
+    cur.execute("SELECT to_regnamespace(%s) IS NOT NULL", (undo,))
+    if cur.fetchone()[0]:
+        raise ChunkRefused(f"undo_log_exists:{undo}")
+    tables = _logged_tables(cur)
+    cur.execute(f"CREATE SCHEMA {undo}")
+    cur.execute(f"CREATE SEQUENCE {undo}.seq")
+    cur.execute(f"CREATE TABLE {undo}.meta (key text PRIMARY KEY, value jsonb NOT NULL)")
+    mark = cur.execute("SELECT coalesce(max(seq), 0) FROM ontology.applied_owned"
+                       ).fetchone()[0]
+    cur.execute(f"INSERT INTO {undo}.meta VALUES ('delta_mark', %s), ('tables', %s)",
+                (json.dumps(mark), json.dumps([[a, b, k] for a, b, k in tables])))
+    for schema, table, _ in tables:
+        cur.execute(f"CREATE TABLE {undo}.{_log_table(schema, table)} (seq bigint NOT NULL, "
+                    "op \"char\" NOT NULL, r jsonb NOT NULL)")
+    # one function for every table: the transition tables are its statement's rows
+    cur.execute(f"""CREATE FUNCTION {undo}.log() RETURNS trigger LANGUAGE plpgsql AS $f$
+DECLARE s bigint; t text := 't_' || TG_TABLE_SCHEMA || '__' || TG_TABLE_NAME;
+BEGIN
+  IF current_setting('{UNDO_GUC}', true) IS DISTINCT FROM '{undo}' THEN RETURN NULL; END IF;
+  IF TG_OP = 'TRUNCATE' THEN RAISE EXCEPTION 'undo log {undo}: TRUNCATE is not logged'; END IF;
+  s := nextval('{undo}.seq');
+  IF TG_OP IN ('DELETE', 'UPDATE') THEN
+    EXECUTE format('INSERT INTO {undo}.%I SELECT $1, ''d'', to_jsonb(plx_undo_old.*) '
+                   'FROM old_rows AS plx_undo_old', t) USING s;
+  END IF;
+  IF TG_OP IN ('INSERT', 'UPDATE') THEN
+    EXECUTE format('INSERT INTO {undo}.%I SELECT $1, ''i'', to_jsonb(plx_undo_new.*) '
+                   'FROM new_rows AS plx_undo_new', t) USING s;
+  END IF;
+  RETURN NULL;
+END $f$""")
+    for schema, table, _ in tables:
+        rel = f"{schema}.{table}"
+        for op, refs in (("insert", "NEW TABLE AS new_rows"),
+                         ("update", "OLD TABLE AS old_rows NEW TABLE AS new_rows"),
+                         ("delete", "OLD TABLE AS old_rows")):
+            cur.execute(f"CREATE TRIGGER {undo}_{op} AFTER {op.upper()} ON {rel} REFERENCING "
+                        f"{refs} FOR EACH STATEMENT EXECUTE FUNCTION {undo}.log()")
+        cur.execute(f"CREATE TRIGGER {undo}_truncate AFTER TRUNCATE ON {rel} FOR EACH "
+                    f"STATEMENT EXECUTE FUNCTION {undo}.log()")
+    return {"undo_log": undo, "tables": len(tables), "delta_mark": mark}
+
+
+def log_into(cur: Any, undo: str | None) -> None:
+    """This transaction's writes go to the undo log ``undo`` (none: not logged)."""
+    if undo:
+        cur.execute("SELECT set_config(%s, %s, true)", (UNDO_GUC, _undo_name(undo)))
+
+
+def drop_undo_triggers(cur: Any, undo: str) -> int:
+    """The log's triggers taken off the served tables (the log itself stays)."""
+    undo = _undo_name(undo)
+    cur.execute("SELECT t.tgname, n.nspname, c.relname FROM pg_trigger t JOIN pg_class c ON "
+                "c.oid = t.tgrelid JOIN pg_namespace n ON n.oid = c.relnamespace WHERE "
+                "NOT t.tgisinternal AND t.tgname = ANY(%s)",
+                ([f"{undo}_{op}" for op in ("insert", "update", "delete", "truncate")],))
+    found = cur.fetchall()
+    for name, schema, table in found:
+        cur.execute(f'DROP TRIGGER "{name}" ON {schema}.{table}')
+    return len(found)
+
+
+def undo_migration(dsn: str, undo: str) -> dict[str, Any]:
+    """Every row the logged run wrote put back (module docstring), in one transaction."""
+    import psycopg
+    undo = _undo_name(undo)
+    out: dict[str, Any] = {"undo_log": undo}
+    started = time.monotonic()
+    with psycopg.connect(dsn) as pg, pg.cursor() as cur:
+        cur.execute(om.LOCK)
+        cur.execute("SELECT to_regclass(%s) IS NOT NULL", (f"{undo}.meta",))
+        if not cur.fetchone()[0]:
+            return {**out, "undone": False, "reason": "undo_log_missing"}
+        meta = dict(cur.execute(f"SELECT key, value FROM {undo}.meta").fetchall())
+        if meta.get("undone"):
+            return {**out, "undone": False, "reason": "already_undone"}
+        mark = cur.execute("SELECT coalesce(max(seq), 0) FROM ontology.applied_owned"
+                           ).fetchone()[0]
+        if mark != meta["delta_mark"]:
+            return {**out, "undone": False, "reason": "delta_applied_since",
+                    "delta_mark": [meta["delta_mark"], mark]}
+        out["triggers_dropped"] = drop_undo_triggers(cur, undo)
+        rows: dict[str, Any] = {}
+        for schema, table, pk in meta["tables"]:
+            log = f"{undo}.{_log_table(schema, table)}"
+            if not cur.execute(f"SELECT EXISTS (SELECT 1 FROM {log})").fetchone()[0]:
+                continue
+            keys = ", ".join(f"(r->>'{c}')" for c in pk)
+            # each primary key's first event: its row before the run, or none
+            cur.execute(f"CREATE TEMP TABLE first_event ON COMMIT DROP AS SELECT DISTINCT ON "
+                        f"({keys}) op, jsonb_populate_record(NULL::{schema}.{table}, r) AS row "
+                        f"FROM {log} ORDER BY {keys}, seq, op")
+            match = " AND ".join(f"t.{c} = (f.row).{c}" for c in pk)
+            cur.execute(f"DELETE FROM {schema}.{table} t USING first_event f WHERE {match}")
+            gone = cur.rowcount
+            # a generated column (search.chunks.tsv) is the table's to compute again; an
+            # identity ALWAYS column (ontology.change_cycles.cycle_id) gets its original key back
+            found = cur.execute(
+                "SELECT column_name, identity_generation FROM information_schema.columns "
+                "WHERE table_schema = %s AND table_name = %s AND is_generated = 'NEVER' "
+                "ORDER BY ordinal_position", (schema, table)).fetchall()
+            cols = [r[0] for r in found]
+            override = (" OVERRIDING SYSTEM VALUE"
+                        if any(r[1] == "ALWAYS" for r in found) else "")
+            cur.execute(f"INSERT INTO {schema}.{table} ({', '.join(cols)}){override} SELECT "
+                        f"{', '.join(f'(f.row).{c}' for c in cols)} FROM first_event f "
+                        "WHERE f.op = 'd'")
+            rows[f"{schema}.{table}"] = {"deleted": gone, "restored": cur.rowcount}
+            cur.execute("DROP TABLE first_event")
+        cur.execute(f"INSERT INTO {undo}.meta VALUES ('undone', %s)",
+                    (json.dumps(time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())),))
+        pg.commit()
+    return {**out, "undone": True, "tables": rows,
+            "seconds": round(time.monotonic() - started, 3)}
 
 
 # ----------------------------------------------------------------- the apply
@@ -644,8 +865,8 @@ class _Run:
                 c.close()
 
 
-def _one(pg: Any, run: _Run, name: str, write: bool, holder: int | None
-         ) -> tuple[str, Any]:
+def _one(pg: Any, run: _Run, name: str, write: bool, holder: int | None,
+         rehearse_undo: str | None = None) -> tuple[str, Any]:
     """Apply (or measure) chunk ``name`` in its own transaction on ``pg``: ("done", its
     report), ("skipped", None) when recorded done meanwhile, ("refused", reason).
     ``holder``: the backend holding the delta's lock for this (parallel) run, else the
@@ -659,13 +880,24 @@ def _one(pg: Any, run: _Run, name: str, write: bool, holder: int | None
                 pg.rollback()   # the coordinator is gone: the delta could run, write nothing
                 return "refused", "coordinator_lock_lost"
             cur.execute("SET LOCAL jit = off")
-            refused = _checks(cur, run.record, run.step_record, run.key, write)
+            refused = _checks(cur, run.record, run.step_record, run.key, write,
+                              rehearsal=rehearse_undo is not None)
             if refused:
                 pg.rollback()
                 return "refused", refused
+            if rehearse_undo is not None:   # rolled back below: nothing of it stays
+                if rehearse_undo:
+                    install_undo_log(cur, rehearse_undo)
+                    log_into(cur, rehearse_undo)
+                out = _chunk(cur, name, run.conn, run.sconn, run.layer, run.steps,
+                             run.record, run.step_record, run.groups, run.key, True)
+                out["seconds"] = round(time.monotonic() - t, 3)
+                pg.rollback()
+                return "done", out
             if name in _done(cur, run.key):   # another run applied it meanwhile
                 pg.rollback()
                 return "skipped", None
+            log_into(cur, _flag(cur).get("undo"))
         else:
             cur.execute("SET TRANSACTION READ ONLY")
         try:
@@ -716,7 +948,9 @@ def _worker_chunk(name: str, write: bool) -> tuple[str, str, Any]:
 
 def apply_chunked(layer: str | Path | None, dsn: str, *, steps: str | Path | None = None,
                   write: bool = True, log: Any = None, stop_after: int | None = None,
-                  workers: int = 1, stop_file: str | Path | None = None) -> dict[str, Any]:
+                  workers: int = 1, stop_file: str | Path | None = None,
+                  units_first: bool = False, undo_log: str | None = None,
+                  rehearse: float | None = None) -> dict[str, Any]:
     """Apply (``write``) or measure the unit layer ``layer`` and the step layer ``steps``
     chunk by chunk (module docstring). ``stop_after``: return after that many chunks were
     applied by this call (a test's stop). ``workers`` > 1: the chunks of one wave
@@ -724,9 +958,18 @@ def apply_chunked(layer: str | Path | None, dsn: str, *, steps: str | Path | Non
     and record as in the serial run, the delta's lock held by this (the coordinator's)
     session throughout; ``final`` and every chunk alone in its wave run here, in order.
     ``stop_file``: once it exists no chunk starts (those running finish), the run returns
-    ``stopped`` and resumes when run again. Returns the report."""
+    ``stopped`` and resumes when run again. ``units_first``, ``undo_log`` (the first apply
+    of a run only) and ``rehearse``: module docstring. Returns the report."""
     import psycopg
 
+    if units_first and (layer is None or steps is not None):
+        return {"applied": False, "reason": "units_first_is_a_unit_layer_alone"}
+    if rehearse is not None:
+        if not 0 < rehearse <= 1:
+            return {"applied": False, "reason": "rehearse_share"}
+        return _rehearse(layer, dsn, steps, units_first, undo_log, rehearse, log)
+    if undo_log is not None:
+        _undo_name(undo_log)
     run = _Run(layer, steps)
     record, step_record, key = run.record, run.step_record, run.key
     unit_id = record["id"] if record is not None else None
@@ -735,10 +978,11 @@ def apply_chunked(layer: str | Path | None, dsn: str, *, steps: str | Path | Non
         run.close()
         return {**report, "applied": False, "reason": "steps_of_another_unit_layer"}
     required = sorted((record or {}).get("steps_required") or ())
-    if required and (step_record is None or set(required) - set(step_record["steps"])):
+    if required and not units_first and \
+            (step_record is None or set(required) - set(step_record["steps"])):
         run.close()
         return {**report, "applied": False, "reason": "step_migration_required"}
-    names = chunks(record, step_record)
+    names = chunks(record, step_record, units_first)
     started = time.monotonic()
     applied_now = 0
     pool = None
@@ -778,12 +1022,38 @@ def apply_chunked(layer: str | Path | None, dsn: str, *, steps: str | Path | Non
                 if refused:
                     pg.rollback()
                     return {**report, "applied": False, "reason": refused}
+                flag = _flag(cur)
+                if write and step_record is not None and _units_first_of(flag, record):
+                    # the units-first run of this layer taken over: its done unit chunks
+                    # are this run's (logged into its undo log, as every write of the run)
+                    log_into(cur, flag.get("undo"))
+                    held = f"{PREFIX}{flag['key']}:"
+                    cur.execute("UPDATE ontology.load_state SET name = %s || substr(name, %s) "
+                                "WHERE starts_with(name, %s)",
+                                (f"{PREFIX}{key}:", len(held) + 1, held))
+                    report["took_over"] = {"units_first": flag["key"], "chunks": cur.rowcount}
+                    flag = {**flag, "key": key, "chunks": len(names), "units_first": False}
+                    cur.execute("UPDATE ontology.store_meta SET value = %s WHERE key = %s",
+                                (json.dumps(flag), FLAG))
+                    if undo_log is not None and undo_log != flag.get("undo"):
+                        pg.rollback()
+                        return {**report, "applied": False, "reason": "undo_log_of_another_run"}
                 done = _done(cur, key)
                 if write and not done:
                     _preflight(cur, run.conn, record)
+                    flag = {"key": key, "chunks": len(names)}
+                    if units_first:
+                        flag["units_first"] = True
+                    if undo_log is not None:
+                        report["undo"] = install_undo_log(cur, undo_log)
+                        flag["undo"] = undo_log
+                        log_into(cur, undo_log)
                     cur.execute("INSERT INTO ontology.store_meta (key, value) VALUES (%s, %s)"
                                 " ON CONFLICT (key) DO UPDATE SET value = excluded.value",
-                                (FLAG, json.dumps({"key": key, "chunks": len(names)})))
+                                (FLAG, json.dumps(flag)))
+                elif write and undo_log is not None and flag.get("undo") != undo_log:
+                    pg.rollback()   # a resumed run keeps the log it began with
+                    return {**report, "applied": False, "reason": "undo_log_of_another_run"}
                 holder = pg.info.backend_pid
             pg.commit()
             for wave in waves(names):
@@ -807,9 +1077,9 @@ def apply_chunked(layer: str | Path | None, dsn: str, *, steps: str | Path | Non
                     import multiprocessing
                     pool = cf.ProcessPoolExecutor(
                         max_workers=workers, mp_context=multiprocessing.get_context("spawn"),
-                        initializer=_worker_start,
-                        initargs=(str(layer) if layer is not None else None,
-                                  str(steps) if steps is not None else None, dsn, holder))
+                        **parent_watch.pool_init(_worker_start, (
+                            str(layer) if layer is not None else None,
+                            str(steps) if steps is not None else None, dsn, holder)))
                 stop = _wave(pool, workers, todo, write, stopping, record_out)
                 if stop == "stopped":
                     return {**report, "applied": False, "reason": "stopped"}
@@ -825,7 +1095,80 @@ def apply_chunked(layer: str | Path | None, dsn: str, *, steps: str | Path | Non
     report["totals"] = _totals(report["chunks"])
     if write and applied_now:
         report["vacuum"] = vacuum_after_apply(dsn)
+    if units_first:   # committed units; the schema and step code switch with the steps
+        report["units_first"] = True
     return {**report, "applied": write}
+
+
+def _weights(run: _Run, names: Sequence[str]) -> dict[str, int]:
+    """Each chunk's rows in the layers (the rehearsal's measure of its work)."""
+    out: dict[str, int] = {}
+    conn, record = run.conn, run.record
+    for name in names:
+        kind, _, which = name.partition(":")
+        n = 1
+        if conn is not None and name == "events":
+            n = conn.execute("SELECT count(*) FROM objects").fetchone()[0]
+        elif conn is not None and kind == "links" and which.isdigit():
+            _, _, lite, litep = _unit_link_scope(record["delete"]["links"][int(which)])
+            n = conn.execute(f"SELECT count(*) FROM links WHERE {lite}", litep).fetchone()[0]
+        elif conn is not None and kind == "units" and which.isdigit():
+            g = run.groups[int(which)]
+            end = _end(g["prefix"])
+            sql, params = "SELECT count(*) FROM objects WHERE object_type = ?", [g["type"]]
+            if end is not None:
+                sql += " AND object_id >= ? AND object_id < ?"
+                params += [g["prefix"], end]
+            n = conn.execute(sql, params).fetchone()[0]
+        elif conn is not None and name == "units:new":
+            n = len(_uncovered(conn, run.groups))
+        elif run.step_record is not None and kind == "steps" and which.startswith("staged:"):
+            counts = run.step_record["staged"][which[len("staged:"):]]
+            n = sum(v for v in (counts or {}).values() if isinstance(v, int)) \
+                if isinstance(counts, Mapping) else 1
+        out[name] = max(int(n), 1)
+    return out
+
+
+def _rehearse(layer: Any, dsn: str, steps: Any, units_first: bool, undo_log: str | None,
+              share: float, log: Any) -> dict[str, Any]:
+    """The rehearsal (module docstring): a share of the chunks applied, timed, rolled back."""
+    import psycopg
+    run = _Run(layer, steps)
+    try:
+        names = [n for n in chunks(run.record, run.step_record, units_first) if n != "final"]
+        weights = _weights(run, names)
+        total = sum(weights.values())
+        heavy = sorted(names, key=lambda n: (-weights[n], names.index(n)))
+        picked, got = [heavy[0]], weights[heavy[0]]
+        # then every k-th chunk in order, until the share of the rows is reached
+        step = max(1, round(1 / share))
+        for name in names[::step]:
+            if got >= share * total:
+                break
+            if name not in picked:
+                picked.append(name)
+                got += weights[name]
+        rehearse_undo = (_undo_name(undo_log) + "_rehearse")[:41] if undo_log else ""
+        report: dict[str, Any] = {"key": run.key, "rehearsed": False, "chunks": {},
+                                  "rows": {"total": total, "rehearsed": got}}
+        with psycopg.connect(dsn) as pg:
+            for name in picked:
+                status, out = _one(pg, run, name, True, None, rehearse_undo=rehearse_undo)
+                if status != "done":
+                    return {**report, "reason": out, "chunk": name}
+                out["rows"] = weights[name]
+                report["chunks"][name] = out
+                if log is not None:
+                    print(f"rehearsed {name}: {json.dumps(out, sort_keys=True)}", file=log,
+                          flush=True)
+        took = sum(v["seconds"] for v in report["chunks"].values())
+        report.update(rehearsed=True, seconds=round(took, 3),
+                      projected_seconds=round(took * total / max(got, 1), 1),
+                      share=round(got / max(total, 1), 4))
+        return report
+    finally:
+        run.close()
 
 
 # The tables a bulk apply rewrites most, whose index-only reads need a current visibility
@@ -884,8 +1227,22 @@ def _wave(pool: Any, width: int, todo: list[str], write: bool, stopping: Any,
 
 
 
-def _checks(cur: Any, record: Any, step_record: Any, key: str, write: bool) -> str | None:
-    """Why the migration cannot (go on) apply here, else None."""
+def _flag(cur: Any) -> dict[str, Any]:
+    cur.execute("SELECT value FROM ontology.store_meta WHERE key = %s", (FLAG,))
+    row = cur.fetchone()
+    return json.loads(row[0]) if row is not None else {}
+
+
+def _units_first_of(flag: Mapping[str, Any], record: Any) -> bool:
+    """The flag names a units-first run of ``record``'s layer (one this run takes over)."""
+    return bool(flag.get("units_first")) and record is not None and \
+        flag.get("key") == migration_key(record, None)
+
+
+def _checks(cur: Any, record: Any, step_record: Any, key: str, write: bool,
+            rehearsal: bool = False) -> str | None:
+    """Why the migration cannot (go on) apply here, else None. ``rehearsal``: a run in
+    progress (its own or another's) refuses it: it would time a half-applied store."""
     if om._whole(cur) is None:
         return "generation_loading"
     if not om._has_tables(cur):
@@ -905,9 +1262,16 @@ def _checks(cur: Any, record: Any, step_record: Any, key: str, write: bool) -> s
             return "steps_baseline_unknown"
         if held != steps_from(step_record):
             return "other_steps"
-    cur.execute("SELECT value FROM ontology.store_meta WHERE key = %s", (FLAG,))
-    row = cur.fetchone()
-    if row is not None and json.loads(row[0]).get("key") != key:
+        from ontology.step_migrate import collapse_refusal
+        why = collapse_refusal(cur, step_record["steps"])
+        if why:   # a step not occurrence-safe on a store the collapse folded
+            return why
+    flag = _flag(cur)
+    if flag and rehearsal and not (flag.get("units_first") and step_record is not None
+                                   and _units_first_of(flag, record)):
+        return "migration_in_progress"
+    if flag and flag.get("key") != key and not (step_record is not None
+                                               and _units_first_of(flag, record)):
         return "another_migration_in_progress"
     return None
 
@@ -992,6 +1356,12 @@ def _final(cur: Any, record: Any, step_record: Any, key: str) -> dict[str, Any]:
                 "starts_with(name, %s)", (len(f"{PREFIX}{key}:") + 1, f"{PREFIX}{key}:"))
     parts = {name: value for name, value in cur.fetchall()}
     out: dict[str, Any] = {}
+    pending = om.reparse_pending(cur, record)
+    if pending:   # the units no longer rewrite those carriers: their re-parse goes first
+        raise ChunkRefused("identifier_reparse_pending:" + ",".join(pending))
+    pending = om.rezone_pending(cur, record)
+    if pending:   # nor those timestamp carriers: their rewrite goes first
+        raise ChunkRefused("timestamp_rezone_pending:" + ",".join(pending))
     if record is not None:
         units = _totals({k: v for k, v in parts.items() if not k.startswith("steps")})
         units["reproject"] = om.reproject(cur, om._newer(cur, record["scope"],
@@ -1029,9 +1399,19 @@ def _final(cur: Any, record: Any, step_record: Any, key: str) -> dict[str, Any]:
                     ("steps:" + step_record["id"], steps_from(step_record), step_record["to"],
                      json.dumps(step_record["scope"]), json.dumps(stepped, sort_keys=True)))
         out["reproject.steps"] = stepped["reproject"]
+    # the change feed (migration 0026): the scopes the chunks rewrote, judged whole by
+    # its readers (written with the switch: every chunk's rows are committed by now)
+    from operating.pg import change_feed
+    gen = change_feed.generation(cur) if change_feed.present(cur) else None
+    for rec, prefix in ((record, ""), (step_record, "steps:")):
+        if rec is not None:
+            change_feed.record_scope(cur, f"migration:{prefix}{rec['id']}", gen, rec["scope"])
+    undo = _flag(cur).get("undo")
     cur.execute("DELETE FROM ontology.load_state WHERE starts_with(name, %s)",
                 (f"{PREFIX}{key}:",))
     cur.execute("DELETE FROM ontology.store_meta WHERE key = %s", (FLAG,))
+    if undo:   # the run's last writes are logged; the served tables carry no trigger after
+        out["undo_triggers_dropped"] = drop_undo_triggers(cur, undo)
     return out
 
 
@@ -1057,20 +1437,38 @@ def main(argv: Sequence[str] | None = None) -> int:
                        help="processes applying one wave's chunks at once (default 1)")
         p.add_argument("--stop-file", default=None,
                        help="once this file exists no chunk starts; rerun to resume")
+        p.add_argument("--units-first", action="store_true",
+                       help="the unit chunks alone: the schema switches with the steps")
+        p.add_argument("--undo-log", default=None,
+                       help="log every row the run writes into this schema (first apply)")
+        p.add_argument("--rehearse", type=float, default=None,
+                       help="apply this share of the chunks, time it, roll back")
+    u = sub.add_parser("undo", help="put back every row a logged run wrote")
+    u.add_argument("--undo-log", required=True)
+    u.add_argument("--dsn", default=None)
     args = parser.parse_args(argv)
+    from operating.pg import config
+    if args.command == "undo":
+        out = undo_migration(args.dsn or config.dsn(), args.undo_log)
+        print(json.dumps(out, sort_keys=True, default=str))
+        return 0 if out.get("undone") else 1
     if args.layer is None and args.steps is None:
         parser.error("a unit layer, --steps or both")
-    from operating.pg import config
-    report = apply_chunked(args.layer, args.dsn or config.dsn(), steps=args.steps,
-                           write=args.command == "apply", log=sys.stderr,
-                           workers=max(1, args.workers), stop_file=args.stop_file)
+    try:
+        report = apply_chunked(args.layer, args.dsn or config.dsn(), steps=args.steps,
+                               write=args.command == "apply", log=sys.stderr,
+                               workers=max(1, args.workers), stop_file=args.stop_file,
+                               units_first=args.units_first, undo_log=args.undo_log,
+                               rehearse=args.rehearse)
+    except ChunkRefused as why:
+        report = {"applied": False, "reason": str(why)}
     text = json.dumps(report, sort_keys=True, default=str)
     if args.report:
         Path(args.report).write_text(text)
     print(json.dumps({k: v for k, v in report.items() if k != "chunks"}, sort_keys=True,
                      default=str))
-    return 0 if report.get("applied") or (args.command == "measure"
-                                          and "reason" not in report) else 1
+    return 0 if report.get("applied") or report.get("rehearsed") or (
+        args.command == "measure" and "reason" not in report) else 1
 
 
 if __name__ == "__main__":

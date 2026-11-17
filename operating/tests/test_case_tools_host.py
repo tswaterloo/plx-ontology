@@ -55,9 +55,10 @@ from ontology.project import MailCaptures, build_store
 from operating.case_mail_scope import MailScope
 from operating.case_runtime import CaseRuntime, LiveReaders
 from operating.case_tools_host import CaptureCaseHostTools, CaseCaptures, PagedRead, serving_tools
-from operating.mcp_server import CASE_TOOL_RETIREMENTS, TOOLS, MCPServer
+from operating.mcp_server import MCPServer
+from operating.mcp_server_catalog import CASE_TOOL_RETIREMENTS, TOOLS
 from operating.ontology_host import CaseHostTools
-from operating.ontology_tools import load_contracts
+from operating.ontology_tools_policy import load_contracts
 from operating.tests import test_mcp_case_tools as case_tools
 
 CONTRACTS = load_contracts()
@@ -345,9 +346,9 @@ class ReadParityTests(case_tools.CaseToolsTestCase):
                      f"{chr(97 + n // 26)} report." for n in range(count)]
             lines += [f"Not provided: sheet{chr(97 + n % 26)}{chr(97 + n // 26)} report."
                       for n in range(count)] + ["filler line"] * 20000
-            started = time.monotonic()
+            started = time.thread_time()   # the scan's CPU time, which load does not add to
             found = stated_conflicts("\n".join(lines))
-            self.assertLess(time.monotonic() - started, 2.0)
+            self.assertLess(time.thread_time() - started, 2.0)
             self.assertEqual([(f["held_line"], f["absent_line"]) for f in found],
                              [(n + 1, count + n + 1) for n in range(min(count,
                                                                          MAX_CONFLICTS))])
@@ -377,9 +378,9 @@ class ReadParityTests(case_tools.CaseToolsTestCase):
         filler = ["Goods shall be provided by the seller under these terms."] * 4000
         text = "\n".join(["Built from the files you sent: the Closing Figures sheet."]
                          + filler + ["Not provided: Closing Figures sheet."])
-        started = time.monotonic()
+        started = time.thread_time()   # the scan's own CPU time (its bound's clock too)
         scan = dc.scan_conflicts(text)
-        self.assertLess(time.monotonic() - started, 2.0)
+        self.assertLess(time.thread_time() - started, 2.0)
         self.assertEqual([(f["held_line"], f["absent_line"]) for f in scan["conflicts"]],
                          [(1, 4002)])
         self.assertIsNone(scan["stopped_at_line"])
@@ -399,12 +400,17 @@ class ReadParityTests(case_tools.CaseToolsTestCase):
         adversarial = "\n".join(
             ["Built from the files you sent: " + " ".join(words * 8)] * 2500
             + ["Not provided: " + ", ".join(["alpha charlie"] * 20)] * 200)
-        started = time.monotonic()
+        started = time.thread_time()
         with mock.patch.object(dc, "MAX_SCAN_SECONDS", 0.2):
             scan = dc.scan_conflicts(adversarial)
-        self.assertLess(time.monotonic() - started, 1.2)
+        self.assertLess(time.thread_time() - started, 1.2)
         self.assertEqual(scan["conflicts"], [])
-        self.assertGreaterEqual(scan["stopped_at_line"], 2501)
+        # Where it stops is the 0.2 s of CPU's doing: on a slower core (the Sparks, or a
+        # process whose earlier tests left the collector more to walk) it is still
+        # indexing (513 and 1281 seen on a Spark), elsewhere it is comparing the items (2501
+        # on). Either way it names a line of the text and never runs to the end.
+        self.assertIsNotNone(scan["stopped_at_line"])
+        self.assertTrue(1 <= scan["stopped_at_line"] <= 2700, scan["stopped_at_line"])
         # The read names a stopped scan as a gap, with the line it stopped at.
         paged = PagedRead(SimpleNamespace(contracts=CONTRACTS, limits={
             "max_untrusted_text_chars": 4000, "max_result_bytes": 64000}), None)
@@ -1153,7 +1159,7 @@ class MailUnitsOnTheCaseHostTests(unittest.TestCase):
         from integrations import captured_text as ct
         from integrations import page_counts as pc
         from integrations.tests.test_capture_mail import file_attachment
-        from operating.case_tools_host import page_build
+        from operating.case_tools_host_citations import page_build
         from operating.tests import test_attested_missing as am
         graph = FakeGraph()
         graph.put(BOX_A, "MSG-P", "CK-P", subject="PO", body="attached",
@@ -1400,25 +1406,26 @@ class CapturedDocumentDirectionTests(unittest.TestCase):
         """The attachment mailboxes another host read within the refresh interval are this
         host's too (no scan); an older list is read again and kept for the next host."""
         from operating import case_tools_host as cth
+        from operating import case_tools_host_mailboxes
         temp = tempfile.TemporaryDirectory()
         self.addCleanup(temp.cleanup)
         key = os.path.realpath("/nonexistent/mail-capture/capture-kept.db")
         self.addCleanup(cth._MAILBOXES.pop, key, None)
         listed = [{"mailbox_upn": "orders@example.com"}]
         store = types.SimpleNamespace(path=key)
-        with mock.patch.dict(os.environ, {cth.MAILBOXES_CACHE_ENV: temp.name}):
+        with mock.patch.dict(os.environ, {case_tools_host_mailboxes.MAILBOXES_CACHE_ENV: temp.name}):
             with mock.patch.object(cth, "_mailbox_list", return_value=listed) as scan:
                 self.assertEqual(cth._attachment_mailboxes(store), listed)
                 self.assertEqual(scan.call_count, 1)
             cth._MAILBOXES.pop(key, None)   # another process: nothing held in memory
-            self.assertEqual(oct(cth._mailboxes_cache(key).stat().st_mode & 0o777),
+            self.assertEqual(oct(case_tools_host_mailboxes._mailboxes_cache(key).stat().st_mode & 0o777),
                              "0o600")
             with mock.patch.object(cth, "_mailbox_list",
                                    side_effect=AssertionError("scanned")):
                 self.assertEqual(cth._attachment_mailboxes(store), listed)
             cth._MAILBOXES.pop(key, None)
             old = time.time() - cth.ATTACHMENT_MAILBOXES_SECONDS - 5
-            os.utime(cth._mailboxes_cache(key), (old, old))
+            os.utime(case_tools_host_mailboxes._mailboxes_cache(key), (old, old))
             fresh = [{"mailbox_upn": "sales@example.com"}]
             with mock.patch.object(cth, "_mailbox_list", return_value=fresh) as scan:
                 self.assertEqual(cth._attachment_mailboxes(store), fresh)
@@ -1429,13 +1436,14 @@ class CapturedDocumentDirectionTests(unittest.TestCase):
             with mock.patch.object(cth, "_mailbox_list", return_value=listed) as scan:
                 self.assertEqual(cth._attachment_mailboxes(store), listed)
                 self.assertEqual(scan.call_count, 1)
-            self.assertEqual(json.loads(cth._mailboxes_cache(key).read_text())["mailboxes"],
+            self.assertEqual(json.loads(case_tools_host_mailboxes._mailboxes_cache(key).read_text())["mailboxes"],
                              fresh)
 
     def test_hosts_refreshing_the_list_at_once_scan_the_capture_once(self):
         """Hosts of one user whose lists aged out together scan the capture one at a time:
         the first scans and keeps its list, each waiting host takes that list."""
         from operating import case_tools_host as cth
+        from operating import case_tools_host_mailboxes
         temp = tempfile.TemporaryDirectory()
         self.addCleanup(temp.cleanup)
         key = os.path.realpath("/nonexistent/mail-capture/capture-shared.db")
@@ -1447,7 +1455,7 @@ class CapturedDocumentDirectionTests(unittest.TestCase):
             scans.append(path)
             time.sleep(0.5)   # the scan of 2.3M attachments, shortened
             return listed
-        with mock.patch.dict(os.environ, {cth.MAILBOXES_CACHE_ENV: temp.name}), \
+        with mock.patch.dict(os.environ, {case_tools_host_mailboxes.MAILBOXES_CACHE_ENV: temp.name}), \
                 mock.patch.object(cth, "_mailbox_list", side_effect=scan):
             hosts = [threading.Thread(target=cth._read_mailboxes, args=(key, threading.Event()))
                      for _ in range(4)]
@@ -1459,7 +1467,7 @@ class CapturedDocumentDirectionTests(unittest.TestCase):
             self.assertEqual(cth._MAILBOXES[key][1], listed)
             # once the kept list is old, the next refresh scans again (once)
             old = time.time() - cth.ATTACHMENT_MAILBOXES_SECONDS - 5
-            os.utime(cth._mailboxes_cache(key), (old, old))
+            os.utime(case_tools_host_mailboxes._mailboxes_cache(key), (old, old))
             done = threading.Event()
             cth._read_mailboxes(key, done)
             self.assertTrue(done.is_set())
@@ -1476,6 +1484,7 @@ class AttachmentFind(unittest.TestCase):
 
     def test_a_message_find_reports_each_readable_attachments_hits(self):
         from operating import answer_gate, case_tools_host as cth, mcp_server
+        from operating import mcp_server_evidence
         attached = [f"{self.MESSAGE}#attachment=a{n}&sha256={str(n) * 64}" for n in range(3)]
 
         def hit(citation, text):
@@ -1513,7 +1522,7 @@ class AttachmentFind(unittest.TestCase):
         self.assertEqual(problems, [])
         self.assertIn(attached[0], answer_gate.evidence_handles(
             "plx.read", out, arguments={"citation": self.MESSAGE, "find": "INCI"}))
-        served = [cited for cited, _field, _v, _s in mcp_server._served_texts(out)]
+        served = [cited for cited, _field, _v, _s in mcp_server_evidence._served_texts(out)]
         self.assertIn([attached[0]], served)
 
     def test_a_message_too_large_for_its_attachment_list_keeps_its_text(self):

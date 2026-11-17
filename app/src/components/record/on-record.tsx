@@ -6,7 +6,7 @@
 // never left out, so a thin record reads as thin rather than as finished.
 
 import Link from "next/link";
-import { formatDate, objectHref, plural } from "@/lib/format";
+import { formatDate, namesOrCount, objectHref, plural } from "@/lib/format";
 import type { ObjectPage } from "@/lib/types";
 
 /** The types whose pages carry their own design (figures, steps, orders, margin). */
@@ -34,23 +34,23 @@ export function answersOf(obj: ObjectPage): Answer[] {
   // each name once, never the record's own (a Sage invoice's rows all carry its number)
   const own = obj.label.trim().toLowerCase();
   const names = [...new Set([...related.map((r) => r.label.trim()), ...linked.map((l) => l.label.trim())])].filter((n) => n && n.toLowerCase() !== own);
-  const relatedWords = names.slice(0, 3);
   const linkCount = related.length + linked.length;
   const ask = `/ask?${new URLSearchParams({ q: `What should I know about ${obj.label}?` }).toString()}`;
   return [
     {
       q: "Who is on it",
-      a: people.length ? people.slice(0, 3).map((p) => `${p.name} (${p.role}${p.organisation ? `, ${p.organisation}` : ""})`).join("; ") + (people.length > 3 ? `; ${people.length - 3} more` : "") : "No person named on record",
+      // up to three by name and role; more are counted, each listed under People
+      a: people.length === 0 ? "No person named on record" : people.length > 3 ? `${plural(people.length, "person", "people")} named on record` : people.map((p) => `${p.name} (${p.role}${p.organisation ? `, ${p.organisation}` : ""})`).join("; "),
       empty: people.length === 0,
     },
     {
       q: "Linked to",
-      a: linkCount === 0 ? "Nothing linked yet; explore the links below" : relatedWords.length === 0 ? plural(linkCount, "linked record") : `${relatedWords.join(", ")}${names.length > relatedWords.length ? ` and ${names.length - relatedWords.length} more` : ""}`,
+      a: linkCount === 0 ? "Nothing linked yet; explore the links below" : names.length === 0 ? plural(linkCount, "linked record") : namesOrCount(names, "linked record"),
       href: related.length === 1 ? objectHref(related[0].type, related[0].object_id) : undefined,
       empty: linkCount === 0,
     },
     { q: "Last change", a: last ? `${last.title}, ${formatDate(last.at)}` : "No change recorded", empty: !last },
-    proposal ? { q: "Next step", a: proposal.title, empty: false } : { q: "Next step", a: "Ask what matters about it", href: ask, empty: false },
+    proposal ? { q: "Next step", a: proposal.title, empty: false } : { q: "Next step", a: "Ask about it", href: ask, empty: false },
   ];
 }
 

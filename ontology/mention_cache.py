@@ -308,7 +308,6 @@ def prefill(sources: Mapping[str, Any], new: Any, path: str | Path, *,
     held yet, extract its mentions (by the document workers when there are) and keep
     them; nothing is resolved. A document or record that fails is left to the step."""
     from ontology import mentions as M
-    from ontology import project_parallel as par
     from ontology.mention_memo import document_key
     from ontology.project import Projector
     from ontology.store import canonical

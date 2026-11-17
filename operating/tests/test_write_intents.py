@@ -18,7 +18,6 @@ import tempfile
 import threading
 import time
 import unittest
-from unittest import mock
 
 from integrations.people_exclusion import PeopleExclusion
 from operating import write_intents as wi
@@ -390,6 +389,7 @@ class Execution(Base):
                      {wi.SANDBOX_FLAG: "1", wi.SANDBOX_ENV: "Production", wi.SCOPES_FLAG: "bc",
                       **opened},
                      # every desk switch on but bc_write not opened to approved writes
+                     # (the desk needs it like every other system)
                      {wi.SANDBOX_FLAG: "1", wi.SANDBOX_ENV: "Sandbox", wi.SCOPES_FLAG: "bc"},
                      {wi.SANDBOX_FLAG: "1", wi.SANDBOX_ENV: "Sandbox", wi.SCOPES_FLAG: "bc",
                       wi.APPROVED_ENV: "send_mail,bc_writes"}]

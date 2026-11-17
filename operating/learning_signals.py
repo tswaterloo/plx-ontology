@@ -24,7 +24,7 @@ through its read API. Each source that cannot be read says so in the run's ``sou
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
 import json
 from pathlib import Path
 import sqlite3
@@ -56,6 +56,7 @@ def reply_in_thread(st: Any, conversation: str, after: str, mine: set[str],
     """(message id, sent at, body text) of the first mail from one of ``mine`` in the
     conversation after ``after`` (within ``days``); None when there is none."""
     from . import autopilot as ap
+    from . import autopilot_records
     from . import proactive_threads as pt
     start = L.instant(after)
     if not conversation or start is None or not mine:
@@ -65,17 +66,17 @@ def reply_in_thread(st: Any, conversation: str, after: str, mine: set[str],
         members = pt._members(st, {conversation}, True).get(conversation, [])
     except Exception:  # noqa: BLE001 - no word index (Postgres): matched by value
         members = pt._members(st, {conversation}, False).get(conversation, [])
-    rows = ap._read(st, members, ("sender", "sent_at", "body_preview"))
+    rows = autopilot_records._read(st, members, ("sender", "sent_at", "body_preview"))
     found = []
     for oid, r in rows.items():
-        sender = (ap._addresses(ap._v(r, "sender")) or [""])[0]
-        at = L.instant(ap._v(r, "sent_at"))
+        sender = (autopilot_records._addresses(autopilot_records._v(r, "sender")) or [""])[0]
+        at = L.instant(autopilot_records._v(r, "sent_at"))
         if sender in mine and at is not None and start < at <= end:
             found.append((at, oid, r))
     if not found:
         return None
     at, oid, r = min(found, key=lambda x: (x[0], x[1]))
-    text = _body(st, oid) or ap._v(r, "body_preview")
+    text = _body(st, oid) or autopilot_records._v(r, "body_preview")
     return oid, L._iso(at), text
 
 
@@ -86,6 +87,7 @@ def replies_in_threads(st: Any, wants: Iterable[tuple[str, str, frozenset]],
     members found in one pass per ``MEMBER_CHUNK`` (a store without a word index scans
     once, not once per thread)."""
     from . import autopilot as ap
+    from . import autopilot_records
     from . import proactive_threads as pt
     wants = list(dict.fromkeys(wants))
     convs = {c for c, _a, _m in wants if c}
@@ -96,7 +98,7 @@ def replies_in_threads(st: Any, wants: Iterable[tuple[str, str, frozenset]],
     every = sorted({o for c in convs for o in members.get(c, ())})
     rows = {}
     for start in range(0, len(every), 2000):
-        rows.update(ap._read(st, every[start:start + 2000], ("sender", "sent_at",
+        rows.update(autopilot_records._read(st, every[start:start + 2000], ("sender", "sent_at",
                                                               "body_preview")))
     out: dict = {}
     for conv, after, mine in wants:
@@ -104,15 +106,15 @@ def replies_in_threads(st: Any, wants: Iterable[tuple[str, str, frozenset]],
         found = []
         for oid in members.get(conv, ()) if begin is not None else ():
             r = rows.get(oid) or {}
-            sender = (ap._addresses(ap._v(r, "sender")) or [""])[0]
-            at = L.instant(ap._v(r, "sent_at"))
+            sender = (autopilot_records._addresses(autopilot_records._v(r, "sender")) or [""])[0]
+            at = L.instant(autopilot_records._v(r, "sent_at"))
             if sender in mine and at is not None and begin < at <= begin + timedelta(days=days):
                 found.append((at, oid, r))
         if not found:
             out[(conv, after, mine)] = None
             continue
         at, oid, r = min(found, key=lambda x: (x[0], x[1]))
-        out[(conv, after, mine)] = (oid, L._iso(at), _body(st, oid) or ap._v(r, "body_preview"))
+        out[(conv, after, mine)] = (oid, L._iso(at), _body(st, oid) or autopilot_records._v(r, "body_preview"))
     return out
 
 

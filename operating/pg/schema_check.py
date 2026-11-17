@@ -56,6 +56,7 @@ CONTRACT_INDEXES: dict[str, tuple[str, str, str]] = {
     "chunks_pkey": ("chunks", "btree", "chunk_id"),
     "chunks_tsv_gin": ("chunks", "gin", "tsv"),
     "chunks_embedding_hnsw": ("chunks", "hnsw", "embedding halfvec_cosine_ops"),
+    "chunks_embedding_bq_hnsw": ("chunks", "hnsw", "bit_hamming_ops"),
     "chunks_audience_key": ("chunks", "btree", "audience_key"),
     "chunks_kind": ("chunks", "btree", "kind"),
     "chunks_object_id": ("chunks", "btree", "object_id"),

@@ -21,7 +21,7 @@ import unittest
 from typing import Any
 
 from operating import mcp_server
-from operating.mcp_server import HOST_READS
+from operating.mcp_server_catalog import HOST_READS
 from operating import playbook_eval as pe
 from operating import playbook_originals as po
 from operating.tests import ao_reference_investigation as ao_reference

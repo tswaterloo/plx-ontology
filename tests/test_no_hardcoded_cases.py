@@ -32,6 +32,17 @@ import check_no_hardcoded_cases as gate  # noqa: E402
 TODAY = dt.date(2026, 10, 1)
 
 
+def verdict_cache_dir() -> Path | None:
+    """Where the real-repo scan keeps per-file verdicts between runs: $PLX_TEST_CACHE, else
+    /data/scratch/test-cache on this host; None (no cache) when neither is writable."""
+    import os
+    for candidate in (os.environ.get("PLX_TEST_CACHE"), "/data/scratch/test-cache"):
+        if candidate and os.access(Path(candidate).parent if not Path(candidate).exists()
+                                   else candidate, os.W_OK):
+            return Path(candidate)
+    return None
+
+
 class HardcodedCaseGateTests(unittest.TestCase):
     def setUp(self):
         self.root = Path(tempfile.mkdtemp())
@@ -331,8 +342,50 @@ class HardcodedCaseGateTests(unittest.TestCase):
         self.assertTrue(out.getvalue().rstrip().endswith("no-hardcoded-cases: FAIL"))
 
     def test_real_repo_passes_today(self):
-        code, lines = gate.evaluate(ROOT)
+        code, lines = gate.evaluate(ROOT, cache_dir=verdict_cache_dir())
         self.assertEqual(code, 0, "\n".join(lines))
+
+    def test_the_verdict_cache_never_hides_a_new_violation(self):
+        cache = self.root / ".cache"
+        self.write("operating/general.py", "X = 'fine'\n")
+        self.write("operating/flagged.py", "Y = 'PO5447'\n")
+        uncached = self.run_gate()
+        self.assertEqual(uncached[0], 1)
+        for _ in range(2):  # cold, then every file from the cache: the same report
+            code, lines = gate.evaluate(self.root, TODAY, cache_dir=cache)
+            self.assertEqual((code, "\n".join(lines)), uncached)
+        # a changed file is a new blob: scanned again
+        self.write("operating/general.py", "X = 'fine'\nZ = 'AO-26005B'\n")
+        code, lines = gate.evaluate(self.root, TODAY, cache_dir=cache)
+        self.assertEqual(code, 1)
+        self.assertIn("operating/general.py:2 identifier AO-26005B=", "\n".join(lines))
+        # a new rule invalidates every cached verdict, also of a file cached clean
+        self.write("operating/general.py", "X = 'fine'\nW = 'QZX-90417'\n")
+        self.assertEqual(gate.evaluate(self.root, TODAY, cache_dir=cache)[0], 1)  # PO5447 still
+        self.write("operating/flagged.py", "Y = 1\n")
+        self.assertEqual(gate.evaluate(self.root, TODAY, cache_dir=cache)[0], 0)
+        self.deny["identifiers"].append({"id": "QZX-90417", "pattern": "QZX-90417"})
+        self._save_denylist()
+        code, lines = gate.evaluate(self.root, TODAY, cache_dir=cache)
+        self.assertEqual(code, 1, "\n".join(lines))
+        self.assertIn("operating/general.py:2 identifier QZX-90417=", "\n".join(lines))
+        # the same file under another path is its own entry; a garbled cache is ignored
+        self.write("operator_api/copy.py", "W = 'QZX-90417'\n")
+        for cached in cache.glob("*.json"):
+            cached.write_text('{"digest": "x", "files": {"operating/general.py\\u0000y": [[1]]}}')
+        code, lines = gate.evaluate(self.root, TODAY, cache_dir=cache)
+        report = "\n".join(lines)
+        self.assertIn("operating/general.py:2 identifier QZX-90417=", report)
+        self.assertIn("operator_api/copy.py:1 identifier QZX-90417=", report)
+        # a cache file edited by hand to claim every file clean is the one thing a cache
+        # keyed by content cannot catch: it lives in the user's own scratch, and the gate
+        # check itself (scripts/check_no_hardcoded_cases.py, gate-checks.json) runs uncached
+        for cached in cache.glob("*.json"):
+            data = json.loads(cached.read_text())
+            data["files"] = {k: [] for k in data["files"]}
+            cached.write_text(json.dumps(data))
+        code, _ = self.run_gate()
+        self.assertEqual(code, 1, "the gate itself (no cache) still fails")
 
     def test_allowlist_entries_expire_by_mid_october(self):
         deny = json.loads((ROOT / gate.DENYLIST).read_text(encoding="utf-8"))

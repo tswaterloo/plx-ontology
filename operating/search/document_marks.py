@@ -74,11 +74,16 @@ def enabled() -> bool:
 def withheld(object_ids: Iterable[str], held: Iterable[str], *, conn: Any = None
              ) -> set[str]:
     """The document objects among ``object_ids`` whose search chunks carry a marking
-    outside ``held`` (every file among them when the search store cannot be read)."""
+    outside ``held`` (every file among them when the search store cannot be read), and
+    for every reader the PLX-issued documents held as supplier documents
+    (``operating.pg.own_issued``)."""
     held = frozenset(held)
+    object_ids = [o for o in object_ids if isinstance(o, str)]
+    own = _own_issued()
+    hidden = {o for o in object_ids if o in own}
     ids = sorted({o for o in object_ids if _document(o)})
     if not ids or (conn is None and not enabled()) or holds_every(held):
-        return set()
+        return hidden
     own = conn is None
     try:
         if own:
@@ -90,9 +95,9 @@ def withheld(object_ids: Iterable[str], held: Iterable[str], *, conn: Any = None
             "SELECT DISTINCT object_id FROM search.chunks WHERE object_id = ANY(%s) "
             "AND kind <> ALL(%s) AND NOT (markings <@ %s::text[])",
             (ids, list(RECORD_KINDS), sorted(set(held)))).fetchall()
-        return {row[0] for row in rows}
+        return {row[0] for row in rows} | hidden
     except Exception:  # noqa: BLE001 - undecidable: files withheld (fail closed)
-        return {o for o in ids if o.split(":", 1)[0] in FILE_TYPES}
+        return {o for o in ids if o.split(":", 1)[0] in FILE_TYPES} | hidden
     finally:
         if own and conn is not None:
             try:
@@ -212,18 +217,51 @@ def withheld_set(held: Iterable[str]) -> tuple[frozenset[str], frozenset[str]] |
 
 def params(held: Iterable[str]) -> dict[str, str]:
     """The SQL parameters ``sql`` reads for a reader holding ``held``: the withheld
-    document ids (``:dm_ids``) and the object types withheld whole (``:dm_types``, every
-    file type when the search store cannot be read)."""
+    document ids (``:dm_ids``), the object types withheld whole (``:dm_types``, every
+    file type when the search store cannot be read) and, for every reader alike, the
+    PLX-issued sales documents the served store holds as supplier documents
+    (``:dm_own``, ``operating.pg.own_issued``: one list shared by every reader, so a
+    Postgres session compiles it once per refresh, never once per marking set)."""
+    own = _own_json(_own_issued())
     got = withheld_set(held)
     if got is None:
-        return {"dm_ids": "[]", "dm_types": json.dumps(sorted(FILE_TYPES))}
-    return {"dm_ids": json.dumps(sorted(got[0])), "dm_types": "[]"}
+        return {"dm_ids": "[]", "dm_types": json.dumps(sorted(FILE_TYPES)), "dm_own": own}
+    return {"dm_ids": json.dumps(sorted(got[0])), "dm_types": "[]", "dm_own": own}
+
+
+def _own_issued() -> frozenset[str]:
+    """The supplier-typed objects that are PLX's own documents (empty when the guard's
+    table cannot be read: the store as it is)."""
+    try:
+        from operating.pg import own_issued
+        return own_issued.hidden_ids()
+    except Exception:  # noqa: BLE001 - no guard table: nothing more is withheld
+        return frozenset()
+
+
+_OWN_KEPT: list[tuple[frozenset[str], str]] = []
+_OWN_LOCK = threading.Lock()
+
+
+def _own_json(own: frozenset[str]) -> str:
+    """``:dm_own``: the sorted ids as one JSON list, the same text object for the same
+    set (a Postgres session keeps a long list once under its text,
+    ``sqlite_compat._bound_lists``, and finds it again by the text's cached hash)."""
+    if not own:
+        return "[]"
+    with _OWN_LOCK:
+        if _OWN_KEPT and _OWN_KEPT[0][0] is own:
+            return _OWN_KEPT[0][1]
+        text = json.dumps(sorted(own))
+        _OWN_KEPT[:] = [(own, text)]
+        return text
 
 
 def sql(column: str) -> str:
-    """SQL: the object id ``column`` is not a document marked beyond the reader
-    (with ``params``)."""
+    """SQL: the object id ``column`` is not a document marked beyond the reader nor a
+    PLX-issued one held as a supplier's (with ``params``)."""
     return (f"({column} NOT IN (SELECT value FROM json_each(:dm_ids)) AND "
+            f"{column} NOT IN (SELECT value FROM json_each(:dm_own)) AND "
             f"substr({column}, 1, instr({column}, ':') - 1) NOT IN "
             "(SELECT value FROM json_each(:dm_types)))")
 

@@ -26,6 +26,10 @@ import re
 from typing import Any, Iterable, Mapping, Sequence
 
 from . import autopilot as ap
+from . import autopilot_events
+from . import autopilot_handlers
+from . import autopilot_queue
+from . import autopilot_records
 
 SUPPLIER_ITEM_OF = "SupplierItem.offered_by"
 SUPPLIER_ITEM_FOR = "SupplierItem.for_item"
@@ -46,7 +50,7 @@ def candidate_tokens(*texts: str) -> list[str]:
     digits with one digit, not a year or a date."""
     out = []
     for t in texts:
-        for m in ap.TOKEN.finditer(t or ""):
+        for m in autopilot_handlers.TOKEN.finditer(t or ""):
             tok = m.group(1).strip("-")
             if len(_norm(tok)) >= MIN_CHARS and any(c.isdigit() for c in tok) and \
                     not re.fullmatch(r"(?:19|20)\d{2}(?:-\d{1,2}){0,2}", tok):
@@ -65,7 +69,7 @@ def mail_suppliers(ctx: Any, event: Mapping[str, Any]) -> set[str]:
     linked = [o for o in ctx.linked(event["object_id"], ("Email.sent_by_supplier",))
               if o.startswith("Supplier:")]
     if not linked and event.get("sender"):
-        linked = [o for side, o in ap._parties(ctx.st, str(event["sender"]))
+        linked = [o for side, o in autopilot_events._parties(ctx.st, str(event["sender"]))
                   if side == "supplier"]
     return with_twins(ctx, linked, SUPPLIER_TWIN)
 
@@ -111,14 +115,14 @@ def xref(ctx: Any, item: str) -> dict[str, Any]:
         row = rows.get(oid) or {}
         binding = oid.split(":", 2)[1] if oid.count(":") >= 2 else ""
         sides.append({"object_id": oid, "system": binding.split(".", 1)[0] or None,
-                      "code": ap._v(row, "code") or None,
-                      "erp_code": ap._v(row, "erp_code") or None})
+                      "code": autopilot_records._v(row, "code") or None,
+                      "erp_code": autopilot_records._v(row, "erp_code") or None})
     offers = [a for _lt, a, b in ctx.touching(group, (SUPPLIER_ITEM_FOR,))
               if a.startswith("SupplierItem:")]
     srows = ctx.read(offers[:50], ("supplier_item_number",))
     by = {a: b for _lt, a, b in ctx.touching(offers[:50], (SUPPLIER_ITEM_OF,))}
-    vendor = sorted({(ap._v(r, "supplier_item_number"), by.get(o, ""))
-                     for o, r in srows.items() if ap._v(r, "supplier_item_number")})
+    vendor = sorted({(autopilot_records._v(r, "supplier_item_number"), by.get(o, ""))
+                     for o, r in srows.items() if autopilot_records._v(r, "supplier_item_number")})
     return {"items": sides,
             "vendor_numbers": [{"number": n, "supplier": s or None} for n, s in vendor]}
 
@@ -129,9 +133,9 @@ def open_pos_for_items(ctx: Any, suppliers: Iterable[str], items: Iterable[str]
     are one PO: the first kept)."""
     from . import autopilot_work as aw
     suppliers = set(suppliers)
-    lines = ctx.linked_many(items, (ap.PO_LINE_ITEM,))
-    lines = [x for x in lines if x.startswith("PurchaseOrderLine:")][:ap.MAX_LINES * 4]
-    pos = sorted({b for _lt, a, b in ctx.touching(lines, (ap.PO_LINE_OF,))
+    lines = ctx.linked_many(items, (autopilot_queue.PO_LINE_ITEM,))
+    lines = [x for x in lines if x.startswith("PurchaseOrderLine:")][:autopilot_queue.MAX_LINES * 4]
+    pos = sorted({b for _lt, a, b in ctx.touching(lines, (autopilot_queue.PO_LINE_OF,))
                   if b.startswith("PurchaseOrder:")})
     if not pos:
         return []
@@ -140,7 +144,7 @@ def open_pos_for_items(ctx: Any, suppliers: Iterable[str], items: Iterable[str]
     out, numbers = [], set()
     for po in sorted(from_supplier):
         row = heads.get(po) or {}
-        number = ap._v(row, "po_number").upper()
+        number = autopilot_records._v(row, "po_number").upper()
         if not aw._po_open(row) or (number and number in numbers):
             continue
         numbers.add(number)

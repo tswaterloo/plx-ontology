@@ -27,7 +27,7 @@ from operating import confirmation_forms as cf
 from operating import mcp_server
 from operating import playbook_tools as pt
 from operating import semantic_proposals as sp
-from operating.ontology_tools import load_contracts
+from operating.ontology_tools_policy import load_contracts
 from operating.playbook_eval import proposal_store
 from operating.playbook_reports import PlaybookReportStore
 from operating.playbooks import PLAYBOOK_DIR, PlaybookRegistry, overlay_dir

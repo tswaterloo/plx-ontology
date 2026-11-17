@@ -100,7 +100,7 @@ def get_json(url: str, headers: Mapping[str, str], *, max_bytes: int = 4_000_000
     request = Request(url, headers=dict(headers), method="GET")
     try:
         with build_opener(_NoRedirect()).open(request, timeout=timeout_seconds) as response:
-            raw = response.read(max_bytes + 1)
+            raw = read_bounded(response, max_bytes + 1, timeout_seconds)
             if len(raw) > max_bytes:
                 raise SourceUnavailable("source response exceeds configured bound")
             return json.loads(raw)
@@ -110,6 +110,26 @@ def get_json(url: str, headers: Mapping[str, str], *, max_bytes: int = 4_000_000
         raise _http_error(exc) from None
     except Exception as exc:
         raise SourceUnavailable(f"read-only source GET failed: {type(exc).__name__}") from None
+
+
+def read_bounded(response: Any, limit: int, timeout_seconds: float) -> bytes:
+    """At most ``limit`` bytes of ``response``, read one socket read at a time and given
+    up past four timeouts plus the bound at 64 KiB/s (``TimeoutError``): a server that
+    trickles bytes never holds the reader (``live_source_guard.request_seconds``)."""
+    import time
+    deadline = time.monotonic() + 4 * float(timeout_seconds) + limit / (64 * 1024)
+    read = getattr(response, "read1", None)
+    read = read if callable(read) else response.read
+    chunks, total = [], 0
+    while total < limit:
+        if time.monotonic() >= deadline:
+            raise TimeoutError("request_deadline")
+        chunk = read(min(65_536, limit - total))
+        if not chunk:
+            break
+        chunks.append(chunk)
+        total += len(chunk)
+    return b"".join(chunks)
 
 
 LOOPBACK_HOSTS = ("127.0.0.1", "localhost", "::1")

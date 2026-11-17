@@ -22,10 +22,13 @@ import json
 from pathlib import Path
 import re
 import tempfile
+import threading
 import unittest
 from unittest import mock
 
 from verify import live_verify as lv
+from verify import live_verify_policy
+from verify import live_verify_report
 from tests.test_live_wiring import argv_of, run_main, spec
 from ontology.schema import load_schema
 from scripts import live_read_probes as probes
@@ -53,7 +56,10 @@ class SchemaWorld:
     """The Portal reporting API's catalog (the pinned snapshot) serving rows generated from
     the compiled schema's own bindings (``ontology/generator/fixture.py``), every approved
     column present; ``unavailable``/``broken`` relations answer as the client would and
-    each read advances ``now`` by one second (the probe's clock)."""
+    each read advances ``now`` by one second (the probe's clock). The probe's readers run at
+    the same time, so each reader thread has its own clock: the time before the readers
+    started plus its own reads; the probe's own thread (after the readers joined) reads the
+    time plus the longest reader's."""
 
     def __init__(self, schema, *, unavailable=(), broken=()):
         from ontology import schema as ontology_schema
@@ -63,7 +69,10 @@ class SchemaWorld:
                                         if e["name"] in unavailable else e["unavailable"])
                         for e in snapshot["relations"]}
         self.broken = set(broken)
-        self.now = 0.0
+        self._before = 0.0   # time on the probe's own thread (the catalog read, sequential reads)
+        self._spent: list[float] = []   # each reader thread's own reads, by first read
+        self._reader = threading.local()   # this thread's index in _spent (none: unset)
+        self._lock = threading.Lock()
         source = fixture.SyntheticCaptures(schema, "portal_api", 2 * fixture.min_rows(schema))
         records = source.records(sorted(self.catalog))
         self.rows = {}
@@ -73,6 +82,28 @@ class SchemaWorld:
                 first.setdefault(record.record_key, record.row)
             self.rows[name] = [{**{c: None for c in entry["columns"]}, **row}
                                for row in first.values()]
+
+    def _index(self) -> int:
+        # A thread-local, not the thread's ident: an ident is reused once a thread ends.
+        if not hasattr(self._reader, "index"):
+            with self._lock:
+                self._reader.index = len(self._spent)
+                self._spent.append(0.0)
+        return self._reader.index
+
+    @property
+    def now(self) -> float:
+        if threading.current_thread() is threading.main_thread():
+            return self._before + max(self._spent, default=0.0)
+        return self._before + self._spent[self._index()]
+
+    @now.setter
+    def now(self, value: float) -> None:
+        delta = value - self.now
+        if threading.current_thread() is threading.main_thread():
+            self._before += delta
+        else:
+            self._spent[self._index()] += delta
 
     def relations(self):
         return self.catalog
@@ -311,8 +342,8 @@ class SchemaQueryableProbeTests(unittest.TestCase):
                           len(EMPTY_LIVE), False))
         self.assertIn("blocked", detail)
         # The spec's own cap (its 248 relation names outgrow the 4,000 default), within it.
-        self.assertEqual(lv.detail_cap(self.spec), self.spec["max_detail_chars"])
-        self.assertLessEqual(len(json.dumps(detail, sort_keys=True)), lv.detail_cap(self.spec))
+        self.assertEqual(live_verify_report.detail_cap(self.spec), self.spec["max_detail_chars"])
+        self.assertLessEqual(len(json.dumps(detail, sort_keys=True)), live_verify_report.detail_cap(self.spec))
         # Every name list survives the cap, whole, and so do the failure codes and the
         # unreached count (relations never named) ahead of the counts a list carries.
         fields = detail["fields"]
@@ -393,11 +424,15 @@ class SchemaQueryableProbeTests(unittest.TestCase):
         world = SchemaWorld(self.schema)   # each read takes one second of the probe's clock
         document = probes.schema_queryable({}, client=world, budget_seconds=1,
                                            clock=lambda: world.now)
-        # One read fits; what it read is still projected and probed (the grace). 1 queryable
-        # and 92 unreached measures the bound catalog: far under the floor, and incomplete.
+        # One read per reader fits; what they read is still projected and probed (the
+        # grace). 4 queryable and the rest unreached measures the bound catalog: far under
+        # the floor, and incomplete.
+        readers = probes.QUERYABLE_READERS
         self.assertEqual((document["queryable_count"], document["unreached_count"],
-                          document["named_relation_count"]), (1, len(self.bound) - 1, 1))
-        self.assertEqual(document["queryable_share"], int(10000 / len(self.bound)) / 10000)
+                          document["named_relation_count"]),
+                         (readers, len(self.bound) - readers, readers))
+        self.assertEqual(document["queryable_share"],
+                         int(10000 * readers / len(self.bound)) / 10000)
         self.assert_every_relation_counted_once(document)
         failures = lv.check_expectations(self.spec, 0, document)
         self.assertIn("queryable_share < 0.9", failures)
@@ -415,7 +450,18 @@ class SchemaQueryableProbeTests(unittest.TestCase):
         # Above the floor but incomplete (one unreached, or one unavailable) still fails.
         world = SchemaWorld(self.schema)
         short = probes.schema_queryable({}, client=world, budget_seconds=len(self.bound) - 1,
-                                        clock=lambda: world.now)
+                                        readers=1, clock=lambda: world.now)
+        # Read four at a time, a deadline one read short of the longest share leaves one
+        # relation of each longest share unreached, and nothing else.
+        shares = [sorted(self.bound)[i::readers] for i in range(readers)]
+        longest = max(len(share) for share in shares)
+        world4 = SchemaWorld(self.schema)
+        short4 = probes.schema_queryable({}, client=world4, budget_seconds=longest - 1,
+                                         clock=lambda: world4.now)
+        self.assertEqual(short4["unreached_count"],
+                         sum(len(share) == longest for share in shares))
+        self.assertEqual(world4.now, longest - 1)   # the longest readers stopped one short
+        self.assertIs(short4["ok"], False)
         gone = probes.schema_queryable({}, client=SchemaWorld(
             self.schema, unavailable={sorted(self.bound)[0]}))
         for document, field in ((short, "unreached_count"), (gone, "unavailable_count")):
@@ -429,12 +475,16 @@ class SchemaQueryableProbeTests(unittest.TestCase):
                 self.assertEqual(lv.completeness(self.spec, document)["incomplete"], [field])
         with self.assertRaises(ValueError):
             probes.schema_queryable({}, client=world, budget_seconds=0)
+        for readers in (0, 5, True):
+            with self.assertRaises(ValueError):
+                probes.schema_queryable({}, client=world, readers=readers)
 
     def test_the_spec_deadline_covers_every_read_timing_out_and_the_timeout_covers_it(self):
         # gap-427f2d196680: with every read taking the client's whole timeout (the catalog
-        # read too), the spec's own --budget-seconds still reaches every bound relation, and
-        # timeout_seconds exceeds that budget plus one read in flight plus the probe's grace,
-        # under the daily ceiling.
+        # read too), the spec's own --budget-seconds still reaches every bound relation read
+        # QUERYABLE_READERS at a time (at most four: the service refuses a sixth concurrent
+        # request and the mirror's sync may hold four), and timeout_seconds exceeds that
+        # budget plus one read in flight plus the probe's grace, under the daily ceiling.
         from integrations import workbench_read_api as wra
         with mock.patch.object(wra, "get_json", return_value={}) as get_json:
             wra._get_workbench_json("https://example.invalid/r", {}, max_bytes=1)
@@ -443,9 +493,12 @@ class SchemaQueryableProbeTests(unittest.TestCase):
         budget = float(command[command.index("--budget-seconds") + 1])
         timeout = self.spec["timeout_seconds"]
         self.assertGreaterEqual(len(self.bound), 103)
-        self.assertGreater(budget, (len(self.bound) + 1) * read_timeout)
+        readers = probes.QUERYABLE_READERS
+        self.assertTrue(1 <= readers <= 4, readers)
+        longest = -(-len(self.bound) // readers)   # the longest reader's share
+        self.assertGreater(budget, (longest + 1) * read_timeout)
         self.assertGreater(timeout, budget + read_timeout + probes.QUERYABLE_GRACE_SECONDS)
-        self.assertLessEqual(timeout, lv.MAX_TIMEOUT_BY_CADENCE[self.spec["cadence"]])
+        self.assertLessEqual(timeout, live_verify_policy.MAX_TIMEOUT_BY_CADENCE[self.spec["cadence"]])
         self.assertEqual(probes.QUERYABLE_BUDGET_SECONDS, budget)   # the CLI default agrees
 
         class SlowWorld(SchemaWorld):
@@ -461,7 +514,8 @@ class SchemaQueryableProbeTests(unittest.TestCase):
         document = probes.schema_queryable({}, client=world, budget_seconds=budget,
                                            clock=lambda: world.now)
         self.assertEqual(document["unreached_count"], 0)
-        self.assertGreaterEqual(world.now, len(self.bound) * read_timeout)
+        self.assertGreaterEqual(world.now, (longest + 1) * read_timeout)
+        self.assertEqual(sum(world._spent), len(self.bound) * read_timeout)
         self.assert_every_relation_counted_once(document)
         self.assertEqual(lv.completeness(self.spec, document), {"complete": True})
         self.assertEqual(lv.check_expectations(self.spec, 0, document), [])

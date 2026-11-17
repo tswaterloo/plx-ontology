@@ -1,0 +1,10 @@
+[Unit]
+Description=PLX bare-mention rebuild, daily (09:30 UTC = 4:30 AM ET, after the exclusion purge)
+
+[Timer]
+OnCalendar=*-*-* 09:30:00 UTC
+Persistent=true
+RandomizedDelaySec=5min
+
+[Install]
+WantedBy=timers.target

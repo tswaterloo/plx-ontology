@@ -503,9 +503,11 @@ class FixtureCardTest(unittest.TestCase):
             return call
 
         for n in (1, 10, 60):
-            started = time.monotonic()
+            # the card's own work: this process's CPU time (every thread it reads on), which a
+            # busy host's scheduling does not add to, so the budget still fails on slowness
+            started = time.process_time()
             card = sc.card(world(n), "S", as_of=AS_OF)
-            elapsed = time.monotonic() - started
+            elapsed = time.process_time() - started
             read = min(n, sc.MAX_ORDERS)
             orders = "purchase order" + ("s" if read != 1 else "")
             line = next(b for b in card["blockers"] if b["kind"] == "not_recorded")
@@ -629,8 +631,11 @@ class FixtureCardTest(unittest.TestCase):
     def test_the_sample_reads_every_found_record_once_at_n_1_10_60(self):
         real = self.world.call
 
-        def aliased(n):
+        def aliased(n, calls):
             def call(name, args):
+                named = sorted({v for v in args.values()
+                                if isinstance(v, str) and v.startswith("alias:")})
+                calls.append((name, tuple(named)))
                 if name == "plx.find":
                     return {"candidates": [{"object": {"object_id": f"alias:{i}"}}
                                            for i in range(n)] * 2}   # duplicates listed
@@ -639,16 +644,28 @@ class FixtureCardTest(unittest.TestCase):
                 return real(name, args)
             return call
 
+        # The sample's work is counted, not timed: one find, then the same reads for every
+        # found record (duplicates read once), so n records cost n times one record's reads.
+        per_card = None
         for n in (1, 10, 60):
-            started = time.monotonic()
+            calls: list[tuple[str, tuple[str, ...]]] = []
             with self.world.view._request():
-                found = sc.sample(aliased(n), "PurchaseOrder", n, AS_OF)
-            elapsed = time.monotonic() - started
+                found = sc.sample(aliased(n, calls), "PurchaseOrder", n, AS_OF)
             self.assertEqual((found["candidates"], found["cards"],
                               found["cards_with_cited_fact"]), (n, n, n))
             self.assertEqual(found["cards_with_internal_codes"], 0)
             self.assertEqual(found["blockers_by_kind"]["not_recorded"], 2 * n)
-            self.assertLess(elapsed / n, 2.0, (n, elapsed))
+            self.assertEqual([name for name, _ in calls].count("plx.find"), 1, calls)
+            self.assertEqual(calls[0][0], "plx.find")
+            reads = [named for name, named in calls[1:]]
+            by_alias = {f"alias:{i}": sum(f"alias:{i}" in named for named in reads)
+                        for i in range(n)}
+            self.assertEqual(set(by_alias.values()), {by_alias["alias:0"]}, by_alias)
+            self.assertGreaterEqual(by_alias["alias:0"], 1)
+            if per_card is None:
+                per_card = (len(reads), by_alias["alias:0"])
+            self.assertEqual((len(reads), by_alias["alias:0"]),
+                             (n * per_card[0], per_card[1]), (n, calls[:5]))
 
 
 class ReferenceAndRouteTest(unittest.TestCase):

@@ -669,14 +669,18 @@ def _is_po(object_id: str) -> bool:
     return object_id.split(":", 1)[0] == "PurchaseOrder"
 
 
-def _po_identity(conn: sqlite3.Connection, object_id: str, l1_handle: str
-                 ) -> dict[str, Any] | None:
+def _po_identity(conn: sqlite3.Connection, object_id: str, l1_handle: str,
+                 start: str | None = None, end: str | None = None) -> dict[str, Any] | None:
     """The identity (``same_po_identity``) of one projected purchase-order version: its
     numbers as the source wrote them (the identifier index's raw text, trimmed of spaces
     as Postgres ``TRIM`` does; None for a source null or a field the row lacks) and its
     supplier (the records its ``ordered_from`` link names from this version). None when
     it is not known: no projected primary number (none, or one the grammar could not
-    read), two readings of one field, or no supplier link (a supplier row not projected)."""
+    read), two readings of one field, or no supplier link (a supplier row not projected).
+    ``start``/``end``: the version's own time span. A link row is one stretch of a link over
+    consecutive end versions and cites only the last pair (decision
+    2026-11-11-stamp-sightings-and-link-identity, F2), so an earlier version's supplier is
+    the link stretch that spans it when no link row cites its handle."""
     marks = ", ".join("?" for _ in _PO_NUMBER_FIELDS)
     found: dict[str, set[str | None]] = {}
     for path, value, raw in conn.execute(
@@ -695,6 +699,12 @@ def _po_identity(conn: sqlite3.Connection, object_id: str, l1_handle: str
         "SELECT DISTINCT to_object FROM links WHERE from_object = ? AND link_type = ? "
         "AND binding_kind = 'fk' AND EXISTS (SELECT 1 FROM json_each(links.evidence_handles) "
         "WHERE json_each.value = ?)", (object_id, _PO_SUPPLIER_LINK, l1_handle)))
+    if not suppliers and start is not None:
+        suppliers = sorted(row[0] for row in conn.execute(
+            "SELECT DISTINCT to_object FROM links WHERE from_object = ? AND link_type = ? "
+            "AND binding_kind = 'fk' AND (? IS NULL OR julianday(recorded_at) < julianday(?)) "
+            "AND (superseded_at IS NULL OR julianday(superseded_at) > julianday(?))",
+            (object_id, _PO_SUPPLIER_LINK, end, end, start)))
     if not suppliers:
         return None
     return {**{name: next(iter(texts)) for name, texts in found.items()},
@@ -708,10 +718,10 @@ def version_identity(conn: sqlite3.Connection) -> Callable[[str, str], dict[str,
     def identity(object_id: str, digest: str) -> dict[str, Any] | None:
         if not _is_po(object_id):
             return None
-        row = conn.execute("SELECT l1_handle FROM object_versions WHERE object_id = ? AND "
-                           "digest = ? ORDER BY recorded_at DESC LIMIT 1",
-                           (object_id, digest)).fetchone()
-        return None if row is None else _po_identity(conn, object_id, row[0])
+        row = conn.execute("SELECT l1_handle, recorded_at, superseded_at FROM object_versions "
+                           "WHERE object_id = ? AND digest = ? ORDER BY recorded_at DESC "
+                           "LIMIT 1", (object_id, digest)).fetchone()
+        return None if row is None else _po_identity(conn, object_id, row[0], row[1], row[2])
     return identity
 
 
@@ -852,7 +862,8 @@ def _identity_spans(conn: sqlite3.Connection, version: Mapping[str, Any]
     for another type or an identity not known."""
     object_id = version["object_id"]
     own = [(version["recorded_at"], version["superseded_at"])]
-    pinned = _po_identity(conn, object_id, version["l1_handle"]) if _is_po(object_id) else None
+    pinned = (_po_identity(conn, object_id, version["l1_handle"], version["recorded_at"],
+                           version["superseded_at"]) if _is_po(object_id) else None)
     if pinned is None or version["superseded_at"] is None:
         return own
     out: list[tuple[str, str | None]] = []
@@ -860,7 +871,7 @@ def _identity_spans(conn: sqlite3.Connection, version: Mapping[str, Any]
             "SELECT l1_handle, recorded_at, superseded_at FROM object_versions "
             "WHERE object_id = ? AND recorded_at >= ? ORDER BY recorded_at",
             (object_id, version["recorded_at"])).fetchall():
-        now = _po_identity(conn, object_id, handle)
+        now = _po_identity(conn, object_id, handle, since, until)
         if now is None or not same_po_identity(pinned, now):
             continue
         if out and out[-1][1] == since:

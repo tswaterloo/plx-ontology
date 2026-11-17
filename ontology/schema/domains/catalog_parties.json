@@ -636,6 +636,25 @@
           ]
         },
         {
+          "name": "gtin",
+          "value_type": "text",
+          "description": "The item's GTIN (barcode number) as BC holds it; blank on items without one (7,490 of 16,767 captured items carry one, 2026-11-12).",
+          "sources": [
+            {
+              "binding": "bc.items",
+              "path": "gtin",
+              "parser": "trim"
+            }
+          ],
+          "evidence": [
+            {
+              "kind": "workbench_code",
+              "path": "ontology/schema/generated/meta/bc_metadata.json",
+              "note": "item.gtin Edm.String (pinned $metadata, evidence_mode live-capture, sha256 09a82605df00); held in every captured BC items row (CT-D-03)"
+            }
+          ]
+        },
+        {
           "name": "bc_item_type",
           "value_type": "text",
           "sources": [
@@ -1248,7 +1267,15 @@
                   "kind": "ref",
                   "id": "portal.bc_item_card_price_per_base_uom"
                 }
-              ]
+              ],
+              "when": [
+                {
+                  "path": "unitCost",
+                  "op": "gte",
+                  "value": "0.000001"
+                }
+              ],
+              "note": "BC's unit cost is 0 on an item that carries no cost: 0 on 10,909 of 15,750 items of one company and on all 1,023 of another (capture count 11-15). A 0 is a gap (source_condition_unmet), never a cost of 0, so a reader falls back to the Portal/FM average cost instead of costing a margin or stock value at 0 (AUD-08)."
             }
           ],
           "evidence": [
@@ -1331,7 +1358,8 @@
             {
               "binding": "portal.app_product",
               "path": "deleted_at",
-              "parser": "iso_timestamp"
+              "parser": "iso_timestamp",
+              "naive_zone": "UTC"
             }
           ],
           "evidence": [
@@ -2112,7 +2140,8 @@
             {
               "binding": "portal.app_customer",
               "path": "deleted_at",
-              "parser": "iso_timestamp"
+              "parser": "iso_timestamp",
+              "naive_zone": "UTC"
             }
           ],
           "evidence": [
@@ -2164,6 +2193,25 @@
               "binding": "portal.fm_customer",
               "path": "email_3",
               "parser": "trim"
+            }
+          ]
+        },
+        {
+          "name": "sage_salesperson_code",
+          "value_type": "text",
+          "description": "The customer's Sage salesperson code (AR customer codeslsp1, trimmed). The with_owners step (ontology/owner_links.py) looks it up in the Sage AR salesperson rows and links the Sage employee code to the one staff Person whose address local part it is, as a lead (a code is no identity).",
+          "sources": [
+            {
+              "binding": "portal.sage_ar_customer",
+              "path": "codeslsp1",
+              "parser": "trim"
+            }
+          ],
+          "evidence": [
+            {
+              "kind": "workbench_code",
+              "path": "ontology/owner_links.py",
+              "note": "codeslsp1 is the Sage AR customer's salesperson code; the sage.ar_salesperson mirror maps codeslsp to the employee code codeempl."
             }
           ]
         },
@@ -2591,6 +2639,23 @@
                   {
                     "kind": "ref",
                     "id": "upstream-code.upsertvendors.d50ef1"
+                  }
+                ]
+              },
+              {
+                "when": [
+                  {
+                    "path": "external_id",
+                    "op": "prefix",
+                    "value": "sage-vendor-"
+                  }
+                ],
+                "lineage": "gold_etl_from_sage",
+                "evidence": [
+                  {
+                    "kind": "data_profile",
+                    "ref": "served ontology 2026-11-12: app_supplier.external_id sage-vendor-{id}",
+                    "note": "599 of 599 served app_supplier rows with external_id sage-vendor-{X} hold code X (a Sage vendor id), all first recorded 2026-10-28 in one load; 620 of 622 code twins of them name the Sage AP vendor X whose name agrees with the BC vendor numbered X. A Sage vendor import's copy (the second spelling beside upsertVendors' sage-vend-), not a Portal-native staging row."
                   }
                 ]
               }
@@ -3139,7 +3204,8 @@
             {
               "binding": "portal.app_supplier",
               "path": "deleted_at",
-              "parser": "iso_timestamp"
+              "parser": "iso_timestamp",
+              "naive_zone": "UTC"
             }
           ],
           "evidence": [
@@ -4055,6 +4121,51 @@
               "parser": "trim"
             }
           ]
+        },
+        {
+          "name": "city",
+          "value_type": "text",
+          "description": "Used by the twins_contacts step: two cards of one name in different cities are no corroborated twin.",
+          "markings": [
+            "pii"
+          ],
+          "sources": [
+            {
+              "binding": "bc.contacts",
+              "path": "city",
+              "parser": "trim"
+            }
+          ]
+        },
+        {
+          "name": "state",
+          "value_type": "text",
+          "description": "Used by the twins_contacts step (location agreement).",
+          "markings": [
+            "pii"
+          ],
+          "sources": [
+            {
+              "binding": "bc.contacts",
+              "path": "state",
+              "parser": "trim"
+            }
+          ]
+        },
+        {
+          "name": "postal_code",
+          "value_type": "text",
+          "description": "Used by the twins_contacts step (location agreement).",
+          "markings": [
+            "pii"
+          ],
+          "sources": [
+            {
+              "binding": "bc.contacts",
+              "path": "postalCode",
+              "parser": "trim"
+            }
+          ]
         }
       ],
       "display": [
@@ -4197,11 +4308,12 @@
       "name": "same_record_as",
       "reverse_name": "same_record_as",
       "cardinality": "N:M",
-      "description": "Records of one item in different systems. Codes are stored copies (FM->gold ETL, gold->BC serializer), so a code match is verified but non-unique codes yield candidates, never a merge. The gold external_id -> FM id link (fm-<family>-{id}) needs a prefixed-id compare the format lacks. A FileMaker raw-material code and a Sage item number reach the BC item of that number directly too (the gold product carried the code to BC; a packaging code reaches it through its gold product, the format's eight bindings being taken); every BC end is a lead by the BC company cap until the twins_parties build step corroborates a unique code whose names agree.",
+      "description": "Records of one item in different systems. Codes are stored copies (FM->gold ETL, gold->BC serializer), so a code match is verified, but a code more than one record of a binding holds (FM finished products and bulks reuse codes across variants) yields candidates, never a merge (unique_keys: a lead). The gold external_id fm-bulk-{id} / fm-fp-{id} is the ETL's own stored key of its FM record, so it joins the one FM bulk or finished product verified (where codes repeat, it is the key that names the right one); raw and packaging ids are not yet compared. A FileMaker raw-material code and a Sage item number reach the BC item of that number directly too (the gold product carried the code to BC; a packaging code reaches it through its gold product, the format's eight bindings being taken); every BC end is a lead by the BC company cap until the twins_parties build step corroborates a unique code whose names agree.",
       "bindings": [
         {
           "kind": "same_record",
           "tier_ceiling": "verified",
+          "unique_keys": true,
           "from_binding": "portal.app_product",
           "to_binding": "portal.fm_raw_material",
           "pairs": [
@@ -4226,6 +4338,7 @@
         {
           "kind": "same_record",
           "tier_ceiling": "verified",
+          "unique_keys": true,
           "from_binding": "portal.app_product",
           "to_binding": "portal.fm_packaging",
           "pairs": [
@@ -4250,6 +4363,7 @@
         {
           "kind": "same_record",
           "tier_ceiling": "verified",
+          "unique_keys": true,
           "from_binding": "portal.app_product",
           "to_binding": "portal.fm_bulk_product",
           "pairs": [
@@ -4274,6 +4388,7 @@
         {
           "kind": "same_record",
           "tier_ceiling": "verified",
+          "unique_keys": true,
           "from_binding": "portal.app_product",
           "to_binding": "portal.fm_finished_product",
           "pairs": [
@@ -4298,6 +4413,7 @@
         {
           "kind": "same_record",
           "tier_ceiling": "verified",
+          "unique_keys": true,
           "from_binding": "portal.app_product",
           "to_binding": "bc.items",
           "pairs": [
@@ -4318,6 +4434,7 @@
         {
           "kind": "same_record",
           "tier_ceiling": "verified",
+          "unique_keys": true,
           "from_binding": "portal.app_product",
           "to_binding": "portal.sage_ic_item",
           "pairs": [
@@ -4342,6 +4459,7 @@
         {
           "kind": "same_record",
           "tier_ceiling": "verified",
+          "unique_keys": true,
           "from_binding": "portal.app_product",
           "to_binding": "portal.sage_ic_item",
           "pairs": [
@@ -4362,6 +4480,7 @@
         {
           "kind": "same_record",
           "tier_ceiling": "verified",
+          "unique_keys": true,
           "from_binding": "portal.fm_raw_material",
           "to_binding": "bc.items",
           "pairs": [
@@ -4382,6 +4501,7 @@
         {
           "kind": "same_record",
           "tier_ceiling": "verified",
+          "unique_keys": true,
           "from_binding": "portal.sage_ic_item",
           "to_binding": "bc.items",
           "pairs": [
@@ -4396,6 +4516,56 @@
             {
               "kind": "ref",
               "id": "upstream-code.bcitemnumber.4ae4db"
+            }
+          ]
+        },
+        {
+          "kind": "same_record",
+          "tier_ceiling": "verified",
+          "unique_keys": true,
+          "from_binding": "portal.app_product",
+          "to_binding": "portal.fm_bulk_product",
+          "pairs": [
+            {
+              "from": "external_id",
+              "to": "id",
+              "compare": "identifier",
+              "identifier_kind": "fm_bulk_product_id"
+            }
+          ],
+          "evidence": [
+            {
+              "kind": "ref",
+              "id": "upstream-code.etlproducts.712d7f"
+            },
+            {
+              "kind": "ref",
+              "id": "upstream-code.silver-raw-materials-packaging-bulk-prod.36f18f"
+            }
+          ]
+        },
+        {
+          "kind": "same_record",
+          "tier_ceiling": "verified",
+          "unique_keys": true,
+          "from_binding": "portal.app_product",
+          "to_binding": "portal.fm_finished_product",
+          "pairs": [
+            {
+              "from": "external_id",
+              "to": "id",
+              "compare": "identifier",
+              "identifier_kind": "fm_finished_product_id"
+            }
+          ],
+          "evidence": [
+            {
+              "kind": "ref",
+              "id": "upstream-code.etlproducts.712d7f"
+            },
+            {
+              "kind": "ref",
+              "id": "upstream-code.silver-raw-materials-packaging-bulk-prod.36f18f"
             }
           ]
         }
@@ -4511,6 +4681,7 @@
         {
           "kind": "same_record",
           "tier_ceiling": "verified",
+          "unique_keys": true,
           "from_binding": "portal.app_customer",
           "to_binding": "portal.sage_ar_customer",
           "pairs": [
@@ -4531,6 +4702,7 @@
         {
           "kind": "same_record",
           "tier_ceiling": "verified",
+          "unique_keys": true,
           "from_binding": "portal.app_customer",
           "to_binding": "bc.customers",
           "pairs": [
@@ -4551,6 +4723,7 @@
         {
           "kind": "same_record",
           "tier_ceiling": "verified",
+          "unique_keys": true,
           "from_binding": "portal.sage_ar_customer",
           "to_binding": "bc.customers",
           "pairs": [
@@ -4575,6 +4748,7 @@
         {
           "kind": "same_record",
           "tier_ceiling": "stored_by_text_join",
+          "unique_keys": true,
           "from_binding": "portal.app_customer",
           "to_binding": "portal.fm_customer",
           "pairs": [
@@ -4748,6 +4922,7 @@
         {
           "kind": "same_record",
           "tier_ceiling": "lead",
+          "unique_keys": true,
           "from_binding": "portal.app_supplier",
           "to_binding": "bc.vendors",
           "pairs": [
@@ -4772,6 +4947,7 @@
         {
           "kind": "same_record",
           "tier_ceiling": "verified",
+          "unique_keys": true,
           "from_binding": "portal.app_supplier",
           "to_binding": "portal.fm_supplier",
           "pairs": [
@@ -5148,7 +5324,7 @@
       "name": "same_record_as",
       "reverse_name": "same_record_as",
       "cardinality": "N:M",
-      "description": "BC contact cards of one person or company in different BC books: display name, e-mail, phone and company name scored by ontology/identity_scoring.py (person). Reviewed only: BC keeps no cross-book contact key.",
+      "description": "BC contact cards of one person or company. In different BC books: display name, e-mail, phone and company name scored by ontology/identity_scoring.py (person), reviewed only (BC keeps no cross-book contact key). Inside one BC company: two cards with the same normalized display name and a specific e-mail or phone in common (not one on cards of three or more names, not a role mailbox unless their locations agree), written by the twins_contacts build step (ontology/contact_twins.py): corroborated for two Company cards of one side (Vendor+Vendor, Customer+Customer, Customer+none, none+none) whose city, state and postal code do not differ, a lead otherwise; a name alone never. A contact twin never makes the customers or vendors its cards relate to one party.",
       "bindings": [
         {
           "kind": "reviewed",
@@ -5159,6 +5335,18 @@
               "id": "wb.identity_scoring"
             }
           ]
+        },
+        {
+          "kind": "mention",
+          "tier_ceiling": "corroborated",
+          "evidence": [
+            {
+              "kind": "workbench_code",
+              "path": "ontology/contact_twins.py",
+              "note": "twins_contacts step: two cards of one BC company with the same normalized display name and a specific e-mail or phone in common; corroborated for two Company cards of one side in one place, a lead otherwise; own-domain and excluded people's cards never read; a person's rejection vetoes."
+            }
+          ],
+          "written_by_step": "twins_contacts"
         }
       ]
     },
@@ -5181,6 +5369,10 @@
               "kind": "workbench_code",
               "path": "ontology/party_roles.py",
               "note": "roles step: equal normalized names of a customer and a supplier of one system and audience scope, own parties and many-record names excluded."
+            },
+            {
+              "kind": "ref",
+              "id": "workbench.bc_same_company_scope"
             }
           ]
         },
@@ -5342,6 +5534,26 @@
               "note": "Link-completeness audit round 2, 2026-11-08 (read-only source mirror, counts only): 5,211 of 5,211 non-blank ids reach a customer; of 80 sampled pairs, 37 could be checked against the FileMaker product of the same code and all 37 name the same customer (the rest have no FileMaker owner); shift baseline 0.0."
             }
           ]
+        },
+        {
+          "kind": "fk",
+          "tier_ceiling": "lead",
+          "from_binding": "portal.app_product",
+          "to_binding": "portal.fm_customer",
+          "pairs": [
+            {
+              "from": "custom_fields.customerId",
+              "to": "id",
+              "compare": "integer_id"
+            }
+          ],
+          "evidence": [
+            {
+              "kind": "workbench_code",
+              "path": "ontology/schema/domains/catalog_parties.json",
+              "note": "Link-completeness audit (M14), 2026-11-08 (read-only source mirror, counts only): 1,478 of 1,478 non-blank custom_fields.customerId values reach an FM customer id. No sampled precision for this key yet, so it stays a lead until a live sample checks it against the product's FileMaker owner."
+            }
+          ]
         }
       ]
     },
@@ -5374,6 +5586,29 @@
               "note": "Link-completeness audit round 2, 2026-11-08 (read-only source mirror, counts only): 5,096 non-blank names equal one customer's name (16 ambiguous); of 80 sampled pairs 24 could be checked against the FileMaker owner of the same item code and all 24 agree."
             }
           ]
+        }
+      ]
+    },
+    {
+      "id": "Product.formula_line",
+      "from": "Product",
+      "to": "Product",
+      "name": "formula_line",
+      "reverse_name": "in_formulas_of",
+      "cardinality": "N:M",
+      "description": "A line of the product's formula: a formula sheet (a file whose name or folder holds a formula number F-YY-NNNN or a formula word, its text read by ontology/composition_lines.py) states the product's code (corroborated) or, stating none, its name (lead), and the line's part code is exactly the raw material's identifier (twins joined, least id). One link per sheet line; the reason carries the sheet, formula code, line number, part, description, share %, quantity and unit, the share x size check and the sheet's status (complete or partial), cited to the sheet's version, so a reader who may not read the sheet never sees the line. The raw material's supplier items follow SupplierItem.for_item. Written by the with_formula_lines build step (ontology/formula_lines.py); the Portal's own formula lines are not served.",
+      "bindings": [
+        {
+          "kind": "mention",
+          "tier_ceiling": "corroborated",
+          "evidence": [
+            {
+              "kind": "workbench_code",
+              "path": "ontology/formula_lines.py",
+              "note": "with_formula_lines step: formula sheets' lines, the sheet matched to the product by its stated CODE (corroborated) or NAME (lead) and its name or path holding the product's name words, the part resolved through identifiers; excluded people's records never read."
+            }
+          ],
+          "written_by_step": "with_formula_lines"
         }
       ]
     }

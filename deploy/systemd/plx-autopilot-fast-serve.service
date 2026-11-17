@@ -1,0 +1,39 @@
+[Unit]
+# operating/autopilot_fast.serve (AUDIT3-10): one consumer reads a capture's signal within
+# a second; plx-autopilot-fast.path/.timer stand down while it holds fast.lock and take over
+# while it is down. Prepares My work items only (never sends, writes or approves).
+Description=PLX Workbench autopilot fast feed, continuous (prepares work items only)
+After=postgresql.service
+# a failing consumer backs off itself (15 s doubling to 15 min, before it takes the lock)
+# and pages after 3 failures in a row (ops_alarms autopilot_fast_restarts)
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+User=@PLX_USER@
+Group=@PLX_GROUP@
+WorkingDirectory=@PLX_CURRENT@
+EnvironmentFile=-@PLX_HOME@/.config/plx/proactive.env
+# the consumer re-checks this file before each cycle and ends when it changed (a new people
+# exclusion or PLX_AUTOPILOT_OFF), so Restart=always starts it over the new values
+Environment=PLX_PROACTIVE_ENV=@PLX_HOME@/.config/plx/proactive.env
+Environment=PATH=/data/venv/bin:/usr/local/bin:/usr/bin:/bin
+# names its Postgres sessions after the unit (ARCH T2: pg_stat_activity, slow-query log)
+Environment=PGAPPNAME=%N
+Environment=PLX_ONTOLOGY_PG=only
+Environment=PLX_AUTOPILOT_EVQ=1
+# a new release: the consumer ends and Restart=always runs it on that release
+Environment=PLX_RELEASE_CURRENT=@PLX_CURRENT@
+ExecStart=/data/venv/bin/python3 -m operating.autopilot fast --serve --state-dir /data/plx-state
+Nice=5
+CPUWeight=100
+MemoryHigh=1G
+MemoryMax=2G
+MemorySwapMax=512M
+TimeoutStopSec=5min
+Restart=always
+RestartSec=15s
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

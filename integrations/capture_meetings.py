@@ -133,11 +133,12 @@ from ontology.types import Actor
 
 from . import live_source_grammar as grammar
 from . import people_exclusion
-from .capture_mail import assert_outside_git, blocked_reason, graph_block
+from .capture_mail_scope import assert_outside_git
+from .capture_mail_standing import blocked_reason, graph_block
 from .capture_store import (ITEM_ACL_MAX_AGE, CaptureError, CaptureStore, CapturedRecord,
-                            SourceKind, register_source_kind)
+                            SourceKind, keep_store_dir_mode, register_source_kind)
 from .live_source_guard import (LiveSourceAudience, NotVisible, SourceUnavailable, jsonable,
-                                nextlink_refused, unavailable_detail)
+                                unavailable_detail)
 
 SCOPE_SCHEMA = "plx-meetings-capture-scope/v1"
 STORE_DIR = "meetings-capture"
@@ -575,8 +576,8 @@ def open_store(state_dir: str | Path, audience: Any) -> CaptureStore:
     """The meetings capture store under ``state_dir`` (outside every git work tree)."""
     root = assert_outside_git(state_dir) / STORE_DIR
     root.mkdir(parents=True, exist_ok=True, mode=0o700)
+    keep_store_dir_mode(root)
     store = CaptureStore(root / DB_FILE, audience)
-    os.chmod(root / DB_FILE, 0o600)
     return store
 
 
@@ -1559,7 +1560,8 @@ def run_cli(args: argparse.Namespace, *, environ: Mapping[str, str] | None = Non
     budget = args.budget_seconds
 
     def out_of_time() -> bool:
-        return budget is not None and clock() - started >= budget
+        from . import drain   # a drain request (the ingest host's SIGTERM) ends it too
+        return drain.requested() or (budget is not None and clock() - started >= budget)
 
     try:
         api, transport = build_api(environ, sender=sender, retry=BoundedBackoff(

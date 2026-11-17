@@ -126,7 +126,7 @@ export function ImpactCard({ type, id }: { type: string; id: string }) {
           </>
         )}
         <button type="button" className="h-8 cursor-pointer rounded-lg border border-border px-3 text-[13px] hover:bg-hover disabled:cursor-default disabled:opacity-50" onClick={run} disabled={busy} aria-busy={busy || undefined}>
-          {busy ? "Walking links" : why ? "Find causes" : "Show impact"}
+          {busy ? "Following links" : why ? "Find causes" : "Show impact"}
         </button>
       </div>
       {error && <p role="alert" className="mt-2 text-[13px] text-late">{error}</p>}

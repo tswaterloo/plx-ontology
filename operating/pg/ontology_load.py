@@ -909,8 +909,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     try:
         steps = None
         if args.steps_ref:
-            from ontology.step_migrate import steps_digest
-            steps = steps_digest(args.steps_ref)
+            from ontology.step_migrate import recorded_steps_digest
+            steps = recorded_steps_digest(args.steps_ref)   # in its own scheme
         load(args.store, dsn, tables=args.tables, workers=args.workers,
              replace=args.replace, min_free=int(args.min_free_gb * 1024 ** 3),
              locked_index=args.locked_index,

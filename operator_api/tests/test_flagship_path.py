@@ -50,7 +50,8 @@ def scripted_planner(object_id, text="The order's record holds {v}."):
         if not request["transcript"]:
             return {"action": "call", "calls": [
                 {"tool": "plx.object", "arguments": {"object_id": object_id}}]}, None
-        card = request["transcript"][0]["observations"][0]["result"]
+        result = request["transcript"][0]["observations"][0]["result"]
+        card = result.get("shown", result)   # a packed observation keeps the card in ``shown``
         cell = next(v for v in card.get("values") or []
                     if v.get("citation") and v.get("value") is not None)
         value = cell["value"]
@@ -333,6 +334,7 @@ class ServedWorld(World):
 
         from ontology import reviews
         from operating import case_workspace_live as live_ws
+        from operating import case_workspace_live_projection
 
         import types
 
@@ -345,23 +347,23 @@ class ServedWorld(World):
         self.addCleanup(store.unlink)
         # The tenant's own decision the served build read none of (the host may serve
         # another tenant), or one recorded after the build started: never served.
-        self.assertEqual(live_ws.served_generation(self.state, "plx"),
+        self.assertEqual(case_workspace_live_projection.served_generation(self.state, "plx"),
                          (None, "served_tenant_unproven"))
         served = current_generation(self.state / "projection")
         read = types.SimpleNamespace(store=served.store, report={
             "post_project": {"reviews": {"counts": {"decisions": 1}}}})
-        self.assertEqual(live_ws._foreign_or_unproven(self.state, "plx", read),
+        self.assertEqual(case_workspace_live_projection._foreign_or_unproven(self.state, "plx", read),
                          "served_older_than_decisions")
         with contextlib.closing(sqlite3.connect(store)) as db, db:
             db.execute("UPDATE reviews SET recorded_at = '2000-01-01T00:00:00Z'")
-        self.assertIsNone(live_ws._foreign_or_unproven(self.state, "plx", read))
+        self.assertIsNone(case_workspace_live_projection._foreign_or_unproven(self.state, "plx", read))
         with contextlib.closing(sqlite3.connect(store)) as db, db:
             db.execute("INSERT INTO reviews VALUES ('another-tenant', '2000-01-01T00:00:00Z')")
         before = private_files(self.state)
-        self.assertEqual(live_ws.served_generation(self.state, "plx"),
+        self.assertEqual(case_workspace_live_projection.served_generation(self.state, "plx"),
                          (None, "served_tenant_unproven"))
         # It falls back to a private build, which the disk check refuses before it starts.
-        with self.assertRaises(live_ws.ProjectionDiskLow):
+        with self.assertRaises(case_workspace_live_projection.ProjectionDiskLow):
             live_ws.run_projection(self.state, "plx", disk_free=lambda _path: 1)
         self.assertEqual(private_files(self.state), before)
         # Room at the start, none once it runs: the build stops and leaves no part behind.
@@ -370,17 +372,18 @@ class ServedWorld(World):
         def filling(_path):
             calls.append(1)
             return 10 ** 15 if len(calls) == 1 else 1
-        with self.assertRaises(live_ws.ProjectionDiskLow):
+        with self.assertRaises(case_workspace_live_projection.ProjectionDiskLow):
             live_ws.run_projection(self.state, "plx", disk_free=filling)
         self.assertGreater(len(calls), 1)
         self.assertEqual(private_files(self.state), before)
 
     def test_a_stopped_run_leaves_no_pin_behind(self):
         from operating import case_workspace_live as live_ws
+        from operating import case_workspace_live_projection
 
         folder = self.state / "case-workspace-live"
         folder.mkdir(exist_ok=True)
-        dead = folder / f"{live_ws.PIN_PREFIX}00000001-999999999-deadbeef.sqlite"
+        dead = folder / f"{case_workspace_live_projection.PIN_PREFIX}00000001-999999999-deadbeef.sqlite"
         dead.write_bytes(b"")
         chosen = live_ws.run_projection(self.state, "plx")
         self.addCleanup(chosen.close)

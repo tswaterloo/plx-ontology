@@ -420,8 +420,9 @@ class CheckerCatchesBrokenFiles(unittest.TestCase):
         self.assertTrue(any("no authority rule" in p for p in self.problems(self.doc)))
 
     def test_authority_lineage_no_source_produces(self):
-        self.prop("SalesOrder", "required_date")["authority"]["precedence"][0]["lineage"] = ["sage_bronze"]
-        self.assertTrue(any("authority lineage sage_bronze" in p for p in self.problems(self.doc)))
+        # AUD-08 gave required_date a Sage source (sage_bronze is produced now); silver_view is not
+        self.prop("SalesOrder", "required_date")["authority"]["precedence"][0]["lineage"] = ["silver_view"]
+        self.assertTrue(any("authority lineage silver_view is produced by none" in p for p in self.problems(self.doc)))
 
     def test_staging_rows_cannot_be_authority(self):
         precedence = self.prop("SalesOrder", "customer_po")["authority"]["precedence"]

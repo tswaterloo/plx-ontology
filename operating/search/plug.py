@@ -38,6 +38,10 @@ POOL_K = 2 * FIND_K
 # The longest a tool call waits for the ranking it started (``prefetch``); past it the
 # word index answers alone and says so (``search_fallback``).
 RANK_WAIT_S = 20.0
+# The search chunks kept per hit, best first (``chunk_handles``: the citations of the
+# fields they were cut from): plx.find quotes a hit from those fields of its store text
+# alone, never from every chunk of the object (AUD-11: 205 s a free-text find).
+HIT_CHUNKS = 3
 _POOL = cf.ThreadPoolExecutor(max_workers=4, thread_name_prefix="plx-search")
 # An as_known_at this close to now is "now" (a cursor pins the first page's time).
 NOW_TOLERANCE = dt.timedelta(minutes=15)
@@ -80,6 +84,9 @@ class Ranked:
     hits: list[dict[str, Any]] = field(default_factory=list)
     mode: str = "index"
     problem: str | None = None
+    # the ranked lists the ranking was made without (``SearchResult.failed``: a retriever
+    # past its timeout, no question vector): shown as a ``search_partial`` gap
+    failed: tuple[str, ...] = ()
 
 
 _CALL: ContextVar[dict[str, Any] | None] = ContextVar("plx_search_call", default=None)
@@ -89,7 +96,8 @@ _CALL: ContextVar[dict[str, Any] | None] = ContextVar("plx_search_call", default
 def call_state() -> Iterator[dict[str, Any]]:
     """One tool call's search state: the rankings fetched before the store lock is
     taken (``prefetch``) and the mode and problem of the ranking the call used."""
-    state: dict[str, Any] = {"mode": "index", "problem": None, "prefetched": {}}
+    state: dict[str, Any] = {"mode": "index", "problem": None, "failed": (),
+                             "prefetched": {}}
     token = _CALL.set(state)
     try:
         yield state
@@ -116,7 +124,8 @@ def _rank(policy: Any, actor: Any, query: str, *,
     try:
         key: tuple | None = (id(policy), actor, query, tuple(kinds or ()), k,
                              os.environ.get("PLX_PG_DSN"), os.environ.get("PLX_SEARCH_WEIGHTS"),
-                             os.environ.get("PLX_RERANK"))
+                             os.environ.get("PLX_RERANK"),
+                             os.environ.get("PLX_SEARCH_BQ"))
         hash(key)
     except TypeError:
         key = None   # an unhashable reader is never reused
@@ -128,7 +137,9 @@ def _rank(policy: Any, actor: Any, query: str, *,
                 _RECENT.move_to_end(key)
                 return found[2]
     result = _ranked_now(policy, actor, query, kinds=kinds, k=k)
-    if key is not None and result.problem is None:
+    # A ranking made without one of its lists is not reused: the next page or repeat
+    # ranks again (its cursor then says the order moved) rather than keep the gap 10 min.
+    if key is not None and result.problem is None and not result.failed:
         with _RECENT_LOCK:
             _RECENT[key] = (now, policy, result)
             _RECENT.move_to_end(key)
@@ -152,20 +163,32 @@ def _ranked_now(policy: Any, actor: Any, query: str, *,
     try:
         weights = load_weights()
         weights = dataclasses.replace(weights, rerank_top=min(weights.rerank_top, FIND_K))
+        # Logged (``search.query_log``, operator-only): the question, each shown hit's
+        # signals and every failed list, so a list that silently stops ranking is seen.
         result = search(query, actor, k=k, kinds=kinds, policy=policy, item_gate=_deferred,
-                        weights=weights, hidden=False, log=False)
+                        weights=weights, hidden=False, log=True)
     except Exception as exc:  # noqa: BLE001 - the word index answers, and says so
         return Ranked(problem="search_unavailable:" + type(exc).__name__)
     if "no_read_policy" in result.notes:
         return Ranked(problem="search_no_read_policy")
     out: list[dict[str, Any]] = []
-    seen: set[str] = set()
+    first: dict[str, dict[str, Any]] = {}
     for hit in result.hits:
         object_id = hit.get("object_id")
-        if isinstance(object_id, str) and object_id and object_id not in seen:
-            seen.add(object_id)
-            out.append(hit)
-    return Ranked(out, "hybrid")
+        if not isinstance(object_id, str) or not object_id:
+            continue
+        handle = hit.get("handle")
+        if object_id not in first:
+            # one hit per object; the handles of its best-ranked chunks ride on it (each
+            # passed the search's own permission filter in SQL)
+            first[object_id] = dict(hit, chunk_handles=[handle] if isinstance(handle, str)
+                                    else [])
+            out.append(first[object_id])
+        elif isinstance(handle, str):
+            held = first[object_id]["chunk_handles"]
+            if handle not in held and len(held) < HIT_CHUNKS:
+                held.append(handle)
+    return Ranked(out, "hybrid", failed=tuple(result.failed))
 
 
 def _gated(result: Ranked, policy: Any, actor: Any, item_gate: Any) -> Ranked:
@@ -181,10 +204,14 @@ def _gated(result: Ranked, policy: Any, actor: Any, item_gate: Any) -> Ranked:
         if len(out) >= FIND_K:
             break
         if reader.item_allowed(hit.get("handle")):
-            out.append(hit)
+            # the hit's other chunks are quoted only from items this reader may open
+            out.append(dict(hit, chunk_handles=[
+                h for h in hit["chunk_handles"]
+                if h == hit.get("handle") or reader.item_allowed(h)])
+                if hit.get("chunk_handles") else hit)
     digest = hashlib.sha256(json.dumps([h["object_id"] for h in out]).encode()
                             ).hexdigest()[:16]
-    return Ranked(out, "hybrid:" + digest)
+    return Ranked(out, "hybrid:" + digest, failed=result.failed)
 
 
 def prefetch(policy: Any, actor: Any, item_gate: Any, query: str) -> None:
@@ -196,10 +223,12 @@ def prefetch(policy: Any, actor: Any, item_gate: Any, query: str) -> None:
         state["prefetched"][query] = _POOL.submit(_rank, policy, actor, query)
 
 
-def ranked(policy: Any, actor: Any, item_gate: Any, query: str) -> Ranked:
+def ranked(policy: Any, actor: Any, item_gate: Any, query: str, *,
+           wait: float | None = None) -> Ranked:
     """The call's ranking of ``query`` (prefetched, else run now), gated for this
     reader (``_gated``) and recorded as the call's mode. Search off: an empty
-    ``index`` ranking."""
+    ``index`` ranking. ``wait``: the longest the call waits for a prefetched ranking
+    (at most ``RANK_WAIT_S``; a call's own time budget), past it ``search_timeout``."""
     if not enabled():
         return Ranked()
     state = _CALL.get()
@@ -208,7 +237,8 @@ def ranked(policy: Any, actor: Any, item_gate: Any, query: str) -> Ranked:
         result = _rank(policy, actor, query)
     else:
         try:
-            result = found.result(timeout=RANK_WAIT_S)
+            result = found.result(timeout=RANK_WAIT_S if wait is None
+                                  else max(0.0, min(RANK_WAIT_S, wait)))
         except cf.TimeoutError:
             result = Ranked(problem="search_timeout")
         except Exception as exc:  # noqa: BLE001 - the word index answers, and says so
@@ -216,14 +246,25 @@ def ranked(policy: Any, actor: Any, item_gate: Any, query: str) -> Ranked:
     result = _gated(result, policy, actor, item_gate)
     if state is not None:
         state["mode"], state["problem"] = result.mode, result.problem
+        state["failed"] = result.failed
     return result
 
 
 def fallback_gap(subject: str) -> dict[str, Any] | None:
-    """The gap a call states when hybrid search was asked for and could not run."""
+    """The gap a call states when hybrid search was asked for and could not run
+    (``search_fallback``), or ran without some of its ranked lists (``search_partial``:
+    e.g. the meaning list past its timeout, so the order is by words alone)."""
     state = _CALL.get()
-    if state is None or not state.get("problem"):
+    if state is None:
         return None
+    if not state.get("problem"):
+        failed = tuple(state.get("failed") or ())
+        if not failed:
+            return None
+        return {"state": "unknown", "reason": "search_partial", "subject": subject[:700],
+                "detail": ("hybrid search ranked without its " + ", ".join(failed)
+                           + " list" + ("s" if len(failed) > 1 else "") + " (failed or past "
+                           "its time limit); matches only that list finds may be missing")}
     return {"state": "unknown", "reason": "search_fallback", "subject": subject[:700],
             "detail": ("hybrid search could not run (" + state["problem"][:80] + "); only "
                        "the word index answered: a document must hold every word of the "
@@ -233,7 +274,7 @@ def fallback_gap(subject: str) -> dict[str, Any] | None:
 def check_cursor_mode(cursor_mode: str | None, mode: str) -> None:
     """A page cursor continues only the ranking it was written for: a mode or order
     change mid-pagination is an explicit error, never a short or "complete" page."""
-    from operating.ontology_tools import ToolError
+    from operating.ontology_tools_identity import ToolError
     if (cursor_mode or "index") != mode:
         raise ToolError("invalid_cursor",
                         "the ranking this cursor pages has changed (hybrid search ran or "

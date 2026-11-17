@@ -93,10 +93,9 @@ from typing import Any, Callable, Iterable, Mapping, Sequence
 
 from .copy_gate import count as _count, say_date as _say
 from .proactive_business import _tick
-from .proactive_chasers import (AUTOMATED, CUSTOMER_MAIL, CUSTOMER_PO, CUSTOMER_TWINS,
-                                MENTIONS_CPO, PUBLIC_MAIL, SETTLED_MENTION, SO, _FORWARD,
-                                _OID, _REPLY, _addr, _customers, _instant, _order_facts,
-                                _row, _touch, _words)
+from .proactive_chasers import (AUTOMATED, CUSTOMER_MAIL, CUSTOMER_PO, CUSTOMER_TWINS, MENTIONS_CPO,
+                                PUBLIC_MAIL, SETTLED_MENTION, SO, _FORWARD, _OID, _REPLY, _addr,
+                                _customers, _instant, _order_facts, _touch, _words)
 
 COMMITMENTS = "commitments"
 NEEDS_REPLY = "needs_reply"

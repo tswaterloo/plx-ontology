@@ -6,7 +6,10 @@ from __future__ import annotations
 from datetime import date, datetime, timezone
 import unittest
 
-from operating import time_window
+from operating import (active_population, copy_gate, po_status, proactive_engine,
+                       sales_order_status, system_activity, time_window)
+from operating import proactive_engine_findings
+from operator_api import presentation
 
 
 SHAPES = (
@@ -43,6 +46,64 @@ class BusinessDayTests(unittest.TestCase):
             with self.subTest(bad=bad):
                 self.assertIsNone(time_window.business_day(bad))
 
+    def test_every_day_helper_reads_by_the_one_rule(self):
+        helpers = (active_population.day_of, po_status.day_of, proactive_engine_findings._day,
+                   sales_order_status.day_of, system_activity.day_of, copy_gate._as_day)
+        for helper in helpers:
+            for raw, day, why in SHAPES:
+                with self.subTest(helper=helper.__module__, raw=raw):
+                    self.assertEqual(helper(raw), day)
+        self.assertEqual(system_activity.day_of("20261101"), date(2026, 11, 1))   # Sage
+        self.assertEqual(sales_order_status.day_of({"value": "2026-11-01T02:00:00Z"}),
+                         date(2026, 10, 31))
+
+    def test_the_app_says_the_business_day(self):
+        self.assertEqual(presentation.date_words("due 2025-04-14T00:00:00Z"),
+                         "due Apr 14, 2025")
+        self.assertEqual(presentation.date_words("created 2026-04-16T02:54:47.539000"),
+                         "created Apr 15, 2026")
+        self.assertEqual(presentation.date_words("as of 2026-11-01T02:00:00Z"),
+                         "as of Oct 31, 2026")
+        self.assertEqual(presentation.date_words("on 2026-02-30"), "on 2026-02-30")
+
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ClaimZoneTests(unittest.TestCase):
+    """C-09: a claim of a stored timestamp is checked against its cited cell read under
+    the zone the source declares, the way the projection stored it."""
+
+    def check(self, relation, column, cell, claimed):
+        from operating import claim_checks
+        from operating import claim_checks_parse
+        handle = f"api://portal/{relation}/x@g"
+        resolved = {"relation": relation, "row": {column: cell}}
+        claim = {"value": claimed, "citation": handle, "field": f"row.{column}"}
+        items = [{"id": "F1", "texts": [], "citations": [{"handle": handle,
+                                                          "status": "resolved"}],
+                  "value_claims": claim_checks_parse.parse_value_claims([claim], [handle], [])}]
+        result = claim_checks.check_items(items, rows=lambda h: resolved if h == handle
+                                          else None)
+        return result["counts"]["passed"] == result["counts"]["claims"] == 1
+
+    def test_a_prisma_stamp_is_its_utc_instant(self):
+        rel = "public.app_production_task"
+        self.assertTrue(self.check(rel, "created_at", "2026-04-16T02:54:47.539",
+                                   "2026-04-16T02:54:47.539000Z"))
+        self.assertTrue(self.check(rel, "created_at", "2026-04-16T02:54:47.539",
+                                   "2026-04-16T02:54:47.539"))       # the cell as written
+        self.assertFalse(self.check(rel, "created_at", "2026-04-16T02:54:47.539",
+                                    "2026-04-16T06:54:47.539000Z"))
+
+    def test_a_filemaker_wall_clock_stamp_is_its_eastern_instant(self):
+        rel = "silver.batches"
+        self.assertTrue(self.check(rel, "updated_at", "2025-03-10T09:19:34Z",
+                                   "2025-03-10T13:19:34.000000Z"))
+        self.assertFalse(self.check(rel, "updated_at", "2025-03-10T09:19:34Z",
+                                    "2025-03-10T09:19:34.000000Z"))   # the false label
+
+    def test_an_undeclared_column_is_read_as_written(self):
+        self.assertFalse(self.check("public.no_such_relation", "created_at",
+                                    "2026-04-16T02:54:47.539", "2026-04-16T02:54:47.539000Z"))

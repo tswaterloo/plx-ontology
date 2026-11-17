@@ -26,6 +26,7 @@ from datetime import date
 from typing import Any, Hashable, Iterable, Mapping, Sequence
 
 from . import source_defaults
+from . import time_window
 
 ACTIVE_DAYS = 180
 CLOSED, HISTORIC = "closed", "historic"
@@ -38,12 +39,7 @@ def day_of(value: Any) -> date | None:
     """The day a stored date or timestamp names (a row's ``value`` or plain text)."""
     if isinstance(value, Mapping):
         value = value.get("value")
-    if isinstance(value, date):
-        return value
-    try:
-        return date.fromisoformat(str(value).strip()[:10])
-    except ValueError:
-        return None
+    return time_window.business_day(value)
 
 
 def import_days(pairs: Iterable[tuple[Hashable, Any]]) -> dict[Hashable, frozenset]:

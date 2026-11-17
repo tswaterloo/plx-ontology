@@ -27,25 +27,25 @@ GATED = 20          # copies item-gated per hit at most (the count's ceiling)
 def lookup(conn: Any, scope: Mapping[str, Any], groups: Sequence[str]
            ) -> dict[str, list[dict[str, Any]]]:
     """dup_group -> the readable copies (one row per source item: handle, kind, title,
-    occurred_at, authority, audience_key) of each substantive, non-boilerplate cluster;
-    a cluster outside those bounds maps to []."""
+    occurred_at, authority, audience_key, a body for the caller's same-text check) of
+    each substantive, non-boilerplate cluster; a cluster outside those bounds maps to []."""
     groups = sorted({g for g in groups if g})
     if not groups:
         return {}
     rows = conn.execute(
         f"""SELECT c.dup_group, c.source_handle, min(c.kind), min(c.title),
                    min(c.occurred_at), max(c.authority), min(c.audience_key),
-                   max(length(c.body))
+                   max(length(c.body)), min(c.body)
             FROM search.chunks c
             WHERE c.dup_group = ANY(%(groups)s::text[]) AND {PERM}
             GROUP BY c.dup_group, c.source_handle
             ORDER BY c.dup_group, c.source_handle""",
         dict(scope, groups=groups)).fetchall()
     out: dict[str, list[dict[str, Any]]] = {g: [] for g in groups}
-    for group, handle, kind, title, occurred, authority, key, length in rows:
+    for group, handle, kind, title, occurred, authority, key, length, body in rows:
         out[group].append({"handle": handle, "kind": kind, "title": title,
                            "occurred_at": occurred, "authority": authority,
-                           "audience_key": key, "length": length or 0})
+                           "audience_key": key, "length": length or 0, "body": body})
     for group, members in out.items():
         if not members or len(members) > MAX_HANDLES or (
                 len(members) > SHORT_MAX_HANDLES

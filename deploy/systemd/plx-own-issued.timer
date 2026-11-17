@@ -1,0 +1,11 @@
+[Unit]
+Description=PLX own-issued guard refresh, every 15 minutes (judges only the documents the delta added)
+
+[Timer]
+OnBootSec=10min
+OnCalendar=*:0/15
+Persistent=true
+RandomizedDelaySec=60
+
+[Install]
+WantedBy=timers.target

@@ -29,7 +29,6 @@ import contextlib
 import hashlib
 import io
 import json
-import os
 from pathlib import Path
 import sqlite3
 import sys

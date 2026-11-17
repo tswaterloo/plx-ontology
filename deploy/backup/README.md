@@ -92,10 +92,104 @@ Pick a set: `S=/data/backups/daily; T=<stamp>`.
    (`PLX_BACKUP_PG_SCHEMA_ONLY=`) restores directly.
 5. Start the services again; `systemctl status 'plx-*'`.
 
-## Off-site copies: OPEN, needs the owner
+## Off-box copy to a Spark (owner, 15 Nov 2026; no S3)
 
-Two off-site destinations (another region or provider each, e.g.
-The hook is ready: copy
-`offsite_hook.example.sh`, fill in both destinations, and set `PLX_BACKUP_OFFSITE_HOOK`.
-Until then every run reports `"offsite": "not_configured"`. Encrypt before upload if the
-destination is not encrypted at rest under PLX control (the state holds business text).
+`offbox_copy.py` (units `plx-offbox-copy`, daily 6:45 AM ET, and `plx-offbox-restore-test`,
+daily 12:30 PM ET) copies the newest healthy nightly set and the capture backup to the DGX
+Spark sb4ec (`PLX_OFFBOX_HOSTS`, sb4ec only), over the tailnet ssh. Each file
+is encrypted on this box (gpg AES256, key `~/.config/plx/offbox.key`, 0600, made once with
+`offbox_copy.py init-key`, never printed; its one escrow copy is described below), sent with `rsync --checksum` into
+`~/plx-offbox` (0700, ours, files 0600) and kept only after the Spark's sha256 matches.
+Objects are content-addressed, so an unchanged piece is sent once; the newest 7 records are
+kept. Green only when the sources are whole and every object of the record matched on the
+Spark in that run; otherwise the unit fails (exit 3 incomplete, 1 failed) and the plx-
+OnFailure alarm fires. Status: `~/.local/state/plx-offbox/{status,restore-status}.json`.
+
+Data host and key never on one machine (review 459af42e5c): s7d3d holds the key's escrow
+copy, so it is never a data host. A host listed in both `PLX_OFFBOX_HOSTS` and
+`PLX_OFFBOX_ESCROW_HOSTS` (s7d3d) is refused before any connection, and a run fails before
+any upload when a configured data host holds `~/.config/plx/offbox.key`. The host of the
+first copy is kept; when it is unreachable the run FAILS (exit 1, the alarm) and never moves
+the copy to another Spark.
+
+Speed: one ssh stream over the userspace tailnet carries ~0.7 MB/s (a per-flow limit, not
+the CPU or the cipher), so batches go out on 8 separate ssh connections (~5.4 MB/s measured
+15 Nov; `PLX_OFFBOX_STREAMS`, at most 12: 16 made the jump host's sshd drop connections). The
+Postgres set goes first, and a newer healthy set that lands during a long run goes to the
+head of the queue and replaces the older set in that run's record. `PLX_OFFBOX_BWLIMIT_KBPS`
+(unit: 4096 KiB/s over all streams, split per stream) caps the upload, so a reseed after a
+Spark reset does not starve the embedding and test traffic; it takes about 4-5 h for ~59 GB.
+Partial uploads an interrupted run leaves in `incoming/` are removed after 12 h
+(`PLX_OFFBOX_INCOMING_MAX_HOURS`). The restore test tries the newest record first, then each
+older kept record until one passes, and reports the newest, the one that passed and every
+one tried; a corrupt record fails it even when an older one passes.
+
+Known limits: a capture list file (`lists/*.gz`) is copied only when the frozen capture
+manifest names its digest (the piece's `listing`) and the bytes read match it; a list with no
+digest (an adopted piece) is left out and counted in `capture.lists_unverifiable` (the
+capture backup re-reads the archive without it). The secrets tarball and the nightly
+manifest carry no digest of their own; they are encrypted as read. The Spark sees ciphertext
+sizes and record timestamps, never names or contents.
+
+Key escrow (owner, 15 Nov 2026): the data is on sb4ec and the second copy of the key is on
+the OTHER Spark, `s7d3d:~/.config/plx/offbox.key` (directory 0700, file 0600, our user), so
+losing one machine (this box or either Spark) leaves the data readable, while neither Spark
+holds both the data and the key. It was copied over ssh stdin and checked by comparing sha256
+on both ends; the key is never printed. Check it (prints only MATCH or DIFFERENT):
+
+    F=/data/plx-state/ts-petra/ssh_config
+    [ "$(sha256sum < ~/.config/plx/offbox.key)" = "$(ssh -F $F s7d3d 'sha256sum < ~/.config/plx/offbox.key')" ] && echo MATCH || echo DIFFERENT
+
+Open risk (decision for the owner and Vince): an admin with root on both Sparks, or one
+account that reaches both, could take the key from s7d3d and the ciphertext from sb4ec and
+read every backup, including excluded people's capture. The code only keeps the two on
+different machines; it cannot stop a person who controls both. Mitigation: move the key's
+second copy off the Sparks (the owner's password vault or another machine neither Spark
+admin controls), then remove it from s7d3d. There is no S3, so an off-Spark escrow needs a
+place Vince provides: on the Vince list.
+
+The backup secrets passphrase (`~/.config/plx/backup-secrets.pass`, the only passphrase of
+the nightly `secrets-<stamp>.tar.gpg`) is escrowed the same way: a second copy at
+`s7d3d:~/.config/plx/backup-secrets.pass` (0600, ours; copied over ssh stdin on 15 Nov 2026
+and checked by sha256, never printed), never on sb4ec. Check it the same way:
+
+    [ "$(sha256sum < ~/.config/plx/backup-secrets.pass)" = "$(ssh -F $F s7d3d 'sha256sum < ~/.config/plx/backup-secrets.pass')" ] && echo MATCH || echo DIFFERENT
+
+The daily restore test proves recovery without this box: besides the sampled objects it
+checks on s7d3d (`PLX_OFFBOX_ESCROW_HOSTS`) that the escrowed key matches this box's key and
+both escrowed files are ours, 0600, in a 0700 directory, and it opens the record's secrets
+archive with the ESCROWED passphrase (read over ssh into a 0600 file in its private work
+directory, deleted after). A missing, unsafe, different or non-opening escrow copy, or an
+unreachable s7d3d, fails the test (alarm). A new passphrase must be escrowed the same day.
+
+The owner may keep a third copy of both in his vault. A new key (`init-key` again) makes the old
+Spark copy unreadable with the new key: escrow the new key the same way the same day.
+
+Recovery after losing this box: on a new box (or on s7d3d itself) take the key from s7d3d
+(`install -m 600` it to `~/.config/plx/offbox.key`, or point `PLX_OFFBOX_KEY` at it) and the
+secrets passphrase (`install -m 600` it to `~/.config/plx/backup-secrets.pass`), set
+`PLX_OFFBOX_HOSTS=sb4ec` and run `offbox_copy.py restore-test` to prove the newest record
+decrypts. Then `rsync` the record (`copies/<stamp>.json.gpg`) and every object it names from
+`sb4ec:~/plx-offbox/` back, `gpg -d --batch --pinentry-mode loopback --passphrase-file <key>`
+each, check each plaintext sha256 against the record, and put each file at its `rel` path
+(`daily/...` under /data/backups, `capture/...` under /var/backups/plx-capture); then the
+restores above (Postgres first). The secrets archive opens with the escrowed passphrase:
+`gpg -d --batch --pinentry-mode loopback --passphrase-file ~/.config/plx/backup-secrets.pass
+daily/secrets-<stamp>.tar.gpg | tar -x -C <restore dir>`. Without this box's ssh_config, reach sb4ec through s7d3d
+(`ssh -J <user>@<s7d3d> <user>@192.168.100.11`; the tailnet refuses ssh straight to sb4ec).
+
+## Root-only /etc/plx files (live-session.env, mint-readers.env, api-model.env, backup-root.conf)
+
+These stay 0600 root (plx-mint-link refuses a looser mode). `plx-backup.service` runs
+`root_secrets.sh` as `ExecStartPre=+` (root). Its settings (archive directory, backup user,
+passphrase file) come only from the root-owned `/etc/plx/backup-root.conf` (0600 root, keys
+`ROOT_SECRETS_DIR`, `ROOT_SECRETS_OWNER`, `ROOT_SECRETS_PASSPHRASE_FILE`), never from the
+backup user's environment. The script pipes a tar of exactly those four files (the conf itself too, since the backup scans /etc/plx and would otherwise list it as missing) into gpg
+(AES256, the secrets passphrase), writes it in a fresh root-made directory under /run, chowns
+it and renames it to `/run/plx-backup/root-secrets.tar.gpg` (+ `.list`); the backup user
+carries it. It is encrypted at rest in the set, but the backup user also holds the passphrase, so this is no secrecy boundary against that user, only against reading the files in /etc/plx. `plx_backup.py` nests that archive inside
+`secrets-<stamp>.tar.gpg` and records the staged paths as `config.root_staged` in the
+manifest. A restore-needed file the run cannot read and the root step did not stage (no
+conf, no passphrase, stale or foreign-owned archive, a hand run outside systemd) is always
+`restore_files_missing` and the run exits 7. The restore test decrypts the nested archive and
+fails unless every staged file is present and non-empty. No file mode changes.

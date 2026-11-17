@@ -32,8 +32,8 @@ from .templates_api import TemplatesMixin
 from .ask_drafts import AskDraftsMixin
 from .write_intents_api import WriteIntentsMixin
 from .watch import MockWatchMixin
-from .auth import Reader
-from .errors import UserFacing
+from .auth import Reader, sign_in_kind
+from .errors import RecordNotFound, UserFacing
 
 LABEL = "FIXTURE: synthetic demo data (isolated-fixture), not real PLX records"
 NOW = datetime(2026, 10, 29, 14, 5, tzinfo=timezone.utc)
@@ -344,6 +344,8 @@ def _r(kind: str, oid: str, label: str) -> m.ObjectRef:
 
 # The other records' people, links and activity, as the real page reads them (fixture only).
 RECORD_EXTRAS: dict[str, dict[str, Any]] = {
+    # a document on the order the demo reader may not open: counted, never titled
+    "PurchaseOrder:demo:90412": {"linked_withheld": 1},
     "SalesOrder:demo:77120": {
         "related": [_r("Customer", "Customer:demo:glow", "Glow Botanicals"),
                     _r("AssemblyOrder", "AssemblyOrder:demo:AO-7712", "AO-7712"),
@@ -592,10 +594,11 @@ class MockBackend(TemplatesMixin, ActionsMixin, WriteIntentsMixin, AutopilotMixi
     # the demo's autopilot studio (``mock_studio.install``, ``serve --mock`` only)
     studio_demo: Any = None
 
-    def _ap_visible(self, reader: Reader, everyone: bool = False) -> Any:
+    def _ap_visible(self, reader: Reader, everyone: bool = False,
+                    states: tuple[str, ...] = ("open",)) -> Any:
         if self.studio_demo is not None:
-            return self.studio_demo.visible(reader)
-        return super()._ap_visible(reader, everyone)
+            return self.studio_demo.visible(reader) if states == ("open",) else []
+        return super()._ap_visible(reader, everyone, states)
 
     def _studio_modes(self, passed: bool) -> list[str]:
         if self.studio_demo is None:
@@ -663,6 +666,7 @@ class MockBackend(TemplatesMixin, ActionsMixin, WriteIntentsMixin, AutopilotMixi
         return m.Me(display_name=reader.display_name, email=reader.email,
                     principal=",".join(sorted(s.principals)), auth=reader.mode,
                     proof=s.proof, tenant=s.tenant, dev_mode=reader.mode != "entra",
+                    sign_in=sign_in_kind(reader.mode, s.proof),
                     data_label=self.data_label, expires_at=s.expires_at)
 
     def _pause(self) -> None:
@@ -713,6 +717,15 @@ class MockBackend(TemplatesMixin, ActionsMixin, WriteIntentsMixin, AutopilotMixi
         for word in re.findall(r"\S+\s*", parts["direct_answer"]):
             yield "token", m.TokenEvent(text=word)
         answer_id = secrets.token_hex(12)
+        answer = m.AnswerPayload(answer_id=answer_id, question=request.question,
+                                 freshness=FRESH, conversation_id=conversation,
+                                 latency_ms=ms(), **parts)
+        answer.follow_ups = presentation.follow_ups(request.question, answer)
+        if getattr(reader.session, "canary", False):
+            # the Ask canary's service session is nobody's own: nothing kept for the
+            # reader its claims name (as ``WorkspaceBackend.ask``)
+            yield "answer", answer
+            return
         with self._lock:
             self._answers[answer_id] = reader.key
             recent = self._recent.setdefault(reader.key, [])
@@ -720,10 +733,6 @@ class MockBackend(TemplatesMixin, ActionsMixin, WriteIntentsMixin, AutopilotMixi
                                               answer_id=answer_id,
                                               conversation_id=conversation))
             del recent[10:]
-        answer = m.AnswerPayload(answer_id=answer_id, question=request.question,
-                                 freshness=FRESH, conversation_id=conversation,
-                                 latency_ms=ms(), **parts)
-        answer.follow_ups = presentation.follow_ups(request.question, answer)
         from .backend import _answer_kept
         from .feedback import served_markings
         markings = served_markings(self, reader)
@@ -990,6 +999,47 @@ class MockBackend(TemplatesMixin, ActionsMixin, WriteIntentsMixin, AutopilotMixi
                                     m.SystemCoverage(system="planner", share=1.0, actions=140),
                                     m.SystemCoverage(system="bc", share=0.0, actions=5800)])
 
+    _DEMO_TEAMS = {"purchasing": "PUR", "customer_service": "CS", "quality": "QA",
+                   "production_planning": "PP", "receivables": "AR", "rnd": "RND",
+                   "finance": "FIN"}
+
+    def _demo_team_of(self, row: dict[str, Any]) -> Optional[str]:
+        return next((self._DEMO_TEAMS[r] for r in row.get("roles") or [] if r in self._DEMO_TEAMS), None)
+
+    def workload(self, reader: Reader) -> m.Workload:
+        """Counts per team of the demo team, and per person the reader's own row and the
+        purchasing team (a made-up grant), as the real one gives a granted manager."""
+        _until, people = self._team_demo()
+        counts = {o: (i % 4, i % 3, (i * 5) % 7) for i, o in enumerate(people)}
+        teams: dict[str, list[str]] = {}
+        for o, r in people.items():
+            team = self._demo_team_of(r)
+            if team:
+                teams.setdefault(team, []).append(o)
+        rows = [m.WorkloadTeam(team=t, tasks=sum(counts[o][1] for o in ms),
+                               alerts=sum(counts[o][2] for o in ms),
+                               awaiting_reply=sum(counts[o][0] for o in ms) if len(ms) >= 3 else None)
+                for t, ms in sorted(teams.items())]
+        granted = ["PUR"]
+        mine = [m.WorkloadPerson(person=o, name=r["name"], team=self._demo_team_of(r) or "",
+                                 self=o == "demo-0", awaiting_reply=counts[o][0],
+                                 tasks=counts[o][1], alerts=counts[o][2])
+                for o, r in people.items() if o == "demo-0" or self._demo_team_of(r) in granted]
+        return m.Workload(teams=rows, people=mine, granted_teams=granted,
+                          read_at="2026-01-05T08:30:00+00:00")
+
+    def workload_grant_sheet(self, reader: Reader) -> m.WorkloadGrantSheet:
+        """The owner's grant sheet over the demo team; 403 for every other reader, as the
+        real one."""
+        from . import feedback as fb
+        if not fb.owner_open(reader.session):
+            raise UserFacing("forbidden", "Only the owner assigns workload grants.", 403)
+        _until, people = self._team_demo()
+        rows = [m.WorkloadGrantPerson(oid=o, name=r["name"], team=self._demo_team_of(r),
+                                      sees=["PUR", "CS"] if o == "demo-0" else [])
+                for o, r in sorted(people.items(), key=lambda kv: kv[1]["name"].lower())]
+        return m.WorkloadGrantSheet(people=rows, teams=sorted(set(self._DEMO_TEAMS.values())))
+
     def team_person(self, reader: Reader, key: str) -> m.TeamPersonDetail:
         from .errors import UserFacing
         from .team_view import key_of, person_row
@@ -1040,32 +1090,9 @@ class MockBackend(TemplatesMixin, ActionsMixin, WriteIntentsMixin, AutopilotMixi
         return m.RdBoard(as_of="2026-01-05", idle_after_days=idle_days(), total=0, idle=0, sent=0,
                          writes=0)
 
-    def uat_feedback(self, reader: Reader, status: Optional[str] = None) -> m.UatFeedback:
-        """A few synthetic UAT items so the page works in the demo world."""
-        from .errors import UserFacing
-        if status is not None and status not in ("open", "fixed", "answered", "unknown"):
-            raise UserFacing("invalid_request", "status is open, fixed, answered or unknown.",
-                             422)
-        rows = [("1", "Label print cuts the lot number", "open", "Critical", 12),
-                ("2", "BOM export misses phantom items", "open", "High", 30),
-                ("3", "Report title typo", "open", "Low", 3),
-                ("4", "Receiving screen slow", "fixed", "High", 40),
-                ("5", "Ask about unit of measure", "answered", None, 20)]
-        totals = {"answered": 1, "fixed": 1, "open": 3}
-        items = [m.UatItem(record=f"SharePointListItem:uat-{i}", list="MRP UAT Feedback",
-                           title=t, status=s, status_word=s.title(), priority=p,
-                           modified="2026-01-05", age_days=a if s == "open" else None)
-                 for i, t, s, p, a in rows if not status or s == status]
-        counts: dict[str, int] = {}
-        for it in rows:
-            if it[2] == "open":
-                w = it[3] or "No priority"
-                counts[w] = counts.get(w, 0) + 1
-        return m.UatFeedback(
-            as_of="2026-01-05", status=status, totals=totals, total=5,
-            open_priorities=[m.UatPriorityCount(word=w, count=n) for w, n in counts.items()],
-            lists=["MRP UAT Feedback"], items=items, matched=totals.get(status, 5) if status
-            else 5)
+    def answer_bank(self, reader: Reader, question: Optional[str] = None) -> m.DocList:
+        """The mock workspace holds no questionnaires: the list, read and empty."""
+        return m.DocList(view="answer_bank", title="Answers any customer may get")
 
     def record_pack(self, reader: Reader, object_type: str, object_id: str) -> m.RecordPack:
         from .errors import UserFacing
@@ -1079,7 +1106,7 @@ class MockBackend(TemplatesMixin, ActionsMixin, WriteIntentsMixin, AutopilotMixi
     def meeting_follow_up(self, reader: Reader, meeting_id: str) -> m.MeetingFollowUp:
         from operating import meeting_followup as mf
         from operating import card_actions as ca
-        from .briefs import _follow_ups, _viewer
+        from .briefs import _viewer
         from .errors import UserFacing
         store = mf.FollowUps(self.state_dir, self.meeting_people) if self.state_dir else None
         record = store.get(meeting_id) if store else None
@@ -1232,7 +1259,7 @@ class MockBackend(TemplatesMixin, ActionsMixin, WriteIntentsMixin, AutopilotMixi
                     or (o["type"].lower() == object_type.lower()
                         and object_id.lower() in (*o["aliases"], o["label"].lower()))), None)
         if obj is None:
-            raise KeyError("object_not_found")
+            raise RecordNotFound()
         po = obj["object_id"] == "PurchaseOrder:demo:90412"
         status = (m.ObjectStatus(state="late", text="12 days late: due 17 Oct, supplier "
                                  "now ships 4 Nov", sources=[PO_ROW, MAIL]) if po else
@@ -1351,10 +1378,15 @@ class MockBackend(TemplatesMixin, ActionsMixin, WriteIntentsMixin, AutopilotMixi
         page = self.object_page(reader, object_type, object_id)
         po = page.type == "PurchaseOrder"
         margin = page.type in ("Customer", "SalesOrder")
+        from .record_documents import LISTS, TITLES
+        docs = section == "documents" and page.type in LISTS
         return m.ObjectSection(
             object_id=page.object_id, section=section,
-            applies=po or section in ("people", "landed_cost")
-            or (section == "margin" and margin),
+            applies=(po and section != "documents") or section in ("people", "landed_cost")
+            or (section == "margin" and margin) or docs,
+            # the mock workspace holds no sheets or mail: each list, read and empty
+            documents=m.RecordDocuments(lists=[m.DocList(view=v, title=TITLES[v])
+                                               for v in LISTS[page.type]]) if docs else None,
             profitability=page.profitability if section == "margin" else None,
             status=page.status if section == "late" and po else None,
             late_lines=page.late_lines if section == "late" else [],
@@ -1377,7 +1409,7 @@ class MockBackend(TemplatesMixin, ActionsMixin, WriteIntentsMixin, AutopilotMixi
                                 kind="text", title=named["label"], text=named["label"],
                                 fields={}, as_of=None, text_offset=text_offset)
         if s is None:
-            raise KeyError("source_not_found")
+            raise RecordNotFound("source_not_found")
         return m.SourceView(handle=s.handle, system=s.system, label=s.label,
                             kind="record" if s.fields else "text", title=s.label,
                             text=s.quote, fields=s.fields, as_of=s.as_of,
@@ -1413,7 +1445,7 @@ class MockBackend(TemplatesMixin, ActionsMixin, WriteIntentsMixin, AutopilotMixi
     def answer_context(self, reader: Reader, answer_id: str) -> dict[str, Any]:
         with self._lock:
             if self._answers.get(answer_id) != reader.key:
-                raise KeyError("answer_not_found")
+                raise RecordNotFound("answer_not_found")
             return dict(self._kept.get(answer_id) or {})
 
     # the fixture's grants: reader key -> markings held (set by a test or a demo)
@@ -1430,7 +1462,7 @@ class MockBackend(TemplatesMixin, ActionsMixin, WriteIntentsMixin, AutopilotMixi
     def feedback(self, reader: Reader, request: m.FeedbackRequest) -> m.FeedbackResponse:
         with self._lock:
             if self._answers.get(request.answer_id) != reader.key:
-                raise KeyError("answer_not_found")
+                raise RecordNotFound("answer_not_found")
             self._feedback.append({"answer_id": request.answer_id, "rating": request.rating,
                                    "note": request.note})
             number = len(self._feedback)

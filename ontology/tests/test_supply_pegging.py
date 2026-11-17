@@ -33,7 +33,7 @@ from ontology import identifiers, owner_links as ol, schema
 from ontology.project import CapturedRecord, build_store
 
 T = "2026-10-01T00:00:00Z"
-KEYS = {"tasks": ("scope", "id"), "people": ("person_key",)}
+KEYS = {"tasks": ("scope", "id"), "approvals": ("scope", "id"), "people": ("person_key",)}
 
 
 class Source:
@@ -170,12 +170,24 @@ PEOPLE = {"people": [
     {"person_key": "p1", "kind": "staff", "object_id": STAFF,
      "addresses": ["jane.doe@plx.test"], "domain": "plx.test"},
     {"person_key": "p2", "kind": "staff", "object_id": BARRED,
-     "addresses": ["omar@plx.test"], "domain": "plx.test"}]}
-MC = {"tasks": [{"scope": "s", "id": "t1", "title": "Call", "assignee": "jane.doe"},
-                {"scope": "s", "id": "t2", "title": "Call", "assignee": "omar"}]}
+     "addresses": ["omar@plx.test"], "domain": "plx.test"},
+    {"person_key": "p3", "kind": "staff", "object_id": "44444444-4444-4444-4444-444444444444",
+     "addresses": ["jesse@plx.test"], "domain": "plx.test"}]}
+MC = {"tasks": [{"scope": "s", "id": "t1", "title": "Call", "assignee": "jane.doe",
+                 "reporter": "Jane.Doe@plx.test"},
+                {"scope": "s", "id": "t2", "title": "Call", "assignee": "omar",
+                 "reporter": "dependabot[bot]"}],
+      "approvals": [{"scope": "s", "id": "a1", "task_id": "t1", "status": "approved",
+                     "requestedBy": "jane.doe@plx.test", "decidedBy": "omar@plx.test"},
+                    {"scope": "s", "id": "a2", "task_id": "t1", "status": "pending",
+                     "requestedBy": "nobody@elsewhere.test", "decidedBy": ""}]}
 FM = {"public.generated_purchase_order": [
     {"id": 7, "ponumber": "PO#7", "requisitioner_c": "Jane Doe"},
-    {"id": 8, "ponumber": "PO#8", "requisitioner_c": "Omar"}]}
+    {"id": 8, "ponumber": "PO#8", "requisitioner_c": "Omar"}],
+    # an assembly order's creator account (served shape: a first name), the planner
+    "public.assembly_order": [{"id": 10000, "nameamo_c": "AO-25001A", "auditcreator": "Jesse "},
+                              {"id": 10001, "nameamo_c": "AO-25001B", "auditcreator": "Omar"},
+                              {"id": 10002, "nameamo_c": "AO-25001C", "auditcreator": "Ana"}]}
 
 
 class Owners(unittest.TestCase):
@@ -200,12 +212,21 @@ class Owners(unittest.TestCase):
     def test_owner_fields_reach_one_staff_person_never_an_excluded_one(self):
         rows = self.owners({"PLX_EXCLUDED_PEOPLE_OIDS": BARRED, "PLX_EXCLUSION_ENV_FILE": ""})
         got = {(r[0], r[1].split(":", 2)[2], r[3]) for r in rows}
-        self.assertEqual(got, {("MCTask.assigned_to", '{"id":"t1","scope":"s"}', "corroborated"),
-                               ("PurchaseOrder.buyer", '{"id":7}', "lead")})
+        t1, a1 = '{"id":"t1","scope":"s"}', '{"id":"a1","scope":"s"}'
+        self.assertEqual(got, {("MCTask.assigned_to", t1, "corroborated"),
+                               # the reporter's address in another case; a bot names nobody
+                               ("MCTask.reported_by", t1, "corroborated"),
+                               # the requester; the decider is the excluded person: no link,
+                               # and an unknown address or an empty field names nobody
+                               ("MCApproval.requested_by_person", a1, "corroborated"),
+                               ("PurchaseOrder.buyer", '{"id":7}', "lead"),
+                               ("AssemblyOrder.created_by", '{"id":10000}', "lead")})
         self.assertFalse(any("p2" in r[2] for r in rows))
         other = "33333333-3333-3333-3333-333333333333"
         unbarred = self.owners({"PLX_EXCLUDED_PEOPLE_OIDS": other, "PLX_EXCLUSION_ENV_FILE": ""})
-        self.assertEqual(sum("p2" in r[2] for r in unbarred), 2)
+        self.assertEqual(sorted(r[0] for r in unbarred if "p2" in r[2]),
+                         ["AssemblyOrder.created_by", "MCApproval.decided_by_person",
+                          "MCTask.assigned_to", "PurchaseOrder.buyer"])
 
     def test_no_exclusion_list_writes_nothing(self):
         self.assertEqual(self.owners({"PLX_EXCLUSION_ENV_FILE": ""}), [])

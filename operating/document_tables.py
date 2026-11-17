@@ -428,28 +428,36 @@ def _removed(conn: sqlite3.Connection, ids: Sequence[str]) -> set[str]:
     return out
 
 
+# ids per batched link read (``links_from``/``links_to``): one statement per batch, not
+# per id (a sheet's item over its 1,600 invoice lines was 1,600 statements, 11-16)
+LINK_BATCH = 500
+
+
+def _links(conn: sqlite3.Connection, ids: Iterable[str], link_type: str, near: str,
+           far: str) -> dict[str, list[str]]:
+    out: dict[str, list[str]] = defaultdict(list)
+    want = sorted(set(ids))
+    for start in range(0, len(want), LINK_BATCH):
+        for near_id, far_id in conn.execute(
+                f"SELECT {near}, {far} FROM link_rows WHERE {near} IN "
+                "(SELECT value FROM json_each(?)) AND link_type = ? "
+                "AND superseded_at IS NULL AND tier <> 'contradicted' "
+                f"ORDER BY {near}, {far}",
+                (json.dumps(want[start:start + LINK_BATCH]), link_type)):
+            out[near_id].append(far_id)
+    return out
+
+
 def links_from(conn: sqlite3.Connection, ids: Iterable[str], link_type: str
                ) -> dict[str, list[str]]:
     """from_object -> its current, uncontradicted ``link_type`` targets (by the index)."""
-    out: dict[str, list[str]] = defaultdict(list)
-    for oid in sorted(set(ids)):
-        for (to,) in conn.execute(
-                "SELECT to_object FROM link_rows WHERE from_object = ? AND link_type = ? "
-                "AND superseded_at IS NULL AND tier <> 'contradicted'", (oid, link_type)):
-            out[oid].append(to)
-    return out
+    return _links(conn, ids, link_type, "from_object", "to_object")
 
 
 def links_to(conn: sqlite3.Connection, ids: Iterable[str], link_type: str
              ) -> dict[str, list[str]]:
     """to_object -> its current, uncontradicted ``link_type`` sources (by the index)."""
-    out: dict[str, list[str]] = defaultdict(list)
-    for oid in sorted(set(ids)):
-        for (frm,) in conn.execute(
-                "SELECT from_object FROM link_rows WHERE to_object = ? AND link_type = ? "
-                "AND superseded_at IS NULL AND tier <> 'contradicted'", (oid, link_type)):
-            out[oid].append(frm)
-    return out
+    return _links(conn, ids, link_type, "to_object", "from_object")
 
 
 def values(conn: sqlite3.Connection, ids: Iterable[str], props: Sequence[str]
@@ -832,24 +840,38 @@ class Parties:
                             self.by_domain[dom].add(oid)
         self._memo: dict[str, str | None] = {}
         self._ids = ids
-        self._names: dict[str, set[str]] | None = None
+        self._shared: dict[str, Any] = {}   # the name index, built once, shared by bound copies
+
+    def unbound(self) -> "Parties":
+        """This object holding data only (no connection), the form a memo may keep."""
+        self.conn = None
+        return self
+
+    def bound(self, conn: Any) -> "Parties":
+        """A copy reading through ``conn`` (the asking request's own), sharing the data."""
+        import copy
+        out = copy.copy(self)
+        out.conn = conn
+        return out
 
     def members(self, oid: str) -> set[str]:
         """The records of one party: its settled twins, and the records of its type in
         other systems carrying exactly its normalized name (six characters or more)."""
         from ontology.identity_scoring import normalize_name
-        if self._names is None:
-            self._names = defaultdict(set)
+        names = self._shared.get("names")
+        if names is None:
+            names = defaultdict(set)
             for rid, props in values(self.conn, self._ids, ("name",)).items():
                 said = normalize_name(first(props, "name") or "")
                 if len(said.replace(" ", "")) >= 6:
-                    self._names[said].add(rid)
+                    names[said].add(rid)
+            self._shared["names"] = names
         out = cluster(self.conn, oid, self.twins)
         for rid in sorted(out):
             said = normalize_name(first(values(self.conn, [rid], ("name",)).get(rid), "name")
                                   or "")
             if len(said.replace(" ", "")) >= 6:
-                out |= self._names.get(said, set())
+                out |= names.get(said, set())
         return out
 
     def _skip(self, dom: str) -> bool:
@@ -884,6 +906,7 @@ class Resolver:
     def __init__(self, conn: sqlite3.Connection) -> None:
         self.conn = conn
         self._memo: dict[tuple[str, tuple[str, ...]], list[str]] = {}
+        self._groups: dict[tuple[str, tuple[str, ...], str | None], list[str]] = {}
 
     def __call__(self, raw: Any, types: Sequence[str]) -> list[str]:
         token = re.sub(r"\s+", "", str(raw or "")).upper()
@@ -900,11 +923,16 @@ class Resolver:
 
     def group(self, raw: Any, types: Sequence[str], twins: str | None = None) -> list[str]:
         """Every record whose identifier the value is exactly (one item code in several
-        systems or companies is one item), their settled twins joined; least id first."""
-        ids = set(self(raw, types))
-        for oid in sorted(ids):
-            ids |= cluster(self.conn, oid, twins)
-        return sorted(ids)
+        systems or companies is one item), their settled twins joined; least id first.
+        One read per value (a price sheet names the same codes on every row and sheet)."""
+        token = re.sub(r"\s+", "", str(raw or "")).upper()
+        key = (token, tuple(types), twins)
+        if key not in self._groups:
+            ids = set(self(raw, types))
+            for oid in sorted(ids):
+                ids |= cluster(self.conn, oid, twins)
+            self._groups[key] = sorted(ids)
+        return list(self._groups[key])
 
     def one(self, raw: Any, types: Sequence[str], twins: str | None = None) -> str | None:
         """The one identity a value names (twins joined by ``twins`` links), else None."""

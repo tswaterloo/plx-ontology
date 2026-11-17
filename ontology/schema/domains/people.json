@@ -485,6 +485,72 @@
    ]
   },
   {
+   "id": "Contact.same_person_as",
+   "from": "Contact",
+   "to": "Person",
+   "name": "same_person_as",
+   "reverse_name": "bc_contacts",
+   "cardinality": "N:M",
+   "description": "The Person whose address is exactly the Business Central contact's stored email (lower case, trimmed), corroborated. Exact matches only, never a plus-addressed or other-host form; never to a withheld or excluded person (none is a Person). Also a recorded human review.",
+   "bindings": [
+    {
+     "kind": "reviewed",
+     "tier_ceiling": "reviewed",
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "wb.people_links"
+      }
+     ]
+    },
+    {
+     "kind": "mention",
+     "tier_ceiling": "corroborated",
+     "from_binding": "bc.contacts",
+     "to_binding": "graph_mail.people",
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "wb.people_links"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "Person.same_person_as",
+   "from": "Person",
+   "to": "Person",
+   "name": "same_person_as",
+   "reverse_name": "same_person_as",
+   "cardinality": "N:M",
+   "description": "Another Person record of the same person: its address is this one's plus-addressed form (a+tag@d and a@d, corroborated), or the same mailbox name under another host of one registrable domain (a@mail.acme.com and a@acme.com, a lead: possibly one person). Never merged: each Person keeps its own audience. Never to a withheld or excluded person (none is a Person). Also a recorded human review.",
+   "bindings": [
+    {
+     "kind": "reviewed",
+     "tier_ceiling": "reviewed",
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "wb.people_links"
+      }
+     ]
+    },
+    {
+     "kind": "mention",
+     "tier_ceiling": "corroborated",
+     "from_binding": "graph_mail.people",
+     "to_binding": "graph_mail.people",
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "wb.people_links"
+      }
+     ]
+    }
+   ]
+  },
+  {
    "id": "TeamsChat.with_person",
    "from": "TeamsChat",
    "to": "Person",
@@ -551,6 +617,41 @@
    ]
   },
   {
+   "id": "AssemblyOrder.created_by",
+   "from": "AssemblyOrder",
+   "to": "Person",
+   "name": "created_by",
+   "reverse_name": "assembly_orders_created",
+   "cardinality": "N:M",
+   "description": "The staff Person who created (planned) the assembly order: the FileMaker account name in auditcreator, matched to one staff Person's address local part; a lead (a name is no identity).",
+   "bindings": [
+    {
+     "kind": "reviewed",
+     "tier_ceiling": "reviewed",
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "wb.people_links"
+      }
+     ]
+    },
+    {
+     "kind": "mention",
+     "tier_ceiling": "lead",
+     "from_binding": "portal.fm_assembly_order",
+     "to_binding": "graph_mail.people",
+     "evidence": [
+      {
+       "kind": "workbench_code",
+       "path": "ontology/owner_links.py",
+       "note": "with_owners step: an owner field naming exactly one staff Person, by Entra object id or address (corroborated) or by a code or name matching one address local part (lead); never an excluded person (PLX_EXCLUDED_PEOPLE_OIDS)."
+      }
+     ],
+     "written_by_step": "with_owners"
+    }
+   ]
+  },
+  {
    "id": "PurchaseOrder.buyer",
    "from": "PurchaseOrder",
    "to": "Person",
@@ -606,7 +707,7 @@
    "name": "sales_rep",
    "reverse_name": "sales_orders_represented",
    "cardinality": "N:M",
-   "description": "The order's salesperson: BC salesperson code matched to one staff Person's address local part; a lead.",
+   "description": "The order's salesperson: BC salesperson code matched to one staff Person's address local part, or the Sage salesperson code through the Sage salesperson's employee code; a lead.",
    "bindings": [
     {
      "kind": "reviewed",
@@ -631,6 +732,20 @@
       }
      ],
      "written_by_step": "with_owners"
+    },
+    {
+     "kind": "mention",
+     "tier_ceiling": "lead",
+     "from_binding": "portal.sage_oe_order_header",
+     "to_binding": "graph_mail.people",
+     "evidence": [
+      {
+       "kind": "workbench_code",
+       "path": "ontology/owner_links.py",
+       "note": "with_owners step: an owner field naming exactly one staff Person, by Entra object id or address (corroborated) or by a code or name matching one address local part (lead); never an excluded person (PLX_EXCLUDED_PEOPLE_OIDS)."
+      }
+     ],
+     "written_by_step": "with_owners"
     }
    ]
   },
@@ -641,7 +756,7 @@
    "name": "account_owner",
    "reverse_name": "customer_accounts",
    "cardinality": "N:M",
-   "description": "The customer's account owner: BC salespersonCode matched to one staff Person's address local part; a lead. The Portal account_manager_id names an app_user whose address the reporting API does not serve, so it links nobody yet.",
+   "description": "The customer's account owner: BC salespersonCode matched to one staff Person's address local part, or the Sage salesperson code through the Sage salesperson's employee code; a lead. The Portal account_manager_id names an app_user whose address the reporting API does not serve, so it links nobody yet.",
    "bindings": [
     {
      "kind": "reviewed",
@@ -657,6 +772,20 @@
      "kind": "mention",
      "tier_ceiling": "lead",
      "from_binding": "bc.customers",
+     "to_binding": "graph_mail.people",
+     "evidence": [
+      {
+       "kind": "workbench_code",
+       "path": "ontology/owner_links.py",
+       "note": "with_owners step: an owner field naming exactly one staff Person, by Entra object id or address (corroborated) or by a code or name matching one address local part (lead); never an excluded person (PLX_EXCLUDED_PEOPLE_OIDS)."
+      }
+     ],
+     "written_by_step": "with_owners"
+    },
+    {
+     "kind": "mention",
+     "tier_ceiling": "lead",
+     "from_binding": "portal.sage_ar_customer",
      "to_binding": "graph_mail.people",
      "evidence": [
       {
@@ -733,6 +862,111 @@
        "kind": "workbench_code",
        "path": "ontology/owner_links.py",
        "note": "with_owners step: an owner field naming exactly one staff Person, by Entra object id or address (corroborated) or by a code or name matching one address local part (lead); never an excluded person (PLX_EXCLUDED_PEOPLE_OIDS)."
+      }
+     ],
+     "written_by_step": "with_owners"
+    }
+   ]
+  },
+  {
+   "id": "MCTask.reported_by",
+   "from": "MCTask",
+   "to": "Person",
+   "name": "reported_by",
+   "reverse_name": "mc_tasks_reported",
+   "cardinality": "N:M",
+   "description": "The Mission Control task's reporter: an address, or a bare name that is one staff Person's address local part; corroborated. A bot or service reporter names nobody.",
+   "bindings": [
+    {
+     "kind": "reviewed",
+     "tier_ceiling": "reviewed",
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "wb.people_links"
+      }
+     ]
+    },
+    {
+     "kind": "mention",
+     "tier_ceiling": "corroborated",
+     "from_binding": "mission_control.tasks",
+     "to_binding": "graph_mail.people",
+     "evidence": [
+      {
+       "kind": "workbench_code",
+       "path": "ontology/owner_links.py",
+       "note": "with_owners step: the reporter field naming exactly one staff Person, by address (corroborated) or by a bare name that is one staff Person's address local part; never an excluded person (PLX_EXCLUDED_PEOPLE_OIDS)."
+      }
+     ],
+     "written_by_step": "with_owners"
+    }
+   ]
+  },
+  {
+   "id": "MCApproval.requested_by_person",
+   "from": "MCApproval",
+   "to": "Person",
+   "name": "requested_by_person",
+   "reverse_name": "mc_approvals_requested",
+   "cardinality": "N:M",
+   "description": "The Person whose address requested the approval; corroborated. Exact matches only; never to a withheld or excluded person.",
+   "bindings": [
+    {
+     "kind": "reviewed",
+     "tier_ceiling": "reviewed",
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "wb.people_links"
+      }
+     ]
+    },
+    {
+     "kind": "mention",
+     "tier_ceiling": "corroborated",
+     "from_binding": "mission_control.approvals",
+     "to_binding": "graph_mail.people",
+     "evidence": [
+      {
+       "kind": "workbench_code",
+       "path": "ontology/owner_links.py",
+       "note": "with_owners step: the requested_by field naming exactly one staff Person, by address (corroborated) or by a bare name that is one staff Person's address local part; never an excluded person (PLX_EXCLUDED_PEOPLE_OIDS)."
+      }
+     ],
+     "written_by_step": "with_owners"
+    }
+   ]
+  },
+  {
+   "id": "MCApproval.decided_by_person",
+   "from": "MCApproval",
+   "to": "Person",
+   "name": "decided_by_person",
+   "reverse_name": "mc_approvals_decided",
+   "cardinality": "N:M",
+   "description": "The Person whose address decided the approval; corroborated. Exact matches only; never to a withheld or excluded person.",
+   "bindings": [
+    {
+     "kind": "reviewed",
+     "tier_ceiling": "reviewed",
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "wb.people_links"
+      }
+     ]
+    },
+    {
+     "kind": "mention",
+     "tier_ceiling": "corroborated",
+     "from_binding": "mission_control.approvals",
+     "to_binding": "graph_mail.people",
+     "evidence": [
+      {
+       "kind": "workbench_code",
+       "path": "ontology/owner_links.py",
+       "note": "with_owners step: the decided_by field naming exactly one staff Person, by address (corroborated) or by a bare name that is one staff Person's address local part; never an excluded person (PLX_EXCLUDED_PEOPLE_OIDS)."
       }
      ],
      "written_by_step": "with_owners"

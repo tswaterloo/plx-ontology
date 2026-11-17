@@ -4,9 +4,12 @@
 // filler): every blank with what it held, what was put there and the record field it came
 // from, so each value is checked before anything is saved. The filled copy is a new file;
 // the original is never changed. Saving it beside its SharePoint original is an upload the
-// person approves; a reply carrying it is prepared, never sent from here.
+// person approves; a reply carrying it opens in the action dialog, where the person previews
+// the message with the file attached and sends it themselves.
 
-import type { FillField, InstructFill } from "@/lib/types";
+import { useState } from "react";
+import type { ActionResult, FillField, InstructFill } from "@/lib/types";
+import { CardActions } from "./card-actions";
 import { SaveAsTemplate } from "./templates";
 import { Upload } from "./upload-draft";
 
@@ -21,6 +24,22 @@ const LEFT: Record<string, string> = {
 
 // a suggested value is shown with its source for the person to check; it is not in the file
 const SHOWS_SOURCE = new Set(["filled", "suggested"]);
+
+/** The reply's sends; after one, what happened to it (sent, a dry run and why, failed). */
+function ReplyActions({ reply }: { reply: NonNullable<InstructFill["reply"]> }) {
+  const [done, setDone] = useState<ActionResult | null>(null);
+  return (
+    <>
+      <CardActions card={{ id: reply.card_id ?? "", subject: { label: reply.subject }, actions: reply.actions ?? [] }} state={done} onDone={setDone} />
+      {done && (
+        <p className="text-[12px] leading-4 text-muted" data-testid="fill-reply-result">
+          {done.text}
+          {(done.missing ?? []).length > 0 && ` ${(done.missing ?? []).join(" ")}`}
+        </p>
+      )}
+    </>
+  );
+}
 
 function Source({ f }: { f: FillField }) {
   if (!SHOWS_SOURCE.has(f.status) || !f.citation) return <span className="text-muted">{LEFT[f.status] ?? f.reason}</span>;
@@ -106,10 +125,19 @@ export function FillReview({ fill }: { fill: InstructFill }) {
         record={fill.record.object_id || null}
         docType="form"
       />
-      {fill.reply && (
-        <p className="text-[12px] leading-4 text-muted" data-testid="fill-reply">
-          Reply to {fill.reply.to.join(", ") || "the sender"} with {fill.reply.attachment}: {fill.reply.missing.join(" ")}
-        </p>
+      {fill.reply && fill.reply.status === "ready" && fill.reply.card_id ? (
+        <div className="space-y-1.5" data-testid="fill-reply">
+          <p className="text-[12px] leading-4 text-muted">
+            Reply to {fill.reply.to.join(", ") || "the sender"} with {fill.reply.attachment} attached. You see the message before it goes.
+          </p>
+          <ReplyActions reply={fill.reply} />
+        </div>
+      ) : (
+        fill.reply && (
+          <p className="text-[12px] leading-4 text-muted" data-testid="fill-reply">
+            Reply to {fill.reply.to.join(", ") || "the sender"} with {fill.reply.attachment}: {fill.reply.missing.join(" ")}
+          </p>
+        )
       )}
     </section>
   );

@@ -431,6 +431,11 @@ class OrderCaseGenericTest(unittest.TestCase):
         self.assertEqual((verdict["status"], verdict["code"]),
                          ("failed", "claim_value_mismatch"))
 
+
+class OrderCaseInvoicePickTest(unittest.TestCase):
+    """The invoiced pick and its turnaround (split from OrderCaseGenericTest so the
+    lander's per-class shards each stay well under its 900 s module limit)."""
+
     def test_the_invoiced_pick_joins_a_bc_invoice_to_its_portal_order_through_find(self):
         world = OrderWorld(self, invoices=INVOICES)
         opener = world.opener()
@@ -763,6 +768,9 @@ class OrderCaseGenericTest(unittest.TestCase):
         opened = OrderWorld(self, invoices=[prefixed]).opener().open_case("pick", JOIN)
         self.assertEqual(opened["pick"]["directions"]["reverse"]["bc"]["reader"], False)
 
+
+class OrderCaseReversePickTest(unittest.TestCase):
+
     def test_the_reverse_pick_keeps_the_join_rules_its_order_and_its_budget(self):
         """The reverse direction refuses what the forward one refuses
         (a case variant of a customer PO, one number in two BC companies), proposes the
@@ -1068,6 +1076,9 @@ class OrderCaseGenericTest(unittest.TestCase):
         self.assertEqual([f["feature"] == "related_same_record" for f in features],
                          [v is True for _a, _b, v in by_find])
 
+
+class OrderCaseSpecTest(unittest.TestCase):
+
     def test_the_spec_command_meets_its_expectations_over_injected_sources(self):
         """case.unfamiliar_order: the committed command (its host config copied with a
         books map that pins the fixture companies) over the in-process FakeWorkbench and
@@ -1172,6 +1183,9 @@ class OrderCaseGenericTest(unittest.TestCase):
         self.assertEqual(lv.check_expectations(spec, code, document, spec["expect_blocked"]),
                          [], document)
 
+
+class OrderCaseSpecGapTest(unittest.TestCase):
+
     def test_a_disjoint_replica_reads_blocked_source_gap_and_other_causes_still_fail(self):
         """gap-6d35a1af53db: BC drains from another environment than the served replica,
         so the two share no order. The pick that ran both directions to the end and
@@ -1245,6 +1259,7 @@ class OrderCaseGenericTest(unittest.TestCase):
         it. Its BC-only live audience builds no Graph reader (``build_live_readers``, the one
         filter), so it passes reading no Graph or SharePoint variable."""
         from verify import live_verify as lv
+        from verify import live_verify_policy
         from integrations.tests.test_live_source_adapters import ENV
         from tests.test_live_readers_filter import GRAPH_PREFIXES, GuardedEnv, Undeclared
 
@@ -1264,7 +1279,7 @@ class OrderCaseGenericTest(unittest.TestCase):
                     with mock.patch.object(os, "environ", guarded):
                         self.returncode, text = spec_main(argv[5:])
                 except Undeclared as read:
-                    self.returncode, text = lv.UNDECLARED_ENV_EXIT, ""
+                    self.returncode, text = live_verify_policy.UNDECLARED_ENV_EXIT, ""
                     self.stderr = json.dumps({"error": "UndeclaredEnv",
                                               "name": read.args[0]}).encode()
                 self.stdout = text.encode()
@@ -1272,15 +1287,21 @@ class OrderCaseGenericTest(unittest.TestCase):
             def communicate(self, timeout=None):
                 return self.stdout, self.stderr
 
+        # Two proactive workers whatever this machine's memory cap: the host's tool pool
+        # (its worker spec copies the people exclusion from the env) is built on every run,
+        # as on an uncapped host, not only where the cap leaves room for one.
         with mock.patch.object(lv.subprocess, "Popen", InProcess):
             entry = lv.run_spec(spec, environ={
-                **ENV, "PLX_WORKBENCH_API_URL": BASE, "PLX_WORKBENCH_API_KEY": KEY})
+                **ENV, "PLX_WORKBENCH_API_URL": BASE, "PLX_WORKBENCH_API_KEY": KEY,
+                "PLX_PROACTIVE_WORKERS": "2"})
         self.assertIn("MICROSOFT_GRAPH_CLIENT_SECRET", seen["env"].hidden)
         self.assertEqual(entry["result"], "pass", entry.get("detail"))
         self.assertFalse([name for name in seen["env"].read if name.startswith(GRAPH_PREFIXES)])
 
     def test_no_case_identifier_is_in_the_generic_opener(self):
-        tree = ast.parse((ROOT / "operating" / "case_workspace_live.py").read_text("utf-8"))
+        tree = ast.Module(body=[node for path in sorted(
+            (ROOT / "operating").glob("case_workspace_live*.py"))
+            for node in ast.parse(path.read_text("utf-8")).body], type_ignores=[])
         docstrings = {id(node.body[0].value) for node in ast.walk(tree)
                       if isinstance(node, (ast.Module, ast.ClassDef, ast.FunctionDef))
                       and node.body and isinstance(node.body[0], ast.Expr)}

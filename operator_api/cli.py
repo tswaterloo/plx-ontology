@@ -98,7 +98,8 @@ def console_argv(parser: argparse.ArgumentParser, args: argparse.Namespace,
 def make_auth(parser: argparse.ArgumentParser, args: argparse.Namespace, mode: str,
               ctx: Mapping[str, Any]) -> tuple[Any, dict[str, Any]]:
     from operating import session_identity
-    from .auth import DevAuth, EntraAuth, configured_employee, ticket_identity
+    from .auth import (SESSION_STORE_FILE, DevAuth, EntraAuth, configured_employee,
+                       ticket_identity)
 
     resolver, session = ctx.get("resolver"), ctx.get("session")
     if mode == "entra":
@@ -135,13 +136,16 @@ def make_auth(parser: argparse.ArgumentParser, args: argparse.Namespace, mode: s
         auth.resolver = resolver          # /api/health: the employee policy in force
         return auth, {"sign_in_available": True}
     secret = session_identity.session_secret(os.environ)
+    # the sessions outlive a restart in the state directory (none: held in memory only)
+    state_dir = ctx.get("state_dir")
     auth = DevAuth(ticket_identity=ticket_identity(resolver, secret, ctx["replay_guard"]),
                    sign_in_identity=ticket_identity(resolver, secret, ctx["replay_guard"],
                                                     single_use=True),
-                   mode="dev")
+                   mode="dev",
+                   store_path=None if state_dir is None else Path(state_dir) / SESSION_STORE_FILE)
     auth.resolver = resolver              # /api/health: the employee policy in force
     return auth, {"sign_in_available": True,
-                  "message": "Demo sign-in: paste the access link you were given."}
+                  "message": "Paste the access link you were given."}
 
 
 def optional_understanding() -> Optional[Callable]:
@@ -152,7 +156,26 @@ def optional_understanding() -> Optional[Callable]:
         from operating.query_understanding import understand
     except ImportError:
         return None
-    return understand
+    return masked_understanding(understand)
+
+
+def masked_understanding(understand: Callable) -> Callable:
+    """``understand`` whose model reading (``llm``, default ``ClaudeUnderstander`` unless
+    ``PLX_UNDERSTAND_LLM`` is off) gets the question and its context masked: no card
+    number or credential reaches the model (``operating.card_text``)."""
+    import functools
+
+    @functools.wraps(understand)
+    def masked(question: str, *args: Any, **kwargs: Any) -> Any:
+        if kwargs.get("llm") is None \
+                and os.environ.get("PLX_UNDERSTAND_LLM", "").lower() != "off":
+            from operating.card_text import mask_served, mask_served_in
+            from operating.query_understanding import ClaudeUnderstander
+            model = ClaudeUnderstander()
+            kwargs["llm"] = lambda q, context, timeout: model(
+                mask_served(q), mask_served_in(context), timeout)
+        return understand(question, *args, **kwargs)
+    return masked
 
 
 def default_search(env: Any, mode: str, pg_dsn: Optional[str]) -> str:

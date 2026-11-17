@@ -90,8 +90,9 @@ def check_dependencies(host: Any, *, per_type: int, scan: int,
     served ``host`` as its capture principal; counts only (module doc)."""
     from ontology.json_contract import validate
     from operating.host import projection_path
-    from operating.ontology_tools_process import (CLEAR, ProcessTools, _dedupe, load_graphs,
-                                                  not_pegged_waits_on)
+    from operating.ontology_tools_process import ProcessTools
+    from operating.ontology_tools_process_graphs import CLEAR, load_graphs
+    from operating.ontology_tools_process_helpers import _dedupe, not_pegged_waits_on
     from operating.process_risks import undecided_cause
     from scripts.ontology_projection_probe import reader_actor
 

@@ -82,6 +82,53 @@ class PeopleTest(unittest.TestCase):
         self.assertEqual([p for p in found if p["row"]["kind"] == "outside"], [])
         self.assertEqual(stats["automated"], 1)
 
+    def test_every_form_of_an_excluded_address_is_excluded(self):
+        # CC-NY-8: the excluded person's own address at a shared provider (never one of
+        # our domains), its plus-addressed form and another host of it are no Person;
+        # another sender at the provider still is
+        boxes = BOXES[:2] + [box(GONE, "gone@ours.example", "gone.home@gmail.com")]
+        counts = {("gone.home@gmail.com", ANA): 2, ("gone.home+shop@gmail.com", ANA): 1,
+                  ("Gone.Home+x@GMAIL.com", BEN): 1, ("gone.home@mail.gmail.com", ANA): 1,
+                  ("someone@gmail.com", ANA): 1}
+        found, stats = pd.people(boxes, counts, PeopleExclusion([GONE]))
+        rows = json.dumps([p["row"] for p in found])
+        self.assertNotIn("gone", rows)
+        self.assertEqual(stats["withheld_alias"], 4)
+        self.assertIn("someone@gmail.com", rows)
+        # so the people the links step reads hold no form of it either
+        people = _people(found)
+        for key in ("gone.home@gmail.com", "gone.home+shop@gmail.com"):
+            self.assertEqual(people.judge("address", key), ("no_person", None))
+        self.assertFalse(any("gone" in json.dumps(h.cite) for h in
+                             (x for held in people.by["address"].values() for x in held.values())))
+
+    def test_an_excluded_address_the_guard_decides_is_withheld_in_every_form(self):
+        # not one of our mailboxes' addresses: the guard decides it (a bound listing),
+        # and its plus base or registrable-domain form decides the variants
+        class Guard(PeopleExclusion):
+            def decides(self, value):
+                return True
+
+            def is_excluded(self, value):   # a bound listing: every address decided
+                if "@" in value:
+                    return value == "boss.home@gmail.com" or value == "gone@ours.example"
+                return super().is_excluded(value)
+
+        counts = {("boss.home+news@gmail.com", ANA): 1, ("boss.home@mail.gmail.com", ANA): 1,
+                  ("boss.home@gmail.com", ANA): 1, ("buyer@client.example", ANA): 1}
+        found, stats = pd.people(BOXES, counts, Guard([GONE]))
+        self.assertEqual([p["row"]["addresses"] for p in found if p["row"]["kind"] == "outside"],
+                         [["buyer@client.example"]])
+        self.assertEqual(stats["withheld_alias"], 3)
+
+    def test_plus_base_and_alias_key(self):
+        self.assertEqual(pd.plus_base("A+Tag@X.example"), "a@x.example")
+        self.assertEqual(pd.plus_base("a@x.example"), "a@x.example")
+        self.assertIsNone(pd.plus_base("+tag@x.example"))
+        self.assertIsNone(pd.plus_base("no address"))
+        self.assertEqual(pd.alias_key("a+t@mail.acme.co.uk"), "a@acme.co.uk")
+        self.assertEqual(pd.alias_key("a@acme.com"), "a@acme.com")
+
     def test_person_handle_round_trip(self):
         # An outside contact's citation names no mailbox (a mailbox id is an employee's);
         # the earlier form naming one still parses; a staff person's names its own.
@@ -195,6 +242,54 @@ class LinksTest(unittest.TestCase):
         self.assertEqual(got, [])
         self.assertEqual(counts["MCTask.with_person:ambiguous"], 1)
 
+    def test_an_alias_at_another_of_our_domains_is_its_one_staff_mailbox(self):
+        # served shape (11-12): staff hold x@ at two tenant domains with one local part, the
+        # directory lists one address of most; their mail from the other domain named nobody
+        found, _ = pd.people([box(ANA, "ana@ours.example", "ana@ours-two.example"),
+                              box(BEN, "ben@ours.example"),
+                              box(GONE, "gone@ours.example")], {}, PeopleExclusion([GONE]))
+        people = _people(found)
+        people.guard = PeopleExclusion([GONE])
+
+        def run(rows):
+            counts = Counter()
+            with mock.patch.object(pl, "_values", lambda *_a, **_k: iter(rows)):
+                got = list(pl.judge_values(None, people, pl.FAMILIES, counts))
+            return {(r["object_id"], lt, h.person) for r, lt, h, _p in got}, counts
+
+        # an alias the exclusion cannot decide (not in the tenant listing) links nobody:
+        # it may be an excluded person's
+        got, counts = run([(_value("Email:6", "Ben@Ours-Two.example"), "sender")])
+        self.assertEqual(got, set())
+        self.assertEqual(counts["Email.sent_by_person:alias_undecided"], 1)
+        # a decided guard (the tenant listing holds the address): only gone@ is excluded
+        decided = [mock.patch.object(people.guard, "decides", lambda v: True),
+                   mock.patch.object(people.guard, "is_excluded",
+                                     lambda v: v.lower().startswith("gone@"))]
+        for patch in decided:
+            patch.start()
+        got, counts = run([
+            (_value("Email:6", "Ben@Ours-Two.example"), "sender"),        # alias -> Ben
+            (_value("Email:7", "gone@ours-two.example"), "sender"),       # excluded: no Person
+            (_value("Email:8", "ben@client.example"), "sender"),          # not ours
+            (_value("Email:9", "ben@ours-two.zendesk.com"), "sender"),     # help desk host
+            (_value("Email:9", json.dumps(["ben@ours-two.example"])), "to_addresses")])
+        self.assertEqual(got, {("Email:6", "Email.sent_by_person", f"Person:{BEN}")})
+        self.assertEqual((counts["Email.sent_by_person:alias_linked"],
+                          counts["Email.sent_by_person:no_person"]), (1, 3))
+        # an address the exclusion decides is an excluded person's links nobody
+        with mock.patch.object(people.guard, "is_excluded", lambda v: True):
+            self.assertEqual(run([(_value("Email:6", "ben@ours-two.example"), "sender")])[0],
+                             set())
+        for patch in decided:
+            patch.stop()
+        # no usable exclusion: the alias rule links nothing (exact addresses still do)
+        people.guard = None
+        got, counts = run([(_value("Email:6", "ben@ours-two.example"), "sender"),
+                           (_value("Email:10", "ana@ours-two.example"), "sender")])
+        self.assertEqual(got, {("Email:10", "Email.sent_by_person", f"Person:{ANA}")})
+        self.assertEqual(counts["Email.sent_by_person:alias_exclusion_unavailable"], 1)
+
     def test_outside_contact_is_no_local_part_match(self):
         got, _ = self.links([(_value("MCTask:4", "buyer"), "assignee")])
         self.assertEqual(got, set())
@@ -207,6 +302,15 @@ class LinksTest(unittest.TestCase):
         self.assertEqual(pl.keys("participants", "not json"), [])
         self.assertEqual(pl.FAMILIES["TeamsChat"]["participants"][0], "TeamsChat.with_person")
 
+    def test_a_contact_email_links_its_one_person_exactly(self):
+        got, counts = self.links([
+            (_value("Contact:bc.contacts:1", "Buyer@Client.example "), "email"),
+            (_value("Contact:bc.contacts:2", "buyer+x@client.example"), "email"),
+            (_value("Contact:bc.contacts:3", "gone@ours.example"), "email")])
+        self.assertEqual(got, {("Contact:bc.contacts:1", "Contact.same_person_as",
+                                self.outside)})
+        self.assertEqual(counts["Contact.same_person_as:no_person"], 2)
+
     def test_link_row_cites_values_not_keys(self):
         _kind, holder = self.people.judge("address", "ana@ours.example")
         row = pl.link_row(_value("Email:5", "ana@ours.example"), "Email.sent_by_person",
@@ -217,6 +321,175 @@ class LinksTest(unittest.TestCase):
         self.assertNotIn("ana@", row["reason"])
         self.assertIn("pii", row["markings"])
 
+
+class AliasLinksTest(unittest.TestCase):
+    """CC-NY-8: one person's Person records joined, never merged."""
+
+    def pairs(self, senders):
+        found, _ = directory({(a, ANA): 1 for a in senders})
+        people = _people(found)
+        counts = Counter()
+        key = {p.person: a for a, held in people.by["address"].items() for p in held.values()}
+        return {(key[f.person], key[t.person], tier, feature)
+                for f, t, tier, feature in pl.alias_pairs(people, counts)}, counts, people
+
+    def test_plus_forms_are_one_person_other_hosts_a_lead(self):
+        got, _, _ = self.pairs(["a@x.example", "a+promo@x.example", "a@mail.x.example",
+                                "b@x.example"])
+        self.assertEqual(got, {
+            ("a+promo@x.example", "a@x.example", "corroborated", "plus_address"),
+            ("a@mail.x.example", "a@x.example", "lead", "sub_domain")
+            if pd.address_key("a@mail.x.example") < pd.address_key("a@x.example") else
+            ("a@x.example", "a@mail.x.example", "lead", "sub_domain"),
+            ("a+promo@x.example", "a@mail.x.example", "lead", "sub_domain")
+            if pd.address_key("a+promo@x.example") < pd.address_key("a@mail.x.example") else
+            ("a@mail.x.example", "a+promo@x.example", "lead", "sub_domain")})
+
+    def test_two_tags_without_the_base_join_each_other(self):
+        got, _, _ = self.pairs(["a+one@x.example", "a+two@x.example"])
+        self.assertEqual({(t, f) for _a, _b, t, f in got}, {("corroborated", "plus_address")})
+        self.assertEqual(len(got), 1)
+
+    def test_a_crowded_alias_links_nothing_and_no_excluded_form_is_reached(self):
+        hosts = [f"info@h{n}.x.example" for n in range(pl.ALIAS_GROUP_MAX + 1)]
+        got, counts, _ = self.pairs(hosts + ["gone+x@ours.example"])
+        self.assertEqual(got, set())
+        self.assertEqual(counts["Person.same_person_as:alias_group_too_large"], 1)
+
+    def test_the_link_is_seen_only_with_both_persons(self):
+        _, _, people = self.pairs(["a@x.example", "a+promo@x.example"])
+        [(first, second, tier, feature)] = list(pl.alias_pairs(people, Counter()))
+        versions = {first.person: {"l1_handle": "v1", "markings": '["pii"]', "recorded_at": T},
+                    second.person: {"l1_handle": "v2", "markings": '["l5"]', "recorded_at": T}}
+        row = pl.alias_row(first, second, tier, feature, versions)
+        self.assertEqual(row["link_type"], "Person.same_person_as")
+        self.assertEqual(row["tier"], "corroborated")
+        handles = json.loads(row["evidence_handles"])
+        self.assertTrue({first.handle, second.handle, "v1", "v2"} <= set(handles))
+        self.assertEqual(set(json.loads(row["markings"])), {"pii", "l5"})
+        self.assertNotIn("a+promo", row["reason"])
+        self.assertIsNone(pl.alias_row(first, second, tier, feature, {first.person: versions[
+            first.person]}))
+
+
+
+class PartedStepTest(unittest.TestCase):
+    """TRAIN2-B1: ``with_people`` run in hash parts (``pg_step_inplace.PARTED_STEPS``)
+    writes, part by part, exactly the unparted step's links, each from an object of its
+    own part (what staging's ``hash_part`` scope holds a part to), and its counts sum to
+    the unparted counts. The Person alias links were one global pass every part wrote
+    whole (``store_link_outside_scope`` on the second part)."""
+
+    @classmethod
+    def setUpClass(cls):
+        hosts = [f"x{i}.example" for i in range(9)]
+        senders = [f"{a}@{h}" for h in hosts for a in ("a", "a+promo", "b")]
+        senders += [f"a@mail.{h}" for h in hosts] + [f"b+{t}@x0.example" for t in "pq"]
+        senders += [f"info@h{n}.y.example" for n in range(pl.ALIAS_GROUP_MAX + 1)]
+        found, _ = directory({(a, ANA): 1 for a in senders})
+        cls.people = _people(found)
+        persons = sorted(cls.people.persons())
+        addresses = sorted(cls.people.by["address"])
+        cls.values = []
+        for j in range(60):
+            cls.values.append((_value(f"Email:{j}", addresses[j % len(addresses)]),
+                               "sender"))
+            cls.values.append((_value(f"Email:{j}", json.dumps(
+                [addresses[(j * 7) % len(addresses)], "ben@ours.example",
+                 "nobody@nowhere.example"])), "to_addresses"))
+            cls.values.append((_value(f"Contact:bc.contacts:{j}",
+                                      addresses[(j * 5) % len(addresses)]), "email"))
+        cls.versions = {p: {"l1_handle": f"v://{p}", "markings": "[]", "recorded_at": T}
+                        for p in persons}
+        # a person's rejections: of an Email link and of an alias link
+        email_to = next(h.person for h in cls.people.by["address"][addresses[3]].values())
+        cls.rejected = {"Email:3": [(email_to, "Email.sent_by_person")]}
+        first = next(pl.alias_pairs(cls.people, Counter()))
+        cls.rejected[first[0].person] = [(first[1].person, pl.ALIAS_LINK)]
+        cls.links = {lt: {"bindings": [{"kind": pl.mentions.BINDING_KIND}]}
+                     for lt in (*pl.LINK_TYPES, pl.ALIAS_LINK)}
+
+    def run_step(self, part=None):
+        from ontology.pg_step_inplace import object_part
+        test = self
+
+        class Conn:
+            def execute(self, *_a):
+                return None
+
+        conn = Conn()
+        if part is not None:
+            conn.part = (*part, ("Person:",))
+
+        def values(c, props, prefixes):
+            # as ``pg_step_inplace.parted_read`` narrows the read: the part's objects and
+            # every Person
+            part = getattr(c, "part", None)
+            for row, prop in test.values:
+                oid = row["object_id"]
+                if prop in props and oid.startswith(tuple(prefixes)) and (
+                        part is None or oid.startswith("Person:")
+                        or object_part(oid, part[1]) == part[0]):
+                    yield row, prop
+
+        class Builder:
+            connection = conn
+            rows: list = []
+
+            def add(self, kind, rows):
+                self.rows.extend(rows)
+
+        builder = Builder()
+        builder.rows = []
+        projector = mock.Mock(links=self.links)
+        with mock.patch.object(pl, "read_people", lambda *_a: self.people), \
+                mock.patch.object(pl, "own_domains", lambda _p: ["ours.example"]), \
+                mock.patch.object(pl, "_excluder", lambda: None), \
+                mock.patch.object(pl, "_versions", lambda *_a: self.versions), \
+                mock.patch.object(pl, "_values", values), \
+                mock.patch.object(pl, "_q", lambda *_a: []), \
+                mock.patch.object(pl.SR, "rejected_pairs", lambda _c, objs: {
+                    o: self.rejected[o] for o in set(objs) if o in self.rejected}):
+            out = pl.people_links_step(builder, projector)
+        return builder.rows, out
+
+    def test_the_parts_union_is_the_unparted_output(self):
+        from ontology.pg_step_inplace import object_part
+        whole, out = self.run_step()
+        ids = [r["link_id"] for r in whole]
+        self.assertEqual(len(ids), len(set(ids)))
+        alias = [r for r in whole if r["link_type"] == pl.ALIAS_LINK]
+        # the fixture reaches every kind of row and count the step has
+        self.assertTrue({"corroborated", "lead"} <= {r["tier"] for r in alias})
+        self.assertGreater(len(alias), 10)
+        for kind in ("plus_address", "sub_domain", "alias_group_too_large"):
+            self.assertTrue(out["counts"].get(f"{pl.ALIAS_LINK}:{kind}"), kind)
+        self.assertEqual(out["counts"]["rejected"], 2)
+        self.assertTrue({"Email.sent_by_person", "Email.addressed_to_person",
+                         "Contact.same_person_as"} <= set(out["link_types"]))
+        key = lambda r: json.dumps(r, sort_keys=True)
+        for n in (2, 3, 5, 16):
+            with self.subTest(parts=n):
+                union, counts, written = [], Counter(), Counter()
+                for k in range(n):
+                    rows, got = self.run_step((k, n))
+                    # every link is from an object of its part (staging's hash_part scope)
+                    self.assertEqual({object_part(r["from_object"], n) for r in rows} - {k},
+                                     set())
+                    union += rows
+                    counts.update(got["counts"])
+                    written.update(got["link_types"])
+                self.assertEqual(sorted(map(key, union)), sorted(map(key, whole)))
+                self.assertEqual(+counts, +Counter(out["counts"]))
+                self.assertEqual(+written, +Counter(out["link_types"]))
+
+    def test_unparted_alias_pairs_are_every_pair(self):
+        got = list(pl.alias_pairs(self.people, Counter()))
+        for n in (1, 4):
+            parted = [x for k in range(n)
+                      for x in pl.alias_pairs(self.people, Counter(), (k, n))]
+            self.assertEqual(sorted((f.person, t.person, tier, ft) for f, t, tier, ft in parted),
+                             sorted((f.person, t.person, tier, ft) for f, t, tier, ft in got))
 
 if __name__ == "__main__":
     unittest.main()

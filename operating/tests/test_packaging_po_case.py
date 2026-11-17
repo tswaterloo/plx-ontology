@@ -327,7 +327,9 @@ class PackagingCaseGenericTest(unittest.TestCase):
         self.assertTrue(any(item["statement"].startswith("PurchaseOrder.currency")
                             for item in record["findings"]["supported"]))
         import ast
-        tree = ast.parse((ROOT / "operating" / "case_workspace_live.py").read_text("utf-8"))
+        tree = ast.Module(body=[node for path in sorted(
+            (ROOT / "operating").glob("case_workspace_live*.py"))
+            for node in ast.parse(path.read_text("utf-8")).body], type_ignores=[])
         docstrings = {id(node.body[0].value) for node in ast.walk(tree)
                       if isinstance(node, (ast.Module, ast.ClassDef, ast.FunctionDef))
                       and node.body and isinstance(node.body[0], ast.Expr)}

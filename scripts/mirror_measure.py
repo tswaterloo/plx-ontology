@@ -294,8 +294,8 @@ def count_relation(client: Any, name: str, entry: Mapping[str, Any] | None, *,
         result.update(verdict="not_served", classification="upstream_unavailable",
                       complete=False)
         return result
-    from integrations.source_mirror import (generated_replacement_models, natural_text,
-                                            pair_replacements, replacement_key)
+    from integrations.source_mirror import generated_replacement_models
+    from integrations.source_mirror_rules import natural_text, pair_replacements, replacement_key
     # The natural key a replaced row's successor carries (the mirror's own rule).
     natural = (replacement_key(generated_replacement_models(), name, entry.get("columns") or ())
                if replacements else None)
@@ -714,7 +714,8 @@ def relation_counts(client: Any, relations: Sequence[str], *,
     if daily_budget_seconds is not None and not _is_seconds(daily_budget_seconds):
         raise ValueError("daily budget out of range")
     if mirror_bound is None:
-        from integrations.source_mirror import load_ingest_config, mirror_options
+        from integrations.source_mirror import load_ingest_config
+        from integrations.source_mirror_query import mirror_options
         mirror_bound = mirror_options(load_ingest_config()).get("max_rows_per_relation")
     started = monotonic()
     catalog = client.relations()
@@ -945,10 +946,9 @@ def ordered_full_coverage(client: Any, db_path: str | Path, *,
     (outcome, failure class, HTTP status, the service's error code, pages, rows, final
     page size, seconds) so the next failure is evidence-led.
     """
-    from integrations.source_mirror import (MAX_BATCH_HANDLES, PROBE_PRINCIPAL, AudienceMap,
-                                            SourceMirror, load_ingest_config,
-                                            make_citation, mirror_options,
-                                            soft_delete_counts)
+    from integrations.source_mirror import (MAX_BATCH_HANDLES, AudienceMap, SourceMirror,
+                                            load_ingest_config, make_citation)
+    from integrations.source_mirror_query import PROBE_PRINCIPAL, mirror_options, soft_delete_counts
     from ontology.core import Actor
     if (isinstance(resolve_sample, bool) or not isinstance(resolve_sample, int) or
             not 0 <= resolve_sample <= MAX_BATCH_HANDLES):

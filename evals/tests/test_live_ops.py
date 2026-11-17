@@ -7,7 +7,7 @@ from __future__ import annotations
 import copy
 import dataclasses
 from decimal import Decimal
-from datetime import date, datetime, timedelta, timezone
+from datetime import date, datetime, timezone
 import json
 from pathlib import Path
 import tempfile
@@ -28,6 +28,50 @@ ROWS = {H_PO: ("public.app_purchase_order", {"id": "po-1"},
         H_AR: ("public.app_customer", {"id": "cu-1"},
                {"id": "cu-1", "company_name": "Fixture Soap Co", "balance": "4821.75"})}
 
+
+def _door(recipe):
+    """A front door whose reading picks ``recipe`` (``operating.front_door.Reading``)."""
+    from types import SimpleNamespace as NS
+    from operating.front_door import Reading
+    return NS(read=lambda question, earlier: Reading(
+        question=question, rewrite=question, route="lookup", status="Reading", seconds=0.0,
+        recipe=recipe))
+
+
+
+class BoundedReads(unittest.TestCase):
+    def test_the_scoreboard_reads_its_front_door_within_the_session_limit(self):
+        """``run_items`` with more workers than the front door has sessions: at most
+        ``size`` readings at once (none waits past the app's queue and routes as typed),
+        every question read exactly once, at N=1/10/60 questions."""
+        import threading
+        import time as clock
+        from unittest import mock
+        from scripts import eval_live_ops as live
+        for count in (1, 10, 60):
+            lock, now, peak, read = threading.Lock(), [0], [0], []
+
+            def reading(question, earlier):
+                with lock:
+                    now[0] += 1
+                    peak[0] = max(peak[0], now[0])
+                clock.sleep(0.01)
+                with lock:
+                    now[0] -= 1
+                    read.append(question)
+                return None
+            door = __import__("types").SimpleNamespace(size=2, read=reading)
+
+            def ran(items, routed, make_host, **_kw):
+                routed._shortcut()
+            pairs = [({"id": f"i{n}", "split": "dev", "question": {"text": f"q{n}"}}, {})
+                     for n in range(count)]
+            with mock.patch.object(live.runner, "run_items", ran):
+                live.run_items(pairs, object(), lambda: None, out_dev=None, out_held=None,
+                               evidence_label="isolated-fixture", workers=6,
+                               budget_seconds=60, front_door=door)
+            self.assertLessEqual(peak[0], 2, count)
+            self.assertEqual(sorted(read), sorted(f"q{n}" for n in range(count)))
 
 class Host(fx.FakeHost):
     def __init__(self) -> None:
@@ -972,11 +1016,14 @@ class KeyTests(unittest.TestCase):
         self.assertEqual(found, {"3241766": "COA DayMoist CLR_3241766.pdf"})
 
     def test_a_margin_question_takes_the_apps_profit_route_before_the_fast_path(self):
-        """``backend.ask_shortcut`` decides the route as the app's Ask does: a margin
-        question runs the profit route first; declined, the fast path, then the agent,
-        with why each route before it did not answer."""
+        """The front door's reading decides the route as the app's Ask does
+        (``backend.read_shortcut``): a question it reads as a margin question runs the
+        profit route first; declined, the fast path, then the agent, with why each route
+        before it did not answer. No reading (no front door, or one that fails): no ready
+        answer, whatever the question's words."""
         from types import SimpleNamespace as NS
         tried, served = [], []
+        profit_door = _door("profit")
 
         class Fast:
             Reads = NS(of_server=staticmethod(lambda server: server))
@@ -996,22 +1043,34 @@ class KeyTests(unittest.TestCase):
             return None
         with mock.patch.object(script.RoutedAgent, "_profit", profit):
             routed = script.RoutedAgent(Agent(), "hows our margin on 1-Shoppe orders in BC?",
-                                        fast=Fast, session=lambda host: (None, object()))
+                                        fast=Fast, session=lambda host: (None, object()),
+                                        front_door=profit_door)
             run = routed.run("p", None)
             self.assertEqual((tried, served), ([routed.question], [routed.question]))
             self.assertEqual(run.agent, {"routed": "agent",
                                          "declined": ["profit:no_customer"]})
             tried.clear()
             script.RoutedAgent(Agent(), "status on PO#10515?", fast=Fast,
-                               session=lambda host: (None, object())).run("p", None)
+                               session=lambda host: (None, object()),
+                               front_door=_door(None)).run("p", None)
             self.assertEqual(tried, [])          # no margin question: no profit route
+            # a margin question no reading routes (no front door; one that raises): the
+            # phrase rules no longer pick a ready answer
+            for door in (None, NS(read=mock.Mock(side_effect=RuntimeError("down")))):
+                served.clear()
+                run = script.RoutedAgent(Agent(), "is 1-Shoppe profitable?", fast=Fast,
+                                         session=lambda host: (None, object()),
+                                         front_door=door).run("p", None)
+                self.assertEqual((tried, served), ([], ["is 1-Shoppe profitable?"]))
+                self.assertEqual(run.agent, {"routed": "agent"})
         answered = runner.AgentRun(events=[], final_text="x", usage={},
                                    agent={"routed": "profit"})
         with mock.patch.object(script.RoutedAgent, "_profit",
                                lambda self, host, declined: answered):
             served.clear()
             run = script.RoutedAgent(Agent(), "is 1-Shoppe profitable?", fast=Fast,
-                                     session=lambda host: (None, object())).run("p", None)
+                                     session=lambda host: (None, object()),
+                                     front_door=profit_door).run("p", None)
             self.assertIs(run, answered)
             self.assertEqual(served, [])         # answered: the fast path never runs
 
@@ -1088,7 +1147,8 @@ class KeyTests(unittest.TestCase):
             server = NS(ontology=Host(Path(tmp) / "store.sqlite"),
                         case_runtime=NS(employee_gate=lambda a: ("gated", a)), actor=actor)
             routed = script.RoutedAgent(Agent(), "how many POs are late rn", fast=Fast,
-                                        session=lambda host: (None, server))
+                                        session=lambda host: (None, server),
+                                        front_door=_door("late_list"))
             run = routed.run("p", None)
         self.assertEqual(run.agent, {"routed": "late_list", "outcome": "not_found"})
         self.assertTrue(run.final_text.startswith("The late-order check has not run for your "
@@ -1111,7 +1171,7 @@ class KeyTests(unittest.TestCase):
         def broken(host):
             raise RuntimeError("no session")
         run = script.RoutedAgent(Answering(), "how many POs are late rn", fast=NoFast,
-                                 session=broken).run("p", None)
+                                 session=broken, front_door=_door("late_list")).run("p", None)
         self.assertEqual(run.agent, {"routed": "agent",
                                      "declined": ["late_list_unavailable:RuntimeError"]})
 

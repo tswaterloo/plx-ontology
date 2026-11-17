@@ -295,11 +295,14 @@ class LiveProbe(unittest.TestCase):
                          ("session_projection_unavailable", False))
 
 
-# A placeholder lot number (N/A, NA, NONE, -, any case) binds no Lot at all (4a760b4923).
+# A placeholder lot number (N/A, NA, NONE, -, any case, a space before, after or both) binds
+# no Lot at all (4a760b4923; spaces AUD-08).
 PLACEHOLDER_LOT_WHERE = json.dumps([
     {"path": "lotnoqc", "op": "present"},
     {"path": "lotnoqc", "op": "not_in", "value": [
-        "NA", "Na", "nA", "na", "N/A", "N/a", "n/A", "n/a", "NONE", "None", "none", "-"]}])
+        pre + word + post
+        for word in ("NA", "Na", "nA", "na", "N/A", "N/a", "n/A", "n/a", "NONE", "None", "none", "-")
+        for pre, post in (("", ""), (" ", ""), ("", " "), (" ", " "))]}])
 
 
 class LotOnReceiptLines(unittest.TestCase):
@@ -310,7 +313,7 @@ class LotOnReceiptLines(unittest.TestCase):
         self.assertEqual({(b["relation"], json.dumps(b["where"])) for b in lot["bindings"]}, {
             (RM, PLACEHOLDER_LOT_WHERE),
             (PK, PLACEHOLDER_LOT_WHERE),
-            (GOLD, '[{"path": "supplier_lot_number", "op": "present"}]')})
+            (GOLD, PLACEHOLDER_LOT_WHERE.replace("lotnoqc", "supplier_lot_number"))})
         (number,) = [p for p in lot["properties"] if p["name"] == "lot_number"]
         self.assertEqual((number["value_type"], number["identifier_kind"]),
                          ("identifier", "lot_number"))

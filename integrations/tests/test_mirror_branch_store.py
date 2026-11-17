@@ -27,7 +27,7 @@ from urllib.parse import urlsplit
 
 from integrations import mirror_branch_store as mbs, mirror_capture as mc
 from integrations.http import SourceHttpError
-from integrations.source_mirror import MirrorError
+from integrations.source_mirror_values import MirrorError
 from integrations.tests.test_source_mirror import BASE, KEY, Clock, FakeWorkbench
 from integrations.workbench_read_api import WorkbenchReadApiClient
 from ontology.core import Actor

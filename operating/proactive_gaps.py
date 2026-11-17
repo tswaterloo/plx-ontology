@@ -329,7 +329,7 @@ def card_candidates(conn: Any, as_of: date) -> set[str]:
     class _Tools:   # ``attested_conflicts`` reads ``tools.schema`` only
         schema = load_schema()
 
-    from .ontology_tools import unit_out
+    from .ontology_tools_results import unit_out
 
     def rows_of(prop: str, objects: Iterable[str]) -> dict[str, list[tuple[Any, ...]]]:
         out: dict[str, list[tuple[Any, ...]]] = {}
@@ -748,6 +748,7 @@ def main(argv: Sequence[str] | None = None, *, environ: Mapping[str, str] | None
     from integrations.source_mirror import AudienceMap
 
     from . import case_workspace_live as live
+    from . import case_workspace_live_projection
 
     parser = argparse.ArgumentParser(prog="python3 -m operating.proactive_gaps",
                                      description=__doc__.split("\n\n")[0])
@@ -801,7 +802,7 @@ def main(argv: Sequence[str] | None = None, *, environ: Mapping[str, str] | None
     projection = live.projection_file(args.state_dir, args.tenant)
     rendered = []
     try:
-        live.project_state(args.state_dir, projection, tenant=args.tenant)
+        case_workspace_live_projection.project_state(args.state_dir, projection, tenant=args.tenant)
         summary["blocked_upstream"] = live.upstream_parts(live.portal_upstream(args.state_dir))
         for actor in (investigator, *readers):
             session = live._Session(runtime, actor, audience, projection,

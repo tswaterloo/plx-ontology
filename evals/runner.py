@@ -141,7 +141,7 @@ Neither is ``live-verified``, which only the live verifier grants.
 from __future__ import annotations
 
 import argparse
-from dataclasses import dataclass, field
+from dataclasses import field
 import hashlib
 import json
 import os
@@ -149,18 +149,17 @@ from pathlib import Path
 import re
 import shutil
 import sqlite3
-import subprocess
 import sys
-import tempfile
 import time
 from typing import Any, Callable, Iterable, Mapping, Protocol, Sequence
 from urllib.parse import unquote
 
+from ontology import tmp_root
 from evals import measure as measuring
 from evals import partition as partitions
 from evals.admission import admissible
 from operating.agent_environment import agent_environment
-from operating.answer_gate import ANSWER_BACKING, DOCUMENT_READ_RULE
+from operating.answer_gate import ANSWER_BACKING
 from operating import tool_results
 from evals import score as scoring
 from operating import eval_results as results_file
@@ -520,7 +519,7 @@ class CaseHost:
         if fixture and _definitely_live(self.source_state_dir):
             raise RunnerError("fixture_host_on_live_state")
         if runtime is None:
-            self._work = Path(tempfile.mkdtemp(prefix="plx-eval-state-"))
+            self._work = Path(tmp_root.mkdtemp(prefix="plx-eval-state-"))
             try:
                 if fixture:
                     # Label the empty copy before the mirror lands in it, so the stdio

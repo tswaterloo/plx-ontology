@@ -45,6 +45,7 @@ from operating.ontology_tools_aggregate import AggregateTools
 from tests import test_ontology_tools_process as pbase
 from tests import test_ontology_tools_review as tr
 from tests import test_process_three_way as three
+from tools.timing_policy import budget
 
 A = tr.employee_session(tr.OID_A).actor
 STRANGER = tr.employee_session("cccccccc-cccc-4ccc-8ccc-cccccccccccc").actor  # no grant
@@ -443,3 +444,92 @@ class StaleStoreTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class RemovedEndLinkTests(unittest.TestCase):
+    """C-10: a live identity link whose end its source no longer holds (5,505 served
+    Customer.same_record_as rows end on Portal cards soft-deleted 2026-08-27) is never a
+    live copy: plx.identity and plx.around label the end with its removal gap, the twin
+    lookup leaves it out; a reader without the grant sees neither link nor gap."""
+
+    setUp = MirrorRemovalReaderTests.setUp
+    project = MirrorRemovalReaderTests.project
+
+    def linked(self, name, count):
+        """``count`` customers (every third soft-deleted, c01 missing), each but c02 tied
+        to c02 by a verified identity link."""
+        base, ids = self.project(name, count)
+        hub = ids[2]
+        conn = sqlite3.connect(self.root / f"{name}.sqlite")
+        handle, marks = next(r for r in conn.execute(
+            "SELECT l1_handle, markings FROM object_versions WHERE object_id = ?", (hub,)))
+        cols = store_ddl.LINK_COLUMNS
+        for oid in ids:
+            if oid == hub:
+                continue
+            row = {"link_id": f"probe:{oid}", "link_type": "Customer.same_record_as",
+                   "from_object": hub, "to_object": oid, "tier": "verified",
+                   "binding_kind": "same_record", "link_contract": None,
+                   "reason": json.dumps([{"feature": "stored_key", "agrees": True}]), "why_not": "[]",
+                   "evidence_handles": json.dumps([handle]), "reviewed_by": None,
+                   "reviewed_at": None, "review_action_id": None, "markings": marks,
+                   "recorded_at": "2026-09-29T12:00:00.000Z", "superseded_at": None}
+            conn.execute(f"INSERT INTO links ({', '.join(cols)}) VALUES "
+                         f"({', '.join('?' for _ in cols)})", [row[c] for c in cols])
+        conn.commit()
+        conn.close()
+        return base, ids, hub
+
+    def test_identity_and_around_label_a_removed_end_and_twins_leave_it_out(self):
+        for count in (4, 10, 60):
+            with self.subTest(customers=count):
+                base, ids, hub = self.linked(f"ends{count}", count)
+                removed = {ids[i] for i in range(0, count, 3)} | {ids[1]}
+                live = sorted(set(ids) - removed - {hub})
+                started = time.monotonic()
+                from operating import ontology_tools_evidence as ev
+                from operating import ontology_tools_traverse as tt
+                walker = tt.TraverseTools(base)
+                evidence = ev.EvidenceTools(base, traverse=walker)
+                out = checked(self, "plx.identity", evidence.call(
+                    "plx.identity", {"object_ids": [hub]}, A))
+                self.assertLess(time.monotonic() - started, budget(10))
+                ends = {e["to"] for e in out["edges"]}
+                self.assertTrue(ends <= set(ids) - {hub})   # labelled, kept
+                if len(ends) < count - 1:   # a page cut to the result size says so
+                    self.assertFalse(out["completeness"]["complete"], out["completeness"])
+                else:
+                    self.assertEqual(ends, set(ids) - {hub})
+                said = {g["subject"] for g in out["gaps"]
+                        if g["reason"] in ("deleted_in_source", "missing_from_source")}
+                listed = sorted(removed)[:5]
+                self.assertTrue(set(listed) <= said, (listed, said))
+                self.assertFalse(said & set(live), said)
+                if len(removed) > 5:
+                    self.assertIn(f"{len(removed)} records at an end of these links", said)
+
+                walk = checked(self, "plx.around", walker.call("plx.around", {
+                    "from": hub, "path": [{"link_type": "Customer.same_record_as",
+                                           "direction": "forward"}], "limit": 50,
+                    "tier_floor": "lead"}, A))
+                # staging cards: the walk reaches them as leads (possibly_related)
+                shown = {o["object_id"] for o in walk["objects"] + walk.get(
+                    "possibly_related", {}).get("objects", [])}
+                self.assertTrue(removed & shown, walk)
+                gaps = {g["subject"]: g for g in walk["gaps"]
+                        if g["reason"] in ("deleted_in_source", "missing_from_source")}
+                for oid in sorted(removed & shown)[:5]:
+                    self.assertEqual(gaps[oid]["state"], "absent_in_source")
+                self.assertFalse(set(gaps) & set(live), gaps)
+
+                # the twin lookup: Portal cards are staging (never an identity tier on
+                # their own), so the tier is taken as an identity tier here; the removed
+                # ends are left out, every live one listed
+                from unittest import mock
+                with mock.patch.object(ot, "_effective_tier", lambda row: "verified"):
+                    twins = base._identity_twins(base._scope(A, base.clock()), [hub])
+                self.assertEqual(set(twins.get(hub, {})), set(live))
+
+                hidden = evidence.call("plx.identity", {"object_ids": [hub]}, STRANGER)
+                self.assertNotIn("deleted_in_source", json.dumps(hidden))
+                self.assertNotIn("c00", json.dumps(hidden))

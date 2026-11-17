@@ -73,6 +73,7 @@ from typing import Any, Iterable, Mapping, Sequence
 from evals import generative as gen
 from evals import graph_walks as gw
 from scripts import eval_graph_walks as egw
+from ontology import parent_watch
 
 OWNER_MARKINGS = "finance,purchasing_prices,quality_controlled,pii"
 SPLITS = {"dev": "dev", "held": "held"}
@@ -618,8 +619,8 @@ class Replayer:
 def _pool(spec: Mapping[str, Any], header: Mapping[str, Any], workers: int) -> Any:
     from concurrent.futures import ProcessPoolExecutor
     import multiprocessing
-    return ProcessPoolExecutor(max_workers=workers, initializer=_worker_start,
-                               initargs=(dict(spec), dict(header)),
+    return ProcessPoolExecutor(max_workers=workers,
+                               **parent_watch.pool_init(_worker_start, (dict(spec), dict(header))),
                                mp_context=multiprocessing.get_context("spawn"))
 
 

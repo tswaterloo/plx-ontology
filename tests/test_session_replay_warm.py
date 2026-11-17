@@ -15,9 +15,7 @@ from __future__ import annotations
 
 from contextlib import ExitStack
 from datetime import datetime, timedelta, timezone
-import json
 import os
-import shutil
 from pathlib import Path
 import tempfile
 import unittest

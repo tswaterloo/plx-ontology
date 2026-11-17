@@ -39,6 +39,7 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -48,6 +49,7 @@ import sys
 import tempfile
 import time
 from typing import Any, Iterable, Iterator, Mapping, Sequence
+from ontology import parent_watch
 
 
 class Refused(RuntimeError):
@@ -64,6 +66,7 @@ _PG_SHAPE = (("CASE WHEN c.field IS NULL THEN json_extract(c.value, lf.path) ELS
              ("k.kind = lf.kind", "k.kind = c.kind"),
              ("lf.field", "c.field"))
 _LINK_TABLES = re.compile(r"\b(link_rows|links)\b", re.I)
+_OBJECT_VALUES = re.compile(r"\b(value_cells|object_values)\b", re.I)
 _OBJECT_TABLES = re.compile(r"\b(objects|object_versions|object_values|identifiers|"
                             r"value_cells|value_sources)\b", re.I)
 
@@ -83,6 +86,48 @@ def pg_form(sql: str) -> str:
     if "value_layout_fields" in sql or re.search(r"\blf\.", sql):
         raise Refused("packed_layout_read")
     return sql
+
+
+# A step run on several processes (``--part k/n``, :func:`steps_in_parts`): each part
+# reads the current values of the objects whose id hashes to it (the first byte of the
+# id's MD5, modulo the parts: Python and Postgres compute it alike) and every object of
+# the prefixes named here (each part reads them whole: ``with_people``'s Persons, the
+# keys every value is judged against). Partitioned by the object a link is from, a link
+# id (the pair it names) and a person's rejection of it are decided in one part only.
+PARTED_STEPS: dict[str, tuple[str, ...]] = {"with_people": ("Person:",)}
+
+
+def object_part(object_id: str, parts: int) -> int:
+    """The part (of ``parts``) an object's values and links are in (:data:`PARTED_STEPS`)."""
+    return hashlib.md5(object_id.encode("utf-8")).digest()[0] % parts
+
+
+def part_sql(column: str, part: int, parts: int) -> str:
+    """:func:`object_part` of ``column`` is ``part``, as a Postgres condition."""
+    if not (isinstance(parts, int) and isinstance(part, int) and 1 <= parts <= 256
+            and 0 <= part < parts) or not re.fullmatch(r"[a-z_]+\.[a-z_]+", column):
+        raise Refused(f"part_invalid:{part}/{parts}")
+    return f"mod(get_byte(decode(md5({column}), 'hex'), 0), {parts}) = {part}"
+
+
+_PART_UNSAFE = re.compile(r"(?i)\b(ORDER\s+BY|GROUP\s+BY|LIMIT|OFFSET|UNION|INTERSECT|EXCEPT|"
+                          r"HAVING|WINDOW)\b")
+
+
+def parted_read(sql: str, params: Any, part: tuple[int, int, Sequence[str]]
+                ) -> tuple[str, list[Any]]:
+    """A packed current-value read (Postgres' shape) narrowed to one part's objects and
+    the whole prefixes every part reads; refused unless it is the one plain read the
+    condition can be appended to (one ``WHERE``, the version table as ``v``, nothing
+    after the conditions)."""
+    k, n, whole = part
+    if _PART_UNSAFE.search(sql) or len(re.findall(r"(?i)\bWHERE\b", sql)) != 1 \
+            or not re.search(r"\bJOIN object_versions v ON\b", sql) or "(" in \
+            re.split(r"(?i)\bWHERE\b", sql)[0].split(" FROM ", 1)[1]:
+        raise Refused("part_read_shape:" + sql[:120])
+    keep = [f"substr(v.object_id, 1, {len(p)}) = ?" for p in whole]
+    cond = " OR ".join([*keep, part_sql("v.object_id", k, n)])
+    return f"{sql} AND ({cond})", [*list(params or ()), *whole]
 
 
 class _SplitCursor:
@@ -128,6 +173,10 @@ class SplitConnection:
     ``PgCompatConnection`` inside the migration's transaction), writes and everything
     else to the step's own SQLite store (``local``). ``reads`` counts the statements."""
 
+    # (part, parts, whole prefixes) of a parted step (:data:`PARTED_STEPS`): its packed
+    # current-value reads narrowed to them (:func:`parted_read`)
+    part: tuple[int, int, tuple[str, ...]] | None = None
+
     def __init__(self, local: sqlite3.Connection, pg: Any) -> None:
         self.local = local
         self.pg = pg
@@ -148,11 +197,33 @@ class SplitConnection:
             if self._wrote(_LINK_TABLES, sql) or self._wrote(_OBJECT_TABLES, sql):
                 raise Refused("read_after_write:" + sql[:80])
             self.reads += 1
+            if _PACKED_FROM in sql:
+                if self.part is not None:
+                    return self._packed_read(*parted_read(pg_form(sql), params, self.part))
+                return self._packed_read(pg_form(sql), params)
+            if self.part is not None and _OBJECT_VALUES.search(sql):
+                raise Refused("part_read_unparted:" + sql[:80])   # every value, not its own
             return self.pg.execute(pg_form(sql), params)
         cur = self.local.cursor()
         if row_factory is not None:
             cur.row_factory = row_factory
         return cur.execute(sql, params)
+
+    def _packed_read(self, sql: str, params: Any) -> Any:
+        """A packed current-value read (``sender_parties._values``, ``mc_task_links``):
+        every current value of some fields, ~11M rows for ``with_people``'s message
+        fields, ~20 GB held whole in Python (11-11: 61-78 min at a 20G cap and ~10 GB of
+        swap). Streamed from a server cursor (``PgCompatConnection.stream``: one batch
+        held, the same rows) when the session holds no open transaction; inside one (the
+        ``build`` prototype, its unit rows written and not committed) read whole from
+        that transaction, since another connection would not see them."""
+        import psycopg
+        conn = getattr(self.pg, "_conn", None)
+        stream = getattr(self.pg, "stream", None)
+        if stream is None or conn is None or \
+                conn.info.transaction_status != psycopg.pq.TransactionStatus.IDLE:
+            return self.pg.execute(sql, params)
+        return stream(sql, params, read_all=True)
 
     def execute(self, sql: str, params: Any = ()) -> Any:
         return self._route(sql, params, self.local.row_factory)
@@ -202,6 +273,17 @@ class SplitBuilder:
 
     def __setattr__(self, name: str, value: Any) -> None:
         setattr(self._inner, name, value)
+
+
+def _refuse_collapsed(dsn: str, run: Iterable[str]) -> None:
+    """Refused (``collapsed_store:<step>``) when the store at ``dsn`` is one
+    ``operating.pg.mention_collapse`` folded and a step of ``run`` is not occurrence-safe
+    (``step_migrate.COLLAPSE_SAFE``): its re-run would lose the rows of the folded twins."""
+    from ontology import step_migrate as sm
+    try:
+        sm.refuse_on_collapsed(dsn, run)
+    except ValueError as exc:
+        raise Refused(str(exc)) from None
 
 
 def _poison(folder: Path) -> Path:
@@ -267,6 +349,7 @@ def build_layer(the_plan: Mapping[str, Any], new: Any, steps: Mapping[str, Any],
     missing = sorted(set(run) - set(steps))
     if missing:
         raise ValueError("steps_missing:" + ",".join(missing))
+    _refuse_collapsed(dsn, run)
     unit = read_layer(unit_layer) if unit_layer is not None else None
     units = the_plan.get("units") or {}
     if unit is None and ((units.get("units") or {}).get("affected")
@@ -850,6 +933,8 @@ _OWN_MERGED = re.compile(r"^SELECT (?:\*|\w+(?:, \w+)*) FROM links WHERE (?P<whe
 # overlay's union gave them in no order either)
 _OWN_UNORDERED = re.compile(r"^SELECT (?P<cols>\w+(?:, \w+)*) FROM link_rows WHERE "
                             r"(?P<where>.+)$")
+_ID_IN = re.compile(r"^SELECT (?P<cols>\w+(?:, \w+)*) FROM link_rows WHERE link_id IN "
+                    r"\(\?(?:, ?\?)*\)$")
 _OWN_NOT = re.compile(r"\b(SELECT|FROM|JOIN|UNION|INTERSECT|EXCEPT|LIMIT|OFFSET|GROUP|"
                       r"HAVING|ORDER|WITH)\b", re.I)
 
@@ -875,6 +960,9 @@ class OverlayConnection(SplitConnection):
         object.__setattr__(self, "batched", batched)
         object.__setattr__(self, "own_local", own_local)
         object.__setattr__(self, "shared_threads", shared_threads)
+        # (prefix, end) id ranges the overlay hides whole from this step (its own, no from
+        # types, no object scope): a read of link ids all inside them has no served row
+        object.__setattr__(self, "hidden_whole", ())
 
     def _wrote(self, pattern: re.Pattern[str], sql: str) -> bool:
         if pattern is _LINK_TABLES:
@@ -947,11 +1035,20 @@ class OverlayConnection(SplitConnection):
         link id from both sides when the link id is read."""
         from operating.pg.sqlite_compat import Cursor
         params = tuple(params or ())
+        cur = self.local.cursor()
+        cur.row_factory = None
+        if params and _ID_IN.match(text) and all(
+                isinstance(p, str) and any(lo <= p < hi for lo, hi in self.hidden_whole)
+                for p in params):
+            # every id in a range hidden whole: the overlay holds none of them (11-13:
+            # with_people's 17k "held" checks went to Postgres for nothing, under load)
+            own = [tuple(r) for r in cur.execute(sql, params).fetchall()]
+            self.local_reads += 1
+            names = tuple(d[0] for d in cur.description)
+            return Cursor(names, own, len(own), self.pg.row_factory is None)
         got = super()._route(sql, params, row_factory)
         names = tuple(d[0] for d in got.description)
         rows = [tuple(r) for r in got.fetchall()]
-        cur = self.local.cursor()
-        cur.row_factory = None
         own = [tuple(r) for r in cur.execute(sql, params).fetchall()]
         self.local_reads += 1
         if tuple(d[0] for d in cur.description) != names:
@@ -1204,6 +1301,31 @@ def hidden_for(name: str, names: Sequence[str], run: Mapping[str, Any],
     return out
 
 
+def _concurrent_needs(only: Iterable[str], specs: Mapping[str, Any]) -> set[str]:
+    """What a concurrent staged run of ``only`` needs staged before it starts: each step
+    named before it (the serial run's order, ``run_steps``) whose links it reads
+    (``reads``, ``reads_own``) or amends, transitively. A step named after it is hidden
+    from it either way (:func:`hidden_for`), so it is never waited for."""
+    out: set[str] = set()
+    todo = [n for n in only if n in specs]
+    while todo:
+        n = todo.pop()
+        spec = specs[n]
+        for d in {*spec.reads, *spec.reads_own, *spec.amends}:
+            if d in specs and d < n and d not in out:
+                out.add(d)
+                todo.append(d)
+    return out - set(only)
+
+
+def _staged_done(done: Path) -> bool:
+    """Whether a step's JSON says its difference was staged."""
+    try:
+        return bool(json.loads(done.read_text()).get("staged"))
+    except (OSError, ValueError):
+        return False
+
+
 def run_steps(the_plan: Mapping[str, Any], run: Mapping[str, Any], new: Any,
               steps: Mapping[str, Any], dsn: str, work: Path, *,
               sources: Mapping[str, Any] | None = None,
@@ -1213,7 +1335,8 @@ def run_steps(the_plan: Mapping[str, Any], run: Mapping[str, Any], new: Any,
               normalizer: Any = None, mention_cache: str | Path | None = None,
               stage_key: str | None = None, stage_part: int = 0,
               apply_now: bool = False, view: str = "staged",
-              part_before: int | None = None, concurrent: bool = False) -> dict[str, Any]:
+              part_before: int | None = None, concurrent: bool = False,
+              part: tuple[int, int] | None = None) -> dict[str, Any]:
     """Each step of ``run`` (name -> from types | None) against the committed Postgres
     ontology at ``dsn`` (reads only; module docstring of :func:`write_run_layer`), its
     links kept in ``work/<step>.sqlite`` with ``work/<step>.json`` (a rerun skips a step
@@ -1228,13 +1351,22 @@ def run_steps(the_plan: Mapping[str, Any], run: Mapping[str, Any], new: Any,
     difference is written to the served links at once (``step_staging.apply_now``, with
     its undo and per-type counts), and every step reads the served links (``view``
     "applied": nothing staged is shown). ``view`` "staged" with ``part_before``: a mention
-    part also sees its step's staged parts numbered below (the apply-as-you-go proof)."""
+    part also sees its step's staged parts numbered below (the apply-as-you-go proof).
+    ``part`` (k, n): ``only`` is one step of :data:`PARTED_STEPS`, run over the objects of
+    part k of n (:func:`object_part`) and staged as part k against the served links from
+    those objects (:func:`steps_in_parts` runs the parts)."""
     from ontology import step_migrate as sm
     from operating.pg.sqlite_compat import PgCompatConnection
     if view not in ("staged", "applied") or (apply_now and view != "applied"):
         raise Refused(f"view:{view}")
-    if concurrent and not (apply_now and only):
-        raise Refused("concurrent_needs_apply_now_and_only")
+    if concurrent and not (only and (apply_now or stage_key is not None)):
+        raise Refused("concurrent_needs_only_and_apply_now_or_stage")
+    if part is not None:
+        if not only or len(only) != 1 or next(iter(only)) not in PARTED_STEPS:
+            raise Refused("part_needs_one_parted_step")
+        part_sql("v.x", *part)   # a valid (k, n)
+        if apply_now or (stage_key is not None and stage_part != part[0]):
+            raise Refused("part_stage_part")
 
     specs = sm.STEPS if specs is None else specs
     remark = set(the_plan["steps"].get("remark") or ())
@@ -1244,6 +1376,7 @@ def run_steps(the_plan: Mapping[str, Any], run: Mapping[str, Any], new: Any,
         scoped["mentions"] = [{"step": "mentions", "prefix": o["prefix"], "end": o["end"],
                                "from": None, "objects": "scope_docs"}
                               for o in sm._owned("mentions", None, specs)]
+    _refuse_collapsed(dsn, run if only is None else set(only) & set(run))
     work.mkdir(parents=True, exist_ok=True)
     report: dict[str, Any] = {"steps": {}}
 
@@ -1266,7 +1399,13 @@ def run_steps(the_plan: Mapping[str, Any], run: Mapping[str, Any], new: Any,
                 continue
             if concurrent and only is not None and name not in only:
                 # (11-11) the steps run at once where none reads
-                # another's links: one not named here reads as Postgres serves it now
+                # another's links: one not named here reads as Postgres serves it now.
+                # Staged (11-12): one a named step reads must be staged first (its JSON
+                # says so), so the named step sees exactly what the serial run shows it;
+                # the others' staged rows may appear mid-run only in types it never reads
+                if not apply_now and name in run and name in _concurrent_needs(only, specs) \
+                        and not _staged_done(work / f"{name}.json"):
+                    raise Refused(f"concurrent_read_not_staged:{name}")
                 if name > max(only):
                     break
                 continue
@@ -1275,7 +1414,8 @@ def run_steps(the_plan: Mapping[str, Any], run: Mapping[str, Any], new: Any,
             if stage_key is not None and done.is_file():
                 entry = _staged_entry(dsn, stage_key, name, store, done, run, specs,
                                       mention_docs if name in scoped else None, stage_part,
-                                      apply=apply_now)
+                                      apply=apply_now,
+                                      hash_part=part if name in PARTED_STEPS else None)
                 report["steps"][name] = {**entry, "resumed": True}
                 continue
             if done.is_file() and store.is_file():
@@ -1304,8 +1444,8 @@ def run_steps(the_plan: Mapping[str, Any], run: Mapping[str, Any], new: Any,
                     raise Refused("mention_scope_with_from_types")
                 srcs = scoped_mention_sources(srcs, mention_groups, overlay.scope_handles())
             projector = sm._projector(new, srcs, normalizer)
-            part = work / f"{name}.sqlite.part"
-            local = _local_store(part)
+            store_part = work / f"{name}.sqlite.part"
+            local = _local_store(store_part)
             try:
                 ahead = (name == "mentions" and mention_groups is not None and mention_cache
                          and os.environ.get("PLX_INPLACE_READ_AHEAD", "1") != "0")
@@ -1314,6 +1454,13 @@ def run_steps(the_plan: Mapping[str, Any], run: Mapping[str, Any], new: Any,
                                          batched="ahead" if ahead else name in BATCHED_STEPS,
                                          own_local=own_local,
                                          shared_threads=stage_key is not None)
+                if part is not None:
+                    builder.connection.part = (*part, PARTED_STEPS[name])
+                if own_local:
+                    builder.connection.hidden_whole = tuple(
+                        (o["prefix"], o["end"]) for o in hidden
+                        if not o.get("objects") and o.get("from") is None
+                        and o["prefix"] in spec.prefixes)
                 if ahead:
                     keys, handles = mention_reads(mention_cache, mention_groups)
                     report["mention_reads_ahead"] = builder.batched.prefetch_mentions(
@@ -1345,7 +1492,8 @@ def run_steps(the_plan: Mapping[str, Any], run: Mapping[str, Any], new: Any,
                 from operating.pg import step_staging
                 got = step_staging.stage(dsn, stage_key, name, stage_part, store,
                                          sm._owned(name, run[name], specs),
-                                         mention_docs if name in scoped else None)
+                                         mention_docs if name in scoped else None,
+                                         hash_part=part)
                 staged_report = {"staged": step_staging.totals({stage_part: got}),
                                  "stage_part": stage_part}
                 if apply_now:
@@ -1359,6 +1507,7 @@ def run_steps(the_plan: Mapping[str, Any], run: Mapping[str, Any], new: Any,
                                 else None)
             entry = {"seconds": round(time.monotonic() - t, 3), "links": n,
                      "reads": builder.connection.reads,
+                     **({"part": list(part)} if part is not None else {}),
                      **({"batched": builder.batched.counts} if builder.batched else {}),
                      **staged_report,
                      "report": json.loads(json.dumps(result, default=str))}
@@ -1374,8 +1523,8 @@ def run_steps(the_plan: Mapping[str, Any], run: Mapping[str, Any], new: Any,
 
 def _staged_entry(dsn: str, stage_key: str, name: str, store: Path, done: Path,
                   run: Mapping[str, Any], specs: Mapping[str, Any],
-                  objects: Sequence[str] | None, part: int, apply: bool = False
-                  ) -> dict[str, Any]:
+                  objects: Sequence[str] | None, part: int, apply: bool = False,
+                  hash_part: tuple[int, int] | None = None) -> dict[str, Any]:
     """A step done before, staged: its JSON when its markers match it; else staged now
     from its store (as part ``part``) and its JSON rewritten; refused when the store is
     gone too (the step must run again: its JSON removed). ``apply``: applied too (now,
@@ -1387,6 +1536,9 @@ def _staged_entry(dsn: str, stage_key: str, name: str, store: Path, done: Path,
     with psycopg.connect(dsn) as pg, pg.cursor() as cur:
         parts = step_staging.staged(cur, name)
         were = step_staging.applied(cur, name)
+    if hash_part is not None:   # one part of a parted step: its own markers only
+        parts = {part: parts[part]} if part in parts else {}
+        were = {part: were[part]} if part in were else {}
     want = entry.get("staged")
     if want and parts and step_staging.totals(parts) == want:
         if apply and not (were and step_staging.totals(were) == want):
@@ -1397,7 +1549,7 @@ def _staged_entry(dsn: str, stage_key: str, name: str, store: Path, done: Path,
     if not store.is_file():
         raise Refused(f"staged_lost:{name}")
     got = step_staging.stage(dsn, stage_key, name, part, store,
-                             sm._owned(name, run[name], specs), objects)
+                             sm._owned(name, run[name], specs), objects, hash_part=hash_part)
     entry.update(staged=step_staging.totals({part: got}), stage_part=part)
     done.write_text(json.dumps(entry, sort_keys=True))
     if apply:
@@ -1654,7 +1806,6 @@ def mentions_in_parts(args: Any, dsn: str, scope: Mapping[str, Any], workers: in
     deleted once merged (its JSON kept): the merge never holds the links twice over (a
     rerun after a merge that stopped runs the parts whose store is gone again)."""
     import os
-    import subprocess
     work = Path(args.work)
     stage_key = getattr(args, "stage_key", None)
     if (work / "mentions.json").is_file() and ((work / "mentions.sqlite").is_file()
@@ -1684,7 +1835,13 @@ def mentions_in_parts(args: Any, dsn: str, scope: Mapping[str, Any], workers: in
     if len(parts) != workers * batches:
         raise Refused(f"mention_parts_planned_otherwise:{len(parts)}")
     narrowed_run = json.loads(Path(args.narrowed).read_text())["run"]
-    before = sorted(n for n in narrowed_run if n < "mentions")
+    concurrent = bool(getattr(args, "concurrent", False))
+    if concurrent and stage_key is None and not apply:
+        raise Refused("concurrent_needs_only_and_apply_now_or_stage")
+    from ontology import step_migrate as sm
+    # side by side (concurrent): only what mentions reads must have staged before it
+    before = sorted(n for n in narrowed_run if n < "mentions" and (
+        not concurrent or n in _concurrent_needs({"mentions"}, sm.STEPS)))
     if stage_key is not None:
         # the steps before staged once here, never by the parts at once
         from ontology import step_migrate as sm
@@ -1785,6 +1942,7 @@ def _mention_batch(args: Any, dsn: str, work: Path, root: Path, parts: Sequence[
                "--only", "mentions", "--dsn", dsn,
                *(["--stage-key", stage_key, "--stage-part", str(k)] if stage_key else []),
                *(["--view", "applied"] if apply else []),
+               *(["--concurrent"] if getattr(args, "concurrent", False) else []),
                *(["--part-before", str(part_before)] if part_before is not None else [])]
         log = open(d / "run.log", "w")
         procs.append((k, subprocess.Popen(cmd, stdout=log, stderr=subprocess.STDOUT), log))
@@ -1797,21 +1955,21 @@ def _mention_batch(args: Any, dsn: str, work: Path, root: Path, parts: Sequence[
         raise Refused(f"mention_parts_failed:{failed}")
 
 
-def _merged_parts(work: Path, root: Path, parts: Sequence[Any], started: float
-                  ) -> dict[str, Any]:
-    """The parts' stores merged into ``work/mentions.sqlite`` (an unstaged run)."""
+def _merged_parts(work: Path, root: Path, parts: Sequence[Any], started: float,
+                  name: str = "mentions") -> dict[str, Any]:
+    """The parts' stores merged into ``work/<name>.sqlite`` (an unstaged run)."""
     from ontology import store_ddl
-    part_file = work / "mentions.sqlite.part"
+    part_file = work / f"{name}.sqlite.part"
     local = _local_store(part_file)
     try:
         total, reports = 0, []
         for k in range(len(parts)):
             d = root / str(k)
-            for rows in _store_link_batches(d / "mentions.sqlite"):
+            for rows in _store_link_batches(d / f"{name}.sqlite"):
                 local.add("links", rows)
                 total += len(rows)
-            reports.append(json.loads((d / "mentions.json").read_text()))
-            (d / "mentions.sqlite").unlink()   # a stopped merge: the part runs again
+            reports.append(json.loads((d / f"{name}.json").read_text()))
+            (d / f"{name}.sqlite").unlink()   # a stopped merge: the part runs again
         conn = local.connection
         if not conn.in_transaction:
             conn.execute("BEGIN IMMEDIATE")
@@ -1819,42 +1977,135 @@ def _merged_parts(work: Path, root: Path, parts: Sequence[Any], started: float
     except BaseException:
         local.abort()
         raise
-    Path(kept).replace(work / "mentions.sqlite")
+    Path(kept).replace(work / f"{name}.sqlite")
     del store_ddl
     entry = {"seconds": round(time.monotonic() - started, 3), "links": total,
              "reads": sum(r.get("reads", 0) for r in reports), "parts": len(parts),
              "part_seconds": [r.get("seconds") for r in reports],
              "report": _summed([r.get("report") for r in reports])}
-    (work / "mentions.json").write_text(json.dumps(entry, sort_keys=True))
+    (work / f"{name}.json").write_text(json.dumps(entry, sort_keys=True))
     return entry
 
 
-def _staged_parts(dsn: str, work: Path, root: Path, count: int, started: float
-                  ) -> dict[str, Any]:
-    """The staged parts of a parted ``mentions`` run checked against their markers (each
-    part's JSON names its own), their stores deleted, ``work/mentions.json`` written with
-    the totals: no merged store (its links are staged; the later steps read them there)."""
+def _staged_parts(dsn: str, work: Path, root: Path, count: int, started: float,
+                  name: str = "mentions") -> dict[str, Any]:
+    """The staged parts of a parted ``name`` run (``mentions``, or a step of
+    :data:`PARTED_STEPS`) checked against their markers (each part's JSON names its own),
+    their stores deleted, ``work/<name>.json`` written with the totals: no merged store
+    (its links are staged; the later steps read them there)."""
     import psycopg
     from operating.pg import step_staging
-    reports = [json.loads((root / str(k) / "mentions.json").read_text()) for k in range(count)]
+    reports = [json.loads((root / str(k) / f"{name}.json").read_text()) for k in range(count)]
     with psycopg.connect(dsn) as pg, pg.cursor() as cur:
-        held = step_staging.staged(cur, "mentions")
+        held = step_staging.staged(cur, name)
     for k, r in enumerate(reports):
         if k not in held or step_staging.totals({k: held[k]}) != r.get("staged"):
-            raise Refused(f"mention_part_not_staged:{k}")
+            raise Refused(f"part_not_staged:{name}:{k}")
     if set(held) != set(range(count)):
-        raise Refused(f"mention_parts_staged_other:{sorted(set(held) - set(range(count)))}")
+        raise Refused(f"parts_staged_other:{name}:{sorted(set(held) - set(range(count)))}")
     if os.environ.get("PLX_STAGE_KEEP_PARTS") != "1":   # (a rehearsal compares them)
         for k in range(count):
-            (root / str(k) / "mentions.sqlite").unlink(missing_ok=True)
+            (root / str(k) / f"{name}.sqlite").unlink(missing_ok=True)
     entry = {"seconds": round(time.monotonic() - started, 3),
              "links": sum(r.get("links", 0) for r in reports),
              "reads": sum(r.get("reads", 0) for r in reports), "parts": count,
              "part_seconds": [r.get("seconds") for r in reports],
              "staged": step_staging.totals(held),
              "report": _summed([r.get("report") for r in reports])}
-    (work / "mentions.json").write_text(json.dumps(entry, sort_keys=True))
+    (work / f"{name}.json").write_text(json.dumps(entry, sort_keys=True))
     return entry
+
+
+def steps_in_parts(args: Any, dsn: str, name: str, workers: int) -> dict[str, Any]:
+    """Step ``name`` (one of :data:`PARTED_STEPS`) on ``workers`` processes, part k over
+    the objects of part k (:func:`object_part`), each part staged as part k against the
+    served links from its objects (``--stage-key``), or, unstaged, the parts' stores
+    merged into ``args.work/<name>.sqlite``; ``args.work/<name>.json`` holds the totals,
+    as one process writes them. The steps before it are shared from ``args.work`` (staged
+    there before: a concurrent part refuses one that is not). A part that fails fails the
+    step; a rerun runs only the parts not done (a part whose JSON is there and, staged,
+    whose markers match it)."""
+    import subprocess
+    from ontology import step_migrate as sm
+    work = Path(args.work)
+    stage_key = getattr(args, "stage_key", None)
+    if name not in PARTED_STEPS:
+        raise Refused(f"step_not_parted:{name}")
+    if getattr(args, "apply_now", False):
+        raise Refused("parts_apply_now")
+    if not 1 < workers <= 256:
+        raise Refused(f"part_invalid:{workers}")
+    if (work / f"{name}.json").is_file() and ((work / f"{name}.sqlite").is_file()
+                                              or stage_key is not None):
+        entry = json.loads((work / f"{name}.json").read_text())
+        if stage_key is not None:
+            import psycopg
+            from operating.pg import step_staging
+            with psycopg.connect(dsn) as pg, pg.cursor() as cur:
+                held = step_staging.staged(cur, name)
+            if not held or step_staging.totals(held) != entry.get("staged"):
+                raise Refused(f"staged_lost:{name}")
+        return {**entry, "resumed": True}
+    started = time.monotonic()
+    root = work / f"{name}-parts"
+    root.mkdir(parents=True, exist_ok=True)
+    plan_file = root / "parts.json"
+    if plan_file.is_file() and json.loads(plan_file.read_text()) != {"parts": workers}:
+        raise Refused(f"parts_planned_otherwise:{name}")
+    plan_file.write_text(json.dumps({"parts": workers}))
+    narrowed_run = json.loads(Path(args.narrowed).read_text())["run"]
+    concurrent = bool(getattr(args, "concurrent", False))
+    before = sorted(n for n in narrowed_run if n < name and (
+        not concurrent or n in _concurrent_needs({name}, sm.STEPS)))
+    held: dict[int, Any] = {}
+    if stage_key is not None:
+        import psycopg
+        from operating.pg import step_staging
+        for n in before:   # staged once here, never by the parts at once
+            _staged_entry(dsn, stage_key, n, work / f"{n}.sqlite", work / f"{n}.json",
+                          narrowed_run, sm.STEPS, None, 0)
+        with psycopg.connect(dsn) as pg, pg.cursor() as cur:
+            held = step_staging.staged(cur, name)
+    procs = []
+    for k in range(workers):
+        d = root / str(k)
+        d.mkdir(exist_ok=True)
+        for n in before:
+            for ext in ("json", "sqlite"):
+                link, target = d / f"{n}.{ext}", work / f"{n}.{ext}"
+                if not link.exists() and not link.is_symlink() and target.exists():
+                    link.symlink_to(target.resolve())
+        done = d / f"{name}.json"
+        if done.is_file():
+            got = json.loads(done.read_text())
+            if stage_key is None and (d / f"{name}.sqlite").is_file():
+                continue
+            if stage_key is not None and k in held and got.get("staged") == \
+                    step_staging.totals({k: held[k]}):
+                continue
+        done.unlink(missing_ok=True)
+        (d / f"{name}.sqlite").unlink(missing_ok=True)
+        cmd = json.loads(os.environ.get("PLX_INPLACE_STEP_CMD") or "null") or [
+            sys.executable, "-m", "ontology.pg_step_inplace"]
+        cmd = [*cmd, "steps", "--plan", args.plan, "--narrowed", args.narrowed,
+               "--state-dir", args.state_dir, "--work", str(d), "--only", name,
+               "--part", f"{k}/{workers}",
+               *(["--stage-key", stage_key, "--stage-part", str(k)] if stage_key else []),
+               *(["--concurrent"] if concurrent else [])]
+        log = open(d / "run.log", "w")
+        # the database by the environment, never on a command line (``ps`` shows those)
+        procs.append((k, subprocess.Popen(cmd, stdout=log, stderr=subprocess.STDOUT,
+                                          env={**os.environ, "PLX_PG_DSN": dsn}), log))
+    failed = []
+    for k, proc, log in procs:
+        if proc.wait() != 0:
+            failed.append(k)
+        log.close()
+    if failed:
+        raise Refused(f"parts_failed:{name}:{failed}")
+    if stage_key is not None:
+        return _staged_parts(dsn, work, root, workers, started, name)
+    return _merged_parts(work, root, list(range(workers)), started, name)
 
 
 def _summed(reports: Sequence[Any]) -> Any:
@@ -2152,7 +2403,10 @@ def marks_code() -> str:
     step's code files), so a shard judged by another classifier is never taken."""
     import hashlib
     from ontology import step_migrate as sm
-    digest = hashlib.sha256(sm.code_digests()["text_index"].encode())
+    # the exact bytes (v1 scheme) of the step's files: ``_PRECHECK_CODE`` and the judged
+    # shards are pinned to them, so any edit, even one no definition digest sees, turns
+    # the pre-check off and retires the shards
+    digest = hashlib.sha256(sm.byte_digests()["text_index"].encode())
     digest.update((Path(sm.ROOT) / "operating" / "chunking" / "sensitive.py").read_bytes())
     return digest.hexdigest()
 
@@ -2165,7 +2419,9 @@ def marks_code() -> str:
 # SIN word, an offer or a termination phrase. A title naming a time sheet and a captured
 # label are left to the classifier. Derived from the classifier of ``_PRECHECK_CODE``
 # (``marks_code``): under any other the pre-check is off and every document is classified.
-_PRECHECK_CODE = "eeeb7feea3178fad317e8592ab02912f183ae37f4aeb4475ae9e774efc4d7634"
+# ac52157b: marks_code() after 8a3ac9ab84 (text_parallel pool init only: same rows, same
+# sensitive.py); eeeb7fee before it
+_PRECHECK_CODE = "ac52157bf97df583ac9dd642848fa0869a16d86207dc394e577d77a5dc40c036"
 _PRECHECK_LOWER = (
     # _STATEMENT
     "minimum ", "credit limit", "available credit", "previous ", "new balance", "statement ",
@@ -2471,7 +2727,8 @@ def text_marks(state: str, out: Path, shards: int, workers: int,
     todo = [n for n in range(shards) if not (out / f"shard-{n}.json").is_file()]
     if todo:
         with futures.ProcessPoolExecutor(max_workers=max(1, min(workers, len(todo))),
-                                         mp_context=multiprocessing.get_context("spawn")) as pool:
+                                         mp_context=multiprocessing.get_context("spawn"),
+                                         **parent_watch.pool_init()) as pool:
             for f in [pool.submit(judge_shard, state, n, shards, str(out), tuple(readings))
                       for n in todo]:
                 f.result()
@@ -2603,6 +2860,15 @@ def _serve_kept(projection: Path, blobs: Sequence[Any], primed: Sequence[str] = 
     serve_kept([*(Path(p) for p in primed), projection], blobs)
 
 
+def _unit_id(path: str | None) -> str | None:
+    """The id of the unit layer a step layer goes with (``ontology_migrate apply`` refuses
+    a step layer bound to another one)."""
+    if path is None:
+        return None
+    from ontology.schema_migrate import read_layer
+    return read_layer(path)["id"]
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="python3 -m ontology.pg_step_inplace")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -2636,6 +2902,11 @@ def main(argv: Sequence[str] | None = None) -> int:
                    help="stage each step's difference to the served links "
                         "(operating.pg.step_staging) under this run key")
     r.add_argument("--stage-part", type=int, default=0)
+    r.add_argument("--part-workers", type=int, default=1,
+                   help="with --only one step of PARTED_STEPS: run it on this many "
+                        "processes, one part of its objects each (steps_in_parts)")
+    r.add_argument("--part", default=None,
+                   help="(steps_in_parts' child) K/N: run --only's step over part K of N")
     r.add_argument("--apply-now", action="store_true",
                    help="apply each finished step's (and mention batch's) staged difference "
                         "to the served links at once (operating.pg.step_staging.apply_now)")
@@ -2648,8 +2919,9 @@ def main(argv: Sequence[str] | None = None) -> int:
                    help="the scoped mentions run in this many batches of "
                         "--mention-workers parts, one after the other")
     r.add_argument("--concurrent", action="store_true",
-                   help="with --apply-now and --only: the steps not named are neither "
-                        "staged nor required: read as Postgres serves them now")
+                   help="with --only and --apply-now or --stage-key: the steps not named "
+                        "are not run here; staged, each one a named step reads must have "
+                        "staged before (refused otherwise)")
     r.add_argument("--emulate-batches", action="store_true",
                    help="(the proof) each batch sees the batches before it staged, as if "
                         "applied; nothing is applied")
@@ -2666,6 +2938,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     w.add_argument("--work", required=True)
     w.add_argument("--scope", default=None)
     w.add_argument("--marks", default=None, help="the marks command's work directory")
+    w.add_argument("--unit-layer", default=None,
+                   help="the unit layer applied in the same transaction (its id is recorded)")
     w.add_argument("--out", required=True)
     w.add_argument("--dsn", default=None)
     args = parser.parse_args(argv)
@@ -2711,6 +2985,18 @@ def main(argv: Sequence[str] | None = None) -> int:
     scope = json.loads(Path(args.scope).read_text()) if getattr(args, "scope", None) else None
     if scope is not None and scope.get("refused"):
         scope = None   # the mention scope could not be bounded: every document
+    if args.command == "steps" and args.part_workers > 1 and args.only in PARTED_STEPS \
+            and args.part is None:
+        report = steps_in_parts(args, dsn, args.only, args.part_workers)
+        print(json.dumps({args.only: {k: v for k, v in report.items() if k != "report"}},
+                         sort_keys=True))
+        return 0
+    part = None
+    if args.command == "steps" and args.part is not None:
+        got = re.fullmatch(r"(\d{1,3})/(\d{1,3})", args.part)
+        if got is None:
+            raise Refused(f"part_invalid:{args.part}")
+        part = (int(got[1]), int(got[2]))
     if args.command == "steps" and args.mention_workers > 1 and scope is not None \
             and args.only == "mentions" and args.mention_cache:
         report = mentions_in_parts(args, dsn, scope, args.mention_workers)
@@ -2737,7 +3023,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                                stage_key=args.stage_key, stage_part=args.stage_part,
                                apply_now=args.apply_now,
                                view=args.view or ("applied" if args.apply_now else "staged"),
-                               part_before=args.part_before, concurrent=args.concurrent)
+                               part_before=args.part_before, concurrent=args.concurrent,
+                               part=part)
         print(json.dumps({k: {kk: vv for kk, vv in v.items() if kk != "report"}
                           for k, v in report["steps"].items()}, sort_keys=True))
         return 0
@@ -2759,7 +3046,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             marked_scope = sm._text_marks_scope(dsn, marked)
         report = write_run_layer({**the_plan, "steps": {**the_plan["steps"], **narrowed}},
                                  run, load_schema(), Path(args.work), Path(args.out),
-                                 unit_id=None, delta_mark=delta_mark(dsn),
+                                 unit_id=_unit_id(args.unit_layer), delta_mark=delta_mark(dsn),
                                  sequence=next_sequence(dsn),
                                  mention_docs=scope["objects"] if scope else None,
                                  marked=marked, marked_scope=marked_scope)

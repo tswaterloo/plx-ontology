@@ -78,8 +78,10 @@ from typing import Any, Callable, Iterable, Mapping, Sequence
 
 from integrations.live_source_guard import NotVisible
 
-from .claim_checks import (IDENTIFIER, ISO_DATE, NUMBER, case_items, check_items,
-                           returned_evidence)
+from .claim_checks import check_items
+from .claim_checks_grammar import IDENTIFIER, ISO_DATE, NUMBER
+from .claim_checks_values import returned_evidence
+from .claim_checks_wording import case_items
 from .customer_po_coverage import classify_order, parse_date_value
 from .cases import _digest as _case_citation_digest, format_unit, parse_unit
 from .playbook_originals import (DocumentFields, KindConfirmationsRead, check_case_originals,
@@ -1643,7 +1645,7 @@ def _transcript_violations(allowed: Iterable[str], transcript: Iterable[Any] | N
     # Direct L1 reads of an in-process driver (operating.source_reads) and the host-code
     # citation read (mcp_server.HOST_READS) are not host tools: read-only by construction,
     # so the tool allowlist does not govern them.
-    from .mcp_server import HOST_READS
+    from .mcp_server_catalog import HOST_READS
     permitted, out = set(allowed) | READS | HOST_READS, []
     for index, entry in enumerate(transcript):
         name = entry if isinstance(entry, str) else (

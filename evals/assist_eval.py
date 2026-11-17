@@ -49,7 +49,7 @@ import re
 import sqlite3
 import sys
 import time
-from typing import Any, Iterable, Mapping, Optional, Sequence
+from typing import Any, Mapping, Optional, Sequence
 
 SINCE, UNTIL = "2026-10-06T07:00:00Z", "2026-10-26T07:00:00Z"   # dev days only
 # a held-out window (``sample --held-out``): fresh days after the contaminated 10-26..11-05,
@@ -132,15 +132,17 @@ def _top(body: str) -> str:
 def party_names(store: str) -> dict[str, str]:
     """address or @domain -> the one customer or supplier name stating it (else absent)."""
     from operating import autopilot as ap
+    from operating import autopilot_events
+    from operating import autopilot_records
     st = ap._store(store)
     try:
-        found = ap._party_addresses(st)
+        found = autopilot_events._party_addresses(st)
         ids = sorted({o for v in found.values() for _s, o in v})
         names = {}
         for start in range(0, len(ids), 5000):
-            for oid, row in ap._read(st, ids[start:start + 5000], ("name",)).items():
-                if ap._v(row, "name"):
-                    names[oid] = ap._v(row, "name")
+            for oid, row in autopilot_records._read(st, ids[start:start + 5000], ("name",)).items():
+                if autopilot_records._v(row, "name"):
+                    names[oid] = autopilot_records._v(row, "name")
         out = {}
         for key, parties in found.items():
             said = {names.get(o) for _s, o in parties} - {None}

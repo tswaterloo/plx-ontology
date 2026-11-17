@@ -7,8 +7,8 @@ import { ApiError, apiErrorFrom } from "./errors";
 import { onSessionReset } from "./session-cache";
 import { SseParser } from "./sse";
 import { ownPath, setViewingAs, VIEW_AS_HEADER, viewingAs } from "./view-as";
-import type { Explore, LabourPage, LateList, RecordAsOf, RecordHistory,
-  Template, TemplateDocType, TemplateFilled, TemplateList, TemplateProposal, TemplateSave, TemplateSuggestions,
+import type { DocList, Explore, LabourPage, LateList, RecordAsOf, RecordHistory,
+  MemoryItem, MemoryItems, MemoryPeople, MemorySave, Template, TemplateDocType, TemplateFilled, TemplateList, TemplateProposal, TemplateSave, TemplateSuggestions,
   WriteApprove, WriteExecute, WriteIntentList, WriteIntentView, WritePreview,
   ActionConfirm,
   ActionPreview,
@@ -40,7 +40,6 @@ import type { Explore, LabourPage, LateList, RecordAsOf, RecordHistory,
   AutopilotDecisionRequest,
   AutopilotItem,
   AutopilotSwitches,
-  AutopilotWorkflowSwitch,
   AutopilotScorecard,
   TrustPage,
   AutopilotCatalog,
@@ -51,9 +50,11 @@ import type { Explore, LabourPage, LateList, RecordAsOf, RecordHistory,
   AutopilotWorkflowDetail,
   AutopilotWorkflowDraft,
   TeamView,
+  Workload,
+  WorkloadGrants,
+  WorkloadGrantSheet,
   TeamPersonDetail,
   RdBoard,
-  UatFeedback,
   UpcomingMeetings,
   WatcherItemState,
   WatcherItemStateRequest,
@@ -88,9 +89,12 @@ import type { Explore, LabourPage, LateList, RecordAsOf, RecordHistory,
   WatchReadResult,
   TimeSaved,
   UploadPreview,
+  EntryHold,
+  EntryConfirm,
   DocFillRequest,
   InstructFill,
   ViewAsPeople,
+  LearnedTemplates,
 } from "./types";
 
 type TokenProvider = () => Promise<string | null>;
@@ -118,25 +122,58 @@ function viewAsHeader(path: string, method: string): Record<string, string> {
   return { [VIEW_AS_HEADER]: v.key };
 }
 
+/** The longest a page read (a GET) waits for the server's answer: past its own 60 s read limit
+ * and a slow network, a server that never answers (frozen, restarting) shows a timeout with a
+ * retry instead of a page that spins for ever. Writes and the Ask's stream are not cut here. */
+export const GET_TIMEOUT_MS = 90_000;
+
+/** The caller's signal, plus a timeout for a read; a read past it fails as ApiError 504 "read_timeout". */
+function readSignal(method: string, signal?: AbortSignal | null): { signal?: AbortSignal; timeout?: AbortSignal } {
+  if ((method !== "GET" && method !== "HEAD") || typeof AbortSignal === "undefined" || typeof AbortSignal.timeout !== "function") {
+    return { signal: signal ?? undefined };
+  }
+  const timeout = AbortSignal.timeout(GET_TIMEOUT_MS);
+  if (!signal) return { signal: timeout, timeout };
+  if (typeof AbortSignal.any !== "function") return { signal };
+  return { signal: AbortSignal.any([signal, timeout]), timeout };
+}
+
 async function call(path: string, init: RequestInit & { json?: unknown } = {}): Promise<Response> {
   const { json, ...rest } = init;
-  const as = viewAsHeader(path, (rest.method ?? "GET").toUpperCase());
-  const res = await fetch(path, {
-    credentials: "same-origin",
-    ...rest,
-    headers: await headers({
-      Accept: "application/json",
-      ...(json !== undefined ? { "Content-Type": "application/json" } : {}),
-      ...as,
-    }),
-    body: json !== undefined ? JSON.stringify(json) : rest.body,
-  });
+  const method = (rest.method ?? "GET").toUpperCase();
+  const as = viewAsHeader(path, method);
+  const limited = readSignal(method, rest.signal);
+  let res: Response;
+  try {
+    res = await fetch(path, {
+      credentials: "same-origin",
+      ...rest,
+      signal: limited.signal,
+      headers: await headers({
+        Accept: "application/json",
+        ...(json !== undefined ? { "Content-Type": "application/json" } : {}),
+        ...as,
+      }),
+      body: json !== undefined ? JSON.stringify(json) : rest.body,
+    });
+  } catch (e) {
+    // our own timeout, not the caller's cancel: an honest "took too long", never a hang
+    if (limited.timeout?.aborted && !rest.signal?.aborted) throw new ApiError(504, "read_timeout");
+    throw e;
+  }
   if (!res.ok) throw await apiErrorFrom(res);
   return res;
 }
 
 async function getJson<T>(path: string, signal?: AbortSignal): Promise<T> {
-  return (await (await call(path, { signal })).json()) as T;
+  const res = await call(path, { signal });
+  try {
+    return (await res.json()) as T;
+  } catch (e) {
+    // the read timed out while its body was still arriving
+    if (e instanceof DOMException && e.name === "TimeoutError" && !signal?.aborted) throw new ApiError(504, "read_timeout");
+    throw e;
+  }
 }
 
 /** How often a Today list still being read for the first time is asked for again, and for how long at most. */
@@ -326,13 +363,25 @@ export async function getOpsHealth(signal?: AbortSignal): Promise<OpsHealth | nu
   return body.ops ?? null;
 }
 
-/** One reliability incident (operating/ops_alarms.py): shown in the app until it recovers; never paged. */
+/** One reliability incident (operating/ops_alarms.py): shown in the app until it recovers, and mailed by
+ * level when ops mail is on (operating/ops_notify.py). A paused one is stopped on purpose until `paused.until`. */
 export interface OpsIncident {
   key: string;
   line: string;
   opened_at: string;
   last_seen_at?: string;
   closed_at?: string;
+  level?: "info" | "warning" | "high" | "critical";
+  paused?: { until: string; why: string };
+}
+
+/** Whether the alarms mail anyone (off until the host config names a sender), and why not. */
+export interface OpsNotify {
+  sending: boolean;
+  why_not?: string | null;
+  recipients?: number;
+  heartbeat_on?: string | null;
+  pending?: number;
 }
 
 export interface OpsAlarms {
@@ -341,7 +390,9 @@ export interface OpsAlarms {
   checked_at?: string | null;
   every_minutes?: number;
   open: OpsIncident[];
+  paused?: OpsIncident[];
   recovered: OpsIncident[];
+  notify?: OpsNotify | null;
   checks: (OpsCheck & { line?: string })[];
   queue?: OpsQueue | null;
 }
@@ -502,6 +553,23 @@ export function getMeetingBrief(type: string, id: string, signal?: AbortSignal):
   return getJson<Brief>(`/api/brief/${encodeURIComponent(type)}/${encodeURIComponent(id)}`, signal);
 }
 
+/** The QC daily pack: open quality checks, calibration, slots past start, batches on hold and
+ * the hold-release queue (quality_controlled readers see lines; anyone else the marked sections). */
+export function getQcDaily(signal?: AbortSignal): Promise<Brief> {
+  return getJson<Brief>("/api/brief/qc-daily", signal);
+}
+
+/** The QC audit pack: on-time share of the QC checks by area and month over the last year. */
+export function getQcAudit(signal?: AbortSignal): Promise<Brief> {
+  return getJson<Brief>("/api/brief/qc-audit", signal);
+}
+
+/** The QC audit pack as one printable plain-text page, each line with its sources. */
+export async function getQcAuditText(signal?: AbortSignal): Promise<string> {
+  const res = await call("/api/brief/qc-audit.txt", { signal });
+  return res.text();
+}
+
 /** Department and week labour hours (hr / ops-management readers only). */
 export function getLabour(signal?: AbortSignal): Promise<LabourPage> {
   return getJson<LabourPage>("/api/labour", signal);
@@ -563,6 +631,17 @@ export async function decideAutopilotItem(itemId: string, body: AutopilotDecisio
   return (await (await call(`/api/autopilot/items/${encodeURIComponent(itemId)}/decision`, { method: "POST", json: body })).json()) as AutopilotItem;
 }
 
+/** An order or PO you prepared, held until its checks are settled. */
+export function getEntryHold(entryId: string, signal?: AbortSignal): Promise<EntryHold> {
+  return getJson<EntryHold>(`/api/entries/${encodeURIComponent(entryId)}`, signal);
+}
+
+/** Enter or confirm one value of your held entry. Nothing is written to BC: with no check
+ * left the entry goes to the write desk for a colleague to approve. */
+export async function confirmEntryValue(entryId: string, body: EntryConfirm): Promise<EntryHold> {
+  return (await (await call(`/api/entries/${encodeURIComponent(entryId)}/confirm`, { method: "POST", json: body })).json()) as EntryHold;
+}
+
 /** A drafted document's upload to SharePoint: before and after, re-checked as you now. */
 export function getUpload(uploadId: string, signal?: AbortSignal): Promise<UploadPreview> {
   return getJson<UploadPreview>(`/api/instruct/uploads/${encodeURIComponent(uploadId)}`, signal);
@@ -581,7 +660,6 @@ export async function fillForm(body: DocFillRequest): Promise<InstructFill> {
   return (await (await call("/api/doc-fill", { method: "POST", json: body })).json()) as InstructFill;
 }
 
-/** Owner only: the write path's global kill switch. */
 /** Switch one of your own autopilot workflows on or off (only your own; on only once it
  * passed its check for you). Answers the area as it now reads. */
 export async function setAutopilotOptIn(workflow: string, on: boolean): Promise<AutopilotArea> {
@@ -599,13 +677,9 @@ export async function setAutopilotPaused(paused: boolean): Promise<AutopilotArea
   return (await (await call("/api/autopilot/pause", { method: "POST", json: { paused } })).json()) as AutopilotArea;
 }
 
+/** Owner only: the write path's global kill switch. */
 export async function setAutopilotGlobal(globalOff: boolean): Promise<AutopilotSwitches> {
   return (await (await call("/api/autopilot/switches", { method: "POST", json: { global_off: globalOff } })).json()) as AutopilotSwitches;
-}
-
-/** Owner only: a workflow off or on, or a role's workflow live or back to dry run. */
-export async function setAutopilotWorkflow(workflow: string, body: AutopilotWorkflowSwitch): Promise<AutopilotArea> {
-  return (await (await call(`/api/autopilot/workflows/${encodeURIComponent(workflow)}`, { method: "POST", json: body })).json()) as AutopilotArea;
 }
 
 /** One workflow: trigger, conditions, actions, gate, mode, caught and missed, history. */
@@ -653,6 +727,21 @@ export function getTeam(signal?: AbortSignal): Promise<TeamView> {
   return getJson<TeamView>("/api/team", signal);
 }
 
+/** Open threads awaiting reply, tasks and alerts per team; per person your own and the teams the owner granted you. */
+export function getWorkload(signal?: AbortSignal): Promise<Workload> {
+  return getJson<Workload>("/api/workload", signal);
+}
+
+/** The owner's grant sheet: each person's team and the teams they see per person (403 for everyone else). */
+export function getWorkloadGrants(signal?: AbortSignal): Promise<WorkloadGrantSheet> {
+  return getJson<WorkloadGrantSheet>("/api/workload/grants", signal);
+}
+
+/** The owner saves the whole assignment (entries for people the sheet never shows are kept by the server). */
+export async function setWorkloadGrants(body: WorkloadGrants): Promise<WorkloadGrants> {
+  return (await (await call("/api/workload/grants", { method: "POST", json: body })).json()) as WorkloadGrants;
+}
+
 // One person's drill-down (404 for a person you may not open).
 export function getTeamPerson(key: string, signal?: AbortSignal): Promise<TeamPersonDetail> {
   return getJson<TeamPersonDetail>(`/api/team/${encodeURIComponent(key)}`, signal);
@@ -663,10 +752,6 @@ export function getRdBoard(signal?: AbortSignal): Promise<RdBoard> {
   return getRead<RdBoard>("/api/rd-projects", signal);
 }
 
-// The MRP UAT feedback lists as you may read them (read only); `status` narrows the items.
-export function getUatFeedback(status?: string, signal?: AbortSignal): Promise<UatFeedback> {
-  return getRead<UatFeedback>(status ? `/api/uat-feedback?status=${encodeURIComponent(status)}` : "/api/uat-feedback", signal);
-}
 
 // An item's label and artwork changes from your own alert list.
 export function getLabelChanges(objectId: string, signal?: AbortSignal): Promise<LabelChanges> {
@@ -691,8 +776,9 @@ export function getActionsLog(signal?: AbortSignal): Promise<ActionsLog> {
   return getJson<ActionsLog>("/api/actions/log", signal);
 }
 
-export function suggest(q: string, signal?: AbortSignal): Promise<SuggestResponse> {
-  return getJson<SuggestResponse>(`/api/suggest?q=${encodeURIComponent(q.slice(0, 100))}&limit=8`, signal);
+export function suggest(q: string, signal?: AbortSignal, limit = 8): Promise<SuggestResponse> {
+  const n = Math.max(1, Math.min(20, Math.floor(limit)));
+  return getJson<SuggestResponse>(`/api/suggest?q=${encodeURIComponent(q.slice(0, 100))}&limit=${n}`, signal);
 }
 
 /** Projection type names (PurchaseOrder, SalesOrder, ...). Anything else fails closed. */
@@ -731,8 +817,11 @@ export function getAsOf(type: string, id: string, at: string, signal?: AbortSign
 }
 
 /** The slow sections of a record's page, read after its quick first read and merged in
- * (`mergeSection`): the late check, people, landed cost, how we know and the margin. */
-export const PAGE_SECTIONS: readonly SectionName[] = ["late", "people", "landed_cost", "trail", "margin", "knows"];
+ * (`mergeSection`): the late check, people, landed cost, how we know, the margin, what a
+ * person works on, the lists from customers' and suppliers' sheets and mail and a product's formula. */
+export const PAGE_SECTIONS: readonly SectionName[] = ["late", "people", "landed_cost", "trail", "margin", "knows", "documents", "formula"];
+/** The record types whose page has the documents section (`operator_api.record_documents.LISTS`). */
+export const DOCUMENT_LIST_TYPES: readonly string[] = ["Customer", "Supplier", "Product", "FgItem"];
 
 export function getObjectSection(section: SectionName, type: string, id: string, signal?: AbortSignal): Promise<ObjectSection> {
   if (!PAGE_SECTIONS.includes(section) || !isObjectType(type) || !id || id.length > 700)
@@ -771,6 +860,10 @@ export function mergeSection(page: ObjectPage, s: ObjectSection): ObjectPage {
       return { ...page, profitability: s.profitability ?? null, profitability_choices: s.profitability_choices ?? [] };
     case "knows":
       return { ...page, knows: s.knows ?? null };
+    case "documents":
+      return { ...page, documents: s.documents ?? null };
+    case "formula":
+      return { ...page, formula: s.formula ?? null };
   }
   return page;
 }
@@ -791,7 +884,7 @@ export function getSourceRecords(handle: string, signal?: AbortSignal): Promise<
 export const APP_VERSION = process.env.NEXT_PUBLIC_APP_VERSION || "0.1.0";
 
 /** Where the reader is: the app path and query, never the host (works the same on every OS). */
-export function currentPage(): string | undefined {
+function currentPage(): string | undefined {
   if (typeof window === "undefined") return undefined;
   return (window.location.pathname + window.location.search).slice(0, 300);
 }
@@ -830,6 +923,21 @@ export async function setFeedbackStatus(id: string, status: FeedbackStatus): Pro
 
 const ASK_EVENTS = new Set(["understanding", "status", "sources", "verdict", "token", "answer", "error"]);
 
+/** How long the Ask's stream may say nothing at all before it counts as cut off: the server
+ * sends a keep-alive every 15 s while an answer is still being worked on (operator_api.app
+ * KEEP_ALIVE_SECONDS), so only a frozen or restarted server goes this long. */
+export const ASK_STALL_MS = 60_000;
+
+/** The reader's next chunk, or "stalled" when none (not even a keep-alive) came within `ms`. */
+async function readOrStall<T>(reader: ReadableStreamDefaultReader<T>, ms: number): Promise<ReadableStreamReadResult<T> | "stalled"> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([reader.read(), new Promise<"stalled">((done) => (timer = setTimeout(() => done("stalled"), ms)))]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 /**
  * POST /api/ask and yield typed events as they arrive. Unknown event names
  * are dropped; malformed data or a stream that ends without an answer
@@ -852,7 +960,15 @@ export async function* ask(req: AskRequest, signal?: AbortSignal): AsyncGenerato
   let finished = false;
   try {
     for (;;) {
-      const { value, done } = await reader.read();
+      const next = await readOrStall(reader, ASK_STALL_MS);
+      if (next === "stalled") {
+        // nothing at all (not even the server's keep-alive) for a minute: the server froze
+        // or restarted under the answer; say it was cut off rather than wait for ever
+        void reader.cancel().catch(() => undefined);
+        yield { event: "error", data: { code: "stream_interrupted", message: "" } };
+        return;
+      }
+      const { value, done } = next;
       const raws = done ? parser.end() : parser.push(value);
       for (const raw of raws) {
         if (!ASK_EVENTS.has(raw.event)) continue;
@@ -934,11 +1050,48 @@ export async function logSaved(body: WorkLogSave): Promise<void> {
   await call("/api/work-log/saved", { method: "POST", json: body });
 }
 
+// ---- memory: what the Workbench remembers about you (yours only) ----
+
+/** Your standing instructions, preferences, commitments and facts, newest first. */
+export function getMemory(signal?: AbortSignal): Promise<MemoryItems> {
+  return getJson<MemoryItems>("/api/memory", signal);
+}
+
+/** The people you work with most and your conversations going, from your own mailbox. */
+export function getMemoryPeople(signal?: AbortSignal): Promise<MemoryPeople> {
+  return getJson<MemoryPeople>("/api/memory/people", signal);
+}
+
+/** Keep something in your own words, or correct one of your items (id). */
+export async function saveMemory(body: MemorySave, id?: number): Promise<MemoryItem> {
+  const res = id
+    ? await call(`/api/memory/${id}`, { method: "PUT", json: body })
+    : await call("/api/memory", { method: "POST", json: body });
+  return (await res.json()) as MemoryItem;
+}
+
+/** One of your commitments done: it leaves Today and your memory; your log keeps it. */
+export async function doneMemory(id: number): Promise<void> {
+  await call(`/api/memory/${id}/done`, { method: "POST" });
+}
+
+/** Forget one of your items: it is not used again, and not learned again unseen. */
+export async function forgetMemory(id: number): Promise<void> {
+  await call(`/api/memory/${id}`, { method: "DELETE" });
+}
+
 // ---- templates: your own saved templates, and those shared with you ----
 
 /** Your templates and those shared with you or a role of yours, with the types, fields and roles. */
 export function getTemplates(signal?: AbortSignal, docType?: TemplateDocType): Promise<TemplateList> {
   return getJson<TemplateList>(`/api/templates${docType ? `?doc_type=${encodeURIComponent(docType)}` : ""}`, signal);
+}
+
+/** The questionnaire answers we gave that any customer may get, ranked against `question`;
+ * answered `reading` while your first read of it goes on, asked again until it is there. */
+export function getAnswerBank(question?: string, signal?: AbortSignal): Promise<DocList> {
+  const q = (question ?? "").trim().slice(0, 700);
+  return getRead<DocList>(`/api/templates/answer-bank${q ? `?question=${encodeURIComponent(q)}` : ""}`, signal);
 }
 
 /** Save a new template, or change one of yours (id). */
@@ -961,6 +1114,11 @@ export async function proposeTemplate(text: string, record?: string | null): Pro
 /** A template filled from a record you can read; nothing is sent. */
 export async function fillTemplate(id: number, record?: string | null): Promise<TemplateFilled> {
   return (await (await call(`/api/templates/${id}/fill`, { method: "POST", json: { record: record || null } })).json()) as TemplateFilled;
+}
+
+/** The kinds of document learned from your own sent documents (re-learned daily). */
+export function getLearnedTemplates(signal?: AbortSignal): Promise<LearnedTemplates> {
+  return getJson<LearnedTemplates>("/api/templates/learned", signal);
 }
 
 /** The templates to offer when you start a document of this type. */

@@ -5,7 +5,9 @@
 * :func:`diff` compares the served schema with the new one unit by unit
   (``ontology.project_incremental.plan``): a unit whose schema slice
   (``ontology.build_keys.unit_slice``, everything of the schema its rows can read) differs,
-  or that only the new schema has, is *affected*; a link unit only the served schema has is
+  or that only the new schema has, is *affected*, unless the slice of what its rows are a
+  function of (``build_keys.rows_slice``: no documentation, of an end type of a foreign-key
+  link only what the link reads) is equal (``units.same_rows``: kept, never rewritten); a link unit only the served schema has is
   *dropped*. Equal slices give equal rows, so nothing else is re-derived. What a unit
   rewrite cannot express is refused with a reason (never guessed): a binding that changes
   type or goes away (object ids move, and step links name them), a property whose
@@ -140,14 +142,35 @@ def _added_marks(old: Mapping[str, Any], new: Mapping[str, Any]) -> list[str]:
     return sorted(added)
 
 
+def _read_by_units_only(kind: str | None, new: Any) -> bool:
+    """A property newly declared an identifier of a kind never read from text
+    (``never_in_text``: no mention profile extracts it, no mention link type targets a type
+    by it) changes only the rows of the units projecting it (its values and identifier
+    rows, IN-10), unless another kind aliases it or a link pair compares by it. A kind
+    changed or dropped on a property stays refused (``identifier_kind_changes``)."""
+    from ontology import identifiers
+    if not kind or kind not in identifiers.kinds() or \
+            not identifiers.kind_spec(kind).get("never_in_text"):
+        return False
+    if any(kind in (identifiers.kind_spec(k).get("alias_kinds") or ())
+           for k in identifiers.kinds()):
+        return False
+    return not any(pair.get("identifier_kind") == kind
+                   for link in (_get(new, "link_types") or {}).values()
+                   for binding in link.get("bindings", ())
+                   for pair in binding.get("pairs", ()))
+
+
 def diff(served: Any, new: Any, *, force: Any = (), present: Any = None,
-         specs: Any = None) -> dict[str, Any]:
+         specs: Any = None, touch: Iterable[str] = ()) -> dict[str, Any]:
     """The migration plan from ``served`` to ``new`` (module docstring). ``force``: units
     affected whatever their slices (their derivation code changed:
     ``ontology.step_migrate.plan``). ``present``: the build steps this tree runs (None:
     ``ontology.step_migrate.present_steps``); a step whose declared inputs the affected
     units touch must run again (``steps_required``; refused ``step_input_changed`` unless a
-    step migration covers it, ``ontology.step_migrate.plan_schemas``)."""
+    step migration covers it, ``ontology.step_migrate.plan_schemas``). ``touch``: object
+    types whose rows change outside every unit (an identifier re-parse in place,
+    ``step_migrate.reparse_carriers``): touched as an affected unit's are."""
     from ontology import build_keys
     from ontology import step_migrate
     from ontology.project import POST_PROJECT
@@ -165,10 +188,32 @@ def diff(served: Any, new: Any, *, force: Any = (), present: Any = None,
     old_slices = {u: build_keys.unit_slice(op, u, d) for u, d in old_plan.units.items()}
     new_slices = {u: build_keys.unit_slice(np_, u, d) for u, d in new_plan.units.items()}
     force = set(force)
-    affected = sorted(u for u in new_slices
-                      if old_slices.get(u) != new_slices[u] or u in force)
+    # a unit whose slice differs only where its rows read nothing (documentation, an end
+    # type's other properties, a link type merely touching it: ``build_keys.rows_slice``)
+    # keeps its rows: not rewritten, and no step re-reads it
+    same_rows = sorted(
+        u for u in new_slices
+        if u in old_slices and old_slices[u] != new_slices[u] and u not in force
+        and build_keys.rows_slice(op, u, old_plan.units[u], old_plan.rows.get(u))
+        == build_keys.rows_slice(np_, u, new_plan.units[u], new_plan.rows.get(u)))
+    affected = {u for u in new_slices
+                if (old_slices.get(u) != new_slices[u] or u in force) and u not in same_rows}
+    # a same_record link unit compares the values its ends' units write
+    # (``Projector._conflicts`` reads them from the layer): those units are rewritten with
+    # it, rows unchanged or not
+    held: dict[str, set[str]] = {}
+    for u, rows in new_plan.rows.items():
+        if rows[0] in ("binding", "shard"):
+            held.setdefault(rows[1], set()).add(u)
+    for u in sorted(affected):
+        rows = new_plan.rows.get(u) or ()
+        if rows[:1] == ("links",) and rows[4] == "same_record":
+            affected |= {e for end in rows[2:4] for e in held.get(end, ())}
+    same_rows = [u for u in same_rows if u not in affected]
+    affected = sorted(affected)
     dropped = sorted(set(old_slices) - set(new_slices))
-    out["units"] = {"total": len(new_slices), "affected": affected, "dropped": dropped}
+    out["units"] = {"total": len(new_slices), "affected": affected, "dropped": dropped,
+                    "same_rows": same_rows}
     # the plan's id: what it rewrites (a code-only migration forcing other units differs);
     # a layer's id adds its content and a sequence (:func:`build_layer`)
     out["id"] = _sha([out["from"], out["to"], affected, dropped, sorted(force)])[:16]
@@ -183,8 +228,8 @@ def diff(served: Any, new: Any, *, force: Any = (), present: Any = None,
     for tid in sorted({new_plan.bindings[b][0] for b in touched}):
         pa, pb = _props(otypes.get(tid) or {}), _props(ntypes[tid])
         for name in sorted(set(pa) | set(pb)):
-            if (pa.get(name) or {}).get("identifier_kind") != \
-                    (pb.get(name) or {}).get("identifier_kind"):
+            was, now = ((p.get(name) or {}).get("identifier_kind") for p in (pa, pb))
+            if was != now and not (was is None and _read_by_units_only(now, new)):
                 out["refused"].append(f"identifier_kind_changes:{tid}.{name}")
             if any(s.get("parser") == POST_PROJECT for p in (pa.get(name), pb.get(name)) if p
                    for s in p.get("sources", ())):
@@ -260,6 +305,7 @@ def diff(served: Any, new: Any, *, force: Any = (), present: Any = None,
                                        the_plan.bindings[rows[3]][0]))
             elif rows[0] != "gaps":
                 out["refused"].append(f"unit_rows_unknown:{unit}:{rows[0]}")
+    touched |= set(touch)
     out["touched_types"] = sorted(touched)
     out["touched_links"] = sorted([list(e) for e in touched_links])
     present = step_migrate.present_steps() if present is None else present

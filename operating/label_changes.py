@@ -58,7 +58,7 @@ from ontology import store as ostore
 from .copy_gate import count, say_date
 from . import proactive_threads as pt
 from .proactive_business import _tick
-from .proactive_chasers import _FORWARD, _REPLY, _addr, _instant
+from .proactive_chasers import _FORWARD, _instant
 
 RULE = "label_changes"
 UNAPPROVED = "label_change_unapproved"

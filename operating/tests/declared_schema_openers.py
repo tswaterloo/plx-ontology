@@ -75,7 +75,7 @@ def _ai_watcher(d: Path) -> Path:
 
 def _originals(d: Path) -> Path:
     from operating.case_originals import OriginalStore
-    s = OriginalStore(d / "o")
+    OriginalStore(d / "o")
     return next((d / "o").rglob("*.sqlite"), None) or next(
         p for p in (d / "o").rglob("*") if p.is_file() and p.suffix in (".db", ".sqlite"))
 
@@ -100,7 +100,7 @@ def _labour(d: Path) -> Path:
 
 
 def _inbox(d: Path) -> Path:
-    from operating.proactive_engine import _open_inbox
+    from operating.proactive_engine_inbox import _open_inbox
     _open_inbox(d / "i.sqlite").close()
     return d / "i.sqlite"
 
@@ -201,7 +201,7 @@ def _replay_progress(d: Path) -> Path:
 
 
 def _autopilot(d: Path) -> Path:
-    from operating.autopilot import Queue
+    from operating.autopilot_queue import Queue
     Queue(d / "q.sqlite").close()
     return d / "q.sqlite"
 

@@ -502,7 +502,6 @@ class NeverServedCold(LastGoodPage.__base__):
         import pickle
         import sqlite3
         import tempfile
-        from operator_api import page_store
         from operator_api.page_store import PageStore, disk_key, kept_code
         folder = tempfile.TemporaryDirectory()
         self.addCleanup(folder.cleanup)
@@ -722,10 +721,11 @@ class NeverServedCold(LastGoodPage.__base__):
     def test_a_round_trip_through_the_disk_keeps_every_handle_and_record(self):
         """The page rebuilt from its kept JSON names the same sources and records as the
         page read, so the checks before serving it see all of them."""
+        from operator_api import backend_pages
         from operator_api.page_parts import shown_handles
         page = self.late_page("PurchaseOrder:bc:PO-1", "PurchaseOrder:bc:PO-2", extra=m.Source(
             handle="graph-mail://m/1", system="Email", label="mail", open_url="/source?x"))
-        back = be._kept_good_model((1.0, be._portable_model(page), (), "c1"))[1]
+        back = backend_pages._kept_good_model((1.0, backend_pages._portable_model(page), (), "c1"))[1]
         self.assertEqual(shown_handles(back), shown_handles(page))
         from operator_api.page_parts import shown_objects
         self.assertEqual(shown_objects(back), shown_objects(page))
@@ -994,24 +994,35 @@ class RewarmOnDeltaLayer(unittest.TestCase):
         store.write_bytes(b"")
         backend = be.WorkspaceBackend.__new__(be.WorkspaceBackend)
         backend.store_path = store
-        warmed, stop = [], threading.Event()
-        backend.warm_known = lambda: warmed.append(1) or 0
+        warmed, stop, done = [], threading.Event(), threading.Event()
+        backend.warm_known = lambda: warmed.append(1) or done.set() or 0
+        # Event-ordered, never timed: the watcher has read the unchanged state on a poll
+        # before the layer lands, and the test waits for the read-ahead itself.
+        polls, polled = [0], threading.Condition()
+        real_state = backend._warm_state
+
+        def state():
+            found = real_state()
+            with polled:
+                polls[0] += 1
+                polled.notify_all()
+            return found
+        backend._warm_state = state
         with mock.patch.dict(os.environ, {delta_overlay.DIR_ENV: ""}), \
                 mock.patch.object(be, "GENERATION_POLL_SECONDS", 0.05):
             watcher = threading.Thread(target=backend.watch_generation, args=(stop,),
                                        kwargs={"rewarm_seconds": 3600}, daemon=True)
             watcher.start()
-            time.sleep(0.3)
+            with polled:   # the start's read and two polls of the same state
+                self.assertTrue(polled.wait_for(lambda: polls[0] >= 3, 120))
             self.assertEqual(warmed, [])           # nothing changed: no read-ahead
             pointer = delta_overlay.pointer_path(store)
             pointer.parent.mkdir(parents=True, exist_ok=True)
             pointer.write_text("{}")               # a cycle lands a layer
-            for _ in range(60):
-                if warmed:
-                    break
-                time.sleep(0.05)
+            self.assertTrue(done.wait(120), "the new layer was never read ahead")
             stop.set()
-            watcher.join(2)
+            watcher.join(120)
+        self.assertFalse(watcher.is_alive())
         self.assertEqual(warmed, [1])
 
 

@@ -18,6 +18,13 @@ from unittest.mock import patch
 
 from ontology.core import Actor, ValidationError
 from operating import answer_gate, case_verification, claim_checks
+from operating import claim_checks_cells
+from operating import claim_checks_counts
+from operating import claim_checks_grammar
+from operating import claim_checks_parse
+from operating import claim_checks_text
+from operating import claim_checks_values
+from operating import claim_checks_wording
 from operating import playbook_eval as pe
 from operating.source_units import SourceUnitContracts
 from operating.tests import test_ao_26005b_case as ao_tests
@@ -130,7 +137,7 @@ def vc(value, handle=None, field=None, role=None, unit=None, calculation=None):
 def gate(text, citations, claims=(), rows=None, calculations=CALCS, outcome=None,
          contracts=CONTRACTS, returned=None, question=None, **item):
     handles = list(citations)
-    parsed = claim_checks.parse_value_claims(list(claims), handles,
+    parsed = claim_checks_parse.parse_value_claims(list(claims), handles,
                                              [calc["id"] for calc in calculations])
     rows = ROWS if rows is None else rows
     return claim_checks.check_items(
@@ -530,7 +537,7 @@ class StructuredClaimTests(unittest.TestCase):
                 ({"value": "6"}, "value_claim_needs_citation_or_calculation"),
                 ({"value": "6", "calculation": "C1", "extra": 1}, "invalid_value_claim")):
             with self.subTest(code=code), self.assertRaisesRegex(ValidationError, code):
-                claim_checks.parse_value_claims([claim], [ITEM], ["C1"])
+                claim_checks_parse.parse_value_claims([claim], [ITEM], ["C1"])
 
 
 def calc_of(cid, expression, relations, inputs, result, unit="pc"):
@@ -709,20 +716,20 @@ class ReviewProbeRegressions(unittest.TestCase):
         values = {"x": (claim_checks.to_decimal(1140), ()), "y": (claim_checks.to_decimal(351), ())}
         value = format(evaluate(deepest, values)[0], "f")
         calc = calc_of("C7", deepest, [], {"x": line_id, "y": line_oe}, value, unit="1")
-        started = time.monotonic()
+        started = time.process_time()   # its CPU, as above: never the loaded wall clock
         out = gate("A ratio is recorded.", [LINE], [vc(value, calculation="C7")],
                    calculations=[calc])
-        self.assertLess(time.monotonic() - started, 1.0)
+        self.assertLess(time.process_time() - started, 1.0)
         self.assertTrue(out["passed"], out["failures"])
         # With a contracted role beside it the guard passes and the algebra runs too.
         values["p"] = (claim_checks.to_decimal(1509), (("pc", 1),))
         value = format(evaluate(f"p * ({deepest})", values)[0], "f")
         calc = calc_of("C7", f"p * ({deepest})", [], {"p": P_ITEM, "x": line_id, "y": line_oe},
                        value)
-        started = time.monotonic()
+        started = time.process_time()
         out = gate("A scaled ratio is recorded.", [LINE, ITEM], [vc(value, calculation="C7")],
                    calculations=[calc])
-        self.assertLess(time.monotonic() - started, 1.0)
+        self.assertLess(time.process_time() - started, 1.0)
         self.assertTrue(out["passed"], out["failures"])
         self.assertEqual(codes(gate("A planned ratio.", [LINE, ITEM], [
             vc(value, role="planned", calculation="C7")], calculations=[calc])),
@@ -937,7 +944,7 @@ class TypeAlgebraProperties(unittest.TestCase):
                                       calculations=[calc])
                         if worded["passed"]:
                             self.assertTrue(claim_checks._qt.accepts(
-                                claim_checks._TYPE_WORDS[word], truth), (word, truth))
+                                claim_checks_wording._TYPE_WORDS[word], truth), (word, truth))
         self.assertGreater(passed, 50)
 
 
@@ -1171,6 +1178,13 @@ class ProseTests(unittest.TestCase):
         self.assertTrue(gate("Its SHA-256 equals the recorded hash (ISO-8601, UTF-8).",
                              [ITEM])["passed"])
         self.assertEqual(codes(gate("SHA-256 says 1509.", [ITEM])), ["claim_unstructured"])
+        # A result-set handle's random characters (a gap's ``missing``) are no number or
+        # date, whatever they start with; a number beside one still is.
+        for handle in ("set:2kYvRlTGaG0IDYGc7oorWTKM", "set:0_9-2026-01-07abcdefgh"):
+            with self.subTest(handle=handle):
+                self.assertTrue(gate(f"listed in {handle}.", [ITEM])["passed"])
+                self.assertEqual(codes(gate(f"{handle} holds 7.", [ITEM])),
+                                 ["claim_unstructured"])
 
     def test_glued_and_hyphenated_digits_are_numbers_unless_the_prefix_is_a_known_id(self):
         for text in ("produced x1509", "produced SKU-1509", "produced v1509",
@@ -1409,7 +1423,7 @@ class TextValueClaimTests(unittest.TestCase):
         """e356dc4031b9 item 4: ``_same_value`` on timestamps, directly."""
         def same(claimed, cell):
             claim = {"value": claimed, "kind": "text"}
-            return claim_checks._same_value(claim, cell, claim_checks.value_form(claim))
+            return claim_checks_values._same_value(claim, cell, claim_checks_cells.value_form(claim))
         for claimed, cell, expected in (
                 ("2026-10-01T15:00:00Z", "2026-10-01T15:00:00.000000+00:00", True),
                 ("2026-10-01T15:00:00Z", "2026-10-01T11:00:00-04:00", True),
@@ -1516,7 +1530,7 @@ class TextValueClaimTests(unittest.TestCase):
                 ("approved by QA", "Batch approved by QA: No. 5 of 7.", 0),
                 ("approved by QA", "approved by QA = No.", 0)):
             with self.subTest(text=text):
-                self.assertEqual(claim_checks.supported_quotes(value, text), supported)
+                self.assertEqual(claim_checks_text.supported_quotes(value, text), supported)
 
     def test_no_longer_and_not_yet_negate(self):
         """da836e2f3f55 item 4: "no longer X" and "not yet X" do not state X."""
@@ -1525,7 +1539,7 @@ class TextValueClaimTests(unittest.TestCase):
             with self.subTest(text=text):
                 self.assertEqual(self.failed(text, ("status", "REVISED")),
                                  [("claim_value_unstated", "REVISED")])
-        self.assertEqual(claim_checks.supported_quotes(
+        self.assertEqual(claim_checks_text.supported_quotes(
             "approved", "The re-quote is no longer approved."), 0)
         # A negated type word types no number: "not yet produced" says nothing produced.
         self.assertTrue(gate("Not yet produced: 1509 planned.", [ITEM],
@@ -1993,9 +2007,9 @@ class OriginalPageClaimTests(unittest.TestCase):
                 self.assertTrue(gate(text, cites, rows=rows)["passed"])
         # Without a page citation every number is a quantity.
         self.assertEqual(codes(gate("See page 3.", [ITEM])), ["claim_unstructured"])
-        self.assertEqual([str(v) for _w, v in claim_checks.prose_numbers(
+        self.assertEqual([str(v) for _w, v in claim_checks_text.prose_numbers(
             "pages 3 and 4, 1600 units", pages=frozenset({3, 4}))], ["1600"])
-        self.assertEqual([str(v) for _w, v in claim_checks.prose_numbers(
+        self.assertEqual([str(v) for _w, v in claim_checks_text.prose_numbers(
             "pages 3 and 11", pages=frozenset({3, 11}))], [])
         self.assertEqual(claim_checks.cited_pages([page3, ITEM,
                                                    "original://o-2#extraction=2&page=11"]),
@@ -2086,7 +2100,7 @@ class OriginalPageClaimTests(unittest.TestCase):
                 self.assertFalse(out["passed"])
                 self.assertEqual({item["item"] for item in out["failures"]}, {"outcome"})
         # The digits after "p." are a number, and an abbreviation's period is no sentence end.
-        self.assertEqual([str(v) for _w, v in claim_checks.prose_numbers("p.3 units")], ["3"])
+        self.assertEqual([str(v) for _w, v in claim_checks_text.prose_numbers("p.3 units")], ["3"])
         self.assertEqual(codes(gate("p.3 units were produced.", cites, damaged3, rows=rows)),
                          ["claim_wording_role_mismatch"])
         self.assertEqual(codes(gate("See p. 3.", [self.PAGE], rows=rows)),
@@ -2373,7 +2387,7 @@ class OriginalTextQuoteTests(unittest.TestCase):
             with self.subTest(claim=claim):
                 with self.assertRaisesRegex(claim_checks.ValidationError,
                                             "invalid_value_claim_quote:0"):
-                    claim_checks.parse_value_claims([claim], [MO, QUOTE_LINE], ["C7"])
+                    claim_checks_parse.parse_value_claims([claim], [MO, QUOTE_LINE], ["C7"])
 
     def test_a_short_or_negated_quote_is_refused(self):
         """Any token-bounded substring verified, however short
@@ -2403,7 +2417,7 @@ class OriginalTextQuoteTests(unittest.TestCase):
                 out = self.quote(value, handle, field)
                 self.assertTrue(out["passed"], out["failures"])
         # Only the negated occurrence is refused: one un-negated occurrence supports it.
-        self.assertEqual(claim_checks.supported_quotes(
+        self.assertEqual(claim_checks_text.supported_quotes(
             "approved", "Not approved Monday; approved Tuesday."), 1)
         # "No" after a label before an identifier is the abbreviation of number; a negating
         # answer after the passage reverses it.
@@ -2414,14 +2428,14 @@ class OriginalTextQuoteTests(unittest.TestCase):
                 ("QC passed", "QC passed. No issues found.", 1),
                 ("QC passed? No", "QC passed? No", 1)):
             with self.subTest(value=value, text=text):
-                self.assertEqual(claim_checks.supported_quotes(value, text), supported)
+                self.assertEqual(claim_checks_text.supported_quotes(value, text), supported)
 
     def test_a_quote_never_ends_inside_a_joined_token(self):
         for value, text in (("Jan 9", "Jan 9,2026"), ("1", "1,509"), ("re", "re-quote"),
                             ("509 units", "1,509 units"), ("30 boxes", "at 10:30 boxes"),
                             ("quote today", "re-quote today")):
             with self.subTest(value=value):
-                self.assertEqual(claim_checks.quoted_spans(value, text), 0)
+                self.assertEqual(claim_checks_text.quoted_spans(value, text), 0)
 
     def test_a_comma_between_words_separates_a_csv_field(self):
         # A CSV row: the comma between two words is a field separator, not a joiner, so a
@@ -2432,8 +2446,8 @@ class OriginalTextQuoteTests(unittest.TestCase):
                                  ("Lost: rejected or expired", 1),
                                  ("Status:Open", 0), ("REJECTED/EXP", 0)):
             with self.subTest(value=value):
-                self.assertEqual(claim_checks.supported_quotes(value, row), supported)
-        self.assertEqual(claim_checks.supported_quotes("Open item", "Status:Open item"), 1)
+                self.assertEqual(claim_checks_text.supported_quotes(value, row), supported)
+        self.assertEqual(claim_checks_text.supported_quotes("Open item", "Status:Open item"), 1)
 
     def test_a_number_is_no_quote_and_a_quotes_unit_is_unverified(self):
         # The body holds 12,500.00 as a figure: a number claim of it is the figure rule
@@ -2723,19 +2737,19 @@ class TextFigureTests(unittest.TestCase):
             with self.subTest(text=text, value=value):
                 out = on_page(text, value)
                 self.assertTrue(out["passed"], out["failures"])
-        self.assertEqual([figure.value for figure in claim_checks._text_figures(release)],
+        self.assertEqual([figure.value for figure in claim_checks_text._text_figures(release)],
                          [10032, 2, 6000, 3])
         # Only at a clause start and only with the colon: elsewhere the number is a figure.
         for text, value in (("Release 1: 10,032 lb", "1"), ("Step 3: pack 2 cases", "3"),
                             ("x; item 4: none", "4"), ("Line 5: ok", "5"),
                             *((f"{word.title()} 6: ok", "6")
-                              for word in claim_checks.HEADING_WORDS)):
+                              for word in claim_checks_grammar.HEADING_WORDS)):
             with self.subTest(heading=text):
                 self.assertEqual(codes(on_page(text, value)), ["claim_value_mismatch"])
         for text in ("shipped release 2: done", "release 2 pallets", "Qty 2: kept",
                      "Qty: 2", "Received 2: ok", "x. Pallets 2: stacked"):
             with self.subTest(figure=text):
-                self.assertIn(Decimal(2), [f.value for f in claim_checks._text_figures(text)])
+                self.assertIn(Decimal(2), [f.value for f in claim_checks_text._text_figures(text)])
 
     def test_n_1_10_60_figures_of_one_text_none_lost_or_slowed(self):
         for count in (1, 10, 60):
@@ -2748,7 +2762,7 @@ class TextFigureTests(unittest.TestCase):
                 started = time.monotonic()
                 out = claim_checks.check_items(
                     [{"id": f"F{n}", "texts": [], "value_claims":
-                      claim_checks.parse_value_claims([claim], [self.FILE], []),
+                      claim_checks_parse.parse_value_claims([claim], [self.FILE], []),
                       "citations": [{"handle": self.FILE, "status": "resolved"}]}
                      for n, claim in enumerate(claims)], rows=rows.get)
                 self.assertLess(time.monotonic() - started, 5)
@@ -2823,7 +2837,7 @@ class CustomerPoClaimTests(CustomerPoEvalBase, unittest.TestCase):
         self.assertTrue(check["passed"], check)
         self.assertEqual(report["claim_checks"]["failures"], [])
         self.assertTrue(report["summary"]["passed_all"], report["checks"])
-        from operating.claim_checks import IDENTIFIER
+        from operating.claim_checks_grammar import IDENTIFIER
         self.assertEqual(IDENTIFIER.findall("sales order SO-2026-0003."), ["SO-2026-0003"])
         self.assertEqual(IDENTIFIER.findall("total 1509.5"), [])
 
@@ -2881,7 +2895,7 @@ def aggregate_count(handles, value=None, **result):
            "completeness": {"complete": True, "truncated": False, "returned": 1, "total": 1},
            "meta": {}}
     out.update(result)
-    return claim_checks.returned_evidence(
+    return claim_checks_values.returned_evidence(
         "plx.aggregate", {"set": "set:s1", "measure": {"property": "receipt_number",
                                                        "op": "count"}}, out)
 
@@ -2933,7 +2947,7 @@ class AskClaimFormTests(unittest.TestCase):
         it. Nothing else does: another gap, fewer listed records than the cap, a record
         it does not list, an incomplete late list, a count as known at another time."""
         from operating import ontology_tools_aggregate as oa
-        self.assertEqual(claim_checks.MAX_COUNT_CITATIONS, oa.MAX_CITATIONS)
+        self.assertEqual(claim_checks_counts.MAX_COUNT_CITATIONS, oa.MAX_CITATIONS)
         rows = dict(receipt(index) for index in range(120))
         handles = list(rows)
         listed = handles[:oa.MAX_CITATIONS]
@@ -2968,7 +2982,7 @@ class AskClaimFormTests(unittest.TestCase):
             # a gap of no late order is no member of the late list
             gaps.append({"rank": len(page) + 1, "kind": "receipt_without_qc",
                          "object_id": "Receipt:r:x", "citations": [handles[119]]})
-            return claim_checks.returned_evidence("plx.find", {"query": "late pos",
+            return claim_checks_values.returned_evidence("plx.find", {"query": "late pos",
                                                                **arguments}, {
                 "status": "home", "home": {"late_orders": {"count": count,
                                                            "complete": complete},
@@ -3012,7 +3026,7 @@ class AskClaimFormTests(unittest.TestCase):
             out = {"groups": [group], "partial": False, "gaps": [],
                    "completeness": {"complete": True, "truncated": False}}
             out.update(result)
-            return claim_checks.returned_evidence("plx.aggregate", {
+            return claim_checks_values.returned_evidence("plx.aggregate", {
                 "object_type": "Receipt", **(arguments or {}),
                 "measure": {"op": measure, "property": "receipt_number"}}, out)
 
@@ -3064,7 +3078,7 @@ class AskClaimFormTests(unittest.TestCase):
             with self.subTest(refused=name):
                 self.assertEqual(codes(run(claim, returned)), ["claim_value_mismatch"])
         with self.assertRaises(ValueError):            # a count names no quantity role
-            claim_checks.parse_value_claims(
+            claim_checks_parse.parse_value_claims(
                 [op("119", "count_distinct", sample, role="received")],
                 [h["citation"] for h in sample], [])
 
@@ -3107,20 +3121,20 @@ class AskClaimFormTests(unittest.TestCase):
                   "results": [measured], "gaps": []}
         query_args = {"from": {"object_ids": ["Product:x"]}, "measures": [{"op": "count"}]}
         bound = gate("2 receipts.", pair, [two], rows=rows, calculations=(),
-                     returned=claim_checks.returned_evidence("plx.query", query_args, walked))
+                     returned=claim_checks_values.returned_evidence("plx.query", query_args, walked))
         self.assertTrue(bound["passed"], bound["failures"])
         self.assertEqual(checked(bound)[0]["bound"], "exact")
         hop_gap = dict(walked, gaps=[{"state": "unknown", "reason": "nothing_reached",
                                       "subject": "traverse"}])
-        self.assertEqual([c["complete"] for c in claim_checks.returned_evidence(
+        self.assertEqual([c["complete"] for c in claim_checks_values.returned_evidence(
             "plx.query", query_args, hop_gap)["counts"]], [False])
         # a listed property no member type declares (rows listed without it) leaves no
         # member out: the count stays exact (11-14 link eval: "at least 1" for 1)
         listing_gap = dict(walked, gaps=[{"state": "unknown", "reason": "unknown_property",
                                           "subject": "as_of_date"}])
-        self.assertEqual([c["complete"] for c in claim_checks.returned_evidence(
+        self.assertEqual([c["complete"] for c in claim_checks_values.returned_evidence(
             "plx.query", query_args, listing_gap)["counts"]], [True])
-        self.assertEqual(claim_checks.returned_evidence(
+        self.assertEqual(claim_checks_values.returned_evidence(
             "plx.query", query_args, dict(walked, by_record=[]))["counts"], [])
         # A count of members cites each member's record (members_cited): it binds exactly
         # beside gaps that state only the captures' age, never beside any other gap.
@@ -3131,17 +3145,17 @@ class AskClaimFormTests(unittest.TestCase):
         aged = [{"state": "stale", "reason": "stale_source", "subject": "portal_api"},
                 {"state": "stale", "reason": "schema_drift", "subject": "projection"}]
         bound = gate("2 receipts.", pair, [two], rows=rows, calculations=(),
-                     returned=claim_checks.returned_evidence(
+                     returned=claim_checks_values.returned_evidence(
                          "plx.query", query_args, dict(walked, results=[members],
                                                        gaps=aged)))
         self.assertTrue(bound["passed"], bound["failures"])
         self.assertEqual(checked(bound)[0]["bound"], "exact")
         for gap in ({"state": "stale", "reason": "delta_overlay_unmerged", "subject": "x"},
                     {"state": "unknown", "reason": "nothing_reached", "subject": "x"}):
-            self.assertEqual([c["complete"] for c in claim_checks.returned_evidence(
+            self.assertEqual([c["complete"] for c in claim_checks_values.returned_evidence(
                 "plx.query", query_args, dict(walked, results=[members],
                                               gaps=aged + [gap]))["counts"]], [False])
-        self.assertEqual([c["complete"] for c in claim_checks.returned_evidence(
+        self.assertEqual([c["complete"] for c in claim_checks_values.returned_evidence(
             "plx.query", query_args, dict(walked, results=[dict(members, groups=[
                 dict(members["groups"][0], members_cited=pair[:1])])]))["counts"]], [False])
         # A plx.around answer listing every member as known now is itself their exact
@@ -3158,14 +3172,14 @@ class AskClaimFormTests(unittest.TestCase):
                    "meta": {"as_known_at": "2026-11-05T23:59:59.999Z", "freshness": [
                        {"captured_at": "2026-11-05T05:51:20.586453Z"}]}}
         around_args = {"from": "Product:x", "path": []}
-        self.assertEqual(claim_checks.listing_count(around_args, listing), tuple(pair))
+        self.assertEqual(claim_checks_counts.listing_count(around_args, listing), tuple(pair))
         bound = gate("2 receipts.", pair, [two], rows=rows, calculations=(),
-                     returned=claim_checks.returned_evidence("plx.around", around_args,
+                     returned=claim_checks_values.returned_evidence("plx.around", around_args,
                                                              listing))
         self.assertTrue(bound["passed"], bound["failures"])
         self.assertEqual(checked(bound)[0]["bound"], "exact")
         past = dict(around_args, as_known_at="2026-11-05")
-        self.assertEqual(claim_checks.listing_count(past, listing), tuple(pair))
+        self.assertEqual(claim_checks_counts.listing_count(past, listing), tuple(pair))
         early = dict(listing, meta={"as_known_at": "2026-11-05T01:00:00Z",
                                     "freshness": listing["meta"]["freshness"]})
         for args, result in (
@@ -3176,8 +3190,8 @@ class AskClaimFormTests(unittest.TestCase):
                 (around_args, dict(listing, completeness=dict(
                     listing["completeness"], total=3))),
                 (dict(around_args, cursor="c"), listing)):
-            self.assertIsNone(claim_checks.listing_count(args, result))
-            self.assertEqual(claim_checks.returned_evidence(
+            self.assertIsNone(claim_checks_counts.listing_count(args, result))
+            self.assertEqual(claim_checks_values.returned_evidence(
                 "plx.around", args, result)["counts"], [])
         # 12 receipts seen, 8 cited: "12" binds to the complete count of the 12, "8" does
         # not (no entry of 8), whatever the claim's own citations add up to.
@@ -3251,7 +3265,7 @@ class AskClaimFormTests(unittest.TestCase):
                     op("3", "count", [{"citation": handles[0]}] * 2),
                     op("3", "count", [{"citation": list(rows)[5]}])):
             with self.subTest(bad=bad), self.assertRaises(ValidationError):
-                claim_checks.parse_value_claims([bad], handles, [])
+                claim_checks_parse.parse_value_claims([bad], handles, [])
 
     def test_twins_count_once(self):
         """A Portal receipt and its BC capture are one receipt held in two systems: with no
@@ -3282,7 +3296,7 @@ class AskClaimFormTests(unittest.TestCase):
         cells = [{"citation": h, "field": "row.total_amount"} for h in handles]
         returned = {"counts": [], "currencies": {}}
         for handle in handles:
-            claim_checks.returned_evidence("plx.object", {}, {"values": [
+            claim_checks_values.returned_evidence("plx.object", {}, {"values": [
                 money(handle, "row.total_amount", "USD")]}, returned)
         total = op("301.00", "sum", cells, currency="USD")
         result = gate("They total 301.00 USD.", handles, [total], rows=rows, calculations=(),
@@ -3314,7 +3328,33 @@ class AskClaimFormTests(unittest.TestCase):
                     {"value": "so-1", "citation": handles[0], "field": "row.id",
                      "currency": "USD"}):
             with self.subTest(bad=bad), self.assertRaises(ValidationError):
-                claim_checks.parse_value_claims([bad], handles, [])
+                claim_checks_parse.parse_value_claims([bad], handles, [])
+
+    def test_an_amount_the_document_gives_no_currency_for_is_never_stated_in_one(self):
+        """A '$'-only document amount is read with no currency
+        (``currency_basis`` unstated). The answer cannot state USD or CAD for it, from the
+        claim or in the prose; the same amount with its currency returned still passes."""
+        rows = dict([sales_order(1, "617.61")])
+        handle = next(iter(rows))
+        cells = [{"citation": handle, "field": "row.total_amount"}]
+        unstated = {"counts": [], "currencies": {}}
+        claim_checks.returned_evidence("plx.object", {}, {"values": [
+            {**money(handle, "row.total_amount", None, "617.61"),
+             "currency_basis": "unstated"}]}, unstated)
+        for currency in ("USD", "CAD"):
+            with self.subTest(currency=currency):
+                total = op("617.61", "sum", cells, currency=currency)
+                got = gate(f"The invoice is {currency} 617.61.", [handle], [total],
+                           rows=rows, calculations=(), returned=unstated)
+                self.assertFalse(got["passed"])
+                self.assertIn("claim_currency_mismatch", codes(got))
+        stated = {"counts": [], "currencies": {}}
+        claim_checks.returned_evidence("plx.object", {}, {"values": [
+            money(handle, "row.total_amount", "USD", "617.61")]}, stated)
+        total = op("617.61", "sum", cells, currency="USD")
+        got = gate("The invoice is 617.61 USD.", [handle], [total], rows=rows,
+                   calculations=(), returned=stated)
+        self.assertTrue(got["passed"], got["failures"])
 
     def test_a_sum_claim_is_recomputed_and_typed_from_the_rows_it_cites(self):
         rows = dict(receipt(index) for index in range(60))
@@ -3361,7 +3401,7 @@ class AskClaimFormTests(unittest.TestCase):
         cells = [{"citation": h, "field": "row.total_amount"} for h in handles]
         returned = {"counts": [], "currencies": {}}
         for handle in handles:
-            claim_checks.returned_evidence("plx.object", {}, {"values": [
+            claim_checks_values.returned_evidence("plx.object", {}, {"values": [
                 money(handle, "row.total_amount", "USD")]}, returned)
 
         def run(text, claim, given=returned, read=rows):
@@ -3425,7 +3465,7 @@ class AskClaimFormTests(unittest.TestCase):
                     op("0.50", "ratio", cells[:2], currency="USD"),
                     op("1", "max", [cells[0], cells[0]]), op("1", "median", cells)):
             with self.subTest(bad=bad), self.assertRaises(ValidationError):
-                claim_checks.parse_value_claims([bad], handles, [])
+                claim_checks_parse.parse_value_claims([bad], handles, [])
 
     def test_the_days_between_two_cited_dates_are_recomputed_from_the_cells(self):
         """wf dev 11-10: "how many days late did PO X come in", "how many days terms is
@@ -3485,7 +3525,7 @@ class AskClaimFormTests(unittest.TestCase):
                     op("3", "days", [{"citation": rc}, late[1]]),
                     op("3", "days", late, currency="USD"), op("three", "days", late)):
             with self.subTest(bad=bad), self.assertRaises(ValidationError):
-                claim_checks.parse_value_claims([bad], handles, [])
+                claim_checks_parse.parse_value_claims([bad], handles, [])
 
     def test_days_from_a_day_the_question_writes_or_today_to_one_cited_date(self):
         """wf dev 11-11: "can we still use lot 505-E-5 - expiry and days remaining (as of
@@ -3543,7 +3583,7 @@ class AskClaimFormTests(unittest.TestCase):
                     days("3", "2026-11-31"), days("3", "11/10/2026"), days("3", 20261110),
                     days("3", "2026-11-10T00:00:00Z"), op("3", "days", expiry)):
             with self.subTest(bad=bad), self.assertRaises(ValidationError):
-                claim_checks.parse_value_claims([bad], [lot], [])
+                claim_checks_parse.parse_value_claims([bad], [lot], [])
         # the question's own days: written in full with their year, never a bare day
         for text, want in (("as of November 10, 2026", {"2026-11-10"}),
                            ("from 10 Nov. 2026 to 2026-12-01", {"2026-11-10", "2026-12-01"}),
@@ -3552,6 +3592,128 @@ class AskClaimFormTests(unittest.TestCase):
                            ("on 2026-02-30", set()), ("", set())):
             with self.subTest(text=text):
                 self.assertEqual({d.isoformat() for d in written_days(text)}, want)
+
+    def test_the_day_a_cited_number_of_days_after_a_date_is_recomputed(self):
+        """wf 11-13: "planning a buy from a supplier on a given day: expected arrival given
+        their lead time?" was answered "about one week later": no
+        op could state a day after a date, so the reply could not write November 17.
+        ``add_days`` is the ISO day x1 whole days after the cited date x0, or x0 days after
+        a ``day`` the question writes in full or today; the days a whole number in days
+        (the column's contract or recorded unit, else its own name), re-read now; no role,
+        unit or currency; anything else refused."""
+        from datetime import datetime, timezone
+        from operating.time_window import reference_days
+        sup = "api://public.app_supplier/%7B%22id%22%3A%22s-1%22%7D@g-1"
+        po = "api://public.app_purchase_order/%7B%22id%22%3A%22po-1%22%7D@g-1"
+        rows = {sup: {"relation": "public.app_supplier", "key": {"id": "s-1"},
+                      "row": {"id": "s-1", "lead_time_days": 7, "lead_time": "2",
+                              "usage_per_day": 30, "due_day": 15, "day_of_week": 3,
+                              "business_days": 5,
+                              "half_days": "1.5", "note": "soon"}},
+                po: {"relation": "public.app_purchase_order", "key": {"id": "po-1"},
+                     "row": {"id": "po-1", "order_date": "2026-10-29T14:02:00Z",
+                             "note": "soon"}}}
+        handles = [sup, po]
+        lead = {"citation": sup, "field": "row.lead_time_days"}
+        ordered = {"citation": po, "field": "row.order_date"}
+        question = "planning a buy from the supplier on November 10, 2026: what's " \
+                   "the expected arrival given their lead time?"
+        now = datetime(2026, 11, 13, 15, tzinfo=timezone.utc)
+        returned = {"reference_days": reference_days(question, now)}
+
+        def after(value, inputs, day=None, **more):
+            claim = op(value, "add_days", inputs, **more)
+            return {**claim, "day": day} if day is not None else claim
+
+        def run(text, claim, read=rows, given=returned):
+            return gate(text, handles, [claim], rows=read, calculations=(), returned=given)
+        for text, claim in (
+                ("It should arrive on 2026-11-17.", after("2026-11-17", [lead], "2026-11-10")),
+                ("It should arrive November 17, 2026.",
+                 after("2026-11-17", [lead], "2026-11-10")),
+                ("Ordered today it arrives 2026-11-20.",
+                 after("2026-11-20", [lead], "2026-11-13")),
+                ("PO-1 is due on 2026-11-05.", after("2026-11-05", [ordered, lead]))):
+            with self.subTest(text=text):
+                result = run(text, claim)
+                self.assertTrue(result["passed"], result["failures"])
+        for name, claim, given, code in (
+                ("wrong day", after("2026-11-18", [lead], "2026-11-10"), returned,
+                 "claim_value_mismatch"),
+                ("a day the question does not write", after("2026-11-16", [lead],
+                                                            "2026-11-09"), returned,
+                 "claim_value_mismatch"),
+                ("no reference days", after("2026-11-17", [lead], "2026-11-10"), None,
+                 "claim_value_mismatch"),
+                ("days of no stated unit", after("2026-11-12", [
+                    {"citation": sup, "field": "row.lead_time"}], "2026-11-10"), returned,
+                 "claim_value_mismatch"),
+                # the day its figure would give, so only "no count of days" refuses it
+                *((f"{column}: no count of days", after(day, [
+                    {"citation": sup, "field": f"row.{column}"}], "2026-11-10"), returned,
+                   "claim_value_mismatch")
+                  for column, day in (("usage_per_day", "2026-12-10"),
+                                      ("due_day", "2026-11-25"),
+                                      ("day_of_week", "2026-11-13"),
+                                      ("business_days", "2026-11-15"))),
+                ("no whole number", after("2026-11-11", [
+                    {"citation": sup, "field": "row.half_days"}], "2026-11-10"), returned,
+                 "claim_value_mismatch"),
+                ("not a number", after("2026-11-11", [
+                    {"citation": sup, "field": "row.note"}], "2026-11-10"), returned,
+                 "claim_value_mismatch"),
+                ("not a date", after("2026-11-05", [
+                    {"citation": po, "field": "row.note"}, lead]), returned,
+                 "claim_value_mismatch"),
+                ("swapped", after("2026-11-05", [lead, ordered]), returned,
+                 "claim_value_mismatch"),
+                ("a quantity role", after("2026-11-17", [lead], "2026-11-10",
+                                          role="received"), returned, "claim_role_mismatch"),
+                ("a unit", after("2026-11-17", [lead], "2026-11-10", unit="days"), returned,
+                 "claim_unit_mismatch")):
+            with self.subTest(case=name):
+                self.assertEqual(codes(run(f"It arrives {claim['value']}.", claim,
+                                           given=given)), [code])
+        # re-read now: the lead time moved, the same claim fails
+        moved = {**rows, sup: {**rows[sup], "row": {**rows[sup]["row"], "lead_time_days": 8}}}
+        self.assertEqual(codes(run("It arrives 2026-11-17.",
+                                   after("2026-11-17", [lead], "2026-11-10"), read=moved)),
+                         ["claim_value_mismatch"])
+        # the reply may not state another day than the claim's
+        self.assertFalse(run("It arrives 2026-11-18.",
+                             after("2026-11-17", [lead], "2026-11-10"))["passed"])
+        for bad in (after("17", [lead], "2026-11-10"), after("Nov 17", [lead], "2026-11-10"),
+                    after("2026-11-31", [lead], "2026-11-10"),
+                    after("2026-11-17", [lead]), after("2026-11-05", [ordered, lead],
+                                                       "2026-11-10"),
+                    after("2026-11-17", [{**lead, "unit": "day"}], "2026-11-10"),
+                    after("2026-11-17", [lead], "2026-11-10", currency="USD"),
+                    after("2026-11-17", [lead], "11/10/2026")):
+            with self.subTest(bad=bad), self.assertRaises(ValidationError):
+                claim_checks_parse.parse_value_claims([bad], handles, [])
+
+    def test_an_add_days_claim_round_trips_as_an_answer_value(self):
+        """The session turns a passed ``add_days`` claim into the answer value that states
+        it (its calculation keeps the ``day``) and back into the same claim; the answer
+        contract accepts it with one input and a day, or two without, nothing else."""
+        from operating import agent_session
+        from operating.answer_contract import calculation_problem
+        sup = "api://public.app_supplier/%7B%22id%22%3A%22s-1%22%7D@g-1"
+        claim = {"value": "2026-11-17", "op": "add_days", "day": "2026-11-10",
+                 "of": [{"citation": sup, "field": "row.lead_time_days"}]}
+        value = agent_session._answer_value("arrives", claim)
+        self.assertEqual(value["calculation"], {
+            "op": "add_days", "day": "2026-11-10",
+            "inputs": [{"l1_handle": sup, "field_path": "row.lead_time_days"}]})
+        self.assertIsNone(calculation_problem(value["calculation"]))
+        self.assertEqual(agent_session._value_claim(value, value["value"]), claim)
+        two = {"op": "add_days", "inputs": [
+            {"l1_handle": sup, "field_path": "row.order_date"},
+            {"l1_handle": sup, "field_path": "row.lead_time_days"}]}
+        self.assertIsNone(calculation_problem(two))
+        self.assertEqual(calculation_problem({**two, "day": "2026-11-10"}), "inputs")
+        self.assertEqual(calculation_problem({**value["calculation"], "day": "11/10/2026"}),
+                         "day")
 
     def test_a_margin_and_its_percent_hold_over_cited_revenue_and_ledger_cost(self):
         """A margin over cited revenue and booked ledger cost (signed negative) is an
@@ -3563,7 +3725,7 @@ class AskClaimFormTests(unittest.TestCase):
                 entry: bc_view(entry, id="ile-1", costAmountActual="-191.04")}
         handles = [line, entry]
         returned = {"counts": [], "currencies": {}}
-        claim_checks.returned_evidence("plx.object", {}, {"values": [
+        claim_checks_values.returned_evidence("plx.object", {}, {"values": [
             money(line, "row.amountExcludingTax", "CAD"),
             money(entry, "row.costAmountActual", "CAD")]}, returned)
         inputs = [{"citation": line, "field": "row.amountExcludingTax", "value": "672"},
@@ -3602,7 +3764,7 @@ class AskClaimFormTests(unittest.TestCase):
                     {**share, "currency": "CAD"}):
             bad = {k: v for k, v in bad.items() if v is not None}
             with self.subTest(bad=bad), self.assertRaises(ValidationError):
-                claim_checks.parse_value_claims([bad], handles, [])
+                claim_checks_parse.parse_value_claims([bad], handles, [])
 
 
 RRO_PAGE = "original://rro#page=8"
@@ -4032,10 +4194,10 @@ class GateCorrectValueTests(unittest.TestCase):
             with self.subTest(refused=quote):
                 self.assertEqual(codes(quoted(quote)), ["claim_value_mismatch"])
         # The passage the quote matched, as the page writes it.
-        self.assertEqual(claim_checks.verbatim_quote(
+        self.assertEqual(claim_checks_text.verbatim_quote(
             "Total open, all 1\u201330 days |  |  | 9,900.00", RRO_TEXT),
             "Total open, all 1\u201330 days |  | 9,900.00")
-        self.assertIsNone(claim_checks.verbatim_quote("Total open | 9,901.00", RRO_TEXT))
+        self.assertIsNone(claim_checks_text.verbatim_quote("Total open | 9,901.00", RRO_TEXT))
         # Bare, 9900 has two meanings on the page: the quote still pins one.
         self.assertIn("ambiguous", self.page([{"value": "9900", "citation": RRO_PAGE,
                                                "field": "text"}])["failures"][0]["detail"])
@@ -4064,3 +4226,130 @@ PAGE_OTHER = "original://other#page=1"
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class DimensionTests(unittest.TestCase):
+    """CC-NY-7: every computed value carries each input's dimension (money, currency,
+    unit) into ``answer_contract.computed_value``, which refuses more than one; the gate
+    refuses a recorded calculation that adds money in two currencies too."""
+
+    def test_computed_value_refuses_inputs_of_more_than_one_dimension(self):
+        from operating.answer_contract import (Dimension, MixedDimensions, computed_claim,
+                                               computed_value)
+        ten = [Decimal("10"), Decimal("20")]
+        usd, cad = Dimension(True, "USD"), Dimension(True, "CAD")
+        kg, ea = Dimension(unit="kg"), Dimension(unit="ea")
+        cases = (("mixed currency", [usd, cad], "mixed_currency"),
+                 ("money with unknown currency", [usd, Dimension(True)], "missing_currency"),
+                 ("both unknown currency", [Dimension(True), Dimension(True)],
+                  "missing_currency"),
+                 ("money beside a plain number", [usd, Dimension()], "money_with_non_money"),
+                 ("mixed unit", [kg, ea], "mixed_unit"),
+                 ("a unit beside none", [kg, Dimension()], "mixed_unit"))
+        for name, dims, code in cases:
+            for op in ("sum", "avg", "min", "max", "difference", "ratio"):
+                with self.subTest(case=name, op=op), self.assertRaises(MixedDimensions) as raised:
+                    computed_value(op, ten, dimensions=dims)
+                self.assertEqual(raised.exception.code, code)
+                self.assertTrue(raised.exception.reason)
+        self.assertIn("CAD and USD", MixedDimensions.__str__(
+            self._raises(computed_value, "sum", ten, [usd, cad])))
+        # one dimension, and none at all, still compute (a currency code's case folds)
+        self.assertEqual(computed_value("sum", ten, dimensions=[usd, Dimension(True, "usd")]),
+                         Decimal("30"))
+        self.assertEqual(computed_value("avg", ten, dimensions=[kg, kg]), Decimal("15"))
+        self.assertEqual(computed_value("ratio", ten, True, dimensions=[usd, usd]),
+                         Decimal("50"))
+        self.assertEqual(computed_value("sum", ten, dimensions=[Dimension(),
+                                                                Dimension(unit="1")]),
+                         Decimal("30"))
+        self.assertEqual(computed_claim("avg", Decimal("15"), ten, dimensions=[usd, usd]),
+                         (True, Decimal("15")))
+        with self.assertRaises(MixedDimensions):
+            computed_claim("avg", Decimal("15"), ten, dimensions=[usd, cad])
+        # a dimension per input, never left out
+        for dims in ([usd], [usd, usd, usd], [usd, ("USD", None)]):
+            with self.subTest(dims=dims), self.assertRaises(ValueError):
+                computed_value("sum", ten, dimensions=dims)
+        with self.assertRaises(TypeError):
+            computed_value("sum", ten)  # pylint: disable=missing-kwoa
+
+    @staticmethod
+    def _raises(function, *args):
+        from operating.answer_contract import MixedDimensions
+        try:
+            function(args[0], args[1], dimensions=args[2])
+        except MixedDimensions as error:
+            return error
+        raise AssertionError("not refused")
+
+    def _orders(self, *currencies):
+        rows = dict(sales_order(index, f"{index}00.50") for index in (1, 2))
+        handles = list(rows)
+        returned = {"counts": [], "currencies": {}}
+        for handle, currency in zip(handles, currencies):
+            if currency is not None:
+                claim_checks_values.returned_evidence("plx.object", {}, {"values": [
+                    money(handle, "row.total_amount", currency)]}, returned)
+        return rows, handles, returned
+
+    def test_a_recorded_calculation_adding_two_currencies_is_refused(self):
+        def calc(expression, result, unit="1"):
+            return {"id": "C9", "expression": expression, "result": result, "unit": unit,
+                    "inputs": {"a": _input(handles[0], "row.total_amount", unit),
+                               "b": _input(handles[1], "row.total_amount", unit)}}
+
+        def run(currencies, expression, result, value=None):
+            nonlocal handles
+            rows, handles, returned = self._orders(*currencies)
+            calculation = calc(expression, result)
+            return gate(f"It is {value or result}.", handles,
+                        [vc(value or result, calculation="C9")], rows=rows,
+                        calculations=[calculation], returned=returned)
+        handles = []
+        self.assertTrue(run(("USD", "USD"), "a + b", "301.00")["passed"])
+        self.assertTrue(run(("USD", "USD"), "(a + b) / 2", "150.50")["passed"])
+        self.assertTrue(run(("USD", "USD"), "b - a", "100.00")["passed"])
+        # a ratio of two amounts in one currency is a plain number; times a count, money
+        self.assertTrue(run(("USD", "USD"), "a / a + b - b", "1")["passed"])
+        self.assertTrue(run(("USD", "CAD"), "a * 2", "201.00")["passed"])
+        for currencies, expression, result, needle in (
+                (("USD", "CAD"), "a + b", "301.00", "CAD and USD"),
+                (("USD", "CAD"), "(a + b) / 2", "150.50", "CAD and USD"),
+                (("USD", "CAD"), "b - a", "100.00", "CAD and USD"),
+                (("USD", None), "a + b", "301.00", "not known"),
+                ((None, None), "a + b", "301.00", "not known")):
+            with self.subTest(currencies=currencies, expression=expression):
+                result_ = run(currencies, expression, result)
+                self.assertEqual(codes(result_), ["claim_currency_mismatch"])
+                self.assertIn(needle, result_["failures"][0]["detail"])
+
+    def test_op_claims_refuse_mixed_currency_mixed_unit_and_missing_dimension(self):
+        rows, handles, returned = self._orders("USD", "CAD")
+        cells = [{"citation": h, "field": "row.total_amount"} for h in handles]
+        for name in ("sum", "avg", "min", "max"):
+            with self.subTest(op=name):
+                self.assertEqual(codes(gate("It is 1 USD.", handles,
+                                            [op("1", name, cells, currency="USD")],
+                                            rows=rows, calculations=(), returned=returned)),
+                                 ["claim_currency_mismatch"])
+        rows, handles, returned = self._orders("USD", None)
+        self.assertEqual(codes(gate("Average 150.50 USD.", handles,
+                                    [op("150.50", "avg", cells, currency="USD")], rows=rows,
+                                    calculations=(), returned=returned)),
+                         ["claim_currency_mismatch"])
+        # quantities: one in kg, the other in no unit or in each
+        receipts = dict(receipt(index) for index in range(2))
+        keys = list(receipts)
+        for second in ({}, {"unit": "ea"}):
+            mixed = op("0.75", "avg", [{"citation": keys[0], "field": "row.amount",
+                                        "unit": "kg"},
+                                       {"citation": keys[1], "field": "row.amount",
+                                        **second}])
+            with self.subTest(second=second):
+                self.assertEqual(codes(gate("0.75.", keys, [mixed], rows=receipts,
+                                            calculations=())), ["claim_unit_mismatch"])
+        same = op("0.75", "avg", [{"citation": key, "field": "row.amount", "unit": "kg"}
+                                  for key in keys])
+        self.assertTrue(gate("0.75 kg.", keys, [same], rows=receipts,
+                             calculations=())["passed"])

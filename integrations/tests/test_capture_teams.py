@@ -23,6 +23,7 @@ import re
 import sqlite3
 import tempfile
 import unittest
+from unittest import mock
 from urllib.parse import parse_qs, unquote, urlencode, urlsplit
 
 from verify import live_verify as lv
@@ -35,6 +36,7 @@ from integrations.live_source_guard import (BoundedBackoff, LiveSourceAudience,
 from ontology.project_graph import TeamsCaptures
 from ontology.types import Actor
 from operating.case_mail_scope import MailScope
+from tests import tmpdirs
 
 ROOT = Path(__file__).resolve().parents[2]
 ENV = {"PLX_EXCLUDED_PEOPLE_OIDS": "0e0e0e0e-0000-4000-8000-00000000e0e1",
@@ -50,6 +52,7 @@ GENERAL = "19:general0001@thread.tacv2"
 PRIVATE = "19:private0002@thread.tacv2"
 CHAT = "19:0000aaaa-0000-0000-0000-000000000001_0000aaaa@unq.gbl.spaces"
 SECRET_TEXT = "Freight quote for PO12172025 is 4,200 USD"
+PREVIEW_TEXT = "Preview body the capture never keeps"
 FULL_HISTORY = "0001-01-01T00:00:00Z"   # Graph's visibleHistoryStartDateTime: all history
 
 CAPTURE = Actor("plx", frozenset({"svc:teams-capture"}), "restricted")
@@ -74,6 +77,7 @@ class FakeTeamsGraph:
         self.team_members = [(U_COS, COS), (U_VINCE, VINCE)]
         self.channel_members = {PRIVATE: [(U_VINCE, VINCE)]}
         self.chat_members = [(U_COS, COS), (U_OTHER, OTHER)]
+        self.names = {U_COS: "Cos", U_VINCE: "Vince", U_OTHER: "Guest"}
         # A member's visibleHistoryStartDateTime (default: the whole history; None: absent).
         self.history: dict[str, str | None] = {}
         self.seq = 0
@@ -91,6 +95,13 @@ class FakeTeamsGraph:
         self.chat_tenant = ENV["MICROSOFT_GRAPH_TENANT_ID"]
         # The chat listing's lastUpdatedDateTime (members or name changed), when set.
         self.chat_updated: str | None = None
+        # The chat's lastMessagePreview, answered only to a listing that expands it
+        # (unset: the key is absent; None: Graph's null for a chat without messages).
+        self.chat_preview: dict | None | str = "absent"
+        # Empty listing pages served before the chat (Graph pages the expanded listing).
+        self.chat_listing_pad = 0
+        # The HTTP status a listing that expands lastMessagePreview answers (None: served).
+        self.chat_expand_status: int | None = None
         # Channels whose delta, while they hold no message, answers an empty page and a
         # nextLink Graph then refuses with 400 (live 2026-10-27).
         self.refused_empty_delta: set[str] = set()
@@ -174,9 +185,19 @@ class FakeTeamsGraph:
         if re.fullmatch(r"/v1\.0/users/[^/]+/joinedTeams", path):
             return j(200, {"value": [{"id": TEAM}]})
         if path == f"/v1.0/users/{U_COS}/chats":
-            return j(200, {"value": [{"id": CHAT, "chatType": "oneOnOne",
-                                      **({"lastUpdatedDateTime": self.chat_updated}
-                                         if self.chat_updated else {})}]})
+            if self.chat_expand_status and "$expand" in query:
+                return j(self.chat_expand_status, {"error": {"code": "BadRequest"}})
+            item = {"id": CHAT, "chatType": "oneOnOne",
+                    **({"lastUpdatedDateTime": self.chat_updated}
+                       if self.chat_updated else {})}
+            if self.chat_preview != "absent" and query.get("$expand") == ["lastMessagePreview"]:
+                item["lastMessagePreview"] = self.chat_preview
+            at = int(query.get("$skiptoken", ["0"])[0])
+            if at < self.chat_listing_pad:
+                rest = {k: v[0] for k, v in query.items() if k != "$skiptoken"}
+                return j(200, {"value": [], "@odata.nextLink": base + "?" + urlencode(
+                    {**rest, "$skiptoken": str(at + 1)})})
+            return j(200, {"value": [item]})
         if re.fullmatch(r"/v1\.0/users/[^/]+/chats", path):
             return j(200, {"value": []})
         if path == "/v1.0/teams":
@@ -205,7 +226,9 @@ class FakeTeamsGraph:
             members = self.channel_members[found[1]]
         if members is not None:
             return j(200, {"value": [
-                {"userId": u, "email": e, "roles": [], "displayName": e.split("@")[0].title(),
+                {"userId": u, "email": e, "roles": [],   # e None: Graph's email null
+                 # Graph drops the name with the address (11-14/11-15)
+                 "displayName": (self.names.get(u) or e.split("@")[0].title()) if e else None,
                  **({} if self.history.get(u, FULL_HISTORY) is None else
                     {"visibleHistoryStartDateTime": self.history.get(u, FULL_HISTORY)})}
                 for u, e in members]})
@@ -288,7 +311,10 @@ def chat_listings(graph: FakeTeamsGraph) -> set[str]:
 
 class CaptureCase(unittest.TestCase):
     def setUp(self) -> None:
-        self.tmp = tempfile.TemporaryDirectory()
+        # removed last, after every cleanup a subclass adds (its runtime and hosts close
+        # first), and again while a warm-up they left running still writes into it
+        self.tmp = tmpdirs.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
         self.graph = FakeTeamsGraph()
         self.graph.post_root(GENERAL, "1001", replies=2)
         self.graph.post_root(GENERAL, "1002")
@@ -302,7 +328,6 @@ class CaptureCase(unittest.TestCase):
 
     def tearDown(self) -> None:
         self.store.close()
-        self.tmp.cleanup()
 
     def unit(self, thread: str) -> tuple[str, str]:
         if thread == CHAT:
@@ -508,6 +533,123 @@ class ScheduleTests(CaptureCase):
         self.assertEqual(self.listed(), [CHAT])   # the channels are fresh and wait
         self.assertIn("lastUpdatedDateTime", unquote(next(
             u for u in self.graph.gets() if u.split("?")[0].endswith("/chats"))))
+
+    def preview(self, minutes: float) -> None:
+        """The chat listing's last message preview, created that many minutes ago
+        (body, sender and id are what Graph sends; the capture keeps none of them)."""
+        created = (datetime.now(timezone.utc) - timedelta(minutes=minutes)).strftime(
+            "%Y-%m-%dT%H:%M:%S.%fZ")
+        self.graph.chat_preview = {"id": "1700000000000", "createdDateTime": created,
+                                   "isDeleted": False, "messageType": "message",
+                                   "body": {"contentType": "text", "content": PREVIEW_TEXT},
+                                   "from": {"user": {"id": U_VINCE}}}
+
+    def test_a_dormant_chat_with_a_message_newer_than_any_held_is_due_on_the_next_run(self):
+        """lastUpdatedDateTime does not move on a new message (live 2026-11-16): the
+        listing's lastMessagePreview does, so the first message of a dormant chat is read
+        on the next run, not after refresh_hours; an older or null preview keeps the old
+        rule, and the preview's body never reaches the store or the report."""
+        self.capture.run(scope(refresh_hours=12))
+        self.age(CHAT, seen=3, activity=200)          # dormant: read 3 h ago, quiet 8 days
+        cases = (("newer", lambda: self.preview(5), [CHAT]),
+                 ("older than the last read", lambda: self.preview(4 * 60), []),
+                 ("older than the newest held", lambda: self.preview(201 * 60), []),
+                 ("null", lambda: setattr(self.graph, "chat_preview", None), []),
+                 ("absent", lambda: setattr(self.graph, "chat_preview", "absent"), []),
+                 ("malformed", lambda: setattr(self.graph, "chat_preview",
+                                                {"createdDateTime": "yesterday"}), []),
+                 ("not an object", lambda: setattr(self.graph, "chat_preview", "x"), []))
+        for name, setup, due in cases:
+            with self.subTest(name):
+                setup()
+                self.capture.previews.clear()
+                self.age(CHAT, seen=3, activity=200)
+                self.graph.calls.clear()
+                run = self.capture.run(scope(refresh_hours=12))
+                self.assertEqual(self.listed(), due)   # the channels are fresh and wait
+                self.assertEqual(run["discovery"]["chat_previews"],
+                                 1 if name in ("newer", "older than the last read",
+                                               "older than the newest held") else 0)
+                listing = unquote(next(u for u in self.graph.gets()
+                                       if u.split("?")[0].endswith("/chats")))
+                self.assertIn("$expand=lastMessagePreview", listing)
+        # Past refresh_hours a null preview still falls back to the dormant rotation.
+        self.graph.chat_preview = None
+        self.age(CHAT, seen=13, acl=13, activity=200)
+        self.graph.calls.clear()
+        self.capture.run(scope(refresh_hours=12))
+        self.assertEqual(self.listed(), [CHAT])
+        self.preview(1)
+        run = self.capture.run(scope(refresh_hours=12))
+        stored = b"".join(path.read_bytes() for path in Path(self.store.path).parent.rglob("*")
+                          if path.is_file())
+        self.assertNotIn(PREVIEW_TEXT.encode(), stored)
+        self.assertNotIn(PREVIEW_TEXT, json.dumps(run, default=str))
+
+    def test_a_preview_read_is_repeated_only_within_the_skew_then_waits(self):
+        """A preview newer than the newest message held (a system event the capture does
+        not keep, or a read that raced Graph's indexing) stays due only until the last
+        settled read is PREVIEW_SKEW past it: bounded re-reads, never every run."""
+        self.capture.run(scope(refresh_hours=12))
+        skew = capture_teams.PREVIEW_SKEW.total_seconds() / 60
+        self.preview(skew + 30)
+        for seen_minutes, due in ((skew + 31, [CHAT]), (31, [CHAT]), (29, []), (5, [])):
+            with self.subTest(seen_minutes=seen_minutes):
+                # Read seen_minutes ago; the preview is skew + 30 minutes old.
+                self.age(CHAT, seen=seen_minutes / 60, activity=200)
+                self.graph.calls.clear()
+                self.capture.run(scope(refresh_hours=12))
+                self.assertEqual(self.listed(), due)
+
+    def test_the_expanded_chat_listing_pages_through_the_guard(self):
+        """The expanded listing's nextLink repeats $select and $expand: the GET-only
+        guard follows it, and a preview on a later page still makes the chat due."""
+        found = self.capture.run(scope(refresh_hours=12))["discovery"]["discovered_total"]
+        self.age(CHAT, seen=3, activity=200)
+        self.graph.chat_listing_pad = 2
+        self.preview(5)
+        self.graph.calls.clear()
+        run = self.capture.run(scope(refresh_hours=12))
+        listings = [unquote(u) for u in self.graph.gets()
+                    if u.split("?")[0].endswith(f"/users/{U_COS}/chats")]
+        self.assertEqual(len(listings), 3)
+        self.assertTrue(all("$expand=lastMessagePreview" in u for u in listings))
+        self.assertEqual(run["discovery"]["discovered_total"], found)
+        self.assertEqual(run["discovery"]["status"], "complete")
+        self.assertEqual(self.listed(), [CHAT])
+
+    def test_a_refused_expanded_listing_falls_back_to_the_plain_listing(self):
+        """Graph refusing the expand for a member never drops their chats: the same
+        listing is read without it on that run, counted, and the chat is still found and
+        captured (a new chat is read; scheduling falls back to the rules without previews)."""
+        self.preview(5)
+        for status in (400, 403, 500):
+            with self.subTest(status=status):
+                self.tearDown()
+                self.setUp()
+                self.graph.post_chat("3001")
+                self.preview(5)
+                self.graph.chat_expand_status = status
+                run = self.capture.run(scope(refresh_hours=12))
+                listings = [unquote(u) for u in self.graph.gets()
+                            if u.split("?")[0].endswith(f"/users/{U_COS}/chats")]
+                self.assertEqual(["$expand" in u for u in listings], [True, False])
+                self.assertIn(CHAT, self.listed())
+                self.assertEqual((run["discovery"]["chat_preview_fallbacks"],
+                                  run["discovery"]["chat_previews"],
+                                  run["discovery"]["status"]), (1, 0, "complete"))
+                self.assertEqual(run["discovery"]["reasons"], [])
+        # Without a refusal there is no fallback.
+        self.graph.chat_expand_status = None
+        run = self.capture.run(scope(refresh_hours=12))
+        self.assertEqual(run["discovery"]["chat_preview_fallbacks"], 0)
+        # Both listings refused: the member's chats part fails as before the expand.
+        self.graph.forbidden.append(rf"/users/{U_COS}/chats$")
+        run = self.capture.run(scope(refresh_hours=12))
+        self.assertEqual(run["discovery"]["chat_preview_fallbacks"], 1)
+        self.assertEqual(run["discovery"]["reasons"],
+                         ["blocked:missing_permission:Chat.ReadBasic.All"])
+        self.assertNotEqual(run["discovery"]["status"], "complete")
 
     def test_the_ledger_keys_on_ids_so_added_or_removed_conversations_skip_nothing(self):
         threads = [f"19:rot{n:03d}@thread.tacv2" for n in range(1, 10)]
@@ -859,6 +1001,234 @@ class AudienceTests(CaptureCase):
         self.capture.run(scope())
         self.assertEqual(self.visible(COS_ONLY, PRIVATE), [])
         self.assertEqual(len(self.visible(MEMBER, PRIVATE)), 1)
+
+
+class SteadyVersionTests(CaptureCase):
+    """A message Graph lists again unchanged is not saved again (11-14/11-15: 360k chat
+    versions in two days, 99.8% of an unchanged source version), and a real change still
+    is."""
+
+    CARD = "643f34e9a7a7459ca7681960421ad5a5"
+
+    def versions(self, thread: str = CHAT, message: str = "%") -> int:
+        kind, unit = self.unit(thread)
+        with sqlite3.connect(self.store.path) as db:
+            return db.execute("SELECT count(*) FROM versions WHERE kind = ? AND unit = ? "
+                              "AND path LIKE ?", (kind, unit, f"%/{message}")).fetchone()[0]
+
+    def member_rows(self) -> set[str]:
+        """The chat messages MEMBER (declared by address only: cos@, vince@) sees."""
+        return {r["key"]["id"] for r in self.visible(MEMBER, CHAT)}
+
+    def omit(self, user: str, address: str | None = None) -> None:
+        self.graph.chat_members = [(u, address if u == user else e)
+                                   for u, e in self.graph.chat_members]
+
+    def test_a_member_listed_without_his_address_keeps_it_for_a_while_then_loses_it(self):
+        self.capture.run(scope())
+        held = self.versions()
+        self.assertEqual(self.member_rows(), {"3001", "3002"})
+        # Graph names cos by object id only, then by both again (the nightly flip): no
+        # message, nor the chat's record, is saved again, and his address still reads.
+        self.omit(U_COS)
+        self.capture.run(scope())
+        self.assertEqual((self.versions(), self.member_rows()), (held, {"3001", "3002"}))
+        self.omit(U_COS, COS)
+        self.capture.run(scope())
+        self.assertEqual((self.versions(), self.member_rows()), (held, {"3001", "3002"}))
+        self.assertEqual(self.store.state(capture_teams.ADDRESS_ABSENT + self.unit(CHAT)[1]),
+                         "{}")
+        # An absence that lasts past the grace is the membership as read: saved again,
+        # and the address no longer reads (his object id still does).
+        self.omit(U_COS)
+        self.capture.run(scope())
+        key = capture_teams.ADDRESS_ABSENT + self.unit(CHAT)[1]
+        since = datetime.now(timezone.utc) - capture_teams.ADDRESS_ABSENT_GRACE \
+            - timedelta(minutes=1)
+        expired = json.dumps({U_COS: since.strftime("%Y-%m-%dT%H:%M:%SZ")})
+        self.store.set_state(key, expired)
+        self.capture.run(scope())
+        self.assertGreater(self.versions(), held)
+        self.assertEqual(self.member_rows(), set())
+        self.assertEqual(len(self.visible(COS_ONLY, CHAT)), 2)
+        # The expired start is held until the record read names the address no more
+        # (it was saved without it this run), then dropped.
+        self.assertEqual(self.store.state(key), expired)
+        self.capture.run(scope())
+        self.assertEqual(self.store.state(key), "{}")
+        self.assertEqual(self.member_rows(), set())
+
+    def test_a_run_paused_before_the_record_is_saved_keeps_the_grace_expired(self):
+        self.capture.run(scope())
+        self.omit(U_COS)
+        key = capture_teams.ADDRESS_ABSENT + self.unit(CHAT)[1]
+        since = datetime.now(timezone.utc) - capture_teams.ADDRESS_ABSENT_GRACE \
+            - timedelta(minutes=1)
+        expired = json.dumps({U_COS: since.strftime("%Y-%m-%dT%H:%M:%SZ")})
+        self.store.set_state(key, expired)
+        # The membership is read (expired: the address goes), then the messages read
+        # fails: the run pauses, the conversation's record still names the address.
+        self.graph.failing[rf"/chats/{re.escape(CHAT)}/messages"] = 503
+        self.capture.run(scope())
+        self.assertEqual(self.member_rows(), set())
+        self.assertEqual(self.store.state(key), expired)
+        # The next run is still past the grace: no fresh 24 h, no flip back to the address.
+        self.graph.failing.clear()
+        self.retry_passed()
+        self.capture.run(scope())
+        self.assertEqual(self.member_rows(), set())
+        self.assertEqual(self.store.state(key), expired)
+        self.capture.run(scope())
+        self.assertEqual((self.member_rows(), self.store.state(key)), (set(), "{}"))
+
+    def test_a_failed_absence_state_read_or_write_saves_the_membership_as_read(self):
+        self.capture.run(scope())
+        key = capture_teams.ADDRESS_ABSENT + self.unit(CHAT)[1]
+        state, set_state = self.store.state, self.store.set_state
+
+        def broken(real, failing):
+            def call(name, *rest):
+                if failing and name.startswith(capture_teams.ADDRESS_ABSENT):
+                    raise sqlite3.OperationalError("database is locked")
+                return real(name, *rest)
+            return call
+
+        for which in ("read", "write"):
+            self.omit(U_COS, COS)
+            self.capture.run(scope())
+            self.store.set_state(key, "{}")
+            held = self.versions()
+            self.omit(U_COS)
+            with mock.patch.object(self.store, "state", broken(state, which == "read")), \
+                    mock.patch.object(self.store, "set_state",
+                                      broken(set_state, which == "write")), \
+                    self.assertLogs("integrations.capture_teams", "WARNING") as logged:
+                run = self.capture.run(scope())
+            chat = next(c for c in run["conversations"] if c["kind"] == "chat")
+            self.assertNotIn(CHAT, "\n".join(logged.output), which)
+            # Captured, as read (the old behaviour): the address-less membership saved,
+            # the run not stopped, the fallback counted and logged.
+            self.assertEqual(chat["status"], "complete", which)
+            self.assertEqual(chat["counts"]["state_fallbacks"], 1, which)
+            self.assertEqual(run["state_fallbacks"], sum(
+                c["counts"]["state_fallbacks"] for c in run["conversations"]), which)
+            self.assertTrue(all(c["status"] == "complete" for c in run["conversations"]),
+                            which)
+            self.assertGreater(self.versions(), held, which)
+            self.assertEqual(self.member_rows(), set(), which)
+            self.assertTrue(any("kept addresses failed" in m for m in logged.output), which)
+            self.assertFalse(any(COS in m for m in logged.output), which)
+
+    def test_a_real_membership_change_still_saves_every_message_again(self):
+        self.graph.users["cos.new@petrasoap.com"] = U_COS   # in the directory read once
+        self.capture.run(scope())
+        held = self.versions()
+        # A new address for cos: the old one reads no more.
+        self.omit(U_COS, "cos.new@petrasoap.com")
+        self.capture.run(scope())
+        self.assertGreater(self.versions(), held)
+        self.assertEqual(self.member_rows(), set())
+        # His old address listed for another member now is never kept for him.
+        self.omit(U_COS, COS)
+        self.capture.run(scope())
+        self.graph.chat_members = [(U_COS, None), (U_OTHER, COS)]
+        self.capture.run(scope())
+        record = self.conversation(COS_ONLY, CHAT)[0]["row"]
+        self.assertEqual({p["id"]: p["email"] for p in record["participants"]},
+                         {U_COS: None, U_OTHER: COS})
+        # A member no longer listed keeps nothing: removed, he reads nothing.
+        held = self.versions()
+        self.graph.chat_members = [(U_OTHER, OTHER)]
+        self.capture.run(scope())
+        self.assertGreater(self.versions(), held)
+        self.assertEqual(self.visible(COS_ONLY, CHAT), [])
+
+    def test_an_unreadable_record_of_absences_keeps_no_address(self):
+        self.capture.run(scope())
+        key = capture_teams.ADDRESS_ABSENT + self.unit(CHAT)[1]
+        for value in ("not json", "[]"):
+            self.omit(U_COS, COS)
+            self.capture.run(scope())
+            self.store.set_state(key, value)
+            self.omit(U_COS)
+            self.capture.run(scope())
+            self.assertEqual(self.member_rows(), set(), value)   # fails closed
+            self.assertEqual(self.store.state(key), "{}", value)
+
+    def card(self, card_id: str, text: str = "Stanford lecture") -> None:
+        """Message 3003 (the newest, so every incremental round lists it again): a link
+        preview Graph lists as an adaptive card, its id also in the body."""
+        message = self.graph.chat.get("3003") or self.graph.message("3003", text)
+        message.update({
+            "body": {"contentType": "html", "content":
+                     f'<p><a href="https://youtu.be/x" target="_blank">{text}</a></p>'
+                     f'<attachment id="{card_id}"></attachment>'},
+            "attachments": [{"id": card_id,
+                             "contentType": "application/vnd.microsoft.card.adaptive",
+                             "contentUrl": None, "content": '{"type":"AdaptiveCard"}',
+                             "name": None}]})
+        self.graph.chat["3003"] = message
+
+    def stored_card(self) -> str:
+        row = next(r for r in self.visible(COS_ONLY, CHAT) if r["key"]["id"] == "3003")["row"]
+        self.assertIn(f'<attachment id="{row["attachments"][0]["id"]}">', row["body_content"])
+        return row["attachments"][0]["id"]
+
+    def test_a_card_listed_again_under_a_new_id_is_not_saved_again(self):
+        self.card(self.CARD)
+        self.capture.run(scope())
+        held = self.versions()
+        self.assertEqual(self.versions(message="3003"), 1)
+        for n in range(3):   # a fresh random id on every read, the etag unchanged
+            self.card(f"{n:032x}")
+            self.capture.run(scope())
+            self.assertEqual((self.versions(), self.stored_card()), (held, self.CARD))
+        # The text changed under the same etag: saved again, as read.
+        self.card("1" * 32, "Stanford lecture, part 2")
+        self.capture.run(scope())
+        self.assertEqual((self.versions(), self.stored_card()), (held + 1, "1" * 32))
+        # An edit (a new etag): saved again whatever changed.
+        message = self.graph.chat["3003"]
+        message["etag"] = message["lastModifiedDateTime"] = "2026-10-01T09:00:00.000Z"
+        self.card("2" * 32, "Stanford lecture, part 2")
+        self.capture.run(scope())
+        self.assertEqual((self.versions(message="3003"), self.stored_card()), (3, "2" * 32))
+
+    def test_a_failed_read_of_held_cards_saves_the_message_as_read(self):
+        self.card(self.CARD)
+        self.capture.run(scope())
+        held = self.versions()
+        self.card("f" * 32)
+        with mock.patch.object(self.capture, "_current",
+                               side_effect=sqlite3.OperationalError("disk I/O error")), \
+                self.assertLogs("integrations.capture_teams", "WARNING"):
+            run = self.capture.run(scope())
+        chat = next(c for c in run["conversations"] if c["kind"] == "chat")
+        self.assertEqual(chat["status"], "complete")
+        self.assertGreaterEqual(run["state_fallbacks"], 1)
+        self.assertEqual((self.versions(), self.stored_card()), (held + 1, "f" * 32))
+
+    def test_card_ids_held_under_a_store_path_with_uri_characters(self):
+        self.store.close()
+        odd = Path(self.tmp.name) / "a?b#c%41d"
+        odd.mkdir()
+        self.store = open_store(odd, self.audience)
+        api, _ = graph_read.build_graph(ENV, sender=self.graph)
+        self.capture = TeamsCapture(self.store, api, self.audience, CAPTURE)
+        self.card(self.CARD)
+        self.capture.run(scope())
+        held = self.versions()
+        self.card("e" * 32)
+        run = self.capture.run(scope())
+        self.assertEqual(run["state_fallbacks"], 0)
+        self.assertEqual((self.versions(), self.stored_card()), (held, self.CARD))
+
+    def test_a_file_attachment_under_a_new_id_is_saved_again(self):
+        self.capture.run(scope())
+        held = self.versions()
+        self.graph.chat["3002"]["attachments"][0]["id"] = "att-2"   # not a card
+        self.capture.run(scope())
+        self.assertEqual(self.versions(), held + 1)
 
 
 class TransientMembersReadTests(CaptureCase):

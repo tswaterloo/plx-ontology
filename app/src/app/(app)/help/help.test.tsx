@@ -37,4 +37,17 @@ describe("the help page", () => {
     render(<HelpPage />);
     expect(screen.getByTestId("help-pick")).toBeInTheDocument();
   });
+
+  it("offers the desktop download in a browser, and not inside the desktop app", () => {
+    const { unmount } = render(<HelpPage />);
+    expect(screen.getByTestId("help-desktop-download")).toHaveAttribute("href", "/desktop/");
+    unmount();
+    (window as unknown as { plxDesktop?: unknown }).plxDesktop = { app: true, version: "0.1.0", notify: () => undefined, onMenu: () => () => undefined };
+    try {
+      render(<HelpPage />);
+      expect(screen.queryByTestId("help-desktop")).toBeNull();
+    } finally {
+      delete (window as unknown as { plxDesktop?: unknown }).plxDesktop;
+    }
+  });
 });

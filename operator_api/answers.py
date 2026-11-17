@@ -11,6 +11,7 @@ from datetime import date, datetime
 from decimal import Decimal, InvalidOperation
 import re
 import secrets
+from types import SimpleNamespace
 from typing import Any, Callable, Iterable, Mapping, Optional, Sequence
 from urllib.parse import quote
 
@@ -20,6 +21,7 @@ from .test_records import hidden_words
 from .serving import (FAMILY_OWNER, HOST_READ_SCHEMES, LATE_COUNT_LIMIT, LATE_LIST_LIMIT,
     MAX_FACTS, MAX_SOURCES_PER_FACT, object_url, open_url, plain, record_words, system_of,
     teams)
+from operating.prose_style import some_of
 
 
 def aged_to_today(inbox: Mapping[str, Any], today: Optional[date] = None) -> dict[str, Any]:
@@ -218,29 +220,13 @@ def _quantities_in_words(found: re.Match) -> str:
     return "(" + " and ".join(f"{n} {found.group(2)}" for n in shown_numbers(numbers)) + ")"
 
 
-def ask_shortcut(request: m.AskRequest) -> Optional[str]:
-    """The Ask's route ahead of the fast path and the agent: ``late_list`` (the reader's
-    late purchase orders, from the gap inbox), ``profit`` (a customer's or an order's
-    margin, ``operating.customer_profit``), else None. One decision, used by ``ask`` and
-    by the scoreboard (``scripts.eval_live_ops``), so the scoreboard measures the route
-    an employee's question takes."""
-    intent = picked_question(request) or request.question
-    if not request.object_id and late_list_question(request.question):
-        return "late_list"
-    if not request.object_id and (orders_at_risk_question(request.question)
-                                  or late_for_target(request.question)):
-        return "at_risk"
-    if (profit_question(intent) or order_margin_question(intent)) and (
-            not request.object_id or customer_object(request.object_id)):
-        return "profit"
-    return None
-
-
 def read_shortcut(request: m.AskRequest, reading: Any) -> Optional[str]:
     """The ready answer the front door's model picked for the question (``late_list``,
-    ``at_risk``, ``profit``: ``operating.front_door.RECIPES``), under the same conditions
-    on the record the request is about as ``ask_shortcut``'s; None: the fast path and the
-    agent answer."""
+    ``at_risk``, ``profit``: ``operating.front_door.RECIPES``): a late list or the orders
+    at risk only for a question about no one record, a profit answer only for none or a
+    customer's; None (no reading, another recipe): the fast path and the agent answer. The
+    one route to a ready answer: the phrase-rule route (``ask_shortcut``) went with DI-02
+    (2026-11-15), so a question the front door did not read is never routed by keywords."""
     recipe = getattr(reading, "recipe", None)
     if recipe in ("late_list", "at_risk") and not request.object_id:
         return recipe
@@ -287,15 +273,6 @@ def late_for_target(question: str) -> Optional[str]:
                     found.group("target").strip(), flags=re.IGNORECASE)
     target = re.sub(r"\s+(?:right\s+now|now|today|rn)$", "", target, flags=re.IGNORECASE)
     return target.strip() or None
-
-
-def late_list_question(question: str) -> bool:
-    """Whether ``question`` asks only for the list of late purchase orders, typos and chat
-    spellings included ("wat r the late pos", "any late pos rn?"); a qualified question (a
-    supplier, a negation, a time frame, a record) goes to the agent, which reads and the
-    gate checks (``mcp_portfolio.late_list_words``, plx.find's home mode reads the same)."""
-    from operating.mcp_portfolio import late_list_words
-    return late_list_words(question)
 
 
 def _base(view: Any) -> Mapping[str, Any]:
@@ -572,8 +549,8 @@ def at_risk_answer(backend: "WorkspaceBackend", view: Any, request: m.AskRequest
     else:
         n = len(risky)
         direct = (f"{n} customer order{'s' if n != 1 else ''} you can see "
-                  f"{'are' if n != 1 else 'is'} at risk from late purchase orders{when}: "
-                  + "; ".join(named_lines[:3]) + (f"; and {n - 3} more" if n > 3 else "")
+                  f"{'are' if n != 1 else 'is'} at risk from late purchase orders{when}"
+                  + (": " if n <= 3 else "; ") + some_of(named_lines, 3, sep="; ")
                   + ". Days at risk are a lower bound (no assembly lead time is recorded); "
                   "each chain's records are cited below.")
         outcome = "partial" if not_found else "answered"
@@ -615,6 +592,25 @@ def profit_question(question: str) -> bool:
 def order_margin_question(question: str) -> bool:
     from operating.customer_profit import order_margin_question as asks
     return asks(question)
+
+
+# The money words a profit question is asked in, typos included ("proffit", "margn"): a
+# cheap check before a record's page pays for the front door's reading
+# (``backend._record_read``), never a route; deliberately wider than ``profit_question``
+# (a question it catches that is not about profit costs only the read it paid before).
+_PROFIT_HINT = re.compile(
+    r"\b(?:un)?pro+f+i?t+\w*|\bmarg[ai]?n\w*|\bmoney\b|\bloss(?:es)?\b|"
+    r"\blos(?:e|es|ing|t)\b|\bearn\w*|\bmark-?ups?\b|\bgross\b|\bbottom\s+line\b|"
+    r"\bin\s+the\s+(?:red|black)\b|\b(?:make|made|making)\s+(?:on|from|off)\b|"
+    r"\bworth\s+(?:it|keeping)\b|\bp\s*&\s*l\b|\bpnl\b|\bunderwater\b",
+    re.IGNORECASE)
+
+
+def profit_worded(*texts: str) -> bool:
+    """Whether any of ``texts`` (a question, the conversation's earlier questions) is worded
+    about profit, margin or money made or lost (``_PROFIT_HINT``)."""
+    return any(_PROFIT_HINT.search(text or "") for text in texts) or \
+        any(profit_question(text) or order_margin_question(text) for text in texts if text)
 
 
 def _money(amount: Any, currency: Any) -> Optional[m.Money]:
@@ -667,13 +663,25 @@ def cards_linked(view: Any, ids: Sequence[str]) -> bool:
         return False
 
 
-def customer_choices(view: Any, candidates: Sequence[Mapping[str, Any]]
-                     ) -> list[m.ObjectRef]:
+def customer_choices(view: Any, candidates: Sequence[Mapping[str, Any]],
+                     spread: Optional[Callable[[Sequence[Any], Callable[[], bool]], list]]
+                     = None) -> list[m.ObjectRef]:
     """Each customer of ``candidates`` (at most 8) as a choice named by its customer number
-    as this reader reads it."""
+    as this reader reads it. ``spread``: the hints read side by side (``serving.fan_out``
+    over the Ask pool, each as this reader; 11-13: a did-you-mean of 8 customers read its
+    hints one after another, half of a 164 s margin Ask); None: one after another."""
+    shown = list(candidates[:8])
+    hints: list[list[str]]
+    if spread is not None and len(shown) > 1:
+        tasks = [lambda call, oid=c["object_id"]: customer_hint(
+            SimpleNamespace(_call=call), oid) for c in shown]
+        hints = list(spread(tasks, lambda: False))
+        hints += [customer_hint(view, c["object_id"]) for c in shown[len(hints):]]
+    else:
+        hints = [customer_hint(view, c["object_id"]) for c in shown]
     choices = []
-    for c in candidates[:8]:
-        detail = customer_hint(view, c["object_id"]) or [c.get("lineage") or "Customer"]
+    for c, hint in zip(shown, hints):
+        detail = hint or [c.get("lineage") or "Customer"]
         choices.append(m.ObjectRef(
             object_id=c["object_id"], type="Customer",
             label=f"{plain(c.get('display')) or c['object_id']} ({' · '.join(detail)})"[:200],
@@ -683,11 +691,14 @@ def customer_choices(view: Any, candidates: Sequence[Mapping[str, Any]]
 
 def profit_choices(backend: "WorkspaceBackend", view: Any, request: m.AskRequest,
                    candidates: Sequence[Mapping[str, Any]], conversation: str,
-                   ms: Callable[[], int], *, unlinked: bool = False) -> m.AnswerPayload:
+                   ms: Callable[[], int], *, unlinked: bool = False,
+                   spread: Optional[Callable[[Sequence[Any], Callable[[], bool]], list]]
+                   = None) -> m.AnswerPayload:
     """Several customers match the name: each a choice with its customer number (read as
     this reader), never merged or picked. ``unlinked``: they share the exact name and no
-    identity link makes them one record, so their margins are not added together."""
-    choices = customer_choices(view, candidates)
+    identity link makes them one record, so their margins are not added together.
+    ``spread``: as ``customer_choices``'s."""
+    choices = customer_choices(view, candidates, spread)
     direct = (f"Did you mean {choices[0].label}?" if len(choices) == 1 else
               f"{len(choices)} customers have that exact name and nothing links them as "
               "one customer, so their margins are not added together. Which did you mean?"
@@ -1227,7 +1238,8 @@ def claim_refusal(decided: Mapping[str, Any]) -> Optional[str]:
 UNAVAILABLE_WORDS = {"usage_limit": "its usage limit has been reached",
                      "sign_in": "it could not sign in",
                      "timeout": "it ran out of time",
-                     "error": "it stopped with an error"}
+                     "error": "it stopped with an error",
+                     "not_started": "it could not start on this server"}
 RECORDS_BELOW = ("I couldn't confirm a direct answer, but the records read for your "
                  "question are below.")
 

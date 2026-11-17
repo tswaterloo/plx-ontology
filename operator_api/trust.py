@@ -77,7 +77,7 @@ def _captured(state_dir: Optional[Path]) -> dict[str, str]:
     return out
 
 
-def freshness(backend: Any) -> list[m.TrustFreshness]:
+def freshness(backend: Any, now: Optional[datetime] = None) -> list[m.TrustFreshness]:
     try:
         served = backend.freshness().sources
     except Exception:  # noqa: BLE001 - no served data readable: captured times only
@@ -90,10 +90,13 @@ def freshness(backend: Any) -> list[m.TrustFreshness]:
     for system, at in captured.items():
         row = rows.setdefault(system, m.TrustFreshness(system=system, stale=True))
         row.captured_at = at
+    # the lag is the age of the system's newest capture now, never measured against the
+    # served build's stamp (a generation outlives that by days); no capture time: null
+    now = now or datetime.now(timezone.utc)
     for row in rows.values():
-        a, b = _instant(row.captured_at), _instant(row.served_at)
-        if a is not None and b is not None:
-            row.lag_seconds = max(0, int((a - b).total_seconds()))
+        a = _instant(row.captured_at)
+        if a is not None:
+            row.lag_seconds = max(0, int((now - a).total_seconds()))
     return sorted(rows.values(), key=lambda r: r.system)
 
 

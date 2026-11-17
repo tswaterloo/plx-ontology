@@ -139,7 +139,7 @@ def _apply_business(obj: dict[str, Any], spec: Mapping[str, Any] | None, relatio
     relation (system or log) stays as generated."""
     if not spec or spec["decision"] == "skip":
         return
-    for key in ("display", "text"):
+    for key in ("display", "text", "identifiers"):
         missing = [c for c in spec.get(key, ()) if c not in props]
         if missing:
             raise OverrideError(f"business.json {relation}.{key}: no column "
@@ -147,6 +147,22 @@ def _apply_business(obj: dict[str, Any], spec: Mapping[str, Any] | None, relatio
     obj["description"] = (f"{spec['label']}: {spec['about']}. {obj['description']}")[:2000]
     if spec.get("display"):
         obj["display"] = [props[c] for c in spec["display"]]
+    # a document number the business looks records up by: an identifier of its kind
+    # (identifier rows, ``plx.find``), never a text value only a word search reaches
+    # (``identifies: reference``: the number names another record, e.g. the invoice an AR
+    # document's number also is: plx.find reads it as a lead to that record)
+    for column, decl in sorted((spec.get("identifiers") or {}).items()):
+        prop = next(p for p in obj["properties"] if p["name"] == props[column])
+        rest = {k: v for k, v in prop.items() if k not in ("name", "value_type")}
+        kind = decl["kind"] if isinstance(decl, dict) else decl
+        prop.clear()
+        prop.update({"name": props[column], "value_type": "identifier",
+                     "identifier_kind": kind,
+                     **({"identifies": decl["identifies"]}
+                        if isinstance(decl, dict) and "identifies" in decl else {}),
+                     **rest})
+        for source in prop["sources"]:
+            source["parser"] = "identifier"
 
 
 def generate(facts: Mapping[str, Any], link_contracts: Mapping[str, Any],
@@ -201,7 +217,9 @@ def generate(facts: Mapping[str, Any], link_contracts: Mapping[str, Any],
             if column.get("enum_values"):
                 prop["enum_values"] = list(column["enum_values"])
             prop["sources"] = [{"binding": bid, "path": column["name"],
-                                "parser": PARSERS[column["value_type"]]}]
+                                "parser": PARSERS[column["value_type"]],
+                                **{k: column[k] for k in ("naive_zone", "wall_clock_zone")
+                                   if column.get(k)}}]
             properties.append(prop)
         verified_key = rel["key_source"] in identity["verified_key_sources"]
         key_evidence = rel["key_evidence"]

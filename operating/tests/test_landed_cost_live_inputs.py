@@ -26,7 +26,9 @@ from ontology.types import Actor
 from operating import duty_actual as da
 from operating import landed_cost as lc
 from operating import ontology_tools as ot
+from operating import ontology_tools_results
 from operating import ontology_tools_investigate as oi
+from operating import ontology_tools_investigate_host
 from operating import ontology_tools_traverse as tt
 from scripts import duty_actual_report as report
 from tests import test_investigate_landed_cost as world
@@ -222,12 +224,12 @@ class InvestigateActualsTest(unittest.TestCase):
         base = ot.OntologyTools(reader, policy, schema=ot.default_schema(),
                                 grammar=ot.default_grammar())
         table: dict = {}
-        ot.register(table, base)
+        ontology_tools_results.register(table, base)
         tt.register(table, tt.TraverseTools(base))
         oi.register(table, oi.InvestigateTools(
             table, rows=oi.citation_rows(world.FixtureWorld.runtime,
                                          policy.held_markings if held else None),
-            scope=oi.read_scope(base),
+            scope=ontology_tools_investigate_host.read_scope(base),
             held_markings=(lambda actor: policy.held_markings(actor)) if held else None,
             landed_actuals=provider))
         return table

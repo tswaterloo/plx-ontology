@@ -66,7 +66,11 @@ def main(argv: list[str] | None = None) -> int:
             return 130
         except Exception as exc:  # noqa: BLE001 - a queue that cannot be reached
             import psycopg
-            if not isinstance(exc, psycopg.OperationalError):
+            from psycopg import errors as pg_errors
+            # A queue database whose schema is behind this code (a deploy before its
+            # `init`): nothing ran, the same as unreachable.
+            behind = isinstance(exc, (pg_errors.UndefinedColumn, pg_errors.UndefinedTable))
+            if not isinstance(exc, psycopg.OperationalError) and not behind:
                 raise
             print(f"jobq: queue unreachable ({type(exc).__name__})", file=sys.stderr)
             return UNREACHABLE
@@ -80,6 +84,7 @@ def main(argv: list[str] | None = None) -> int:
             print(f"{what} {job_id if job_id is not None else ''}".strip())
         elif args.cmd == "worker":
             from .worker import SystemdExecutor, Worker
+            queue.init()   # pending migrations first: the code may be newer than the schema
             Worker(queue, SystemdExecutor(), state_dir=args.state_dir).serve(args.poll)
         elif args.cmd == "status":
             status = queue.status()

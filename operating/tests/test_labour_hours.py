@@ -8,7 +8,6 @@ import tempfile
 import time
 import unittest
 from datetime import date, datetime, timedelta, timezone
-from decimal import Decimal
 from pathlib import Path
 
 from integrations.people_exclusion import PeopleExclusion

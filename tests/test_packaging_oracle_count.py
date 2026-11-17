@@ -312,6 +312,7 @@ class OneReaderAcrossCallersTest(unittest.TestCase):
 
     def oracle_call(self, s, actor):
         from operating import ontology_tools as ot
+        from operating import ontology_tools_results
         from operating import ontology_tools_traverse as tt
 
         base = self.pl.tools_at(s).base if hasattr(self.pl.tools_at(s), "base") else None
@@ -319,7 +320,7 @@ class OneReaderAcrossCallersTest(unittest.TestCase):
                                         schema=self.pl.tp.SCHEMA, contracts=self.pl.CONTRACTS,
                                         clock=lambda: self.pl.tp.NOW)
         table: dict = {}
-        ot.register(table, base)
+        ontology_tools_results.register(table, base)
         tt.register(table, tt.TraverseTools(base))
         return lambda name, args: table[name]["handler"](args, actor)
 
@@ -327,14 +328,19 @@ class OneReaderAcrossCallersTest(unittest.TestCase):
         import tempfile
         from datetime import date
         from pathlib import Path
-        import time
+        import os
 
         from operating import po_status
+
+        def cpu() -> float:   # this process's CPU (every thread) and its reaped children's
+            return sum(os.times()[:4])
 
         today = date.fromisoformat(self.TODAY)
         for n in (1, 10, 60):
             with self.subTest(n=n), tempfile.TemporaryDirectory() as tmp:
-                started = time.monotonic()
+                # the work's CPU time: a busy host adds wall time, never this, so the
+                # budget still fails on a caller that does more work per order
+                started = cpu()
                 s, expected = self.world(n)
                 st, result, gaps = self.engine(s, Path(tmp) / "store.sqlite")
                 src = po_status.StoreSource(st)
@@ -352,7 +358,7 @@ class OneReaderAcrossCallersTest(unittest.TestCase):
                         self.assertFalse(read.blind, oid)
                     self.assertEqual(self.process(s, oid, self.pl.STAFF)[0], verdict, oid)
                     self.assertEqual(gaps.get(oid, "neither"), verdict, oid)
-                self.assertLess(time.monotonic() - started, 60, n)
+                self.assertLess(cpu() - started, 60, n)
 
     def test_a_hidden_twin_link_leaves_the_restricted_reader_blind_in_every_caller(self):
         import json

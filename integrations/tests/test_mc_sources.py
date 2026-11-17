@@ -373,6 +373,23 @@ class McSourcesTests(unittest.TestCase):
         self.assertTrue(self.store.resolve(gate["citation"], OPS)["ok"])
         self.assertFalse(self.store.resolve(gate["citation"], TASKS_ONLY)["ok"])
 
+    def test_a_gates_own_mc_scope_is_kept_beside_the_operator_scope(self):
+        # MC's gate scope ({kind: launch, ...}) was overwritten by the record's operator
+        # scope, so no gate could ever be classed a launch (AP-02)
+        scope = {"kind": "launch", "lane": "ops", "promptHash": "ab" * 32}
+        self.fake.tasks["TASK-2"]["approvalGates"][0]["scope"] = scope
+        self.capture(CaptureSpec("ops", ("landed cost",)))
+        gate = self.store.records(OPS, "mission_control",
+                                  unit_of("ops", "approvals"))["items"][0]
+        self.assertEqual(gate["row"]["scope"], "ops")
+        self.assertEqual(gate["row"]["gate_scope"], scope)
+        del self.fake.tasks["TASK-2"]["approvalGates"][0]["scope"]
+        self.fake.tasks["TASK-2"]["approvalGates"][0]["id"] = "apg_two"
+        self.capture(CaptureSpec("ops", ("landed cost",)))
+        rows = {g["row"]["id"]: g["row"] for g in self.store.records(
+            OPS, "mission_control", unit_of("ops", "approvals"))["items"]}
+        self.assertNotIn("gate_scope", rows["apg_two"])   # unscoped gate: no new key
+
     def test_every_read_trims_records_per_mc_project_and_unknown_projects_fail_closed(self):
         add_hr_project(self.fake)
         self.fake.buckets += [{"id": "BKT-LOOSE", "name": "Loose", "project": None},

@@ -385,7 +385,7 @@ class ServedTraversalTest(unittest.TestCase):
         """The served tools answer under the host's audience (everything granted), but the
         reader's policy grants it nothing: every root it is answered and every object an
         answer names is counted."""
-        from operating.ontology_tools import ReadPolicy
+        from operating.ontology_tools_policy import ReadPolicy
         with tempfile.TemporaryDirectory() as tmp:
             report = self.traverse(tmp, policy=ReadPolicy("plx", {}))
         self.assertEqual(report["reader_denied_probed"],

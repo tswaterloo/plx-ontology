@@ -41,6 +41,7 @@ import re
 import sqlite3
 import sys
 from typing import Any, Callable, Iterable, Iterator, Mapping, Optional
+from . import time_window
 
 from ontology import parent_watch
 
@@ -102,10 +103,7 @@ def day_of(value: Any) -> Optional[date]:
     text = str(value).strip()
     if re.fullmatch(r"\d{8}", text):
         text = f"{text[:4]}-{text[4:6]}-{text[6:]}"
-    try:
-        return date.fromisoformat(text[:10])
-    except ValueError:
-        return None
+    return time_window.business_day(text)
 
 
 @dataclass(frozen=True)
@@ -619,7 +617,8 @@ def main(argv: Optional[list[str]] = None) -> int:
     args.out.parent.mkdir(parents=True, exist_ok=True)
     tmp = args.out.with_suffix(".tmp")
     tmp.write_text(json.dumps(snap, sort_keys=True))
-    os.chmod(tmp, 0o600)
+    # owner and group (plx-state, the state directory's): the API user reads it; others none
+    os.chmod(tmp, 0o640)
     tmp.replace(args.out)
     for c in snap["coverage"]:
         print(json.dumps(c, sort_keys=True))

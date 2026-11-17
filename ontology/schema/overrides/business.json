@@ -429,6 +429,9 @@
     "decision": "type",
     "label": "AP open document",
     "about": "a Sage AP open (posted) vendor document: invoice, credit or debit note, payment or prepayment, with balance and due date",
+    "identifiers": {
+     "idinvc": "sage_ap_document"
+    },
     "display": [
      "idinvc",
      "idrmit",
@@ -1353,6 +1356,9 @@
     "decision": "type",
     "label": "AR open document",
     "about": "a Sage AR open (posted) customer document: invoice, credit or debit note, receipt or prepayment, with balance, due date and status",
+    "identifiers": {
+     "idinvc": {"kind": "sage_ar_document", "identifies": "reference"}
+    },
     "display": [
      "idinvc",
      "idrmit",
@@ -1970,6 +1976,37 @@
      "docnumber",
      "batchid",
      "btchentry"
+    ],
+    "joins": [
+     {
+      "name": "source_shipment",
+      "reverse_name": "gl_entries",
+      "to_binding": "portal.sage_oe_shipment_header",
+      "pairs": [
+       {
+        "from": "drilldwnlk",
+        "to": "shiuniq",
+        "compare": "text_id"
+       }
+      ],
+      "where": [
+       {
+        "path": "drilapp",
+        "op": "eq",
+        "value": "OE"
+       },
+       {
+        "path": "drilsrcty",
+        "op": "in",
+        "value": [
+         3,
+         "3"
+        ]
+       }
+      ],
+      "tier": "verified",
+      "why": "the Sage OE shipment a GL journal entry posted (drilldwnlk = shiuniq), for entries whose drill-down source is OE shipments only (drilapp OE, drilsrcty 3); the same column on other ledgers' entries is another document's id (random-shift baseline 1.2-1.9 against 0.007 here; link-completeness audit round 2, 2026-11-08: 83,801 of 83,802 OE-shipment-sourced entries reach a shipment)"
+     }
     ]
    },
    "sage.gl_jec": {

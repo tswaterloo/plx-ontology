@@ -21,7 +21,9 @@ from pathlib import Path
 import sqlite3
 from typing import Any, Iterator, Sequence
 
+from ontology import parent_watch
 from ontology import mention_firm as MF
+from ontology import mention_occurrences as MO
 
 CHUNK = 2000
 MIN_OBJECTS = 4 * CHUNK
@@ -82,7 +84,7 @@ def parallel_firm_links(builder: Any, types: Sequence[str], counts: Counter,
     try:
         with main_not_imported(), futures.ProcessPoolExecutor(
                 max_workers=count, mp_context=multiprocessing.get_context("spawn"),
-                initializer=_init, initargs=(str(Path(temp).resolve()),)) as pool:
+                **parent_watch.pool_init(_init, (str(Path(temp).resolve()),))) as pool:
             for found, tally, left in pool.map(_judge, _chunks(iter(objects)),
                                          [tuple(types)] * (len(objects) // CHUNK + 1)):
                 rows += found
@@ -94,7 +96,7 @@ def parallel_firm_links(builder: Any, types: Sequence[str], counts: Counter,
         return None
     rows += MF.resolved_rows(conn, pending, counts, own)
     LAST.update(mode="parallel", workers=count, objects=len(objects))
-    return rows
+    return MO.one_per_lead(rows)   # one firm row per lead (``ontology.mention_occurrences``)
 
 
 def unique_mentions_step(builder: Any, projector: Any) -> dict[str, Any]:

@@ -47,6 +47,7 @@ from typing import Any, Mapping, Sequence
 from evals import graph_walks as gw
 from evals import link_coverage as lc
 from scripts.eval_graph_walks import FIRM, Refused, Store, people_guard
+from ontology import parent_watch
 
 SAMPLE = 40
 SCAN = 4000
@@ -238,7 +239,7 @@ def compose_parallel(dsn: str, state: Path, environ: Mapping[str, str], schema: 
     parts = deal(lc.link_types(schema["link_types"]), workers)
     questions, dropped, counts = [], {}, {}
     env = dict(environ)
-    with ProcessPoolExecutor(max_workers=max(1, workers)) as pool:
+    with ProcessPoolExecutor(max_workers=max(1, workers), **parent_watch.pool_init()) as pool:
         for made, extra in pool.map(_compose_part, [(dsn, str(state), env, schema, p, seed,
                                                      as_of) for p in parts if p]):
             questions += made

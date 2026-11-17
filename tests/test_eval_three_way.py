@@ -259,7 +259,7 @@ class ScoreTest(unittest.TestCase):
 
 class EmptyStratumTest(unittest.TestCase):
     def test_no_candidates_reports_empty_with_the_source_tried(self):
-        from evals.oracle import BcReads, PortalReads, Sources
+        from evals.oracle import PortalReads, Sources
         from evals.oracle import keys as K
         from evals.oracle.cross_sample import THREE_WAY_TRIED, sample
         world = build_world()

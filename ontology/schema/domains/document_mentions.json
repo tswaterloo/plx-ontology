@@ -1,0 +1,706 @@
+{
+ "$schema": "../_format.schema.json",
+ "format": "plx-ontology-domain/v1",
+ "domain": "document_mentions",
+ "origin": "curated",
+ "description": "Mention link types from a document-field class (supplier confirmation, packing slip, supplier invoice, freight bill, CoA, delivery receipt, customer PO, forwarder quote, AO packet, decision record) to the record types its text names that no other domain declared: sales invoices, sales orders, assembly orders, batches and batch schedules. A document reference whose target type had no declared link was counted undeclared_target and dropped (171,971 in the gen 11 build). Every link is a lead written by ontology/document_fields.py store_document_links.",
+ "upstream_pins": {},
+ "object_types": [],
+ "link_types": [
+  {
+   "id": "SupplierConfirmation.for_assembly_order",
+   "from": "SupplierConfirmation",
+   "to": "AssemblyOrder",
+   "name": "for_assembly_order",
+   "reverse_name": "confirmations",
+   "cardinality": "N:M",
+   "description": "A supplier confirmation names this AssemblyOrder: an identifier the one identifier grammar reads in its text, resolved through the identifier index (ontology/document_fields.py store_document_links). Always a lead: several candidates stay several links, and the document's author is unknown (an external assertion). Declared so the references counted undeclared_target by that step become links (AUD-13).",
+   "bindings": [
+    {
+     "kind": "mention",
+     "tier_ceiling": "lead",
+     "evidence": [
+      {
+       "kind": "workbench_code",
+       "path": "ontology/document_fields.py"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "SupplierConfirmation.for_batch",
+   "from": "SupplierConfirmation",
+   "to": "Batch",
+   "name": "for_batch",
+   "reverse_name": "confirmations",
+   "cardinality": "N:M",
+   "description": "A supplier confirmation names this Batch: an identifier the one identifier grammar reads in its text, resolved through the identifier index (ontology/document_fields.py store_document_links). Always a lead: several candidates stay several links, and the document's author is unknown (an external assertion). Declared so the references counted undeclared_target by that step become links (AUD-13).",
+   "bindings": [
+    {
+     "kind": "mention",
+     "tier_ceiling": "lead",
+     "evidence": [
+      {
+       "kind": "workbench_code",
+       "path": "ontology/document_fields.py"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "SupplierConfirmation.for_batch_schedule",
+   "from": "SupplierConfirmation",
+   "to": "BatchSchedule",
+   "name": "for_batch_schedule",
+   "reverse_name": "confirmations",
+   "cardinality": "N:M",
+   "description": "A supplier confirmation names this BatchSchedule: an identifier the one identifier grammar reads in its text, resolved through the identifier index (ontology/document_fields.py store_document_links). Always a lead: several candidates stay several links, and the document's author is unknown (an external assertion). Declared so the references counted undeclared_target by that step become links (AUD-13).",
+   "bindings": [
+    {
+     "kind": "mention",
+     "tier_ceiling": "lead",
+     "evidence": [
+      {
+       "kind": "workbench_code",
+       "path": "ontology/document_fields.py"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "ForwarderQuote.for_sales_invoice",
+   "from": "ForwarderQuote",
+   "to": "SalesInvoice",
+   "name": "for_sales_invoice",
+   "reverse_name": "forwarder_quotes",
+   "cardinality": "N:M",
+   "description": "A forwarder quote names this SalesInvoice: an identifier the one identifier grammar reads in its text, resolved through the identifier index (ontology/document_fields.py store_document_links). Always a lead: several candidates stay several links, and the document's author is unknown (an external assertion). Declared so the references counted undeclared_target by that step become links (AUD-13).",
+   "bindings": [
+    {
+     "kind": "mention",
+     "tier_ceiling": "lead",
+     "evidence": [
+      {
+       "kind": "workbench_code",
+       "path": "ontology/document_fields.py"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "ForwarderQuote.for_sales_order",
+   "from": "ForwarderQuote",
+   "to": "SalesOrder",
+   "name": "for_sales_order",
+   "reverse_name": "forwarder_quotes",
+   "cardinality": "N:M",
+   "description": "A forwarder quote names this SalesOrder: an identifier the one identifier grammar reads in its text, resolved through the identifier index (ontology/document_fields.py store_document_links). Always a lead: several candidates stay several links, and the document's author is unknown (an external assertion). Declared so the references counted undeclared_target by that step become links (AUD-13).",
+   "bindings": [
+    {
+     "kind": "mention",
+     "tier_ceiling": "lead",
+     "evidence": [
+      {
+       "kind": "workbench_code",
+       "path": "ontology/document_fields.py"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "ForwarderQuote.for_assembly_order",
+   "from": "ForwarderQuote",
+   "to": "AssemblyOrder",
+   "name": "for_assembly_order",
+   "reverse_name": "forwarder_quotes",
+   "cardinality": "N:M",
+   "description": "A forwarder quote names this AssemblyOrder: an identifier the one identifier grammar reads in its text, resolved through the identifier index (ontology/document_fields.py store_document_links). Always a lead: several candidates stay several links, and the document's author is unknown (an external assertion). Declared so the references counted undeclared_target by that step become links (AUD-13).",
+   "bindings": [
+    {
+     "kind": "mention",
+     "tier_ceiling": "lead",
+     "evidence": [
+      {
+       "kind": "workbench_code",
+       "path": "ontology/document_fields.py"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "ForwarderQuote.for_batch",
+   "from": "ForwarderQuote",
+   "to": "Batch",
+   "name": "for_batch",
+   "reverse_name": "forwarder_quotes",
+   "cardinality": "N:M",
+   "description": "A forwarder quote names this Batch: an identifier the one identifier grammar reads in its text, resolved through the identifier index (ontology/document_fields.py store_document_links). Always a lead: several candidates stay several links, and the document's author is unknown (an external assertion). Declared so the references counted undeclared_target by that step become links (AUD-13).",
+   "bindings": [
+    {
+     "kind": "mention",
+     "tier_ceiling": "lead",
+     "evidence": [
+      {
+       "kind": "workbench_code",
+       "path": "ontology/document_fields.py"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "ForwarderQuote.for_batch_schedule",
+   "from": "ForwarderQuote",
+   "to": "BatchSchedule",
+   "name": "for_batch_schedule",
+   "reverse_name": "forwarder_quotes",
+   "cardinality": "N:M",
+   "description": "A forwarder quote names this BatchSchedule: an identifier the one identifier grammar reads in its text, resolved through the identifier index (ontology/document_fields.py store_document_links). Always a lead: several candidates stay several links, and the document's author is unknown (an external assertion). Declared so the references counted undeclared_target by that step become links (AUD-13).",
+   "bindings": [
+    {
+     "kind": "mention",
+     "tier_ceiling": "lead",
+     "evidence": [
+      {
+       "kind": "workbench_code",
+       "path": "ontology/document_fields.py"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "PackingSlip.for_assembly_order",
+   "from": "PackingSlip",
+   "to": "AssemblyOrder",
+   "name": "for_assembly_order",
+   "reverse_name": "packing_slips",
+   "cardinality": "N:M",
+   "description": "A packing slip names this AssemblyOrder: an identifier the one identifier grammar reads in its text, resolved through the identifier index (ontology/document_fields.py store_document_links). Always a lead: several candidates stay several links, and the document's author is unknown (an external assertion). Declared so the references counted undeclared_target by that step become links (AUD-13).",
+   "bindings": [
+    {
+     "kind": "mention",
+     "tier_ceiling": "lead",
+     "evidence": [
+      {
+       "kind": "workbench_code",
+       "path": "ontology/document_fields.py"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "PackingSlip.for_batch",
+   "from": "PackingSlip",
+   "to": "Batch",
+   "name": "for_batch",
+   "reverse_name": "packing_slips",
+   "cardinality": "N:M",
+   "description": "A packing slip names this Batch: an identifier the one identifier grammar reads in its text, resolved through the identifier index (ontology/document_fields.py store_document_links). Always a lead: several candidates stay several links, and the document's author is unknown (an external assertion). Declared so the references counted undeclared_target by that step become links (AUD-13).",
+   "bindings": [
+    {
+     "kind": "mention",
+     "tier_ceiling": "lead",
+     "evidence": [
+      {
+       "kind": "workbench_code",
+       "path": "ontology/document_fields.py"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "PackingSlip.for_batch_schedule",
+   "from": "PackingSlip",
+   "to": "BatchSchedule",
+   "name": "for_batch_schedule",
+   "reverse_name": "packing_slips",
+   "cardinality": "N:M",
+   "description": "A packing slip names this BatchSchedule: an identifier the one identifier grammar reads in its text, resolved through the identifier index (ontology/document_fields.py store_document_links). Always a lead: several candidates stay several links, and the document's author is unknown (an external assertion). Declared so the references counted undeclared_target by that step become links (AUD-13).",
+   "bindings": [
+    {
+     "kind": "mention",
+     "tier_ceiling": "lead",
+     "evidence": [
+      {
+       "kind": "workbench_code",
+       "path": "ontology/document_fields.py"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "AssemblyOrderPacket.for_sales_invoice",
+   "from": "AssemblyOrderPacket",
+   "to": "SalesInvoice",
+   "name": "for_sales_invoice",
+   "reverse_name": "ao_packets",
+   "cardinality": "N:M",
+   "description": "A assembly order packet names this SalesInvoice: an identifier the one identifier grammar reads in its text, resolved through the identifier index (ontology/document_fields.py store_document_links). Always a lead: several candidates stay several links, and the document's author is unknown (an external assertion). Declared so the references counted undeclared_target by that step become links (AUD-13).",
+   "bindings": [
+    {
+     "kind": "mention",
+     "tier_ceiling": "lead",
+     "evidence": [
+      {
+       "kind": "workbench_code",
+       "path": "ontology/document_fields.py"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "AssemblyOrderPacket.for_batch_schedule",
+   "from": "AssemblyOrderPacket",
+   "to": "BatchSchedule",
+   "name": "for_batch_schedule",
+   "reverse_name": "ao_packets",
+   "cardinality": "N:M",
+   "description": "A assembly order packet names this BatchSchedule: an identifier the one identifier grammar reads in its text, resolved through the identifier index (ontology/document_fields.py store_document_links). Always a lead: several candidates stay several links, and the document's author is unknown (an external assertion). Declared so the references counted undeclared_target by that step become links (AUD-13).",
+   "bindings": [
+    {
+     "kind": "mention",
+     "tier_ceiling": "lead",
+     "evidence": [
+      {
+       "kind": "workbench_code",
+       "path": "ontology/document_fields.py"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "CustomerPoDocument.for_assembly_order",
+   "from": "CustomerPoDocument",
+   "to": "AssemblyOrder",
+   "name": "for_assembly_order",
+   "reverse_name": "customer_po_documents",
+   "cardinality": "N:M",
+   "description": "A customer po document names this AssemblyOrder: an identifier the one identifier grammar reads in its text, resolved through the identifier index (ontology/document_fields.py store_document_links). Always a lead: several candidates stay several links, and the document's author is unknown (an external assertion). Declared so the references counted undeclared_target by that step become links (AUD-13).",
+   "bindings": [
+    {
+     "kind": "mention",
+     "tier_ceiling": "lead",
+     "evidence": [
+      {
+       "kind": "workbench_code",
+       "path": "ontology/document_fields.py"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "CustomerPoDocument.for_batch",
+   "from": "CustomerPoDocument",
+   "to": "Batch",
+   "name": "for_batch",
+   "reverse_name": "customer_po_documents",
+   "cardinality": "N:M",
+   "description": "A customer po document names this Batch: an identifier the one identifier grammar reads in its text, resolved through the identifier index (ontology/document_fields.py store_document_links). Always a lead: several candidates stay several links, and the document's author is unknown (an external assertion). Declared so the references counted undeclared_target by that step become links (AUD-13).",
+   "bindings": [
+    {
+     "kind": "mention",
+     "tier_ceiling": "lead",
+     "evidence": [
+      {
+       "kind": "workbench_code",
+       "path": "ontology/document_fields.py"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "CustomerPoDocument.for_batch_schedule",
+   "from": "CustomerPoDocument",
+   "to": "BatchSchedule",
+   "name": "for_batch_schedule",
+   "reverse_name": "customer_po_documents",
+   "cardinality": "N:M",
+   "description": "A customer po document names this BatchSchedule: an identifier the one identifier grammar reads in its text, resolved through the identifier index (ontology/document_fields.py store_document_links). Always a lead: several candidates stay several links, and the document's author is unknown (an external assertion). Declared so the references counted undeclared_target by that step become links (AUD-13).",
+   "bindings": [
+    {
+     "kind": "mention",
+     "tier_ceiling": "lead",
+     "evidence": [
+      {
+       "kind": "workbench_code",
+       "path": "ontology/document_fields.py"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "SupplierInvoice.for_assembly_order",
+   "from": "SupplierInvoice",
+   "to": "AssemblyOrder",
+   "name": "for_assembly_order",
+   "reverse_name": "supplier_invoices",
+   "cardinality": "N:M",
+   "description": "A supplier invoice names this AssemblyOrder: an identifier the one identifier grammar reads in its text, resolved through the identifier index (ontology/document_fields.py store_document_links). Always a lead: several candidates stay several links, and the document's author is unknown (an external assertion). Declared so the references counted undeclared_target by that step become links (AUD-13).",
+   "bindings": [
+    {
+     "kind": "mention",
+     "tier_ceiling": "lead",
+     "evidence": [
+      {
+       "kind": "workbench_code",
+       "path": "ontology/document_fields.py"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "SupplierInvoice.for_batch",
+   "from": "SupplierInvoice",
+   "to": "Batch",
+   "name": "for_batch",
+   "reverse_name": "supplier_invoices",
+   "cardinality": "N:M",
+   "description": "A supplier invoice names this Batch: an identifier the one identifier grammar reads in its text, resolved through the identifier index (ontology/document_fields.py store_document_links). Always a lead: several candidates stay several links, and the document's author is unknown (an external assertion). Declared so the references counted undeclared_target by that step become links (AUD-13).",
+   "bindings": [
+    {
+     "kind": "mention",
+     "tier_ceiling": "lead",
+     "evidence": [
+      {
+       "kind": "workbench_code",
+       "path": "ontology/document_fields.py"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "SupplierInvoice.for_batch_schedule",
+   "from": "SupplierInvoice",
+   "to": "BatchSchedule",
+   "name": "for_batch_schedule",
+   "reverse_name": "supplier_invoices",
+   "cardinality": "N:M",
+   "description": "A supplier invoice names this BatchSchedule: an identifier the one identifier grammar reads in its text, resolved through the identifier index (ontology/document_fields.py store_document_links). Always a lead: several candidates stay several links, and the document's author is unknown (an external assertion). Declared so the references counted undeclared_target by that step become links (AUD-13).",
+   "bindings": [
+    {
+     "kind": "mention",
+     "tier_ceiling": "lead",
+     "evidence": [
+      {
+       "kind": "workbench_code",
+       "path": "ontology/document_fields.py"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "FreightBill.for_assembly_order",
+   "from": "FreightBill",
+   "to": "AssemblyOrder",
+   "name": "for_assembly_order",
+   "reverse_name": "freight_bills",
+   "cardinality": "N:M",
+   "description": "A freight bill names this AssemblyOrder: an identifier the one identifier grammar reads in its text, resolved through the identifier index (ontology/document_fields.py store_document_links). Always a lead: several candidates stay several links, and the document's author is unknown (an external assertion). Declared so the references counted undeclared_target by that step become links (AUD-13).",
+   "bindings": [
+    {
+     "kind": "mention",
+     "tier_ceiling": "lead",
+     "evidence": [
+      {
+       "kind": "workbench_code",
+       "path": "ontology/document_fields.py"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "FreightBill.for_batch",
+   "from": "FreightBill",
+   "to": "Batch",
+   "name": "for_batch",
+   "reverse_name": "freight_bills",
+   "cardinality": "N:M",
+   "description": "A freight bill names this Batch: an identifier the one identifier grammar reads in its text, resolved through the identifier index (ontology/document_fields.py store_document_links). Always a lead: several candidates stay several links, and the document's author is unknown (an external assertion). Declared so the references counted undeclared_target by that step become links (AUD-13).",
+   "bindings": [
+    {
+     "kind": "mention",
+     "tier_ceiling": "lead",
+     "evidence": [
+      {
+       "kind": "workbench_code",
+       "path": "ontology/document_fields.py"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "FreightBill.for_batch_schedule",
+   "from": "FreightBill",
+   "to": "BatchSchedule",
+   "name": "for_batch_schedule",
+   "reverse_name": "freight_bills",
+   "cardinality": "N:M",
+   "description": "A freight bill names this BatchSchedule: an identifier the one identifier grammar reads in its text, resolved through the identifier index (ontology/document_fields.py store_document_links). Always a lead: several candidates stay several links, and the document's author is unknown (an external assertion). Declared so the references counted undeclared_target by that step become links (AUD-13).",
+   "bindings": [
+    {
+     "kind": "mention",
+     "tier_ceiling": "lead",
+     "evidence": [
+      {
+       "kind": "workbench_code",
+       "path": "ontology/document_fields.py"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "CertificateOfAnalysis.for_sales_invoice",
+   "from": "CertificateOfAnalysis",
+   "to": "SalesInvoice",
+   "name": "for_sales_invoice",
+   "reverse_name": "certificates_of_analysis",
+   "cardinality": "N:M",
+   "description": "A certificate of analysis names this SalesInvoice: an identifier the one identifier grammar reads in its text, resolved through the identifier index (ontology/document_fields.py store_document_links). Always a lead: several candidates stay several links, and the document's author is unknown (an external assertion). Declared so the references counted undeclared_target by that step become links (AUD-13).",
+   "bindings": [
+    {
+     "kind": "mention",
+     "tier_ceiling": "lead",
+     "evidence": [
+      {
+       "kind": "workbench_code",
+       "path": "ontology/document_fields.py"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "CertificateOfAnalysis.for_sales_order",
+   "from": "CertificateOfAnalysis",
+   "to": "SalesOrder",
+   "name": "for_sales_order",
+   "reverse_name": "certificates_of_analysis",
+   "cardinality": "N:M",
+   "description": "A certificate of analysis names this SalesOrder: an identifier the one identifier grammar reads in its text, resolved through the identifier index (ontology/document_fields.py store_document_links). Always a lead: several candidates stay several links, and the document's author is unknown (an external assertion). Declared so the references counted undeclared_target by that step become links (AUD-13).",
+   "bindings": [
+    {
+     "kind": "mention",
+     "tier_ceiling": "lead",
+     "evidence": [
+      {
+       "kind": "workbench_code",
+       "path": "ontology/document_fields.py"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "CertificateOfAnalysis.for_assembly_order",
+   "from": "CertificateOfAnalysis",
+   "to": "AssemblyOrder",
+   "name": "for_assembly_order",
+   "reverse_name": "certificates_of_analysis",
+   "cardinality": "N:M",
+   "description": "A certificate of analysis names this AssemblyOrder: an identifier the one identifier grammar reads in its text, resolved through the identifier index (ontology/document_fields.py store_document_links). Always a lead: several candidates stay several links, and the document's author is unknown (an external assertion). Declared so the references counted undeclared_target by that step become links (AUD-13).",
+   "bindings": [
+    {
+     "kind": "mention",
+     "tier_ceiling": "lead",
+     "evidence": [
+      {
+       "kind": "workbench_code",
+       "path": "ontology/document_fields.py"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "CertificateOfAnalysis.for_batch",
+   "from": "CertificateOfAnalysis",
+   "to": "Batch",
+   "name": "for_batch",
+   "reverse_name": "certificates_of_analysis",
+   "cardinality": "N:M",
+   "description": "A certificate of analysis names this Batch: an identifier the one identifier grammar reads in its text, resolved through the identifier index (ontology/document_fields.py store_document_links). Always a lead: several candidates stay several links, and the document's author is unknown (an external assertion). Declared so the references counted undeclared_target by that step become links (AUD-13).",
+   "bindings": [
+    {
+     "kind": "mention",
+     "tier_ceiling": "lead",
+     "evidence": [
+      {
+       "kind": "workbench_code",
+       "path": "ontology/document_fields.py"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "CertificateOfAnalysis.for_batch_schedule",
+   "from": "CertificateOfAnalysis",
+   "to": "BatchSchedule",
+   "name": "for_batch_schedule",
+   "reverse_name": "certificates_of_analysis",
+   "cardinality": "N:M",
+   "description": "A certificate of analysis names this BatchSchedule: an identifier the one identifier grammar reads in its text, resolved through the identifier index (ontology/document_fields.py store_document_links). Always a lead: several candidates stay several links, and the document's author is unknown (an external assertion). Declared so the references counted undeclared_target by that step become links (AUD-13).",
+   "bindings": [
+    {
+     "kind": "mention",
+     "tier_ceiling": "lead",
+     "evidence": [
+      {
+       "kind": "workbench_code",
+       "path": "ontology/document_fields.py"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "DeliveryReceipt.for_sales_invoice",
+   "from": "DeliveryReceipt",
+   "to": "SalesInvoice",
+   "name": "for_sales_invoice",
+   "reverse_name": "delivery_receipts",
+   "cardinality": "N:M",
+   "description": "A delivery receipt names this SalesInvoice: an identifier the one identifier grammar reads in its text, resolved through the identifier index (ontology/document_fields.py store_document_links). Always a lead: several candidates stay several links, and the document's author is unknown (an external assertion). Declared so the references counted undeclared_target by that step become links (AUD-13).",
+   "bindings": [
+    {
+     "kind": "mention",
+     "tier_ceiling": "lead",
+     "evidence": [
+      {
+       "kind": "workbench_code",
+       "path": "ontology/document_fields.py"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "DeliveryReceipt.for_assembly_order",
+   "from": "DeliveryReceipt",
+   "to": "AssemblyOrder",
+   "name": "for_assembly_order",
+   "reverse_name": "delivery_receipts",
+   "cardinality": "N:M",
+   "description": "A delivery receipt names this AssemblyOrder: an identifier the one identifier grammar reads in its text, resolved through the identifier index (ontology/document_fields.py store_document_links). Always a lead: several candidates stay several links, and the document's author is unknown (an external assertion). Declared so the references counted undeclared_target by that step become links (AUD-13).",
+   "bindings": [
+    {
+     "kind": "mention",
+     "tier_ceiling": "lead",
+     "evidence": [
+      {
+       "kind": "workbench_code",
+       "path": "ontology/document_fields.py"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "DeliveryReceipt.for_batch",
+   "from": "DeliveryReceipt",
+   "to": "Batch",
+   "name": "for_batch",
+   "reverse_name": "delivery_receipts",
+   "cardinality": "N:M",
+   "description": "A delivery receipt names this Batch: an identifier the one identifier grammar reads in its text, resolved through the identifier index (ontology/document_fields.py store_document_links). Always a lead: several candidates stay several links, and the document's author is unknown (an external assertion). Declared so the references counted undeclared_target by that step become links (AUD-13).",
+   "bindings": [
+    {
+     "kind": "mention",
+     "tier_ceiling": "lead",
+     "evidence": [
+      {
+       "kind": "workbench_code",
+       "path": "ontology/document_fields.py"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "DeliveryReceipt.for_batch_schedule",
+   "from": "DeliveryReceipt",
+   "to": "BatchSchedule",
+   "name": "for_batch_schedule",
+   "reverse_name": "delivery_receipts",
+   "cardinality": "N:M",
+   "description": "A delivery receipt names this BatchSchedule: an identifier the one identifier grammar reads in its text, resolved through the identifier index (ontology/document_fields.py store_document_links). Always a lead: several candidates stay several links, and the document's author is unknown (an external assertion). Declared so the references counted undeclared_target by that step become links (AUD-13).",
+   "bindings": [
+    {
+     "kind": "mention",
+     "tier_ceiling": "lead",
+     "evidence": [
+      {
+       "kind": "workbench_code",
+       "path": "ontology/document_fields.py"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "DecisionRecord.for_sales_invoice",
+   "from": "DecisionRecord",
+   "to": "SalesInvoice",
+   "name": "for_sales_invoice",
+   "reverse_name": "decision_records",
+   "cardinality": "N:M",
+   "description": "A decision record names this SalesInvoice: an identifier the one identifier grammar reads in its text, resolved through the identifier index (ontology/document_fields.py store_document_links). Always a lead: several candidates stay several links, and the document's author is unknown (an external assertion). Declared so the references counted undeclared_target by that step become links (AUD-13).",
+   "bindings": [
+    {
+     "kind": "mention",
+     "tier_ceiling": "lead",
+     "evidence": [
+      {
+       "kind": "workbench_code",
+       "path": "ontology/document_fields.py"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "DecisionRecord.for_batch_schedule",
+   "from": "DecisionRecord",
+   "to": "BatchSchedule",
+   "name": "for_batch_schedule",
+   "reverse_name": "decision_records",
+   "cardinality": "N:M",
+   "description": "A decision record names this BatchSchedule: an identifier the one identifier grammar reads in its text, resolved through the identifier index (ontology/document_fields.py store_document_links). Always a lead: several candidates stay several links, and the document's author is unknown (an external assertion). Declared so the references counted undeclared_target by that step become links (AUD-13).",
+   "bindings": [
+    {
+     "kind": "mention",
+     "tier_ceiling": "lead",
+     "evidence": [
+      {
+       "kind": "workbench_code",
+       "path": "ontology/document_fields.py"
+      }
+     ]
+    }
+   ]
+  }
+ ],
+ "event_types": [],
+ "evidence_catalog": {}
+}

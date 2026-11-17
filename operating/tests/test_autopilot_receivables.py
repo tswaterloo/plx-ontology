@@ -9,6 +9,10 @@ import json
 import unittest
 
 from operating import autopilot as ap
+from operating import autopilot_engine
+from operating import autopilot_handlers
+from operating import autopilot_queue
+from operating import autopilot_reading
 from operating import autopilot_receivables as ar
 from operating import proactive_sheets as ps
 from operating.tests.test_autopilot_replay import World
@@ -97,7 +101,7 @@ class Receivables(World):
         self.assertTrue(prepared["citations"])
         self.assertTrue(prepared["work"]["dry_run"])
         self.assertNotIn("write", prepared["work"])
-        self.assertIsNone(ap.write_spec({"body": {"prepared": prepared["work"]},
+        self.assertIsNone(autopilot_reading.write_spec({"body": {"prepared": prepared["work"]},
                                          "citations": prepared["citations"]}))
         self.assertEqual(ap._prepare(st, spec, got[odd], DAY, (), 30),
                          {"skip": "order_line_unknown"})
@@ -113,12 +117,75 @@ class Receivables(World):
         st = self.store()
 
         def slow(_ctx, _event):
-            raise ap.HandlerTimeout()
+            raise autopilot_queue.HandlerTimeout()
         flows = {**rs.JUDGES, "invoice_entry": (ar.invoice_entry_events, slow,
                                                 rs.judge_invoice)}
         with mock.patch.object(rs, "JUDGES", flows):
             got = rs.score_day(st, people(), ap.load_registry(), "invoice_entry", DAY)
         self.assertEqual(got["counts"], {"events": 1, "skip:handler_timeout": 1})
+
+    def test_score_never_judges_an_entry_against_a_partial_sum_of_what_was_entered(self):
+        """CC-NY-5: an entered invoice item line whose amount is unreadable, or stated in
+        another currency than the invoice, leaves what was entered unknown (counted with
+        its reason), never an item sum that left the line out as 0."""
+        from operating import receivables_score as rs
+        order, (a, b), _ = self.order([("SYN-A", "4", "17.705"), ("SYN-B", "3", "4")])
+        sh = self.shipment(order, [(a, "4"), (b, "3")], "2026-10-21")
+        inv = self.w.obj("SalesInvoice", {"invoice_number": "IN-1", "invoice_date": "2026-10-22",
+                                          "currency": "CAD", "subtotal": "82.82"},
+                         binding="portal.sage_oe_invoice_header", markings=FIN)
+        self.w.link("SalesInvoice.bills", inv, order)
+        cases = {"unreadable": ("70.82", "about 12", None), "usd": ("70.82", "12.00", "USD"),
+                 "read": ("70.82", "12.00", "CAD")}
+        lines = {}
+        for name, (first, second, cur) in cases.items():
+            ids = []
+            for code, qty, amount in (("SYN-A", "4", first), ("SYN-B", "3", second)):
+                ln = self.w.obj("SalesInvoiceLine", {
+                    "sage_item_code": code, "invoiced_quantity": qty, "line_type": "1",
+                    "extended_amount": amount}, binding=f"portal.sage_oe_invoice_detail_{name}",
+                    markings=FIN)
+                if cur and code == "SYN-B":
+                    self.w.rows["object_values"][-1]["currency"] = cur
+                ids.append(ln)
+            lines[name] = ids
+        work = {"entry": {"lines": [{"item": "SYN-A", "quantity": "4"},
+                                    {"item": "SYN-B", "quantity": "3"}],
+                          "subtotal": "82.82", "currency": "CAD"}}
+        event = {"object_id": sh, "order_id": order}
+        got = {}
+        # one invoice's lines at a time: link each case's lines, rebuild, judge
+        for name in cases:
+            self.w.rows["links"] = [l for l in self.w.rows["links"]
+                                    if l["link_type"] != "SalesInvoiceLine.line_of"]
+            for ln in lines[name]:
+                self.w.link("SalesInvoiceLine.line_of", ln, inv)
+            self.dir.joinpath("s.sqlite").unlink(missing_ok=True)
+            st = self.store()
+            ctx = autopilot_handlers.Ctx(st, DAY, float("inf"), ())
+            got[name] = (rs.truth_invoice(ctx, sh, order, DAY),
+                         dict(rs.judge_invoice(ctx, event, work, DAY)))
+        truth, counts = got["unreadable"]
+        self.assertIsNone(truth["items"])            # never 70.82 (the line read as 0)
+        self.assertEqual(truth["items_unknown"], "line_amount_unreadable")
+        self.assertEqual(counts, {"prepared": 1, "found": 1, "truth_unknown": 1,
+                                  "truth_unknown:line_amount_unreadable": 1})
+        truth, counts = got["usd"]
+        self.assertEqual((truth["items"], truth["items_unknown"]),
+                         (None, "line_currency_differs"))
+        self.assertEqual(counts["truth_unknown"], 1)
+        truth, counts = got["read"]
+        self.assertEqual((truth["items"], truth["items_unknown"]), (Decimal("82.82"), None))
+        self.assertEqual((counts["exact"], counts.get("truth_unknown", 0)), (1, 0))
+        # the table says a figure rests on entries it could not judge
+        out = self.dir / "score"
+        out.mkdir()
+        for n, name in enumerate(("unreadable", "read")):
+            (out / f"invoice_entry-2026-10-2{n}.json").write_text(json.dumps(
+                {"workflow": "invoice_entry", "day": f"2026-10-2{n}", "counts": got[name][1]}))
+        table = rs.table(out)["invoice_entry"]
+        self.assertEqual((table["precision"], table["of_judged"], table["complete"]),
+                         (0.5, 1.0, False))
 
     def test_entry_goes_to_who_keys_this_customers_invoices_never_the_role(self):
         from operating.tests.test_proactive_engine import EXCLUDED_OID
@@ -298,7 +365,7 @@ class Cash(World):
         self.doc("SYN-IN-2001", "SYNTHOTHER")
         self.doc("SYN-IN-3001", paid_on="20261010")
         st = self.store()
-        ctx = lambda: ap.Ctx(st, DAY, float("inf"), ())
+        ctx = lambda: autopilot_handlers.Ctx(st, DAY, float("inf"), ())
         work = ar.prepare_cash(ctx(), self.lines(("SYN-IN-1001", "500.00"),
                                                  ("in 1002", "120.5"), ("NOPE-9", "3")))
         self.assertEqual(work["entry"]["applied"],
@@ -308,7 +375,7 @@ class Cash(World):
                          ("620.50", "CAD"))
         c = ctx()
         ar.prepare_cash(c, self.lines(("SYN-IN-1001", "500.00")))
-        self.assertIn("finance", {m for row in ap._markings(st, c.objects) for m in row})
+        self.assertIn("finance", {m for row in autopilot_engine._markings(st, c.objects) for m in row})
         for refs, why in ((("SYN-IN-1001", "1"), ("SYN-IN-2001", "1")),
                           "customer_or_currency_not_one"), \
                          ((("SYN-IN-3001", "1"),), "invoice_not_open"), \
@@ -358,7 +425,7 @@ class Cash(World):
             self.assertEqual(len({e["event_id"] for e in events}), len(events))
             self.assertNotIn(EXCLUDED_OID, got.values())
             st.autopilot_people = people()
-            work = {k: ar.h_cash_application(ap.Ctx(st, DAY, float("inf"), ()), e)
+            work = {k: ar.h_cash_application(autopilot_handlers.Ctx(st, DAY, float("inf"), ()), e)
                     for e in events if (k := (e["remittance"][0], *(e["remittance"][2] or
                                                                      [None])))[0] in ("f5", "f6")}
             self.assertEqual([a["invoice"] for a in
@@ -402,7 +469,7 @@ class Cash(World):
         self.assertEqual(len(ar.receipt_plan(st, both, date(2026, 10, 1))), 2)
         with mock.patch.object(ar, "remittances", lambda _st, _p: {("f1", 0): both}):
             (event,) = ar.cash_application_events(st, ap.load_registry(), DAY, people())
-            work = ar.h_cash_application(ap.Ctx(st, DAY, float("inf"), ()), event)
+            work = ar.h_cash_application(autopilot_handlers.Ctx(st, DAY, float("inf"), ()), event)
         self.assertEqual((work["entry"]["customer"], work["entry"]["total"],
                           work["entry"]["invoices_of"]),
                          ("SYNTHPAYER", "520.00", ["SYNTHCUST", "SYNTHOTHER"]))
@@ -414,7 +481,7 @@ class Cash(World):
                          [])
         self.assertEqual(ar.cash_application_events(st, reg, DAY, None), [])
         event = {"object_id": "Attachment:fx:1", "remittance": ["f1", 0]}
-        self.assertEqual(ar.h_cash_application(ap.Ctx(st, DAY, float("inf"), ()), event),
+        self.assertEqual(ar.h_cash_application(autopilot_handlers.Ctx(st, DAY, float("inf"), ()), event),
                          {"skip": "people_exclusion_unavailable"})
 
 

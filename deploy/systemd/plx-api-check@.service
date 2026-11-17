@@ -1,0 +1,23 @@
+# The API's configuration preflight for one release (plx-release preflight <id>, before the
+# switch): `operator_api serve --check` from @PLX_RELEASES@/<id> under the API's own user,
+# environment and drop-ins (deploy/ops/host/install.py installs plx-api.service.d's drop-ins
+# for this unit too, then its own zzzz-check.conf last). It parses the flags, opens the
+# store and the identity configuration and exits; it serves nothing and starts no worker.
+[Unit]
+Description=PLX Workbench API configuration check of release %i
+After=postgresql.service
+
+[Service]
+Type=oneshot
+Environment=PLX_ONTOLOGY_PG=only
+Environment=PGAPPNAME=plx-api-check
+User=plx-workbench
+Group=plx-workbench
+EnvironmentFile=/etc/plx/workbench-api.env
+Environment=PLX_PRECEDENCE_TABLE=/data/plx-state/precedence/measured.json
+ExecStart=/usr/bin/env python3 -m operator_api serve --check --bind 127.0.0.1 --port 8780 $PLX_API_ARGS
+TimeoutStartSec=5min
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=read-only
+PrivateTmp=true

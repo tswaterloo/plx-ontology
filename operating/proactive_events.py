@@ -82,6 +82,7 @@ from ontology import store as ostore
 from ontology.units import unit_token
 
 from . import stock_state
+from . import time_window
 
 REVISION_DAYS = 14
 EXPIRY_DAYS = 30
@@ -114,10 +115,7 @@ LINK_TYPES = ("PurchaseOrderLine.line_of", "SupplierConfirmation.confirms",
 
 
 def _day(raw: Any) -> date | None:
-    try:
-        return date.fromisoformat(str(raw).strip()[:10])
-    except ValueError:
-        return None
+    return time_window.business_day(raw)
 
 
 def _decimal(raw: Any) -> Decimal | None:
@@ -1551,12 +1549,112 @@ def margin_context(st: Any, reader: str, state_dir: Any = None) -> str:
     """What every order's margin run reads beside its records (module note above)."""
     from pathlib import Path
 
-    digest = hashlib.sha256(reader.encode("utf-8"))
     here = Path(__file__).resolve().parent
-    for name in MARGIN_CODE:
-        digest.update((here / name).read_bytes())
-    for name in MARGIN_PLANS:
-        digest.update((here.parent / "ontology" / "plans" / name).read_bytes())
+    return _run_context(st, reader, [*(here / name for name in MARGIN_CODE),
+                                     *(here.parent / "ontology" / "plans" / name
+                                       for name in MARGIN_PLANS)], state_dir)
+
+
+# A lateness verdict (``plx.process`` ``po_delivery_window``) is read again unless nothing
+# it can read moved: the code that decides it, the process graph and the purchasing
+# schema (``VERDICT_CODE``), the store's meta, the reader's grants, the day it is judged
+# on, and every record within ``VERDICT_DEPTH`` hops of the PO's identity cluster over
+# every link type the shared purchase-order status definition and the process graph read
+# (``verdict_link_types``; each record reached with its own identity cluster). The
+# ontology tools and process tools count with their sibling modules (``ontology_tools_*``).
+VERDICT_CODE = ("operating/po_status.py", "operating/process_lateness.py",
+                "operating/ontology_tools_process.py", "operating/ontology_tools.py",
+                "operating/ontology_tools_find.py", "operating/ontology_tools_identity.py",
+                "operating/ontology_tools_object.py", "operating/ontology_tools_policy.py",
+                "operating/ontology_tools_process_answer.py",
+                "operating/ontology_tools_process_evidence.py",
+                "operating/ontology_tools_process_graphs.py",
+                "operating/ontology_tools_process_helpers.py",
+                "operating/ontology_tools_process_paths.py",
+                "operating/ontology_tools_process_quantities.py",
+                "operating/ontology_tools_process_run.py", "operating/ontology_tools_reader.py",
+                "operating/ontology_tools_results.py", "operating/ontology_tools_scope.py",
+                "operating/ontology_tools_traverse.py", "operating/attested_conflicts.py",
+                "operating/injection_guard.py", "ontology/units.py",
+                "ontology/schema/process/po_delivery_window.json",
+                "ontology/schema/domains/purchasing.json")
+VERDICT_DEPTH = 3
+
+
+def verdict_context(st: Any, reader: str, as_of: Any, state_dir: Any = None) -> str:
+    """What every PO's lateness verdict reads beside its records (``VERDICT_CODE``)."""
+    from pathlib import Path
+
+    repo = Path(__file__).resolve().parent.parent
+    return _run_context(st, f"{reader}|{as_of}", [repo / name for name in VERDICT_CODE],
+                        state_dir)
+
+
+def verdict_link_types() -> list[str]:
+    """Every link type a lateness verdict can walk: the shared PO status definition's
+    (``operating.po_status``) and every path of the process graph's stages."""
+    from pathlib import Path
+
+    from . import po_status as ps
+
+    kinds = {*ps.TWIN_LINKS, *ps.CONFIRMATION_LINKS, ps.LINE_OF, ps.RECEIPT_RECEIVES_LINE,
+             ps.QC_RECEIVES_LINE, ps.RECEIVED_LOT}
+    graph = json.loads((Path(__file__).resolve().parent.parent / "ontology" / "schema"
+                        / "process" / "po_delivery_window.json").read_text(encoding="utf-8"))
+    for stage in graph.get("stages") or ():
+        for evidence in stage.get("evidence") or ():
+            for path in [*(evidence.get("paths") or ()),
+                         *(evidence.get("fallback_paths") or ())]:
+                kinds.update(hop["link"] for hop in path if hop.get("link"))
+    return sorted(kinds)
+
+
+def verdict_fingerprints(st: Any, roots: Sequence[str], context: str) -> dict[str, str]:
+    """Each PO's verdict fingerprint (the note above ``VERDICT_CODE``): one link scan per
+    link type, then each root's neighbourhood walked in memory both ways."""
+    from .proactive_engine_findings import _identity_link_types
+
+    identity = set(_identity_link_types())
+    near: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for link in st.links(sorted(set(verdict_link_types()) | identity), None, held=False):
+        near[link["from_object"]].append(link)
+        near[link["to_object"]].append(link)
+
+    def edge(link: Mapping[str, Any]) -> tuple:
+        return (link["link_type"], link["from_object"], link["to_object"], link["tier"],
+                str(link.get("markings")), str(link.get("link_id")))
+
+    reached: dict[str, set[str]] = {}
+    edges: dict[str, set[tuple]] = {}
+    for root in roots:
+        seen, walked, frontier, hops = {root}, set(), [root], 0
+        while frontier:
+            nxt = []
+            for obj in frontier:
+                for link in near.get(obj, ()):
+                    twin = link["link_type"] in identity
+                    if not twin and hops >= VERDICT_DEPTH:
+                        continue
+                    walked.add(edge(link))
+                    for end in (link["from_object"], link["to_object"]):
+                        if end not in seen:
+                            seen.add(end)
+                            # a twin is the same record (no hop spent); any other link is one
+                            (frontier if twin else nxt).append(end)
+            frontier, hops = nxt, hops + 1
+        reached[root], edges[root] = seen, walked
+    return closure_fingerprints(st, roots, reached, edges, context)
+
+
+def _run_context(st: Any, reader: str, files: Sequence[Any], state_dir: Any = None) -> str:
+    """A run's digest beside its records: the reader, ``files`` (code, plans, schema),
+    the store's meta (``MARGIN_META``, less what moves with every capture) and the reviews
+    store (any review written moves every reading)."""
+    from pathlib import Path
+
+    digest = hashlib.sha256(reader.encode("utf-8"))
+    for path in files:
+        digest.update(Path(path).read_bytes())
 
     def still(value: Any) -> Any:
         if isinstance(value, dict):
@@ -1586,7 +1684,7 @@ def margin_context(st: Any, reader: str, state_dir: Any = None) -> str:
 def margin_fingerprints(st: Any, roots: Sequence[str], context: str) -> dict[str, str]:
     """Each order's fingerprint (the module note above): set-based, one link scan per link
     type (kept for the run) and one read per table per ``FINGERPRINT_CHUNK`` records."""
-    from .proactive_engine import _identity_link_types
+    from .proactive_engine_findings import _identity_link_types
 
     hops = _margin_hops()
     types = sorted({t for _s, _f, path in hops for t, _d in path})
@@ -1654,6 +1752,15 @@ def margin_fingerprints(st: Any, roots: Sequence[str], context: str) -> dict[str
             at[step] = objects
         reached[root] = set().union(*at.values())
         edges[root] = seen_edges
+    return closure_fingerprints(st, roots, reached, edges, context)
+
+
+def closure_fingerprints(st: Any, roots: Sequence[str], reached: Mapping[str, set[str]],
+                         edges: Mapping[str, set[tuple]], context: str) -> dict[str, str]:
+    """Each root's fingerprint over what its run can read: ``context``, the links walked
+    (``edges[root]``) and every current row of every record reached (``reached[root]``:
+    values, versions, the record itself, a removal), one read per table per
+    ``FINGERPRINT_CHUNK`` records. A row added, changed or removed moves the fingerprint."""
     read = sorted(set().union(*reached.values())) if reached else []
     lines: dict[str, list[str]] = defaultdict(list)
     for table, current in (("object_values", True), ("object_versions", True),

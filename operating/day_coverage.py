@@ -46,6 +46,9 @@ import sys
 from typing import Any, Iterable, Mapping, Sequence
 
 from . import autopilot as ap
+from . import autopilot_queue
+from . import autopilot_reading
+from . import autopilot_records
 from . import autopilot_replay as rp
 
 SCHEMA = "plx-day-coverage/v1"
@@ -147,7 +150,11 @@ def _ids(st: Any, otype: str) -> list[str]:
 def _scan(st: Any, otype: str, props: Sequence[str]) -> Iterable[tuple[str, dict[str, Any]]]:
     ids = _ids(st, otype)
     for start in range(0, len(ids), CHUNK):
-        yield from ap._read(st, ids[start:start + CHUNK], props).items()
+        yield from autopilot_records._read(st, ids[start:start + CHUNK], props).items()
+
+
+# the list item types: the generated one and the curated types taking some of its rows
+SHAREPOINT_LIST_TYPES = ("SharePointListItem", "ExpenseReceipt", "VendorInvoiceEntry")
 
 
 def _address(raw: str) -> str:
@@ -187,55 +194,57 @@ def _sources(st: Any, people: Any, since: str, until: str) -> dict[str, Any]:
         for oid, r in _scan(st, "PlannerTask", ("created_at", "created_by", "completed_at",
                                                 "completed_by")):
             for verb in ("created", "completed"):
-                at = ap._instant(ap._v(r, f"{verb}_at"))
+                at = ap._instant(autopilot_records._v(r, f"{verb}_at"))
                 if _in(at, lo, hi):
-                    by = ap._v(r, f"{verb}_by").lower()
+                    by = autopilot_records._v(r, f"{verb}_by").lower()
                     yield (by if by in addresses_of else None, at, f"planner_{verb}",
                            "task_followthrough", [oid], None)
 
     def calendar() -> Iterable[tuple]:
         for oid, r in _scan(st, "CalendarEvent", ("start", "end", "is_organizer",
                                                   "is_cancelled", "mailbox")):
-            start, end = ap._instant(ap._v(r, "start")), ap._instant(ap._v(r, "end"))
-            if not _in(start, lo, hi) or ap._v(r, "is_cancelled").lower() == "true":
+            start, end = ap._instant(autopilot_records._v(r, "start")), ap._instant(autopilot_records._v(r, "end"))
+            if not _in(start, lo, hi) or autopilot_records._v(r, "is_cancelled").lower() == "true":
                 continue
-            box = ap._v(r, "mailbox").lower()
+            box = autopilot_records._v(r, "mailbox").lower()
             person = directory.get(box, box if box in addresses_of else None)
             length = int((end - start).total_seconds() // 60) if end and end > start else 30
-            if ap._v(r, "is_organizer").lower() == "true":
+            if autopilot_records._v(r, "is_organizer").lower() == "true":
                 yield (person, start, "meeting_organized", "meeting", [oid], None)
             yield (person, start, "meeting_attended", "meeting", [oid], min(length, 480))
 
     def sharepoint() -> Iterable[tuple]:
-        for oid, r in _scan(st, "SharePointListItem", ("created_date_time", "created_by",
-                                                       "last_modified_date_time",
-                                                       "last_modified_by")):
+        # a list item a curated type takes (sharepoint_lists.json) is still list upkeep
+        for oid, r in (row for otype in SHAREPOINT_LIST_TYPES
+                       for row in _scan(st, otype, ("created_date_time", "created_by",
+                                                    "last_modified_date_time",
+                                                    "last_modified_by"))):
             seen = set()
             for t, b in (("created_date_time", "created_by"),
                          ("last_modified_date_time", "last_modified_by")):
-                at = ap._instant(ap._v(r, t))
+                at = ap._instant(autopilot_records._v(r, t))
                 if not _in(at, lo, hi) or at in seen:
                     continue
                 seen.add(at)
-                address = _address(ap._v(r, b))
+                address = _address(autopilot_records._v(r, b))
                 yield (directory.get(address) if address else None, at, "sharepoint_edit",
                        "shared_list_upkeep", [oid], None)
 
     def sage() -> Iterable[tuple]:
         for otype, (kind, prop, flow) in SAGE_ENTRIES.items():
             for oid, r in _scan(st, otype, (prop, "enteredby", "srceledger", "srcetype")):
-                at = _sage_day(ap._v(r, prop))
+                at = _sage_day(autopilot_records._v(r, prop))
                 if not _in(at, lo, hi):
                     continue
                 if otype == GL_HEADER:
                     # a GL entry mirrors its subledger's posting: only what no other
                     # table counts (a journal, a bank entry, a shipment, a receipt...)
-                    got = GL_SOURCES.get((ap._v(r, "srceledger").strip().upper(),
-                                          ap._v(r, "srcetype").strip().upper()))
+                    got = GL_SOURCES.get((autopilot_records._v(r, "srceledger").strip().upper(),
+                                          autopilot_records._v(r, "srcetype").strip().upper()))
                     if got is None:
                         continue
                     kind, flow = got
-                yield (code(ap._v(r, "enteredby")), at, kind, flow, [oid], None)
+                yield (code(autopilot_records._v(r, "enteredby")), at, kind, flow, [oid], None)
 
     def qc() -> Iterable[tuple]:
         for etype, (kind, prop) in QC_EVENTS.items():
@@ -243,9 +252,9 @@ def _sources(st: Any, people: Any, since: str, until: str) -> dict[str, Any]:
                 "SELECT e.time, eo.object_id FROM events e JOIN event_objects eo ON "
                 "eo.event_id = e.event_id WHERE e.event_type = ? AND e.time >= ? AND "
                 "e.time < ?", (etype, since, until)).fetchall()
-            got = ap._read(st, [o for _t, o in rows], (prop,))
+            got = autopilot_records._read(st, [o for _t, o in rows], (prop,))
             for t, oid in rows:
-                yield (code(ap._v(got.get(oid), prop)), ap._instant(t), kind, "qc_release",
+                yield (code(autopilot_records._v(got.get(oid), prop)), ap._instant(t), kind, "qc_release",
                        [oid], None)
 
     def unattributed() -> Iterable[tuple]:
@@ -255,7 +264,7 @@ def _sources(st: Any, people: Any, since: str, until: str) -> dict[str, Any]:
                 (json.dumps(sorted(UNATTRIBUTED_EVENTS)), since, until)):
             yield ("-", None, etype, UNATTRIBUTED_EVENTS[etype], [], n)
         n = sum(1 for _o, r in _scan(st, "SharePointFile", ("last_modified",))
-                if _in(ap._instant(ap._v(r, "last_modified")), lo, hi))
+                if _in(ap._instant(autopilot_records._v(r, "last_modified")), lo, hi))
         yield ("-", None, "SharePointFile.modified", "sharepoint", [], n)
 
     return {"planner": planner, "calendar": calendar, "sharepoint": sharepoint,
@@ -424,7 +433,7 @@ def measure(st: Any, people: Any, *, role: str, replay_dir: Path, since: datetim
                 "reason": "people_exclusion_unavailable"}
     slug = re.sub(r"[^a-z0-9_]+", "_", role.lower())[:60]
     root = replay_dir / slug
-    saved = json.loads((root / ap.ROLES_FILE).read_text()) if (root / ap.ROLES_FILE).exists() \
+    saved = json.loads((root / autopilot_queue.ROLES_FILE).read_text()) if (root / autopilot_queue.ROLES_FILE).exists() \
         else {"roles": {}}
     who = set(saved["roles"].get(role) or ()) if not role.startswith("person:") else set()
     who = set(rp.members(st, people, role, {**roles, **({role: sorted(who)} if who else {})},
@@ -496,7 +505,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     p.add_argument("--capture-state", default=None)
     p.add_argument("--out", required=True)
     p.add_argument("--cache", default=None, help="a directory keeping each source's rows")
-    p.add_argument("--source", choices=ap.STORE_SOURCES, default=None,
+    p.add_argument("--source", choices=autopilot_reading.STORE_SOURCES, default=None,
                    help="as the replay's --source: the SQLite generation at --store, or the "
                         "Postgres ontology (a fresh window is counted on the data it was "
                         "replayed on); refused when Postgres does not hold that generation")
@@ -514,7 +523,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         from . import autopilot_work as aw
         st.autopilot_mc = aw.MCQuestions(a.capture_state)
     try:
-        roles = ap._roles({ap.ROLES_ENV: a.roles_file} if a.roles_file else {},
+        roles = ap._roles({autopilot_queue.ROLES_ENV: a.roles_file} if a.roles_file else {},
                           Path(a.replay))
         result = measure(st, people, role=a.role, replay_dir=Path(a.replay),
                          since=ap._instant(a.since), until=ap._instant(a.until), roles=roles,

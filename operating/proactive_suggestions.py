@@ -79,7 +79,7 @@ def _summary_due(summary: str) -> tuple[str, str] | None:
     the engine words it (``proactive_engine._late_summary``, ``_unconfirmed_summary``);
     None when it states none."""
     from datetime import date as _date
-    from .proactive_engine import _late_summary, _unconfirmed_summary
+    from .proactive_engine_purchasing import _late_summary, _unconfirmed_summary
     marker = _date(1, 1, 1)
     for basis in _BASIS_SAID:
         for words in (_late_summary, _unconfirmed_summary):

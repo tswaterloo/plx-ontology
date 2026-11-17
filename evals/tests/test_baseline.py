@@ -921,6 +921,7 @@ class LiveSpecTests(unittest.TestCase):
 
     def test_live_run_emits_an_eval_block_the_verifier_lifts_and_status_prints(self):
         from verify import live_verify
+        from verify import live_verify_report
         from scripts import eval_dev_baseline as script
         from scripts import eval_oracle_dev as dev
         from scripts import eval_status
@@ -962,7 +963,7 @@ class LiveSpecTests(unittest.TestCase):
         fields = live_verify._recorded(spec, document)
         self.assertEqual(fields["eval"]["dev_set"], document["eval"]["dev_set"])
         self.assertEqual(fields["eval"]["by_family"], document["eval"]["by_family"])
-        lifted = live_verify.eval_blocks([{"id": "eval.dev_baseline", "result": "pass",
+        lifted = live_verify_report.eval_blocks([{"id": "eval.dev_baseline", "result": "pass",
                                            "spec": "devloop/live-checks/eval.dev_baseline.json",
                                            "exit_code": 0, "detail": {"fields": fields}}])
         line = eval_status.status({"eval": lifted})["line"]

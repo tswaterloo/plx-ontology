@@ -27,8 +27,10 @@ from ontology.json_contract import validate
 from ontology.project import CapturedRecord, build_store, object_id_of
 from ontology.schema import load_schema
 from operating import ontology_tools as ot
+from operating import ontology_tools_results
 from operating import ontology_tools_investigate as oi
 from operating import ontology_tools_process as op
+from operating import ontology_tools_process_graphs
 from operating import process_lateness as pl
 from operating import ontology_tools_traverse as tt
 from tests import test_ontology_tools_process as tp
@@ -1177,7 +1179,7 @@ class DeclarationTests(unittest.TestCase):
         due["lateness"]["received"]["event_types"] = ["PurchaseOrder.expected"]
         due["lateness"]["lines"]["ordered"] = "bc_expected_receipt_date"
         graph["open_when"]["rules"][0]["property"] = "bc_status"
-        problems = op.check_graph(graph, tp.SCHEMA)
+        problems = ontology_tools_process_graphs.check_graph(graph, tp.SCHEMA)
         for text in ("lateness precedence must rank each of its event_types exactly once",
                      "PurchaseOrder.expected is not an event of Receipt",
                      "PurchaseOrderLine.bc_expected_receipt_date is not a quantity property",
@@ -1227,7 +1229,7 @@ class LatePoPlanTests(unittest.TestCase):
         base = ot.OntologyTools(ot.StoreReader(store.conn), policy or tp.POLICY,
                                 schema=tp.SCHEMA, contracts=CONTRACTS, clock=lambda: tp.NOW,
                                 item_gate=item_gate)
-        ot.register(table, base)
+        ontology_tools_results.register(table, base)
         tt.register(table, tt.TraverseTools(base))
         op.register(table, op.ProcessTools(base, tp.GRAPHS))
         oi.register(table, oi.InvestigateTools(table, schema=tp.SCHEMA, rows=None))

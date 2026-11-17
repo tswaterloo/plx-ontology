@@ -44,7 +44,7 @@ _TEXT = re.compile(r"^[A-Za-z0-9 ./#_-]{0,64}$")   # a code or number shown as i
 
 
 def _contracts() -> Mapping[str, Any]:
-    from .ontology_tools import load_contracts
+    from .ontology_tools_policy import load_contracts
     return load_contracts()
 
 

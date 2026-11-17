@@ -97,6 +97,7 @@ function WorkLog() {
   return (
     <div className="flex min-h-0 flex-1 flex-col bg-list">
       <Toolbar
+        pin="Work log"
         heading
         title={
           <>
@@ -122,7 +123,7 @@ function WorkLog() {
           setQuery(q.trim());
         }}
       >
-        <label className="flex h-8 min-w-[240px] flex-1 items-center gap-2 rounded-lg bg-bg px-2.5 shadow-lift">
+        <label className="flex h-8 min-w-[240px] flex-1 items-center gap-2 rounded-lg bg-bg px-2.5 shadow-lift focus-within:shadow-[0_0_0_1px_var(--accent)]">
           <Search className="size-[15px] text-muted" aria-hidden />
           <input value={q} onChange={(ev) => setQ(ev.target.value)} placeholder="Search your work: a PO, a person, a question" className="w-full bg-transparent text-[13px] outline-none" aria-label="Search your work log" />
         </label>

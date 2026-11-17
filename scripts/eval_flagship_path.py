@@ -194,7 +194,7 @@ class RawCaptures:
         self.unread: list[str] = []
 
     def portal(self) -> dict[str, list[dict[str, Any]]]:
-        from integrations.source_mirror import MirrorError
+        from integrations.source_mirror_values import MirrorError
         out: dict[str, list[dict[str, Any]]] = {}
         for relation in PORTAL_RELATIONS:
             rows: list[dict[str, Any]] = []
@@ -908,6 +908,7 @@ def _store_exists(kind: str, state_dir: Path) -> bool:
 def main(argv: Sequence[str] | None = None, *, environ: Mapping[str, str] | None = None,
          planner: Any = None, host_options: Mapping[str, Any] | None = None) -> int:
     from operating import case_workspace_live as live
+    from operating import case_workspace_live_projection
 
     parser = argparse.ArgumentParser(prog="python3 scripts/eval_flagship_path.py",
                                      description=__doc__.split("\n\n")[0])
@@ -987,7 +988,7 @@ def main(argv: Sequence[str] | None = None, *, environ: Mapping[str, str] | None
             args.state_dir.resolve(), args.mirror_audience, args.tenant, args.principal,
             args.clearance, work_dir=(args.work_dir or args.state_dir / "flagship").resolve(),
             planner=planner, live=readers_live, markings=markings)
-    except live.ProjectionDiskLow as error:
+    except case_workspace_live_projection.ProjectionDiskLow as error:
         summary["projection"] = {"source": "private", "reason": error.code,
                                  "free_bytes": error.free, "needed_bytes": error.needed}
         print(json.dumps(summary, indent=1, sort_keys=True))

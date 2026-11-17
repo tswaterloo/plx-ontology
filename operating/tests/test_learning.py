@@ -7,17 +7,18 @@ SYNTHETIC fixtures only; evidence label: isolated-fixture.
 
 from __future__ import annotations
 
+import dataclasses
 from datetime import datetime, timedelta, timezone
 import json
 import os
 from pathlib import Path
-import sqlite3
 import tempfile
 import time
 import unittest
 from unittest import mock
 
 from operating import autopilot as ap
+from operating import autopilot_reading
 from operating import briefing as bf
 from operating import learning as L
 from operating import learning_signals as ls
@@ -514,7 +515,7 @@ class AutopilotUsesLessons(Fixture):
         self.assertTrue(work["draft"]["body"].rstrip().endswith("Thanks,"))
         self.assertTrue(work["learned"]["lessons"])
         # the card the owner confirms carries the restyled body
-        self.assertEqual(ap.card_of(item)["draft"]["body"], work["draft"]["body"])
+        self.assertEqual(autopilot_reading.card_of(item)["draft"]["body"], work["draft"]["body"])
 
     def _po(self) -> str:
         self.order("PO-4512", on_hand="5", need="10")
@@ -581,3 +582,194 @@ class ReplayMeasure(unittest.TestCase):
         self.assertEqual(out["train_items"], 8)
         self.assertTrue(out["time_forward"])
         self.assertEqual(out["lessons_as_of"], L._iso(start))
+
+
+class Stated(unittest.TestCase):
+    """Drafting rules a person states in their own words win over what was learned."""
+
+    class Guard:
+        available = True
+
+        def clear(self, person):
+            return person != "gone"
+
+    def setUp(self):
+        self.dir = Path(tempfile.mkdtemp())
+
+    def test_rules_read_from_their_words(self):
+        rules = lambda t: [(r["key"].split(":")[0], r["value"]) for r in L.stated_rules(t)]  # noqa: E731
+        self.assertEqual(rules("Sign off with Thanks, Ana"), [("signoff", "thanks")])
+        self.assertEqual(rules('Always end my emails with "Best regards"'),
+                         [("signoff", "best_regards")])
+        self.assertEqual(rules("Start every email with Hi <name>"), [("greeting", "hi_name")])
+        self.assertEqual(rules("No greeting please"), [("greeting", "none")])
+        self.assertEqual(rules('Never write "I hope this email finds you well"'),
+                         [("drop", "yes")])
+        self.assertEqual(rules("Sign off with Thanks, Ana. Never write \u201cI hope this email "
+                               "finds you well\u201d."), [("signoff", "thanks"), ("drop", "yes")])
+        for nothing in ("Sign off with Talk soon", "Sign off with Cheers, Bob 416-555-1212",
+                        "Sign off with Thanks, ana@x.com", 'Never say "Call Bob at 555"',
+                        "Always give quantities in cases", "", None):
+            self.assertEqual(L.stated_rules(nothing), [], nothing)
+
+    def test_a_rule_stated_for_one_side_applies_to_that_side_only(self):
+        said = L.stated_rules("To customers, sign off with Best regards")
+        self.assertEqual([(r["key"], r["value"]) for r in said],
+                         [("side:customer:signoff", "best_regards")])
+        self.assertEqual(said[0]["text"], 'Ends replies to customers with "Best regards"')
+        self.assertEqual([r["key"] for r in L.stated_rules(
+            "For the team, no greeting. Never write \"hope this finds you well\"")][0],
+            "side:internal:greeting")
+        self.assertNotIn("side:", json.dumps(L.stated_rules(
+            "Sign off with Thanks, and write to the team in plain text")))
+        L.set_stated(self.dir, "p1", 5, "Sign off with Thanks, Ana")
+        L.set_stated(self.dir, "p1", 6, "When writing to suppliers, sign off with Kind regards")
+        got = L.Lessons.load(self.dir, {}, self.Guard())
+        work = {"draft": {"body": "Hi Pat,\n\nPO 1 ships Friday.\n\nRegards,"}}
+
+        def end(side):
+            body = got.apply_draft(work, "p1", event={"sender": "pat@x.example", "side": side,
+                                                      "channel": "mail"})["draft"]["body"]
+            return body.rstrip().splitlines()[-1]
+        self.assertEqual(end("supplier"), "Kind regards")
+        self.assertEqual(end("customer"), "Thanks, Ana")       # the rule for everyone
+        self.assertEqual(got.memory_items("p1"), [])
+
+    def test_applied_over_learned_and_gone_when_forgotten(self):
+        L.set_stated(self.dir, "p1", 5, "Sign off with Thanks, Ana")
+        L.set_stated(self.dir, "p1", 6, 'Never write "I hope this email finds you well"')
+        L.set_stated(self.dir, "p1", 7, "Start every email with Hello <name>")
+        L.set_stated(self.dir, "gone", 8, "Sign off with Cheers")
+        self.assertEqual(os.stat(self.dir / L.STATED_FILE).st_mode & 0o777, 0o600)
+        got = L.Lessons.load(self.dir, {}, self.Guard())
+        body = "Hi Sam,\n\nI hope this email finds you well.\nPO 1234 ships Friday.\n\nRegards"
+        out, used = got.restyle(body, "p1", ())
+        self.assertEqual(out, "Hello Sam,\n\nPO 1234 ships Friday.\n\nThanks, Ana")
+        self.assertEqual(len(used), 3)
+        self.assertEqual(got.of("gone"), [])                     # the exclusion, as for lessons
+        self.assertEqual(got.memory_items("p1"), [])            # already the person's own item
+        self.assertEqual(L.Lessons.load(self.dir, {L.OFF_ENV: "1"}, self.Guard()).of("p1"), [])
+        # a newer item's rule for the same key wins; forgetting it brings back the older one
+        L.set_stated(self.dir, "p1", 9, "Sign off with Cheers")
+        sign = lambda: L.Lessons.load(self.dir, {}, self.Guard()).get("p1", (), "style", "signoff")  # noqa: E731
+        self.assertEqual(sign().value, "cheers")
+        L.set_stated(self.dir, "p1", 9, None)
+        self.assertEqual(sign().value, "thanks")
+        L.set_stated(self.dir, "p1", 5, None)
+        self.assertIsNone(sign())
+        unavailable = type("G", (), {"available": False, "clear": lambda self, p: True})()
+        self.assertEqual(L.Lessons.load(self.dir, {}, unavailable).of("p1"), [])
+
+
+class Repeats(unittest.TestCase):
+    """Mail a person keeps sending in near the same words, offered as a template body."""
+
+    def test_the_same_shape_three_times_is_offered_without_its_facts(self):
+        reply = ("Hi Sam,\n\nThanks for your order.\nPO 77 ships Friday.\nLet me know if you "
+                 "need anything else.\n\nBest regards,\nAna")
+        got = L.Lessons([], [sent(i, reply=reply) for i in range(3)] + [sent(9)])
+        [r] = got.repeats(ANA)
+        self.assertEqual((r["side"], r["count"], r["first"]),
+                         ("customer", 3, "Thanks for your order."))
+        self.assertEqual(r["body"], "Hi,\n\nThanks for your order.\n...\nLet me know if you "
+                                    "need anything else.\n\nBest regards")
+        self.assertNotIn("77", r["body"])
+        self.assertNotIn("Sam", r["body"])
+        self.assertEqual(L.Lessons([], [sent(i, reply=reply) for i in range(2)]).repeats(ANA), [])
+        self.assertEqual(got.repeats(BEN), [])
+
+
+class Audience(unittest.TestCase):
+    """A greeting and sign-off learned per correspondent and per side (customers, suppliers,
+    colleagues), backing off to the person's own and then the role's; a stated rule wins."""
+
+    def setUp(self):
+        hey = "Hey Sam,\n\nOrder SO-1 shipped.\n\nThanks,\nAna"
+        hi = "Hi Joe,\n\nOrder SO-1 shipped.\n\nBest,\nAna"
+        dear = "Dear Bob,\n\nOrder SO-1 shipped.\n\nThanks,\nAna"
+        self.signals = (
+            [sent(i, reply=hey) for i in range(8)]
+            + [sent(10 + i, reply=hi, sender="joe@plx.example", side="internal")
+               for i in range(5)]
+            + [sent(20 + i, reply=dear, sender="bob@synth-customer.example") for i in range(3)])
+        self.got = lessons_of(self.signals, roles={"sales": [ANA, BEN, CAL]})
+
+    def body(self, sender, side):
+        work = {"draft": {"body": "Hello Pat,\n\nOrder SO-1 shipped.\n\nRegards,"}}
+        out = self.got.apply_draft(work, ANA, event={"sender": sender, "side": side,
+                                                     "channel": "mail"})
+        return out["draft"]["body"]
+
+    def test_each_audience_gets_its_own_frame(self):
+        self.assertTrue(self.body("amy@synth-customer.example", "customer").startswith("Hey Pat,"))
+        colleague = self.body("kim@plx.example", "internal")
+        self.assertTrue(colleague.startswith("Hi Pat,"), colleague)
+        self.assertTrue(colleague.rstrip().endswith("Best"), colleague)
+        # the one correspondent written to as "Dear" three times
+        self.assertTrue(self.body("bob@synth-customer.example", "customer").startswith("Dear Pat,"))
+        # a side never written to and no clear habit overall: the draft's own greeting
+        self.assertTrue(self.body("lee@synth-supplier.example", "supplier").startswith("Hello Pat,"))
+
+    def test_a_stated_rule_wins_over_every_audience(self):
+        mine = next(l for l in self.got.of(ANA) if l.key == "greeting")
+        stated = dataclasses.replace(mine, lesson_id="st_x", value="good_morning_name",
+                                     confidence=1.0)
+        every = [l for ls in self.got.by.values() for l in ls.values()]
+        got = L.Lessons([l for l in every if l is not mine] + [stated])
+        self.assertIs(got.frame(ANA, (), "greeting",
+                                {"sender": "bob@synth-customer.example", "side": "customer"}),
+                      stated)
+
+    def test_forgetting_a_greeting_forgets_it_for_every_audience(self):
+        kept, _ = L.admit(self.signals, CLEAR)
+        lessons = L.distil(kept, now=NOW, forgotten=[(ANA, "style", "greeting")])
+        keys = {l.key for l in lessons if l.who == ANA}
+        self.assertFalse({k for k in keys if k.endswith(":greeting") or k == "greeting"})
+        self.assertIn("side:internal:signoff", keys)
+
+    def test_memory_shows_a_side_only_where_it_differs_and_never_a_correspondent(self):
+        texts = [i["text"] for i in self.got.memory_items(ANA)]
+        self.assertIn('Starts replies to colleagues with "Hi <name>,"', texts)
+        self.assertIn('Ends replies to colleagues with "Best"', texts)
+        # a side written to as everyone is: said once, for everyone
+        same = lessons_of([sent(i, reply="Hey Sam,\n\nShipped.\n\nThanks,\nAna")
+                           for i in range(6)]).memory_items(ANA)
+        said = [i["text"] for i in same if "Starts replies" in i["text"]]
+        self.assertEqual(said, ['Starts replies with "Hey <name>,"'])
+        self.assertFalse([t for t in texts if "this person" in t])
+        self.assertFalse([i for i in self.got.memory_items(ANA) if "sender:" in i["subject"]])
+
+    def test_no_audience_or_correspondent_lesson_becomes_a_role_lesson(self):
+        roles = [l for (scope, _w), ls in self.got.by.items() if scope == "role"
+                 for l in ls.values()]
+        self.assertFalse([l for l in roles if ":" in l.key and l.kind == "style"])
+
+    def test_a_learned_item_deleted_from_memory_is_forgotten_in_the_ledger(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            ledger = L.Ledger(Path(tmp))
+            kept, _ = L.admit(self.signals, CLEAR)
+            ledger.write(L.distil(kept, now=NOW), {}, NOW)
+            ledger.conn.close()
+            subject = next(i["subject"] for i in self.got.memory_items(ANA)
+                           if "colleagues" in i["text"] and "Starts" in i["text"])
+            self.assertTrue(L.unlearn(Path(tmp), ANA, subject, NOW))
+            ledger = L.Ledger(Path(tmp))
+            try:
+                keys = {(l.who, l.key) for l in ledger.lessons()}
+                self.assertNotIn((ANA, "side:internal:greeting"), keys)
+                self.assertIn((ANA, "side:internal:signoff"), keys)
+                self.assertIn((ANA, "style", "side:internal:greeting"), ledger.forgotten())
+            finally:
+                ledger.conn.close()
+            # the general greeting forgotten: every audience's goes with it at once
+            self.assertTrue(L.unlearn(Path(tmp), ANA, "learn.style.greeting", NOW))
+            ledger = L.Ledger(Path(tmp))
+            try:
+                left = {l.key for l in ledger.lessons() if l.who == ANA}
+                self.assertFalse({k for k in left if k.endswith(":greeting")})
+                self.assertIn("side:internal:signoff", left)
+            finally:
+                ledger.conn.close()
+            for nothing in ("note.x", "learn.bogus.k", "learn.style.", None):
+                self.assertFalse(L.unlearn(Path(tmp), ANA, nothing, NOW))
+            self.assertFalse(L.unlearn(None, ANA, subject, NOW))

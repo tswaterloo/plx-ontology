@@ -666,6 +666,30 @@ class ReadTest(World):
                          ["computed", "money"])
         self.assertEqual(self.shown(may_read=lambda key: key != "api:a"), [])
 
+    def test_a_refreshed_item_is_served_as_this_run_saw_it(self) -> None:
+        """STATE-005: the same item seen again with a new text, priority and a stricter
+        marking is refreshed in place (one id, a reader's dismiss kept), never served from
+        its older sighting."""
+        with closing(aw.open_store(self.watch)) as ws:
+            (before,) = ws.execute("SELECT item_id FROM items WHERE title = 't'").fetchone()
+        again = {"title": "t", "subject": "PurchaseOrder:fx:1",
+                 "subject_type": "PurchaseOrder", "text": "PO moved again", "why": "later",
+                 "next_step": "", "departments": ["PROC"], "priority": "low",
+                 "claim_kind": "other", "gate": "passed", "claims": [],
+                 "groups": [[row(1)], [mail(5)]], "refused_claims": 0, "state": "open",
+                 "objects": {row(1): "PurchaseOrder:fx:1", mail(5): "Email:fx:5"},
+                 "markings": {row(1): '["finance"]', mail(5): "[]"}}
+        with closing(aw.open_store(self.watch)) as ws:
+            counts = aw.fold(ws, [again], run_id=2, now=NOW + dt.timedelta(hours=1))
+            self.assertEqual(counts["refreshed"], 1)
+            rows = [tuple(r) for r in ws.execute(
+                "SELECT item_id, text, priority, run_id FROM items WHERE title = 't'")]
+            self.assertEqual(rows, [(before, "PO moved again", "low", 2)])
+        # a reader without finance no longer sees it; one with finance sees this run's text
+        self.assertEqual(self.shown(held=()), [])
+        self.assertIn("PO moved again", self.shown())
+        self.assertNotIn("PO moved", self.shown())
+
     def test_a_marked_value_of_an_unmarked_record_needs_its_marking(self) -> None:
         """A claim reading a finance-marked cost of an order whose version is unmarked is
         stored at finance; one reading its status is not."""

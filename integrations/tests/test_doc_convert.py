@@ -808,6 +808,9 @@ class RealMarkItDownTest(unittest.TestCase):
         self.assertEqual(next(c for c in document.claims if c["field"] == "quote_number")["slide"], 1)
 
     def test_pdf(self):
+        if not doc_convert.available("pdf"):
+            self.skipTest("markitdown's pdf extra is missing: "
+                          + "+".join(doc_convert.missing_extras("pdf")))
         with pypdf_rejects(2):
             self.check(make_pdf([["Petra PO: PPO-200"], ["Quote Number: Q-5"]]),
                        "application/pdf", "Q-5")

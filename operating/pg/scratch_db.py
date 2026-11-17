@@ -52,18 +52,48 @@ def use_test_cluster(environ: Any = None, socket_dir: str = PG_SOCKET_DIR) -> st
 _COUNTER = itertools.count()
 
 
+def superuser_dsn(dsn: str) -> str:
+    """``dsn`` logged in as this OS user's own role (a superuser on the test cluster)
+    instead of the run's ``PGUSER`` (plx_test, ARCH T7): only for the tests that prove a
+    deploy file a superuser runs (the role files). ``PLX_PG_TEST_SUPERUSER`` overrides."""
+    import getpass
+    import psycopg
+    user = os.environ.get("PLX_PG_TEST_SUPERUSER") or getpass.getuser()
+    return psycopg.conninfo.make_conninfo(dsn, user=user)
+
+
 def admin() -> Any:
     import psycopg
     return psycopg.connect(admin_dsn(), autocommit=True, connect_timeout=5)
 
 
+def _byte_order(provider: Any, collate: Any) -> bool:
+    """Whether a database of this locale provider and LC_COLLATE orders text by bytes
+    (code points): libc C/POSIX (C.UTF-8 too), or the builtin provider."""
+    if provider == "b":
+        return True
+    name = str(collate or "")
+    return provider == "c" and (name in ("C", "POSIX") or name.startswith(("C.", "POSIX.")))
+
+
 def create_db() -> tuple[str, str]:
-    """(name, dsn) of a new empty database."""
+    """(name, dsn) of a new empty database. It orders text by bytes as the served
+    databases do (C.UTF-8), whatever locale the cluster was made with: a Spark's test
+    cluster initialised under en_US.utf8 read key and citation ranges linguistically
+    ('probe:zz' past 'probe;'), red there and green elsewhere (11-15). Tests of a
+    linguistic database make one themselves (test_pg_byte_order, test_pg_link_keys)."""
     import psycopg
     from psycopg import sql
     name = f"plx_test_a_{os.getpid()}_{next(_COUNTER)}"
     with admin() as conn:
-        conn.execute(sql.SQL("CREATE DATABASE {}").format(sql.Identifier(name)))
+        provider, collate = conn.execute(
+            "SELECT datlocprovider, datcollate FROM pg_database WHERE datname = 'template1'"
+        ).fetchone()
+        if _byte_order(provider, collate):
+            conn.execute(sql.SQL("CREATE DATABASE {}").format(sql.Identifier(name)))
+        else:
+            conn.execute(sql.SQL("CREATE DATABASE {} TEMPLATE template0 LOCALE_PROVIDER libc "
+                                 "LC_COLLATE 'C'").format(sql.Identifier(name)))
     return name, psycopg.conninfo.make_conninfo(admin_dsn(), dbname=name)
 
 

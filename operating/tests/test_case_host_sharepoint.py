@@ -32,6 +32,7 @@ from urllib.parse import quote
 import warnings
 
 from integrations import capture_sharepoint as cs
+from integrations import capture_sharepoint_scope
 from integrations import capture_store
 from integrations import capture_teams
 from integrations import document_understanding, graph_read
@@ -54,12 +55,13 @@ from ontology.tests.test_mail_documents import StaticPortal, po
 from ontology.types import Actor
 from operating.case_runtime import CaseRuntime, LiveReaders
 from operating import ontology_tools_evidence
-from operating.case_tools_host import (LIVE_READ_GETS, REREAD_GETS, CaptureCaseHostTools,
-                                       CaseCaptures)
+from operating.case_tools_host import CaptureCaseHostTools, CaseCaptures
+from operating.case_tools_host_rules import LIVE_READ_GETS, REREAD_GETS
 from operating.employee_permissions import (EmployeePermissionPolicy,
                                            EmployeePermissionResolver, EntraDirectoryRead,
                                            PORTAL_DEPARTMENT_CODES)
-from operating.mcp_server import EVIDENCE_META_KEY, MCPServer
+from operating.mcp_server import MCPServer
+from operating.mcp_server_evidence import EVIDENCE_META_KEY
 from operating import host as host_module
 from operating.tests.test_case_tools_host import _client
 from operating.tests.test_host import ENV as ENV_HOST, HostCase
@@ -610,9 +612,16 @@ class RevokedHistoryTests(SharePointHostCase):
             self.assertNotIn("content", read)
             self.assertNotIn("fields", read)
             self.assertNotIn(TEXT_SECRET, json.dumps(read))
-        # The folder holder whose own identity is still on the item reads both.
-        self.assertEqual(self.ok(self.server(QUALITY), "plx.read", {"citation": old})["status"],
-                         "resolved")
+        # The folder holder whose own identity is still on the item reads both: the current
+        # version resolves, and the superseded one reads as changed_since (never support)
+        # naming the current version's citation (a superseded SharePoint file reads as its
+        # current version).
+        holder = self.server(QUALITY)
+        self.assertEqual(self.ok(holder, "plx.read",
+                                 {"citation": self.handle("01FILEB", 2)})["status"], "resolved")
+        superseded = self.ok(holder, "plx.read", {"citation": old})
+        self.assertEqual(superseded["status"], "changed_since", superseded)
+        self.assertEqual(superseded["current_citation"], self.handle("01FILEB", 2))
 
     def test_a_case_finding_citing_a_captured_file_follows_the_capture_gate(self):
         """A finding cites the captured release file (no live reader for the drive): it
@@ -1115,7 +1124,92 @@ class ContainerMemberHostTests(SharePointHostCase):
         self.assertEqual(hidden["error"]["code"], "object_not_found")
 
 
-MAP_HTML = (b"<html><head><script>var x='SCRIPTONLY'</script></head><body><h1>Screening "
+class RecordSizeTests(SharePointHostCase):
+    """A record (plx.object) whose SharePoint-labelled answer is over the response bound
+    as sent has its longest untrusted_text values cut to fit, each marked truncated, and
+    one result_trimmed gap says so; never refused whole as result_too_large (an Assembly
+    Order packet's 8 KB evidence text made every packet page an error, 11-15). What
+    cannot fit even so is still the error."""
+
+    scanned = False
+    seed = ContainerMemberHostTests.seed
+    LONG = "Inspection note line. " * 400   # 8800 chars, as a packet's evidence text
+
+    def _reader(self):
+        employee = Actor("plx", frozenset({"employee:" + OID}))
+        return self.server(employee, resolver=EmployeePermissionResolver(
+            EmployeePermissionPolicy.from_json({**POLICY, "principals": {
+                "staff:quality": POLICY["principals"]["staff:quality"]}}),
+            Calls(portal_user("MANAGER", email=SALES)), Calls(member(QA_GROUP))))
+
+    def _long_object(self):
+        """plx.object with its first untrusted_text value made ``LONG`` (as a packet's)."""
+        from operating import ontology_tools as ot
+        real = ot.OntologyTools._object
+
+        def lengthened(tools, arguments, actor):
+            out = real(tools, arguments, actor)
+            for value in out.get("values") or ():
+                if isinstance(value.get("value"), dict) \
+                        and "untrusted_text" in value["value"]:
+                    value["value"] = dict(value["value"], untrusted_text=self.LONG)
+                    break
+            return out
+        return mock.patch.object(ot.OntologyTools, "_object", lengthened)
+
+    def test_a_record_over_the_bound_once_labelled_is_trimmed_never_refused(self):
+        from operating import mcp_server
+        conn = sqlite3.connect(self.projection)
+        self.addCleanup(conn.close)
+        object_id = conn.execute("SELECT object_id FROM objects WHERE object_type = "
+                                 "'ContainerMember'").fetchone()[0]
+        args = {"object_id": object_id, "response_format": "detailed"}
+        with self._long_object():
+            whole = self.ok(self._reader(), "plx.object", args)
+        long = [v for v in whole["values"] if isinstance(v.get("value"), dict)
+                and v["value"].get("untrusted_text") == self.LONG]
+        self.assertEqual(len(long), 1, "the fixture record carries one long text value")
+        self.assertIn("as_of_capture", [g["reason"] for g in whole["gaps"]])
+        sent = mcp_server._envelope_bytes(whole)
+        bound = sent - 4 * len(self.LONG) // 3   # over it as sent; fits once the text is cut
+        with self._long_object(), mock.patch.object(mcp_server, "MAX_RESULT_BYTES", bound):
+            fitted = _client(self._reader(), "plx.object", args)
+        self.assertFalse(fitted["isError"], fitted)
+        answer = fitted["structuredContent"]
+        self.assertLessEqual(mcp_server._envelope_bytes(answer), bound)
+        self.assertEqual(answer["object"]["object_id"], object_id)
+        cut = [v for v in answer["values"] if isinstance(v.get("value"), dict)
+               and v["value"].get("truncated") is True]
+        self.assertEqual(len(cut), 1)
+        text = cut[0]["value"]["untrusted_text"]
+        self.assertTrue(self.LONG.startswith(text) and 0 < len(text) < len(self.LONG))
+        self.assertEqual(cut[0]["value"]["origin"], long[0]["value"]["origin"])
+        # every other value, the link counts and the capture labels stay as they were
+        others = lambda a: [v for v in a["values"] if v["property"] != long[0]["property"]]
+        self.assertEqual(others(answer), others(whole))
+        self.assertEqual(answer.get("linked_counts"), whole.get("linked_counts"))
+        trimmed = [g for g in answer["gaps"] if g["reason"] == "result_trimmed"]
+        self.assertEqual(len(trimmed), 1)
+        self.assertIn("plx.read", trimmed[0]["detail"])
+        self.assertIn("as_of_capture", [g["reason"] for g in answer["gaps"]])
+        # a bound nothing fits under is still the error, never an unlabelled answer
+        with self._long_object(), mock.patch.object(mcp_server, "MAX_RESULT_BYTES", 2000):
+            refused = _client(self._reader(), "plx.object", args)["structuredContent"]
+        self.assertEqual(refused["error"]["code"], "result_too_large")
+
+    def test_a_record_that_fits_is_never_cut(self):
+        conn = sqlite3.connect(self.projection)
+        self.addCleanup(conn.close)
+        object_id = conn.execute("SELECT object_id FROM objects WHERE object_type = "
+                                 "'ContainerMember'").fetchone()[0]
+        with self._long_object():
+            whole = self.ok(self._reader(), "plx.object", {"object_id": object_id})
+        self.assertNotIn("result_trimmed", [g["reason"] for g in whole["gaps"]])
+        self.assertIn(self.LONG, [v["value"].get("untrusted_text") for v in whole["values"]
+                                  if isinstance(v.get("value"), dict)])
+
+
+MAP_HTML =(b"<html><head><script>var x='SCRIPTONLY'</script></head><body><h1>Screening "
             b"Map</h1><p>Cost per bottle: blank + landed cost, divided by good bottles "
             b"returned.</p></body></html>")
 MAP_SPEC = b'{"step": "Testing priority uses a look-ahead window", "rate": 1.10}'
@@ -1171,7 +1265,8 @@ class MarkupFileHostTests(SharePointHostCase):
         self.assertNotIn("content", read)
         gap = self.labels(read, "text_not_extracted")[blob]
         self.assertEqual(gap["state"], "not_ingested")
-        self.assertIn("unsupported", gap["detail"])
+        # CAP-L210: a file whose bytes are no text gets its terminal class, never "unread"
+        self.assertIn("binary_no_text", gap["detail"])
         self.assertEqual((read["completeness"]["complete"], read["completeness"]["reason"]),
                          (False, "text_not_extracted"))
         self.assertIn(blob, self.labels(read))   # still labelled as of capture
@@ -1245,8 +1340,13 @@ class HostBoundTests(SharePointHostCase):
         counted = self.ok(server, "plx.aggregate", {"set": found["set"],
                                                     "measure": {"op": "count"}})
         self.assertGreater(sum(int(g["value"]) for g in counted["groups"]), 0)
-        label = self.labels(counted)["sharepoint"]
-        self.assertIn("as of 2026-10-01T12:00:", label["detail"])
+        # A count that lists its members (members_cited) labels each one as of its capture,
+        # by its own citation; one that lists none carries the single "sharepoint" label.
+        members = [handle for group in counted["groups"] for handle in group["members_cited"]]
+        self.assertEqual(len(members), 3, counted)
+        labels = self.labels(counted)
+        for handle in members:
+            self.assertIn("as of capture 2026-10-01T12:00:", labels[handle]["detail"])
         self.assertIn("sharepoint", {f["source"] for f in counted["meta"]["freshness"]})
 
     def test_one_calls_re_read_bound_is_not_reset_by_a_read_inside_it(self):
@@ -1515,7 +1615,7 @@ class HostBoundTests(SharePointHostCase):
         self.assertTrue(all(method == "GET" for method, _url in calls))
 
     def test_a_live_read_of_an_uncaptured_file_shares_the_calls_re_read_bound(self):
-        server = self.server(QUALITY, live_drive=True, max_live_rereads=1)
+        self.server(QUALITY, live_drive=True, max_live_rereads=1)
         tools = self.tools
         uncaptured = self.handle(SCAN, version=2)   # a version the capture never held
         reads = []
@@ -1602,7 +1702,23 @@ class LiveRefusalKindTests(SharePointHostCase):
         kind = server.case_runtime.captures.gate_decision(handle, EMPLOYEE)
         read = self.ok(self.server(EMPLOYEE, live_drive=True, live_api=live_api),
                        "plx.read", {"citation": handle})
-        read.get("meta", {}).pop("as_known_at", None)
+        # the capture's age as served moves with the clock (``ontology_tools.aged``), as
+        # as_known_at does, wherever the answer carries them (a refusal's freshness too:
+        # one second apart across a reads' boundary, 11-14): the bytes compared are the rest
+        def unclocked(value):
+            if isinstance(value, dict):
+                if isinstance(value.get("meta"), dict):
+                    value["meta"].pop("as_known_at", None)
+                freshness = value.get("freshness")
+                for entry in freshness if isinstance(freshness, list) else ():
+                    if isinstance(entry, dict):
+                        entry.pop("lag_seconds", None)
+                for item in value.values():
+                    unclocked(item)
+            elif isinstance(value, list):
+                for item in value:
+                    unclocked(item)
+        unclocked(read)
         return kind, json.dumps(read, sort_keys=True)
 
     def test_only_a_permission_decision_is_a_refusal_and_every_answer_reads_alike(self):
@@ -1787,6 +1903,7 @@ class StoredTextLookupTests(SharePointHostCase):
 
     def test_each_code_version_keeps_its_own_lookup_and_old_kept_files_are_pruned(self):
         from operating import case_tools_host as host
+        from operating import case_tools_host_index
         root = Path(self.store.root)
         mine = host.lookup_path(root, "a" * 64)
         other = host.lookup_path(root, "b" * 64)
@@ -1797,13 +1914,13 @@ class StoredTextLookupTests(SharePointHostCase):
         # what older code kept: the JSON index (unversioned and per code), the file facts
         # and an unfinished temporary file of one
         legacy = [root / host.INDEX_FILE, host.identifier_index_path(root, "c" * 64),
-                  root / host.LEGACY_FACTS_FILE,
+                  root / case_tools_host_index.LEGACY_FACTS_FILE,
                   root / f".{host.identifier_index_path(root, 'c' * 64).name}.0badf00d.tmp"]
         for path in legacy:
             path.write_text("{}")
         unrelated = root / "notes.json"
         unrelated.write_text("{}")
-        old = time.time() - host.INDEX_OTHER_VERSION_STALE - 60
+        old = time.time() - case_tools_host_index.INDEX_OTHER_VERSION_STALE - 60
         for path in legacy + [unrelated, mine]:
             os.utime(path, (old, old))
         host._prune_indexes(mine)
@@ -2584,7 +2701,7 @@ class LiveCheckModuleTests(unittest.TestCase):
         self.drive = drive
         with tempfile.TemporaryDirectory() as tmp:
             scope_file = Path(tmp) / "scope.json"
-            scope_file.write_text(json.dumps({"schema": cs.SCOPE_SCHEMA, "targets": [
+            scope_file.write_text(json.dumps({"schema": capture_sharepoint_scope.SCOPE_SCHEMA, "targets": [
                 {"id": "quality", "drive_id": DRIVE, "folders": ["/Quality/AOs"]}]}))
             audience_file = Path(tmp) / "audience.json"
             audience_file.write_text(json.dumps({

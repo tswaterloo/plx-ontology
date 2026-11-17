@@ -97,6 +97,7 @@ from pathlib import Path
 import sys
 from typing import Any, Callable, Iterable, Mapping, Sequence
 from zoneinfo import ZoneInfo
+from . import time_window
 
 SCHEMA = "plx-po-status-vocabulary/v1"
 OPEN, CLOSED, DRAFT, UNKNOWN = "open", "closed", "draft", "unknown"
@@ -687,10 +688,7 @@ def day_of(raw: Any) -> date | None:
     """An ISO date (a timestamp's day); None when not one."""
     if raw is None or isinstance(raw, bool):
         return None
-    try:
-        return date.fromisoformat(str(raw).strip()[:10])
-    except ValueError:
-        return None
+    return time_window.business_day(raw)
 
 
 def clusters(pairs: Iterable[tuple[str, str]], members: Iterable[str]) -> dict[str, str]:
@@ -1805,6 +1803,7 @@ class ContextSource:
         to this reader, its evidence allowed), followed transitively; and whether an
         identity link of a member is hidden from this reader (a fuller grant might join
         a twin)."""
+        from operating import ontology_tools_process_graphs
         op, ctx, schema = self.op, self.ctx, self.tools.base.schema
         kinds = sorted(lid for lid, link in schema.link_types.items()
                        if link["from"] == ctx.obj(oid)["object_type"]
@@ -1825,7 +1824,7 @@ class ContextSource:
                         or not self.tools._evidence_ok(ctx, row):
                     blind = True
                     continue
-                if op._link_tier(row, ends) not in op._IDENTITY_TIERS \
+                if ontology_tools_process_graphs._link_tier(row, ends) not in op._IDENTITY_TIERS \
                         or compared_twin(row["from_object"], row["to_object"]):
                     continue   # a lead, or another system's record: compared, not joined
                 for end in (row["from_object"], row["to_object"]):
@@ -1839,6 +1838,7 @@ class ContextSource:
         system's record (``compared_twin``), joins to a member, the link and both ends
         visible to this reader and its evidence allowed; their dates are read, never their
         status. A link this reader may not read is no twin here."""
+        from operating import ontology_tools_process_graphs
         op, ctx, schema = self.op, self.ctx, self.tools.base.schema
         kinds = sorted(lid for lid, link in schema.link_types.items()
                        if link["from"] == ctx.obj(oid)["object_type"]
@@ -1858,7 +1858,7 @@ class ContextSource:
             if not ctx.row_visible(row) or len(ends) < 2 \
                     or not self.tools._evidence_ok(ctx, row):
                 continue
-            tier = op._link_tier(row, ends)
+            tier = ontology_tools_process_graphs._link_tier(row, ends)
             if tier != FIRM and not (tier in op._IDENTITY_TIERS and compared_twin(
                     row["from_object"], row["to_object"])):
                 continue
@@ -1912,12 +1912,13 @@ class ContextSource:
     def lines(self, oid: str) -> tuple[list | None, list, bool, list]:
         """This record's lines (the graph's ``lines`` declaration) as triples; None when
         not proven complete for this reader (hidden when a fuller grant would read them)."""
+        from operating import ontology_tools_process_answer
         spec = self.spec
         if not spec:
             return None, [], False, []
         reach = self._reach(self.graph["root_type"], oid, spec["paths"], spec["object_type"])
         if not (reach.proven and not reach.truncated):
-            return None, [], self.op._HIDDEN in reach.causes, []
+            return None, [], ontology_tools_process_answer._HIDDEN in reach.causes, []
         ids = [lid for lid in sorted(reach.records)
                if self.ctx.obj(lid)["object_type"] == spec["object_type"]]
         from operating.ontology_tools import _value_out
@@ -1937,11 +1938,12 @@ class ContextSource:
         receiving log (``receives_line`` from the FM receipt relations) summed per item;
         ``UNREAD`` when the items or a QC quantity are not proven readable for this reader
         (a QC row without a quantity is unread, never 0)."""
+        from operating import ontology_tools_process_answer
         ctx, op = self.ctx, self.op
         reach = self._reach(PO_TYPE, fm, [[{"link": LINE_OF, "direction": "reverse"}]],
                             LINE_TYPE, {FM_ITEM_BINDING})
         if not reach.proven or reach.truncated:
-            return UNREAD, [], op._HIDDEN in reach.causes, []
+            return UNREAD, [], ontology_tools_process_answer._HIDDEN in reach.causes, []
         out = []
         for item in sorted(r for r in reach.records if ctx.obj(r)["object_type"] == LINE_TYPE):
             want, _unit = self._quantities(item, (ORDERED,))
@@ -1957,6 +1959,7 @@ class ContextSource:
         """Each line reached by the lateness ``lines`` declaration with its state
         (not_received, partial, received, unknown), its own expected date when declared
         (BC expectedReceiptDate: reported, never a due date) and its cited values."""
+        from operating import ontology_tools_process_answer
         from operating.ontology_tools import _value_out
 
         if not spec:
@@ -1981,7 +1984,7 @@ class ContextSource:
             if "expected" in spec and spec["expected"] not in ctx.withheld(lid):
                 rows = [row for row in ctx.values(lid).get(spec["expected"], ())
                         if row["value"] is not None]
-                days = {op._date(row["value"]) for row in rows}
+                days = {ontology_tools_process_answer._date(row["value"]) for row in rows}
                 if len(days) == 1 and None not in days:
                     line["expected_date"] = next(iter(days)).isoformat()
                     values += [v for v in (_value_out(r, tid, 200)[0] for r in rows) if v]
@@ -2015,7 +2018,9 @@ class ContextSource:
         ``idreceipt`` names no receipt header) and whose record they hang from is named
         by none either (no header names the row's PO item, ``Receipt.receives_line``):
         the dated records may then miss one."""
-        from operating.ontology_tools import _markings
+        from operating import ontology_tools_process_answer
+        from operating import ontology_tools_process_helpers
+        from operating.ontology_tools_policy import _markings
 
         ctx, op = self.ctx, self.op
         schema = self.tools.base.schema
@@ -2031,12 +2036,12 @@ class ContextSource:
                              and not reach.via.get(r, set()) & reach.named_by)
         marks = {m for e in spec["event_types"]
                  for m in schema.event_types[e].get("markings", ())}
-        out.hidden = not ctx.scope.holds(marks) or op._HIDDEN in reach.causes
+        out.hidden = not ctx.scope.holds(marks) or ontology_tools_process_answer._HIDDEN in reach.causes
         uncited = False
         out.dates = {r: [] for r in out.records}
         for _, subject, row in self.tools._visible_events(ctx, out.records,
                                                           spec["event_types"]):
-            cite, day = op._cite(row), op._date(row["time"])
+            cite, day = ontology_tools_process_helpers._cite(row), ontology_tools_process_answer._date(row["time"])
             if cite is None or day is None or subject not in out.dates:
                 uncited = True
                 continue
@@ -2047,17 +2052,17 @@ class ContextSource:
         order_by = spec.get("order_by")
         for rid in out.records if order_by else ():
             rows = [row for row in ctx.values(rid).get(order_by, ()) if row["value"] is not None]
-            days = {op._date(row["value"]) for row in rows}
+            days = {ontology_tools_process_answer._date(row["value"]) for row in rows}
             out.order[rid] = (next(iter(days)) if len(days) == 1 and None not in days
                               and order_by not in ctx.withheld(rid) else None)
         out.proven = reach.proven and not reach.truncated and not out.hidden and not uncited
         # unproven only because a path reached a lead (below the tier floor): a lead is
         # never counted and hides nothing a counted read holds (``_Why`` tier ``lead``)
         lead_only = (not reach.proven and bool(reach.reasons)
-                     and all(w.tier == op._LEAD for w in reach.reasons))
+                     and all(w.tier == ontology_tools_process_answer._LEAD for w in reach.reasons))
         # or only because a source's capture is stale: read as of that capture (the
         # verdict says so), as the late list reads the same captured records
-        stale = (op.stale_sources(reach.reasons) or ()) \
+        stale = (ontology_tools_process_answer.stale_sources(reach.reasons) or ()) \
             if not reach.proven and not lead_only else ()
         out.counted_proven = out.proven or ((lead_only or bool(stale)) and not reach.truncated
                                             and not out.hidden and not uncited)
@@ -2108,7 +2113,9 @@ class ContextSource:
         must have run): ``(document date, day, item)`` each cited as this reader reads
         it. A lead is never this order's promise; the caller labels these a possible
         vendor promise. Empty when the promise read is hidden from this reader."""
-        from operating.ontology_tools import _markings
+        from operating import ontology_tools_process_answer
+        from operating import ontology_tools_process_helpers
+        from operating.ontology_tools_policy import _markings
 
         spec = ((self.stage or {}).get("due") or {}).get("lateness", {}).get("promised")
         found = self.promised
@@ -2118,12 +2125,12 @@ class ContextSource:
         order_by = spec.get("order_by")
         for _, subject, row in self.tools._visible_events(ctx, found.leads,
                                                           spec["event_types"]):
-            cite, day = op._cite(row), op._date(row["time"])
+            cite, day = ontology_tools_process_helpers._cite(row), ontology_tools_process_answer._date(row["time"])
             if cite is None or day is None:
                 continue
             order = None
             if order_by and order_by not in ctx.withheld(subject):
-                days = {op._date(r["value"]) for r in ctx.values(subject).get(order_by, ())
+                days = {ontology_tools_process_answer._date(r["value"]) for r in ctx.values(subject).get(order_by, ())
                         if r["value"] is not None}
                 order = next(iter(days)) if len(days) == 1 and None not in days else None
             out.append((order, day, {
@@ -2135,6 +2142,7 @@ class ContextSource:
     def need_dates(self, oid: str, members: Sequence[str]) -> list[tuple[int, date | None, Any]]:
         """The stage's declared planned dates (``_due_date``, kept in ``dated``: every
         source, never repaired), each ranked by the declared precedence."""
+        from operating import ontology_tools_process_answer
         if self.stage is None:
             return []
         self.dated = self.tools._due_date(self.ctx, self.graph, oid, self.stage,
@@ -2144,7 +2152,7 @@ class ContextSource:
         for value in self.dated.values:
             rank = tier_of.get(value["property"])
             if rank is not None:
-                day = self.op._date(value["value"])
+                day = ontology_tools_process_answer._date(value["value"])
                 out.append((rank, day, {**value, "authority_rank": rank}
                             if day is not None else value))
         return out
@@ -2153,6 +2161,7 @@ class ContextSource:
         """Each open line's own expected date (the lateness ``lines`` declaration's
         ``expected``), cited; ``None`` for an open line whose date is withheld, disputed or
         absent (open until proven otherwise, also when its quantities are unread)."""
+        from operating import ontology_tools_process_answer
         from operating.ontology_tools import _value_out
 
         spec = self.spec
@@ -2170,7 +2179,7 @@ class ContextSource:
                     continue
                 rows = [row for row in ctx.values(lid).get(spec["expected"], ())
                         if row["value"] is not None]
-                days = {self.op._date(row["value"]) for row in rows}
+                days = {ontology_tools_process_answer._date(row["value"]) for row in rows}
                 if spec["expected"] in ctx.withheld(lid) or len(days) != 1 or None in days:
                     out.append((None, lid))
                     continue
@@ -2833,7 +2842,7 @@ def _fm_log(scans: Mapping[str, Mapping[str, Any]]) -> Callable[[str], Any]:
 
 
 def _scan_label(scan: Mapping[str, Any]) -> dict[str, Any]:
-    from integrations.source_mirror import scan_label
+    from integrations.source_mirror_query import scan_label
     return scan_label(scan)
 
 

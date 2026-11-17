@@ -103,11 +103,15 @@ class DerivationCodeTests(unittest.TestCase):
         covered = project.derivation_modules()
         self.assertIn("operating.use_case_parts", found["modules"])   # the zip was walked
         self.assertEqual(sorted(set(found["modules"]) - set(covered)), [])
-        # The source opened reads its capture file (through the mirror's scope views):
+        # The source opened reads its capture file (through the mirror's scope views:
+        # source_mirror and the modules it imports, its record counts and its schema):
         # input records, fingerprinted as such.
         self.assertLessEqual(set(found["source"]) - set(covered),
-                             {"integrations.source_mirror", "integrations.http",
-                              "integrations.workbench_read_api"})
+                             {"integrations.source_mirror", "integrations.source_mirror_values",
+                              "integrations.source_mirror_rules", "integrations.source_mirror_query",
+                              "integrations.http",
+                              "integrations.workbench_read_api", "integrations.mirror_records",
+                              "operating.declared_schema.source_mirror"})
         self.assertTrue(found["opened"])
         self.assertEqual(sorted(set(found["opened"]) - set(project._DERIVATION_DATA)), [])
 

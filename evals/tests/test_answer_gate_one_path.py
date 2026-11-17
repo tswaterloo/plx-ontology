@@ -1100,18 +1100,19 @@ class OneGateSourceTests(unittest.TestCase):
     def test_an_api_row_handle_has_one_strict_parser(self):
         """The edge citation of a line reads its row handle with the mirror's parser
         (``source_mirror.parse_citation``); the investigate tool's looser copy is gone."""
-        from operating import ontology_tools_investigate as oti
-        text = (REPO / "operating/ontology_tools_investigate.py").read_text(encoding="utf-8")
+        from operating import ontology_tools_investigate_pages
+        text = "".join(path.read_text(encoding="utf-8") for path in sorted(
+            (REPO / "operating").glob("ontology_tools_investigate*.py")))
         self.assertNotIn("_API_ROW", text)
         good = 'api://public.app_sales_order/%7B%22id%22%3A%22fx-so-82%22%7D@469e197db0cd5a9b-8'
-        self.assertEqual(oti._api_row(good), ("public.app_sales_order", (("id", "fx-so-82"),)))
+        self.assertEqual(ontology_tools_investigate_pages._api_row(good), ("public.app_sales_order", (("id", "fx-so-82"),)))
         for loose in ("api://AnyThing/%7B%22id%22%3A1%7D@x",   # no schema, no capture id
                       "api://public.t/%7B%22id%22%3A1%7D@0",   # capture 0
                       "api://public.t/%7B%7D@1",               # empty key
                       "api://public.t/%7B%22a%22%3A%7B%7D%7D@1",   # nested key value
                       "api://public.t/not-json@1", None, 7, "src://x/y@1"):
             with self.subTest(handle=loose):
-                self.assertIsNone(oti._api_row(loose))
+                self.assertIsNone(ontology_tools_investigate_pages._api_row(loose))
 
 
 if __name__ == "__main__":

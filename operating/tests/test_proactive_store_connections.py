@@ -23,7 +23,7 @@ class ThreadConnectionsTest(unittest.TestCase):
     def test_connection_closes_when_its_thread_ends_and_the_rest_close_with_the_store(self):
         made: list[FakeConn] = []
 
-        def connect(_path):
+        def connect(_path, _file_only=False):
             made.append(FakeConn())
             return made[-1]
 
@@ -34,7 +34,7 @@ class ThreadConnectionsTest(unittest.TestCase):
             # what _Store.__init__ sets beside them (the owning thread of each connection,
             # the helper threads and the idle part connections close() reads)
             store._conn_thread, store._helpers, store._parts = {}, [], []
-            store.interrupt, store.path = None, Path(d)
+            store.interrupt, store.path, store.file_only = None, Path(d), False
 
             def read():
                 self.assertIs(store.conn, store.conn)   # one per thread, reused

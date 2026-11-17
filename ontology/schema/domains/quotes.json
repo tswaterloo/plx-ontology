@@ -126,7 +126,8 @@
       {
        "binding": "portal.app_quote",
        "path": "issue_date",
-       "parser": "iso_timestamp"
+       "parser": "iso_timestamp",
+       "naive_zone": "UTC"
       }
      ],
      "evidence": [
@@ -144,7 +145,8 @@
       {
        "binding": "portal.app_quote",
        "path": "valid_until",
-       "parser": "iso_timestamp"
+       "parser": "iso_timestamp",
+       "naive_zone": "UTC"
       }
      ],
      "evidence": [
@@ -161,7 +163,8 @@
       {
        "binding": "portal.app_quote",
        "path": "accepted_at",
-       "parser": "iso_timestamp"
+       "parser": "iso_timestamp",
+       "naive_zone": "UTC"
       }
      ],
      "evidence": [
@@ -178,7 +181,8 @@
       {
        "binding": "portal.app_quote",
        "path": "rejected_at",
-       "parser": "iso_timestamp"
+       "parser": "iso_timestamp",
+       "naive_zone": "UTC"
       }
      ],
      "evidence": [
@@ -877,7 +881,8 @@
    "time": {
     "binding": "portal.app_quote",
     "path": "issue_date",
-    "parser": "iso_timestamp"
+    "parser": "iso_timestamp",
+    "naive_zone": "UTC"
    },
    "qualifiers": [
     {
@@ -906,7 +911,8 @@
    "time": {
     "binding": "portal.app_quote",
     "path": "valid_until",
-    "parser": "iso_timestamp"
+    "parser": "iso_timestamp",
+    "naive_zone": "UTC"
    },
    "qualifiers": [
     {
@@ -935,7 +941,8 @@
    "time": {
     "binding": "portal.app_quote",
     "path": "accepted_at",
-    "parser": "iso_timestamp"
+    "parser": "iso_timestamp",
+    "naive_zone": "UTC"
    },
    "qualifiers": [
     {
@@ -968,7 +975,8 @@
    "time": {
     "binding": "portal.app_quote",
     "path": "rejected_at",
-    "parser": "iso_timestamp"
+    "parser": "iso_timestamp",
+    "naive_zone": "UTC"
    },
    "qualifiers": [
     {

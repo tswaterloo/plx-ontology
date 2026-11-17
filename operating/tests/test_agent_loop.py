@@ -20,6 +20,7 @@ import unittest
 
 from operating import agent_loop, answer_gate
 from operating import ontology_tools_investigate as oi
+from operating import ontology_tools_investigate_follow_ups
 from operating import session_identity as si
 from operating.action_path import ActionPath
 from operating.agent_loop import Bounds, evidence_handles
@@ -127,7 +128,7 @@ class AgentLoopTests(EmployeeDoorTestCase):
         session = si.employee_session(resolver, channel=si.CHANNEL_MCP, object_id=oid)
         path = ActionPath(Path(tempfile.mkdtemp(dir=self.tmp)) / "actions.db", runtime.cases) \
             if action_path else None
-        recorder = None if path is None else oi.follow_up_recorder(path, session, session.actor)
+        recorder = None if path is None else ontology_tools_investigate_follow_ups.follow_up_recorder(path, session, session.actor)
         server = MCPServer(case_runtime=runtime, actor=session.actor, session=session,
                            action_path=path,
                            ontology=CaseHostTools(runtime, session.actor, store_path=self.store,

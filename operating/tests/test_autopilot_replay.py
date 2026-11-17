@@ -16,6 +16,10 @@ import unittest
 from unittest import mock
 
 from operating import autopilot as ap
+from operating import autopilot_engine
+from operating import autopilot_events
+from operating import autopilot_queue
+from operating import autopilot_reading
 from operating import autopilot_replay as rp
 from operating import autopilot_roster as roster
 from operating import proactive_engine as pe
@@ -198,8 +202,8 @@ class CrossReference(World):
         w.link("SupplierItem.for_item", offer, portal)
         po = self.po(1)
         line = w.obj("PurchaseOrderLine", {"ordered_quantity": "40", "item_code": "OUR-1"})
-        w.link(ap.PO_LINE_OF, line, po)
-        w.link(ap.PO_LINE_ITEM, line, ours)
+        w.link(autopilot_queue.PO_LINE_OF, line, po)
+        w.link(autopilot_queue.PO_LINE_ITEM, line, ours)
         return po
 
     def test_a_supplier_item_number_maps_its_eta_mail_to_the_open_po(self):
@@ -214,11 +218,11 @@ class CrossReference(World):
         self.assertEqual(work["matched_by_supplier_item"][0]["supplier_number"], "VX-4471-B")
         # the cross-reference is finance marked: a reader without finance sees nothing
         self.assertIn("finance", item["markings"])
-        self.assertEqual(ap.visible(self.queue(), reader=READER, may_read=everyone, held=[],
+        self.assertEqual(autopilot_reading.visible(self.queue(), reader=READER, may_read=everyone, held=[],
                                     decide=opens_all), [])
-        self.assertEqual(len(ap.visible(self.queue(), reader=READER, may_read=everyone,
+        self.assertEqual(len(autopilot_reading.visible(self.queue(), reader=READER, may_read=everyone,
                                         held=["finance"], decide=opens_all)), 1)
-        self.assertEqual(ap.visible(self.queue(), reader=READER, may_read=lambda a: False,
+        self.assertEqual(autopilot_reading.visible(self.queue(), reader=READER, may_read=lambda a: False,
                                     held=["finance"], decide=opens_all), [])
 
     def test_another_suppliers_number_maps_nothing(self):
@@ -323,7 +327,7 @@ class Replay(World):
             self.assertTrue(all(s["sent"] == 0 and s["writes"] == 0 for s in days.summaries()))
         finally:
             days.close()
-        self.assertNotIn("Nov 20", (self.dir / "out" / ap.GATE_FILE).read_text())
+        self.assertNotIn("Nov 20", (self.dir / "out" / autopilot_engine.GATE_FILE).read_text())
         self.assertEqual(out["actions"], 3)
 
 
@@ -436,7 +440,7 @@ class StoreSource(World):
 
 class Gate(unittest.TestCase):
     def gate(self, tmp: Path, body) -> tuple:
-        path = tmp / ap.GATE_FILE
+        path = tmp / autopilot_engine.GATE_FILE
         if body is not None:
             path.write_text(body if isinstance(body, str) else json.dumps(body))
         return ap.gate_from({}, tmp)
@@ -445,7 +449,7 @@ class Gate(unittest.TestCase):
         import tempfile
         with tempfile.TemporaryDirectory() as d:
             tmp = Path(d)
-            role = lambda j, m: {"schema": ap.GATE_SCHEMA, "roles": {"purchasing": {  # noqa: E731
+            role = lambda j, m: {"schema": autopilot_engine.GATE_SCHEMA, "roles": {"purchasing": {  # noqa: E731
                 "members": [OURS_OID], "workflows": {"supplier_eta_receiving":
                                                      {"judged": j, "matched": m}}}}}
             for body, on in ((None, False), ("not json", False),
@@ -459,7 +463,7 @@ class Gate(unittest.TestCase):
                     self.assertFalse(allowed(OURS_OID, "quote_pricing"))
                     self.assertFalse(allowed(APPROVER_OID, "supplier_eta_receiving"))
                     self.assertEqual(bool(passed), on)
-                    (tmp / ap.GATE_FILE).unlink(missing_ok=True)
+                    (tmp / autopilot_engine.GATE_FILE).unlink(missing_ok=True)
 
     def test_a_pass_in_one_role_stays_in_that_role(self):
         import tempfile
@@ -467,7 +471,7 @@ class Gate(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             tmp = Path(d)
             passed, failed = {"judged": 20, "matched": 19}, {"judged": 20, "matched": 10}
-            allowed, _ = self.gate(tmp, {"schema": ap.GATE_SCHEMA, "roles": {
+            allowed, _ = self.gate(tmp, {"schema": autopilot_engine.GATE_SCHEMA, "roles": {
                 "purchasing": {"members": [OURS_OID], "workflows": {flow: passed}},
                 "quality": {"members": [OURS_OID], "workflows": {flow: failed}},
                 "owner": {"members": [OURS_OID], "workflows": {}}}})
@@ -476,7 +480,7 @@ class Gate(unittest.TestCase):
             self.assertFalse(allowed(OURS_OID, flow, {"owner"}))        # never measured
             self.assertFalse(allowed(OURS_OID, flow, {"receiving"}))    # not a member
             self.assertFalse(allowed(OURS_OID, flow))   # their own item: a role failed it
-            allowed, _ = self.gate(tmp, {"schema": ap.GATE_SCHEMA, "roles": {
+            allowed, _ = self.gate(tmp, {"schema": autopilot_engine.GATE_SCHEMA, "roles": {
                 "purchasing": {"members": [OURS_OID], "workflows": {flow: passed}},
                 "owner": {"members": [OURS_OID], "workflows": {}}}})
             self.assertTrue(allowed(OURS_OID, flow))
@@ -525,8 +529,8 @@ class LiveReplay(Fixture):
         def items(name: str, workflows) -> int:
             queue = self.dir / name / ap.QUEUE_FILE
             queue.parent.mkdir()
-            (queue.parent / ap.GATE_FILE).write_text(json.dumps(
-                {"schema": ap.GATE_SCHEMA, "roles": {"purchasing": {
+            (queue.parent / autopilot_engine.GATE_FILE).write_text(json.dumps(
+                {"schema": autopilot_engine.GATE_SCHEMA, "roles": {"purchasing": {
                     "members": [OURS_OID],
                     "workflows": {f: {"judged": 20, "matched": 20} for f in workflows}}}}))
             with contextlib.redirect_stdout(io.StringIO()), \
@@ -848,7 +852,7 @@ class WaitingOnYou(World):
         self.assertEqual((total("dev", "judged"), total("dev", "matched")), (3, 3))
         self.assertEqual((total("held_out", "judged"), total("held_out", "matched")), (2, 0))
         self.assertEqual(out["gate"]["on"], "held_out")
-        gate = json.loads((self.dir / "out" / ap.GATE_FILE).read_text())
+        gate = json.loads((self.dir / "out" / autopilot_engine.GATE_FILE).read_text())
         counts = gate["roles"][f"person:{OURS}"]["workflows"]
         self.assertEqual(sum(v["judged"] for v in counts.values()), 2)
         self.assertEqual(sum(v["matched"] for v in counts.values()), 0)
@@ -923,9 +927,11 @@ class PastApprovals(World):
                     pending[project] = [
                         self.w.obj("MCApproval", {
                             "gate_id": f"g-{i}-{k}", "status": "approved",
-                            # asked by an agent no one in the directory is (the asker
-                            # is left out: test_..._never_goes_back_to_its_asker...)
-                            "requested_by": "agent@synth-tenant.example",
+                            # asked by an agent no one in the directory is, outside our
+                            # domains (the asker is left out: test_..._never_goes_back_to_its
+                            # _asker...; one of our domains the directory does not hold is
+                            # withheld: ap.approvals_cleared)
+                            "requested_by": "agent@synth-agents.example",
                             "requested_at": at(10),
                             "decided_by": APPROVER, "decided_at": at(30),
                             "reason": "Ship it"}, audience=f"mc:live/approvals/{project}")
@@ -961,8 +967,8 @@ class PastApprovals(World):
                 # (project, who asked): both decide in P-BOTH; only we decide in P-OURS
                 for i, (project, asker) in enumerate((
                         ("P-BOTH", OURS), ("P-BOTH", APPROVER), ("P-OURS", OURS),
-                        ("P-NONE", OURS), ("P-NONE", "nobody@synth-tenant.example"),
-                        ("P-NONE", ""))):
+                        ("P-NONE", OURS), ("P-NONE", "nobody@synth-agents.example"),
+                        ("P-NONE", "nobody@synth-tenant.example"), ("P-NONE", ""))):
                     asked[(project, asker)] = [
                         self.w.obj("MCApproval", {
                             "gate_id": f"g-{i}-{k}", "status": "pending",
@@ -991,8 +997,9 @@ class PastApprovals(World):
                     ("P-OURS", OURS): {APPROVER_OID},
                     # every approver: the asker is left out
                     ("P-NONE", OURS): {APPROVER_OID},
-                    # an asker not known, or none: every approver
-                    ("P-NONE", "nobody@synth-tenant.example"): both, ("P-NONE", ""): both})
+                    # an asker outside our domains: every approver; one of ours the
+                    # directory does not hold, or none: no item (ap.approvals_cleared)
+                    ("P-NONE", "nobody@synth-agents.example"): both})
                 # no one else can decide: the asker keeps it
                 with mock.patch.object(ap, "_approvers", lambda _d: [OURS_OID]):
                     q2 = ap.Queue(self.dir / "q2" / ap.QUEUE_FILE)
@@ -1050,7 +1057,170 @@ class TeamsChats(World):
                 matched = sum(v["matched"] for v in out["workflows"].values())
                 self.assertEqual((judged, matched), (2, 1))
                 self.assertEqual(sum(v["actions"] for v in out["workflows"].values()), 1)
-                self.assertNotIn("c3", (self.dir / "out" / ap.GATE_FILE).read_text())
+                self.assertNotIn("c3", (self.dir / "out" / autopilot_engine.GATE_FILE).read_text())
+
+    def _items(self):
+        q = ap.Queue(self.dir / "out" / f"person_{OURS.split('@')[0]}_synth_tenant_"
+                     "example" / ap.QUEUE_FILE)
+        self.addCleanup(q.close)
+        return q, q.items(None, ("open", "done", "settled", "dismissed"))
+
+    def test_a_teams_item_names_its_sender_and_quotes_the_message(self):
+        """The live defect (11-16): every Teams reply item read "Someone is waiting on a
+        reply: (Teams message)". The item names the sender as the message states
+        (``from.display_name``) and quotes the start of its text; a message with no text
+        says so; the stored sender stays the id (the exclusion's input) and no id is shown."""
+        self.chat("c1", OURS_OID, 9, "Morning, can you check the run sheet?", day=-1)
+        self.chat("c1", APPROVER_OID, 10, "Did batch 7 pass the check? password: Zx9!long-secret")
+        self.chat("c2", OURS_OID, 9, "Hi", day=-1)
+        self.w.obj("TeamsChatMessage", {"created_at": at(11), "from": json.dumps(
+            {"display_name": "", "id": APPROVER_OID})}, audience="teams:chat:c2",
+            binding="graph_teams.messages")
+        st = self.store()
+        Replay.replay(self, role=f"person:{OURS}")
+        q, items = self._items()
+        by_chat = {i["audiences"][0]: i for i in items if i["autopilot"] == "teams_reply"}
+        named = by_chat["teams:chat:c1"]
+        happened = named["body"]["happened"]
+        self.assertEqual(happened["sender"], APPROVER_OID.lower())
+        self.assertEqual(happened["sender_name"], "Synth person")
+        self.assertTrue(happened["snippet"].startswith("Did batch 7 pass the check?"))
+        self.assertNotIn("Zx9!long-secret", json.dumps(named))
+        self.assertIn("Synth person is waiting on a reply: \u201cDid batch 7 pass the check?",
+                      named["title"])
+        shown = autopilot_engine.shown_item(named)
+        self.assertEqual(shown["body"]["happened"]["sender"], "Synth person")
+        self.assertEqual(shown["body"]["happened"]["message"], happened["snippet"])
+        self.assertNotIn(APPROVER_OID.lower(), json.dumps(shown["body"]["happened"]["sender"]))
+        # no name stated: their address from the directory; no text: not read yet, then
+        # (the next cycle read the served store) the reason
+        bare = autopilot_engine.shown_item(by_chat["teams:chat:c2"])
+        self.assertEqual(bare["body"]["happened"]["sender"], APPROVER)
+        self.assertEqual(bare["body"]["happened"]["message"], autopilot_engine.NOT_READ)
+        self.assertIn("(Teams message with no text)", bare["title"])
+        self.assertNotIn(APPROVER_OID.lower(), bare["title"].lower())
+        with q.conn:
+            q.conn.execute("UPDATE items SET state = 'open'")
+        self.assertGreaterEqual(ap.name_teams_items(st, q, {}), 1)
+        again = {i["audiences"][0]: i for i in q.items(None) if i["autopilot"] == "teams_reply"}
+        self.assertEqual(again["teams:chat:c1"]["body"], named["body"])   # done once
+        bare = autopilot_engine.shown_item(again["teams:chat:c2"])
+        self.assertEqual(bare["body"]["happened"]["message"], autopilot_engine.NO_TEXT)
+        self.assertNotIn(APPROVER_OID.lower(), bare["title"].lower())
+
+    def test_cardinality_items_prepared_before_the_names_are_named_once(self):
+        """Open Teams items stored before the item carried the name and text (the live
+        queue's) are named from the stored message and their event on the next cycle, each
+        once, none lost or doubled, a reply's title written again; a sender with no stated
+        name and no address still reads "Someone", never the id."""
+        for n in (1, 10, 60):
+            with self.subTest(n=n):
+                self.setUp()
+                msgs = [self.chat(f"c{i}", APPROVER_OID, 10, f"Is order {i} ready?")
+                        for i in range(n)]
+                anon = self.w.obj("TeamsChatMessage", {"created_at": at(10), "from": json.dumps(
+                    {"id": EXCLUDED_OID})}, audience="teams:chat:cx",
+                    binding="graph_teams.messages")
+                st = self.store()
+                q = ap.Queue(self.dir / "q" / ap.QUEUE_FILE)
+                self.addCleanup(q.close)
+                old = "Someone is waiting on a reply: (Teams message)"
+                with q.conn:
+                    for k, oid in enumerate([*msgs, anon]):
+                        sender = (APPROVER_OID if oid != anon else EXCLUDED_OID).lower()
+                        event = {"event_id": f"e{k}", "event_type": "message.received",
+                                 "object_id": oid, "object_type": "TeamsChatMessage",
+                                 "channel": "teams", "sender": sender, "at": at(10),
+                                 "text": "" if oid == anon else f"Is order {k} ready?"}
+                        q.add_event(event, at(10))
+                        q.add_item({
+                            "item_id": f"i{k}", "event_id": f"e{k}", "autopilot": "teams_reply",
+                            "owner": OURS_OID, "title": "Someone is waiting on your reply in "
+                            "Teams: " + old, "body": {
+                                "label": "Someone is waiting on your reply in Teams",
+                                "happened": {k2: event[k2] for k2 in (
+                                    "event_type", "object_id", "object_type", "channel",
+                                    "sender", "at")},
+                                "prepared": {"kind": "reply", "asked": [], "summary": old}},
+                            "audiences": ["teams:chat:c"], "markings": [], "citations": [],
+                            "due_at": at(14), "created_at": at(10)})
+                # a malformed stored row (item body or its event) is skipped and counted,
+                # never failing the cycle or the other items
+                with q.conn:
+                    q.conn.execute("INSERT INTO events (event_id, event_type, object_id, "
+                                   "object_type, seen_at, body) VALUES ('ebad', 'message.received', "
+                                   "'x', 'TeamsChatMessage', ?, '{not json')", (at(10),))
+                    for bad_id, bad_event, bad_body in (("ibad1", "e0", "{not json"),
+                                                        ("ibad2", "ebad", json.dumps({
+                                                            "happened": {
+                                                                "channel": "teams",
+                                                                "event_type":
+                                                                "message.received"}}))):
+                        q.conn.execute(
+                            "INSERT INTO items (item_id, event_id, autopilot, owner, title, "
+                            "body, audiences, markings, citations, due_at, created_at, state) "
+                            "VALUES (?, ?, 'teams_reply', ?, 't', ?, '[]', '[]', '[]', ?, ?, "
+                            "'open')", (bad_id, bad_event, OURS_OID, bad_body, at(14), at(10)))
+                from collections import Counter
+                skipped = Counter()
+                self.assertEqual(ap.name_teams_items(st, q, {}, skipped=skipped), n + 1)
+                self.assertEqual(skipped["teams_item_unreadable"], 2)
+                self.assertEqual(ap.name_teams_items(st, q, {}), 0)      # once
+                with q.conn:
+                    q.conn.execute("DELETE FROM items WHERE item_id LIKE 'ibad%'")
+                after = {i["item_id"]: i for i in q.items(None)}
+                self.assertEqual(sorted(after), sorted(f"i{k}" for k in range(n + 1)))
+                for k in range(n):
+                    item = after[f"i{k}"]
+                    self.assertEqual(item["body"]["happened"]["sender_name"], "Synth person")
+                    self.assertEqual(item["title"], "Someone is waiting on your reply in "
+                                     f"Teams: Synth person is waiting on a reply: \u201cIs "
+                                     f"order {k} ready?\u201d")
+                bare = autopilot_engine.shown_item(after[f"i{n}"])
+                self.assertEqual(bare["body"]["happened"]["sender"], "Someone")
+                self.assertEqual(bare["body"]["happened"]["message"], autopilot_engine.NO_TEXT)
+                self.assertNotIn(EXCLUDED_OID.lower(), json.dumps(bare).lower().replace(
+                    json.dumps(bare["body"]["happened"]["object_id"]).lower(), ""))
+
+    def test_old_workflow_labels_are_retitled_on_open_items_only(self):
+        """The registry no longer says "Someone is waiting on your reply": an open item
+        whose title starts with the old label gets the new one (title and body label), the
+        rest of the title kept; done again it changes nothing; a closed item, an item of
+        another title and the batch bound are respected."""
+        registry = ap.load_registry()
+        labels = {a["id"]: a["label"] for a in registry["autopilots"]}
+        self.assertEqual(labels["teams_reply"], "Reply waiting in Teams")
+        for a in registry["autopilots"]:
+            self.assertNotIn("Someone", a["label"])
+        q = ap.Queue(self.dir / "q" / ap.QUEUE_FILE)
+        self.addCleanup(q.close)
+        old = "Someone is waiting on your reply in Teams"
+        rows = [("o1", "open", old + ": Ana Ruiz is waiting on a reply: x"),
+                ("o2", "open", old + ": Bo is waiting on a reply: y"),
+                ("c1", "done", old + ": Cy is waiting on a reply: z"),
+                ("n1", "open", "Reply waiting in Teams: Di is waiting on a reply: w"),
+                ("n2", "open", old + " and more")]
+        with q.conn:
+            for k, (iid, state, title) in enumerate(rows):
+                q.add_event({"event_id": f"e{k}", "event_type": "message.received",
+                             "object_id": f"o{k}", "object_type": "TeamsChatMessage"}, at(10))
+                q.add_item({"item_id": iid, "event_id": f"e{k}", "autopilot": "teams_reply",
+                            "owner": OURS_OID, "title": title, "body": {"label": old},
+                            "audiences": [], "markings": [], "citations": [],
+                            "due_at": at(14), "created_at": at(10)})
+                q.conn.execute("UPDATE items SET state = ? WHERE item_id = ?", (state, iid))
+        self.assertEqual(ap.retitle_old_labels(q, registry, limit=1), 1)
+        self.assertEqual(ap.retitle_old_labels(q, registry), 1)
+        self.assertEqual(ap.retitle_old_labels(q, registry), 0)      # idempotent
+        got = {i["item_id"]: i for i in q.items(None, ("open", "done"))}
+        self.assertEqual(got["o1"]["title"],
+                         "Reply waiting in Teams: Ana Ruiz is waiting on a reply: x")
+        self.assertEqual(got["o2"]["title"],
+                         "Reply waiting in Teams: Bo is waiting on a reply: y")
+        self.assertEqual(got["o1"]["body"]["label"], "Reply waiting in Teams")
+        self.assertTrue(got["c1"]["title"].startswith(old))          # closed untouched
+        self.assertEqual(got["c1"]["body"]["label"], old)
+        self.assertEqual(got["n2"]["title"], old + " and more")
 
     def test_cardinality_a_reply_sent_as_several_messages_is_anticipated_whole(self):
         """One answer typed as n messages, each six minutes after the one before, is
@@ -1213,14 +1383,14 @@ class TeamsChats(World):
         self.assertIn("SO-7001", work["teams_draft"]["body"])
         self.assertFalse(work["teams_draft"]["post"])
         self.assertNotIn("draft", work)
-        self.assertIsNone(ap.card_of(item))           # nothing to send or post from
+        self.assertIsNone(autopilot_reading.card_of(item))           # nothing to send or post from
         states = ("open", "done")
-        self.assertEqual(len(ap.visible(q, reader=READER, may_read=everyone, held=[],
+        self.assertEqual(len(autopilot_reading.visible(q, reader=READER, may_read=everyone, held=[],
                                         decide=opens_all, states=states)), 1)
         grants = {"teams": {OURS_OID: "OPS"}, "managers": {APPROVER_OID: ["OPS"]}}
-        self.assertEqual(len(ap.visible(q, reader=OTHER, may_read=everyone, held=[],
+        self.assertEqual(len(autopilot_reading.visible(q, reader=OTHER, may_read=everyone, held=[],
                                         decide=opens_all, grants=grants, states=states)), 1)
-        self.assertEqual(ap.visible(q, reader=OTHER, may_read=lambda a: a != "teams:chat:c1",
+        self.assertEqual(autopilot_reading.visible(q, reader=OTHER, may_read=lambda a: a != "teams:chat:c1",
                                     held=[], decide=opens_all, grants=grants, states=states),
                          [])
 
@@ -1319,7 +1489,7 @@ class GroupChats(TeamsChats):
                 judged = sum(v["judged"] for v in out["workflows"].values())
                 matched = sum(v["matched"] for v in out["workflows"].values())
                 self.assertEqual((judged, matched), (1, 1))
-                self.assertNotIn("g2", (self.dir / "out" / ap.GATE_FILE).read_text())
+                self.assertNotIn("g2", (self.dir / "out" / autopilot_engine.GATE_FILE).read_text())
 
     def test_cardinality_the_first_answer_to_the_owners_own_message_is_their_turn(self):
         """``teams_group_turn``: in a group chat the owner keeps writing in (10 messages in
@@ -1361,7 +1531,7 @@ class GroupChats(TeamsChats):
                     "SELECT COUNT(*) FROM events WHERE json_extract(body, '$.mailbox') = ? "
                     "AND json_extract(body, '$.audience') = 'teams:chat:g3'",
                     (self.THIRD,)).fetchone()[0], 0)
-                self.assertNotIn("g2", (self.dir / "out" / ap.GATE_FILE).read_text())
+                self.assertNotIn("g2", (self.dir / "out" / autopilot_engine.GATE_FILE).read_text())
 
     def test_a_third_member_writing_in_between_ends_the_reply(self):
         """In a group the owner answers a mention; another member (not the asker) writes;
@@ -1418,18 +1588,18 @@ class CaptureShapeChats(TeamsChats):
                 judged = sum(v["judged"] for v in out["workflows"].values())
                 matched = sum(v["matched"] for v in out["workflows"].values())
                 self.assertEqual((judged, matched), (1, 1))
-                text = (self.dir / "out" / ap.GATE_FILE).read_text()
+                text = (self.dir / "out" / autopilot_engine.GATE_FILE).read_text()
                 self.assertNotIn(self.BARRED, text)
                 self.assertNotIn(self.UNKNOWN, text)
 
     def test_chat_people_reads_one_person_once_and_unknown_chats_as_no_one(self):
         directory = {OURS: OURS_OID, APPROVER: APPROVER_OID}
         members = self.guard().chat_members
-        self.assertEqual(ap.chat_people(self.PAIR, members, directory),
+        self.assertEqual(autopilot_events.chat_people(self.PAIR, members, directory),
                          sorted([OURS_OID, APPROVER_OID]))
-        self.assertEqual(ap.chat_people("g9", members, directory),
+        self.assertEqual(autopilot_events.chat_people("g9", members, directory),
                          sorted([OURS_OID, APPROVER_OID, self.THIRD]))
-        self.assertEqual(ap.chat_people(self.UNKNOWN, members, directory), [])
+        self.assertEqual(autopilot_events.chat_people(self.UNKNOWN, members, directory), [])
 
 
 class TeamsSenderAnswered(World):
@@ -1999,7 +2169,7 @@ class RdStatusUpdate(World):
                 self.assertEqual(out["prepared_by_autopilot"].get("rd_status_update"), n)
                 self.assertEqual((flow["judged"], flow["matched"]),
                                  (n, sum(1 for i in range(n) if i % 3)))
-                self.assertFalse(flow["passes_gate"] and n < ap.GATE_MIN_JUDGED)
+                self.assertFalse(flow["passes_gate"] and n < autopilot_engine.GATE_MIN_JUDGED)
                 items = self.rd_items()
                 self.assertEqual(len(items), n)
                 item = items[0]

@@ -28,7 +28,7 @@ share is reported as totals only. Pure: reads no source, clock or environment.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import date, timedelta
+from datetime import date
 from decimal import Decimal, InvalidOperation
 import hashlib
 import re

@@ -246,7 +246,7 @@ def _add(total: dict[str, Any], key: str, amount: int = 1) -> None:
 def _row_digests(view: Mapping[str, Any]) -> set[str] | None:
     """The mirror's row digests of an opened Portal row (``integrations.source_mirror``
     stores SHA-256 of the canonical JSON), or None when the view holds no row."""
-    from integrations.source_mirror import _canonical
+    from integrations.source_mirror_values import _canonical
 
     rows = [view["row"]] if isinstance(view.get("row"), Mapping) else view.get("rows")
     if not isinstance(rows, list) or not rows:
@@ -722,8 +722,8 @@ def _resync(db: str, environ: Mapping[str, str], *, relations: int = RESYNC_RELA
     stored row count grew by beyond the capture's ``keys_new`` plus the rows received that
     no capture count accounts for. Counts only; ``status`` is ``measured``, ``not_run``
     (no Portal client) or ``not_exercised`` (no relation to refresh)."""
-    from integrations.source_mirror import (PROBE_PRINCIPAL, AudienceMap, SourceMirror,
-                                            load_ingest_config, mirror_options)
+    from integrations.source_mirror import AudienceMap, SourceMirror, load_ingest_config
+    from integrations.source_mirror_query import PROBE_PRINCIPAL, mirror_options
     from integrations.workbench_read_api import WorkbenchReadApiClient
     from ontology.core import Actor
 

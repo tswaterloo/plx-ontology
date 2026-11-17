@@ -103,6 +103,7 @@ import threading
 from typing import Any, Callable, Collection, Iterable, Iterator, Mapping, Protocol, Sequence
 
 from ontology import identifiers as ids
+from ontology import tmp_root
 from ontology.project import CapturedRecord, build_store
 from ontology.store import StoreError, instant, removal_stretches, removed_at_sql
 from ontology.units import same_denominator, unit_token
@@ -499,17 +500,22 @@ def _part(schema: Any, name: str) -> Mapping[str, Any]:
 # they leave, so ``comparable`` over every binding of a found record's (``plx.find``'s
 # corroboration) reads them once, not every type and link per pair (0.5 s a binding
 # idle, 52 s of a cold margin Ask under load, 2026-11-13).
-_INDEXES: dict[str, tuple[Any, dict[str, Any]]] = {}   # digest -> (that schema, index)
-_INDEXES_KEPT = 4
+# Kept per schema object: two objects of one digest (a host's schema and a case open's)
+# used in turn each keep their own (one entry per digest rebuilt the index on every
+# switch: 100 rebuilds in one pick, 2026-11-14).
+_INDEXES: dict[tuple[str, int], tuple[Any, dict[str, Any]]] = {}  # (digest, id) -> held
+_INDEXES_KEPT = 8
 
 
 def _schema_index(schema: Any) -> dict[str, Any] | None:
     digest = getattr(schema, "digest", None)
     if isinstance(schema, Mapping) or not isinstance(digest, str) or len(digest) < 64:
         return None
-    held = _INDEXES.get(digest)
+    key = (digest, id(schema))
+    held = _INDEXES.get(key)
     if held is not None and held[0] is schema:   # its own object: a copy that changed its
-        return held[1]                           # parts under the same digest is not reused
+        _INDEXES[key] = _INDEXES.pop(key)        # parts under the same digest is not reused;
+        return held[1]                           # a hit is the most recently used again
     types = getattr(schema, "object_types", None) or {}
     links = getattr(schema, "link_types", None) or {}
     first: dict[str, tuple[str, Mapping[str, Any]]] = {}
@@ -525,9 +531,10 @@ def _schema_index(schema: Any) -> dict[str, Any] | None:
             if lb.get("kind") == "fk" and len(lb.get("pairs") or ()) == 1:
                 fk_from.setdefault(lb.get("from_binding"), []).append((lid, lb))
     index = {"first": first, "last": last, "fk_from": fk_from, "paths": {}}
-    if len(_INDEXES) >= _INDEXES_KEPT:
-        _INDEXES.clear()
-    _INDEXES[digest] = (schema, index)
+    _INDEXES.pop(key, None)
+    while len(_INDEXES) >= _INDEXES_KEPT:   # the least recently used goes, never the lot:
+        _INDEXES.pop(next(iter(_INDEXES)))  # clearing at the cap dropped the index of the
+    _INDEXES[key] = (schema, index)         # schema used just before (2026-11-15)
     return index
 
 
@@ -564,9 +571,23 @@ def link_hops(schema: Any, from_binding: str, to_binding: str) -> list[Hop]:
     source record seen twice), ``fk`` only along an N:1 / 1:1 link (or back along a
     1:1). A link read backwards from its "one" side (a customer to its orders) names
     many records and identifies none, so it is never followed. The schema's links only,
-    never a join."""
+    never a join. A schema with a content digest reads them from its index
+    (``_hop_index``: every pair built in one pass over the links), not every link per
+    pair."""
+    index = _schema_index(schema)
+    if index is not None:
+        return list(_hop_index(schema, index).get((from_binding, to_binding), ()))
+    pair = (from_binding, to_binding)
+    return _hops_by_pair(schema, pair).get(pair, [])
+
+
+def _hops_by_pair(schema: Any, only: tuple[str, str] | None = None
+                  ) -> dict[tuple[str, str], list[Hop]]:
+    """(from binding, to binding) -> ``link_hops`` of every pair the schema's links join
+    (with ``only``, of that pair alone), in link id order: one pass over the links. A
+    link binding from a binding to itself is read forward only."""
     links = _part(schema, "link_types")
-    out = []
+    out: dict[tuple[str, str], list[Hop]] = {}
     for lid in sorted(links):
         link = links[lid]
         cardinality = link.get("cardinality")
@@ -574,18 +595,31 @@ def link_hops(schema: Any, from_binding: str, to_binding: str) -> list[Hop]:
             if lb.get("kind") not in FOLLOWED_LINK_KINDS or len(lb.get("pairs") or ()) != 1:
                 continue
             pair = lb["pairs"][0]
-            ends = (lb.get("from_binding"), lb.get("to_binding"))
-            if ends == (from_binding, to_binding):
-                forward, paths = True, (pair.get("from"), pair.get("to"))
-            elif ends == (to_binding, from_binding):
-                forward, paths = False, (pair.get("to"), pair.get("from"))
-            else:
-                continue
-            single = (lb["kind"] == "same_record" or cardinality == "1:1"
-                      or (forward and cardinality == "N:1"))
-            if single and all(isinstance(p, str) and "." not in p for p in paths):
-                out.append(Hop(lid, paths[0], paths[1], forward, lb["kind"]))
+            start, end = lb.get("from_binding"), lb.get("to_binding")
+            ways = [((start, end), True, (pair.get("from"), pair.get("to")))]
+            if start != end:
+                ways.append(((end, start), False, (pair.get("to"), pair.get("from"))))
+            for key, forward, paths in ways:
+                if only is not None and key != only:
+                    continue
+                single = (lb["kind"] == "same_record" or cardinality == "1:1"
+                          or (forward and cardinality == "N:1"))
+                if single and all(isinstance(p, str) and "." not in p for p in paths):
+                    out.setdefault(key, []).append(Hop(lid, paths[0], paths[1], forward,
+                                                       lb["kind"]))
     return out
+
+
+def _hop_index(schema: Any, index: dict[str, Any]) -> dict[tuple[str, str], tuple[Hop, ...]]:
+    """``_hops_by_pair`` of a digested schema, built once into its ``_schema_index``
+    (a find's ``linking_bindings`` asks every binding against every target: 6900 pairs,
+    each a pass over every link, were 346 s of one 60-invoice pick under load,
+    2026-11-14)."""
+    hops = index.get("hops")
+    if hops is None:
+        hops = index["hops"] = {key: tuple(found) for key, found in
+                                _hops_by_pair(schema).items()}
+    return hops
 
 
 def link_paths(schema: Any, from_binding: str, to_binding: str
@@ -599,15 +633,21 @@ def linking_bindings(schema: Any, to_bindings: Iterable[str]) -> dict[str, list[
     """binding id -> the bindings among ``to_bindings`` (other than itself) whose one
     record a record of it names through ``link_hops``."""
     targets = sorted(set(to_bindings))
-    out: dict[str, list[str]] = {}
-    types = _part(schema, "object_types")
-    for tid in sorted(types):
-        for binding in types[tid].get("bindings", ()):
-            bid = binding.get("id")
-            reach = [tb for tb in targets if tb != bid and link_hops(schema, bid, tb)]
-            if reach:
-                out[bid] = reach
-    return out
+    index = _schema_index(schema)
+    held = index.setdefault("linking", {}) if index is not None else {}
+    key = tuple(targets)
+    if key not in held:
+        hops = _hop_index(schema, index) if index is not None else _hops_by_pair(schema)
+        types = _part(schema, "object_types")
+        reached: dict[str, list[str]] = {}
+        for tid in sorted(types):
+            for binding in types[tid].get("bindings", ()):
+                bid = binding.get("id")
+                reach = [tb for tb in targets if tb != bid and hops.get((bid, tb))]
+                if reach:
+                    reached[bid] = reach
+        held[key] = reached
+    return {bid: list(reach) for bid, reach in held[key].items()}
 
 
 def linked_types(schema: Any, target_type: str, target_binding: str | None = None
@@ -889,7 +929,7 @@ class SourceResolver:
         self.normalizer = normalizer
         self.clock = clock or (lambda: datetime.now(timezone.utc))
         self._own_workdir = workdir is None
-        self.workdir = Path(tempfile.mkdtemp(prefix="plx-resolve-") if workdir is None
+        self.workdir = Path(tmp_root.mkdtemp(prefix="plx-resolve-") if workdir is None
                             else workdir)
         self.workdir.mkdir(parents=True, exist_ok=True)
         self._lock = threading.Lock()
@@ -1299,7 +1339,7 @@ class MirrorLookup:
 
     def probe(self, actor: Any, relation: str, path: str, values: Sequence[str],
               may_read: Callable[[str], bool]) -> list[Probe]:
-        from integrations.source_mirror import MirrorError
+        from integrations.source_mirror_values import MirrorError
         if not may_read(f"api:{relation}"):
             return [Probe(self.source, relation, path, "withheld")]
         column, _, key = path.partition(".")
@@ -1322,7 +1362,7 @@ class MirrorLookup:
         """Every record whose column ``path`` starts with one of ``prefixes`` (the
         mirror's ``prefix`` filter, paged up to ``scan_cap`` rows per prefix); a key
         inside a JSON column is not searchable by prefix."""
-        from integrations.source_mirror import MirrorError
+        from integrations.source_mirror_values import MirrorError
         if not may_read(f"api:{relation}"):
             return [Probe(self.source, relation, path, "withheld")]
         if "." in path:
@@ -1369,7 +1409,7 @@ class MirrorLookup:
                      freshness=served)
 
     def _retrying(self, read: Callable[[], Any]) -> tuple[Any, int]:
-        from integrations.source_mirror import MirrorError
+        from integrations.source_mirror_values import MirrorError
         try:
             return read(), 0
         except MirrorError as exc:

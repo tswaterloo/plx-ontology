@@ -1,0 +1,18 @@
+# Remove the temp directories of gone processes (operating.tmp): each
+# /data/plx-tmp/<unit>/<pid> whose process ended or whose pid was reused, and this user's
+# mkdtemp-named directories in /tmp untouched for 3 days that no live process holds open.
+# Counts only in the journal, never a name.
+[Unit]
+Description=PLX temp directory sweep
+
+[Service]
+Type=oneshot
+WorkingDirectory=@PLX_CURRENT@
+Environment=PATH=/data/venv/bin:/usr/local/bin:/usr/bin:/bin
+Environment=TMPDIR=/tmp
+ExecStart=/data/venv/bin/python3 -m operating.tmp sweep --system-tmp-days 3
+Nice=10
+CPUWeight=20
+IOSchedulingClass=idle
+MemoryMax=512M
+TimeoutStartSec=30min

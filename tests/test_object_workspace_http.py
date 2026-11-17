@@ -81,6 +81,11 @@ def _leaves(value, out):
     return out
 
 
+# The test client's wait for a server start or one answer: a hang guard only (the lander
+# caps a module at 900 s). 60 s timed out one case-panel read at load ~50-66 (11-12).
+HTTP_WAIT = 300
+
+
 class ObjectWorkspaceHttpTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
@@ -160,7 +165,7 @@ class ObjectWorkspaceHttpTest(unittest.TestCase):
 
         thread = threading.Thread(target=run, daemon=True)
         thread.start()
-        server = ready.get(timeout=60)
+        server = ready.get(timeout=HTTP_WAIT)
         if isinstance(server, BaseException):
             raise server
         self.addCleanup(lambda: (server.shutdown(), thread.join(timeout=10)))
@@ -176,7 +181,7 @@ class ObjectWorkspaceHttpTest(unittest.TestCase):
                 headers.update({"Content-Type": "application/json",
                                 "X-Operator-Token": csrf[0]})
                 data = json.dumps(body).encode("utf-8")
-            conn = HTTPConnection("127.0.0.1", port, timeout=60)
+            conn = HTTPConnection("127.0.0.1", port, timeout=HTTP_WAIT)
             conn.request("GET" if body is None else "POST", path, body=data, headers=headers)
             response = conn.getresponse()
             body = json.loads(response.read())
@@ -852,7 +857,7 @@ class ObjectWorkspaceHttpTest(unittest.TestCase):
         self.addCleanup(lambda: (server.shutdown(), thread.join(timeout=10), server.server_close()))
 
         def get(path, ticket=None):
-            conn = HTTPConnection("127.0.0.1", server.server_address[1], timeout=60)
+            conn = HTTPConnection("127.0.0.1", server.server_address[1], timeout=HTTP_WAIT)
             conn.request("GET", path, headers={"Authorization": "Bearer " + ticket}
                          if ticket else {})
             response = conn.getresponse()

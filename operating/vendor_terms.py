@@ -66,7 +66,7 @@ from ontology.units import currency_reading, currency_token_pattern
 from . import drafts
 from .answer_conflicts import Reading, resolve, value_key
 from .copy_gate import say_date
-from .claim_checks import unit_word
+from .claim_checks_text import unit_word
 from .people_graph import EXTERNAL, PERSON, UNDECIDED, WITHHELD
 
 PROVENANCE_ENGINE = "value_provenance"

@@ -21,11 +21,13 @@ from urllib.error import URLError
 from urllib.parse import parse_qs, parse_qsl, quote, unquote, urlencode, urlsplit
 
 from integrations import capture_sharepoint as cs
+from integrations import capture_sharepoint_scope
 from integrations import capture_store, graph_read
 from integrations.captured_text import OCR_PENDING
-from integrations.capture_mail import CaptureError
-from integrations.capture_sharepoint import (CaptureScope, SharePointCapture,
-                                             SharePointCaptureStore, version_handle)
+from integrations.capture_mail_scope import CaptureError
+from integrations.capture_sharepoint import (SharePointCapture, SharePointCaptureStore,
+                                             version_handle)
+from integrations.capture_sharepoint_scope import CaptureScope
 from integrations.graph_read import SharePointReader
 from integrations.live_source_guard import BoundedBackoff, LiveSourceAudience, NotVisible
 from ontology.types import Actor
@@ -1050,6 +1052,7 @@ class ExtractionProcessTests(CaptureCase):
         import time
         from unittest import mock
         from integrations import capture_mail
+        from integrations import capture_mail_extract
         run = self.capture(extraction_processes=True, extract_workers=2).run(scope())
         self.assertTrue(run["complete"], run)
         found = self.store.resolve(self.handle("01FILEB"), CAPTURE, capture_audience())
@@ -1072,7 +1075,7 @@ class ExtractionProcessTests(CaptureCase):
         self.assertEqual(self.root(run)["counts"]["versions_new"], 3)   # the walk went on
         status = self.store.db.execute(
             "SELECT text_status FROM items WHERE item_id='01FILEB'").fetchone()[0]
-        self.assertEqual(status, capture_mail.EXTRACTION_TIMED_OUT)
+        self.assertEqual(status, capture_mail_extract.EXTRACTION_TIMED_OUT)
         self.assertIsNone(capture._extractors)   # ended with the run
 
 
@@ -1227,7 +1230,7 @@ def cli_args(tmp) -> argparse.Namespace:
     """The CLI over the quality folder, state and files under ``tmp``, two runs."""
     scope_file = Path(tmp) / "scope.json"
     scope_file.write_text(json.dumps({
-        "schema": cs.SCOPE_SCHEMA, "targets": [
+        "schema": capture_sharepoint_scope.SCOPE_SCHEMA, "targets": [
             {"id": "quality", "drive_id": DRIVE, "folders": [QUALITY_FOLDER]}]}))
     audience_file = Path(tmp) / "audience.json"
     audience_file.write_text(json.dumps({
@@ -1268,7 +1271,7 @@ class ScopeStoreAndCliTests(unittest.TestCase):
                           shipped.permission_reread_hours), (24, 24))
         for bad in (0, 721, True, "24"):
             with self.assertRaises(CaptureError):
-                CaptureScope.from_json({"schema": cs.SCOPE_SCHEMA, "targets": target,
+                CaptureScope.from_json({"schema": capture_sharepoint_scope.SCOPE_SCHEMA, "targets": target,
                                         "permission_reread_hours": bad})
         with self.assertRaises(CaptureError):
             SharePointCapture(None, None, CAPTURE, max_content_bytes=100_000_001)
@@ -1796,7 +1799,7 @@ class PortalColumnsTests(CaptureCase):
                            "scope_list_item_column_not_in_taxonomy"),
                           ("DocumentCategory", "scope_list_item_columns_invalid")):
             with self.subTest(bad=bad), self.assertRaises(CaptureError) as raised:
-                CaptureScope.from_json({"schema": cs.SCOPE_SCHEMA, "targets": target,
+                CaptureScope.from_json({"schema": capture_sharepoint_scope.SCOPE_SCHEMA, "targets": target,
                                         "list_item_columns": bad})
             self.assertEqual(raised.exception.code, code)
         root = Path(__file__).resolve().parents[2]

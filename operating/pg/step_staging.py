@@ -157,11 +157,23 @@ def _hashes(row: Sequence[Any], narrow: bool) -> tuple[int, int | None]:
 def _served(cur: Any, scope: Mapping[str, Any], narrow: bool
             ) -> dict[str, tuple[int, int | None]]:
     """The served links of ``scope`` (``prefix``/``end``/``from``, or ``objects``: the ids
-    they are from), link id -> (row hash, narrowed hash)."""
+    they are from; ``hash_part`` (k, n): only those from an object of part k of n,
+    ``ontology.pg_step_inplace.object_part``), link id -> (row hash, narrowed hash)."""
     from ontology.pg_byte_order import key_collate
     from operating.pg.migrate_chunks import _served_links
     out: dict[str, tuple[int, int | None]] = {}
     c = key_collate(cur)
+    if scope.get("hash_part") is not None:
+        from ontology.pg_step_inplace import part_sql
+        if scope.get("objects") is not None:
+            raise StageRefused("hash_part_with_objects")
+        for row in _served_links(cur, f"l.link_id{c} >= %s AND l.link_id{c} < %s AND "
+                                 "(%s::text[] IS NULL OR EXISTS (SELECT 1 FROM "
+                                 "unnest(%s::text[]) f WHERE starts_with(l.from_object, f))) "
+                                 "AND " + part_sql("l.from_object", *scope["hash_part"]),
+                                 [scope["prefix"], scope["end"], scope["from"], scope["from"]]):
+            out[row[0]] = _hashes(row, narrow)
+        return out
     if scope.get("objects") is not None:
         objects = sorted(scope["objects"])
         for k in range(0, len(objects), _OBJECT_BATCH):
@@ -182,6 +194,11 @@ def _served(cur: Any, scope: Mapping[str, Any], narrow: bool
 def _in_scope(row: Sequence[Any], scope: Mapping[str, Any], objects: set[str] | None) -> bool:
     if not scope["prefix"] <= row[0] < scope["end"]:
         return False
+    if scope.get("hash_part") is not None:
+        from ontology.pg_step_inplace import object_part
+        k, n = scope["hash_part"]
+        if object_part(row[2], n) != k:
+            return False
     if objects is not None:
         return row[2] in objects
     return scope["from"] is None or row[2].startswith(tuple(scope["from"]))
@@ -203,16 +220,24 @@ def _store_rows(path: Path) -> Iterator[tuple]:
 
 
 def stage(dsn: str, run_key: str, step: str, part: int, store: Path,
-          scopes: Sequence[Mapping[str, Any]], objects: Iterable[str] | None = None
-          ) -> dict[str, Any]:
+          scopes: Sequence[Mapping[str, Any]], objects: Iterable[str] | None = None,
+          hash_part: tuple[int, int] | None = None) -> dict[str, Any]:
     """Stage ``store`` (a finished step's links, or one part of a parted step) against the
     served links of ``scopes`` (the step's owned entries; ``objects``: the part's document
     objects, every scope then holding only links from them, and every store link must be
-    from one). One transaction: the (step, part) staged again from nothing, its marker
-    last. Returns its report."""
+    from one; ``hash_part`` (k, n): part k of a step run over n parts by the object its
+    links are from, the same, ``ontology.pg_step_inplace.object_part``). One transaction:
+    the (step, part) staged again from nothing, its marker last. Returns its report."""
     import psycopg
     narrow = step in NARROWED
     objs = set(objects) if objects is not None else None
+    if hash_part is not None:
+        if objs is not None:
+            raise StageRefused("hash_part_with_objects")
+        if part != hash_part[0]:
+            raise StageRefused(f"hash_part_not_part:{step}:{part}:{hash_part[0]}")
+        scopes = [{**sc, "hash_part": [int(hash_part[0]), int(hash_part[1])]}
+                  for sc in scopes]
     s = schema()
     digest = hashlib.sha256()
     with psycopg.connect(dsn, application_name="plx-step-stage") as pg:
@@ -231,7 +256,7 @@ def stage(dsn: str, run_key: str, step: str, part: int, store: Path,
 
             def check(row: tuple) -> None:
                 if not any(_in_scope(row, sc, objs) for sc in scopes):
-                    if objs is not None:
+                    if objs is not None or hash_part is not None:
                         raise StageRefused(f"store_link_outside_scope:{step}:{row[0]}")
                     outside.append(row[0])
 
@@ -278,10 +303,14 @@ def stage_rows(cur: Any, s: str, step: str, part: int, rows: Iterable[tuple],
               "outside": 0}
     seen: set[str] = set()
     pending: list[tuple] = []
+    replacing: list[str] = []   # served ids the pending rows replace: one COPY with them
     ends: set[str] = set()
     replaced = 0
 
     def flush() -> None:
+        if replacing:
+            _gone(cur, s, step, part, replacing)
+            replacing.clear()
         if not pending:
             return
         with cur.copy(f"COPY {s}.links ({', '.join(cols)}, step, part, ord) "
@@ -309,7 +338,7 @@ def stage_rows(cur: Any, s: str, step: str, part: int, rows: Iterable[tuple],
             continue
         if served is not None:
             digest.update(b"-" + row[0].encode())
-            _gone(cur, s, step, part, [row[0]])
+            replacing.append(row[0])
             report["gone"] += 1
             replaced += 1
         digest.update(b"+" + json.dumps(row, default=str).encode())
@@ -323,13 +352,15 @@ def stage_rows(cur: Any, s: str, step: str, part: int, rows: Iterable[tuple],
 
 
 def served_rows(cur: Any, where: str, params: Sequence[Any] = (),
-                held: dict[str, tuple[int, int | None]] | None = None
+                held: dict[str, tuple[int, int | None]] | None = None,
+                source: str = "ontology.link_rows l"
                 ) -> dict[str, tuple[int, int | None]]:
-    """The served links ``where`` holds (on ``ontology.link_rows l``), link id -> row
-    hashes, as :func:`stage_rows` compares them (added to ``held``)."""
+    """The served links ``where`` holds (on ``ontology.link_rows l``, or the FROM
+    ``source`` giving ``l``), link id -> row hashes, as :func:`stage_rows` compares them
+    (added to ``held``)."""
     from operating.pg.migrate_chunks import _served_links
     held = {} if held is None else held
-    for row in _served_links(cur, where, list(params)):
+    for row in _served_links(cur, where, list(params), source):
         held[row[0]] = _hashes(row, False)
     return held
 
@@ -436,12 +467,20 @@ def apply_now(dsn: str, run_key: str, step: str, parts: Iterable[int] | None = N
                     out["bits"][part] = {"skipped": "applied"}
                     continue
                 cur.execute(LOCK)
+                from ontology.step_migrate import collapse_refusal
+                why = collapse_refusal(cur, [step])
+                if why:   # a step not occurrence-safe on a store the collapse folded
+                    pg.rollback()
+                    raise StageRefused(why)
                 cur.execute("SET LOCAL jit = off")
                 try:
                     bit = apply_in(cur, s, step, part, held[part], columns)
                 except StageRefused:
                     pg.rollback()
                     raise
+                # the change feed (migration 0026): the ends of the links this bit wrote
+                from operating.pg import change_feed
+                change_feed.record_link_ends(cur, f"step:{step}:{part}", s, (step, part))
                 pg.commit()
                 out["bits"][part] = bit
     return out
@@ -520,6 +559,9 @@ def undo_in(cur: Any, s: str, step: str, part: int) -> dict[str, int]:
     """One applied bit taken back in the caller's transaction (it holds the delta's
     lock): its inserted links deleted, its deleted rows put back as they were, its
     markers removed."""
+    # the change feed (migration 0026): the ends of the links taken back, read first
+    from operating.pg import change_feed
+    change_feed.record_link_ends(cur, f"undo:{step}:{part}", s, (step, part))
     cur.execute(f"DELETE FROM ontology.link_rows l USING {s}.undo_inserted u WHERE "
                 "u.step = %s AND u.part = %s AND l.link_id = u.link_id", (step, part))
     removed = cur.rowcount
@@ -537,17 +579,27 @@ def undo_in(cur: Any, s: str, step: str, part: int) -> dict[str, int]:
 
 # ---------------------------------------------------------------- the apply's chunk
 
-def apply_step(cur: Any, step: str, expected: Mapping[str, Any], write: bool,
-               columns: Sequence[str]) -> dict[str, Any]:
-    """One staged step applied in the caller's transaction: its ``gone`` links deleted and
-    its ``links`` inserted (in part and store order). Refused when the markers differ from
-    ``expected`` (the step layer's record of them) or a ``gone`` link is not served."""
+def _staged_totals(cur: Any, step: str, expected: Mapping[str, Any]
+                   ) -> tuple[dict[int, dict[str, Any]], dict[str, Any]]:
     from operating.pg.ontology_migrate import Refused
     parts = staged(cur, step)
     got = totals(parts) if parts else None
     if got is None or any(got.get(k) != expected.get(k) for k in
                           ("parts", "rows", "written", "gone", "digest")):
         raise Refused(f"staged_differs:{step}")
+    return parts, got
+
+
+def apply_step(cur: Any, step: str, expected: Mapping[str, Any], write: bool,
+               columns: Sequence[str], *, keep_undo: bool = False) -> dict[str, Any]:
+    """One staged step applied in the caller's transaction: its ``gone`` links deleted and
+    its ``links`` inserted (in part and store order). Refused when the markers differ from
+    ``expected`` (the step layer's record of them) or a ``gone`` link is not served.
+    ``keep_undo`` (the one-transaction apply, ``ontology_migrate apply``): the deleted rows
+    and inserted ids kept as :func:`apply_now` keeps them, and every part marked applied
+    in the same transaction, so :func:`undo` takes the step back."""
+    from operating.pg.ontology_migrate import Refused
+    parts, got = _staged_totals(cur, step, expected)
     s = schema()
     out = {k: got[k] for k in ("rows", "same", "extractor_only", "written", "gone")}
     were = applied(cur, step)
@@ -558,6 +610,11 @@ def apply_step(cur: Any, step: str, expected: Mapping[str, Any], write: bool,
         return {**out, "applied_before": len(were)}
     if not write:
         return out
+    if keep_undo:
+        _ensure_applied(cur, s)
+        cur.execute(f"INSERT INTO {s}.undo_deleted SELECT l.*, g.step, g.part FROM "
+                    f"ontology.link_rows l JOIN {s}.gone g ON g.link_id = l.link_id "
+                    "WHERE g.step = %s", (step,))
     cur.execute(f"DELETE FROM ontology.link_rows l USING {s}.gone g WHERE g.step = %s AND "
                 "l.link_id = g.link_id", (step,))
     if cur.rowcount != got["gone"]:
@@ -567,8 +624,59 @@ def apply_step(cur: Any, step: str, expected: Mapping[str, Any], write: bool,
                 "WHERE step = %s ORDER BY part, ord", (step,))
     if cur.rowcount != got["written"]:
         raise Refused(f"staged_written:{step}:{cur.rowcount}:{got['written']}")
+    if keep_undo:
+        cur.execute(f"INSERT INTO {s}.undo_inserted (link_id, step, part) SELECT link_id, "
+                    f"step, part FROM {s}.links WHERE step = %s", (step,))
+        for part in sorted(parts):
+            cur.execute(f"INSERT INTO {s}.applied (step, part, staged, report) VALUES "
+                        "(%s, %s, %s, %s)", (step, part, json.dumps(parts[part], sort_keys=True),
+                                             json.dumps({"one_transaction": True})))
     out["deleted"] = got["gone"]
     return out
+
+
+def rehearse_step(cur: Any, step: str, expected: Mapping[str, Any], share: float,
+                  columns: Sequence[str]) -> dict[str, Any]:
+    """A share of :func:`apply_step` in the caller's transaction (which the caller rolls
+    back): the first ``share`` of the staged links (part and store order) inserted, after
+    the first ``share`` of the ``gone`` links (by id) and every ``gone`` link whose id an
+    inserted one re-uses deleted, with the same checks; timed, ``projected_seconds`` the
+    time over the share. Refused as :func:`apply_step` is."""
+    import math
+    from operating.pg.ontology_migrate import Refused
+    if not 0 < share <= 1:
+        raise Refused(f"rehearse_share:{share}")
+    parts, got = _staged_totals(cur, step, expected)
+    if applied(cur, step):
+        raise Refused(f"staged_applied_before:{step}")
+    s = schema()
+    t = time.monotonic()
+    m = math.ceil(int(got["written"]) * share)
+    n = math.ceil(int(got["gone"]) * share)
+    cur.execute("DROP TABLE IF EXISTS pg_temp.rehearse_ins, pg_temp.rehearse_del")
+    cur.execute(f"CREATE TEMP TABLE rehearse_ins ON COMMIT DROP AS SELECT link_id FROM "
+                f"{s}.links WHERE step = %s ORDER BY part, ord LIMIT %s", (step, m))
+    cur.execute(f"CREATE TEMP TABLE rehearse_del ON COMMIT DROP AS (SELECT link_id FROM "
+                f"{s}.gone WHERE step = %s ORDER BY link_id LIMIT %s) UNION (SELECT g.link_id "
+                f"FROM {s}.gone g JOIN pg_temp.rehearse_ins i ON i.link_id = g.link_id WHERE "
+                "g.step = %s)", (step, n, step))
+    cur.execute("SELECT count(*) FROM pg_temp.rehearse_del")
+    (want,) = cur.fetchone()
+    cur.execute("DELETE FROM ontology.link_rows l USING pg_temp.rehearse_del d WHERE "
+                "l.link_id = d.link_id")
+    if cur.rowcount != want:
+        raise Refused(f"staged_gone_not_served:{step}:{cur.rowcount}:{want}")
+    deleted = cur.rowcount
+    cols = ", ".join(columns)
+    cur.execute(f"INSERT INTO ontology.link_rows ({cols}) SELECT {cols} FROM {s}.links x "
+                "WHERE x.step = %s AND x.link_id IN (SELECT link_id FROM pg_temp.rehearse_ins) "
+                "ORDER BY x.part, x.ord", (step,))
+    if cur.rowcount != m:
+        raise Refused(f"staged_written:{step}:{cur.rowcount}:{m}")
+    seconds = time.monotonic() - t
+    return {"share": share, "deleted": deleted, "inserted": m, "written": int(got["written"]),
+            "gone": int(got["gone"]), "seconds": round(seconds, 3),
+            "projected_seconds": round(seconds / share, 1)}
 
 
 def drop(dsn: str, migration: str) -> dict[str, Any]:
@@ -593,6 +701,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     d = sub.add_parser("drop", help="drop the stage schema after the steps apply")
     d.add_argument("--migration", required=True, help="the step layer's record id")
     d.add_argument("--dsn", default=None)
+    u = sub.add_parser("undo", help="take an applied step back (its undo, newest part first)")
+    u.add_argument("--step", required=True)
+    u.add_argument("--dsn", default=None)
     st = sub.add_parser("stage", help="stage one part of a parted step (its store)")
     st.add_argument("--run-key", required=True)
     st.add_argument("--step", required=True)
@@ -604,6 +715,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     dsn = args.dsn or config.dsn()
     if args.command == "drop":
         print(json.dumps(drop(dsn, args.migration)))
+        return 0
+    if args.command == "undo":
+        print(json.dumps({"undo": args.step, "parts": undo(dsn, args.step)}, sort_keys=True))
         return 0
     from ontology import step_migrate as sm
     scope = json.loads(Path(args.scope).read_text())

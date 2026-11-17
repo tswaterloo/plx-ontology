@@ -582,8 +582,10 @@ class ScopedCompletenessTests(unittest.TestCase):
         scratch = tempfile.TemporaryDirectory()
         self.addCleanup(scratch.cleanup)
         path = Path(scratch.name) / "ontology.sqlite"
+        # built when the evidence was read (AT): the capture is not stale at its build
         build_store(path, load_schema(), {"bc": EvidenceCapture(evidence)},
-                    normalizer=identifiers.normalize)
+                    normalizer=identifiers.normalize,
+                    clock=lambda: datetime(2026, 10, 4, 9, 0, tzinfo=timezone.utc))
         reader = ot.StoreReader.open(path)
         self.addCleanup(reader.conn.close)
         policy = ot.ReadPolicy(tenant="plx", audiences={"bc:*": {"r"}, "api:*": {"r"}},

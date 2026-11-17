@@ -35,6 +35,7 @@ from typing import Any, Iterable, Mapping, Sequence
 from ontology.core import Actor, ValidationError
 from operating.case_runtime import LIMITATIONS, CaseRuntime
 from operating.cases import CITATION_CONTENT_CHANGED, CaseNotFound, CitationUnresolvable
+from operator_api.errors import RecordNotFound
 from operator_api.workspace.case_plain import (case_summary, plain_gap, question_root_types,
                                    source_date_label)
 
@@ -424,10 +425,12 @@ class CaseWorkspace:
         state = intents.get(proposal.get("id"))
         if state is None and "_chain_broken" in intents:
             # A broken intent's proposal cannot be read back: it may be this one.
+            n_broken = intents["_chain_broken"]["intents"]
             return {**base, "state": "unknown_chain_broken", "dispatched": None,
-                    "detail": (f"{intents['_chain_broken']['intents']} action record(s) of "
-                               "this case fail their hash chain; which proposal they "
-                               "belong to cannot be read")}
+                    "detail": (f"{n_broken} action records of this case fail their hash chain; "
+                               "which proposal they belong to cannot be read" if n_broken != 1 else
+                               "1 action record of this case fails its hash chain; which proposal "
+                               "it belongs to cannot be read")}
         if state is None and "_truncated" in intents:
             # Registrations past the store's listing bound were not read: unknown.
             listed = intents["_truncated"]
@@ -584,7 +587,7 @@ class CaseWorkspace:
         except CitationUnresolvable as error:
             if str(error) == "original_file_citation_required":
                 raise ValueError(str(error)) from None
-            raise KeyError("citation_unresolvable_for_actor") from None
+            raise RecordNotFound("citation_unresolvable_for_actor") from None
 
     # ---- document metadata proposals --------------------------------------
 
@@ -601,7 +604,7 @@ class CaseWorkspace:
         try:
             result = case_context_tools.document_metadata(self.runtime, self.actor, handle)
         except CitationUnresolvable:
-            raise KeyError("citation_unresolvable_for_actor") from None
+            raise RecordNotFound("citation_unresolvable_for_actor") from None
         return {**result, "proposals_only": True, "read_only": True,
                 "business_system_writes": 0}
 
@@ -621,7 +624,7 @@ class CaseWorkspace:
         if handle.startswith("original://"):
             view = self.runtime.read_original(handle, self.actor)
             if not view.get("ok"):
-                raise KeyError("citation_unresolvable_for_actor")
+                raise RecordNotFound("citation_unresolvable_for_actor")
             if "text" in view:
                 text = view.pop("text")
                 if text_offset > len(text):
@@ -638,11 +641,11 @@ class CaseWorkspace:
             return {**view, "kind": "original", "read_only": True}
         status = self.runtime.citation_status(handle, self.actor)
         if not status.get("ok"):
-            raise KeyError("citation_unresolvable_for_actor")
+            raise RecordNotFound("citation_unresolvable_for_actor")
         try:
             view = self.runtime.resolve_citation(handle, self.actor)
         except CitationUnresolvable:
-            raise KeyError("citation_unresolvable_for_actor") from None
+            raise RecordNotFound("citation_unresolvable_for_actor") from None
         from ontology import raw_markings
         view = marked_rows(handle, view, self.markings if markings is None else markings,
                            raw_markings.state_dirs_of(self.runtime))
@@ -659,7 +662,7 @@ def marked_rows(handle: str, view: Mapping[str, Any], held: Iterable[str],
     from ontology import raw_markings
     marked = raw_markings.mark_view(handle, view, held, state_dirs)
     if marked is None:
-        raise KeyError("citation_unresolvable_for_actor")
+        raise RecordNotFound("citation_unresolvable_for_actor")
     return marked
 
 

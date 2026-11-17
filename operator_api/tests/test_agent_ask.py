@@ -724,6 +724,13 @@ class AgentPath(unittest.TestCase):
         for served in (self.ops, self.outsider):
             self.use(served, no_agent)
         question = "wheres 5447 at? is it late"
+        # a PO's status is the agent's now (``fast_answer.ROUTED_TO_AGENT``, the 11-15
+        # router eval): its recipe, still ``fast_chain``'s first read, is put back here
+        # to prove the fast path's gate end to end, then taken away below
+        from operating import fast_answer
+        recipe = mock.patch.dict(fast_answer._RECIPES, {"po_status": fast_answer.po_status})
+        recipe.start()
+        self.addCleanup(fast_answer._RECIPES.pop, "po_status", None)   # never left behind
         got = self.ask(self.ops, question)
         for (name, data), _ in got:
             m.ASK_EVENTS[name].model_validate(data)
@@ -743,6 +750,10 @@ class AgentPath(unittest.TestCase):
         self.assertEqual(len(started), 1)
         self.assertNotIn("REVISED", json.dumps(other))
         self.assertNotIn(handle, json.dumps(other))
+        # as served: no fast answer for a PO's status, the agent's turn for any reader
+        recipe.stop()
+        self.ask(self.ops, question)
+        self.assertEqual(len(started), 2)
 
     def test_a_session_stopped_at_the_cap_answers_partial_or_still_working(self):
         lines = [tool_use(1, "plx.case_get", {"answer": {"claims": []}}),
@@ -795,7 +806,20 @@ class AgentPath(unittest.TestCase):
                 self.assertIn(label, said)
                 self.assertTrue(answer["trail"] and answer["trail"]["trails"])
 
+    def read_late_lists(self, served):
+        """The front door reads a list-of-late-orders question as the late list (the one
+        route to that ready answer, ``read_shortcut``), any other as no recipe."""
+        from operating.front_door import Reading
+        from operating.mcp_portfolio import late_list_words
+        backend = served.app.state.backend
+        backend.front_door = SimpleNamespace(read=lambda question, earlier: Reading(
+            question, question, "lookup", "Reading your question", 0.1,
+            "late_list" if late_list_words(question) else None))
+        self.addCleanup(setattr, backend, "front_door", None)
+
     def test_late_purchase_orders_answer_from_the_list_home_shows(self):
+        for served in (self.ops, self.outsider):
+            self.read_late_lists(served)
         self.use(self.ops, lambda on_line: self.fail("the list never runs a session"))
         answer = self.ask(self.ops, "Which purchase orders are late?")[-1][0][1]
         self.assertTrue(self.late)
@@ -825,14 +849,17 @@ class AgentPath(unittest.TestCase):
             self.assertNotIn(po["object_id"], text)
         self.assertEqual(other["facts"], [])
 
-    def test_only_the_unqualified_list_question_takes_the_late_list(self):
+    def test_only_the_unqualified_list_question_reads_as_the_late_list(self):
+        # plx.find's home mode (``mcp_portfolio.late_list_words``): the one late-list
+        # grammar left; the Ask's ready late list is routed by the front door's reading
+        from operating.mcp_portfolio import late_list_words
         for asked in ("Which purchase orders are late?", "which POs are late",
                       "What's late?", "late purchase orders", "show me overdue POs",
                       "Are there any POs past due?", "Which POs are late right now?",
                       # chat spellings and typos (demo rehearsal 2026-10-31)
                       "wat r the late pos", "any late pos rn?", "late purchse ordres",
                       "whats overdue atm", "any late p.o.s?"):
-            self.assertTrue(be.late_list_question(asked), asked)
+            self.assertTrue(late_list_words(asked), asked)
         for asked in ("Why is our latest PO late?", "Which of Acme's POs are late?",
                       "Which POs from Thames Chemicals are late?",
                       "Show POs that are not late", "Which POs were late last quarter?",
@@ -844,7 +871,7 @@ class AgentPath(unittest.TestCase):
                       "which of our late purchase orders has the vendor confirmed a "
                       "delivery date for?", "older late pos", "any late pos from dsm rn?",
                       "wat r the late pos not confirmed"):
-            self.assertFalse(be.late_list_question(asked), asked)
+            self.assertFalse(late_list_words(asked), asked)
 
     def test_a_host_that_does_not_start_falls_back_to_the_quicker_answer(self):
         def broken(session):
@@ -858,6 +885,27 @@ class AgentPath(unittest.TestCase):
         answer = got[-1][0][1]
         self.assertTrue(answer["direct_answer"].startswith(be.AGENT_FALLBACK))
         self.assertTrue(answer["facts"])
+        # the quicker answer never passes for the full check (the eval grades it no_answer)
+        self.assertEqual(answer["assistant_unavailable"], be.UNAVAILABLE_WORDS["error"])
+
+    def test_a_server_whose_agent_path_cannot_run_marks_its_box_answers(self):
+        # intel-16 16:50Z: an eval API started from a systemd unit had no claude CLI on
+        # PATH; AgentAsk.from_args gave None and every Ask got the research-free box
+        # answer ("not found", "which did you mean") with assistant_unavailable null
+        backend = self.ops.app.state.backend
+        self.assertIsNone(backend.agent_ask)
+        backend.agent_missing = "no_claude_cli"
+        self.addCleanup(setattr, backend, "agent_missing", None)
+        for question in (f"is {case_fixtures.PO_NUMBER} late?",
+                         "what colour is the moon on PO nowhere-0000?"):
+            answer = self.ask(self.ops, question)[-1][0][1]
+            self.assertEqual(answer["assistant_unavailable"],
+                             be.UNAVAILABLE_WORDS["not_started"], question)
+            self.assertNotEqual(answer["outcome"], "not_found", question)
+            self.assertNotIn("couldn't find records", answer["direct_answer"], question)
+        backend.agent_missing = None
+        answer = self.ask(self.ops, f"is {case_fixtures.PO_NUMBER} late?")[-1][0][1]
+        self.assertIsNone(answer.get("assistant_unavailable"))
 
     def test_a_named_late_po_answers_with_the_lateness_home_shows(self):
         po = self.late[0]
@@ -961,7 +1009,7 @@ class AgentPath(unittest.TestCase):
         self.assertEqual(answer["direct_answer"].count("The order status is Complete."), 1)
         self.assertIn("It is marked complete in the Portal.", answer["direct_answer"])
 
-    def test_original_reads_are_capped_and_a_failing_host_is_not_found(self):
+    def test_original_reads_are_capped_and_a_failing_host_is_a_logged_500(self):
         backend = self.ops.app.state.backend
         reader = SimpleNamespace(key="a")
         other = SimpleNamespace(key="b")
@@ -984,9 +1032,13 @@ class AgentPath(unittest.TestCase):
         backend.agent_ask = aa.AgentAsk(seconds=30, host_for=broken,
                                         agent_for=lambda on_line: self.fail("no session"))
         self.addCleanup(setattr, backend, "agent_ask", None)
-        got = self.ops.client.get("/api/source",
-                                  params={"handle": "original://nr-0123456789ab#page=1"})
-        self.assertEqual(got.status_code, 404)
+        # a host that failed is the server's failure, not a missing original
+        # (followups-1115: only a refusal or RecordNotFound is a 404); nothing of it shown
+        with self.assertLogs("operator_api", "ERROR"):
+            got = self.ops.client.get("/api/source",
+                                      params={"handle": "original://nr-0123456789ab#page=1"})
+        self.assertEqual((got.status_code, got.json()["error"]["code"]), (500, "internal"))
+        self.assertNotIn("host_session_ended", got.text)
 
     def test_a_captured_original_opens_only_through_the_readers_host(self):
         backend = self.ops.app.state.backend
@@ -1366,6 +1418,21 @@ class ReaderIdentity(unittest.TestCase):
         self.assertFalse(aa.AgentAsk(state_dir=Path("."), host_config=Path("x"),
                                      secret="s" * 40).serves(SimpleNamespace(employee=None)))
         self.assertIsNone(aa.AgentAsk.from_args(Path("."), None, {}))
+        # why it cannot run, as a code (the server logs it and marks its answers)
+        with tempfile.TemporaryDirectory() as tmp:
+            config = Path(tmp) / "host.json"
+            config.write_text("{}", encoding="utf-8")
+            secret = {"PLX_WORKBENCH_SESSION_SECRET": "s" * 40}
+            self.assertEqual(aa.AgentAsk.missing(None, secret), "no_host_config")
+            self.assertEqual(aa.AgentAsk.missing(config, {}), "no_session_secret")
+            self.assertEqual(aa.AgentAsk.missing(config, {**secret, "PATH": tmp}),
+                             "no_claude_cli")
+            self.assertIsNone(aa.AgentAsk.from_args(Path(tmp), config,
+                                                    {**secret, "PATH": tmp}))
+            cli = Path(tmp) / "claude"
+            cli.write_text("#!/bin/sh\n", encoding="utf-8")
+            cli.chmod(0o755)
+            self.assertIsNone(aa.AgentAsk.missing(config, {**secret, "PATH": tmp}))
 
     def test_the_agent_and_prompt_are_the_scoreboards(self):
         from operating import agent_session

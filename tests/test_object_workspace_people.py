@@ -39,7 +39,10 @@ from operator_api.tests import case_fixtures
 from operator_api.workspace import object_workspace as objects
 from operating import goal2_mc_approval as g2
 from operating import ontology_tools as ot
+from operating import ontology_tools_results
 from operating import ontology_tools_investigate as oi
+from operating import ontology_tools_investigate_follow_ups
+from operating import ontology_tools_investigate_host
 from operating import ontology_tools_traverse as tt
 from operating import session_identity
 from operator_api.workspace.case_workspace import CaseWorkspace
@@ -48,7 +51,7 @@ from operator_api.tests.console_harness import make_server
 from operator_api.workspace.session_journal import SessionJournal, ask_counts, investigate_counts
 from tests import test_investigate_landed_cost as landed
 from types import SimpleNamespace
-from tests.test_object_workspace_http import OPS
+from tests.test_object_workspace_http import OPS, _seen
 
 
 MC_OPERATOR = "workbench.operator@isolated-fixture.example"
@@ -231,7 +234,7 @@ class PersonControlsTest(unittest.TestCase):
 
     def test_ask_and_investigate_over_http_reach_the_session_journal_as_counts(self):
         def planner(request):
-            card = request["transcript"][0]["observations"][0]["result"]
+            card = _seen(request["transcript"][0]["observations"][0]["result"])
             cell = next(v for v in card["values"]
                         if v.get("citation") and v.get("value") is not None)
             value = cell["value"]
@@ -545,7 +548,8 @@ class PersonControlsTest(unittest.TestCase):
         self.assertEqual(runtime.cases.get(employee, first["case_id"])["proposals"], [])
         status, again = call("POST", "/api/investigate-record", body)
         self.assertEqual((status, again["case_id"], {d["outcome"] for d in again["recorded"]}),
-                         (200, first["case_id"], {"exists"}))
+                         (200, first["case_id"], {"exists"}),
+                         [(d["action"], d["subject"], d["outcome"]) for d in again["recorded"]])
 
     def test_a_fixture_follow_up_has_no_subject_and_a_fixture_person_reviews_with_the_grant(self):
         call = self.console(live=False)
@@ -653,9 +657,9 @@ class RecordOnCaseTest(unittest.TestCase):
             clearance=actor.clearance)
         tools = landed.ForwarderQuoteTests.base(self, session.actor)
         table: dict = {}
-        ot.register(table, tools)
+        ontology_tools_results.register(table, tools)
         tt.register(table, tt.TraverseTools(tools))
-        oi.register(table, oi.InvestigateTools(table, rows=self.rows, scope=oi.read_scope(tools)))
+        oi.register(table, oi.InvestigateTools(table, rows=self.rows, scope=ontology_tools_investigate_host.read_scope(tools)))
         # Portal rows open (a resolver is configured); without a case host the console
         # grants no other family (ApiOnlyAccess), so a quote it does not open is not offered.
         view = objects.ObjectWorkspace(table, session.actor, sources=object(),
@@ -712,8 +716,8 @@ class RecordOnCaseTest(unittest.TestCase):
         self.assertEqual(spy.call_args.args[:3], (self.actions, call.session.actor, case_id))
         self.assertIs(spy.call_args.kwargs["session"], call.session)
         recorded = first["recorded"]
-        ups = [d for d in recorded if d["action"] == oi.FOLLOW_UP_ACTION]
-        drafts = [d for d in recorded if d["action"] == oi.DRAFT_ACTION]
+        ups = [d for d in recorded if d["action"] == ontology_tools_investigate_follow_ups.FOLLOW_UP_ACTION]
+        drafts = [d for d in recorded if d["action"] == ontology_tools_investigate_follow_ups.DRAFT_ACTION]
         self.assertTrue(ups and drafts)
         self.assertEqual({(d["outcome"], d["read_back"]) for d in recorded},
                          {("recorded", "verified")})
@@ -757,7 +761,8 @@ class RecordOnCaseTest(unittest.TestCase):
         status, again = call("POST", "/api/investigate-record", body)
         self.assertEqual(status, 200, again)
         self.assertEqual(again["case_id"], case_id)
-        self.assertEqual({d["outcome"] for d in again["recorded"]}, {"exists"})
+        self.assertEqual({d["outcome"] for d in again["recorded"]}, {"exists"},
+                         [(d["action"], d["subject"], d["outcome"]) for d in again["recorded"]])
         self.assertEqual(len(again["recorded"]), len(recorded))
         status, named = call("POST", "/api/investigate-record", {**body, "case_id": case_id})
         self.assertEqual((status, {d["outcome"] for d in named["recorded"]}), (200, {"exists"}))
@@ -852,8 +857,8 @@ class RecordOnCaseTest(unittest.TestCase):
                          {"read": 1, "complete": False, "partial": "answer_pages_unread"})
         skipped = [d for d in fresh["recorded"] if d["outcome"] == "not_recorded"]
         self.assertEqual({(d["action"], d["partial"], "record_id" in d) for d in skipped},
-                         {(oi.FOLLOW_UP_ACTION, "answer_pages_unread", False),
-                          (oi.DRAFT_ACTION, "answer_pages_unread", False)})
+                         {(ontology_tools_investigate_follow_ups.FOLLOW_UP_ACTION, "answer_pages_unread", False),
+                          (ontology_tools_investigate_follow_ups.DRAFT_ACTION, "answer_pages_unread", False)})
         self.assertEqual({d["outcome"] for d in fresh["recorded"]} - {"not_recorded"},
                          {"recorded"})
         stored = fresh["case"]["follow_ups"] + fresh["case"]["drafts"]
@@ -1124,7 +1129,7 @@ class StoreProvenanceTest(unittest.TestCase):
         # Gap gap-d2a0aa06aafc: every grantable capture family is withheld from a reader
         # the host does not grant it, not only BC, mail and SharePoint.
         from integrations import capture_teams, mc_sources
-        from operating.ontology_tools import ReadPolicy
+        from operating.ontology_tools_policy import ReadPolicy
 
         where = self.state_copy("teams-mc-stale", teams=b"")
         mc_sources.store_path(where).parent.mkdir(parents=True)
@@ -1240,7 +1245,7 @@ class StoreProvenanceTest(unittest.TestCase):
 
 class HostAccessRequestTests(unittest.TestCase):
     def test_one_grant_per_answer_and_a_revocation_applies_to_the_next(self):
-        from operating.ontology_tools import ReadPolicy
+        from operating.ontology_tools_policy import ReadPolicy
 
         decided, audiences = [], {"api:*": OPS}
 
@@ -1269,7 +1274,7 @@ class HostAccessRequestTests(unittest.TestCase):
         mailbox check that could not decide: ``policy_settled`` false), or whose inputs
         changed while it was decided, or from inputs that cannot be named, is decided
         again on the next request."""
-        from operating.ontology_tools import ReadPolicy
+        from operating.ontology_tools_policy import ReadPolicy
 
         decided, state = [], {"settled": False, "inputs": ((1,), ()), "moving": False}
 

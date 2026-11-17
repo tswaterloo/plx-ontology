@@ -30,6 +30,8 @@ from ontology.core import Actor
 from ontology.project import CapturedRecord, build_store
 from ontology.schema import load_schema
 from operating import ontology_tools as ot
+from operating import ontology_tools_identity
+from operating import ontology_tools_policy
 from operating.ontology_tools_evidence import EvidenceTools
 
 T = "2026-10-01T00:00:00+00:00"
@@ -164,7 +166,7 @@ class FindIdentityTests(unittest.TestCase):
                               {(c["reason"], c["tier"], c["matched"]["property"])
                                for c in out["candidates"]}),
                              (count, {}, {(ot.REFERENCE_REASON, "lead", name)}), out)
-            self.assertFalse(any(ot.roots_exactly(c, "351", identifiers)
+            self.assertFalse(any(ontology_tools_identity.roots_exactly(c, "351", identifiers)
                                  for c in out["candidates"]))
         customer = self.find(query="351", object_type="Customer")
         self.assertEqual((customer["status"], customer["candidates"]), ("not_found", []))
@@ -203,9 +205,9 @@ class FindIdentityTests(unittest.TestCase):
                 ("89", "Customer", [(FM_CUSTOMER, "exact_identifier")]),
                 ("5", "Customer", []),
                 ("SO100306", "Customer",
-                 [('Customer:portal.app_customer:{"id":"c-1"}', ot.LINKED_REASON)]),
+                 [('Customer:portal.app_customer:{"id":"c-1"}', ontology_tools_policy.LINKED_REASON)]),
                 ("PO100777", "Supplier",
-                 [('Supplier:portal.app_supplier:{"id":"s-1"}', ot.LINKED_REASON)])):
+                 [('Supplier:portal.app_supplier:{"id":"s-1"}', ontology_tools_policy.LINKED_REASON)])):
             with self.subTest(query=query):
                 out = self.find(query=query, object_type=object_type)
                 self.assertEqual([(c["object"]["object_id"], c["reason"])

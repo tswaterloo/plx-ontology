@@ -5,6 +5,7 @@ each system's record walked on its own. isolated-fixture (a scripted host table)
 from __future__ import annotations
 
 import copy
+import json
 import unittest
 
 from operating import ontology_query as oq
@@ -919,3 +920,103 @@ class IdentifierRoute(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class CodesStartOnTheRealToolsTests(unittest.TestCase):
+    """AUD-11 (audit C section 6, live 11-05): ``plx.query`` from ``{object_type, codes}``
+    with a measure was an internal error (``$.set: does not match ^set:``): one code's
+    record was handed to plx.aggregate as its own object id. The codes now resolve to a
+    set handle, whatever their count, and every code no readable record holds is named.
+    Evidence label ``isolated-fixture``: the registered plx.query over the real
+    plx.find / plx.around / plx.aggregate on a hand-filled projection
+    (``tests.test_ontology_tools_aggregate``)."""
+
+    def setUp(self):
+        from tests import test_ontology_tools_aggregate as fx
+        fx.setUpModule()
+        self.fx = fx
+        self.store = fx.world()
+        self.tools = fx.tools(self.store)
+        table = {name: {"handler": (lambda n: lambda a, actor: self.tools.base.call(
+            n, a, actor))(name)} for name in ("plx.find", "plx.around")}
+        self.query = oq.register(table, self.tools.base)
+
+    def orders(self, size, binding="portal.app_purchase_order", first=0):
+        codes = []
+        for n in range(first, first + size):
+            oid = self.store.obj(f"PurchaseOrder:{binding}:c{n}")
+            handle, lineage = self.store.handles[oid]
+            code = f"PO{900000 + n}"
+            self.store.conn.execute(
+                "INSERT INTO identifiers (identifier_kind, normalized, raw, role, object_id, "
+                "property, l1_handle, field_path, lineage, markings, recorded_at) "
+                "VALUES ('po_number', ?, ?, 'primary', ?, 'po_number', ?, 'row.po_number', "
+                "?, '[]', ?)", (code, code, oid, handle, lineage, self.fx.T0))
+            codes.append(code)
+        self.store.conn.commit()
+        return codes
+
+    def ask(self, codes, actor=None, **extra):
+        out = self.query.call({"from": {"object_type": "PurchaseOrder", "codes": codes},
+                               **extra}, actor or self.fx.STAFF)
+        self.assertEqual(self.fx.validate(out, self.fx.CONTRACTS["tools"]["plx.query"][
+            "output"], root=self.fx.CONTRACTS), [], out)
+        return out
+
+    def test_codes_resolve_to_a_set_handle_and_unknown_codes_are_named(self):
+        for size in (1, 10, 60):
+            with self.subTest(size=size):
+                self.setUp()
+                codes = self.orders(size)
+                out = self.ask(codes + ["PO-NOPE-1"])
+                self.assertNotIn("error", out)
+                self.assertTrue(out["set"].startswith("set:"), out["set"])
+                self.assertEqual(self.tools.base.resolve_set(out["set"], self.fx.STAFF)
+                                 and len(self.tools.base.resolve_set(out["set"],
+                                                                     self.fx.STAFF)), size)
+                self.assertEqual(out["results"][0]["groups"][0]["value"], str(size))
+                (gap,) = [g for g in out["gaps"] if g["reason"] == "codes_not_found"]
+                self.assertEqual(gap["subject"], "PO-NOPE-1")
+                self.assertIn(f"1 of {size + 1}", gap["detail"])
+                # listed too: the listing takes the same set
+                listed = self.ask(codes, rows={"properties": ["status"]})
+                self.assertNotIn("rows_refused", [g["reason"] for g in listed["gaps"]])
+                self.assertEqual(listed["rows"]["count"], size)
+
+    def test_a_code_the_reader_may_not_read_is_reported_as_unknown_and_none_fails_closed(self):
+        # a Business Central order: SALES holds no bc unit
+        hidden = self.orders(1, binding="bc.purchase_orders")
+        seen = self.orders(1, first=1)
+        out = self.ask(seen + hidden, actor=self.fx.SALES)
+        self.assertEqual(out["results"][0]["groups"][0]["value"], "1")
+        (gap,) = [g for g in out["gaps"] if g["reason"] == "codes_not_found"]
+        self.assertEqual(gap["subject"], hidden[0])
+        self.assertNotIn("bc.purchase_orders", json.dumps(out))
+        # nothing readable: refused, naming the codes asked, never an internal error
+        none = self.query.call({"from": {"object_type": "PurchaseOrder", "codes": hidden}},
+                               self.fx.SALES)
+        self.assertEqual(none["error"]["code"], "object_not_found")
+        self.assertIn(hidden[0], none["error"]["message"])
+
+    def test_more_records_than_a_start_holds_are_cut_and_said(self):
+        from unittest import mock
+        codes = self.orders(5)
+        with mock.patch.object(oq, "MAX_CODE_RECORDS", 3):
+            out = self.ask(codes)
+        self.assertEqual(out["results"][0]["groups"][0]["value"], "3")
+        self.assertIn("start_cut", [g["reason"] for g in out["gaps"]])
+        self.assertFalse(out["results"][0]["completeness"]["complete"])
+        self.assertEqual(self.tools.base.sets.completeness(out["set"], self.fx.STAFF)[0],
+                         False)
+
+    def test_one_object_id_start_with_a_measure_counts_through_a_set(self):
+        codes = self.orders(1)
+        oid = "PurchaseOrder:portal.app_purchase_order:c0"
+        self.assertTrue(codes)
+        out = self.query.call({"from": {"object_id": oid}, "measures": [{"op": "count"}]},
+                              self.fx.STAFF)
+        self.assertNotIn("error", out)
+        self.assertEqual(out["results"][0]["groups"][0]["value"], "1")
+        self.assertEqual(out["set"], oid)   # the answer still names the record itself
+        self.assertEqual(self.fx.validate(out, self.fx.CONTRACTS["tools"]["plx.query"][
+            "output"], root=self.fx.CONTRACTS), [], out)

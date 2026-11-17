@@ -96,7 +96,7 @@ describe("the global Feedback entry", () => {
     fireEvent.keyDown(window, { key: "f" });
     const sheet = await screen.findByRole("dialog");
     expect(within(sheet).getByTestId("feedback-attached")).toHaveTextContent("Purchase Order 90412");
-    await userEvent.type(within(sheet).getByLabelText("What should we know?"), "supplier name is old");
+    await userEvent.type(within(sheet).getByLabelText("Your note"), "supplier name is old");
     await userEvent.click(within(sheet).getByTestId("feedback-submit"));
     expect(await within(sheet).findByTestId("feedback-sent")).toBeInTheDocument();
     const { url, body } = posted(f);

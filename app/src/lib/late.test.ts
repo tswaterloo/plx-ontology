@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { LatePo } from "@/lib/types";
-import { matches, readAllLate, sortLate, supplierCounts, type DayBand, type ValueBand, type LatePage } from "./late";
+import { chaseOf, inStateBand, matches, readAllLate, sortLate, supplierCounts, type DayBand, type ValueBand, type LatePage } from "./late";
 
 const po = (n: number, extra: Partial<LatePo> = {}): LatePo => ({
   object_id: `PurchaseOrder:${n}`, label: `PO ${n}`, reason: "late", open_url: `/object/PurchaseOrder/${n}`, sources: [], ...extra,
@@ -81,5 +81,24 @@ describe("readAllLate", () => {
     const one = server(40);
     expect((await readAllLate(one.get, 100, 1000)).items).toHaveLength(40);
     expect(one.asked).toEqual([0]);
+  });
+});
+
+describe("chase facts and the supplier-date filter", () => {
+  it("reads the date given, the last word and whom to ask from a follow-up, and says nothing it does not have", () => {
+    expect(chaseOf(null)).toEqual({ promised: null, promiseWords: null, lastWord: null, ask: null, holds: [], next: null });
+    const c = chaseOf({ eta: { answer: "possibly", in_mail: true, text: "", when: "2026-11-04", source: { system: "Teams", handle: "h", label: "x", as_of: "2026-10-22T10:00:00Z" } }, action: { text: "Check", rule: "r", suggestion_only: true, contact: "a@x.example" }, impact: { orders_at_risk: 0 } } as never);
+    expect(c).toMatchObject({ promised: "2026-11-04", promiseWords: "possible date, unconfirmed", lastWord: { at: "2026-10-22T10:00:00Z", system: "Teams" }, ask: "a@x.example", next: "Check" });
+    expect(chaseOf({ eta: { answer: "conflicting", in_mail: false, text: "", when: "2026-11-04" }, action: { text: "x", rule: "r", suggestion_only: true } } as never)).toMatchObject({ promised: null, promiseWords: "dates on record disagree" });
+  });
+
+  it("filters by supplier date state, and an unknown state shows nothing", () => {
+    const p = (confirmation?: LatePo["confirmation"]) => ({ object_id: "x", label: "1", reason: "", open_url: "", confirmation }) as LatePo;
+    expect(inStateBand(p("none_found"), "no_date")).toBe(true);
+    expect(inStateBand(p("needs_check"), "check")).toBe(true);
+    expect(inStateBand(p(undefined), "unknown")).toBe(true);
+    expect(inStateBand(p("confirmed"), "no_date")).toBe(false);
+    expect(inStateBand(p("confirmed"), "bogus" as never)).toBe(false);
+    expect(inStateBand(p("confirmed"), "all")).toBe(true);
   });
 });

@@ -219,7 +219,7 @@ from ontology import document_fields
 from operating import sharepoint_host_check as check
 # The tiers at which an identity link establishes one record held in two systems: the
 # ontology tools' one rule.
-from operating.ontology_tools import _IDENTITY_TIERS as IDENTITY_TIERS
+from operating.ontology_tools_policy import _IDENTITY_TIERS as IDENTITY_TIERS
 
 BUCKETS = ("extracted", "blank", "unreadable", "ambiguous", "label_absent",
            "label_seen_unread", "handwritten_unkeyed", "other_gap")
@@ -834,7 +834,7 @@ def link_outcomes(store: Path, host: Any, principal: str, withheld: str,
     from ontology.types import Actor
     from operating import attested_conflicts
     from operating.attested_conflicts import AGREEMENTS
-    from operating.ontology_tools import identity_link_type
+    from operating.ontology_tools_identity import identity_link_type
 
     schema = load_schema()
     identity_types = sorted(lid for lid, link in schema.link_types.items()
@@ -985,7 +985,8 @@ def _portal_mirror(client: Any, state: Path, audience: Path, relations: list[str
                    workers: int = 1) -> tuple[set[str], dict[str, Any] | None]:
     """Mirror ``relations`` (GET only) into the host's mirror file, ``order`` first,
     ``workers`` at a time: (the relations captured whole, a blocked part or None)."""
-    from integrations.source_mirror import MirrorError, SourceMirror
+    from integrations.source_mirror import SourceMirror
+    from integrations.source_mirror_values import MirrorError
     from operating.case_runtime import CASE_RUNTIME_DIR, MIRROR_FILE
     from scripts.ontology_projection_probe import PORTAL, _part
 
@@ -1553,7 +1554,7 @@ def main(argv: list[str] | None = None, *, environ: Mapping[str, str] | None = N
                              "run, and measurement stops reading documents at it after the "
                              "first (incomplete budget, never ok)")
     args = parser.parse_args(argv)
-    from integrations.source_mirror import MAX_SYNC_WORKERS
+    from integrations.source_mirror_values import MAX_SYNC_WORKERS
     if not 1 <= args.portal_workers <= MAX_SYNC_WORKERS:
         parser.error(f"--portal-workers must be 1..{MAX_SYNC_WORKERS}")
     for name in ("budget_seconds", "capture_budget_seconds", "bc_budget_seconds",

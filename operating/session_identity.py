@@ -134,6 +134,15 @@ PROOF_WARM = "warm_ahead"
 # serves it only on a short list of read routes and never remembers or reads ahead for it,
 # and it expires within minutes.
 PROOF_VIEW_AS = "owner_view_as"
+# The live Ask canary's service session (``operating.ask_canary``): a console ticket the
+# host minted for the canary alone (``console_ticket mint --service ops_canary``), told
+# apart by its signed ticket id (``SERVICE_JTI_PREFIX``: only the holder of the session
+# secret chooses a jti, so no client can make or unmake one). It reads as the reader its
+# claims name but is nobody's own session: the app serves it ``GET /api/me`` and
+# ``POST /api/ask`` only, nothing of the reader's work log or memory is read or written for
+# it, and ``intent_identity`` refuses it (no intent, action or write can carry it).
+SERVICE_CANARY = "ops_canary"
+SERVICE_JTI_PREFIX = {SERVICE_CANARY: "opscanary_"}
 _EXPIRING = (PROOF_TICKET, PROOF_ENTRA, PROOF_EVAL, PROOF_WARM, PROOF_VIEW_AS)
 
 _CLAIMS = frozenset({"v", "aud", "uid", "email", "entraTenantId", "entraObjectId",
@@ -181,11 +190,25 @@ def session_secret(environ: Mapping[str, str]) -> str | None:
     return value.strip() if isinstance(value, str) and value.strip() else None
 
 
+def service_jti(service: str) -> str:
+    """A fresh ticket id that marks its ticket as ``service``'s (``SERVICE_JTI_PREFIX``);
+    an unknown service is refused (ValueError)."""
+    if service not in SERVICE_JTI_PREFIX:
+        raise ValueError("session_service_invalid")
+    return SERVICE_JTI_PREFIX[service] + secrets.token_urlsafe(16)
+
+
+def _service_of(jti: str) -> str | None:
+    return next((name for name, prefix in SERVICE_JTI_PREFIX.items()
+                 if jti.startswith(prefix)), None)
+
+
 def mint_session_ticket(*, uid: str, email: str, tenant_id: str, object_id: str,
                         author: str, secret: Any, now: int | None = None,
                         ttl_seconds: int = SESSION_TICKET_TTL_SECONDS,
                         jti: str | None = None) -> str:
-    """The ticket the Portal would mint for its signed-in user (format reference)."""
+    """The ticket the Portal would mint for its signed-in user (format reference). A
+    service's ticket takes ``jti=service_jti(service)``."""
     if author not in (AUTHOR_HUMAN, AUTHOR_AGENT):
         raise ValueError("session_ticket_author_invalid")
     if not 0 < ttl_seconds <= SESSION_TICKET_TTL_SECONDS:
@@ -399,6 +422,8 @@ class SessionIdentity:
     # The declared full-read grant the employee held when this identity was resolved
     # (``EmployeeEntitlement.full_read_code``: an enum code, never an id), else None.
     access: str | None = None
+    # A service session (``SERVICE_CANARY``), from its ticket's id; None: a person's own.
+    service: str | None = None
 
     def __post_init__(self) -> None:
         if self.channel not in CHANNEL_AUTHOR:
@@ -409,6 +434,9 @@ class SessionIdentity:
             raise ValueError("session_proof_invalid")
         if self.clearance not in LEVELS:
             raise ValueError("session_clearance_invalid")
+        if self.service is not None and (self.service not in SERVICE_JTI_PREFIX
+                                         or self.proof != PROOF_TICKET):
+            raise ValueError("session_service_invalid")
         object.__setattr__(self, "principals", frozenset(self.principals))
         if self.proof == PROOF_FIXTURE:
             if self.employee is not None:
@@ -468,6 +496,10 @@ class SessionIdentity:
     def view_as(self) -> bool:
         return self.proof == PROOF_VIEW_AS
 
+    @property
+    def canary(self) -> bool:
+        return self.service == SERVICE_CANARY
+
     def expired(self, now: int | None = None) -> bool:
         if self.expires_at is None:
             return False
@@ -487,6 +519,8 @@ class SessionIdentity:
             raise SessionIdentityRefused("warm_session_serves_nothing")
         if self.view_as:
             raise SessionIdentityRefused("view_as_session_writes_nothing")
+        if self.canary:
+            raise SessionIdentityRefused("canary_session_writes_nothing")
         if self.expired():
             raise SessionIdentityRefused("session_expired")
         if actor != self.actor:
@@ -571,6 +605,7 @@ def employee_session(resolver: EmployeePermissionResolver, *, channel: str,
         session_ref=None if claims is None
         else hashlib.sha256(claims["jti"].encode("utf-8")).hexdigest(),
         access=entitlement.full_read_code(),
+        service=None if claims is None else _service_of(claims["jti"]),
         identities=frozenset(
             {i for i in entitlement.source_identities
              if isinstance(i, str) and i.strip() and not i.startswith("group:")}
@@ -780,7 +815,7 @@ def bind_state_dir(state_dir: str | Path, *, fixture: bool, dev: bool = False) -
 
 __all__ = ["DEFAULT_CLIENT", "INTENT_IDENTITY_SCHEMA", "STATE_LABEL_FILE", "AUTHOR_AGENT", "AUTHOR_HUMAN", "CHANNEL_AUTHOR", "CHANNEL_CONSOLE", "CHANNEL_MCP",
            "PROOF_CONFIGURED", "PROOF_ENTRA", "PROOF_EVAL", "PROOF_FIXTURE", "PROOF_TICKET",
-           "PROOF_VIEW_AS", "PROOF_WARM", "view_as_session", "warm_session", "SESSION_TICKET_AUDIENCE",
+           "PROOF_VIEW_AS", "PROOF_WARM", "SERVICE_CANARY", "service_jti", "view_as_session", "warm_session", "SESSION_TICKET_AUDIENCE",
            "SESSION_TICKET_SECRET_ENV", "SESSION_TICKET_TTL_SECONDS", "SessionIdentity",
            "SessionIdentityRefused", "REPLAY_GUARD_FILE", "TicketReplayGuard", "bind_state_dir", "check_runtime", "employee_session", "fixture_session",
            "intent_identity", "mint_session_ticket", "replay_guard_for", "session_secret",

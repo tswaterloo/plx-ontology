@@ -26,7 +26,8 @@ from operating import source_reads
 from operating.case_links import BUILTIN_PATH, LinkContracts, SCHEMA
 from operating.case_runtime import LIMITATIONS, CaseRuntime
 from operating.cases import CaseStore
-from operating.mcp_server import HOST_READS, MCPServer
+from operating.mcp_server import MCPServer
+from operating.mcp_server_catalog import HOST_READS
 from operating.tests.test_ao_26005b_case import AO_CATALOG, AO_TABLES
 
 OPS_QUALITY = frozenset({"staff:operations", "staff:quality"})

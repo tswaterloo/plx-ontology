@@ -44,6 +44,15 @@ describe("meeting follow-up", () => {
     expect(screen.getByText("Northfield Bakery").getAttribute("href")).toBe("/object/Customer/Customer%3AC1");
   });
 
+  it("a document pack opens the record's Documents section; a linked record without a type still opens its page", () => {
+    const pack: Action = { id: "a4", kind: "action", text: "Send the COA pack to Northfield.", citations: cite("00:07:00"), status: "open", owner: { name: "Priya Nair" },
+      records: [{ value: "PO 4410", status: "linked", object_id: "PurchaseOrder:4410", label: "PO 4410" }],
+      prepared: { kind: "document_pack", sent: false, writes: 0, citations: [], object_id: "Customer:C1" } };
+    render(<MeetingFollowUpView followUp={{ ...followUp, actions: [pack] }} />);
+    expect(screen.getByTestId("prepared-pack").getAttribute("href")).toBe("/object/Customer/Customer%3AC1#documents");
+    expect(screen.getByText("PO 4410").getAttribute("href")).toBe("/object/PurchaseOrder/PurchaseOrder%3A4410");
+  });
+
   it("lists my items with their meeting and status", () => {
     render(<MyActionItemsView items={[{ ...actions[0], meeting: "Ops weekly", meeting_id: "m1" }]} />);
     // the row and the "open by meeting" rail both link the meeting

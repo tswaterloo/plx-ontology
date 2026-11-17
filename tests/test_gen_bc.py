@@ -143,7 +143,11 @@ class GenerationTests(unittest.TestCase):
             check_format=False)
         self.assertIn("RelBcLocations", compiled.shadowed)
         self.assertNotIn("RelBcLocations", compiled.object_types)
-        self.assertNotIn("SalesOrderLine.location", compiled.link_types)
+        # The generated link to the shadowed raw type is not lost: the loader moves it onto
+        # the curated type that holds the relation's records whole.
+        moved = compiled.link_types["SalesOrderLine.location"]
+        self.assertEqual((moved["from"], moved["to"]), ("SalesOrderLine", "ProbeLocation"))
+        self.assertEqual(moved["bindings"][0]["to_binding"], "bc.probe_locations")
         self.assertEqual(compiled.bindings["bc.probe_locations"][0], "ProbeLocation")
 
     def test_a_bc_money_declaration_the_source_does_not_serve_fails_generation(self):
@@ -389,7 +393,7 @@ class DriftAndRegistryTests(unittest.TestCase):
         self.assertEqual(set(lv.check_expectations(CAPTURE_SPEC, 0, dict(
             report, evidence_label="live-read"))),
             {"unpinned_companies != expected", "units_reached != units_total",
-             "units_total < 135", "company_proof.company_name != expected"})
+             "units_total < 138", "company_proof.company_name != expected"})
         index = sr.LiveIndex([live_result(report, CAPTURE_SPEC)])
         self.assertEqual({n for n in GENERATED if not index.naming("bc", {n})}, set())
         # Without the flag the same budget reaches none of them.

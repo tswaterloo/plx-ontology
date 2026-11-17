@@ -37,7 +37,8 @@ from ontology import schema as schema_loader
 from ontology.project import MailCaptures, build_store
 from operating.case_mail_scope import MailScope
 from operating.case_runtime import CaseRuntime, LiveReaders
-from operating.case_tools_host import CaptureCaseHostTools, CaseCaptures, page_build
+from operating.case_tools_host import CaptureCaseHostTools, CaseCaptures
+from operating.case_tools_host_citations import page_build
 from operating.mcp_server import MCPServer
 from operating.tests.test_case_tools_host import _client
 

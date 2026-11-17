@@ -151,6 +151,34 @@ describe("AnswerCard", () => {
     expect(card).toHaveAttribute("aria-busy", "false");
   });
 
+  it("an answer that says a read failed offers the question again; one that read everything does not", async () => {
+    const failed: Answer = {
+      ...answer,
+      outcome: "partial",
+      direct_answer: "Purchase order 106001 lines and NOPE-1 could not be read.",
+      not_found: [{ what: "NOPE-1 code lookup", where_it_would_live: "Tool execution failed." }],
+    };
+    const onRetry = vi.fn();
+    const { unmount } = render(<AnswerCard turn={{ id: "t", question: "q", phase: "done", streamed: "", answer: failed }} onRetry={onRetry} />);
+    await userEvent.click(within(screen.getByTestId("read-failed-retry")).getByRole("button", { name: "Try again" }));
+    expect(onRetry).toHaveBeenCalledTimes(1);
+    unmount();
+    // a failure said only in the not-found list is still a failed read
+    const quiet: Answer = { ...answer, not_found: [{ what: "BC lookup", where_it_would_live: "timed out" }] };
+    const second = render(<AnswerCard turn={{ id: "t", question: "q", phase: "done", streamed: "", answer: quiet }} onRetry={onRetry} />);
+    expect(screen.getByTestId("read-failed-retry")).toBeInTheDocument();
+    second.unmount();
+    render(<AnswerCard turn={{ id: "t", question: "q", phase: "done", streamed: "", answer }} onRetry={onRetry} />);
+    expect(screen.queryByTestId("read-failed-retry")).toBeNull();
+  });
+
+  it("wraps long words and links inside the answer instead of widening a phone's page", () => {
+    render(<AnswerCard turn={{ id: "t", question: "q", phase: "done", streamed: "", answer }} />);
+    const card = screen.getByTestId("answer-card");
+    expect(card.className).toContain("[overflow-wrap:anywhere]");
+    expect(card.className).toContain("min-w-0");
+  });
+
   it("a question asked back lists no sources or checks and offers no save, only its replies and feedback", () => {
     const asked = {
       ...answer, outcome: "partial", direct_answer: "Which order do you mean?", facts: [], not_found: [], hidden: { count: 0 },
@@ -275,8 +303,10 @@ describe("AnswerCard", () => {
     };
     render(<AnswerCard turn={{ id: "t", question: "q", phase: "done", streamed: "", answer: { ...answer, freshness: cut } }} />);
     expect(screen.getByTestId("freshness")).toHaveTextContent(/^Data as of 1 Nov/);
-    expect(screen.getByTestId("freshness-behind")).toHaveTextContent("Teams and Email to 30 Oct");
+    expect(screen.getByTestId("freshness-behind")).toHaveTextContent("some records last read: Teams and Email 30 Oct");
     expect(screen.getByTestId("freshness-behind")).not.toHaveTextContent("Portal");
+    // the stalest part's read is never said as where the source's data ends
+    expect(screen.getByTestId("freshness")).not.toHaveTextContent(/\bto 30 Oct/);
   });
 
   it("warns when search cannot find records captured after its index", () => {

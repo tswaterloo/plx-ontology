@@ -33,8 +33,7 @@ from typing import Any, Iterator, Mapping, Sequence
 from unittest import mock
 
 from ontology import project
-from ontology.project import (ETL_REINSERTED, STAGES, WORK_LAYOUT, CapturedRecord, Projector,
-                              build_store)
+from ontology.project import ETL_REINSERTED, STAGES, WORK_LAYOUT, CapturedRecord, build_store
 from ontology.project_incremental import build_generation
 from ontology.tests import synthetic_captures
 from scripts import ontology_projection_probe as probe
@@ -204,15 +203,38 @@ class EtlDuplicateTests(unittest.TestCase):
         self.assertEqual(held["objects"], sorted([oid(rows[0]), oid(rows[1])]))
         self.assertEqual(report["counts"][COLLAPSED], 1)
 
-    def test_a_copy_removed_from_the_source_keeps_its_removal(self):
-        # A removed copy is never absorbed by a present one (its removal is a verified
-        # outcome a reader of its id must still see); removed copies collapse together.
+    def test_a_removed_copy_beside_a_present_one_is_that_row_re_inserted(self):
+        # CC-NY-2: the ETL re-inserts a row under a fresh id and the old id leaves the
+        # source, so a removed copy whose natural key a present copy holds is the same
+        # row, never a second one (it made a repeated line in 263 of 702 Portal app
+        # orders on the 11-14 mirror). The present copy inserted first is kept, whatever
+        # order the copies were inserted in; removed copies of a row no present copy
+        # holds stay one removed object (that row did leave the source).
         gone = "2026-10-05T00:00:00.000000Z"
         rows = [manufacturer(1, 0, _missing=gone), manufacturer(1, 1, _missing=gone),
-                manufacturer(1, 2), manufacturer(1, 3)]
+                manufacturer(1, 2), manufacturer(1, 3),
+                manufacturer(2, 0, _missing=gone), manufacturer(2, 1, _missing=gone)]
         report, held = build({MANUFACTURER: rows})
-        self.assertEqual(held["objects"], sorted([oid(rows[0]), oid(rows[2])]))
-        self.assertEqual(report["counts"][COLLAPSED], 2)
+        self.assertEqual(held["objects"], sorted([oid(rows[2]), oid(rows[4])]))
+        self.assertEqual(report["counts"][COLLAPSED], 4)
+        self.assertEqual(gap_count(report, "etl_duplicate_collapsed"), 4)
+        dropped = {oid(r) for r in rows} - set(held["objects"])
+        self.assertFalse(dropped & set(held["named"]))
+
+    def test_one_object_per_line_at_any_cardinality_of_re_inserts(self):
+        # N=1/10/60 rows, each re-inserted three times with every older copy gone from the
+        # source (the ETL's run pattern): one object per row, present, none lost.
+        gone = "2026-10-05T00:00:00.000000Z"
+        for contents in (1, 10, 60):
+            with self.subTest(contents=contents):
+                rows = [manufacturer(c, k, **({} if k == 2 else {"_missing": gone}))
+                        for c in range(contents) for k in range(3)]
+                started = time.process_time()
+                report, held = build({MANUFACTURER: rows})
+                self.assertEqual(held["objects"], sorted(oid(r) for r in rows
+                                                         if "_missing" not in r))
+                self.assertEqual(report["counts"][COLLAPSED], 2 * contents)
+                self.assertLess(time.process_time() - started, 60)
 
     def test_presence_is_judged_as_known_at_the_cut(self):
         # An absence recorded after the cut is not yet known there: the object row says
@@ -224,8 +246,9 @@ class EtlDuplicateTests(unittest.TestCase):
         self.assertEqual(report["counts"][COLLAPSED], 2)
         report, held = build({MANUFACTURER: [manufacturer(1, 0, _missing=gone),
                                              manufacturer(1, 1), manufacturer(1, 2)]})
-        self.assertEqual(len(held["objects"]), 2)
-        self.assertEqual(report["counts"][COLLAPSED], 1)
+        # known removed: the row re-inserted, absorbed by the present copy all the same
+        self.assertEqual(held["objects"], [oid(manufacturer(1, 1))])
+        self.assertEqual(report["counts"][COLLAPSED], 2)
 
     def test_an_object_collapses_by_its_latest_version_only(self):
         older = manufacturer(1, 0)
@@ -308,9 +331,10 @@ class ProbeDiskTests(unittest.TestCase):
 
     def test_stage_keys_are_the_projector_stages_and_the_verifier_records_them(self):
         from verify import live_verify as lv
+        from verify import live_verify_policy
         self.assertEqual(probe.STAGE_KEYS, STAGES)
-        self.assertEqual(tuple(lv.ENVELOPE_DISK["stages"]), STAGES)
-        self.assertEqual(tuple(lv.ENVELOPE_DISK["peak"]), probe.PEAK_KEYS)
+        self.assertEqual(tuple(live_verify_policy.ENVELOPE_DISK["stages"]), STAGES)
+        self.assertEqual(tuple(live_verify_policy.ENVELOPE_DISK["peak"]), probe.PEAK_KEYS)
 
     def test_the_report_carries_layout_stages_and_the_largest_builds_objects(self):
         disk = probe._Disk(None, time.monotonic)
@@ -335,7 +359,8 @@ class ProbeDiskTests(unittest.TestCase):
                          (600, 1000, 77, 50, WORK_LAYOUT, 300))
         self.assertEqual(out["disk"]["stages"], {"load": 40, "values": 250})
         from verify import live_verify as lv
-        kept = lv._envelope_disk(out["disk"])
+        from verify import live_verify_checks
+        kept = live_verify_checks._envelope_disk(out["disk"])
         self.assertEqual(kept["peak"], peak)
         self.assertEqual(kept["stages"], {"load": 40, "values": 250})
         disk.stage("not_a_stage", 1, 1)    # an unknown stage is never recorded

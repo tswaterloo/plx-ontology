@@ -254,8 +254,10 @@ class BcWorld:
         test.addCleanup(scratch.cleanup)
         self.store_path = Path(scratch.name) / "ontology.sqlite"
         with BcCaptures(self.h.db) as source:
+            # built on the capture's clock: a build right after its capture, never one
+            # weeks later that the build's age rule would call stale
             self.build = build_store(self.store_path, load_schema(), {"bc": source},
-                                     normalizer=identifiers.normalize)
+                                     normalizer=identifiers.normalize, clock=self.h.clock)
         self.reader = ot.StoreReader.open(self.store_path)
         test.addCleanup(self.reader.conn.close)
         self.schema = ot.default_schema()
@@ -462,6 +464,27 @@ class BcOnlyProjectionTests(unittest.TestCase):
         finally:
             conn.close()
         self.assertEqual([r[1:] for r in rows], [("37.5", "EA", "actual")])
+
+    def test_an_item_card_gives_its_gtin_trimmed_and_an_absent_one_none(self):
+        """CT-D-03: Product.gtin is BC's item ``gtin`` (captured on every item row, never
+        projected before), trimmed; a blank one is the empty text every ``trim`` property
+        gives, an absent field no value."""
+        fake = purchase_world()
+        first = fake.data[(MAN, "items")][0]
+        others = [dict(first, id=gid(9, 70 + i), number=f"ITEM-G{i}") for i in range(2)]
+        first["gtin"] = " 00012345678905 "
+        others[0]["gtin"] = "   "
+        fake.data[(MAN, "items")] += others   # others[1] has no gtin field at all
+        w = BcWorld(self, fake)
+        conn = sqlite3.connect(w.store_path)
+        try:
+            rows = conn.execute(
+                "SELECT o.native_key, v.value FROM object_values v JOIN objects o ON "
+                "o.object_id = v.object_id WHERE o.object_type = 'Product' AND "
+                "v.property = 'gtin' AND v.value IS NOT NULL").fetchall()
+        finally:
+            conn.close()
+        self.assertEqual(sorted(r[1] for r in rows), ["", "00012345678905"])
 
     def test_three_way_price_compares_one_stated_tax_basis_in_a_known_currency(self):
         """BC line prices take their tax basis from the header's pricesIncludeTax and a
@@ -1190,7 +1213,7 @@ class ProbeTests(unittest.TestCase):
         self.assertEqual((report["evidence_label"], report["companies_captured"],
                           report["units_complete"], report["units_reached"],
                           report["units_total"]),
-                         ("injected-transport", 3, 135, 135, 135))
+                         ("injected-transport", 3, 138, 138, 138))
         self.assertEqual((report["roots_checked"], report["process_calls"],
                           report["contract_failures"], report["non_bc_citations"],
                           report["portal_hop_absent"], report["cross_company_links"]),

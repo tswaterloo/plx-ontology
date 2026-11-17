@@ -2157,6 +2157,10 @@
               "kind": "workbench_code",
               "path": "ontology/key_links.py",
               "note": "key_joins step: an exact identifier both records hold, joined by the general resolver's normalized value."
+            },
+            {
+              "kind": "ref",
+              "id": "workbench.bc_same_company_scope"
             }
           ]
         },
@@ -2175,6 +2179,10 @@
               "kind": "workbench_code",
               "path": "ontology/key_links.py",
               "note": "key_joins step: an exact identifier both records hold, joined by the general resolver's normalized value."
+            },
+            {
+              "kind": "ref",
+              "id": "workbench.bc_same_company_scope"
             }
           ]
         }
@@ -2207,6 +2215,10 @@
               "kind": "workbench_code",
               "path": "ontology/key_links.py",
               "note": "key_joins step: an exact identifier both records hold, joined by the general resolver's normalized value."
+            },
+            {
+              "kind": "ref",
+              "id": "workbench.bc_same_company_scope"
             }
           ]
         }
@@ -2239,6 +2251,10 @@
               "kind": "workbench_code",
               "path": "ontology/key_links.py",
               "note": "key_joins step: an exact identifier both records hold, joined by the general resolver's normalized value."
+            },
+            {
+              "kind": "ref",
+              "id": "workbench.bc_same_company_scope"
             }
           ]
         }
@@ -2271,6 +2287,10 @@
               "kind": "workbench_code",
               "path": "ontology/key_links.py",
               "note": "key_joins step: an exact identifier both records hold, joined by the general resolver's normalized value."
+            },
+            {
+              "kind": "ref",
+              "id": "workbench.bc_same_company_scope"
             }
           ]
         }
@@ -2392,6 +2412,10 @@
               "kind": "workbench_code",
               "path": "ontology/schema/domains/bc_finance.json",
               "note": "Link-completeness audit round 2, 2026-11-08 (read-only source mirror, counts only): every non-blank Vendor source number reaches one vendor in the entry's company (168 vendor, 130 customer); 15 of 15 sampled pairs agree with the receipt or shipment the entry's document is."
+            },
+            {
+              "kind": "ref",
+              "id": "workbench.bc_same_company_scope"
             }
           ]
         }
@@ -2431,6 +2455,31 @@
               "kind": "workbench_code",
               "path": "ontology/schema/domains/bc_finance.json",
               "note": "Link-completeness audit round 2, 2026-11-08 (read-only source mirror, counts only): every non-blank Customer source number reaches one customer in the entry's company (168 vendor, 130 customer); 15 of 15 sampled pairs agree with the receipt or shipment the entry's document is."
+            },
+            {
+              "kind": "ref",
+              "id": "workbench.bc_same_company_scope"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "RelSageGlAccount.bc_gl_account",
+      "from": "RelSageGlAccount",
+      "to": "GlAccount",
+      "name": "bc_gl_account",
+      "reverse_name": "sage_gl_accounts",
+      "cardinality": "N:M",
+      "description": "The shared-chart BC G/L account a Sage G/L account becomes, in each BC company (book), as the finance owner's chart-of-accounts crosswalk states it (kept, renumbered or renamed; each currency version of a Sage account is its own row, so a CAD and a USD Sage account may map to one BC number). Reviewed only: no stored key joins them, and a rule on Sage's first segment would link accounts the crosswalk adds to the shared chart instead. Applied by operating/gl_crosswalk.py, citing the workbook's sha256 and date.",
+      "bindings": [
+        {
+          "kind": "reviewed",
+          "tier_ceiling": "reviewed",
+          "evidence": [
+            {
+              "kind": "ref",
+              "id": "wb.gl_crosswalk"
             }
           ]
         }
@@ -2555,6 +2604,11 @@
       "kind": "workbench_code",
       "path": "integrations/bc_read.py",
       "note": "BusinessCentralReader.item_ledger_lots / BcCapture._capture_lots: ODataV4 web service ItemLedgerEntries (Page 38) Entry_No, Item_No, Lot_No, Expiration_Date, Location_Code, Document_No with $filter Lot_No ne '' (live_source_grammar bc.odata_item_ledger_entries), joined to the held API v2.0 item ledger entry by entry number; field names from the live ODataV4 $metadata of 2026-11-01."
+    },
+    "wb.gl_crosswalk": {
+      "kind": "workbench_code",
+      "path": "operating/gl_crosswalk.py",
+      "note": "The finance owner's Sage -> BC chart-of-accounts crosswalk workbook read into one cited reference file (sha256, date); its mapped rows applied as reviewed links in place on Postgres with undo."
     }
   }
 }

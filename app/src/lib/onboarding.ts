@@ -32,7 +32,7 @@ export const GUIDES: RoleGuide[] = [
     lookUp: "a sales order or customer PO number you are working on",
     asks: ["Where is sales order 10432 and when does it ship?", "What did Acme last ask us about their June order?", "Which of my customer orders are at risk of shipping late?"],
     autopilots: ["customer_po", "customer_request", "reply_prep"],
-    pages: [{ href: "/watching", label: "Watching" }],
+    pages: [{ href: "/watching", label: "Watching" }, { href: "/rd-projects", label: "R&D and sample projects" }],
   },
   {
     role: "purchasing",
@@ -71,7 +71,7 @@ export const GUIDES: RoleGuide[] = [
     lookUp: "a sample project, a formula code or a customer you are developing for",
     asks: ["What is the status of the sample project for Acme's new coating?", "Which samples have we sent this month with no reply?", "Where is the latest spec sheet for formula 2207?"],
     autopilots: ["task_assigned", "reply_prep", "meeting_followup"],
-    pages: [{ href: "/rd-projects", label: "R&D projects" }],
+    pages: [{ href: "/rd-projects", label: "R&D and sample projects" }],
   },
   {
     role: "quality",

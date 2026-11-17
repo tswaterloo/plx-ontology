@@ -15,7 +15,8 @@ from ontology.core import Actor
 from operating import action_tools
 from operating import agent_definitions as ad
 from operating.agent_definitions import AgentDefinitionError
-from operating.mcp_server import AGENT_META_KEY, MCPServer
+from operating.mcp_server import MCPServer
+from operating.mcp_server_results import AGENT_META_KEY
 from operating.tests.test_mcp_action_tools import (ACT, ActionToolsTestCase,
                                                    fixture_host_session)
 from operating.tests.test_mcp_case_tools import OPS_FINANCE

@@ -90,7 +90,16 @@ DELTA_LOCK = "hashtext('ontology_delta')"
 # write rate during the fill (450 MB/s on the quieter run).
 RATES = {"fill_rows_s_per_worker": 8_000.0, "index_rows_s": 150_000.0,
          "vacuum_rows_s": 300_000.0, "bytes_per_row": 1850.0, "index_bytes_per_row": 400.0,
-         "probe_rows_s": 80_000.0, "swap_s": 5.0, "io_bytes_s": 4e8}
+         "probe_rows_s": 80_000.0, "swap_s": 5.0, "io_bytes_s": 4e8,
+         # the conversion with its texts packed (GA-F11): PACKED_RATES
+         "pack_rows_s_per_worker": 2_500.0, "packed_bytes_per_row": 900.0}
+
+
+def packed_rates(rates: Mapping[str, float] = RATES) -> dict[str, float]:
+    """``rates`` for a fill that packs: its rows a second a process, and the bytes a row
+    takes with its share of the new texts and skeletons."""
+    return {**rates, "fill_rows_s_per_worker": rates["pack_rows_s_per_worker"],
+            "bytes_per_row": rates["packed_bytes_per_row"]}
 # A link type holding at least this share of the rows has a partition of its own; smaller
 # ones share one of BUCKETS partitions (the decision record has the probe costs).
 OWN_MIN_SHARE = 0.04
@@ -381,6 +390,239 @@ def fill_sqls(target: str, source: str, pages: int | None, parts: int,
             for lo, hi in (ranges if ranges is not None else _ranges(pages or 0, parts))]
 
 
+# --- packing the texts (GA-F11) ---------------------------------------------------------
+#
+# A row's ``reason`` and ``evidence_handles`` stored plain (99 % of the served table) are
+# written packed: a skeleton id each and the slot text ids (``slots``, the evidence's
+# first ``ek``), the layout of migration 0007 that ``ontology.links`` formats back
+# (``ontology.store.pack_link_texts``, the SQLite store's own packing, checks that the
+# skeleton formatted with the slots gives the texts back exactly). Every reader reads the
+# texts through the view or unpacks them the view's way (``migrate_chunks._served_links``,
+# ``ontology_reader``'s slices), so no reader changes; a row the packing leaves plain is
+# read as before.
+#
+# Many processes pack side by side, so a text's id is its hash, not a sequence number:
+# the high 61 bits of its SHA-256 above 2^62 (never a sequence's id; a sequence set past
+# them still has 2^61 left). A text whose id another text already holds (a hash collision,
+# about 1 in 2,000 at 50 M texts) is never stored: its row stays plain. A slot text a
+# slice reader would read the slow way (``ontology_reader._ODD_TEXT``: a quote, backslash
+# or control character; more than ``LINK_ODD_CAP`` of them sends every whole-store link
+# slice to the generic read) keeps its row plain too. Texts are only ever added: ``undo``
+# copies packed rows into the old table, whose rows then need them.
+
+PACK_ID_BASE = 1 << 62
+PACK_BATCH = 5000
+_ODD_TEXT = re.compile(r'["\\\x01-\x1f]')
+
+
+def text_ids(text: str) -> tuple[int, int]:
+    """A link text's or skeleton's id (its SHA-256's high 61 bits above 2^62) and the
+    hash's next 64 bits (a check: two texts with one id differ there)."""
+    h = hashlib.sha256(text.encode("utf-8", "surrogatepass")).digest()
+    return PACK_ID_BASE | (int.from_bytes(h[:8], "big") >> 3), int.from_bytes(h[8:16], "big")
+
+
+def text_id(text: str) -> int:
+    return text_ids(text)[0]
+
+
+_AT = {c: i for i, c in enumerate(COLUMNS)}
+
+
+@dataclass
+class Packed:
+    row: tuple[Any, ...]                      # the row as written, texts packed
+    skeletons: list[tuple[int, int, str]]     # (id, check, text): reason's, evidence's
+    texts: list[tuple[int, int, str]]         # (id, check, text) of each slot, in order
+
+
+def packed_row(row: Sequence[Any]) -> Packed | None:
+    """``row`` (:data:`COLUMNS` order) with its texts packed; None when it stays as it is:
+    already packed, a text not text, nothing to slot, the packing not exact, or a slot
+    text that is odd."""
+    from ontology import store
+    a = _AT
+    if row[a["reason_id"]] is not None or row[a["evidence_id"]] is not None:
+        return None
+    got = store.pack_link_texts(row[a["reason"]], row[a["evidence_handles"]])
+    if got is None:
+        return None
+    reason, evidence, texts, used = got
+    if any(_ODD_TEXT.search(t) for t in texts):
+        return None
+    skeletons = [(*text_ids(t), t) for t in (reason, evidence)]
+    slots = [(*text_ids(t), t) for t in texts]
+    out = list(row)
+    out[a["reason_id"]], out[a["evidence_id"]] = skeletons[0][0], skeletons[1][0]
+    out[a["ek"]], out[a["slots"]] = used, [x[0] for x in slots]
+    out[a["reason"]] = out[a["evidence_handles"]] = None
+    return Packed(tuple(out), skeletons, slots)
+
+
+def _intern(cur: Any, schema: str, table: str, texts: Mapping[int, str]) -> set[int]:
+    """``texts`` (id -> text) added to ``<schema>.<table>`` where missing; the ids another
+    text holds (collisions). Inserted in id order (two packers adding the same ids wait
+    for each other in one order, never in a cycle)."""
+    if not texts:
+        return set()
+    stage = f"pack_stage_{table}"
+    cur.execute(f"CREATE TEMP TABLE IF NOT EXISTS {stage} (id bigint, text text) "
+                "ON COMMIT DELETE ROWS")
+    with cur.copy(f"COPY {stage} (id, text) FROM STDIN") as cp:
+        for k, v in texts.items():
+            cp.write_row((k, v))
+    cur.execute(f"INSERT INTO {schema}.{table} (id, text) SELECT id, text FROM {stage} "
+                "ORDER BY id ON CONFLICT (id) DO NOTHING")
+    cur.execute(f"SELECT s.id FROM {stage} s JOIN {schema}.{table} t ON t.id = s.id "
+                "WHERE t.text <> s.text")
+    return {r[0] for r in cur.fetchall()}
+
+
+@dataclass
+class PackJob:
+    dsn: str
+    schema: str
+    target: str            # schema-qualified table the rows go to
+    source: str            # schema-qualified table they are read from
+    lo: int
+    hi: int | None
+    yield_to_delta: bool = True
+    yield_poll_s: float = 5.0
+    batch: int = PACK_BATCH
+    where: str = "TRUE"     # SQL over the source's rows: the ones copied
+
+
+def pack_range(job: PackJob) -> dict[str, int]:
+    """One block range of ``job.source`` copied into ``job.target`` with its texts packed
+    (a pool task: its own connections). Each batch: its new texts interned and committed,
+    then its rows copied and committed; a batch starts only while no delta applies."""
+    import psycopg
+    if job.schema != SCHEMA:
+        raise Refused(f"pack_schema_differs:{job.schema}")
+    counts = {"rows": 0, "packed": 0, "texts": 0, "collided": 0, "yielded_ms": 0}
+    known: dict[int, int] = {}   # id -> check of the texts this process saw stored
+
+    def connect(autocommit: bool) -> Any:
+        conn = psycopg.connect(job.dsn, autocommit=autocommit)
+        conn.execute("SET synchronous_commit = off")
+        return conn
+
+    with connect(False) as rconn, connect(False) as wconn, connect(True) as poll:
+        cols = ", ".join(COLUMNS)
+        read = rconn.cursor(name="pack_range")
+        read.itersize = job.batch
+        read.execute(f"SELECT {cols} FROM {job.source} s WHERE {_ctid(job.lo, job.hi)} "
+                     f"AND ({job.where})")
+        while True:
+            rows = read.fetchmany(job.batch)
+            if not rows:
+                break
+            if job.yield_to_delta:
+                t = time.monotonic()
+                with poll.cursor() as pc:
+                    while delta_applying(pc):
+                        time.sleep(job.yield_poll_s)
+                counts["yielded_ms"] += int((time.monotonic() - t) * 1000)
+            packs = [packed_row(r) for r in rows]
+            want: dict[str, dict[int, str]] = {"link_skeletons": {}, "link_texts": {}}
+            check: dict[int, int] = {}
+            clash: set[int] = set()
+            for got in packs:
+                if got is None:
+                    continue
+                for table, items in (("link_skeletons", got.skeletons),
+                                     ("link_texts", got.texts)):
+                    for kid, chk, txt in items:
+                        seen = known.get(kid, check.get(kid))
+                        if seen is not None and seen != chk:
+                            clash.add(kid)      # another text holds the id
+                            continue
+                        check[kid] = chk
+                        if kid not in known:
+                            want[table][kid] = txt
+            with wconn.cursor() as cur:
+                for attempt in range(1, 6):
+                    try:
+                        found = set()
+                        for table, texts in want.items():
+                            found |= _intern(cur, job.schema, table, texts)
+                        wconn.commit()
+                        break
+                    except psycopg.errors.DeadlockDetected:
+                        wconn.rollback()
+                        if attempt == 5:
+                            raise
+                        time.sleep(0.1 * attempt)
+                clash |= found
+                counts["texts"] += sum(len(t) for t in want.values())
+                if len(known) > 500_000:
+                    known.clear()
+                known.update((k, v) for k, v in check.items() if k not in clash)
+                with cur.copy(f"COPY {job.target} ({cols}) FROM STDIN") as cp:
+                    for row, got in zip(rows, packs):
+                        if got is not None:
+                            if not clash.intersection(
+                                    x[0] for x in (*got.skeletons, *got.texts)):
+                                cp.write_row(got.row)
+                                counts["packed"] += 1
+                                continue
+                            counts["collided"] += 1
+                        cp.write_row(row)
+                wconn.commit()
+            counts["rows"] += len(rows)
+        rconn.rollback()
+    return counts
+
+
+def pack_jobs(s: "Session", jobs: Sequence[PackJob]) -> dict[str, int]:
+    """:func:`pack_range` of each job, ``s.workers`` processes side by side."""
+    import multiprocessing
+    from ontology import parent_watch
+    total: dict[str, int] = {}
+    if not jobs:
+        return total
+    with multiprocessing.get_context("spawn").Pool(
+            max(1, min(s.workers, len(jobs))), **parent_watch.pool_init()) as pool:
+        for got in pool.imap_unordered(pack_range, jobs):
+            for k, v in got.items():
+                total[k] = total.get(k, 0) + v
+    s.yielded_s += total.get("yielded_ms", 0) / 1000
+    return total
+
+
+def _texts_sql(alias: str) -> tuple[str, str]:
+    """The view's reason and evidence expressions over the rows ``alias``."""
+    return (f"coalesce({alias}.reason, {SCHEMA}.link_text({alias}.reason_id, {alias}.slots, "
+            f"{alias}.ek + 1, 64))",
+            f"coalesce({alias}.evidence_handles, {SCHEMA}.link_text({alias}.evidence_id, "
+            f"{alias}.slots, 1, {alias}.ek))")
+
+
+def verify_sample(cur: Any, new: str, source: str, token: str, *, percent: float = 1.0
+                  ) -> dict[str, int]:
+    """A block sample of ``new``'s rows compared with ``source``'s rows of the same key:
+    every column the view gives (the texts as the view formats them) equal. Rows a writer
+    changed since the fill (logged under ``token``) are left to the catch-up. A table of
+    under 10,000 blocks is compared whole (a sample of a small one may hold no block)."""
+    if _pages(cur, f"{SCHEMA}.{q(new)}") < 10_000:
+        percent = 100.0
+    nr, ne = _texts_sql("n")
+    orr, oe = _texts_sql("o")
+    plain = [c for c in COLUMNS if c not in ("reason_id", "evidence_id", "ek", "slots",
+                                             "reason", "evidence_handles")]
+    same = " AND ".join([f"n.{c} IS NOT DISTINCT FROM o.{c}" for c in plain] +
+                        [f"{nr} IS NOT DISTINCT FROM {orr}", f"{ne} IS NOT DISTINCT FROM {oe}"])
+    cur.execute(
+        f"SELECT count(*), count(*) FILTER (WHERE o.link_id IS NULL OR NOT ({same})), "
+        "count(*) FILTER (WHERE n.reason_id IS NOT NULL) "
+        f"FROM {SCHEMA}.{q(new)} n TABLESAMPLE SYSTEM (%s) LEFT JOIN {source} o "
+        "ON o.link_id = n.link_id AND o.link_type = n.link_type "
+        f"WHERE NOT EXISTS (SELECT 1 FROM {SCHEMA}.{LOG} g WHERE g.token = %s "
+        "AND g.link_id = n.link_id)", (percent, token))
+    checked, differ, packed = cur.fetchone()
+    return {"checked": checked, "differ": differ, "packed": packed}
+
+
 # --- the budget -------------------------------------------------------------------------
 
 def project(rows_written: int, *, workers: int, read_bytes: int = 0, probes: int = 0,
@@ -455,6 +697,20 @@ class Rebuild:
     source: str | None = None
     source_pages: int | None = None
     keep: str = "FALSE"
+    # GA-F11: the kept rows' texts packed on the way (:func:`pack_range`)
+    pack: bool = False
+
+    @property
+    def replaces(self) -> tuple[str, ...]:
+        """The types whose rows a writer may not change during the build: none when every
+        row is kept and nothing added (a repack: a logged row is caught up)."""
+        return () if self.source is None and self.keep.strip().upper() == "TRUE" \
+            else self.types
+
+
+def repack(types: Sequence[str]) -> "Rebuild":
+    """The partitions holding ``types`` written again with every row kept, texts packed."""
+    return Rebuild(tuple(types), keep="TRUE", pack=True)
 
 
 def prefix_end(prefix: str) -> str:
@@ -569,13 +825,21 @@ def plan(cur: Any, change: Rebuild, *, workers: int = 8, budget_s: float = BUDGE
     undo (a rebuild would not be logged for it)."""
     if not is_partitioned(cur):
         raise Refused("link_rows_not_partitioned")
-    if _exists(cur, OLD):
+    if _exists(cur, OLD) and change.replaces:
+        # a change's rows would escape the conversion's undo log; a repack's do not: its
+        # catch-up writes through the parent (logged), and the rows it copies read the same
         raise Refused("conversion_not_finished: undo or finish it first")
     unknown = [t for t in change.types if not isinstance(t, str) or not t]
     if unknown or not change.types:
         raise Refused("rebuild_without_types")
     parts = layout(cur)
     placed = _placement(cur, change, parts, gen, rates)
+    pending = set(_undo_pending(cur))
+    held = [p.name for p in placed.hit if p.name in pending]
+    if held:
+        raise Refused(f"rebuild_undo_open:{','.join(held)}: rebuild-finish or rebuild-undo first")
+    if change.pack:
+        rates = packed_rates(rates)
     rows = _total_rows(placed.hit, rates)
     source_rows = 0
     if change.source is not None:
@@ -622,11 +886,20 @@ def _foreign_ids(s: Session, change: Rebuild, plan_: _Plan) -> int:
 
 
 def rebuild(s: Session, change: Rebuild, *, budget_s: float = BUDGET_S,
-            lock_timeout_ms: int = 2000, tries: int = 30) -> dict[str, Any]:
+            lock_timeout_ms: int = 2000, tries: int = 30, keep_old: bool = False,
+            verify_percent: float = 1.0) -> dict[str, Any]:
     """Rebuild the partitions holding ``change.types`` beside the served ones and swap
     them in (module docstring). Returns the plan, the timings and the counts. Refused,
     changed or failed, it leaves the served partitions as they were and drops what it
-    built."""
+    built. ``change.pack``: the old partitions' kept rows go through :func:`pack_range`
+    (``s.workers`` processes), then a ``verify_percent`` block sample of each new
+    partition is compared with the old rows as the view reads them (one difference and
+    nothing is swapped). ``keep_old``: the old partitions are kept detached and every
+    write to the new ones logged, until :func:`rebuild_finish` (or :func:`rebuild_undo`
+    swaps the old ones back with those writes)."""
+    if change.pack and change.replaces:
+        # a packed partition is checked row for row against the rows it was read from
+        raise Refused("pack_is_for_a_repack_only")
     with s.connect() as conn, conn.cursor() as cur:
         gen = _gen(cur)
         planned = plan(cur, change, workers=s.workers, budget_s=budget_s, gen=gen)
@@ -656,6 +929,7 @@ def rebuild(s: Session, change: Rebuild, *, budget_s: float = BUDGET_S,
         replaced = _check(change.types)
         keep = f"NOT ({replaced}) OR ({change.keep})"
         fills: list[str] = []
+        packs: list[PackJob] = []
         for new in built:
             own = _check(new.types, placed.named_after)
             for old in hit:
@@ -663,12 +937,37 @@ def rebuild(s: Session, change: Rebuild, *, budget_s: float = BUDGET_S,
                 if old.types is not None and new.types is not None and \
                         not set(old.types) & set(new.types):
                     continue
+                if change.pack:
+                    packs += [PackJob(s.dsn, SCHEMA, f"{SCHEMA}.{new.name}",
+                                      f"{SCHEMA}.{old.name}", lo, hi, s.yield_to_delta,
+                                      s.yield_poll_s, where=f"({keep}) AND ({own})")
+                              for lo, hi in _ranges(pages[old.name], s.workers * 8)]
+                    continue
                 fills += fill_sqls(f"{SCHEMA}.{new.name}", f"{SCHEMA}.{old.name}",
                                    pages[old.name], s.workers, f"({keep}) AND ({own})")
             if change.source is not None:
                 fills += fill_sqls(f"{SCHEMA}.{new.name}", change.source, source_pages,
                                    s.workers, own)
-        s.timed("fill", lambda: s.run(fills))
+        packed = s.timed("fill", lambda: (pack_jobs(s, packs), s.run(fills))[0])
+        # a row a writer changed while the ranges were read may have been copied twice (its
+        # old and new version, two ranges' snapshots): every logged row made again once
+        # from the old partitions before the unique keys are built (the swap catches up
+        # what is written after)
+        with s.connect() as conn, conn.cursor() as cur:
+            s.timed("catch_up_1", lambda: _build_catch_up(cur, token, hit, built,
+                                                          placed.named_after, keep))
+        checked: dict[str, int] = {}
+        if change.pack and verify_percent > 0:
+            def check() -> None:
+                with s.connect() as conn, conn.cursor() as cur:
+                    for new in built:
+                        got = verify_sample(cur, new.name, f"{SCHEMA}.{PARENT}", token,
+                                            percent=verify_percent)
+                        for k, v in got.items():
+                            checked[k] = checked.get(k, 0) + v
+            s.timed("verify", check)
+            if checked.get("differ"):
+                raise Refused(f"packed_rows_differ:{checked['differ']}")
         s.timed("index", lambda: s.run([x for n in built for x in _index_sqls(n.name)],
                                        workers=max(s.workers, 6)))
         s.timed("vacuum", lambda: s.run([(_pkey_sql(n.name), *_settle(n.name))
@@ -676,21 +975,54 @@ def rebuild(s: Session, change: Rebuild, *, budget_s: float = BUDGET_S,
         foreign = s.timed("id_check", lambda: _foreign_ids(s, change, placed))
         if foreign:
             raise Refused(f"link_id_held_by_another_type:{foreign}")
+        undo_token = f"undo-{gen}" if keep_old else None
         report = s.timed("swap", lambda: swap(s, [o.name for o in hit], built, token=token,
-                                             replaced=change.types,
-                                             lock_timeout_ms=lock_timeout_ms, tries=tries))
+                                             replaced=change.replaces,
+                                             lock_timeout_ms=lock_timeout_ms, tries=tries,
+                                             undo_token=undo_token, gen=gen,
+                                             old_types={o.name: o.types for o in hit}))
         swapped = True
     finally:
         with s.connect() as conn:
             conn.execute(f"DELETE FROM {SCHEMA}.{ACTIVE} WHERE token = %s", (token,))
-            # swapped: the old partitions (and their triggers) go; else what was built
-            for t in ([o.name for o in hit] if swapped else [n.name for n in built]):
-                _drop(conn, "table", t)
-            if not swapped:
+            # swapped: the old partitions go (kept detached for undo with keep_old), their
+            # build triggers with them; else what was built
+            if not (swapped and keep_old):
+                for t in ([o.name for o in hit] if swapped else [n.name for n in built]):
+                    _drop(conn, "table", t)
+            if not swapped or keep_old:
                 for old in hit:
                     _drop(conn, "trigger", _trigger(token), old.name)
             conn.execute(f"DELETE FROM {SCHEMA}.{LOG} WHERE token = %s", (token,))
-    return {"plan": planned, "timings": dict(s.timings), **report}
+    return {"plan": planned, "timings": dict(s.timings), "packed": packed,
+            "verified": checked, "kept_old": keep_old, "gen": gen, **report}
+
+
+def _build_catch_up(cur: Any, token: str, olds: Sequence[Partition],
+                    news: Sequence[Partition], named_after: Sequence[str], keep: str) -> int:
+    """Before a rebuild's indexes: each logged (id, type) taken out of the new partitions
+    and copied again from the old ones as they hold it now (as the fill would: the kept
+    rows of each new partition's types). The log is kept for the swap's catch-up."""
+    cur.execute(f"SELECT DISTINCT link_id, link_type FROM {SCHEMA}.{LOG} WHERE token = %s",
+                (token,))
+    logged = cur.fetchall()
+    if not logged:
+        return 0
+    ids, types = [i for i, _ in logged], [t for _, t in logged]
+    pairs = "(SELECT * FROM unnest(%s::text[], %s::text[]) AS g(link_id, link_type))"
+    cols = ", ".join(COLUMNS)
+    for new in news:
+        cur.execute(f"DELETE FROM {SCHEMA}.{q(new.name)} l USING {pairs} g WHERE "
+                    "l.link_id = g.link_id AND l.link_type = g.link_type", (ids, types))
+        own = _check(new.types, named_after)
+        for old in olds:
+            # the old partition's own columns only in the filters (``keep`` and ``own`` name
+            # them unqualified)
+            cur.execute(f"INSERT INTO {SCHEMA}.{q(new.name)} ({cols}) SELECT {cols} FROM "
+                        f"{SCHEMA}.{q(old.name)} WHERE (link_id, link_type) IN (SELECT "
+                        f"link_id, link_type FROM {pairs} x) AND ({keep}) AND ({own})",
+                        (ids, types))
+    return len(ids)
 
 
 ACTIVE = "link_rows_rebuilds"     # the tokens of the rebuilds running
@@ -698,8 +1030,24 @@ RETIRED = "link_rows_retired"    # what a cleanup could not drop yet (a reader h
 
 
 def _log_table(cur: Any) -> None:
+    # Keyed by a surrogate ``seq`` (TRAIN2-B2): a migration's undo log
+    # (``migrate_chunks._logged_tables``) refuses a keyless table in ``ontology``, and
+    # no natural key fits, since an UPDATE logs its OLD and NEW (token, id, type), often
+    # the same triple. BY DEFAULT, not ALWAYS, so that an undo can put a deleted log row
+    # back with its own ``seq``. The table stays in ``ontology``: the writers' grants
+    # cover it and their triggers insert into it.
     cur.execute(f"""CREATE TABLE IF NOT EXISTS {SCHEMA}.{LOG} (
-        token text NOT NULL, link_id text NOT NULL, link_type text NOT NULL)""")
+        token text NOT NULL, link_id text NOT NULL, link_type text NOT NULL,
+        seq bigint GENERATED BY DEFAULT AS IDENTITY PRIMARY KEY)""")
+    # A keyless table made before the key (DI-03) gets it once. The catalog is read
+    # first so that later calls take no ALTER lock, which would queue the writers'
+    # trigger inserts.
+    cur.execute("SELECT NOT EXISTS (SELECT 1 FROM pg_index WHERE indisprimary AND "
+                "indrelid = %s::regclass)", (f"{SCHEMA}.{LOG}",))
+    if cur.fetchone()[0]:
+        cur.execute(f"ALTER TABLE {SCHEMA}.{LOG} ADD COLUMN IF NOT EXISTS seq bigint "
+                    "GENERATED BY DEFAULT AS IDENTITY")
+        cur.execute(f"ALTER TABLE {SCHEMA}.{LOG} ADD PRIMARY KEY (seq)")
     cur.execute(f"CREATE TABLE IF NOT EXISTS {SCHEMA}.{ACTIVE} (token text PRIMARY KEY)")
     cur.execute(f"""CREATE TABLE IF NOT EXISTS {SCHEMA}.{RETIRED} (
         kind text NOT NULL, name text NOT NULL, on_table text NOT NULL DEFAULT '',
@@ -712,10 +1060,12 @@ def _log_table(cur: Any) -> None:
                 RETURN NULL;
             END IF;
             IF TG_OP IN ('UPDATE', 'DELETE') THEN
-                INSERT INTO {SCHEMA}.{LOG} VALUES (TG_ARGV[0], OLD.link_id, OLD.link_type);
+                INSERT INTO {SCHEMA}.{LOG} (token, link_id, link_type)
+                    VALUES (TG_ARGV[0], OLD.link_id, OLD.link_type);
             END IF;
             IF TG_OP IN ('UPDATE', 'INSERT') THEN
-                INSERT INTO {SCHEMA}.{LOG} VALUES (TG_ARGV[0], NEW.link_id, NEW.link_type);
+                INSERT INTO {SCHEMA}.{LOG} (token, link_id, link_type)
+                    VALUES (TG_ARGV[0], NEW.link_id, NEW.link_type);
             END IF;
             RETURN NULL;
         END $$""")
@@ -724,7 +1074,8 @@ def _log_table(cur: Any) -> None:
         LANGUAGE plpgsql AS $$
         BEGIN
             IF EXISTS (SELECT 1 FROM {SCHEMA}.{ACTIVE} WHERE token = TG_ARGV[0]) THEN
-                INSERT INTO {SCHEMA}.{LOG} VALUES (TG_ARGV[0], '', '');
+                INSERT INTO {SCHEMA}.{LOG} (token, link_id, link_type)
+                    VALUES (TG_ARGV[0], '', '');
             END IF;
             RETURN NULL;
         END $$""")
@@ -833,17 +1184,176 @@ def _retry(s: Session, what: str, attempt_fn: Callable[[Any, Any], dict[str, Any
 
 def swap(s: Session, olds: Sequence[str], news: Sequence[Partition], *, token: str,
          replaced: Sequence[str] = (), lock_timeout_ms: int = 2000,
-         tries: int = 30) -> dict[str, Any]:
+         tries: int = 30, undo_token: str | None = None, gen: int = 0,
+         old_types: Mapping[str, tuple[str, ...] | None] | None = None) -> dict[str, Any]:
     """One transaction: the old partitions detached, the new ones attached (implied
-    bounds, matching indexes: no scan, no build), the logged rows caught up."""
+    bounds, matching indexes: no scan, no build), the logged rows caught up. With
+    ``undo_token``: every later write to the new partitions logged and the swap recorded
+    (:data:`UNDOS`) for :func:`rebuild_undo` / :func:`rebuild_finish`."""
     def attempt(conn: Any, cur: Any) -> dict[str, Any]:
         for old in olds:
             cur.execute(f"ALTER TABLE {SCHEMA}.{PARENT} DETACH PARTITION {SCHEMA}.{q(old)}")
         for new in news:
             cur.execute(f"ALTER TABLE {SCHEMA}.{PARENT} ATTACH PARTITION "
                         f"{SCHEMA}.{q(new.name)} {_bound(new.types)}")
-        return {"caught_up": _catch_up(cur, token, olds, replaced)}
+        caught = _catch_up(cur, token, olds, replaced)
+        if undo_token is not None:
+            _undo_table(cur)
+            cur.execute(f"INSERT INTO {SCHEMA}.{ACTIVE} VALUES (%s) ON CONFLICT DO NOTHING",
+                        (undo_token,))
+            for new in news:
+                _watch(cur, new.name, undo_token)
+                cur.execute(f"CREATE TRIGGER {_trigger(undo_token)}_truncate AFTER TRUNCATE ON "
+                            f"{SCHEMA}.{q(new.name)} FOR EACH STATEMENT EXECUTE FUNCTION "
+                            f"{SCHEMA}.link_rows_log_truncate({lit(undo_token)})")
+            cur.execute(f"INSERT INTO {SCHEMA}.{UNDOS} VALUES (%s, %s, %s, %s, %s)",
+                        (gen, undo_token, list(olds), [n.name for n in news],
+                         json.dumps({o: (list(t) if t is not None else None)
+                                     for o, t in (old_types or {}).items()})))
+        return {"caught_up": caught}
     return _retry(s, "swap", attempt, lock_timeout_ms=lock_timeout_ms, tries=tries)
+
+
+UNDOS = "link_rows_rebuild_undo"   # rebuilds whose old partitions are kept for undo
+
+
+def _undo_table(cur: Any) -> None:
+    cur.execute(f"""CREATE TABLE IF NOT EXISTS {SCHEMA}.{UNDOS} (
+        gen bigint PRIMARY KEY, token text NOT NULL, olds text[] NOT NULL,
+        news text[] NOT NULL, bounds jsonb NOT NULL)""")
+
+
+def _undo_pending(cur: Any) -> list[str]:
+    """The partitions an open rebuild undo names (its new ones served, its old ones kept)."""
+    if not _exists(cur, UNDOS):
+        return []
+    cur.execute(f"SELECT coalesce(array_agg(n), '{{}}') FROM {SCHEMA}.{UNDOS}, "
+                "unnest(news || olds) n")
+    return list(cur.fetchone()[0])
+
+
+def _undo_of(cur: Any, gen: int) -> tuple[str, list[str], list[str]]:
+    if not _exists(cur, UNDOS):
+        raise Refused("no_rebuild_undo")
+    cur.execute(f"SELECT token, olds, news FROM {SCHEMA}.{UNDOS} WHERE gen = %s", (gen,))
+    row = cur.fetchone()
+    if row is None:
+        raise Refused(f"no_rebuild_undo:{gen}")
+    return row[0], list(row[1]), list(row[2])
+
+
+def rebuild_undo(s: Session, gen: int, *, lock_timeout_ms: int = 2000,
+                 tries: int = 30) -> dict[str, Any]:
+    """A kept rebuild taken back: its old partitions attached again in place of the new
+    ones, with every write logged on the new ones since the swap; the new ones dropped."""
+    with s.connect() as conn, conn.cursor() as cur:
+        token, olds, news = _undo_of(cur, gen)
+        cur.execute(f"SELECT EXISTS (SELECT 1 FROM {SCHEMA}.{LOG} WHERE token = %s AND "
+                    "link_id = '')", (token,))
+        if cur.fetchone()[0]:
+            raise Refused("truncated_since_the_rebuild: undo would lose rows")
+        cur.execute(f"SELECT bounds FROM {SCHEMA}.{UNDOS} WHERE gen = %s", (gen,))
+        bounds = {k: (tuple(v) if v is not None else None)
+                  for k, v in cur.fetchone()[0].items()}
+        if set(bounds) != set(olds):
+            raise Refused("rebuild_undo_bounds_unknown")
+        for old in olds:
+            # the old partition's bound as a validated CHECK, so attaching it back scans
+            # nothing under the swap's lock (it is detached: validating it holds no reader;
+            # the default partition keeps the check naming the others)
+            if bounds[old] is not None:
+                ck = q(old[:50] + "_undo_ck")
+                cur.execute(f"ALTER TABLE {SCHEMA}.{q(old)} DROP CONSTRAINT IF EXISTS {ck}")
+                cur.execute(f"ALTER TABLE {SCHEMA}.{q(old)} ADD CONSTRAINT {ck} "
+                            f"CHECK ({_check(bounds[old])}) NOT VALID")
+                cur.execute(f"ALTER TABLE {SCHEMA}.{q(old)} VALIDATE CONSTRAINT {ck}")
+
+    def attempt(conn: Any, cur: Any) -> dict[str, Any]:
+        cur.execute(f"DELETE FROM {SCHEMA}.{ACTIVE} WHERE token = %s", (token,))
+        for new in news:
+            cur.execute(f"DROP TRIGGER IF EXISTS {_trigger(token)} ON {SCHEMA}.{q(new)}")
+            cur.execute(f"DROP TRIGGER IF EXISTS {_trigger(token)}_truncate ON "
+                        f"{SCHEMA}.{q(new)}")
+            cur.execute(f"ALTER TABLE {SCHEMA}.{PARENT} DETACH PARTITION {SCHEMA}.{q(new)}")
+        for old in olds:
+            cur.execute(f"ALTER TABLE {SCHEMA}.{PARENT} ATTACH PARTITION "
+                        f"{SCHEMA}.{q(old)} {_bound(bounds[old])}")
+        caught = _catch_up(cur, token, news, ())
+        cur.execute(f"DELETE FROM {SCHEMA}.{UNDOS} WHERE gen = %s", (gen,))
+        return {"caught_up": caught}
+    out = _retry(s, "undo", attempt, lock_timeout_ms=lock_timeout_ms, tries=tries)
+    with s.connect() as conn:
+        for new in news:
+            _drop(conn, "table", new)
+        conn.execute(f"DELETE FROM {SCHEMA}.{LOG} WHERE token = %s", (token,))
+    return out
+
+
+def rebuild_finish(s: Session, gen: int) -> dict[str, Any]:
+    """A kept rebuild made final: its old partitions, its triggers and log dropped."""
+    with s.connect() as conn, conn.cursor() as cur:
+        token, olds, news = _undo_of(cur, gen)
+        cur.execute(f"DELETE FROM {SCHEMA}.{ACTIVE} WHERE token = %s", (token,))
+        dropped = True
+        for new in news:
+            dropped &= _drop(conn, "trigger", _trigger(token), new)
+            dropped &= _drop(conn, "trigger", _trigger(token) + "_truncate", new)
+        for old in olds:
+            dropped &= _drop(conn, "table", old)
+        cur.execute(f"DELETE FROM {SCHEMA}.{LOG} WHERE token = %s", (token,))
+        cur.execute(f"DELETE FROM {SCHEMA}.{UNDOS} WHERE gen = %s", (gen,))
+    return {"gen": gen, "dropped": dropped}
+
+
+REPACKED = "link_rows_repacked"   # partitions a repack wrote (a rerun skips them)
+
+
+def kept_rebuilds(cur: Any) -> list[int]:
+    if not _exists(cur, UNDOS):
+        return []
+    cur.execute(f"SELECT gen FROM {SCHEMA}.{UNDOS} ORDER BY gen")
+    return [r[0] for r in cur.fetchall()]
+
+
+def repack_all(s: Session, *, types: Sequence[str] = (), every: bool = False,
+               budget_s: float = BUDGET_S, keep_old: bool = True,
+               verify_percent: float = 1.0) -> dict[str, Any]:
+    """GA-F11 on the partitioned table: each partition holding ``types`` (``every``: each
+    partition naming types; the default holds none after the conversion) rebuilt alone
+    with its texts packed (:func:`repack`), smallest first, each gated and swapped on its
+    own; one already repacked (:data:`REPACKED`) is skipped, so a stopped pass resumes.
+    ``keep_old``: each old partition kept detached for :func:`rebuild_undo` until
+    :func:`rebuild_finish`."""
+    if not types and not every:
+        raise Refused("repack_without_types")
+    with s.connect() as conn, conn.cursor() as cur:
+        if not is_partitioned(cur):
+            raise Refused("link_rows_not_partitioned")
+        cur.execute(f"CREATE TABLE IF NOT EXISTS {SCHEMA}.{REPACKED} (name text PRIMARY KEY, "
+                    "gen bigint NOT NULL, at timestamptz NOT NULL DEFAULT now())")
+        cur.execute(f"SELECT name FROM {SCHEMA}.{REPACKED}")
+        done = {r[0] for r in cur.fetchall()}
+        parts = [p for p in layout(cur) if p.types is not None]
+    want = set(types)
+    todo = [p for p in sorted(parts, key=lambda p: (p.pages, p.name))
+            if (every or want & set(p.types or ())) and p.name not in done]
+    unknown = want - {t for p in parts for t in (p.types or ())}
+    if unknown:
+        raise Refused(f"types_no_partition_names:{sorted(unknown)[:5]}")
+    out: list[dict[str, Any]] = []
+    for p in todo:
+        s.timings.clear()
+        got = rebuild(s, repack(p.types or ()), budget_s=budget_s, keep_old=keep_old,
+                      verify_percent=verify_percent)
+        with s.connect() as conn:
+            conn.execute(f"INSERT INTO {SCHEMA}.{REPACKED} (name, gen) SELECT n, %s FROM "
+                         "unnest(%s::text[]) n ON CONFLICT DO NOTHING",
+                         (got["gen"], got["plan"]["new"]))
+        s.log(f"repacked {p.name}: {got['packed']} {got['timings']}")
+        out.append({"partition": p.name, "new": got["plan"]["new"], "gen": got["gen"],
+                    "packed": got["packed"], "verified": got["verified"],
+                    "timings": got["timings"], "swap_locked_s": got.get("swap_locked_s")})
+    return {"repacked": out, "skipped": sorted(done & {p.name for p in parts})}
 
 
 # --- conversion of the served table -----------------------------------------------------
@@ -1094,7 +1604,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     from operating.pg import config
     ap = argparse.ArgumentParser(prog="python3 -m operating.pg.link_partitions")
     ap.add_argument("command", choices=("layout", "plan", "rebuild", "convert", "audit",
-                                        "undo", "finish"))
+                                        "undo", "finish", "repack", "rebuild-undo",
+                                        "rebuild-finish"))
     ap.add_argument("--dsn", default=None)
     ap.add_argument("--type", action="append", default=[], dest="types")
     ap.add_argument("--source", default=None, help="table or (SELECT ...) of the new rows")
@@ -1102,6 +1613,15 @@ def main(argv: Sequence[str] | None = None) -> int:
     ap.add_argument("--workers", type=int, default=8)
     ap.add_argument("--budget-s", type=float, default=BUDGET_S)
     ap.add_argument("--plan-only", action="store_true", help="convert: project and gate only")
+    ap.add_argument("--all", action="store_true",
+                    help="repack: every partition naming types, one rebuild each; "
+                         "rebuild-undo/-finish: every kept rebuild")
+    ap.add_argument("--gen", type=int, action="append", default=[],
+                    help="rebuild-undo/-finish: the kept rebuild's generation")
+    ap.add_argument("--no-keep-old", action="store_true",
+                    help="repack: drop the old partitions at the swap (no undo)")
+    ap.add_argument("--verify-percent", type=float, default=1.0,
+                    help="repack: block sample of each packed partition compared")
     a = ap.parse_args(argv)
     dsn = a.dsn or config.dsn()
     s = Session(dsn, workers=a.workers, log=lambda m: print(m, file=sys.stderr))
@@ -1128,6 +1648,19 @@ def main(argv: Sequence[str] | None = None) -> int:
         elif a.command == "audit":
             with s.connect() as conn, conn.cursor() as cur:
                 out = audit(cur)
+        elif a.command == "repack":
+            out = repack_all(s, types=a.types, every=a.all, budget_s=a.budget_s,
+                             keep_old=not a.no_keep_old, verify_percent=a.verify_percent)
+        elif a.command in ("rebuild-undo", "rebuild-finish"):
+            gens = list(a.gen)
+            if a.all:
+                with s.connect() as conn, conn.cursor() as cur:
+                    gens = kept_rebuilds(cur)
+            if not gens:
+                raise Refused("no_gen")
+            fn = rebuild_undo if a.command == "rebuild-undo" else rebuild_finish
+            # undo newest first: a later rebuild's old partitions are an earlier one's new
+            out = [fn(s, g) for g in sorted(gens, reverse=True)]
         elif a.command == "undo":
             out = undo(s)
         else:
@@ -1135,6 +1668,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     except (OverBudget, Refused, Changed) as exc:
         print(json.dumps({"refused": type(exc).__name__, "why": str(exc)}))
         return 2
+    if a.command in ("rebuild", "convert", "undo", "finish") and not a.plan_only:
+        from operating.pg import link_marks
+        link_marks.after_apply(dsn, f"link_partitions {a.command}")
     print(json.dumps(out, indent=1, default=str))
     return 0
 

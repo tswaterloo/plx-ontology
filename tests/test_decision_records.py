@@ -36,7 +36,9 @@ from ontology.tests.test_mail_documents import StaticPortal
 from ontology.types import Actor
 from operating import decision_evidence as de
 from operating import ontology_tools as ot
+from operating import ontology_tools_results
 from operating import ontology_tools_investigate as oi
+from operating import ontology_tools_investigate_host
 from operating import ontology_tools_traverse as tt
 
 NOW = dt.datetime(2026, 10, 1, 13, 0, tzinfo=dt.timezone.utc)
@@ -128,7 +130,9 @@ class DecisionRecordFieldsTests(unittest.TestCase):
                  if lid.startswith("DecisionRecord.")}
         self.assertEqual({link["to"] for link in links.values()},
                          {"PurchaseOrder", "SalesOrder", "Quote", "AssemblyOrder", "Batch",
-                          "PurchaseRequisition"})
+                          "PurchaseRequisition",
+                          # AUD-13 #16 (b8b9bb2285): lead mentions of these two as well
+                          "SalesInvoice", "BatchSchedule"})
         for lid, link in links.items():
             with self.subTest(link=lid):
                 self.assertEqual(link["reverse_name"], "decision_records")
@@ -220,10 +224,10 @@ class DecisionDocumentsInvestigatedTests(unittest.TestCase):
                                 schema=ot.SchemaView.from_compiled(self.compiled), grammar=None,
                                 contracts=CONTRACTS, clock=lambda: NOW)
         table: dict = {}
-        ot.register(table, base)
+        ontology_tools_results.register(table, base)
         tt.register(table, tt.TraverseTools(base))
         oi.register(table, oi.InvestigateTools(table, rows=oi.citation_rows(self.runtime),
-                                               scope=oi.read_scope(base), clock=lambda: NOW))
+                                               scope=ontology_tools_investigate_host.read_scope(base), clock=lambda: NOW))
         return table
 
     def investigate(self, root, actor):

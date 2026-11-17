@@ -21,10 +21,11 @@ from unittest import mock
 from operating import briefing as bf
 from operating import customer_profit as cp
 from operating import proactive_engine as pe
+from operating import proactive_engine_config
+from operating import proactive_engine_inbox
 from operating import stock_state
-from operating.tests.test_proactive_engine import (ALL_MARKINGS, AS_OF, EXCLUDED_OID, T0,
-                                                  World, admit, people, po,
-                                                  everyone, handle)
+from operating.tests.test_proactive_engine import (ALL_MARKINGS, AS_OF, EXCLUDED_OID, World, admit,
+                                                  people, po, everyone, handle)
 
 MOMENT = datetime(2026, 10, 19, 6, tzinfo=timezone.utc)
 ALL = ALL_MARKINGS | {"purchasing_prices"}
@@ -1412,9 +1413,9 @@ class DetectorTest(Case):
         calls.clear()
         later = MOMENT + timedelta(hours=1)
         apart = pe.run(self.store, self.inbox, AS_OF, call=call, clock=lambda: later,
-                       only=pe.INCREMENTAL, people=people())
+                       only=proactive_engine_config.INCREMENTAL, people=people())
         self.assertEqual(sorted(calls), ["F27"])
-        self.assertEqual(set(apart["detectors"]), set(pe.INCREMENTAL))
+        self.assertEqual(set(apart["detectors"]), set(proactive_engine_config.INCREMENTAL))
         with closing(sqlite3.connect(self.inbox)) as conn:
             self.assertEqual(conn.execute("SELECT detector, run_at FROM detector_runs WHERE "
                                           "detector = 'lot_attention'").fetchall(), before)
@@ -1652,9 +1653,9 @@ class BriefingTest(Case):
     def test_new_since_last_visit_and_new_this_generation(self):
         w, ids = self.world()
         self.run_engine(w)
-        seen = pe.record_visit(self.inbox, "r", clock=lambda: MOMENT + timedelta(hours=1))
-        self.assertEqual(pe.last_visit(self.inbox, "r"), seen)
-        self.assertIsNone(pe.last_visit(self.inbox, "someone-else"))
+        seen = proactive_engine_inbox.record_visit(self.inbox, "r", clock=lambda: MOMENT + timedelta(hours=1))
+        self.assertEqual(proactive_engine_inbox.last_visit(self.inbox, "r"), seen)
+        self.assertIsNone(proactive_engine_inbox.last_visit(self.inbox, "someone-else"))
         late = po_with(w, expected_date="2026-10-29")
         revise(w, late, "expected_date", "2026-10-21", "2026-10-13T00:00:00.000000Z")
         self.run_engine(w, at=MOMENT + timedelta(hours=2))
@@ -2090,11 +2091,17 @@ class BriefingTest(Case):
              "invoice_quantity_mismatch", "undated_po"), start=10)]
         line = bf.build({"status": "read", "gaps": many, "complete": True, "run_at": run},
                         routing=EVERYTHING, hidden={}, last_visit=None)["today"]
-        self.assertEqual(line.count(";"), 3)
-        self.assertTrue(line.endswith("; 2 more kinds."))
+        # more kinds than it names: the line says how many first, never a cut list "N more kinds"
+        self.assertEqual(line.count(";"), 2)
+        self.assertIn(": 5 kinds, worst first: ", line)
+        self.assertNotRegex(line, r"\d+ more kind")
         one = bf.build({"status": "read", "gaps": many[:4], "complete": True, "run_at": run},
                        routing=EVERYTHING, hidden={}, last_visit=None)["today"]
-        self.assertTrue(one.endswith("; 1 more kind."), one)   # never "1 more kinds"
+        self.assertIn(": 4 kinds, worst first: ", one)
+        self.assertNotRegex(one, r"\d+ more kind")
+        three = bf.build({"status": "read", "gaps": many[:3], "complete": True, "run_at": run},
+                         routing=EVERYTHING, hidden={}, last_visit=None)["today"]
+        self.assertNotIn("kinds, worst first", three)   # three or fewer: named, no count
 
     def test_routing_from_an_employee_entitlement(self):
         class Ent:
@@ -2118,6 +2125,23 @@ if __name__ == "__main__":
 # default; that off types reach no reader is tested in test_alert_kinds.OffMeansNothing and
 # test_proactive_threads.
 _ALL_ON = None
+
+
+class CheckWordsTest(unittest.TestCase):
+    """Live walk 11-15: Home's check lines and the digest preview named a third of the
+    checks by their code name ("Rd_projects: partly checked this run")."""
+
+    def test_every_rule_the_run_reports_has_words(self) -> None:
+        from operating import proactive_engine as pe
+        missing = [d for d in pe.DETECTORS if d not in bf.CHECK_WORDS]
+        self.assertEqual(missing, [])
+        for name, words in bf.CHECK_WORDS.items():
+            self.assertNotIn("_", words, name)
+            self.assertEqual(words, words.strip(), name)
+
+    def test_plural_records_say_their_other_system(self) -> None:
+        for name in ("sync_missing", "sync_mismatch"):
+            self.assertNotIn(" its ", f" {bf.TODAY_WORDS[name][3]} ")
 
 
 def setUpModule() -> None:

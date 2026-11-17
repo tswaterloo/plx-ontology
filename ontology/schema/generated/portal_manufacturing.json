@@ -94,7 +94,8 @@
       {
        "binding": "gen.public.app_assembly_order_damage",
        "path": "created_at",
-       "parser": "iso_timestamp"
+       "parser": "iso_timestamp",
+       "naive_zone": "UTC"
       }
      ]
     },
@@ -116,7 +117,8 @@
       {
        "binding": "gen.public.app_assembly_order_damage",
        "path": "date_entered",
-       "parser": "iso_timestamp"
+       "parser": "iso_timestamp",
+       "naive_zone": "UTC"
       }
      ]
     },
@@ -127,7 +129,8 @@
       {
        "binding": "gen.public.app_assembly_order_damage",
        "path": "date_start",
-       "parser": "iso_timestamp"
+       "parser": "iso_timestamp",
+       "naive_zone": "UTC"
       }
      ]
     },
@@ -215,7 +218,8 @@
       {
        "binding": "gen.public.app_assembly_order_damage",
        "path": "updated_at",
-       "parser": "iso_timestamp"
+       "parser": "iso_timestamp",
+       "naive_zone": "UTC"
       }
      ]
     }
@@ -329,7 +333,8 @@
       {
        "binding": "gen.public.app_assembly_order_status",
        "path": "created_at",
-       "parser": "iso_timestamp"
+       "parser": "iso_timestamp",
+       "naive_zone": "UTC"
       }
      ]
     },
@@ -340,7 +345,8 @@
       {
        "binding": "gen.public.app_assembly_order_status",
        "path": "date_entered",
-       "parser": "iso_timestamp"
+       "parser": "iso_timestamp",
+       "naive_zone": "UTC"
       }
      ]
     },
@@ -351,7 +357,8 @@
       {
        "binding": "gen.public.app_assembly_order_status",
        "path": "date_start",
-       "parser": "iso_timestamp"
+       "parser": "iso_timestamp",
+       "naive_zone": "UTC"
       }
      ]
     },
@@ -505,7 +512,8 @@
       {
        "binding": "gen.public.app_assembly_order_status",
        "path": "updated_at",
-       "parser": "iso_timestamp"
+       "parser": "iso_timestamp",
+       "naive_zone": "UTC"
       }
      ]
     }
@@ -663,7 +671,8 @@
       {
        "binding": "gen.public.app_batch_record",
        "path": "created_at",
-       "parser": "iso_timestamp"
+       "parser": "iso_timestamp",
+       "naive_zone": "UTC"
       }
      ]
     },
@@ -685,7 +694,8 @@
       {
        "binding": "gen.public.app_batch_record",
        "path": "date_allocated",
-       "parser": "iso_timestamp"
+       "parser": "iso_timestamp",
+       "naive_zone": "UTC"
       }
      ]
     },
@@ -696,7 +706,8 @@
       {
        "binding": "gen.public.app_batch_record",
        "path": "date_cancelled",
-       "parser": "iso_timestamp"
+       "parser": "iso_timestamp",
+       "naive_zone": "UTC"
       }
      ]
     },
@@ -707,7 +718,8 @@
       {
        "binding": "gen.public.app_batch_record",
        "path": "date_checked",
-       "parser": "iso_timestamp"
+       "parser": "iso_timestamp",
+       "naive_zone": "UTC"
       }
      ]
     },
@@ -718,7 +730,8 @@
       {
        "binding": "gen.public.app_batch_record",
        "path": "date_committed",
-       "parser": "iso_timestamp"
+       "parser": "iso_timestamp",
+       "naive_zone": "UTC"
       }
      ]
     },
@@ -729,7 +742,8 @@
       {
        "binding": "gen.public.app_batch_record",
        "path": "date_completed",
-       "parser": "iso_timestamp"
+       "parser": "iso_timestamp",
+       "naive_zone": "UTC"
       }
      ]
     },
@@ -740,7 +754,8 @@
       {
        "binding": "gen.public.app_batch_record",
        "path": "date_manufactured",
-       "parser": "iso_timestamp"
+       "parser": "iso_timestamp",
+       "naive_zone": "UTC"
       }
      ]
     },
@@ -751,7 +766,8 @@
       {
        "binding": "gen.public.app_batch_record",
        "path": "date_scheduled",
-       "parser": "iso_timestamp"
+       "parser": "iso_timestamp",
+       "naive_zone": "UTC"
       }
      ]
     },
@@ -762,7 +778,8 @@
       {
        "binding": "gen.public.app_batch_record",
        "path": "date_start",
-       "parser": "iso_timestamp"
+       "parser": "iso_timestamp",
+       "naive_zone": "UTC"
       }
      ]
     },
@@ -773,7 +790,8 @@
       {
        "binding": "gen.public.app_batch_record",
        "path": "date_tested",
-       "parser": "iso_timestamp"
+       "parser": "iso_timestamp",
+       "naive_zone": "UTC"
       }
      ]
     },
@@ -1290,7 +1308,8 @@
       {
        "binding": "gen.public.app_batch_record",
        "path": "released_at",
-       "parser": "iso_timestamp"
+       "parser": "iso_timestamp",
+       "naive_zone": "UTC"
       }
      ]
     },
@@ -1323,7 +1342,8 @@
       {
        "binding": "gen.public.app_batch_record",
        "path": "sample_final_date",
-       "parser": "iso_timestamp"
+       "parser": "iso_timestamp",
+       "naive_zone": "UTC"
       }
      ]
     },
@@ -1334,7 +1354,8 @@
       {
        "binding": "gen.public.app_batch_record",
        "path": "sample_initial_date",
-       "parser": "iso_timestamp"
+       "parser": "iso_timestamp",
+       "naive_zone": "UTC"
       }
      ]
     },
@@ -1356,7 +1377,8 @@
       {
        "binding": "gen.public.app_batch_record",
        "path": "signed_at",
-       "parser": "iso_timestamp"
+       "parser": "iso_timestamp",
+       "naive_zone": "UTC"
       }
      ]
     },
@@ -1499,7 +1521,8 @@
       {
        "binding": "gen.public.app_batch_record",
        "path": "updated_at",
-       "parser": "iso_timestamp"
+       "parser": "iso_timestamp",
+       "naive_zone": "UTC"
       }
      ]
     },
@@ -1664,7 +1687,8 @@
       {
        "binding": "gen.public.app_batch_schedule",
        "path": "created_at",
-       "parser": "iso_timestamp"
+       "parser": "iso_timestamp",
+       "naive_zone": "UTC"
       }
      ]
     },
@@ -1675,7 +1699,8 @@
       {
        "binding": "gen.public.app_batch_schedule",
        "path": "date_end",
-       "parser": "iso_timestamp"
+       "parser": "iso_timestamp",
+       "naive_zone": "UTC"
       }
      ]
     },
@@ -1686,7 +1711,8 @@
       {
        "binding": "gen.public.app_batch_schedule",
        "path": "date_start",
-       "parser": "iso_timestamp"
+       "parser": "iso_timestamp",
+       "naive_zone": "UTC"
       }
      ]
     },
@@ -1763,7 +1789,8 @@
       {
        "binding": "gen.public.app_batch_schedule",
        "path": "updated_at",
-       "parser": "iso_timestamp"
+       "parser": "iso_timestamp",
+       "naive_zone": "UTC"
       }
      ]
     }
@@ -1866,7 +1893,8 @@
       {
        "binding": "gen.public.app_manufacturing_job",
        "path": "created_at",
-       "parser": "iso_timestamp"
+       "parser": "iso_timestamp",
+       "naive_zone": "UTC"
       }
      ]
     },
@@ -1899,7 +1927,8 @@
       {
        "binding": "gen.public.app_manufacturing_job",
        "path": "deleted_at",
-       "parser": "iso_timestamp"
+       "parser": "iso_timestamp",
+       "naive_zone": "UTC"
       }
      ]
     },
@@ -1976,7 +2005,8 @@
       {
        "binding": "gen.public.app_manufacturing_job",
        "path": "updated_at",
-       "parser": "iso_timestamp"
+       "parser": "iso_timestamp",
+       "naive_zone": "UTC"
       }
      ]
     }
@@ -2075,7 +2105,8 @@
       {
        "binding": "gen.public.app_manufacturing_order",
        "path": "actual_end_date",
-       "parser": "iso_timestamp"
+       "parser": "iso_timestamp",
+       "naive_zone": "UTC"
       }
      ]
     },
@@ -2086,7 +2117,8 @@
       {
        "binding": "gen.public.app_manufacturing_order",
        "path": "actual_start_date",
-       "parser": "iso_timestamp"
+       "parser": "iso_timestamp",
+       "naive_zone": "UTC"
       }
      ]
     },
@@ -2130,7 +2162,8 @@
       {
        "binding": "gen.public.app_manufacturing_order",
        "path": "completed_at",
-       "parser": "iso_timestamp"
+       "parser": "iso_timestamp",
+       "naive_zone": "UTC"
       }
      ]
     },
@@ -2141,7 +2174,8 @@
       {
        "binding": "gen.public.app_manufacturing_order",
        "path": "created_at",
-       "parser": "iso_timestamp"
+       "parser": "iso_timestamp",
+       "naive_zone": "UTC"
       }
      ]
     },
@@ -2196,7 +2230,8 @@
       {
        "binding": "gen.public.app_manufacturing_order",
        "path": "date_allocated",
-       "parser": "iso_timestamp"
+       "parser": "iso_timestamp",
+       "naive_zone": "UTC"
       }
      ]
     },
@@ -2207,7 +2242,8 @@
       {
        "binding": "gen.public.app_manufacturing_order",
        "path": "date_cancelled",
-       "parser": "iso_timestamp"
+       "parser": "iso_timestamp",
+       "naive_zone": "UTC"
       }
      ]
     },
@@ -2218,7 +2254,8 @@
       {
        "binding": "gen.public.app_manufacturing_order",
        "path": "date_committed",
-       "parser": "iso_timestamp"
+       "parser": "iso_timestamp",
+       "naive_zone": "UTC"
       }
      ]
     },
@@ -2229,7 +2266,8 @@
       {
        "binding": "gen.public.app_manufacturing_order",
        "path": "date_manufactured",
-       "parser": "iso_timestamp"
+       "parser": "iso_timestamp",
+       "naive_zone": "UTC"
       }
      ]
     },
@@ -2240,7 +2278,8 @@
       {
        "binding": "gen.public.app_manufacturing_order",
        "path": "date_realized",
-       "parser": "iso_timestamp"
+       "parser": "iso_timestamp",
+       "naive_zone": "UTC"
       }
      ]
     },
@@ -2251,7 +2290,8 @@
       {
        "binding": "gen.public.app_manufacturing_order",
        "path": "deleted_at",
-       "parser": "iso_timestamp"
+       "parser": "iso_timestamp",
+       "naive_zone": "UTC"
       }
      ]
     },
@@ -2390,7 +2430,8 @@
       {
        "binding": "gen.public.app_manufacturing_order",
        "path": "pick_requested_at",
-       "parser": "iso_timestamp"
+       "parser": "iso_timestamp",
+       "naive_zone": "UTC"
       }
      ]
     },
@@ -2412,7 +2453,8 @@
       {
        "binding": "gen.public.app_manufacturing_order",
        "path": "pick_responded_at",
-       "parser": "iso_timestamp"
+       "parser": "iso_timestamp",
+       "naive_zone": "UTC"
       }
      ]
     },
@@ -2536,7 +2578,8 @@
       {
        "binding": "gen.public.app_manufacturing_order",
        "path": "rejected_at",
-       "parser": "iso_timestamp"
+       "parser": "iso_timestamp",
+       "naive_zone": "UTC"
       }
      ]
     },
@@ -2569,7 +2612,8 @@
       {
        "binding": "gen.public.app_manufacturing_order",
        "path": "scheduled_date",
-       "parser": "iso_timestamp"
+       "parser": "iso_timestamp",
+       "naive_zone": "UTC"
       }
      ]
     },
@@ -2580,7 +2624,8 @@
       {
        "binding": "gen.public.app_manufacturing_order",
        "path": "scheduled_end_date",
-       "parser": "iso_timestamp"
+       "parser": "iso_timestamp",
+       "naive_zone": "UTC"
       }
      ]
     },
@@ -2591,7 +2636,8 @@
       {
        "binding": "gen.public.app_manufacturing_order",
        "path": "scheduled_start_date",
-       "parser": "iso_timestamp"
+       "parser": "iso_timestamp",
+       "naive_zone": "UTC"
       }
      ]
     },
@@ -2680,7 +2726,8 @@
       {
        "binding": "gen.public.app_manufacturing_order",
        "path": "started_at",
-       "parser": "iso_timestamp"
+       "parser": "iso_timestamp",
+       "naive_zone": "UTC"
       }
      ]
     },
@@ -2713,7 +2760,8 @@
       {
        "binding": "gen.public.app_manufacturing_order",
        "path": "updated_at",
-       "parser": "iso_timestamp"
+       "parser": "iso_timestamp",
+       "naive_zone": "UTC"
       }
      ]
     },
@@ -2878,7 +2926,8 @@
       {
        "binding": "gen.public.app_manufacturing_order_line",
        "path": "created_at",
-       "parser": "iso_timestamp"
+       "parser": "iso_timestamp",
+       "naive_zone": "UTC"
       }
      ]
     },
@@ -3046,7 +3095,8 @@
       {
        "binding": "gen.public.app_manufacturing_order_line",
        "path": "updated_at",
-       "parser": "iso_timestamp"
+       "parser": "iso_timestamp",
+       "naive_zone": "UTC"
       }
      ]
     }
@@ -3156,7 +3206,8 @@
       {
        "binding": "gen.public.app_production_task",
        "path": "created_at",
-       "parser": "iso_timestamp"
+       "parser": "iso_timestamp",
+       "naive_zone": "UTC"
       }
      ]
     },
@@ -3167,7 +3218,8 @@
       {
        "binding": "gen.public.app_production_task",
        "path": "date_start",
-       "parser": "iso_timestamp"
+       "parser": "iso_timestamp",
+       "naive_zone": "UTC"
       }
      ]
     },
@@ -3266,7 +3318,8 @@
       {
        "binding": "gen.public.app_production_task",
        "path": "updated_at",
-       "parser": "iso_timestamp"
+       "parser": "iso_timestamp",
+       "naive_zone": "UTC"
       }
      ]
     }
@@ -3393,7 +3446,8 @@
       {
        "binding": "gen.public.assembly_order",
        "path": "audittimestampmodified",
-       "parser": "iso_timestamp"
+       "parser": "iso_timestamp",
+       "wall_clock_zone": "America/New_York"
       }
      ]
     },
@@ -3921,7 +3975,8 @@
       {
        "binding": "gen.public.assembly_order_damage",
        "path": "audittimestampmodified",
-       "parser": "iso_timestamp"
+       "parser": "iso_timestamp",
+       "wall_clock_zone": "America/New_York"
       }
      ]
     },
@@ -4233,7 +4288,8 @@
       {
        "binding": "gen.public.assembly_order_item",
        "path": "audittimestampmodified",
-       "parser": "iso_timestamp"
+       "parser": "iso_timestamp",
+       "wall_clock_zone": "America/New_York"
       }
      ]
     },
@@ -4540,7 +4596,8 @@
       {
        "binding": "gen.public.assembly_order_status",
        "path": "audittimestampmodified",
-       "parser": "iso_timestamp"
+       "parser": "iso_timestamp",
+       "wall_clock_zone": "America/New_York"
       }
      ]
     },
@@ -4885,7 +4942,8 @@
       {
        "binding": "gen.public.batch",
        "path": "audittimestampmodified",
-       "parser": "iso_timestamp"
+       "parser": "iso_timestamp",
+       "wall_clock_zone": "America/New_York"
       }
      ]
     },
@@ -6162,7 +6220,8 @@
       {
        "binding": "gen.public.production",
        "path": "audittimestampmodified",
-       "parser": "iso_timestamp"
+       "parser": "iso_timestamp",
+       "wall_clock_zone": "America/New_York"
       }
      ]
     },
@@ -6583,7 +6642,8 @@
       {
        "binding": "gen.silver.assembly_order_damage",
        "path": "updated_at",
-       "parser": "iso_timestamp"
+       "parser": "iso_timestamp",
+       "wall_clock_zone": "America/New_York"
       }
      ]
     }
@@ -6864,7 +6924,8 @@
       {
        "binding": "gen.silver.assembly_order_items",
        "path": "updated_at",
-       "parser": "iso_timestamp"
+       "parser": "iso_timestamp",
+       "wall_clock_zone": "America/New_York"
       }
      ]
     }
@@ -7125,7 +7186,8 @@
       {
        "binding": "gen.silver.assembly_order_statuses",
        "path": "updated_at",
-       "parser": "iso_timestamp"
+       "parser": "iso_timestamp",
+       "wall_clock_zone": "America/New_York"
       }
      ]
     }
@@ -7353,7 +7415,8 @@
       {
        "binding": "gen.silver.batch_schedule",
        "path": "updated_at",
-       "parser": "iso_timestamp"
+       "parser": "iso_timestamp",
+       "wall_clock_zone": "America/New_York"
       }
      ]
     }
@@ -8330,7 +8393,8 @@
       {
        "binding": "gen.silver.batches",
        "path": "updated_at",
-       "parser": "iso_timestamp"
+       "parser": "iso_timestamp",
+       "wall_clock_zone": "America/New_York"
       }
      ]
     }
@@ -8714,7 +8778,8 @@
       {
        "binding": "gen.silver.manufacturing_orders",
        "path": "updated_at",
-       "parser": "iso_timestamp"
+       "parser": "iso_timestamp",
+       "wall_clock_zone": "America/New_York"
       }
      ]
     },
@@ -8955,7 +9020,8 @@
       {
        "binding": "gen.silver.production_tasks",
        "path": "updated_at",
-       "parser": "iso_timestamp"
+       "parser": "iso_timestamp",
+       "wall_clock_zone": "America/New_York"
       }
      ]
     }

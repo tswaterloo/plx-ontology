@@ -38,6 +38,8 @@ const config: NextConfig = {
       { source: "/labour", destination: "/team#labour", permanent: false },
       { source: "/meetings/action-items", destination: "/meetings?view=follow-ups", permanent: false },
       { source: "/pack/:type/:id*", destination: "/object/:type/:id*#documents", permanent: false },
+      // the record page's first address (before 10-29), still in older mail and notes
+      { source: "/o/:type/:id*", destination: "/object/:type/:id*", permanent: false },
     ];
   },
   async headers() {

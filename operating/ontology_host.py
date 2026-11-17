@@ -63,9 +63,12 @@ import threading
 import time
 from typing import Any, Callable, Iterable, Iterator, Mapping, Sequence
 
-from .ontology_tools import (_ITEM_ACL_SCHEMES, TOOL_NAMES, OntologyTools, ReadPolicy,
-                             StoreReader, _envelope_bytes, _error, default_schema,
-                             item_gate_from_case_runtime, load_contracts)
+from ontology import private_tmp
+from .ontology_tools import OntologyTools, StoreReader, default_schema
+from .ontology_tools_identity import _error
+from .ontology_tools_policy import (_ITEM_ACL_SCHEMES, TOOL_NAMES, ReadPolicy, _envelope_bytes,
+                                    load_contracts)
+from .ontology_tools_results import item_gate_from_case_runtime
 
 # Why plx.object answers object_not_found (``CaseHostTools.not_found_reason``).
 NOT_FOUND_REASONS = ("withheld", "no_current_version", "gate_error", "absent")
@@ -143,8 +146,10 @@ def tool_table(tools: OntologyTools, runtime: Any, *,
     this call."""
     from . import (ontology_tools, ontology_tools_evidence, ontology_tools_investigate,
                    ontology_tools_process, ontology_tools_traverse)
+    from . import ontology_tools_investigate_host
+    from . import ontology_tools_results
     table: dict[str, dict[str, Any]] = {}
-    ontology_tools.register(table, tools)
+    ontology_tools_results.register(table, tools)
     traverse = ontology_tools_traverse.TraverseTools(tools)
     # The store facts every reader's plx.around / plx.timeline needs: loaded from beside
     # the store file (``facts_path``: a build keeps them before it serves a generation);
@@ -157,9 +162,9 @@ def tool_table(tools: OntologyTools, runtime: Any, *,
         table, contracts=tools.contracts, schema=schema if schema is not None else tools.schema,
         rows=ontology_tools_investigate.citation_rows(
             runtime, held_markings=lambda actor: tools.policy.held_markings(actor)),
-        scope=ontology_tools_investigate.read_scope(tools),
-        captured=ontology_tools_investigate.capture_claims(tools),
-        complete=ontology_tools_investigate.relation_complete(tools), follow_ups=follow_ups,
+        scope=ontology_tools_investigate_host.read_scope(tools),
+        captured=ontology_tools_investigate_host.capture_claims(tools),
+        complete=ontology_tools_investigate_host.relation_complete(tools), follow_ups=follow_ups,
         reviews=traverse.review,
         held_markings=lambda actor: tools.policy.held_markings(actor),
         landed_actuals=landed_actuals_of(runtime),
@@ -384,14 +389,16 @@ def store_bc_units(reader: StoreReader) -> dict[str, str]:
     return units
 
 
-_BC_UNITS: dict[tuple[int, int], dict[str, str]] = {}
+_BC_UNITS: dict[Any, dict[str, str]] = {}
 _BC_UNITS_LOCK = threading.Lock()
 
 
-def served_bc_units(reader: StoreReader, identity: tuple[int, int] | None) -> dict[str, str]:
+def served_bc_units(reader: StoreReader, identity: Any) -> dict[str, str]:
     """``store_bc_units`` of a served generation, read once per process per generation
-    file (``identity``: its device and inode; a generation is never written again);
-    None: read every time."""
+    (``identity``: its file's ``_file_stamp``, device, inode, modification time and size
+    with its write-ahead log's, or a Postgres store's state stamp; never the inode alone:
+    a removed file frees its inode for the next file, which may be another generation's,
+    whose BC records the old units then deny); None: read every time."""
     if identity is None:
         return store_bc_units(reader)
     with _BC_UNITS_LOCK:
@@ -997,7 +1004,10 @@ class CaseHostTools:
             from ontology import identifiers
             from ontology.project import build_store
             from ontology.resolve import ReviewedAliases, SourceResolver
-            self._temp = tempfile.TemporaryDirectory(prefix="plx-case-find-")
+            # named with this process's id; a killed host's leftovers are swept (an API
+            # lives for days: an unnamed one goes only after a week)
+            self._temp = private_tmp.TemporaryDirectory("plx-case-find-",
+                                                        unnamed_age=7 * 86400)
             work = Path(self._temp.name)
             from operating.pg import ontology_reader
             only = ontology_reader.pg_only()
@@ -1043,7 +1053,10 @@ class CaseHostTools:
             kept_audience_keys(reader)   # the generation's kept facts: no object scan
             self._reader_keys = reader.audience_keys()
             self._base_reader_keys = list(self._reader_keys)
-            self._bc_units = served_bc_units(reader, self._store_identity)
+            # a SQLite generation by its file's whole stamp (its inode alone may be a
+            # removed generation's); Postgres by the state stamp read above
+            self._bc_units = served_bc_units(reader, self._store_identity if only or
+                                             store is None else _file_stamp(store))
             self._bc_lookup = lookups.get("bc")
             policy = ReadPolicy(self.actor.tenant, {})  # decided again on every call
             resolver = SourceResolver(self.schema, lookups, normalizer=identifiers.normalize,

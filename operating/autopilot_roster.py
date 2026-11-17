@@ -40,6 +40,8 @@ import sys
 from typing import Any, Mapping, Sequence
 
 from . import autopilot as ap
+from . import autopilot_reading
+from . import autopilot_records
 
 AR_WORKFLOWS = ("ar_invoice_send", "ar_collections", "cash_remittance")
 # ``workflows`` / ``not_workflows``: a mail counts only when its workflow (``workflows.
@@ -173,21 +175,21 @@ def derive(st: Any, people: Any, role: str, since: str, until: str, *,
                 named[a].add(b)
         props = ("sender", "to_addresses", "internet_message_id") + (
             ("subject", "body_preview") if wanted or unwanted else ())
-        rows = ap._read(st, sorted(named), props)
+        rows = autopilot_records._read(st, sorted(named), props)
         for oid, recs in named.items():
             r = rows.get(oid) or {}
             if wanted or unwanted:
-                flow = wf.classify(ap._v(r, "subject"), ap._v(r, "body_preview"), "customer")
+                flow = wf.classify(autopilot_records._v(r, "subject"), autopilot_records._v(r, "body_preview"), "customer")
                 if (wanted and flow not in wanted) or flow in unwanted:
                     continue
-            sender = (ap._addresses(ap._v(r, "sender")) or [""])[0]
-            to = ap._addresses(ap._v(r, "to_addresses"))
-            message = ap._v(r, "internet_message_id") or oid
+            sender = (autopilot_records._addresses(autopilot_records._v(r, "sender")) or [""])[0]
+            to = autopilot_records._addresses(autopilot_records._v(r, "to_addresses"))
+            message = autopilot_records._v(r, "internet_message_id") or oid
             if not sender:
                 continue
-            if ap._internal(sender, domains):
+            if autopilot_records._internal(sender, domains):
                 who = directory.get(sender)
-                if who and any(not ap._internal(t, domains) for t in to):
+                if who and any(not autopilot_records._internal(t, domains) for t in to):
                     for rec in recs:
                         if (message, rec) not in seen_messages:
                             seen_messages.add((message, rec))
@@ -217,8 +219,8 @@ def derive(st: Any, people: Any, role: str, since: str, until: str, *,
         otype, prop = rule["portal_flag"]
         ids = [r[0] for r in st.conn.execute(
             "SELECT object_id FROM objects WHERE object_type = ?", (otype,))]
-        for row in ap._read(st, ids, (prop,)).values():
-            flags += ap._v(row, prop).lower() in ("true", "1")
+        for row in autopilot_records._read(st, ids, (prop,)).values():
+            flags += autopilot_records._v(row, prop).lower() in ("true", "1")
     return {"status": "complete", "role": role, "window": [since, until],
             "members": members,
             "evidence": {w: {"score": scores[w], "sent": len(sent.get(w, ())),
@@ -250,7 +252,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     p.add_argument("--days", type=float, default=90.0)
     p.add_argument("--until", default=None)
     p.add_argument("--out", required=True, help="roles file to write (other roles kept)")
-    p.add_argument("--source", choices=ap.STORE_SOURCES, default=None,
+    p.add_argument("--source", choices=autopilot_reading.STORE_SOURCES, default=None,
                    help="the SQLite generation at --store, or the Postgres ontology the API "
                         "reads in mode 1 (refused when it does not hold that generation)")
     a = p.parse_args(argv)

@@ -241,10 +241,16 @@ def open_store(directory: Path) -> sqlite3.Connection:
     path.parent.mkdir(parents=True, exist_ok=True)
     os.close(os.open(path, os.O_CREAT | os.O_RDWR, 0o600))
     for part in (path, path.with_name(path.name + "-wal"), path.with_name(path.name + "-shm")):
-        try:
-            os.chmod(part, 0o600)
+        try:   # only a file this process owns, only ever narrowed; the setgid state dir keeps its group bits
+            info = os.stat(part)
+            keep = 0o660 if path.parent.stat().st_mode & 0o2000 else 0o600   # shared-group dir
+            if info.st_uid == os.geteuid() and info.st_mode & 0o777 & ~keep:
+                os.chmod(part, info.st_mode & keep)
         except FileNotFoundError:
             pass
+        except PermissionError:
+            if part == path:
+                raise   # the store itself must be ours to tighten; sidecars keep the group mode
     conn = sqlite3.connect(str(path), isolation_level=None, timeout=30)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode = WAL")
@@ -304,8 +310,18 @@ def _locked(directory: Path) -> Iterator[bool]:
 
 def _pointer(store: Path) -> tuple[str | None, list[str]]:
     """(the served generation's content digest, the delta layers over it, newest first);
-    no layers when the pointer is missing, unknown or of another generation."""
+    no layers when the pointer is missing, unknown or of another generation. Postgres as
+    the only store (``PLX_ONTOLOGY_PG=only``): ``postgres:<its content digest>`` and no
+    layers (each delta is applied in Postgres itself); the generation's file is never
+    opened (it is gone)."""
     from . import delta_overlay
+    from operating.pg import ontology_reader
+    if ontology_reader.pg_only():
+        meta = ontology_reader.store_meta(["content_digest"])
+        if meta is None:   # not whole, or unreachable: nothing is placed (fail closed)
+            raise ontology_reader.PostgresNotWhole("store_meta_unreadable")
+        generation = meta.get("content_digest")
+        return (f"postgres:{generation}" if generation else None), []
     with closing(_ro(store)) as conn:
         served = dict(conn.execute("SELECT key, value FROM store_meta WHERE key IN "
                                    "('content_digest', 'schema_digest')").fetchall())
@@ -334,18 +350,29 @@ def _pointer(store: Path) -> tuple[str | None, list[str]]:
 # numbers its versions from a sequence), one batch per run named ``postgres:LOW-HIGH``;
 # a batch of more objects than this (a migration re-marking a type) is noted, not queued.
 PG_BATCH_OBJECTS = 100_000
+# With the change feed (migration 0026, ``operating.pg.change_feed``) the changes are the
+# feed's rows past this watcher's cursor instead, one batch per run named ``feed:LOW-HIGH``
+# (the feed's seqs): only records an applied cycle really changed (a layer re-owning a
+# record unchanged writes none). Each run that moves the cursor also moves the version
+# mark to the versions there were when it read, so the first read and a gap (rows pruned
+# past the cursor) look at the versions past that mark once, as above, then follow the
+# feed; a batch of more rows than ``PG_BATCH_OBJECTS`` or a migration's scope is noted,
+# not queued, as above.
+FEED_CONSUMER = "ai_watcher"
 
 
 def _postgres_changes(ws: sqlite3.Connection, now_text: str
-                      ) -> tuple[str, list[str], Any, Any] | None:
-    """(the Postgres generation's digest as the layers' base, the batch of versions not
-    looked at yet as one layer, how a layer is opened, its changed objects) when Postgres
-    is the only store; None otherwise. The first look starts from the versions there are
-    (what came before is the generation's)."""
+                      ) -> tuple[Any, ...] | None:
+    """(the Postgres generation's digest as the layers' base, the batch of changes not
+    looked at yet as one layer, how a layer is opened, its changed objects, and what to
+    run once the batch is recorded: the feed cursor's commit) when Postgres is the only
+    store; None otherwise. The first look starts from the versions there are (what came
+    before is the generation's)."""
     from operating.pg import ontology_reader
     if not ontology_reader.pg_only():
         return None
     import psycopg
+    from operating.pg import change_feed
     from operating.pg.sqlite_compat import PgCompatConnection
     target = ontology_reader.dsn()
     with psycopg.connect(target, connect_timeout=5) as pg:
@@ -353,6 +380,55 @@ def _postgres_changes(ws: sqlite3.Connection, now_text: str
             "SELECT (SELECT value FROM ontology.store_meta WHERE key = 'content_digest'), "
             "(SELECT coalesce(max(ver), 0) FROM ontology.object_versions)").fetchone()
     digest = f"postgres:{generation}"
+    batch = change_feed.read(target, FEED_CONSUMER, generation=generation,
+                             limit=PG_BATCH_OBJECTS)
+    if batch is not None and batch.ready:
+        noted = batch.overflow or bool(batch.migrated)
+        if noted:
+            batch = batch.skipped()
+        ids = sorted(batch.ids())
+        layers = [f"feed:{batch.start}-{batch.end}"] if ids else []
+
+        def open_feed(_layer: str) -> Any:
+            return closing(PgCompatConnection(target, link_guard=True))
+
+        def feed_owned(_conn: Any, _layer: str) -> list[str]:
+            return ids
+        return (digest, layers, open_feed, feed_owned,
+                lambda: _feed_recorded(ws, target, batch, digest, top, now_text))
+    marked = _postgres_versions(ws, now_text, target, digest, top)
+    after = (lambda: _feed_recorded(ws, target, batch, digest, top, now_text)) \
+        if batch is not None else None
+    return (*marked, after)
+
+
+def _feed_recorded(ws: sqlite3.Connection, target: str, batch: Any, digest: str, top: int,
+                   now_text: str) -> bool:
+    """The batch is recorded here: the feed's cursor moves past it, and then the version
+    mark to the versions read with it (a gap later looks at the versions from there)."""
+    from operating.pg import change_feed
+    if not change_feed.commit_to(target, batch):
+        return False
+    mark = f"postgres:{top}-{top}"
+    ws.execute("BEGIN IMMEDIATE")
+    try:
+        for table in ("layers", "learned"):
+            ws.execute(f"INSERT OR REPLACE INTO {table} VALUES (?, ?, ?)",
+                       (mark, digest, now_text))
+            ws.execute(f"DELETE FROM {table} WHERE base_digest = ? AND store LIKE "
+                       "'postgres:%' AND store <> ?", (digest, mark))
+        ws.execute("COMMIT")
+    except BaseException:
+        ws.execute("ROLLBACK")
+        raise
+    return True
+
+
+def _postgres_versions(ws: sqlite3.Connection, now_text: str, target: str, digest: str,
+                       top: int) -> tuple[str, list[str], Any, Any]:
+    """The versions Postgres numbered past the last ones looked at (``_postgres_changes``
+    without the feed)."""
+    from operating.pg.sqlite_compat import PgCompatConnection
     marks = [int(r[0].rsplit("-", 1)[1]) for r in ws.execute(
         "SELECT store FROM layers WHERE base_digest = ? AND store LIKE 'postgres:%'",
         (digest,))]
@@ -366,7 +442,7 @@ def _postgres_changes(ws: sqlite3.Connection, now_text: str
     layers = [f"postgres:{low}-{top}"] if top > low else []
 
     def open_layer(_layer: str) -> Any:
-        return closing(PgCompatConnection(target))
+        return closing(PgCompatConnection(target, link_guard=True))
 
     def owned(conn: Any, layer: str) -> list[str]:
         lo, hi = (int(x) for x in layer.split(":", 1)[1].split("-"))
@@ -542,8 +618,10 @@ def discover(ws: sqlite3.Connection, store: Path, *, now: dt.datetime,
         internal = frozenset()
     counts: Counter = Counter()
     postgres = _postgres_changes(ws, _iso(now))
+    # the change feed's commit, once the batch is recorded here (``_postgres_changes``)
+    recorded = postgres[4] if postgres is not None and len(postgres) > 4 else None
     if postgres is not None:
-        digest, layers, open_layer, owned_of = postgres
+        digest, layers, open_layer, owned_of = postgres[:4]
     else:
         (digest, layers), open_layer, owned_of = _pointer(store), _ro, _layer_owned
     fresh = [layer for layer in layers if not ws.execute(
@@ -553,6 +631,8 @@ def discover(ws: sqlite3.Connection, store: Path, *, now: dt.datetime,
         "SELECT 1 FROM learned WHERE store = ? AND base_digest = ?",
         (layer, digest)).fetchone()]
     if not fresh and not (unlearned and guard is not None and internal):
+        if recorded is not None:
+            recorded()   # nothing new (or this batch recorded before): the cursor moves
         return {"layers": 0, **counts}
     since = _iso(now - dt.timedelta(hours=window_hours))
     newest: dict[str, tuple[str, sqlite3.Row]] = {}
@@ -684,9 +764,10 @@ def discover(ws: sqlite3.Connection, store: Path, *, now: dt.datetime,
             ws.execute("INSERT OR REPLACE INTO layers VALUES (?, ?, ?)",
                        (layer, digest, now_text))
         if postgres is not None and fresh:   # one mark per Postgres: the newest batch
+            kind = fresh[0].split(":", 1)[0] + ":%"   # the versions' or the feed's
             for table in ("layers", "learned"):
-                ws.execute(f"DELETE FROM {table} WHERE base_digest = ? AND store LIKE "
-                           "'postgres:%' AND store <> ?", (digest, fresh[0]))
+                ws.execute(f"DELETE FROM {table} WHERE base_digest = ? AND store LIKE ? "
+                           "AND store <> ?", (digest, kind, fresh[0]))
         if guard is not None and internal:
             for layer in unlearned:
                 ws.execute("INSERT OR REPLACE INTO learned VALUES (?, ?, ?)",
@@ -697,6 +778,8 @@ def discover(ws: sqlite3.Connection, store: Path, *, now: dt.datetime,
     except BaseException:
         ws.execute("ROLLBACK")
         raise
+    if recorded is not None:
+        recorded()   # after the commit: a run that failed reads the same rows again
     return {"layers": len(fresh), "queued": queued, **counts}
 
 
@@ -1219,6 +1302,7 @@ def quoted(claims: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
     as the passage says it, by the very rule the Ask's reply is screened with (whole
     normalised numbers, the currency and unit beside them, dates by their day)."""
     from . import claim_checks as cc
+    from . import claim_checks_text
     values: list[dict[str, Any]] = []
     for claim in claims:
         texts = [_plain(claim.get("text"))]
@@ -1228,9 +1312,9 @@ def quoted(claims: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
         for text in texts:
             if not isinstance(text, str) or not text.strip():
                 continue
-            money = {n: w for n, _s, _e, w in cc.currency_words(text)}
-            units = {n: w for n, _s, _e, w in cc.unit_words(text)}
-            for written, number in cc.prose_numbers(text):
+            money = {n: w for n, _s, _e, w in claim_checks_text.currency_words(text)}
+            units = {n: w for n, _s, _e, w in claim_checks_text.unit_words(text)}
+            for written, number in claim_checks_text.prose_numbers(text):
                 if written.rstrip().endswith("%"):
                     continue   # a percent: below, at percent scale
                 values.append({"value": str(number),
@@ -1240,11 +1324,11 @@ def quoted(claims: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
                 number = cc.to_decimal(match.group(1))
                 if number is not None:
                     values.append({"value": str(number), "unit": "%"})
-            for _written, moment, _flag in cc.written_dates(text):
+            for _written, moment, _flag in claim_checks_text.written_dates(text):
                 if moment and isinstance(moment[0], str):
                     values.append({"value": moment[0]})
-            for label in cc.labels(text):
-                values += [{"value": str(n)} for n in cc.label_numbers(label.group(0))]
+            for label in claim_checks_text.labels(text):
+                values += [{"value": str(n)} for n in claim_checks_text.label_numbers(label.group(0))]
     return {"id": "quoted", "check": {"status": "passed", "unit_basis": "quoted"},
             "value_claims": values}
 
@@ -1369,19 +1453,42 @@ _OWNED_LOCK = threading.Lock()
 _OWNED_KEPT = 256
 
 
+# The name ``Places`` reads Postgres under when it is the only store.
+PG_SERVED = "postgres:"
+
+
+def _pg_places_reader() -> Any:
+    """The reader ``Places`` reads Postgres with: the readers' own
+    (``PgStoreReader.open``: Postgres alone, refused unless whole, the same-person links
+    ``person_link_guard`` hides kept hidden)."""
+    from operating.pg.ontology_reader import PgStoreReader
+    return PgStoreReader.open(only=True)
+
+
 class Places:
     """Where a cited handle's object is served now, with its audience and markings: the
-    newest delta layer owning it, else the served store (``place``)."""
+    newest delta layer owning it, else the served store (``place``). Postgres as the only
+    store: Postgres, read as every reader reads it (``_pg_places_reader``), never a
+    SQLite file."""
 
     def __init__(self, store: Path) -> None:
+        from operating.pg import ontology_reader
         self.store = Path(store)
+        self._conns: dict[str, Any] = {}
+        self._reader: Any = None
+        self._served = str(self.store)
         _digest, self.layers = _pointer(self.store)
-        self._conns: dict[str, sqlite3.Connection] = {}
+        if ontology_reader.pg_only():
+            self._reader = _pg_places_reader()
+            self._served = PG_SERVED
+            self._conns[PG_SERVED] = self._reader.conn
         self._owner: list[tuple[str, frozenset[str]]] | None = None   # newest first
         self._objects: dict[str, str | None] = {}   # handle -> the object it cites
 
-    def _conn(self, path: str) -> sqlite3.Connection:
+    def _conn(self, path: str) -> Any:
         if path not in self._conns:
+            if path == PG_SERVED:   # never a file of that name: Postgres was not opened
+                raise sqlite3.OperationalError("postgres_reader_closed")
             self._conns[path] = _ro(path)
         return self._conns[path]
 
@@ -1393,7 +1500,7 @@ class Places:
         for layer, owned in self._owner:   # newest first: the newest owner wins
             if object_id in owned:
                 return layer
-        return str(self.store)
+        return self._served
 
     def _owned(self, layer: str) -> frozenset[str]:
         from .delta_overlay import _layer_identity
@@ -1417,7 +1524,7 @@ class Places:
             return self._objects[handle]
         tries = [handle, handle.split("#page=", 1)[0], handle.split("#", 1)[0]]
         found = None
-        for path in [*(layer for layer in self.layers), str(self.store)]:
+        for path in [*(layer for layer in self.layers), self._served]:
             conn = self._conn(path)
             for candidate in dict.fromkeys(tries):
                 row = conn.execute("SELECT object_id FROM object_versions WHERE l1_handle = ? "
@@ -1477,8 +1584,13 @@ class Places:
         return dict(row) if row is not None else None
 
     def close(self) -> None:
-        for conn in self._conns.values():
-            conn.close()
+        reader, self._reader = self._reader, None
+        for path, conn in list(self._conns.items()):
+            if path != PG_SERVED:
+                conn.close()
+        self._conns.clear()
+        if reader is not None:
+            reader.close()
 
 
 # --------------------------------------------------------------------------- truth
@@ -1593,6 +1705,14 @@ def detector_covers(inbox: Path, subject: str, groups: Sequence[Sequence[str]]) 
     return False
 
 
+def _cite_rows(item_id: str, item: Mapping[str, Any]) -> list[tuple]:
+    """An item's ``item_cites`` rows: each cited handle by group, with its object and
+    markings (none known: ``["unreadable"]``, which no reader holds)."""
+    return [(item_id, grp, handle, (item.get("objects") or {}).get(handle),
+             (item.get("markings") or {}).get(handle, '["unreadable"]'))
+            for grp, group in enumerate(item["groups"]) for handle in group]
+
+
 def fold(ws: sqlite3.Connection, items: Sequence[Mapping[str, Any]], *, run_id: int,
          now: dt.datetime) -> Counter:
     """Write this run's items: a passed, uncontradicted item is ``open`` (one already open
@@ -1619,8 +1739,25 @@ def fold(ws: sqlite3.Connection, items: Sequence[Mapping[str, Any]], *, run_id: 
                             same = row
                             break
                 if same is not None:
-                    ws.execute("UPDATE items SET last_seen = ? WHERE item_id = ?",
-                               (at, same[0]))
+                    # refreshed in place (its id, and so each reader's dismiss or snooze,
+                    # kept): this run's words, priority, gate, truth and run, and its cites
+                    # with their markings replaced, so a stricter marking or a changed
+                    # value is never served from the older sighting (CODEX STATE-005)
+                    ws.execute(
+                        "UPDATE items SET subject = ?, subject_type = ?, title = ?, text = ?, "
+                        "why = ?, next_step = ?, departments = ?, priority = ?, "
+                        "claim_kind = ?, gate = ?, truth = ?, last_seen = ?, run_id = ? "
+                        "WHERE item_id = ?",
+                        (item["subject"] or "", item.get("subject_type") or "", item["title"],
+                         item["text"], item["why"], item["next_step"],
+                         json.dumps(item["departments"]), item["priority"],
+                         item["claim_kind"], json.dumps({
+                             "verdict": item["gate"], "claims": item["claims"],
+                             "refused_claims": item["refused_claims"]}),
+                         json.dumps(item.get("truth") or {}), at, run_id, same[0]))
+                    ws.execute("DELETE FROM item_cites WHERE item_id = ?", (same[0],))
+                    ws.executemany("INSERT OR IGNORE INTO item_cites VALUES (?, ?, ?, ?, ?)",
+                                   _cite_rows(same[0], item))
                     counts["refreshed"] += 1
                     continue
             item_id = "aw-" + hashlib.sha256(f"{fp}|{state}|{at}".encode()).hexdigest()[:16]
@@ -1634,9 +1771,7 @@ def fold(ws: sqlite3.Connection, items: Sequence[Mapping[str, Any]], *, run_id: 
                              "refused_claims": item["refused_claims"]}),
                  json.dumps(item.get("truth") or {}), state, reason, at, at, run_id))
             ws.executemany("INSERT OR IGNORE INTO item_cites VALUES (?, ?, ?, ?, ?)",
-                           [(item_id, grp, handle, (item.get("objects") or {}).get(handle),
-                             (item.get("markings") or {}).get(handle, '["unreadable"]'))
-                            for grp, group in enumerate(item["groups"]) for handle in group])
+                           _cite_rows(item_id, item))
             counts[state] += 1
         expired = (now - dt.timedelta(days=ITEM_DAYS))
         counts["expired"] = ws.execute(
@@ -1647,6 +1782,27 @@ def fold(ws: sqlite3.Connection, items: Sequence[Mapping[str, Any]], *, run_id: 
         ws.execute("ROLLBACK")
         raise
     return counts
+
+
+# Audience families that are one person's or a few people's (a mailbox, a chat): with no
+# people guard a record served under one is withheld, as a message is.
+_PERSON_FAMILIES = ("mail", "mail-any", "teams")
+
+
+def _person_audience_withheld(key: Any, guard: Any,
+                              excluded: Callable[[Any, str], bool]) -> bool:
+    """Whether a cited record's audience unit may be an excluded person's: a person's id
+    in the key the guard excludes, or, with no guard, a person family's unit (fail
+    closed: a key that is not text, or a guard that cannot decide, withholds)."""
+    if not isinstance(key, str) or not key:
+        return True
+    family = key.partition(":")[0]
+    if guard is None:
+        return family in _PERSON_FAMILIES and not key.startswith("teams:channel:")
+    try:
+        return bool(excluded(guard, key))
+    except Exception:  # noqa: BLE001 - a guard that cannot decide withholds
+        return True
 
 
 def judge(items: Sequence[dict[str, Any]], *, places: Places, inbox: Path,
@@ -1680,7 +1836,9 @@ def judge(items: Sequence[dict[str, Any]], *, places: Places, inbox: Path,
         fields = item.get("fields") or {}
         item["markings"] = {h: places.markings_of(h, objects[h], fields.get(h))
                             for h in handles}
-        if any(is_message(h) and (guard is None or excluded(guard, h)) for h in handles):
+        if any(is_message(h) and (guard is None or excluded(guard, h)) for h in handles) \
+                or any(_person_audience_withheld(p["audience_key"], guard, excluded)
+                       for p in placed.values()):
             item["reason"] = "people_withheld"
             out.append(item)
             continue

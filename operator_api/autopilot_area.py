@@ -31,6 +31,9 @@ from pathlib import Path
 from typing import Any, Mapping, Optional
 
 from operating import autopilot as ap
+from operating import autopilot_engine
+from operating import autopilot_events
+from operating import autopilot_queue
 from operating import autopilot_write as aw
 from operating import workflows as wf
 from operating.card_actions import Journal
@@ -152,7 +155,7 @@ def system_of(item: Mapping[str, Any]) -> str:
     action = prepared.get("action")
     if isinstance(action, Mapping) and action.get("kind") == "mc_approval":
         return "mc"
-    if str(happened.get("object_type") or "") in ap.TEAMS_TYPES:
+    if str(happened.get("object_type") or "") in autopilot_events.TEAMS_TYPES:
         return "teams"
     if ":sage" in str(happened.get("object_id") or "").lower():
         return "sage"
@@ -270,7 +273,7 @@ class AutopilotAreaMixin:
     def _apa_off(env: Mapping[str, str], state: Optional[Path]) -> tuple[bool, set[str], bool]:
         """(global kill, workflows off, the workflow file unreadable)."""
         if state is None:
-            return bool(env.get(aw.KILL_ENV) or env.get(ap.KILL_ENV)), set(), False
+            return bool(env.get(aw.KILL_ENV) or env.get(autopilot_queue.KILL_ENV)), set(), False
         glob = aw.killed(env, state, "") == "global_kill_switch"
         off = {w.strip() for w in (env.get(aw.WORKFLOW_KILL_ENV) or "").split(",") if w.strip()}
         path, broken = state / aw.WORKFLOW_KILL_FILE, False
@@ -309,8 +312,8 @@ class AutopilotAreaMixin:
         registry = ap.load_registry()
         specs = {s.get("id"): s for s in registry.get("autopilots") or ()}
         role_members = self._apa_roles()
-        dev = _gate_doc(Path(env.get(ap.GATE_ENV) or (queue_path.parent / ap.GATE_FILE))
-                        if queue_path else Path("/nonexistent"), ap.GATE_SCHEMA)
+        dev = _gate_doc(Path(env.get(autopilot_engine.GATE_ENV) or (queue_path.parent / autopilot_engine.GATE_FILE))
+                        if queue_path else Path("/nonexistent"), autopilot_engine.GATE_SCHEMA)
         # held-out scores: what the write gate counts (``aw.gate_counts``: fresh days and
         # clean past windows, re-checked against the rules at this read)
         try:
@@ -330,6 +333,7 @@ class AutopilotAreaMixin:
         live_of = self._apa_live_of(env, state)
         items: list[m.AutopilotItem] = []
         last_at: dict[str, str] = {}
+        used_cache: dict[str, Any] = {}
         for item in raw_items:
             happened = item["body"].get("happened") or {}
             flow = wf.of_item(item["autopilot"], happened)
@@ -360,16 +364,27 @@ class AutopilotAreaMixin:
             is_today = bool((created and created.astimezone(_LOCAL).date() == today) or
                             (due and due.astimezone(_LOCAL).date() <= today))
             last_at[flow] = max(last_at.get(flow, ""), item["created_at"])
+            # a sender shown by address or "Someone", never a bare object id
+            shown = autopilot_engine.shown_item(item)
             items.append(m.AutopilotItem(
                 item_id=item["item_id"], autopilot=item["autopilot"],
-                label=item["body"].get("label") or item["autopilot"], title=item["title"],
+                label=item["body"].get("label") or item["autopilot"], title=shown["title"],
                 workflow=flow, system=system_of(item), roles=sorted(roles),
-                owner=item["owner"], mine=item["mine"], happened=happened,
-                prepared=item["body"].get("prepared") or {}, citations=item["citations"],
+                owner=item["owner"], mine=item["mine"],
+                happened=shown["body"].get("happened") or {},
+                prepared=shown["body"].get("prepared") or {}, citations=item["citations"],
                 due_at=item["due_at"], created_at=item["created_at"], today=is_today,
                 state=item_state, decision=decision,
                 live_kinds=(kinds := live_of(item) if item_state in ("waiting", "edited")
-                            else []), live=bool(kinds)))
+                            else []), live=bool(kinds),
+                used_for_draft=self._apa_used(reader, item, used_cache)))
+        # what became of each prepared item this reader may see, settled ones too (the
+        # same audience, marking and citation checks as the list; counts only)
+        from operating import autopilot_outcomes as outcomes_of
+        seen_all = self._ap_visible(reader, everyone=owner,  # type: ignore[attr-defined]
+                                    states=("open", "done"))
+        outcomes = m.AutopilotOutcomes(**outcomes_of.measure(seen_all, decisions, now)) \
+            if seen_all else None
         rows = self._apa_rows(state)
         for row in rows:
             if row.get("workflow") and row.get("at"):
@@ -382,8 +397,17 @@ class AutopilotAreaMixin:
                     oid = str(oid).lower()
                     if owner or oid in me:
                         people.setdefault(oid, m.AutopilotPerson(id=oid, name=_person_name(role)))
+        # an owner the roster names only by id: the name a message of theirs this reader
+        # may see states (a Teams sender's ``from.display_name``), never a guess
+        stated: dict[str, str] = {}
+        for raw in raw_items:
+            happened = raw["body"].get("happened") or {}
+            name = autopilot_engine.person_name(happened.get("sender_name"))
+            if name and happened.get("sender"):
+                stated.setdefault(str(happened["sender"]).lower(), name)
         for it in items:
-            people.setdefault(it.owner, m.AutopilotPerson(id=it.owner, name=""))
+            people.setdefault(it.owner, m.AutopilotPerson(id=it.owner, name=stated.get(
+                str(it.owner).lower(), "")))
         for oid, p in people.items():
             p.you = oid in me
             p.roles = sorted(member_of.get(oid, ()))
@@ -478,7 +502,7 @@ class AutopilotAreaMixin:
         # items are prepared only for a workflow that passed its replay gate
         # (``autopilot.gate_from``): with none passed, that is why nothing is here
         if not items and not drafted and \
-                not ap.gate_of({"schema": ap.GATE_SCHEMA, "roles": dev})[1]:
+                not autopilot_engine.gate_of({"schema": autopilot_engine.GATE_SCHEMA, "roles": dev})[1]:
             notes.insert(0, NO_GATE_PASSED)
         mine_opt, paused_me = self._apa_my_opt_ins(gate, chosen, stopped, me)
         switched_on = None
@@ -505,14 +529,15 @@ class AutopilotAreaMixin:
             my_opt_ins=mine_opt, paused=paused_me, switched_on=switched_on,
             switches=m.AutopilotSwitches(
                 global_off=glob, master_switch=master,
-                autopilot_off=bool(str(env.get(ap.KILL_ENV, "")).lower() in
+                autopilot_off=bool(str(env.get(autopilot_queue.KILL_ENV, "")).lower() in
                                    ("1", "true", "yes", "on") or
                                    (queue_path is not None and
-                                    (queue_path.parent / ap.KILL_FILE).exists())),
+                                    (queue_path.parent / autopilot_queue.KILL_FILE).exists())),
                 workflows_off=sorted(off) if owner else sorted(
                     off & {w.workflow for w in workflows})),
             people=sorted(people.values(), key=lambda p: (not p.you, not p.name, p.name, p.id)),
             roles=sorted(roles_seen), items=items, workflows=workflows, notes=notes,
+            outcomes=outcomes,
             known_workflows=_known_workflows() if owner else sorted(
                 {w.workflow for w in workflows} | {it.workflow for it in items}))
 
@@ -641,6 +666,55 @@ class AutopilotAreaMixin:
                     held.append({"event": "confirm_spent", "at": _iso(now), "token": digest})
                     return True
         return False
+
+    def _apa_used(self, reader: Reader, item: Mapping[str, Any], cache: dict[str, Any]
+                  ) -> Optional[m.AutopilotDraftUse]:
+        """The memory entries that changed the item's draft, those read for it but not
+        applied (``related``), and its template (``context_used``: ids),
+        each resolved only as this reader may read it: a memory entry's text only for the
+        person whose memory it is and only while they keep it; a template's name only when
+        they may use it. Unreadable stores show the ids alone (fail closed)."""
+        used = (item.get("body") or {}).get("context_used")
+        if not isinstance(used, Mapping):
+            return None
+        ids = [i for i in used.get("memory") or () if type(i) is int][:20]
+        related = [i for i in used.get("related") or ()
+                   if type(i) is int and i not in ids][:20]
+        template = used.get("template") if type(used.get("template")) is int else None
+        if not ids and not related and template is None:
+            return None
+        view_as = bool(getattr(reader.session, "view_as", False))
+        if "memory" not in cache:
+            cache["memory"] = {}
+            store = getattr(self, "memory", None)
+            if store is not None and not view_as:
+                try:
+                    decide = getattr(self, "_memory_decide", None)
+                    rows = store.items(reader, decide=decide(reader, wait=True)
+                                       if decide else None)
+                    cache["memory"] = {int(r["id"]): r for r in rows}
+                except Exception:  # noqa: BLE001 - unreadable: ids only
+                    cache["memory"] = {}
+        own = cache["memory"] if item.get("mine") else {}
+        def resolved(i: int) -> m.AutopilotMemoryUse:
+            return (m.AutopilotMemoryUse(id=i, kind=own[i]["kind"], text=own[i]["text"])
+                    if i in own else m.AutopilotMemoryUse(id=i))
+        memory = [resolved(i) for i in ids]
+        used_template = None
+        if template is not None:
+            got = None
+            if not view_as:
+                try:
+                    from .templates import TemplateStore
+                    templates = cache.setdefault("templates", TemplateStore.for_backend(self))
+                    got = templates.get(reader, template) if templates is not None else None
+                except Exception:  # noqa: BLE001 - unreadable: the id alone
+                    got = None
+            used_template = m.AutopilotTemplateUse(
+                id=template, name=got.get("name") if got else None,
+                doc_type=got.get("doc_type") if got else None)
+        return m.AutopilotDraftUse(memory=memory, related=[resolved(i) for i in related],
+                                   template=used_template)
 
     def _apa_me(self, reader: Reader) -> set[str]:
         from operating.proactive_commitments import owner_ids
@@ -827,7 +901,7 @@ class AutopilotAreaMixin:
         path = self._ap_queue_path()  # type: ignore[attr-defined]
         if path is not None and path.exists():
             for it in self._ap_visible(reader, everyone=True) or ():  # type: ignore[attr-defined]
-                titles[it["item_id"]] = it["title"]
+                titles[it["item_id"]] = autopilot_engine.shown_item(it)["title"]
         out = []
         for r in reversed(rows):
             if r.get("event") not in AUDIT_EVENTS:

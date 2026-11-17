@@ -89,15 +89,48 @@ class View:
             self._cleanups.pop()()
 
 
+def profit_door() -> SimpleNamespace:
+    """A front door reading a profitability or margin question as the profit recipe (the
+    one route to the ready answer, ``backend.read_shortcut``), any other as none."""
+    from operating.front_door import Reading
+
+    def read(question, earlier=()):
+        asks = be.profit_question(question) or be.order_margin_question(question)
+        return Reading(question=question, rewrite=question, route="lookup", status="Reading",
+                       seconds=0.0, recipe="profit" if asks else None)
+    return SimpleNamespace(read=read)
+
+
 class ProfitAskTests(unittest.TestCase):
     def backend(self, view: View) -> be.WorkspaceBackend:
-        backend = be.WorkspaceBackend(lambda session: view, data_label="isolated-fixture",
-                                      today=lambda: TODAY)
+        # The read worker owns a view of its own (the same world, opened on its thread):
+        # a view's stores are bound to the thread that opened them, and each worker
+        # closes the views it holds on its own thread when it stops.
+        reads_view = View(self, view.withheld, records=view.records)
+        backend = be.WorkspaceBackend(lambda session: reads_view,
+                                      data_label="isolated-fixture", today=lambda: TODAY,
+                                      front_door=profit_door())
+        # The general-knowledge pass a partial answer gets (``general_answer`` fallback)
+        # runs on a stand-in: never the box's real model CLI (a host with one would
+        # otherwise answer through it, and its words would land in these answers).
+        backend.general_call = self.general_reply
         worker = backend.add_ask_worker(lambda session: view)
         thread = threading.Thread(target=worker.loop, daemon=True)
         thread.start()
+        # The read worker, as the served app runs one: an answer asks it for the markings
+        # the reader holds (``feedback.served_markings``); without it that read waited out
+        # its 60 s limit on every ask (20 asks: past the suite's 900 s module cap).
+        threading.Thread(target=backend.reads.loop, daemon=True).start()
         self.addCleanup(backend.stop)
         return backend
+
+    def setUp(self) -> None:
+        self.general_said: str | None = None   # the stand-in model's reply (None: none)
+        self.general_asked: list[str] = []
+
+    def general_reply(self, text, images=()):
+        self.general_asked.append(text)
+        return self.general_said
 
     @staticmethod
     def reader():
@@ -210,7 +243,7 @@ class ProfitAskTests(unittest.TestCase):
                     customerId=second["id"], status="Draft", orderDate="2026-10-02")
         records.append(head)
         records.append({**copy(line, "cd20", documentId=head["id"]), "document_id": head["id"]})
-        # API-018: no identity link makes them one record, so
+        # API-018 (decided): no identity link makes them one record, so
         # their margins are never added together; each card is its own choice, by number
         from operating import why_trail
         for unlinked in (None, mock.Mock(side_effect=RuntimeError("down"))):
@@ -319,6 +352,32 @@ class ProfitAskTests(unittest.TestCase):
         self.assertEqual(held["trail"]["hidden_steps"], 3)
         self.assertEqual(held["trail"]["hidden_message"], "3 more steps in places you can't "
                                                           "open.")
+
+    def test_the_general_help_under_a_partial_answer_never_denies_its_figures(self):
+        """The 11-16 box repro: under a partial answer that states its margins, the
+        general pass (which sees only the question) wrote that no margin figures were
+        available. That sentence goes; the general help and every figure stay."""
+        from operating import general_answer
+        self.general_said = (
+            "No margin figures were available for this customer, so it is hard to say. "
+            "To judge a customer, compare revenue with all costs, including labour and "
+            "overhead.\nThe records don't show the cost of each order. If the cost isn't "
+            "booked, the margin is overstated.")
+        _names, answer = self.ask(View(self), "Is Northwind Test Foods profitable and why not?")
+        text = answer["direct_answer"]
+        self.assertEqual(answer["outcome"], "partial")
+        self.assertEqual(len(self.general_asked), 1)
+        self.assertIn("whether any figure, data or record was available",
+                      self.general_asked[0])
+        self.assertTrue(text.startswith("Northwind Test Foods is not profitable in the last "
+                                        "12 months: revenue 190.00 CAD"), text)
+        company, _, general = text.partition(general_answer.HEADING)
+        self.assertIn("margin on item cost only: -41.00 CAD (-21.58%)", company)
+        self.assertIn("compare revenue with all costs, including labour and overhead",
+                      general)
+        self.assertIn("If the cost isn't booked, the margin is overstated.", general)
+        self.assertNotIn("No margin figures were available", text)
+        self.assertNotIn("don't show", text)
 
     def test_past_the_read_limit_there_is_no_verdict_only_a_partial_ranking(self):
         from unittest import mock
@@ -459,7 +518,7 @@ class ProfitAskTests(unittest.TestCase):
         """With two or more Ask workers, the margin section's orders are read side by side
         on the pool's workers, each as this reader on its own runtime, and the margin is the
         one read one order after another; with fewer, the section reads alone."""
-        page_view, other = View(self), View(self)
+        page_view, helpers = View(self), (View(self), View(self))
         self.addCleanup(page_view.close)
         alone = be.WorkspaceBackend(lambda session: page_view, data_label="isolated-fixture",
                                     today=lambda: TODAY)
@@ -471,13 +530,14 @@ class ProfitAskTests(unittest.TestCase):
         plain = job(page_view).profitability
         backend = be.WorkspaceBackend(lambda session: page_view, data_label="isolated-fixture",
                                       today=lambda: TODAY)
-        for view in (other, other):
+        for view in helpers:   # each worker's own, opened and closed on its thread
             worker = backend.add_ask_worker(lambda session, view=view: view)
             threading.Thread(target=worker.loop, daemon=True).start()
         self.addCleanup(backend.stop)
         spread = backend._spread(self.reader(), lambda view: be.read_section(
             backend, view, page, "margin"))(page_view).profitability
-        self.assertGreater(other.calls, 0)   # a helper read orders as this reader
+        # a helper read orders as this reader
+        self.assertGreater(sum(view.calls for view in helpers), 0)
         # the helper's world is captured on its own (revision suffixes of handles differ)
         def same(model):
             return re.sub(r"(@|%40)[0-9a-f]+-", "@-",
@@ -581,6 +641,26 @@ class ProfitAskTests(unittest.TestCase):
                          ["Northwind Test Foods (C-50)", "Southwind Test (C-51)"])
         self.assertIsNone(answer["profitability"])
 
+    def test_two_ask_workers_read_a_did_you_means_hints_side_by_side(self):
+        """With two Ask workers the choices' hints are read side by side, a helper reading
+        as this reader on its own runtime, and the choices are the ones read alone."""
+        reads_view = View(self)   # the read worker's own, opened and closed on its thread
+        backend = be.WorkspaceBackend(lambda session: reads_view,
+                                      data_label="isolated-fixture", today=lambda: TODAY,
+                                      front_door=profit_door())
+        backend.general_call = self.general_reply   # never the real model (``backend``)
+        for view in (View(self), View(self)):   # each worker's own, opened on its thread
+            worker = backend.add_ask_worker(lambda session, view=view: view)
+            threading.Thread(target=worker.loop, daemon=True).start()
+        threading.Thread(target=backend.reads.loop, daemon=True).start()   # as in backend()
+        self.addCleanup(backend.stop)
+        events = list(backend.ask(self.reader(), m.AskRequest(question="Is Test profitable?")))
+        spread = events[-1][1].model_dump()
+        _names, alone = self.ask(View(self), "Is Test profitable?")
+        self.assertEqual(sorted(c["label"] for c in spread["did_you_mean"]),
+                         sorted(c["label"] for c in alone["did_you_mean"]))
+        self.assertEqual(len(spread["did_you_mean"]), 2)
+
     def test_a_did_you_mean_pick_keeps_the_question_it_answers(self):
         """The app sends a pick as "I mean <choice>" with the picked customer and the
         conversation so far: it answers the earlier profitability question for that
@@ -609,6 +689,122 @@ class ProfitAskTests(unittest.TestCase):
             question=f"I mean {choice.label}", object_id=choice.object_id)))
         self.assertFalse(be.customer_object("PurchaseOrder:bc.purchase_orders:{}"))
 
+
+    def test_a_ready_answer_on_the_ask_pool_starts_no_look_up_ahead(self):
+        """A question worded for a ready answer read on the Ask pool (profit, at-risk)
+        starts no look-up ahead: it held the only worker while the
+        profit job queued behind it (11-13: 56 s before a 164 s job), or the second one
+        its reads spread over. A question going to the agent still looks up ahead."""
+        pool = SimpleNamespace(ask_workers=[object()])
+        margin = m.AskRequest(question="hows our margin on SIDIA orders in BC?")
+        lookup = m.AskRequest(question="who supplies part 4410?")
+        self.assertTrue(be.WorkspaceBackend._ready_first(pool, margin))
+        self.assertFalse(be.WorkspaceBackend._ready_first(pool, lookup))
+        with mock.patch.object(be.WorkspaceBackend, "_early_find",
+                               side_effect=AssertionError("looked up ahead")):
+            _names, answer = self.ask(View(self), "Is Test profitable?")   # one worker
+        self.assertTrue(answer["did_you_mean"] or answer.get("profitability"), answer)
+
+    def test_a_margin_question_no_reading_routes_never_takes_the_profit_route(self):
+        """The phrase rules route nothing any more (DI-02): with no front door, or one
+        that fails, a profitability question goes past the profit answer (no
+        ``profitability`` payload) to the fast path and the agent, and a did-you-mean
+        pick is routed by the reading of the question it answers, never its own words."""
+        view = View(self)
+        question = "Is Northwind Test Foods profitable?"
+        for door in (None, SimpleNamespace(read=mock.Mock(side_effect=RuntimeError("down")))):
+            backend = self.backend(view)
+            backend.front_door = door
+            reached = []
+
+            def boxed(self, reader, request, conversation, ms):
+                reached.append(request.question)   # the general path, past every ready one
+                return m.AnswerPayload(
+                    answer_id="a", question=request.question, outcome="answered",
+                    direct_answer="From the records.", hidden=m.Hidden(count=0),
+                    freshness=m.Freshness(), conversation_id=conversation, latency_ms=0)
+                yield   # a generator, as the box's own
+            with mock.patch.object(be.WorkspaceBackend, "_profit_ask",
+                                   side_effect=AssertionError("profit route taken")), \
+                    mock.patch.object(be.WorkspaceBackend, "_box_ask", boxed):
+                events = list(backend.ask(self.reader(), m.AskRequest(question=question)))
+            self.assertEqual(reached, [question])
+            self.assertIsNone(events[-1][1].model_dump().get("profitability"))
+        door = profit_door()
+        read = mock.Mock(side_effect=door.read)
+        backend = self.backend(view)
+        backend.front_door = SimpleNamespace(read=read)
+        pick = m.AskRequest(question="I mean Northwind Test Foods (C-50)",
+                            object_id="Customer:bc.customers:{}",
+                            history=[m.HistoryTurn(role="user", text="Is Test profitable?")])
+        self.assertEqual(be.read_shortcut(pick, backend._record_read(pick)), "profit")
+        self.assertEqual(read.call_args[0][0], "Is Test profitable?")
+        self.assertIsNone(backend._record_read(m.AskRequest(question="Is Test profitable?")))
+        read.reset_mock()   # a record with no ready answer is never read for a route
+        self.assertIsNone(backend._record_read(m.AskRequest(
+            question="Is this profitable?", object_id="PurchaseOrder:bc.purchase_orders:{}")))
+        read.assert_not_called()
+
+    def test_only_a_profit_worded_question_on_a_customer_page_waits_for_the_reading(self):
+        """A customer page's question pays for the front door's reading only when it is
+        worded about profit (the reading's one route there, ``read_shortcut``): any other
+        starts at once (di02 review: every customer-page question waited up to 20 s), and
+        a profit question, a typo'd one or a follow-up in a profit conversation, still
+        waits for it and reaches the profit answer. Both paths' latency is measured."""
+        delay = 0.6
+        from operating.front_door import Reading
+
+        def slow(question, earlier=()):
+            import time
+            time.sleep(delay)   # the front door's model turn, reading typos as the model
+            asks = be.profit_worded(question, *earlier)
+            return Reading(question=question, rewrite=question, route="lookup",
+                           status="Reading", seconds=delay, recipe="profit" if asks else None)
+        read = mock.Mock(side_effect=slow)
+        customer = "Customer:bc.customers:{}"
+
+        def run(question, history=()):
+            backend = self.backend(View(self))
+            backend.front_door = SimpleNamespace(read=read)
+            reached = []
+
+            def boxed(self, reader, request, conversation, ms):
+                reached.append("agent")
+                return m.AnswerPayload(
+                    answer_id="a", question=request.question, outcome="answered",
+                    direct_answer="From the records.", hidden=m.Hidden(count=0),
+                    freshness=m.Freshness(), conversation_id=conversation, latency_ms=0)
+                yield
+
+            def profit(self, reader, request, conversation, ms, question=None):
+                reached.append("profit")
+                return None   # then the agent, as for a customer with no checked orders
+                yield
+            import time
+            with mock.patch.object(be.WorkspaceBackend, "_profit_ask", profit), \
+                    mock.patch.object(be.WorkspaceBackend, "_box_ask", boxed):
+                started = time.perf_counter()
+                list(backend.ask(self.reader(), m.AskRequest(
+                    question=question, object_id=customer,
+                    history=[m.HistoryTurn(role="user", text=t) for t in history])))
+                return time.perf_counter() - started, reached
+
+        for question in ("Who is their main contact?", "What are their open orders?",
+                         "When did they last order?", "is anything late for them"):
+            read.reset_mock()
+            took, reached = run(question)
+            read.assert_not_called()
+            self.assertEqual(reached, ["agent"], question)
+            self.assertLess(took, delay, question)   # never waits on the reading
+        for question, history in (("Is this customer profitable?", ()),
+                                  ("whats our margn on them", ()),
+                                  ("are we makin any proffit", ()),
+                                  ("and why not?", ("Are they profitable?",))):
+            read.reset_mock()
+            took, reached = run(question, history)
+            read.assert_called_once()
+            self.assertGreaterEqual(took, delay, question)   # the reading routes it
+            self.assertEqual(reached[0], "profit", (question, reached))
 
 if __name__ == "__main__":
     unittest.main()

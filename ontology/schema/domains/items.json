@@ -444,6 +444,60 @@
       {
        "path": "supplier_lot_number",
        "op": "present"
+      },
+      {
+       "path": "supplier_lot_number",
+       "op": "not_in",
+       "value": [
+        "NA",
+        " NA",
+        "NA ",
+        " NA ",
+        "Na",
+        " Na",
+        "Na ",
+        " Na ",
+        "nA",
+        " nA",
+        "nA ",
+        " nA ",
+        "na",
+        " na",
+        "na ",
+        " na ",
+        "N/A",
+        " N/A",
+        "N/A ",
+        " N/A ",
+        "N/a",
+        " N/a",
+        "N/a ",
+        " N/a ",
+        "n/A",
+        " n/A",
+        "n/A ",
+        " n/A ",
+        "n/a",
+        " n/a",
+        "n/a ",
+        " n/a ",
+        "NONE",
+        " NONE",
+        "NONE ",
+        " NONE ",
+        "None",
+        " None",
+        "None ",
+        " None ",
+        "none",
+        " none",
+        "none ",
+        " none ",
+        "-",
+        " -",
+        "- ",
+        " - "
+       ]
       }
      ],
      "lineage": {
@@ -482,7 +536,7 @@
        "id": "live.portal_relation_keys"
       }
      ],
-     "note": "Gold receipt lines with a supplier lot; a lot inherits its receipt's lineage (Lot.received_in), as the line does."
+     "note": "Gold receipt lines with a supplier lot; a lot inherits its receipt's lineage (Lot.received_in), as the line does. A line whose supplier lot is a stand-in for no lot (N/A or NA in any letter case, NONE, None, none or -, each also with a space before, after or both: the lot normaliser's placeholders, which it reads trimmed and case-folded; the same list guards the FM receipt bindings) names no lot: no Lot is minted for it, so a Lot without a lot number is never an identity (AUD-08)."
     },
     {
      "id": "portal.fm_receipt_raw_material.lotnoqc",
@@ -501,17 +555,53 @@
        "op": "not_in",
        "value": [
         "NA",
+        " NA",
+        "NA ",
+        " NA ",
         "Na",
+        " Na",
+        "Na ",
+        " Na ",
         "nA",
+        " nA",
+        "nA ",
+        " nA ",
         "na",
+        " na",
+        "na ",
+        " na ",
         "N/A",
+        " N/A",
+        "N/A ",
+        " N/A ",
         "N/a",
+        " N/a",
+        "N/a ",
+        " N/a ",
         "n/A",
+        " n/A",
+        "n/A ",
+        " n/A ",
         "n/a",
+        " n/a",
+        "n/a ",
+        " n/a ",
         "NONE",
+        " NONE",
+        "NONE ",
+        " NONE ",
         "None",
+        " None",
+        "None ",
+        " None ",
         "none",
-        "-"
+        " none",
+        "none ",
+        " none ",
+        "-",
+        " -",
+        "- ",
+        " - "
        ]
       }
      ],
@@ -568,17 +658,53 @@
        "op": "not_in",
        "value": [
         "NA",
+        " NA",
+        "NA ",
+        " NA ",
         "Na",
+        " Na",
+        "Na ",
+        " Na ",
         "nA",
+        " nA",
+        "nA ",
+        " nA ",
         "na",
+        " na",
+        "na ",
+        " na ",
         "N/A",
+        " N/A",
+        "N/A ",
+        " N/A ",
         "N/a",
+        " N/a",
+        "N/a ",
+        " N/a ",
         "n/A",
+        " n/A",
+        "n/A ",
+        " n/A ",
         "n/a",
+        " n/a",
+        "n/a ",
+        " n/a ",
         "NONE",
+        " NONE",
+        "NONE ",
+        " NONE ",
         "None",
+        " None",
+        "None ",
+        " None ",
         "none",
-        "-"
+        " none",
+        "none ",
+        " none ",
+        "-",
+        " -",
+        "- ",
+        " - "
        ]
       }
      ],
@@ -1306,6 +1432,29 @@
        "id": "allowlist.public.receipt_packaging"
       }
      ]
+    }
+   ]
+  },
+  {
+   "id": "FgItem.formula_line",
+   "from": "FgItem",
+   "to": "Product",
+   "name": "formula_line",
+   "reverse_name": "in_fg_formulas_of",
+   "cardinality": "N:M",
+   "description": "A line of the product's formula: a formula sheet (a file whose name or folder holds a formula number F-YY-NNNN or a formula word, its text read by ontology/composition_lines.py) states the product's code (corroborated) or, stating none, its name (lead), and the line's part code is exactly the raw material's identifier (twins joined, least id). One link per sheet line; the reason carries the sheet, formula code, line number, part, description, share %, quantity and unit, the share x size check and the sheet's status (complete or partial), cited to the sheet's version, so a reader who may not read the sheet never sees the line. The raw material's supplier items follow SupplierItem.for_item. Written by the with_formula_lines build step (ontology/formula_lines.py); the Portal's own formula lines are not served.",
+   "bindings": [
+    {
+     "kind": "mention",
+     "tier_ceiling": "corroborated",
+     "evidence": [
+      {
+       "kind": "workbench_code",
+       "path": "ontology/formula_lines.py",
+       "note": "with_formula_lines step: formula sheets' lines, the sheet matched to the product by its stated CODE (corroborated) or NAME (lead) and its name or path holding the product's name words, the part resolved through identifiers; excluded people's records never read."
+      }
+     ],
+     "written_by_step": "with_formula_lines"
     }
    ]
   }

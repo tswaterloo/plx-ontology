@@ -327,11 +327,11 @@ class KeepAliveTests(unittest.TestCase):
         form = (b"grant_type=client_credentials&scope=https%3A%2F%2Fgraph.microsoft.com"
                 b"%2F.default&client_id=c&client_secret=s")
         self.server.add("login.microsoftonline.com", reply(), reply(), reply())
-        self.get(f"https://login.microsoftonline.com/x")
+        self.get("https://login.microsoftonline.com/x")
         urllib_sender("POST", token, {}, form, 5.0, 1000)
         self.assertEqual(self.sockets_used(), [1, 2])
         self.assertEqual(self.server.served[1][2].split(" ")[0], "POST")
-        self.get(f"https://login.microsoftonline.com/x")
+        self.get("https://login.microsoftonline.com/x")
         self.assertEqual(self.sockets_used(), [1, 2, 1])
 
     def test_concurrent_senders_never_share_a_connection_mid_request(self):

@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import datetime as dt
 import hashlib
+import json
 from pathlib import Path
 import re
 import secrets
@@ -90,6 +91,23 @@ def style_request(text: str) -> Optional[dict[str, str]]:
             "subject": subject.group(1).strip(" ,.") if subject else ""}
 
 
+# The words a learned kind is asked for by (``style_request`` reads each back to its kind).
+KIND_WORDS = {"quote": "quote", "price_list": "price list", "proposal": "proposal",
+              "spec_sheet": "spec sheet", "coa": "COA", "letter": "letter",
+              "invoice": "invoice"}
+
+
+def _own_address(reader: Reader) -> Optional[str]:
+    """The reader's own address: the signed-in token's, else the session's one address
+    (its subject's own identities). Several addresses and no token address name no one:
+    a session also holding, say, a shared mailbox never takes that mailbox's templates as
+    the reader's (fail closed)."""
+    if reader.email:
+        return reader.email
+    held = sorted({i.lower() for i in reader.session.identities if "@" in i})
+    return held[0] if len(held) == 1 else None
+
+
 def authors_named(name: str, authors: set[str]) -> list[str]:
     """The template authors a name means: a whole word of their address before the @, or
     the address itself."""
@@ -111,11 +129,24 @@ class DocStyleMixin:
         on what was not read, and the first record matched."""
         return [], ["nothing read"], None
 
-    def _style_usable(self, reader: Reader, template: Mapping[str, Any]) -> bool:
+    def _style_usable(self, reader: Reader, template: Mapping[str, Any],
+                      opened: Optional[dict[str, bool]] = None) -> bool:
+        """Whether the reader may open every document the template was learned from;
+        ``opened`` memoizes each source's answer within one request (a document shared by
+        several templates is opened once)."""
         for member in template["members"]:
-            try:
-                self.source(reader, member["source"], 0)  # type: ignore[attr-defined]
-            except Exception:  # noqa: BLE001 - refused, unknown or failed alike: not theirs
+            key = str(member["source"])
+            if opened is not None and key in opened:
+                ok = opened[key]
+            else:
+                try:
+                    self.source(reader, member["source"], 0)  # type: ignore[attr-defined]
+                    ok = True
+                except Exception:  # noqa: BLE001 - refused, unknown or failed alike: not theirs
+                    ok = False
+                if opened is not None:
+                    opened[key] = ok
+            if not ok:
                 return False
         return True
 
@@ -132,7 +163,8 @@ class DocStyleMixin:
         if author:
             named = authors_named(author, {t["author"] for t in of_kind})
         else:
-            named = [reader.email.lower()] if reader.email else []
+            me = _own_address(reader)
+            named = [me.lower()] if me else []
         usable = {}
         for who in named:
             mine = [t for t in of_kind if t["author"] == who]
@@ -149,6 +181,47 @@ class DocStyleMixin:
         if not usable:
             raise _refuse("no_author")
         return next(iter(usable.values()))
+
+    def learned_templates(self, reader: Reader) -> m.LearnedTemplates:
+        """The kinds of document learned from this reader's own sent documents
+        (``operating.doc_style_mine learn``, daily): per kind the template Ask would use
+        (``ds.choose``, the next when this reader can no longer open one of its documents),
+        how many documents it was learned from, the latest one's date and the words that
+        ask for one. Another person's templates are never listed; with the people exclusion
+        unavailable nothing is (fail closed)."""
+        root = self.style_store()
+        me = _own_address(reader)
+        if root is None or not me:
+            return m.LearnedTemplates(status="none")
+        if self._instruct_guard() is None:  # type: ignore[attr-defined]
+            return m.LearnedTemplates(status="unavailable")
+        try:
+            raw = json.loads((root / "templates.json").read_text(encoding="utf-8"))
+            templates = ds.load(root / "templates.json")
+        except (ds.StyleRefused, OSError, ValueError):
+            return m.LearnedTemplates(status="none")
+        me = me.lower()
+        out = []
+        opened: dict[str, bool] = {}   # each document opened at most once per request
+        for kind in sorted({t["kind"] for t in templates if t["author"] == me}):
+            mine = [t for t in templates if t["author"] == me and t["kind"] == kind]
+            while mine:
+                best = ds.choose(mine, me, kind)
+                if best is None:
+                    break
+                if self._style_usable(reader, best, opened):
+                    words = KIND_WORDS.get(kind, kind.replace("_", " "))
+                    sent = (best.get("exemplar") or {}).get("sent")
+                    out.append(m.LearnedTemplate(
+                        kind=kind, label=words[:1].upper() + words[1:],
+                        documents=int(best.get("support") or len(best["members"])),
+                        last_sent=str(sent)[:10] if sent else None,
+                        ask=f"make a {words} in my usual template for "))
+                    break
+                mine = [t for t in mine if t is not best]
+        learned = raw.get("learned_at") if isinstance(raw, dict) else None
+        return m.LearnedTemplates(status="read", templates=out,
+                                  learned_at=learned if isinstance(learned, str) else None)
 
     def style_make(self, reader: Reader, text: str, *, as_of: Optional[dt.date] = None
                    ) -> m.InstructFill:

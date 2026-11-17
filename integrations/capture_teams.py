@@ -50,8 +50,12 @@ CLI passes only the confirmed scope):
   first, until its time budget: first those never read to a settled end, those whose
   membership is three quarters of ``UNIT_ACL_MAX_AGE`` old or older and those whose members
   Graph changed since (the chat listing's ``lastUpdatedDateTime``), the oldest membership
-  first; then those with a message in the last ``active_days`` (every run, newest first);
-  then those whose last settled read is ``refresh_hours`` old, the longest unseen first
+  first; then those with a message in the last ``active_days`` (every run, newest first)
+  and those whose listed last message (the listing's ``lastMessagePreview``, its
+  ``createdDateTime`` only) is newer than the newest message held and than their last
+  settled read less ``PREVIEW_SKEW`` (``lastUpdatedDateTime`` does not move on a new
+  message, so the first message in a dormant chat would wait out ``refresh_hours``; live
+  2026-11-16 p95 351 min); then those whose last settled read is ``refresh_hours`` old, the longest unseen first
   (the dormant ones in fair rotation). The rest were read recently and wait. The persisted
   cursor is the store's ledger (``SEEN``: per unit, its last settled read, newest message
   held and any Retry-After), never a position, so conversations added or removed move no other.
@@ -136,7 +140,10 @@ history (fails closed): a member added or re-added without history reads none of
 earlier messages, through any handle. A chat message's own membership is trimmed the same
 way when it is saved. Channel members see the channel's whole history. When the
 membership changes, every current message is also saved again under the new membership,
-so an added member sees the current messages his history covers. A channel or chat whose
+so an added member sees the current messages his history covers. A member Graph lists
+by his object id but without the address it listed him with keeps that address for up to
+``ADDRESS_ABSENT_GRACE`` (Graph's transient omission is no membership change); a member
+no longer listed, or listed with another address, keeps nothing. A channel or chat whose
 membership read fails (an HTTP error or a refusal; a capped read keeps what it read, a
 standard channel's refused team read falls back to its group) loses its recorded membership
 (``CaptureStore.clear_unit_acl``): it is neither projected nor resolved until a read
@@ -234,10 +241,12 @@ from ontology.types import Actor
 from operating.case_mail_scope import MailScope
 
 from . import live_source_grammar as grammar
-from .capture_mail import (assert_outside_git, blocked_reason, check_state_dir,
-                           directory_members, graph_block)
+from .capture_mail import directory_members
+from .capture_mail_scope import assert_outside_git, check_state_dir
+from .capture_mail_standing import blocked_reason, graph_block
 from .capture_store import (UNIT_ACL_MAX_AGE, CaptureError, CaptureStore, CapturedRecord,
-                            SourceKind, register_source_kind)
+                            SourceKind, _path_text, keep_store_dir_mode,
+                            register_source_kind)
 from .live_source_guard import (HOLD_SCOPE, LiveSourceAudience, ReadOnlyGuardError,
                                 RequestBudgetExhausted, SourceUnavailable,
                                 is_transport_failure, unavailable_detail)
@@ -312,6 +321,25 @@ REASON_MAX = 64
 # time before which it is not read again (``retry``: its own Retry-After). Any other layout, or an unreadable one, starts with nothing seen.
 SEEN = "teams_seen"
 SEEN_VERSION = 1
+# Graph's member listing now and then names a member by object id without the address
+# it named him by a few minutes earlier (11-14/11-15: nightly and after restarts, back on
+# the next read). Each such read changed the membership and saved every message of the
+# chat again (360k versions in two days, source versions unchanged). A member listed by
+# the same object id keeps the address the conversation's current record holds for him
+# while Graph has omitted it for less than ``ADDRESS_ABSENT_GRACE`` (counted from the
+# first read without it, kept per unit under ``ADDRESS_ABSENT`` + unit); an absence that
+# lasts longer is taken as read (its start stays held while the conversation's record
+# still names the address, so a run that pauses before saving the record never starts a
+# fresh grace). An address another member is listed with now is never kept for him; a
+# member no longer listed keeps nothing. A failed read or write of that state, or of the
+# held record, never stops a capture: the membership (and a message) is saved as read,
+# logged and counted (``state_fallbacks``).
+ADDRESS_ABSENT = "teams_address_absent:"
+ADDRESS_ABSENT_GRACE = timedelta(hours=24)
+# Graph gives a card attachment (``application/vnd.microsoft.card.*``: a bot's or
+# connector's card) a new random id, also in the body's ``<attachment id>`` tag, on every
+# read, the message's own version unchanged.
+CARD_TYPE = "application/vnd.microsoft.card."
 # Ledger writes during a run: every this many conversations read (a killed run loses at
 # most these, which are read again).
 LEDGER_FLUSH = 50
@@ -360,6 +388,15 @@ MAX_RUNS = 12  # one CLI invocation: --runs, then on until a full pass is read
 _ENUM = re.compile(r"[A-Za-z]{1,32}")
 # A chat listing's fields: ids, types and when members or name last changed (no content).
 CHAT_LISTING = "id,chatType,lastUpdatedDateTime"
+# The chat listing of a capture run also expands each chat's last message preview: only
+# its ``createdDateTime`` is kept (``_hint``); the preview's body, sender and ids are
+# dropped on read, never stored or logged. Graph refuses a nested ``$select`` on it (400,
+# live 2026-11-16), and pages it exactly as the plain listing (same ids, same pages).
+CHAT_LISTING_EXPAND = "lastMessagePreview"
+# A preview is honoured until the chat's last settled read is this much past it: a read
+# that raced Graph's own indexing of the message is repeated, and a preview whose message
+# the capture never keeps (a system event) stops being due after a few runs.
+PREVIEW_SKEW = timedelta(minutes=15)
 _RESYNC_CODES = frozenset({"resync_required", "sync_state_not_found"})
 # The census (``TeamsCapture.census``): names and 30-day counts, never content.
 CENSUS_FILE = "census.json"
@@ -550,7 +587,7 @@ def _acl_recorded(store: CaptureStore) -> dict[str, str]:
     """When each Teams unit's membership was recorded (the store's ``unit_acl``
     ``recorded_at``, the time ``UNIT_ACL_MAX_AGE`` is counted from), read on a read-only
     connection of its own: the schedule refreshes the oldest first."""
-    db = sqlite3.connect(f"file:{store.path}?mode=ro", uri=True)
+    db = sqlite3.connect(_read_only_uri(store.path), uri=True)
     try:
         return {unit: at for unit, at in db.execute(
             "SELECT unit, recorded_at FROM unit_acl WHERE kind IN (?, ?)",
@@ -928,6 +965,81 @@ def _message_acl(conversation: Conversation, acl: Mapping[str, Any],
     return _history_acl(acl, row) if conversation.kind == "chat" else dict(acl)
 
 
+def _member_address(member: Mapping[str, Any]) -> str | None:
+    """A listed member's address as the membership records it, or None."""
+    email = member.get("email")
+    return (email.strip().lower() if isinstance(email, str) and "@" in email
+            and len(email) <= 320 else None)
+
+
+def _kept_addresses(items: Sequence[Any], known: Mapping[str, str],
+                    absent: Mapping[str, str], now: str,
+                    names: Mapping[str, str] | None = None
+                    ) -> tuple[list[Any], dict[str, str]]:
+    """The member ``items`` as listed, each one listed by an object id ``known`` names an
+    address for but without any address, given that address (and, listed without a name,
+    the one ``names`` holds for him: Graph drops both at once) while its absence (since
+    ``absent[id]``, else ``now``) is younger than ``ADDRESS_ABSENT_GRACE``, unless another
+    member is listed with it; and the absences kept so (id: since). An absence past the
+    grace keeps its start (the address not given) while ``known`` still names the address:
+    the record is saved without it later, and a read before that is still past the grace."""
+    listed = {a for a in (_member_address(m) for m in items if isinstance(m, Mapping)) if a}
+    moment, out, kept = _instant(now), [], {}
+    for member in items:
+        user = member.get("userId") if isinstance(member, Mapping) else None
+        user = user.lower() if isinstance(user, str) and _valid("guid", user.lower()) else None
+        address = known.get(user) if user else None
+        if address and address not in listed and _member_address(member) is None:
+            since = absent.get(user)
+            since = since if isinstance(since, str) and _instant(since) is not None else now
+            began = _instant(since)
+            if moment is not None and began is not None \
+                    and moment - began < ADDRESS_ABSENT_GRACE:
+                name = (names or {}).get(user) if not member.get("displayName") else None
+                member = {**member, "email": address, **({"displayName": name} if name else {})}
+            kept[user] = since
+        out.append(member)
+    return out, kept
+
+
+def _read_only_uri(path: str | os.PathLike[str]) -> str:
+    """The SQLite URI opening ``path`` read-only, its path percent-encoded (a ``?``,
+    ``#`` or ``%`` in a directory name names the file, not a query)."""
+    return Path(path).resolve().as_uri() + "?mode=ro"
+
+
+def _is_card(attachment: Any) -> bool:
+    return isinstance(attachment, Mapping) \
+        and str(attachment.get("content_type") or "").startswith(CARD_TYPE)
+
+
+def _steady_card_ids(row: Mapping[str, Any], stored: Mapping[str, Any]) -> Mapping[str, Any]:
+    """``row`` with the ids its card attachments have in ``stored`` (the message's current
+    version, of the same source version) when the two lists differ only in card ids, in
+    order, and the body in those ids; else ``row`` as read."""
+    new, old = row.get("attachments") or [], stored.get("attachments") or []
+    if not isinstance(new, list) or not isinstance(old, list) or len(new) != len(old):
+        return row
+    ids: dict[str, str] = {}
+    for a, b in zip(new, old):
+        if a == b:
+            continue
+        if not (_is_card(a) and isinstance(b, Mapping) and {**a, "id": None} == {**b, "id": None}
+                and isinstance(a.get("id"), str) and a["id"]
+                and isinstance(b.get("id"), str) and b["id"]):
+            return row
+        ids[a["id"]] = b["id"]
+    body = row.get("body_content")
+    if not ids or not isinstance(body, str):
+        return row
+    for read, held in ids.items():
+        body = body.replace(read, held)
+    if body != stored.get("body_content"):
+        return row   # the body changed beyond the ids: saved as read
+    return {**row, "body_content": body,
+            "attachments": [{**a, "id": ids.get(a.get("id"), a.get("id"))} for a in new]}
+
+
 def _error_reason(exc: BaseException) -> str:
     """``source_error:<Class>[:<detail>]`` within ``REASON_MAX`` (fixed vocabulary)."""
     reason = f"source_error:{type(exc).__name__}"
@@ -974,7 +1086,7 @@ def _new_counts() -> dict[str, int]:
     return {"pages": 0, "messages_read": 0, "replies_read": 0, "versions_new": 0,
             "unchanged": 0, "provenance_dropped": 0, "replies_capped": 0,
             "acl_refreshed": 0, "members": 0, "round_restarts": 0, "people_dropped": 0,
-            "replies_swept_roots": 0}
+            "replies_swept_roots": 0, "state_fallbacks": 0}
 
 
 def _instant(value: Any, *, ceil: bool = False) -> datetime | None:
@@ -998,12 +1110,14 @@ def _instant(value: Any, *, ceil: bool = False) -> datetime | None:
 
 # ------------------------------------------------------------------ capture
 
-def open_store(state_dir: str | Path, audience: Any) -> CaptureStore:
-    """The Teams capture store under ``state_dir`` (outside every git work tree)."""
+def open_store(state_dir: str | Path, audience: Any, *,
+               clock: Callable[[], datetime] | None = None) -> CaptureStore:
+    """The Teams capture store under ``state_dir`` (outside every git work tree), on
+    ``clock`` (the wall clock unless a caller gives its own)."""
     root = assert_outside_git(state_dir) / STORE_DIR
     root.mkdir(parents=True, exist_ok=True, mode=0o700)
-    store = CaptureStore(root / DB_FILE, audience)
-    os.chmod(root / DB_FILE, 0o600)
+    keep_store_dir_mode(root)
+    store = CaptureStore(root / DB_FILE, audience, clock=clock)
     return store
 
 
@@ -1057,6 +1171,9 @@ class TeamsCapture:
         # ``lastUpdatedDateTime``, no content): a membership recorded before it is read
         # again first.
         self.hints: dict[str, str] = {}
+        # Per chat unit, the newest ``lastMessagePreview.createdDateTime`` a listing gave
+        # (the time only): a chat with a message newer than any held is due (``_schedule``).
+        self.previews: dict[str, datetime] = {}
 
     def close(self) -> None:
         self.store.close()
@@ -1154,7 +1271,7 @@ class TeamsCapture:
         reasons: set[str] = set()
         info: dict[str, Any] = {"members": len(scope.members),
                                 "members_outside_allowlist": scope.outside_allowlist,
-                                "people_excluded": 0}
+                                "people_excluded": 0, "chat_preview_fallbacks": 0}
         if not self.audience.may_read_any(self.actor, "teams:"):
             return [], {**info, "status": "not_visible", "reasons": ["not_visible"],
                         "discovered_total": 0, "unvisited": 0}
@@ -1189,9 +1306,8 @@ class TeamsCapture:
                     else:
                         reasons.add("provenance_dropped")
             if with_chats:
-                for item in attempt("teams.chats", "graph.user_chats", lambda: self._listing(
-                        "graph.user_chats", {"$select": CHAT_LISTING}, reasons,
-                        user=user)) or []:
+                for item in attempt("teams.chats", "graph.user_chats", lambda: self._chat_listing(
+                        user, reasons, info)) or []:
                     if _valid("teams_thread", item.get("id")):
                         chats.append(Conversation("chat", item["id"],
                                                   membership=_enum(item.get("chatType"))))
@@ -1217,11 +1333,37 @@ class TeamsCapture:
                     reasons.add("provenance_dropped")
         found = _distinct(channels) + _distinct(chats)
         return found, {**info, "status": _status(reasons), "reasons": sorted(reasons),
-                       "discovered_total": len(found), "unvisited": 0}
+                       "discovered_total": len(found), "unvisited": 0,
+                       "chat_previews": sum(1 for c in found if c.unit in self.previews)}
+
+    def _chat_listing(self, user: str, reasons: set[str], info: dict[str, Any]
+                      ) -> list[Mapping[str, Any]]:
+        """One member's chats, expanded with each chat's last message preview; when
+        Graph refuses or fails the expanded listing, the same listing without the
+        expand (the chats are still found, scheduled without previews; counted in
+        ``chat_preview_fallbacks``). A failure of that plain listing is the member's
+        ``teams.chats`` failure, as before the expand."""
+        try:
+            return self._listing("graph.user_chats", {"$select": CHAT_LISTING,
+                                                      "$expand": CHAT_LISTING_EXPAND},
+                                 reasons, user=user)
+        except SourceUnavailable:
+            info["chat_preview_fallbacks"] += 1
+            return self._listing("graph.user_chats", {"$select": CHAT_LISTING}, reasons,
+                                 user=user)
 
     def _hint(self, conversation: Conversation, item: Mapping[str, Any]) -> None:
         if _instant(item.get("lastUpdatedDateTime")) is not None:
             self.hints[conversation.unit] = item["lastUpdatedDateTime"]
+        # Only the preview's creation time is read; a missing, null or malformed preview
+        # adds nothing (the chat keeps the rules without it). The newest of every
+        # member's listing counts.
+        preview = item.get("lastMessagePreview")
+        created = _instant(preview.get("createdDateTime")) \
+            if isinstance(preview, Mapping) else None
+        held = self.previews.get(conversation.unit)
+        if created is not None and (held is None or created > held):
+            self.previews[conversation.unit] = created
 
     def _schedule(self, found: Sequence[Conversation], scope: TeamsScope, ledger: _Ledger
                   ) -> tuple[list[Conversation], int]:
@@ -1235,7 +1377,8 @@ class TeamsCapture:
            recorded membership first (none first), so no reader loses a conversation to
            an old membership while another is read;
         2. one active in the last ``active_days`` (its newest message held): every run,
-           newest first;
+           newest first; with them, one whose listed last message (``previews``) is newer
+           than the newest held and than its last settled read less ``PREVIEW_SKEW``;
         3. one whose last settled read or membership is ``refresh_hours`` old: the
            longest unseen first (the fair round-robin of the dormant ones).
 
@@ -1253,12 +1396,16 @@ class TeamsCapture:
             retry = _instant(entry.get("retry"))
             acl = _instant(acls.get(conversation.unit))
             changed = _instant(self.hints.get(conversation.unit))
+            preview = self.previews.get(conversation.unit)
             if retry is not None and retry > now:
                 deferred += 1
                 continue
             if seen is None or (acl is not None and now - acl >= urgent) \
                     or (changed is not None and acl is not None and changed > acl):
                 key = (0, (acl or oldest).timestamp())
+            elif preview is not None and (activity is None or preview > activity) \
+                    and preview > seen - PREVIEW_SKEW:
+                key = (1, -preview.timestamp())
             elif activity is not None and now - activity <= active:
                 key = (1, -activity.timestamp())
             elif now - min(seen, acl or seen) >= refresh:
@@ -1293,12 +1440,23 @@ class TeamsCapture:
         return ("graph.team_members" if conversation.membership == "standard"
                 else "graph.channel_members")
 
-    def _membership(self, conversation: Conversation, op: str, scope: TeamsScope
+    def _membership(self, conversation: Conversation, op: str, scope: TeamsScope, *,
+                    keep: bool = True, counts: dict[str, int] | None = None
                     ) -> tuple[dict[str, Any], int, str | None, list[dict[str, Any]]]:
+        """The membership as read; with ``keep`` (a capture's, on its own store
+        connection) a member Graph listed without his address keeping it
+        (``_keep_addresses``); the census decides the guard on the read alone, on threads
+        that never touch the store. A store failure while keeping one saves the
+        membership as read (``_fallback``)."""
         url = (grammar.url(op, team=conversation.team) if op == "graph.team_members"
                else conversation.url(op))
         items, completeness = self.api.get_pages(url, max_pages=50,
                                                  max_items=scope.max_members)
+        if keep:
+            try:
+                items = self._keep_addresses(conversation, items)
+            except Exception as exc:   # capture never stops for its own bookkeeping
+                self._fallback(conversation, "kept addresses", exc, counts)
         identities: set[str] = set()
         starts: dict[str, str | None] = {}
         participants = {p["id"]: p for p in map(_participant, items) if p}
@@ -1325,6 +1483,109 @@ class TeamsCapture:
         capped = (f"cap:member_{completeness['truncation_reason']}"
                   if completeness["truncated"] else None)
         return acl, len(items), capped, list(participants.values())
+
+    def _current(self, kind: SourceKind, paths: Iterable[Sequence[str]]
+                 ) -> dict[tuple[str, ...], tuple[str, Mapping[str, Any]]]:
+        """(source version, payload) of the current versions at ``paths``, read on a
+        read-only connection of its own (what this store committed); an unreadable one
+        is left out."""
+        wanted = {_path_text(kind.canonical_path(p)): tuple(kind.canonical_path(p))
+                  for p in paths}
+        found: dict[tuple[str, ...], tuple[str, Mapping[str, Any]]] = {}
+        texts = sorted(wanted)
+        db = sqlite3.connect(_read_only_uri(self.store.path), uri=True)
+        try:
+            for start in range(0, len(texts), 500):
+                chunk = texts[start:start + 500]
+                for path, version, payload in db.execute(
+                        "SELECT path, source_version, payload FROM versions WHERE kind = ? "
+                        f"AND path IN ({','.join('?' * len(chunk))}) "
+                        "AND superseded_at IS NULL", (kind.name, *chunk)):
+                    try:
+                        value = json.loads(payload)
+                    except ValueError:
+                        continue
+                    if isinstance(value, Mapping):
+                        found[wanted[path]] = (version, value)
+        finally:
+            db.close()
+        return found
+
+    def _keep_addresses(self, conversation: Conversation, items: Sequence[Any]) -> list[Any]:
+        """The members as listed, a listed one Graph gave no address keeping the one the
+        conversation's current record names for his object id (``ADDRESS_ABSENT``)."""
+        items = list(items)
+        if not any(isinstance(m, Mapping) and _member_address(m) is None for m in items) \
+                and self.store.state(ADDRESS_ABSENT + conversation.unit) in (None, "{}"):
+            return items   # every member listed with an address, no absence held
+        kind = conversation.source_kind
+        record = self._current(kind, [conversation.path(CONVERSATION)]).get(
+            tuple(kind.canonical_path(conversation.path(CONVERSATION))))
+        row = (record[1].get("row") if record else None) or {}
+        known: dict[str, str] = {}
+        names: dict[str, str] = {}
+        participants = row.get("participants") if isinstance(row, Mapping) else None
+        for p in participants if isinstance(participants, list) else ():
+            if isinstance(p, Mapping) and isinstance(p.get("id"), str) \
+                    and isinstance(p.get("email"), str) and "@" in p["email"]:
+                known[p["id"].lower()] = p["email"].strip().lower()
+                if isinstance(p.get("display_name"), str) and p["display_name"]:
+                    names[p["id"].lower()] = p["display_name"]
+        try:
+            absent = json.loads(self.store.state(ADDRESS_ABSENT + conversation.unit) or "{}")
+        except ValueError:
+            absent = None
+        unreadable = not isinstance(absent, dict)
+        if unreadable:
+            known, absent = {}, {}   # an unreadable record of absences keeps nothing
+        items, kept = _kept_addresses(items, known, absent, self.store.now(), names)
+        if kept != absent or unreadable:
+            self.store.set_state(ADDRESS_ABSENT + conversation.unit,
+                                 json.dumps(kept, sort_keys=True))
+        return items
+
+    def _fallback(self, conversation: Conversation, what: str, exc: Exception,
+                  counts: dict[str, int] | None) -> None:
+        """A failed read or write of the capture's own steadiness state: logged (a
+        hash of the unit and the error's class only) and counted; the caller saves what it read."""
+        import logging
+        logging.getLogger(__name__).warning(
+            "teams %s unit %s: %s failed (%s); saved as read",
+            conversation.kind, sha256(conversation.unit.encode()).hexdigest()[:12],
+            what, type(exc).__name__)
+        if counts is not None:
+            counts["state_fallbacks"] += 1
+
+    def _steady_cards(self, conversation: Conversation, records: Sequence[CapturedRecord],
+                      counts: dict[str, int] | None = None) -> list[CapturedRecord]:
+        """``records``, a message whose source version is the one held keeping the card
+        attachment ids its held version has (``_steady_card_ids``); every record as read
+        when the held versions cannot be read (``_fallback``)."""
+        try:
+            return self._held_cards(conversation, records)
+        except Exception as exc:   # capture never stops for its own bookkeeping
+            self._fallback(conversation, "held card ids", exc, counts)
+            return list(records)
+
+    def _held_cards(self, conversation: Conversation, records: Sequence[CapturedRecord]
+                    ) -> list[CapturedRecord]:
+        kind = conversation.source_kind
+        cards = [r.path for r in records
+                 if any(map(_is_card, (r.payload.get("row") or {}).get("attachments") or ()))]
+        if not cards:
+            return list(records)
+        held = self._current(kind, cards)
+        out = []
+        for record in records:
+            current = held.get(tuple(kind.canonical_path(record.path)))
+            if current is not None and current[0] == record.source_version:
+                row = record.payload["row"]
+                steady = _steady_card_ids(row, current[1].get("row") or {})
+                if steady is not row:
+                    record = CapturedRecord(record.path, {**record.payload, "row": steady},
+                                            record.source_version, record.lineage)
+            out.append(record)
+        return out
 
     def _record(self, conversation: Conversation, raw: Any, acl: Mapping[str, Any], op: str,
                 *, reply_to: str | None = None) -> CapturedRecord | None:
@@ -1514,7 +1775,7 @@ class TeamsCapture:
         part = "teams.chat_" if conversation.kind == "chat" else "teams."
         try:
             acl, counts["members"], member_cap, participants = self._membership(
-                conversation, members_op, scope)
+                conversation, members_op, scope, counts=counts)
         except SourceUnavailable as exc:
             if members_op != "graph.team_members" or getattr(exc, "http_status", None) != 403:
                 # The run stays open (members_unread) until a members read succeeds. A
@@ -1674,8 +1935,9 @@ class TeamsCapture:
                                         empty=True)
                 return self._paused(result, run_id, f"{part}messages", op, exc, blocked,
                                     reasons)
-            saved = self.store.save_page(run_id, records, next_url, dropped=dropped,
-                                         marks=marks)
+            steady = self._steady_cards(conversation, records, counts)
+            saved = self.store.save_page(run_id, steady,
+                                         next_url, dropped=dropped, marks=marks)
             counts["pages"] += 1
             counts["versions_new"] += saved["new_versions"]
             counts["unchanged"] += saved["unchanged"]
@@ -1814,7 +2076,9 @@ class TeamsCapture:
                     raise
                 gaps.append(root)
                 continue
-            saved = self.store.save_page(run_id, records, cursor, dropped=dropped,
+            steady = self._steady_cards(conversation, records, counts)
+            saved = self.store.save_page(run_id, steady,
+                                         cursor, dropped=dropped,
                                          marks=[f"capped:{root}"] if cut else [])
             counts["versions_new"] += saved["new_versions"]
             counts["unchanged"] += saved["unchanged"]
@@ -1958,7 +2222,8 @@ class TeamsCapture:
                 "unvisited_units": unvisited, "sweep": self._sweep(found, ledger, now),
                 "people_excluded": discovery["people_excluded"] + sum(
                     r["status"] == PEOPLE_EXCLUDED for r in results),
-                "people_dropped": sum(r["counts"]["people_dropped"] for r in results)}
+                "people_dropped": sum(r["counts"]["people_dropped"] for r in results),
+                "state_fallbacks": sum(r["counts"]["state_fallbacks"] for r in results)}
 
     def _sweep(self, found: Sequence[Conversation], ledger: _Ledger, now: datetime
                ) -> dict[str, Any]:
@@ -2037,7 +2302,8 @@ class TeamsCapture:
         def threaded(conversation: Conversation) -> dict[str, Any] | None:
             lane = copy.copy(self)   # shares the client, the guard and the refused set
             lane.workers = 1
-            lane.store = CaptureStore(self.store.path, self.audience)   # this thread's own
+            lane.store = CaptureStore(self.store.path, self.audience,   # this thread's own
+                                      clock=self.store.clock)
             try:
                 return one(conversation, lane)
             finally:
@@ -2079,7 +2345,8 @@ class TeamsCapture:
         return {"complete": False, "discovery": discovery, "conversations": [],
                 "blocked_upstream": blocked, "complete_bound": 0, "bound_total": 0,
                 "found_units": set(), "unvisited_units": set(), "people_excluded": 0,
-                "people_dropped": 0, "throttled": False, "retry_after_seconds": 0.0,
+                "people_dropped": 0, "state_fallbacks": 0, "throttled": False,
+                "retry_after_seconds": 0.0,
                 "next_due_seconds": None, "sweep": None}
 
     # -- census (names and counts, no content) ----------------------------------
@@ -2178,7 +2445,8 @@ class TeamsCapture:
         def withheld(conversation: Conversation, op: str, part: str) -> str | None:
             """Why the guard cannot clear ``conversation`` (None: cleared)."""
             try:
-                acl, _count, capped, _people = self._membership(conversation, op, scope)
+                acl, _count, capped, _people = self._membership(conversation, op, scope,
+                                                                keep=False)
             except SourceUnavailable as exc:
                 reasons.add(_failure(part, op, exc, blocked))
                 return MEMBERS_UNREAD
@@ -2820,7 +3088,8 @@ def _report_run(number: int, run: Mapping[str, Any]) -> dict[str, Any]:
             "discovery": {**{k: discovery[k] for k in (
                 "status", "reasons", "conversations", "discovered_total", "unvisited",
                 "members_outside_allowlist")},
-                **{k: discovery.get(k, 0) for k in ("due", "deferred")},
+                **{k: discovery.get(k, 0) for k in ("due", "deferred", "chat_previews",
+                                                    "chat_preview_fallbacks")},
                 # Due now and not read this run (none: the rest is fresh or waiting).
                 "due_left": max(0, discovery.get("due", 0) - len(run["conversations"]))},
             "next_due_seconds": run.get("next_due_seconds"),
@@ -2830,6 +3099,8 @@ def _report_run(number: int, run: Mapping[str, Any]) -> dict[str, Any]:
             "retry_after_seconds": round(float(run.get("retry_after_seconds") or 0.0), 1),
             # Counts only: who was excluded is never reported.
             "people_excluded": run["people_excluded"], "people_dropped": run["people_dropped"],
+            # Conversations saved as read because the steadiness state failed (logged).
+            "state_fallbacks": run.get("state_fallbacks", 0),
             "reply_sweep": run.get("reply_sweep"),
             "conversations": [{"index": i, "kind": c["kind"], "membership": c["membership"],
                                "status": c["status"], "reasons": c["reasons"],
@@ -2893,7 +3164,8 @@ class RequestLog:
 
 def run_cli(args: argparse.Namespace, *, environ: Mapping[str, str] | None = None,
             sender: Any = None, sleep: Callable[[float], None] | None = None,
-            clock: Callable[[], float] = time.monotonic) -> dict[str, Any]:
+            clock: Callable[[], float] = time.monotonic,
+            store_clock: Callable[[], datetime] | None = None) -> dict[str, Any]:
     """Take the census (``TeamsCapture.census``; its listing to ``census_path``), then,
     only for what the human confirmation names and the census cleared, capture
     ``--runs`` times, then until ``--max-runs`` ran or ``--budget-seconds`` is
@@ -2933,13 +3205,14 @@ def run_cli(args: argparse.Namespace, *, environ: Mapping[str, str] | None = Non
     started = clock()
 
     def expired() -> bool:
-        return budget is not None and clock() - started >= budget
+        from . import drain   # a drain request (the ingest host's SIGTERM) ends it too
+        return drain.requested() or (budget is not None and clock() - started >= budget)
     actors = {name: Actor(audience.tenant, frozenset({principal}), "restricted")
               for name, principal in (("capture", args.principal),
                                       ("member", args.member_principal),
                                       ("outsider", args.outsider_principal),
                                       ("withheld", args.withheld_principal))}
-    store = open_store(state_dir, audience)
+    store = open_store(state_dir, audience, clock=store_clock)
     try:
         retry = BoundedBackoff(budget_seconds=60, **({"sleep": sleep} if sleep else {}))
         api, transport = build_graph(environ, sender=sender, retry=retry)
@@ -3036,7 +3309,7 @@ def run_cli(args: argparse.Namespace, *, environ: Mapping[str, str] | None = Non
         identities[args.member_principal] = sorted(
             {*identities.get(args.member_principal, []), *member_groups})
         with CaptureStore(store.path, LiveSourceAudience.from_json(
-                {**document, "identities": identities})) as view:
+                {**document, "identities": identities}), clock=store.clock) as view:
             member, member_withheld = _read_back(view, pairs, actors["member"])
             resolved = sum(1 for h in member if view.resolve(h, actors["member"]).get("ok"))
         outsider, outsider_withheld = _read_back(store, pairs, actors["outsider"])

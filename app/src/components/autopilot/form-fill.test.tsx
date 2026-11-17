@@ -46,4 +46,23 @@ describe("Fill a form", () => {
     expect(screen.getByRole("alert")).toHaveTextContent("huge.pdf is larger than 8 MB.");
     expect(api.fill).not.toHaveBeenCalled();
   });
+
+  it("offers the reply that carries the filled copy; no send button when it cannot carry it", async () => {
+    const base = {
+      original: "order.docx", name: "order (filled).docx", kind: "docx", size: 10, record: { label: "PO 1234", open_url: "/po/1234" },
+      counts: { filled: 1 }, fields: [], notes: [], download_url: "/api/instruct/files/f_1",
+    };
+    api.fill.mockResolvedValue({
+      ...base,
+      reply: { to: ["pat@maple.example"], subject: "RE: PO 1234", attachment: "order (filled).docx", status: "ready", missing: [], card_id: "fill:up_1",
+        actions: [{ kind: "reply_in_thread", label: "Reply in thread", outbound: true }] },
+    });
+    render(<FormFill />);
+    pick(new File(["x"], "order.docx"));
+    fireEvent.change(screen.getByLabelText("Record"), { target: { value: "PO 1234" } });
+    fireEvent.click(screen.getByRole("button", { name: "Fill" }));
+    const reply = await screen.findByTestId("fill-reply");
+    expect(reply).toHaveTextContent("Reply to pat@maple.example with order (filled).docx attached. You see the message before it goes.");
+    expect(screen.getByTestId("action-reply_in_thread")).toHaveTextContent("Reply in thread");
+  });
 });

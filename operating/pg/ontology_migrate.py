@@ -21,7 +21,10 @@ derives from the rewritten rows is the step layer's (a unit layer naming
 in the same transaction: each re-run step's served links (its link id prefixes, from its
 from types) deleted and the layer's copied in, ``store_meta.steps_digest`` switched, and
 the objects of its scope a delta layer replaced since its snapshot queued again; a delta
-layer of older step code applies without them (:func:`steps_scope`).
+layer of older step code applies without them (:func:`steps_scope`). A staged layer (an
+in-place run's, ``ontology.pg_step_inplace layer``, the steps' differences held in
+``operating.pg.step_staging``'s schema) is applied in the same transaction, each step's
+undo kept; ``--rehearse F`` writes a share of each staged step, times it and rolls back.
 
 ``python3 -m operating.pg.ontology_migrate check [--digest D]``: exit 0 when the code's
 schema (or ``D``) is the one Postgres serves, else 1 with what is pending: the deploy
@@ -76,6 +79,50 @@ def layer_scope(cur: Any, digest: str | None) -> dict[str, Any] | None:
         last, at = row[0], row[1]
         scope.update(row[2])
     return {"id": last, "scope": sorted(scope)}
+
+
+def reparse_id(to_digest: str, carrier: Mapping[str, Any]) -> str:
+    """The ``schema_migrations`` id ``operating.pg.identifier_reparse apply`` records for
+    one carrier re-parsed toward the schema ``to_digest`` (its from/to digests are never a
+    schema digest, so :func:`layer_scope` never walks it)."""
+    return f"reparse:{to_digest}:{carrier['kind']}:{carrier['binding']}"
+
+
+def reparse_pending(cur: Any, record: Mapping[str, Any] | None) -> list[str]:
+    """The carriers of a unit layer's ``identifier_reparse`` (``step_migrate.
+    reparse_carriers``) whose in-place re-parse has not applied: the layer, which no longer
+    rewrites their units, is refused until it has (their new identifier rows would never
+    be written)."""
+    out = []
+    for carrier in (record or {}).get("identifier_reparse") or ():
+        cur.execute("SELECT 1 FROM ontology.schema_migrations WHERE id = %s",
+                    (reparse_id(record["to"], carrier),))
+        if cur.fetchone() is None:
+            out.append(f"{carrier['kind']}:{carrier['binding']}")
+    return out
+
+
+def rezone_id(to_digest: str, carrier: Mapping[str, Any]) -> str:
+    """The ``schema_migrations`` id ``operating.pg.timestamp_rezone apply`` records for one
+    timestamp carrier (a property source or an event time) rewritten toward ``to_digest``."""
+    what = carrier.get("event_type") or carrier.get("property")
+    return f"rezone:{to_digest}:{what}:{carrier['binding']}:{carrier['path']}"
+
+
+def rezone_pending(cur: Any, record: Mapping[str, Any] | None) -> list[str]:
+    """The carriers of a unit layer's ``timestamp_rezone`` (``step_migrate.
+    rezone_carriers``) whose in-place rewrite has not applied: the layer, which no longer
+    rewrites their units, is refused until it has (their served text would keep the old
+    zone under the new schema digest)."""
+    part = (record or {}).get("timestamp_rezone") or {}
+    out = []
+    for carrier in list(part.get("values") or ()) + list(part.get("events") or ()):
+        cur.execute("SELECT 1 FROM ontology.schema_migrations WHERE id = %s",
+                    (rezone_id(record["to"], carrier),))
+        if cur.fetchone() is None:
+            out.append(f"{carrier.get('event_type') or carrier.get('property')}:"
+                       f"{carrier['binding']}")
+    return out
 
 
 def served_steps(cur: Any) -> str | None:
@@ -171,10 +218,16 @@ _TABLES = ("value_cells", "packed_sources", "value_sources", "identifiers",
 
 
 def apply_migration(layer: str | Path | None, dsn: str, *,
-                    steps: str | Path | None = None) -> dict[str, Any]:
+                    steps: str | Path | None = None,
+                    rehearse: float | None = None) -> dict[str, Any]:
     """Apply the migration layer (module docstring) and the step migration layer
-    ``steps`` (``ontology.step_migrate.build_layer``), in one transaction; either may be
-    None. Returns the report."""
+    ``steps`` (``ontology.step_migrate.build_layer``, or the staged layer of an in-place
+    run: ``ontology.pg_step_inplace layer``, its ``from`` marked
+    ``migrate_chunks.STAGED``), in one transaction; either may be None. Returns the report.
+    ``rehearse`` (a share, 0 < F <= 1): every check and the unit part as the apply runs
+    them, each staged step's first share written (``step_staging.rehearse_step``), timed,
+    then the transaction rolled back: nothing of it stays (``rehearsed``, and
+    ``projected_seconds``: the unit part plus each step's time over the share)."""
     import psycopg
 
     record = None
@@ -191,6 +244,8 @@ def apply_migration(layer: str | Path | None, dsn: str, *,
     if step_record is not None:
         report["steps"] = {"migration": step_record["id"], "from": step_record["from"],
                            "to": step_record["to"], "steps": step_record["steps"]}
+    if rehearse is not None and not 0 < rehearse <= 1:
+        return {**report, "applied": False, "reason": f"rehearse_share:{rehearse}"}
     started = time.monotonic()
     # the step layer is bound to the unit layer it was built over; a unit layer whose
     # changes reach a step's inputs comes with that step's layer
@@ -220,37 +275,79 @@ def apply_migration(layer: str | Path | None, dsn: str, *,
                 if served != record["from"]:
                     return {**report, "applied": False, "reason": "other_schema",
                             "served": served}
+            pending = reparse_pending(cur, record)
+            if pending:
+                return {**report, "applied": False, "reason": "identifier_reparse_pending",
+                        "pending": pending}
+            pending = rezone_pending(cur, record)
+            if pending:
+                return {**report, "applied": False, "reason": "timestamp_rezone_pending",
+                        "pending": pending}
             if step_record is not None:
                 held = served_steps(cur)
                 if held is None:   # the generation's step code is not known: no baseline
                     return {**report, "applied": False, "reason": "steps_baseline_unknown"}
-                if held != step_record["from"]:
+                if held != _steps_from(step_record):
                     return {**report, "applied": False, "reason": "other_steps",
                             "served": held}
+                from ontology.step_migrate import collapse_refusal
+                why = collapse_refusal(cur, step_record["steps"])
+                if why:   # a step not occurrence-safe on a store the collapse folded
+                    return {**report, "applied": False, "reason": why}
             cur.execute("SET LOCAL jit = off")
             if record is not None:
                 _apply_units(cur, Path(layer), record, report)
             if step_record is not None:
-                _apply_steps(cur, Path(steps), step_record, report)
+                _apply_steps(cur, Path(steps), step_record, report, rehearse=rehearse)
             report["seconds"] = round(time.monotonic() - started, 3)
+            if rehearse is not None:
+                # what ran whole (checks, the unit part, the record) plus each step's
+                # share's time over the share
+                bits = (report.get("steps") or {}).get("rehearsed") or {}
+                report["projected_seconds"] = round(report["seconds"] + sum(
+                    b["projected_seconds"] - b["seconds"] for b in bits.values()), 1)
+                raise _Rehearsed()
             if record is not None:
                 cur.execute("INSERT INTO ontology.schema_migrations (id, from_digest, "
                             "to_digest, scope, report) VALUES (%s, %s, %s, %s, %s)",
                             (record["id"], record["from"], record["to"],
                              json.dumps(record["scope"]), json.dumps(report, sort_keys=True)))
+                # the change feed (migration 0026): its scope, judged whole by readers
+                from operating.pg import change_feed
+                change_feed.record_scope(cur, f"migration:{record['id']}", _whole(cur),
+                                         record["scope"])
             if step_record is not None:
                 cur.execute("INSERT INTO ontology.schema_migrations (id, from_digest, "
                             "to_digest, scope, report) VALUES (%s, %s, %s, %s, %s)",
-                            ("steps:" + step_record["id"], step_record["from"],
+                            ("steps:" + step_record["id"], _steps_from(step_record),
                              step_record["to"], json.dumps(step_record["scope"]),
                              json.dumps(report.get("steps"), sort_keys=True)))
+                from operating.pg import change_feed
+                change_feed.record_scope(cur, f"migration:steps:{step_record['id']}",
+                                         _whole(cur), step_record["scope"])
     except Refused as refused:   # rolled back: nothing of it applied
         return {**report, "applied": False, "reason": str(refused)}
+    except _Rehearsed:   # rolled back by design
+        return {**report, "applied": False, "rehearsed": rehearse}
     return {**report, "applied": True}
 
 
 class Refused(Exception):
     """A change the migration cannot carry over (its transaction rolls back)."""
+
+
+class _Rehearsed(Exception):
+    """A rehearsal's end: its transaction rolls back."""
+
+
+def _steps_from(step_record: Mapping[str, Any]) -> str:
+    """The served step code a step layer applies over: a staged layer's ``from`` with its
+    marker taken off. A scoped layer (``migrate_chunks.SCOPED``: owned entries naming
+    object tables, which :func:`_apply_steps` would read as whole prefixes) keeps it, so it
+    is refused here as of other step code (``migrate_chunks`` applies it)."""
+    from operating.pg.migrate_chunks import STAGED
+    held = step_record["from"]
+    return held[len(STAGED):] if held.startswith(STAGED) else held
 
 
 def _newer(cur: Any, scope: Sequence[str], mark: int) -> list[str]:
@@ -267,12 +364,44 @@ def _newer(cur: Any, scope: Sequence[str], mark: int) -> list[str]:
 
 
 def _apply_steps(cur: Any, layer: Path, record: Mapping[str, Any],
-                 report: dict[str, Any]) -> None:
+                 report: dict[str, Any], *, rehearse: float | None = None) -> None:
     """The step migration part: each step's served links (its prefixes, from its from
-    types) deleted, the layer's copied in, the served step code switched."""
+    types) deleted, the layer's copied in, the served step code switched. A staged layer
+    (``record["staged"]``): each step's staged difference applied in this transaction
+    (``step_staging.apply_step``, its undo kept; a step applied as it went before is
+    refused: this apply is all of it or nothing), or its share rehearsed."""
     from operating.pg.ontology_delta import _insert
     out = report["steps"]
     t = time.monotonic()
+    if record.get("staged"):
+        from ontology import store_ddl
+        from operating.pg import step_staging
+        if record.get("owned"):
+            raise Refused("staged_layer_with_owned_links")
+        bits: dict[str, Any] = {}
+        for step in sorted(record["staged"]):
+            if rehearse is not None:
+                bits[step] = step_staging.rehearse_step(cur, step, record["staged"][step],
+                                                        rehearse, store_ddl.LINK_COLUMNS)
+                continue
+            bits[step] = step_staging.apply_step(cur, step, record["staged"][step], True,
+                                                 store_ddl.LINK_COLUMNS, keep_undo=True)
+            if "applied_before" in bits[step]:
+                raise Refused(f"staged_applied_before:{step}")
+        out["rehearsed" if rehearse is not None else "staged"] = bits
+        out["deleted.link_rows"] = sum(int(b.get("deleted") or 0) for b in bits.values())
+        out["copied.link_rows"] = sum(int(b.get("inserted") if rehearse is not None
+                                          else b.get("written") or 0) for b in bits.values())
+        if record.get("values") or record.get("text_marks"):
+            raise Refused("staged_layer_with_values")
+        out["seconds"] = round(time.monotonic() - t, 3)
+        out["reproject"] = reproject(cur, _newer(cur, record["scope"], record["delta_mark"]),
+                                     "steps:" + record["id"])
+        cur.execute("INSERT INTO ontology.store_meta (key, value) VALUES ('steps_digest', %s) "
+                    "ON CONFLICT (key) DO UPDATE SET value = excluded.value", (record["to"],))
+        return
+    if rehearse is not None:
+        raise Refused("rehearse_needs_staged_steps")
     deleted = 0
     from ontology.pg_byte_order import key_collate
     c = key_collate(cur)
@@ -697,8 +826,9 @@ def seed_steps(dsn: str, ref: str | None = None, digest: str | None = None) -> d
     generation loaded without it. Refused once a digest is held (a step migration moves
     it)."""
     import psycopg
-    from ontology.step_migrate import steps_digest
-    digest = digest or steps_digest(ref)
+    from ontology.step_migrate import recorded_steps_digest, steps_digest
+    # what a build of ``ref`` recorded, in its own scheme (a v1 commit: bytes)
+    digest = digest or (recorded_steps_digest(ref) if ref else steps_digest())
     with psycopg.connect(dsn) as pg, pg.cursor() as cur:
         cur.execute(LOCK)
         held = served_steps(cur)
@@ -718,6 +848,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     a = sub.add_parser("apply")
     a.add_argument("layer", nargs="?", default=None, help="the unit migration layer")
     a.add_argument("--steps", default=None, help="the step migration layer (same transaction)")
+    a.add_argument("--rehearse", type=float, default=None,
+                   help="a share of each staged step written, timed, then rolled back")
     c = sub.add_parser("check")
     c.add_argument("--digest", default=None)
     sd = sub.add_parser("seed-steps", help="record the step code of the loaded generation")
@@ -725,13 +857,18 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = parser.parse_args(argv)
     dsn = args.dsn or config.dsn()
     if args.command == "apply":
-        out: Mapping[str, Any] = apply_migration(args.layer, dsn, steps=args.steps)
+        out: Mapping[str, Any] = apply_migration(args.layer, dsn, steps=args.steps,
+                                                 rehearse=args.rehearse)
+        if out.get("applied"):   # a rehearsal reports applied False: no marks refresh
+            from operating.pg import link_marks
+            link_marks.after_apply(dsn, "steps" if args.steps and not args.layer else "train")
     elif args.command == "seed-steps":
         out = seed_steps(dsn, args.ref)
     else:
         out = check(dsn, args.digest)
     print(json.dumps(out, sort_keys=True), flush=True)
-    return 0 if out.get("applied") or out.get("ok") or out.get("seeded") else 1
+    return 0 if out.get("applied") or out.get("ok") or out.get("seeded") or \
+        out.get("rehearsed") else 1
 
 
 if __name__ == "__main__":

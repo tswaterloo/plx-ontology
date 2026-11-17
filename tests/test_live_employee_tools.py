@@ -20,12 +20,14 @@ import unittest
 from unittest import mock
 
 from verify import live_verify
+from verify import live_verify_policy
 from integrations.tests import test_bc_capture as tb
 from integrations.tests.test_live_source_adapters import ENV
 from ontology.tests.test_project_bc import MAN, gid, purchase_world, record
 from operating import case_runtime
 from operating import ontology_tools as ot
 from operating import ontology_tools_investigate as oi
+from operating import ontology_tools_investigate_plans
 from scripts import live_employee_tools as le
 
 SPECS = live_verify.ROOT / live_verify.SPECS_DIR_NAME
@@ -154,7 +156,7 @@ class LiveEmployeeToolsTest(unittest.TestCase):
                         self.returncode = le.main([*argv[5:], "--bc-books", str(books)],
                                                   sender=sender, sleep=lambda seconds: None)
                 except Undeclared as read:
-                    self.returncode = live_verify.UNDECLARED_ENV_EXIT
+                    self.returncode = live_verify_policy.UNDECLARED_ENV_EXIT
                     self.stderr = json.dumps({"error": "UndeclaredEnv",
                                               "name": read.args[0]}).encode()
                 self.stdout = out.getvalue().encode()
@@ -327,7 +329,7 @@ class LiveEmployeeToolsTest(unittest.TestCase):
     def test_inline_plans_answer_with_citations_or_refuse_with_their_typed_reason(self):
         spec, code, doc = self.run_spec("tools.investigate_inline_plans")
         self.assertEqual(live_verify.check_expectations(spec, code, doc), [])
-        examples = json.loads(oi.INLINE_EXAMPLES.read_text("utf-8"))["examples"]
+        examples = json.loads(ontology_tools_investigate_plans.INLINE_EXAMPLES.read_text("utf-8"))["examples"]
         self.assertEqual(doc["plans_run"], [e["plan"]["id"] for e in examples])
         outcomes = {plan: stats["outcomes"] for plan, stats in doc["plans"].items()}
         # Both companies' POs and vendors are roots; the one sales shipment is.
@@ -534,7 +536,7 @@ class LiveEmployeeToolsTest(unittest.TestCase):
         self.assertEqual(entry["result"], "pass")
         self.assertNotIn("fields_truncated", entry["detail"])
         self.assertLessEqual(len(json.dumps(entry["detail"], sort_keys=True)),
-                             live_verify.MAX_DETAIL_CHARS)
+                             live_verify_policy.MAX_DETAIL_CHARS)
         self.assertEqual(entry["detail"]["fields"]["families.landed_cost"]["codes_folded"],
                          doc["families"]["landed_cost"]["codes_folded"])
 

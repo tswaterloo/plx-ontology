@@ -33,6 +33,7 @@ from integrations.live_source_guard import (BoundedBackoff, LiveSourceAudience,
 from integrations.tests.test_live_source_adapters import ACCESS_TOKEN, CLIENT_SECRET, ENV, TENANT_ID
 from ontology.core import Actor
 from operating import claim_checks
+from operating import claim_checks_parse
 
 HOST = "https://api.businesscentral.dynamics.com"
 BASE = f"/v2.0/{TENANT_ID}/Production/api/v2.0"
@@ -483,10 +484,10 @@ class FullCaptureTests(unittest.TestCase):
         self.assertFalse(h.fake.bc_gets(UNPINNED))
         self.assertEqual([c["book"] for c in report["companies"]],
                          ["manufacturing", "distribution", "consol"])
-        # 32 sets (the contact relations among them), 10 lines units and the company
-        # record per company (bc.capture_full requires units_total >= 132 with each
+        # 32 sets (the contact relations among them), 11 lines units and the company
+        # record per company (bc.capture_full requires units_total >= 138 with each
         # company's Page 50 and Page 38 units)
-        self.assertEqual(ALL_UNITS, 43)
+        self.assertEqual(ALL_UNITS, 44)
         self.assertEqual(report["units_total"], 3 * ALL_UNITS)
         self.assertEqual(report["units_complete"], 3 * ALL_UNITS)
         self.assertFalse(report["all_complete"])  # an unpinned company is not captured
@@ -497,6 +498,13 @@ class FullCaptureTests(unittest.TestCase):
         self.assertEqual((lines["state"], lines["records_current"]), ("complete", 10))
         self.assertEqual(h.unit(report, CO[2], "itemLedgerEntries")["records_current"], 7)
         self.assertEqual(h.unit(report, CO[1], "salesShipments")["state"], "complete")
+        # CT-D-04: posted shipments bring their lines (3 shipments x 2 lines) in every
+        # company, expanded on the header page as the pinned $metadata allows
+        for company in CO:
+            shipped = h.unit(report, company, "salesShipmentLines")
+            self.assertEqual((shipped["state"], shipped["records_current"]), ("complete", 6))
+        self.assertTrue(h.fake.bc_gets(rf"{CO[0]}\)/salesShipments\?.*"
+                                       r"\$expand=salesShipmentLines"))
         # Lineage follows the company GUID, never the (misleading) company name.
         for company, book in BOOKS["production"].items():
             item = h.store.records(SERVICE, "bc", bc_unit(company, "salesInvoiceLines"),
@@ -624,7 +632,7 @@ class FullCaptureTests(unittest.TestCase):
         lines = h.unit(h.run(entity_sets=("purchaseOrders",)), CO[0], "purchaseOrderLines")
         self.assertEqual((lines["state"], lines["records_current"], lines["dropped"],
                           lines["lines_via_filter"]), ("complete", 6, 0, 1))
-        (flat,) = fake.bc_gets(rf"/purchaseOrderLines\?")
+        (flat,) = fake.bc_gets(r"/purchaseOrderLines\?")
         check_request("GET", flat, environ=ENV)
         self.assertIn(f"documentId eq {bad}", unquote(flat).replace("+", " "))
 
@@ -914,10 +922,11 @@ class ResumeAndThrottleTests(unittest.TestCase):
 
     def test_a_refused_entity_set_fails_alone(self):
         fake = FakeBc()
-        fake.fail(rf"{CO[2]}\)/salesShipments$", (403, {}, b'{"error":{"code":"Forbidden"}}'))
+        # a set without lines (salesShipments now expands its lines on the header page)
+        fake.fail(rf"{CO[2]}\)/locations(\?|$)", (403, {}, b'{"error":{"code":"Forbidden"}}'))
         h = Harness(self, fake)
         report = h.run()
-        unit = h.unit(report, CO[2], "salesShipments")
+        unit = h.unit(report, CO[2], "locations")
         self.assertEqual((unit["state"], unit["reason"]), ("failed", "source_refused"))
         self.assertEqual(report["units_complete"], 3 * ALL_UNITS - 1)
 
@@ -1340,8 +1349,10 @@ class RefusedContinuationTests(unittest.TestCase):
         # Repair of 61a29755: the delta read's nextLink repeated $filter with RAW spaces;
         # it matched the request's decoded value, was stored as the cursor and refused by
         # check_request when followed (ReadOnlyGuardError, uncaught: stalled for good).
-        fake = OpaqueSkiptokenBc({"salesShipments": 5})
-        fake.raw_spaces.add((CO[0], "salesShipments"))
+        # contacts: a modified-since set without lines (salesShipments reads its lines
+        # in full every pass since CT-D-04)
+        fake = OpaqueSkiptokenBc({"contacts": 5})
+        fake.raw_spaces.add((CO[0], "contacts"))
         scratch = tempfile.TemporaryDirectory()
         self.addCleanup(scratch.cleanup)
 
@@ -1349,7 +1360,7 @@ class RefusedContinuationTests(unittest.TestCase):
             return bc_read.capture_probe(
                 ENV, sender=fake, db=Path(scratch.name) / "c.sqlite", page_size=2,
                 resolve_sample=0, passes=passes, books=BOOKS, monotonic=Clock().monotonic,
-                retry=BoundedBackoff(sleep=lambda s: None), entity_sets=("salesShipments",))
+                retry=BoundedBackoff(sleep=lambda s: None), entity_sets=("contacts",))
 
         spec = json.loads((Path(__file__).resolve().parents[2] / "devloop" / "live-checks"
                            / "bc.capture_incremental.json").read_text(encoding="utf-8"))
@@ -1362,10 +1373,10 @@ class RefusedContinuationTests(unittest.TestCase):
         self.assertIn(failure, live_verify.check_expectations(spec, 0, report))
         self.assertFalse([url for url in fake.bc_gets() if " " in url])  # never sent
         fake.raw_spaces.clear()
-        sent = len(fake.bc_gets(rf"{CO[0]}\)/salesShipments"))
+        sent = len(fake.bc_gets(rf"{CO[0]}\)/contacts"))
         healthy = probe(1)  # restarted from its first page
         self.assertNotIn("$skiptoken",
-                         unquote(fake.bc_gets(rf"{CO[0]}\)/salesShipments")[sent]))
+                         unquote(fake.bc_gets(rf"{CO[0]}\)/contacts")[sent]))
         self.assertEqual(healthy["companies"][0]["units"][0]["state"], "complete")
         self.assertEqual(healthy["nextlink_refused_per_pass"], [0])
         self.assertNotIn(failure, live_verify.check_expectations(spec, 0, healthy))
@@ -1445,7 +1456,7 @@ class OfflineResolveAndClaimTests(unittest.TestCase):
         rows = h.store.claim_rows(SERVICE)
 
         def gate(value, field="row.quantity", actor_rows=rows):
-            claims = claim_checks.parse_value_claims(
+            claims = claim_checks_parse.parse_value_claims(
                 [{"value": value, "citation": handle, "field": field}], [handle], [])
             return claim_checks.check_items(
                 [{"id": "F1", "texts": [f"The line holds {value} units ({handle})."],
@@ -2013,14 +2024,16 @@ class IncrementalCaptureTests(unittest.TestCase):
                           or "$select" in unquote(u)])
 
     def test_capture_probe_reports_mode_since_requests_and_rows_per_unit(self):
-        fake = FakeBc({"salesShipments": 4})
+        # contacts: a modified-since set without lines (salesShipments reads its lines
+        # in full every pass since CT-D-04)
+        fake = FakeBc({"contacts": 4})
         scratch = tempfile.TemporaryDirectory()
         self.addCleanup(scratch.cleanup)
         clock = Clock()
         result = bc_read.capture_probe(
             ENV, sender=fake, db=Path(scratch.name) / "c.sqlite", page_size=2,
             resolve_sample=10, passes=2, books=BOOKS, monotonic=clock.monotonic,
-            retry=BoundedBackoff(sleep=lambda s: None), entity_sets=("salesShipments",))
+            retry=BoundedBackoff(sleep=lambda s: None), entity_sets=("contacts",))
         self.assertEqual(result["mode"], "auto")
         self.assertEqual(result["modes_per_pass"], [["full"], ["incremental"]])
         self.assertEqual(result["rows_changed_per_pass"][1], 0)
@@ -2037,13 +2050,13 @@ class IncrementalCaptureTests(unittest.TestCase):
         scratch2 = tempfile.TemporaryDirectory()
         self.addCleanup(scratch2.cleanup)
         three = bc_read.capture_probe(
-            ENV, sender=FakeBc({"salesShipments": 4}), db=Path(scratch2.name) / "c.sqlite",
+            ENV, sender=FakeBc({"contacts": 4}), db=Path(scratch2.name) / "c.sqlite",
             page_size=2, resolve_sample=0, passes=3, books=BOOKS,
             monotonic=Clock().monotonic, retry=BoundedBackoff(sleep=lambda s: None),
-            entity_sets=("salesShipments",), key_pass_last=True)
+            entity_sets=("contacts",), key_pass_last=True)
         self.assertEqual(three["modes_per_pass"], [["full"], ["incremental"], ["full"]])
         units = [u for c in three["companies"] for u in c["units"]
-                 if u["entity_set"] == "salesShipments"]
+                 if u["entity_set"] == "contacts"]
         self.assertTrue(all(u["keys_only"] and u["state"] == "complete" for u in units))
         self.assertEqual(three["keys_refetched_per_pass"][2], 0)
         self.assertEqual(three["rows_changed_per_pass"][1:], [0, 0])

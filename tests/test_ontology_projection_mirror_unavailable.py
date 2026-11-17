@@ -22,6 +22,7 @@ import unittest
 from unittest import mock
 
 from verify import live_verify as lv
+from verify import live_verify_order
 from integrations.tests.test_source_mirror import BASE, KEY
 from integrations.workbench_read_api import WorkbenchReadApiClient
 from ontology import identifiers
@@ -101,7 +102,7 @@ class MirrorUnavailableTest(unittest.TestCase):
                 self.assertEqual(self.scored(report, SPEC["expect_blocked"]), [])
                 self.assertEqual(self.scored(report),
                                  ["mirror_unavailable_bound_count != expected"])
-        self.assertEqual(lv.degraded_relations({"result": "blocked", "detail": {"blocked": {
+        self.assertEqual(live_verify_order.degraded_relations({"result": "blocked", "detail": {"blocked": {
             "parts": lv.blocked_parts(report), "measured": True}}}),
             sorted(names)[:probe.MAX_BLOCKED_PARTS])
 

@@ -110,16 +110,13 @@ from ontology.core import Actor
 from . import live_source_grammar as grammar
 from .capture_store import (CaptureError, CaptureStore, CapturedRecord, bc_unit,
                             is_capture_handle, make_handle, source_kind)
-from .live_source_guard import (BC_HOST, BC_SCOPE, MESSAGE_CLASS_TOKENS,
-                                BoundedBackoff, ClientCredentials, GuardedTransport,
-                                LiveSourceAudience, NotVisible, ReadOnlyGuardError,
-                                RequestBudgetExhausted,
-                                SourceApi, SourceNotFound, SourceUnavailable, TokenProvider,
-                                canonical_sha256, completeness_with_withheld,
-                                failure_diagnostics, is_error_code_token,
-                                is_nextlink_refusal,
-                                jsonable, nextlink_refused, parse_handle,
-                                q, unavailable_detail)
+from .live_source_guard import (BC_SCOPE, MESSAGE_CLASS_TOKENS, BoundedBackoff, ClientCredentials,
+                                GuardedTransport, LiveSourceAudience, NotVisible,
+                                ReadOnlyGuardError, RequestBudgetExhausted, SourceApi,
+                                SourceNotFound, SourceUnavailable, TokenProvider, canonical_sha256,
+                                completeness_with_withheld, failure_diagnostics,
+                                is_error_code_token, is_nextlink_refusal, jsonable,
+                                nextlink_refused, parse_handle, q, unavailable_detail)
 
 
 SCHEME = "bc"
@@ -254,6 +251,8 @@ LOT_PAGE_SIZE = 1000
 LOT_MAX_PAGES = 200
 LOT_DROPPED = ("no_entry_number", "ambiguous_api_record", "duplicate_entry", "item_mismatch")
 LOT_COUNTS = (*LOT_DROPPED, "no_api_record", "stored")
+# A complete lot listing with no row while the item ledger holds entries (``_capture_lots``).
+LOT_NO_ROWS = "no_lot_rows"
 
 
 # The contact relations of customers and vendors (API v2.0 ``contactsInformation``,
@@ -879,7 +878,7 @@ def build_bc(environ: Mapping[str, str] | None = None, *, sender=None,
 
 # ------------------------------------------------------------------ versioned capture
 
-# Entity sets the L1 capture keeps per company (09 L2): every BC
+# Entity sets the L1 capture keeps per company: every BC
 # entity set an ontology binding reads (ontology/schema/domains/*.json), so a BC
 # projection can be complete on its own, and sales quotes (with their lines) for the
 # quotes domain. Document headers with a line navigation also capture their lines, per
@@ -2026,7 +2025,11 @@ class BcCapture:
         and ``no_api_record``: an entry posted since the ledger's read, counted, which
         leaves a complete traversal complete). A truncated or dropping read is ``partial``.
         A company name the grammar refuses fails the unit ``company_name_refused`` before
-        any request. BC holding no lot at all is a complete unit of zero records."""
+        any request. A complete listing of no lot row at all while the company's item
+        ledger holds entries is ``partial``, reason ``no_lot_rows`` (CT-D-05: every company
+        listed none, every run since the page was added): the page may be unpublished, the
+        filter may match nothing or BC may track no lot, and a capture cannot tell which, so
+        zero is a gap, never a complete answer. An empty item ledger with no lot is complete."""
         environment = self.reader.environment.lower()
         resource = self.reader.resource(company_id, LOT_PARENT_SET)
         unit = bc_unit(company_id, LOT_SET)
@@ -2095,10 +2098,13 @@ class BcCapture:
         withheld = int(listing["completeness"].get("withheld") or 0)
         dropped = sum(counts[k] for k in LOT_DROPPED)
         self.store.save_page(run_id, captured, None, withheld=withheld, dropped=dropped)
-        if listing["completeness"].get("complete") and not withheld and not dropped:
+        no_rows = not listing["items"] and not counts["no_entry_number"] and bool(entries)
+        if listing["completeness"].get("complete") and not withheld and not dropped \
+                and not no_rows:
             self.store.finish_run(run_id, "complete", detail={"lots": counts})
         else:
             reason = ("withheld_or_dropped" if withheld or dropped
+                      else LOT_NO_ROWS if no_rows and listing["completeness"].get("complete")
                       else listing["completeness"].get("truncation_reason") or "truncated")
             self.store.finish_run(run_id, "partial", reason=reason, detail={"lots": counts})
         return self._unit_report(actor, unit, LOT_SET, lots=counts)

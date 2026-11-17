@@ -1,0 +1,10 @@
+[Unit]
+Description=PLX off-box restore test, daily at 12:30 PM ET
+
+[Timer]
+OnCalendar=*-*-* 12:30:00 America/New_York
+Persistent=true
+RandomizedDelaySec=10m
+
+[Install]
+WantedBy=timers.target

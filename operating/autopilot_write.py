@@ -7,7 +7,8 @@ checked in this order (the first that fails decides the outcome; every outcome i
 of the audit log):
 
 1. **Kill switches**: the global one (``KILL_ENV`` or ``KILL_FILE`` in the state dir, and
-   the autopilot's own ``PLX_AUTOPILOT_OFF``/``autopilot.off``) and the per-workflow one
+   the autopilot's own ``PLX_AUTOPILOT_OFF``/``autopilot.off``, in the state dir or the
+   control directory beside the autopilot queue) and the per-workflow one
    (``WORKFLOW_KILL_ENV`` or ``WORKFLOW_KILL_FILE``): ``killed``.
 2. **Rules** (``RULES_FILE``, ``load_rules``): a rules document this code does not
    understand refuses everything (``refused``).
@@ -25,7 +26,10 @@ of the audit log):
    ``clean_windows``, ``held_out_kind``), the item's person
    switched the workflow on for themselves (``set_opt_in``: an ``opt_in`` row they wrote,
    never one written for them; off by default) and has not paused everything
-   (``set_paused``), and the host's master switch ``MASTER_ENV=1`` is on. An opt-in does
+   (``set_paused``), the host's master switch ``MASTER_ENV=1`` is on, and the owner
+   opened the action's system with its flag file ``live-<system>`` in the control
+   directory (``control_dir``, ``live_systems``; dry run per system until the file exists,
+   and only a person creates it). An opt-in does
    not outlive its gate: when the workflow no longer passes for the person it is
    suspended (``suspend_lapsed``, an ``opt_in_suspended`` row saying why) and stays off
    until they switch it on again. Nobody else can switch a person's workflow on, the owner
@@ -79,6 +83,8 @@ import sys
 from typing import Any, Iterable, Mapping, Sequence
 
 from operating import autopilot as ap
+from operating import autopilot_engine
+from operating import autopilot_queue
 from operating import autopilot_write_adapters as wa
 from operating.card_actions import Journal
 
@@ -98,6 +104,20 @@ KILL_FILE = "autopilot-writes.off"
 WORKFLOW_KILL_ENV = "PLX_AUTOPILOT_WRITES_OFF_WORKFLOWS"
 WORKFLOW_KILL_FILE = "autopilot-writes-off.json"  # {"workflows": [...]}
 APPROVED_ENV = "PLX_APPROVED_WRITES"             # kinds the owner opened to approved writes
+CONTROL_ENV = "PLX_AUTOPILOT_CONTROL_DIR"         # default: <state>/../autopilot
+LIVE_FLAG = "live-{system}"                       # the owner's per-system go-live file
+MC_LIVE_ENV = "PLX_AUTOPILOT_MC_LIVE"              # set only by opened_environ (live-mc)
+# the owner's second switch for BC Production (owner 11-11: BC writes go to the real
+# company, no sandbox): with ``live-bc`` it opens Production, and then only for a named
+# person's confirmed approval of the exact item, never for the unattended gate
+BC_PRODUCTION_FLAG = "live-bc-production"
+BC_PRODUCTION_ENV = "PLX_AUTOPILOT_BC_PRODUCTION"  # set only by opened_environ
+# the flag a kind goes live under (mail and Teams by their own name, both MC kinds as mc)
+FLAG_SYSTEM = {"mc_approval": "mc", "mc_task": "mc", "send_mail": "mail",
+               "send_teams": "teams", "bc_write": "bc", "sage_write": "sage",
+               "portal_write": "portal", "filemaker_write": "filemaker",
+               "planner_write": "planner", "calendar_write": "calendar",
+               "sharepoint_write": "sharepoint"}
 KINDS = ("mc_approval", "mc_task", "send_mail", "send_teams", "bc_write", "sage_write",
          "portal_write", "filemaker_write", "planner_write", "calendar_write",
          "sharepoint_write")
@@ -190,7 +210,7 @@ def load_rules(path: Path | None = None) -> dict[str, Any]:
         gate = raw["gate"]
         precision, minimum = Decimal(str(gate["precision"])), int(gate["min_judged"])
         # never looser than the product gate (90% on 15)
-        if precision < ap.GATE_PRECISION or minimum < ap.GATE_MIN_JUDGED:
+        if precision < autopilot_engine.GATE_PRECISION or minimum < autopilot_engine.GATE_MIN_JUDGED:
             raise RulesInvalid("gate looser than the product gate")
         _held_out_windows(raw)
         classes = {name: [re.compile(rx, re.IGNORECASE) for rx in rxs]
@@ -242,6 +262,7 @@ def actions_of(item: Mapping[str, Any]) -> list[dict[str, Any]]:
             out.append({"kind": "mc_approval", "system": "mc", "operation": "approval_decide",
                         "target": {"task_id": act.get("task_id"), "gate_id": act.get("gate")},
                         "payload": {"scope": act.get("scope"),
+                                    "proposal": act.get("proposal"),
                                     "note": "Routine approval by the owner's autopilot."},
                         "people": [act.get("requested_by")],
                         "recommendation": work.get("recommendation")})
@@ -256,6 +277,8 @@ def actions_of(item: Mapping[str, Any]) -> list[dict[str, Any]]:
         target = dict(spec.get("target") or {})
         if spec.get("system") in OWN_MAILBOX:
             target["user"] = item.get("owner")      # never another person's mailbox
+        if spec.get("system") == "mc":
+            target["acting_for"] = item.get("owner")  # whose opt-in authorizes the call
         out.append({"kind": kind, "system": spec.get("system"),
                     "operation": spec.get("operation"), "target": target,
                     "people": [p for p in spec.get("people") or () if isinstance(p, str)],
@@ -361,6 +384,12 @@ def routine(rules: Mapping[str, Any], item: Mapping[str, Any], action: Mapping[s
             why.append(f"mc_scope_not_routine:{(scope or {}).get('kind') if isinstance(scope, Mapping) else None}")
         if action.get("recommendation") not in spec.get("recommendation_in", ()):
             why.append(f"no_precedent:{action.get('recommendation')}")
+        if "risk_in" in spec:
+            # the requester's own risk statement (MC proposal.risk); unstated is not routine
+            proposal = (action.get("payload") or {}).get("proposal")
+            risk = proposal.get("risk") if isinstance(proposal, Mapping) else None
+            if risk not in spec["risk_in"]:
+                why.append(f"mc_risk_not_routine:{risk}")
     elif kind in ("send_mail", "send_teams"):
         payload = action.get("payload") or {}
         n = len(payload.get("to") or ()) + len(payload.get("cc") or ())
@@ -564,8 +593,8 @@ def record_scores(run_dir: Path, gate_path: Path, rules: Mapping[str, Any]) -> d
     in ``refused``."""
     run_dir = Path(run_dir)
     _held_out_windows(rules)
-    counts = json.loads((run_dir / ap.GATE_FILE).read_text(encoding="utf-8"))
-    if counts.get("schema") != ap.GATE_SCHEMA:
+    counts = json.loads((run_dir / autopilot_engine.GATE_FILE).read_text(encoding="utf-8"))
+    if counts.get("schema") != autopilot_engine.GATE_SCHEMA:
         raise ValueError("not a replay gate file")
     results = {}
     for p in sorted(run_dir.glob("*/result.json")):
@@ -746,9 +775,9 @@ class WriteGate:
             self.roles, self.counts = {}, {}
         # the product gate's semantics over our verdicts (a workflow our stricter rules or
         # the freshness check refuse is passed in as measured and failed)
-        self._gate, _ = ap.gate_of({"schema": ap.GATE_SCHEMA, "roles": {
+        self._gate, _ = autopilot_engine.gate_of({"schema": autopilot_engine.GATE_SCHEMA, "roles": {
             n: {"members": sorted(m), "workflows": {
-                f: {"judged": ap.GATE_MIN_JUDGED, "matched": ap.GATE_MIN_JUDGED if f in ok else 0}
+                f: {"judged": autopilot_engine.GATE_MIN_JUDGED, "matched": autopilot_engine.GATE_MIN_JUDGED if f in ok else 0}
                 for f in seen}}
             for n, (m, ok, seen) in self.roles.items()}})
 
@@ -954,11 +983,112 @@ def set_paused(journal: Journal, person: str, pause: bool, by: str, now: datetim
                             "at": _iso(now), "by": person})
 
 
+def control_dir(state: Path, environ: Mapping[str, str]) -> Path:
+    """Where the owner's switch files live: ``CONTROL_ENV``, else the autopilot queue's
+    directory beside the write state (``/data/plx-state/autopilot`` on the host)."""
+    named = str(environ.get(CONTROL_ENV) or "").strip()
+    return Path(named) if named else Path(state).parent / "autopilot"
+
+
+def live_systems(state: Path, environ: Mapping[str, str]) -> frozenset[str]:
+    """The systems whose go-live file (``live-<system>``, a plain file a person created)
+    exists in the control directory; read on every call, so a flag placed or removed
+    takes effect at the next action with no restart. Anything else (a directory, a
+    symlink, an unreadable directory) opens nothing."""
+    folder = control_dir(state, environ)
+    out = set()
+    for system in sorted(set(FLAG_SYSTEM.values())):
+        path = folder / LIVE_FLAG.format(system=system)
+        try:
+            if path.is_file() and not path.is_symlink():
+                out.add(system)
+        except OSError:
+            continue
+    return frozenset(out)
+
+
+def bc_production_on(state: Path, environ: Mapping[str, str]) -> bool:
+    """The owner placed ``live-bc-production`` (a plain file, not a symlink) in the
+    control directory; read on every call like the go-live files."""
+    path = control_dir(state, environ) / BC_PRODUCTION_FLAG
+    try:
+        return path.is_file() and not path.is_symlink()
+    except OSError:
+        return False
+
+
+def _bc_production(kind: str, request: Mapping[str, Any], environ: Mapping[str, str]) -> bool:
+    """A BC request addressed (``/v2.0/{tenant}/<environment>/...``) to anything but the
+    sandbox ``PLX_BC_SANDBOX_ENVIRONMENT`` names: Production, so an unreadable or
+    unexpected path is held to the stricter rule."""
+    from operating import write_intents as wi
+    if kind != "bc_write":
+        return False
+    parts = str(request.get("url") or request.get("path") or "").split("/")
+    environment = (parts[3] if len(parts) > 3 else "").lower()
+    sandbox = str(environ.get(wi.SANDBOX_ENV) or "").strip().lower()
+    return not (sandbox and environment == sandbox and sandbox != wi.PRODUCTION.lower())
+
+
+def opened_environ(state: Path, environ: Mapping[str, str]) -> dict[str, str]:
+    """``environ`` with the guard's write switch (``live_source_guard.WRITES_FLAG``) also
+    naming every guarded system whose go-live file exists, so the system's write
+    transport exists once the owner placed the file (no restart). It never removes a
+    system the host already opened (the person-approved desk's own switch)."""
+    from integrations import live_source_guard as guard
+    from operating import autopilot_write_readiness as readiness
+    from operating import write_intents as wi
+    env = dict(environ)
+    live = live_systems(state, env)
+    flagged = set(live & guard.WRITE_SYSTEMS)
+    # BC is written by this executor only while a read-only probe of the last 45 min found
+    # the write permission on the app's token and the very tenant, environment and company
+    # id configured here to be one allowed (PLX or Petra Soap, never PHSI Group); else BC
+    # is closed here even when the host opened it for the BC desk. The target is either
+    # the named sandbox (``live-bc``) or Production (``live-bc`` and the owner's second
+    # file ``live-bc-production``; ``Executor._one`` then lets only a named person's
+    # confirmed approval write it). With the files the desk's switches are taken as given.
+    sandbox = str(env.get(wi.SANDBOX_ENV) or "").strip()
+    target = readiness.bc_environment(env)
+    production = target.lower() == wi.PRODUCTION.lower()
+    in_sandbox = bool(sandbox) and target.lower() == sandbox.lower() and not production
+    env.pop(BC_PRODUCTION_ENV, None)
+    # Production is opened by the owner's two files only, never by a host switch alone
+    verified = (in_sandbox or (production and "bc" in live and bc_production_on(state, env))) \
+        and readiness.bc_verified(state, env)
+    if "bc" in flagged and verified:
+        if production:
+            env[wi.LIVE_FLAG] = "1"
+            env[BC_PRODUCTION_ENV] = "1"
+        else:
+            env[wi.SANDBOX_FLAG] = "1"
+        scopes = str(env.get(wi.SCOPES_FLAG) or "").replace(",", " ").split()
+        env[wi.SCOPES_FLAG] = " ".join(dict.fromkeys([*scopes, "bc"]))
+    if not verified:
+        flagged.discard("bc")
+    have = [n.strip() for n in str(env.get(guard.WRITES_FLAG) or "").split(",")
+            if n.strip() and (verified or n.strip().lower() != "bc")]
+    opened = ",".join(dict.fromkeys([*have, *sorted(flagged)]))
+    if opened:
+        env[guard.WRITES_FLAG] = opened
+    else:
+        env.pop(guard.WRITES_FLAG, None)
+    if "mc" in live:
+        env[MC_LIVE_ENV] = "1"
+    else:
+        env.pop(MC_LIVE_ENV, None)
+    return env
+
+
 def write_state(gate: WriteGate, rows: Sequence[Mapping[str, Any]], environ: Mapping[str, str],
-                owner: str, workflow: str, roles: Iterable[str]) -> tuple[str, list[str]]:
+                owner: str, workflow: str, roles: Iterable[str], *,
+                system: str | None = None, live: Iterable[str] | None = None
+                ) -> tuple[str, list[str]]:
     """``live`` or ``dry_run`` and what is missing for live: the gate passed for the item's
     person (``owner``) AND that person switched the workflow on for themselves, has not
-    paused and the gate still carries it AND the master switch is on."""
+    paused and the gate still carries it AND the master switch is on AND (when
+    ``system`` is given) the owner placed that system's go-live file (``live``: the
+    systems ``live_systems`` found)."""
     owner = str(owner or "").lower()
     if not gate.roles_for(owner, workflow, roles):
         return "dry_run", ["gate_not_passed"]
@@ -973,16 +1103,23 @@ def write_state(gate: WriteGate, rows: Sequence[Mapping[str, Any]], environ: Map
         return "dry_run", ["paused_by_person"]
     if environ.get(MASTER_ENV) != "1":
         return "dry_run", [f"master_switch_off:{MASTER_ENV}"]
+    if system is not None and system not in set(live or ()):
+        return "dry_run", [f"system_not_live:{LIVE_FLAG.format(system=system)}"]
     return "live", []
 
 
 # ------------------------------------------------------------------ switches, rates
 
 def killed(environ: Mapping[str, str], state: Path, workflow: str) -> str | None:
-    if environ.get(KILL_ENV) or environ.get(ap.KILL_ENV):
+    if environ.get(KILL_ENV) or environ.get(autopilot_queue.KILL_ENV):
         return "global_kill_switch"
-    if (state / KILL_FILE).exists() or (state / ap.KILL_FILE).exists():
+    if (state / KILL_FILE).exists() or (state / autopilot_queue.KILL_FILE).exists():
         return "global_kill_switch"
+    try:
+        if (control_dir(state, environ) / autopilot_queue.KILL_FILE).exists():
+            return "global_kill_switch"
+    except OSError:
+        return "global_kill_switch"        # the switch cannot be read: stopped
     off = {w.strip() for w in (environ.get(WORKFLOW_KILL_ENV) or "").split(",") if w.strip()}
     path = state / WORKFLOW_KILL_FILE
     if path.exists():
@@ -1046,7 +1183,15 @@ class Executor:
                  rules_path: Path | None = None, registry: Mapping[str, Any] | None = None,
                  internal_domains: Iterable[str] = ()) -> None:
         self.state = Path(state)
-        self.environ = dict(os.environ if environ is None else environ)
+        from operating import autopilot_write_readiness as readiness
+        # credentials placed later (an env file under /etc/plx) and the owner's go-live
+        # files are read at every construction: a new executor sees them, no restart
+        given = os.environ if environ is None else environ
+        # the host's env files count for the process environment (the API passes it as
+        # is) or when the environment names them; an injected test environment reads none
+        self.environ = opened_environ(self.state, readiness.write_environ(given)
+                                      if given is os.environ
+                                      or readiness.ENV_FILES_ENV in given else dict(given))
         self.adapters = dict(adapters if adapters is not None
                              else wa.default_adapters(self.environ))
         self.guard = guard
@@ -1190,7 +1335,9 @@ class Executor:
             suspend_lapsed(held, gate, now)
             mode, missing = write_state(gate, held.rows, self.environ,
                                         base["owner"], base["workflow"],
-                                        ap.item_roles(spec) if spec else frozenset())
+                                        ap.item_roles(spec) if spec else frozenset(),
+                                        system=FLAG_SYSTEM.get(kind, kind),
+                                        live=live_systems(self.state, self.environ))
             row["live_by"] = "gate" if mode == "live" else None
             if approval is not None:
                 if kind in approved_kinds(self.environ):
@@ -1200,6 +1347,13 @@ class Executor:
                     missing = [f"approved_writes_off:{kind}", *missing]
             if dry_only and mode == "live":
                 mode, missing, row["live_by"] = "dry_run", [dry_only], None
+            if mode == "live" and approval is None \
+                    and _bc_production(kind, request, self.environ):
+                # BC Production: a named person's approval of this exact item (their
+                # accept, then the confirm below), never the unattended run (owner 11-11:
+                # approve + confirm, no sandbox; a confirmed accept of a
+                # gate-live item is that approval, PLX_APPROVED_WRITES not required)
+                mode, missing, row["live_by"] = "dry_run", ["bc_production_needs_approval"], None
             if mode != "live":
                 return held.append({"event": "decision", "at": _iso(now), **row,
                                     "mode": "dry_run", "status": "dry_run",
@@ -1282,9 +1436,11 @@ class Executor:
                                      self.environ,
                                      str(item.get("owner") or "").lower(), workflow,
                                      ap.item_roles(spec) if spec else frozenset())
+        opened = live_systems(self.state, self.environ)
         live: list[str] = []
         for a in actions_of(item):
-            if a.get("kind") not in KINDS or not (a.get("kind") in approved or mode == "live"):
+            gated = mode == "live" and FLAG_SYSTEM.get(str(a.get("kind"))) in opened
+            if a.get("kind") not in KINDS or not (a.get("kind") in approved or gated):
                 break   # run() makes every action after a dry run a dry run too (ACT-002)
             live.append(str(a.get("kind")))
         return live
@@ -1418,6 +1574,7 @@ def status(state: Path, environ: Mapping[str, str] | None = None) -> dict[str, A
     rows = journal.rows() if journal.path and journal.path.exists() else []
     return {"schema": "plx-autopilot-write-status/v1",
             "master_switch": env.get(MASTER_ENV) == "1",
+            "live_systems": sorted(live_systems(state, env)),
             "killed": killed(env, state, "") is not None,
             "opted_in": sum(1 for o in opt_ins(rows).values() if o["on"]),
             "suspended": sum(1 for o in opt_ins(rows).values() if o.get("suspended")),

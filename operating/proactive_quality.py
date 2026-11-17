@@ -716,7 +716,7 @@ def stale_captures(st: Any, as_of: date, *, gap: Callable, cites: Callable,
                    result: Callable, settled: Sequence[str], skips: Callable,
                    now: dt.datetime | None = None, hours: int = STALE_HOURS
                    ) -> dict[str, Any]:
-    from .ontology_tools import _AUDIENCE_SOURCE
+    from .ontology_tools_policy import _AUDIENCE_SOURCE
 
     if now is None or now.tzinfo is None:
         return result([], status="failed", reasons=["run_moment_unknown"])

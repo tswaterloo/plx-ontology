@@ -29,8 +29,10 @@ from operating import ontology_tools
 from operating.case_runtime import CaseRuntime
 from operating.cases import CitationError
 from operating.kind_confirmation import KindConfirmations
-from operating.mcp_server import (CASE_RUNTIME_TOOLS, CONTRACT_TYPING, MAX_RESULT_BYTES,
-                                  SELF_ENVELOPING_TOOLS, MCPServer, _firewall)
+from operating.mcp_server import MCPServer
+from operating.mcp_server_catalog import CASE_RUNTIME_TOOLS, CONTRACT_TYPING, SELF_ENVELOPING_TOOLS
+from operating.mcp_server_evidence import MAX_RESULT_BYTES
+from operating.mcp_server_results import _firewall
 from operating.session_identity import CHANNEL_MCP, fixture_session
 from integrations.tests.test_live_source_adapters import drive_item
 from operating.tests import test_case_live_citations as live
@@ -102,7 +104,7 @@ class OutputFirewallTestCase(live.LiveCitationTestCase):
                                             "name": NEEDLE}}],
             **{"from": {"emailAddress": {"address": f"{NEEDLES[2]}@evil.example",
                                          "name": NEEDLE}}})
-        self.item = drive_item("AO1", f"AO-26005B {NEEDLE}.pdf", folder=f"/AOs/2026 - AOs",
+        self.item = drive_item("AO1", f"AO-26005B {NEEDLE}.pdf", folder="/AOs/2026 - AOs",
                                content=live.AO_PDF, etag="\"{AO1},1\"")
         self.item["lastModifiedBy"] = {"user": {"email": f"{NEEDLES[2]}@petralabx.com",
                                                 "displayName": NEEDLE}}
@@ -834,6 +836,7 @@ class HostileCellPropertyTests(OutputFirewallTestCase):
         from tests import test_ontology_tools_process as proc_fx
         from tests import test_ontology_tools_traverse as trav_fx
         from operating import ontology_tools as ot
+        from operating import ontology_tools_results
         from operating import ontology_tools_evidence as ev
         from operating import ontology_tools_investigate as oi
         from operating import ontology_tools_traverse as tt
@@ -900,7 +903,7 @@ class HostileCellPropertyTests(OutputFirewallTestCase):
             planted(store.conn, ids["rc_a_1"], mixed)
             tools = proc_fx.tools(store)
             table: dict = {}
-            ot.register(table, tools.base)
+            ontology_tools_results.register(table, tools.base)
             tt.register(table, tt.TraverseTools(tools.base))
             table["plx.process"] = {"handler": lambda a, actor: tools.call("plx.process", a,
                                                                            actor)}

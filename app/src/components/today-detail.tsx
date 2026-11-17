@@ -3,6 +3,7 @@
 import * as Menu from "@radix-ui/react-dropdown-menu";
 import { ArrowUpRight, Bookmark, Check, Copy, MessageCircle, MoreHorizontal } from "lucide-react";
 import Link from "next/link";
+import { Related } from "@/components/related";
 import { useEffect, useState } from "react";
 import { getObject, getObjectSection, mergeSection } from "@/lib/api";
 import { cn } from "@/lib/cn";
@@ -12,9 +13,10 @@ import { factMap, receivedOf, recordHead } from "@/lib/record";
 import { toggleSaved, useSaved } from "@/lib/saved";
 import { briefingKind } from "@/lib/status";
 import type { ActionResult, BriefingItem, CardActionOffer, LatePo, ObjectPage, ProactiveSuggestion, Source, SuggestionDraft, TrailStep } from "@/lib/types";
+import { AlertFired } from "./alert-fired";
 import { ActionDialog } from "./card-actions";
 import { SourceChip } from "./source-chip";
-import { lateFigure, DoneRing, OpenRing, SystemCode } from "./ui/glyphs";
+import { lateFigure, DoneRing, OpenRing, StatusGlyph, SystemCode } from "./ui/glyphs";
 
 export interface QueueRow {
   key: string;
@@ -458,6 +460,8 @@ export function TodayDetail({
               </div>
             </header>
 
+            {row.item && row.group !== "po_late" && <AlertFired item={row.item} />}
+
             {(page || !failed) && (
               <section className="space-y-6" data-testid="detail-stats">
                 {page ? (
@@ -536,6 +540,11 @@ export function TodayDetail({
                         <Link href={objectHref(supplierRef.type, supplierRef.object_id)} className="hover:underline">
                           {x.value}
                         </Link>
+                      ) : x.status && x.status !== "neutral" ? (
+                        <span>
+                          <StatusGlyph status={x.status} size={12} className="mr-1.5 inline-block align-[-1px]" />
+                          {x.value}
+                        </span>
                       ) : (
                         x.value
                       )}
@@ -594,6 +603,7 @@ export function TodayDetail({
                 </ol>
               </section>
             )}
+            <Related records={[row.objectId, ...(supplierRef ? [supplierRef.object_id] : [])]} label={row.title} docTypes={row.type === "PurchaseOrder" ? ["supplier_email", "po_note"] : ["customer_email"]} dense />
           </aside>
         </div>
       </div>

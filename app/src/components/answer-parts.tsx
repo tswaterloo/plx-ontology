@@ -197,7 +197,7 @@ export function missingText(n: NotFoundItem, subject?: string | null): string {
   let what = readable(n.what).replace(/\s*[.]$/, "");
   for (const [re, w] of GAP_WORDS) if (re.test(what)) what = w;
   const whereRaw = readable(n.where_it_would_live).replace(/\s*[.]$/, "");
-  // a source read too long ago: "Portal data may be out of date", never "the Portal. Stale source."
+  // a source read too long ago: "Portal data may be out of date", never a clipped "Stale source" line
   if (/^(?:stale source|source stale)$/i.test(whereRaw) && !/^Some records$/.test(what))
     return `${what.replace(/^the\s+/i, "").replace(/^./, (c) => c.toUpperCase())} data is out of date.`;
   if (/^schema drift$/i.test(whereRaw) && what === "Some records") return "Some records are in an older format and may be incomplete. The Workbench team can refresh them.";
@@ -400,7 +400,8 @@ const DAY_MS = 24 * 3600 * 1000;
 
 /**
  * The sources read more than a day before the data cut-off (`freshness.as_of`), oldest
- * first, as "Email and Teams to 30 Oct" (one date per group), or null when none is.
+ * first, as "some records last read: Email and Teams 30 Oct" (one date per group; the
+ * stalest part's read, not where the source's data ends), or null when none is.
  */
 export function behindCutOff(freshness: Freshness | null | undefined, now?: Date): string | null {
   const cut = Date.parse(freshness?.as_of ?? "");
@@ -414,7 +415,8 @@ export function behindCutOff(freshness: Freshness | null | undefined, now?: Date
     const day = formatDate(s.as_of, { short: true, now });
     byDay.set(day, [...(byDay.get(day) ?? []), SYSTEM_LABEL[s.system] ?? s.system]);
   }
-  return [...byDay].map(([day, names]) => `${names.join(" and ")} to ${day}`).join("; ");
+  // a source's time is its stalest part's last read, never where its data ends
+  return "some records last read: " + [...byDay].map(([day, names]) => `${names.join(" and ")} ${day}`).join("; ");
 }
 
 /**
@@ -433,7 +435,8 @@ export function searchLag(freshness: Freshness | null | undefined, now?: Date): 
 
 /**
  * One grey line: "Data as of 1 Nov, 6:40 PM ET" (the data cut-off, the same on every
- * screen), then any source read over a day before it ("Email and Teams to 30 Oct").
+ * screen), then any source with a part read over a day before it ("some records last read:
+ * Email and Teams 30 Oct").
  * Per-system times are in its tooltip. Amber appears only when a source this view
  * relied on (`used`) is over a week old.
  */
@@ -476,7 +479,7 @@ export function FreshnessLabel({
       {old.length > 0 && (
         <p className="flex items-center gap-1.5 text-meta text-fg" data-testid="freshness-old">
           <OpenRing size={12} />
-          {old.map((s) => `${SYSTEM_LABEL[s.system] ?? s.system} last read ${formatDate(s.as_of, { short: true, now })}`).join(" · ")}.
+          {old.map((s) => `${SYSTEM_LABEL[s.system] ?? s.system}: some records last read ${formatDate(s.as_of, { short: true, now })}`).join(" · ")}.
         </p>
       )}
     </div>
@@ -484,7 +487,7 @@ export function FreshnessLabel({
 }
 
 /**
- * "What I checked": each system the answer read or searched, what, and as of when. An old
+ * Sources checked: each system the answer read or searched, what, and as of when. An old
  * source shows its date here; it turns amber only when over a week old and relied on.
  */
 export function CheckedList({ freshness, facts, now }: { freshness: Freshness | null | undefined; facts: Fact[] | undefined; now?: Date }) {

@@ -1,0 +1,7 @@
+# Model packages for building embeddings and the reranker on a host with the models
+# (operating/embed/models.py, operating/search/models.py); the serving path uses onnxruntime.
+# /data/venv carries the CPU wheel of torch (2.15.0+cpu, from the PyTorch CPU index).
+-r requirements.txt
+torch==2.15.0
+transformers==5.22.0
+sentence-transformers==6.2.0

@@ -35,6 +35,3 @@ FM_SOURCE_FK = {
 }
 
 
-def semantic_fk_field(relation: str, source_field: str) -> str:
-    names = FM_SOURCE_FK.get(relation)
-    return names[1] if names and source_field == names[0] else source_field

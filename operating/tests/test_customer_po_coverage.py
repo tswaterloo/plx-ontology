@@ -10,10 +10,8 @@ connections are refused for the whole module, so nothing can touch a network.
 
 from __future__ import annotations
 
-import contextlib
 from datetime import date, datetime, timezone
 import importlib.util
-import io
 import json
 from pathlib import Path
 import tempfile
@@ -21,7 +19,8 @@ import time
 import unittest
 from unittest.mock import patch
 
-from integrations.source_mirror import AUDIENCE_SCHEMA, MirrorError
+from integrations.source_mirror import AUDIENCE_SCHEMA
+from integrations.source_mirror_values import MirrorError
 from integrations.tests.test_source_mirror import BASE, KEY, Clock, FakeWorkbench
 from integrations.workbench_read_api import WorkbenchReadApiClient
 from ontology.core import Actor
@@ -31,7 +30,9 @@ from operating import source_reads
 from operating import customer_po_coverage as cpo
 from operating.tests import test_attested_missing as tam
 from operating.case_runtime import CaseRuntime
-from operating.mcp_server import HOST_READS, MAX_RESULT_BYTES, MCPServer
+from operating.mcp_server import MCPServer
+from operating.mcp_server_catalog import HOST_READS
+from operating.mcp_server_evidence import MAX_RESULT_BYTES
 
 
 OPS = frozenset({"staff:operations"})

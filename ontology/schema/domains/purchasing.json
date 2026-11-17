@@ -1008,7 +1008,8 @@
             {
               "binding": "portal.app_purchase_order",
               "path": "shipped_at",
-              "parser": "iso_timestamp"
+              "parser": "iso_timestamp",
+              "naive_zone": "UTC"
             }
           ]
         },
@@ -1055,7 +1056,8 @@
             {
               "binding": "portal.fm_generated_purchase_order",
               "path": "audittimestampmodified",
-              "parser": "iso_timestamp"
+              "parser": "iso_timestamp",
+              "wall_clock_zone": "America/New_York"
             }
           ],
           "evidence": [
@@ -1112,7 +1114,8 @@
             {
               "binding": "portal.fm_generated_purchase_order",
               "path": "audittimestampcreated",
-              "parser": "iso_timestamp"
+              "parser": "iso_timestamp",
+              "wall_clock_zone": "America/New_York"
             }
           ],
           "evidence": [
@@ -7163,6 +7166,10 @@
             {
               "kind": "ref",
               "id": "context.live_sources"
+            },
+            {
+              "kind": "ref",
+              "id": "workbench.bc_same_company_scope"
             }
           ]
         }
@@ -7196,6 +7203,10 @@
               "kind": "workbench_code",
               "path": "ontology/schema/domains/purchasing.json",
               "note": "Link-completeness audit round 2, 2026-11-08 (read-only source mirror, counts only): 114 of 114 non-blank order numbers reach a PO reference in the receipt's company; 15 of 15 sampled pairs name the same vendor. The Portal PO with the same number is not this PO: 0 of 15 sampled pairs agreed on the vendor, so no receipt-to-Portal-PO binding is declared."
+            },
+            {
+              "kind": "ref",
+              "id": "workbench.bc_same_company_scope"
             }
           ]
         }
@@ -7356,7 +7367,8 @@
       "time": {
         "binding": "portal.app_purchase_order",
         "path": "approved_at",
-        "parser": "iso_timestamp"
+        "parser": "iso_timestamp",
+        "naive_zone": "UTC"
       },
       "qualifiers": [
         {
@@ -7481,7 +7493,8 @@
       "time": {
         "binding": "portal.app_purchase_order",
         "path": "shipped_at",
-        "parser": "iso_timestamp"
+        "parser": "iso_timestamp",
+        "naive_zone": "UTC"
       },
       "qualifiers": [
         {
@@ -7525,7 +7538,8 @@
       "time": {
         "binding": "portal.app_receipt",
         "path": "received_date",
-        "parser": "iso_timestamp"
+        "parser": "iso_timestamp",
+        "naive_zone": "UTC"
       },
       "qualifiers": [
         {

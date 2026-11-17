@@ -43,10 +43,10 @@ import json
 from pathlib import Path
 import re
 import time
-from typing import Any, Callable, Iterable, Mapping, MutableMapping, Sequence
+from typing import Any, Callable, Mapping, MutableMapping, Sequence
 
 from ontology.json_contract import validate
-from operating.ontology_tools import _error
+from operating.ontology_tools_identity import _error
 
 FLOWS_PATH = Path(__file__).resolve().parents[1] / "ontology" / "impact_flows.json"
 FORMAT = "plx-impact-flow/v1"

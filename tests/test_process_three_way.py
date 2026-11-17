@@ -18,6 +18,8 @@ from unittest import mock
 
 from operating import ontology_tools as ot
 from operating import ontology_tools_process as op
+from operating import ontology_tools_process_graphs
+from operating import ontology_tools_process_helpers
 from operating import ontology_tools_traverse as tt
 from tests import test_ontology_tools_process as base
 
@@ -265,7 +267,7 @@ class PurchaseThreeWayTests(_Base):
         self.assertIn(ids["gl"][0], st["gl_posting"]["events"])
         self.assertIn(ids["invoices"][0], st["vendor_invoice"]["events"])
         self.assertEqual(st["vendor_invoice"]["citations"][0]["l1_handle"],
-                         f"bc://company_a/purchaseInvoices/po-full-i0@cap-1")
+                         "bc://company_a/purchaseInvoices/po-full-i0@cap-1")
         # the confirmation is not recorded by Portal or BC: only documents carry it, and a
         # document source with item permissions never proves its absence (a typed gap)
         self.assertEqual((st["supplier_confirmation"]["missing"]["state"],
@@ -483,7 +485,7 @@ class PurchaseThreeWayTests(_Base):
         sides = {x["role"]: x for x in bad["quantity_checks"][0]["sides"]}
         sides["received"]["not_attributable"][0]["from_binding"] = "bc.purchase_orders"
         sides["invoiced"]["ignore_through"][0]["object_type"] = "Shipment"
-        problems = op.check_graph(bad, base.SCHEMA)
+        problems = ontology_tools_process_graphs.check_graph(bad, base.SCHEMA)
         self.assertTrue(any("is not a from-binding of Receipt.receives" in p for p in problems))
         self.assertTrue(any("ignore_through type Shipment is not on the side's paths" in p
                             for p in problems), problems)
@@ -1252,7 +1254,7 @@ class SystemOfRecordRuleTests(_Base):
         inv = checks[("shipped", "invoiced")]
         self.assertIsNone(inv["agree"])
         self.assertNotIn("twin system", inv["note"])
-        self.assertNotIn(f"bc://company_a/salesInvoiceLines/so-od-i0-0@cap-1", cited(inv))
+        self.assertNotIn("bc://company_a/salesInvoiceLines/so-od-i0-0@cap-1", cited(inv))
 
     def test_loader_refuses_a_side_twin_its_stage_does_not_declare(self):
         graph = copy.deepcopy(base.GRAPHS["purchase_to_invoice"])
@@ -1260,7 +1262,7 @@ class SystemOfRecordRuleTests(_Base):
         for spec in stage["evidence"]:
             spec["paths"] += spec.pop("fallback_paths")
         self.assertIn("side received has fallback_paths but stage receipt declares none",
-                      " ".join(op.check_graph(graph, base.SCHEMA)))
+                      " ".join(ontology_tools_process_graphs.check_graph(graph, base.SCHEMA)))
 
     def test_a_portal_po_reads_its_twin_path_for_invoices_and_proves_none(self):
         # A Portal PO's own source carries no invoice path, so its
@@ -1354,11 +1356,11 @@ class RecordedMeasureTests(_Base):
         (side,) = [x for x in graph["quantity_checks"][0]["sides"] if x["role"] == "received"]
         side["recorded_on"]["quantity"] = "ordered_quantity"
         self.assertIn("ordered_quantity is not a received quantity property",
-                      " ".join(op.check_graph(graph, base.SCHEMA)))
+                      " ".join(ontology_tools_process_graphs.check_graph(graph, base.SCHEMA)))
         side["recorded_on"] = {"role": "received", "quantity": "received_quantity",
                                "evidence": "x"}
         self.assertIn("is recorded on received, which is not another side",
-                      " ".join(op.check_graph(graph, base.SCHEMA)))
+                      " ".join(ontology_tools_process_graphs.check_graph(graph, base.SCHEMA)))
 
     def test_agreeing_figure_decides_as_before(self):
         s = base.Store()
@@ -1692,12 +1694,12 @@ class UnitLabelTests(_Base):
                 ("kg", "KGS"), ("kg", "Kilograms"), ("case", "CS"), ("bag", "BAG"),
                 ("kg", "KG"), ("gr", "GR"), ("bag", "bags"), ("drum", "Drums")]
         for a, b in same:
-            self.assertTrue(op._units_compatible(a, b), (a, b))
+            self.assertTrue(ontology_tools_process_helpers._units_compatible(a, b), (a, b))
         other = [("ea", "kg"), ("pail", "pails"), ("roll", "rolls"), ("g", "GR"),
                  ("bag", "drum"), ("ea", "case"), ("", ""), (None, None), ("ea", None),
                  ("  ", "ea")]
         for a, b in other:
-            self.assertFalse(op._units_compatible(a, b), (a, b))
+            self.assertFalse(ontology_tools_process_helpers._units_compatible(a, b), (a, b))
 
     def test_ea_and_pcs_compare_ea_and_kg_do_not(self):
         s = base.Store()

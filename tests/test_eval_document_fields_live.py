@@ -81,6 +81,7 @@ def one_run_process():
 class StageFunnelTests(unittest.TestCase):
     def run_check(self, files, categories=None, after=None, ocr_fails=None, ocr=False):
         from integrations import capture_sharepoint as cs
+        from integrations import capture_sharepoint_scope
         from integrations.tests import test_capture_sharepoint as tsp
         from operating import sharepoint_host_check as check
         from operating.tests.test_employee_permissions import columns_drive
@@ -100,9 +101,16 @@ class StageFunnelTests(unittest.TestCase):
         if ocr_fails is not None:   # an OCR engine whose every run fails with this cause
             ocr.enter_context(mock.patch.object(du, "_ocr_reading",
                                                 side_effect=du.OcrFailed(ocr_fails)))
+        # The CLI capture reads file text in killable extraction processes (INT-010); the
+        # OCR patches above live in this process, so the capture reads inline here.
+        real_capture = cs.SharePointCapture
+        ocr.enter_context(mock.patch.object(
+            cs, "SharePointCapture",
+            lambda *args, **kwargs: real_capture(*args, **{**kwargs,
+                                                           "extraction_processes": False})))
         with tempfile.TemporaryDirectory() as tmp, one_run_process(), ocr:
             scope, audience = Path(tmp) / "scope.json", Path(tmp) / "audience.json"
-            scope.write_text(json.dumps({"schema": cs.SCOPE_SCHEMA, "targets": [
+            scope.write_text(json.dumps({"schema": capture_sharepoint_scope.SCOPE_SCHEMA, "targets": [
                 {"id": "customers", "drive_id": tsp.DRIVE, "folders": [tsp.QUALITY_FOLDER]}],
                 **({"list_item_columns": ["DocumentCategory"]}
                    if categories is not None else {})}))
@@ -548,7 +556,7 @@ class IdentityTiersTests(unittest.TestCase):
         # One rule for which link tiers make two records one: the evals read the ontology
         # tools' own list, so a tier the tools stop treating as identity stops joining here.
         from evals import baseline
-        from operating.ontology_tools import _IDENTITY_TIERS
+        from operating.ontology_tools_policy import _IDENTITY_TIERS
         from scripts import eval_document_fields_live as live
         self.assertIs(baseline.IDENTITY_TIERS, _IDENTITY_TIERS)
         self.assertIs(live.IDENTITY_TIERS, _IDENTITY_TIERS)
@@ -759,6 +767,7 @@ class DocumentLinksTests(unittest.TestCase):
     def run_links(self, files, fake, *, bc_readers=(), portal=None, extra=(),
                   seconds_per_get=None, clock=None, bc_seconds_per_get=None, state=None):
         from integrations import capture_sharepoint as cs
+        from integrations import capture_sharepoint_scope
         from integrations.tests import test_bc_capture as tb
         from integrations.tests import test_capture_sharepoint as tsp
         from scripts import eval_document_fields_live as live
@@ -777,7 +786,7 @@ class DocumentLinksTests(unittest.TestCase):
                 return fake(*request, **options)
         with tempfile.TemporaryDirectory() as tmp:
             scope, audience = Path(tmp) / "scope.json", Path(tmp) / "audience.json"
-            scope.write_text(json.dumps({"schema": cs.SCOPE_SCHEMA, "targets": [
+            scope.write_text(json.dumps({"schema": capture_sharepoint_scope.SCOPE_SCHEMA, "targets": [
                 {"id": "quality", "drive_id": tsp.DRIVE, "folders": [tsp.QUALITY_FOLDER]}]}))
             audience.write_text(json.dumps({
                 "schema": "plx-live-source-audience/v1", "tenant": "plx",
@@ -1114,13 +1123,15 @@ class DocumentLinksTests(unittest.TestCase):
                     extra=["--budget-seconds", str(budget)])
             return report, code, text, clock[0]
 
-        report, code, text, ended = run(1000)
+        # 1200 s: the reads this budget leaves project 85+ objects at 3 s each, over the
+        # old 300 s reserve (at 1000 s the reads projected 85 objects, 255 s).
+        report, code, text, ended = run(1200)
         phases = report["phase_seconds"]
         self.assertGreater(phases["project"], 300, text[:3000])
         self.assertEqual((report["ok"], code, report["incomplete"], report["documents"]),
                          (True, 0, None, 5), text[:3000])
         self.assertGreater(phases["measure"], 0)
-        self.assertLessEqual(ended, 1000)
+        self.assertLessEqual(ended, 1200)
         # The BC reads were cut so the projection fits: not every unit was read.
         self.assertFalse(report["bc_capture"]["all_complete"])
         self.assertGreaterEqual(report["reserve"]["bc_slices"], 1)
@@ -1392,7 +1403,7 @@ class DocumentLinksTests(unittest.TestCase):
         """A run on a reused state whose BC an earlier run left paused resumes those
         units as that run's session (never stale); once BC finished the next run starts a
         new session."""
-        from datetime import datetime, timedelta, timezone
+        from datetime import datetime, timedelta
 
         from operating.tests.test_attested_missing import pdf
         from scripts import eval_document_fields_live as live

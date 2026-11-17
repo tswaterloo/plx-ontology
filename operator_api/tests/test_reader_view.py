@@ -67,7 +67,8 @@ def page(**extra):
                                              "linked to a supplier"}},
             "timeline": {"events": [{"event_type": "po.posted", "at": "2026-07-07",
                                      "citation": BC}, "not an event"]},
-            "documents": {"result": {"documents": [{"title": "Invoice", "citation": MAIL},
+            "documents": {"result": {"documents": [{"title": "Invoice", "citation": MAIL,
+                                                    "openable": True},
                                                    {"title": "x", "citation": 7}]}},
             "around": {"hops": [{"result": {"objects": [
                 {"object_id": "PurchaseOrderLine:bc.purchase_order_lines:{\"id\":\"l1\"}",
@@ -85,6 +86,56 @@ class RecordPage(unittest.TestCase):
         self.assertEqual([i.source.handle for i in got.linked], [MAIL])
         self.assertEqual(got.status.text, "Late by 3 days")
         self.assertEqual([s.handle for s in got.status.sources], [BC])
+
+    def test_a_linked_document_the_reader_cannot_open_is_counted_never_titled(self):
+        # AUD-12 rule: a title needs an openable document (openable is set per reader by
+        # object_workspace._documents); only those it marks withheld_as are counted, one
+        # the people exclusion may withhold (no mark) or an unflagged one is left out
+        hidden = "graph-mail://box/m2@c2"
+        unflagged = "graph-mail://box/m3@c3"
+        portal = "api://portal/orders/9@v1"
+        sage = "sage://ap/inv/4@v1"
+        got = be._page_model(Backend(), View(), page(documents={"result": {"documents": [
+            {"title": "Invoice", "citation": MAIL, "openable": True},
+            {"title": "Severance terms for J. Doe", "subject": "Private", "citation": hidden,
+             "openable": False, "not_openable_reason": "this record's own permissions "
+             "do not admit you"},
+            {"title": "Board pack", "citation": unflagged},
+            {"title": "Margin sheet", "citation": portal, "openable": False,
+             "withheld_as": "not_permitted"},
+            {"title": "Sage invoice 4", "citation": sage, "openable": False,
+             "withheld_as": "not_available"}]}}))
+        self.assertEqual([i.source.handle for i in got.linked], [MAIL])
+        self.assertEqual((got.linked_withheld, got.linked_unavailable), (1, 1))
+        # no workspace count (a page cached before it): this page's marks, a lower bound
+        self.assertFalse(got.linked_counted_all)
+        shown = got.model_dump_json()
+        for leak in ("Severance", "Private", "Board pack", "Margin", "Sage invoice", hidden,
+                     unflagged, portal, sage):
+            self.assertNotIn(leak, shown)
+
+    def test_the_count_comes_from_every_page_of_linked_documents(self):
+        # the workspace's count over all pages wins over the first page's marks
+        docs = [{"title": f"Mail {i}", "citation": f"graph-mail://box/m{i}@c", "openable": True}
+                for i in range(25)]
+        got = be._page_model(Backend(), View(), page(documents={
+            "result": {"documents": docs},
+            "withheld": {"not_permitted": 41, "not_available": 3, "complete": False}}))
+        self.assertEqual(len(got.linked), 20)
+        self.assertEqual((got.linked_withheld, got.linked_unavailable,
+                          got.linked_counted_all), (41, 3, False))
+
+    def test_a_bc_records_company_is_said_first_and_cited(self):
+        # C-07: a BC number recurs across companies; the page says which one, from the
+        # record's own capture, and says nothing when plx.object names no company
+        card = page()["card"]
+        company = {"book": "distribution", "name": "PLX Distribution", "l1_handle": BC}
+        got = be._page_model(Backend(), View(), page(card={
+            **card, "object": {**card["object"], "company": company}}))
+        self.assertEqual(got.facts[0].text, "Business Central company: PLX Distribution")
+        self.assertEqual([s.handle for s in got.facts[0].sources], [BC])
+        plain = be._page_model(Backend(), View(), page())
+        self.assertFalse(any("company" in f.text for f in plain.facts))
 
     def test_facts_read_as_labels_with_currency_and_no_keys(self):
         got = be._page_model(Backend(), View(), page())
@@ -447,3 +498,124 @@ class AlikeChoices(unittest.TestCase):
         said = [c.label for c in be.told_apart(Workspace(), refs)]
         self.assertEqual(said, ["PO100040 in Business Central (New Directions Aromatics)",
                                 "PO100040 in the Portal (FlavorSum Canada ULC)", "DSM"])
+
+
+class LinkedDocumentCount(unittest.TestCase):
+    """object_workspace._documents: which linked documents a record page may count."""
+
+    PERSON = ("graph-mail://box-x/m1@c", "teams-chat://19:abc/m1@c",
+              "sharepoint://site/d1@v", "original://case/a1@v",
+              "calendar-event://owner-x/e1@v", "meeting-transcript://owner-x/t1@v",
+              "planner-task://plan/t1@v", "mc://live/tasks/p/9@v", "newsource://x/1@v")
+
+    def workspace(self, pages, decided, read=None, sources=None):
+        from ontology.types import Actor
+        from operator_api.workspace import object_workspace as ow
+        calls = []
+
+        def documents(arguments, actor):
+            calls.append(dict(arguments))
+            index = int(arguments.get("cursor") or 0)
+            more = index + 1 < len(pages)
+            return {"documents": [{"title": f"T {h}", "citation": h} for h in pages[index]],
+                    "completeness": {"next_cursor": str(index + 1) if more else None}}
+
+        class Access(ow.ApiOnlyAccess):
+            def decide(self, handles):
+                return {h: decided.get(h) for h in handles}
+        access = Access()
+        access.read = read
+        tools = {name: {"handler": lambda a, actor: {}} for name in ow.TOOLS}
+        tools[ow.DOCUMENTS_TOOL] = {"handler": documents}
+        ws = ow.ObjectWorkspace(tools, Actor("plx", frozenset({"u:reader"})), access=access,
+                                sources=sources)
+        return ws, calls, ow
+
+    def test_people_sources_refused_for_the_reader_are_never_counted(self):
+        # the people exclusion can be what withholds a mail, Teams, SharePoint or original
+        # record (an ungranted unit may be an excluded person's; the item check holds the
+        # participant test): left out entirely, as everywhere else
+        from operator_api.workspace import object_workspace as ow
+        refused = {h: {"state": "withheld", "reason": r} for h in self.PERSON
+                   for r in (ow.NOT_GRANTED,)}
+        refused["graph-mail://box-y/m2@c"] = {"state": "withheld", "reason": ow.ITEM_REFUSED}
+        refused["graph-mail://box-z/m3@c"] = {"state": "withheld", "reason": ow.NO_HOST_GRANT}
+        # permitted but not openable here, and not item-gated: still never counted
+        refused["calendar-event://owner-y/e2@v"] = None
+        ws, _calls, _ = self.workspace([list(refused)], refused)
+        out = ws._documents("PurchaseOrder:bc:p1")
+        self.assertEqual(out["withheld"], {"not_permitted": 0, "not_available": 0,
+                                           "complete": True})
+        for doc in out["result"]["documents"]:
+            self.assertFalse(doc["openable"])
+            self.assertNotIn("withheld_as", doc)
+        got = be._page_model(Backend(), View(), page(documents=out))
+        self.assertEqual((got.linked, got.linked_withheld, got.linked_unavailable), ([], 0, 0))
+
+    def test_not_permitted_and_not_available_are_told_apart(self):
+        from operator_api.workspace import object_workspace as ow
+        portal_refused = "bc://production/c/purchaseInvoices/i1@e"
+        no_host = "fm://plx/invoices/4@v1"
+        unknown = "bc://production/c/purchaseInvoices/i2@e"
+        permitted_unread = "graph-mail://box/m9@c"     # cleared every gate; no reader here
+        decided = {portal_refused: {"state": "withheld", "reason": ow.NOT_GRANTED},
+                   no_host: {"state": "withheld", "reason": ow.NO_HOST_GRANT},
+                   unknown: {"state": "withheld", "reason": "something new"},
+                   permitted_unread: None}
+        ws, _calls, _ = self.workspace([list(decided)], decided, read=None)
+        out = ws._documents("PurchaseOrder:bc:p1")
+        self.assertEqual(out["withheld"], {"not_permitted": 1, "not_available": 2,
+                                           "complete": True})
+        marks = {d["citation"]: d.get("withheld_as") for d in out["result"]["documents"]}
+        self.assertEqual(marks, {portal_refused: "not_permitted", no_host: "not_available",
+                                 unknown: None, permitted_unread: "not_available"})
+
+    def test_every_page_is_counted_and_a_cut_count_says_so(self):
+        from operator_api.workspace import object_workspace as ow
+        refused = {"state": "withheld", "reason": ow.NOT_GRANTED}
+        pages = [[f"bc://production/c/purchaseInvoices/p{p}d{i}@e" for i in range(3)]
+                 for p in range(4)]
+        decided = {h: refused for page_ in pages for h in page_}
+        ws, calls, _ = self.workspace(pages, decided)
+        out = ws._documents("PurchaseOrder:bc:p1")
+        self.assertEqual(out["withheld"], {"not_permitted": 12, "not_available": 0,
+                                           "complete": True})
+        self.assertEqual(len(out["result"]["documents"]), 3)   # the page lists page one
+        self.assertEqual([c.get("limit") for c in calls], [ow.MAX_DOCUMENTS] +
+                         [ow.DOCUMENT_COUNT_PAGE] * 3)
+        many = [[f"bc://production/c/purchaseInvoices/q{p}@e"]
+                for p in range(ow.MAX_DOCUMENT_COUNT_PAGES + 3)]
+        ws, calls, _ = self.workspace(many, {h[0]: refused for h in many})
+        out = ws._documents("PurchaseOrder:bc:p1")
+        self.assertEqual(out["withheld"], {"not_permitted": ow.MAX_DOCUMENT_COUNT_PAGES + 1,
+                                           "not_available": 0, "complete": False})
+
+    def test_no_extra_pages_when_nothing_further_can_count(self):
+        # production: a reader for every item-gated source and only people sources on
+        # the first page, so no further page can hold a counted document
+        from operator_api.workspace import object_workspace as ow
+        pages = [[f"graph-mail://box/p{p}m{i}@c" for i in range(2)] for p in range(3)]
+        ws, calls, _ = self.workspace(pages, {}, read=lambda *a, **k: {}, sources=object())
+        out = ws._documents("PurchaseOrder:bc:p1")
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(out["withheld"], {"not_permitted": 0, "not_available": 0,
+                                           "complete": True})
+        self.assertTrue(all(d["openable"] for d in out["result"]["documents"]))
+        # a business record on the first page: the further pages are read for the count
+        refused = {"state": "withheld", "reason": ow.NOT_GRANTED}
+        pages[0][0] = "bc://production/c/purchaseInvoices/i1@e"
+        pages[2][0] = "bc://production/c/purchaseInvoices/i3@e"
+        ws, calls, _ = self.workspace(pages, {pages[0][0]: refused, pages[2][0]: refused},
+                                      read=lambda *a, **k: {}, sources=object())
+        out = ws._documents("PurchaseOrder:bc:p1")
+        self.assertEqual(len(calls), 3)
+        self.assertEqual(out["withheld"]["not_permitted"], 2)
+
+    def test_the_documents_tool_lists_only_people_sources(self):
+        # _may_count skips paging on that ground: a new family must be weighed first
+        from operating import ontology_tools_evidence as ev
+        from operator_api.workspace import object_workspace as ow
+        self.assertEqual(set(ev.DOCUMENT_FAMILIES), {"mail", "sharepoint", "original", "teams"})
+        for scheme in ("graph-mail://", "sharepoint://", "original://", "teams-chat://",
+                       "teams-channel://"):
+            self.assertFalse(scheme.startswith(ow.COUNTABLE_SCHEMES), scheme)

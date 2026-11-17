@@ -86,6 +86,54 @@ describe("record page reads", () => {
     expect(screen.getByRole("link", { name: "Northwind (C-53)" })).toHaveAttribute("href", "/object/Customer/b2");
   });
 
+  it("a product's formula section lists each sheet's lines, a part linked to its raw material", async () => {
+    const formula = {
+      sheets: [{
+        document: { object_id: "SharePointFile:f1", type: "SharePointFile", label: "F-26-0001 Calm Lotion.pdf", open_url: "/object/SharePointFile/f1" },
+        formula_code: "F-26-0001", dated: "2026-10-02", basis: "code", status: "partial", share_total: "99.5", missing_lines: 1,
+        material_cost: { per_kg: "1.6000", currency: "CAD", priced_share: "80.0", missing: ["R-9999: no purchase price you can read"], complete: false },
+        components: [
+          { no: "1", part: "R-0101", description: "Water", share_percent: "80.0", item: { object_id: "Item:r1", type: "Item", label: "Water", open_url: "/object/Item/r1" }, supplier_items: 1, last_price: { price: "2.00", currency: "CAD", uom: "kg", dated: "2026-10-01", po: { object_id: "PurchaseOrder:p9", type: "PurchaseOrder", label: "PO 9001", open_url: "/object/PurchaseOrder/p9" } } },
+          { no: "2", part: "R-9999", description: "Unknown oil", share_percent: "19.5", check: "share x size does not match", supplier_items: 0 },
+        ],
+      }],
+      unresolved_parts: 1, withheld: 2, other_products: 0, portal_lines_served: false, complete: false,
+    };
+    const f = vi.fn(async (url: string) => {
+      const m = String(url).match(/object-section\/(\w+)\//);
+      if (m) return json(m[1] === "formula" ? { object_id: "Product:p1", section: "formula", formula } : { object_id: "Product:p1", section: m[1], applies: false });
+      return json({ ...page("A"), object_id: "Product:p1", type: "Product", label: "Calm Lotion", complete: false });
+    });
+    vi.stubGlobal("fetch", f);
+    render(<ObjectView type="Product" id="Product:p1" />);
+    const box = await screen.findByTestId("formula");
+    expect(f.mock.calls.some((c) => String(c[0]).includes("/api/object-section/formula/Product/"))).toBe(true);
+    expect(screen.getByRole("link", { name: "R-0101" })).toHaveAttribute("href", "/object/Item/r1");
+    expect(screen.queryByRole("link", { name: "R-9999" })).toBeNull();
+    expect(box).toHaveTextContent("1 line unreadable");
+    expect(box).toHaveTextContent("share x size does not match");
+    expect(box).toHaveTextContent("1 part code name no record");
+    expect(box).toHaveTextContent("2 lines or sheets you can't open");
+    expect(box).toHaveTextContent("99.5");
+    expect(screen.getByRole("link", { name: "2.00 CAD / kg" })).toHaveAttribute("href", "/object/PurchaseOrder/p9");
+    const cost = screen.getByTestId("material-cost");
+    expect(cost).toHaveTextContent("Materials 1.6000 CAD per kg at the last PO prices · 80.0% of the formula priced");
+    expect(cost).toHaveTextContent("R-9999: no purchase price you can read");
+  });
+
+  it("a purchase order never reads a formula section", async () => {
+    const f = vi.fn(async (url: string) => {
+      const m = String(url).match(/object-section\/(\w+)\//);
+      if (m) return json({ object_id: "PurchaseOrder:A", section: m[1], applies: false });
+      return json(page("A", { complete: false }));
+    });
+    vi.stubGlobal("fetch", f);
+    render(<ObjectView type="PurchaseOrder" id="A" />);
+    await screen.findByTestId("object-title");
+    await waitFor(() => expect(f.mock.calls.some((c) => String(c[0]).includes("/object-section/late/"))).toBe(true));
+    expect(f.mock.calls.some((c) => String(c[0]).includes("/object-section/formula/"))).toBe(false);
+  });
+
   it("a stale page whose refresh read fails stays on screen", async () => {
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
     let n = 0;

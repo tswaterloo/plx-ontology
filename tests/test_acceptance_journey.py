@@ -261,8 +261,14 @@ class AcceptanceJourney(unittest.TestCase):
             "audiences": {f"mail:{mail_t.UPN_A}": [SVC, OPS], "sharepoint:*": [SVC, OPS],
                           "bc:production:*": [SVC, OPS]},
             "classifications": {"mail:*": "confidential"}})
-        self.write("mirror-audience.json", {"schema": "plx-source-mirror-audience/v1",
-                                           "tenant": "plx", "audiences": {"public.*": [SVC, OPS]}})
+        # The operations reader holds every Portal schema the reporting API serves, as the
+        # all-sources host does (public, silver and sage): a full grant, so a check the
+        # projection's own BC records decide (100 ordered vs 96 received) is decided for it
+        # (the items' Sage twins are then uncaptured, never withheld from it).
+        self.write("mirror-audience.json", {
+            "schema": "plx-source-mirror-audience/v1", "tenant": "plx",
+            "audiences": {"public.*": [SVC, OPS], "silver.*": [SVC, OPS],
+                          "sage.*": [SVC, OPS]}})
         self.write("mail-scope.json", {
             "schema": "plx-mail-capture-scope/v1", "window_days": 90,
             "internal_domains": ["example-plx.com"],
@@ -480,8 +486,8 @@ class AcceptanceJourney(unittest.TestCase):
         (slip,) = with_leads(answers[3])["objects"]
         # A machine-read document is a lead: never traversed at the default tier floor.
         self.assertEqual(answers[4]["objects"], [])
-        self.assertEqual({e["tier"] for a in (answers[2], answers[3]) for e in a["edges"]},
-                         {"lead"})
+        self.assertEqual({e["tier"] for a in (answers[2], answers[3])
+                          for e in with_leads(a)["edges"]}, {"lead"})
         replies = self.session([call(2, "plx.object", {"object_id": confirmation["object_id"]}),
                                 call(3, "plx.object", {"object_id": slip["object_id"]})])
         return {"confirmation": self.ok(replies[2]), "slip": self.ok(replies[3])}
@@ -602,7 +608,7 @@ class AcceptanceJourney(unittest.TestCase):
                                 1, cycle["projection"]["steps"])
         mails = self.ok(self.session([self.around(
             2, PO_ID, "Email.mentions_purchase_order", tier_floor="lead")])[2])
-        later = [edge for edge in mails["edges"] if any(
+        later = [edge for edge in with_leads(mails)["edges"] if any(
             c["l1_handle"].startswith(f"graph-mail://{mail_t.BOX_A}/m2@")
             for reason in edge["reason"] for c in reason.get("citations", ()))]
         self.assertEqual([(e["to"], e["link_type"]) for e in later],

@@ -32,6 +32,7 @@ from operating import ontology_tools_process as op
 from operating import ontology_tools_traverse as tt
 from operating import po_status as ps
 from operating import proactive_engine as pe
+from operating import proactive_engine_config
 from operating import status_card
 from operating.tests.test_proactive_engine import Engine, World, handle
 from tests.test_ontology_tools_review import CONTRACTS
@@ -703,7 +704,7 @@ class EngineTest(Engine):
                 pairs = [self.pair(w, bc_status="Open", link="PurchaseOrder.bc_posted_as",
                                    tier="verified", portal_status="Pending",
                                    portal_received="0") for _ in range(count)]
-                result = self.run_engine(w)
+                self.run_engine(w)
                 late = [g for g in self.read(limit=1000)["gaps"]
                         if g["kind"] in ("late_po", "unconfirmed_po")]
                 self.assertEqual(sorted(g["object_id"] for g in late),
@@ -831,7 +832,7 @@ class EngineTest(Engine):
                 self.assertFalse(late & {r for pair in undated for r in pair})
                 self.assertEqual(len(late), count)
                 self.assertEqual(summary["po_lateness"]["late"], count)
-                open_undated = [g for g in gaps if g["kind"] == pe.UNDATED_KIND]
+                open_undated = [g for g in gaps if g["kind"] == proactive_engine_config.UNDATED_KIND]
                 self.assertEqual(sorted(g["object_id"] for g in open_undated),
                                  sorted(p for p, _ in undated))
                 self.assertTrue(all("days_late" not in g["follow_up"]
@@ -863,7 +864,7 @@ class EngineTest(Engine):
         for may_read in (lambda key: True, lambda key: key == "api:b",
                          lambda key: key in ("api:b", "bc:x")):
             self.assertFalse([g for g in self.read(limit=1000, may_read=may_read)["gaps"]
-                              if g["kind"] == pe.UNDATED_KIND])
+                              if g["kind"] == proactive_engine_config.UNDATED_KIND])
 
     def test_a_draft_twins_lines_are_never_late_lines(self):
         # decision 2026-11-01 (lead, on the review's open question): rule 1 covers the

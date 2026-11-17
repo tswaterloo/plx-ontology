@@ -56,6 +56,7 @@ import json
 from typing import Any, Callable, Iterable, Mapping, Sequence
 
 from operating.cited_reads import CitedReads, text_of
+from . import time_window
 
 MEETING_SCHEMA = "plx-meeting-brief/v1"
 WEEKLY_SCHEMA = "plx-weekly-review/v1"
@@ -199,10 +200,7 @@ def _day(value: Any) -> date | None:
     raw = text_of(value)
     if not raw:
         return None
-    try:
-        return date.fromisoformat(raw[:10])
-    except ValueError:
-        return None
+    return time_window.business_day(raw)
 
 
 def _decimal(value: Any) -> Decimal | None:
@@ -566,6 +564,8 @@ def _order_rows(reads: Reads, party: str, ptype: str, ids: list[str]
                   else "status not recorded") + ("" if state else " (open or closed unknown)")
         if amount_basis in DERIVED_WORDS:
             detail += f"; value {DERIVED_WORDS[amount_basis]}"
+        elif amount is None and getattr(record, "total_disputed", False) and reads.finance():
+            detail += "; no value shown: its total and its lines disagree"
         due_day = _day(due)
         if state and due_day is not None and due_day < reads.today:
             detail += f"; {(reads.today - due_day).days} days past its " + (
@@ -907,7 +907,7 @@ REVIEW_FAMILIES: tuple[tuple[str, str, Any, frozenset[str]], ...] = (
                 "certificate_expiring", "lot_near_expiry"})),
     ("launch", "Systems launch readiness", _re.compile(
         r"\blaunch\b|\breadiness\b|\bgo[- ]live\b|\buat\b|\berp\b", _re.I),
-     frozenset({"mc_task_overdue", "mc_task_stuck", "mc_approval_pending",
+     frozenset({"mc_task_stuck", "mc_approval_pending",
                 "portal_approval_pending",
                 "planner_task_overdue", "source_stale", "twins_disagree",
                 "sync_missing", "sync_mismatch"})),
@@ -1517,7 +1517,6 @@ class WeeklyArchive:
         self.path = Path(path)
 
     def _conn(self) -> Any:
-        import os
         import sqlite3
         self.path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
         conn = sqlite3.connect(self.path, timeout=5)
@@ -1666,6 +1665,9 @@ RELEASE_NOTE = ("Batches and lots on hold that orders or receipts have waited on
                 "is stored, and on-hand quantities are not served yet.")
 MATERIAL_KINDS = frozenset({"assembly_blocked_by_component", "production_late",
                             "stock_out_risk", "shortage"})
+# the only alert kinds the daily QC pack shows: its alert read asks for these alone (SP-03,
+# 11-15: reading every briefing kind, 2,000 alerts decided, held its first visit 34-48 s)
+QC_ALERT_KINDS = QC_HOLD_KINDS | MATERIAL_KINDS
 
 
 def _int(value: Any) -> int:
@@ -1882,7 +1884,7 @@ def pack_text(pack: Mapping[str, Any]) -> str:
             for src in (r.get("sources") or ())[:MAX_SOURCES]:
                 out.append(f"      source: {src.get('handle')}")
         if s.get("more"):
-            out.append(f"  ... and {s['more']} more")
+            out.append(f"  Not listed here: {s['more']} further row(s) of this section.")
         out.append("")
     out.append(str(pack.get("basis") or ""))
     return "\n".join(out) + "\n"

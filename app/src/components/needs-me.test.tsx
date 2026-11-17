@@ -36,6 +36,7 @@ const approvals = {
     { waiting_on: "pat@plx.example", count: 1, oldest_days: 2, items: [{ id: "a1", kind: "credit_hold", summary: "Release Harbor's credit hold", days: 2, aging: "", channel: "mc", nudge: {} as never, asked_by: "Ana" }] },
     { waiting_on: "Sam", count: 2, oldest_days: 6, items: [] },
     { waiting_on: "Lee", count: 1, oldest_days: 1, items: [] },
+    { waiting_on: "not recorded", count: 1, oldest_days: 4, items: [{ id: "a9", kind: "x", summary: "Discount above 15%", days: 4, aging: "", channel: "mail", nudge: { body: "Hi" } as never }] },
   ],
 } as unknown as ApprovalsQueue;
 const alarms = { configured: true, running: true, open: [{ key: "unit:x", line: "plx-proactive.service: killed: out of memory", opened_at: h(-1) }], recovered: [], checks: [] } as OpsAlarms;
@@ -51,6 +52,7 @@ describe("Needs you (owner)", () => {
       "approve:a:a1",
       "approve:w:w1",
       "blocked:ag:Sam",
+      "blocked:ag:not recorded",
       "blocked:w:w2",
       "blocked:o:unit:x",
     ]);
@@ -59,6 +61,10 @@ describe("Needs you (owner)", () => {
     expect(by["w:w1"].href).toBe("/object/PurchaseOrder/PurchaseOrder%3Ademo%3A90412");
     expect(by["w:w2"].href).toBeNull();
     expect(by["ag:Sam"].title).toBe("2 approvals waiting on Sam");
+    expect(by["ag:Sam"].detail).toBe("oldest 6 days; no nudge drafted yet");
+    expect(by["ag:Sam"].href).toBe("/team#approvals");
+    expect(by["ag:not recorded"].title).toBe("1 approval waiting on an approver not on record");
+    expect(by["ag:not recorded"].detail).toBe("oldest 4 days; a nudge is drafted on Team");
     expect(by["o:unit:x"].href).toBe("/ops");
   });
 

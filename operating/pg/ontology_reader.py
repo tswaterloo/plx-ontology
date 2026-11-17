@@ -41,10 +41,11 @@ import re
 from pathlib import Path
 import sqlite3
 import time
-from typing import Any, Collection, Iterator, Sequence
+from typing import Any, Collection, Iterator, Mapping, Sequence
 
 from ontology.store_ddl import VALUE_COLUMNS
-from operating.ontology_tools import StoreReader, _readable_text
+from operating.ontology_tools import StoreReader
+from operating.ontology_tools_policy import _readable_text
 from operating.pg.sqlite_compat import PgCompatConnection, Row
 
 ENV = "PLX_ONTOLOGY_PG"
@@ -309,6 +310,16 @@ def link_slice_sql(ranged: bool = False, owned: bool = False, typed: bool = Fals
 
 # each part's latest end per (name, markings, gated) read by the workers that read it
 LINK_SLICE_SQL = link_slice_sql()
+# The link slice kept in Postgres (migration 0028, CC-P-07: ``ontology.link_marks``), in
+# ``link_slice_sql``'s row shape: per (type, markings) the latest end of every row (handle
+# '') and of each gated handle. Read only when ``ontology.link_marks_vouched`` holds for
+# these gated schemes (kept at the data version, generation and link_rows change counter
+# Postgres has now); otherwise the slice is read from link_rows as before.
+LINK_MARKS_KEPT_SQL = "SELECT ontology.link_marks_vouched(%(schemes)s::text[])"
+LINK_MARKS_SQL = (
+    "SELECT link_type, markings, CASE WHEN handle = '' THEN NULL "
+    "ELSE to_json(ARRAY[handle])::text END, until FROM ontology.link_marks "
+    "WHERE %(name)s::text IS NULL OR link_type = %(name)s")
 # The links one of whose evidence slots is an odd text (read as before); more odd texts
 # than this and the slice is read the generic way.
 LINK_ODD_SQL = (
@@ -717,7 +728,15 @@ class PgStoreReader(StoreReader):
             "statement_timeout_ms": statement_timeout_ms}
         if temp_limit is not None:
             limit["temp_limit"] = temp_limit   # each statement's temp files (a facts read)
-        reader = cls(PgCompatConnection(str(dsn) if dsn else config.dsn(), **limit), text,
+        # CC-C-04: with the switch on, ``links`` is ``ontology_seen.links``, without the
+        # mention repeats ``operating.pg.mention_repeats`` marked (off: ``ontology.links``);
+        # row 14: ``PLX_PG_BARE_MENTIONS=1`` adds the bare-token mention leads
+        # (``operating.pg.bare_mentions``)
+        from operating.pg import bare_mentions
+        limit["search_path"] = bare_mentions.search_path()
+        # a reader never sees the same-person links ``person_link_guard`` hides
+        reader = cls(PgCompatConnection(str(dsn) if dsn else config.dsn(), link_guard=True,
+                                        **limit), text,
                      only=only)
         if only:
             try:
@@ -753,14 +772,16 @@ class PgStoreReader(StoreReader):
                 return self.text_reader.sensitive_versions(pairs)
         return super().sensitive_versions(pairs)
 
-    def object_chunks(self, scope: Any, object_ids: Sequence[str]) -> list[Any]:
-        """The document chunks of these objects: from the SQLite generation while the
+    def object_chunks(self, scope: Any, versions: Mapping[str, str],
+                      hints: Mapping[str, Sequence[str]] | None = None) -> list[Any]:
+        """``StoreReader.object_chunks`` (the hinted fields' first chunks, else an
+        object's first fields; never every chunk): from the SQLite generation while the
         load deferred ``text_chunks`` (``ontology_load.DEFERRABLE``), else Postgres."""
         if "text_chunks" in self.deferred and self.text_reader is not None:
             with self.text_reader.lock:
-                rows = self.text_reader.object_chunks(scope, object_ids)
+                rows = self.text_reader.object_chunks(scope, versions, hints)
             return self.permitted_here(scope, rows)
-        return super().object_chunks(scope, object_ids)
+        return super().object_chunks(scope, versions, hints)
 
     def check_whole(self) -> None:
         """Raise :class:`PostgresNotWhole` unless Postgres holds an ontology whole
@@ -935,6 +956,25 @@ class PgStoreReader(StoreReader):
 
     link_odd_cap = LINK_ODD_CAP
 
+    def link_marks(self, schemes: Sequence[str], name: str | None = None
+                   ) -> list[tuple] | None:
+        """The link slice's rows (``link_slice_sql``'s shape) from the kept
+        ``ontology.link_marks`` (migration 0028), of every type or of ``name`` alone, in
+        this reader's snapshot; None when they are not kept for exactly these gated
+        schemes at the store as it is now (``LINK_MARKS_KEPT_SQL``), or the store has
+        none (an older schema): the slice is then read from link_rows."""
+        pg = self.conn._pg
+        with self.conn._lock, pg.cursor() as cur:
+            from operating.pg import link_marks
+            if not link_marks.present(cur):
+                return None
+            cur.execute(LINK_MARKS_KEPT_SQL, {"schemes": sorted(schemes)})
+            kept = cur.fetchone()
+            if not kept or kept[0] is not True:
+                return None
+            cur.execute(LINK_MARKS_SQL, {"name": name})
+            return cur.fetchall()
+
     def link_odd_of(self, objects: Sequence[str]) -> list[str] | None:
         """``link_odd`` among the links from or to ``objects`` alone (``LINK_ODD_OWNED_SQL``,
         by their indexes); None: more than ``LINK_ODD_CAP``."""
@@ -955,6 +995,11 @@ class PgStoreReader(StoreReader):
         of this type alone."""
         if kind != "link":
             return None
+        if objects is None and key_range is None:
+            # the whole slice, or one type's: kept in Postgres when it is current
+            kept = self.link_marks(schemes, name)
+            if kept is not None:
+                return kept
         if odd is None and objects is not None:
             odd = self.link_odd_of(objects)
             if odd is None:

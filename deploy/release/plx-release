@@ -13,14 +13,48 @@
 #       its schema and step code), else nothing is built. The app is
 #       built inside the release; node_modules is hard-linked from the current release when
 #       app/package-lock.json is unchanged (else npm ci). Prints the release id.
-#   plx-release switch <id>     current -> <id>, previous -> the old current (atomic)
+#   plx-release preflight <id>  the API's configuration check of <id> (plx-api-check@<id>:
+#                               `operator_api serve --check` under the API's own user,
+#                               environment and drop-ins); exit 1 when it fails
+#   plx-release migrate <id>    Postgres mode: apply the release's pending operating.pg
+#                               migrations from its own tree (none pending: a no-op). Refused
+#                               (exit 75, nothing applied) while a migration window is open:
+#                               $PLX_STAGE_FILE names stage A/B/D (or no stage), a lock in
+#                               $PLX_MIGRATION_LOCKS is held, or a migration process runs. A
+#                               failed apply raises the host alarm (exit 1). DEPLOY-MIG 11-15.
+#   plx-release switch <id>     preflight, then current -> <id>, previous -> the old current
+#                               (atomic). A failed preflight switches nothing, nor does (in
+#                               Postgres mode) a migration of <id> that Postgres does not hold.
 #   plx-release rollback        current -> previous (and previous -> the one rolled back)
-#   plx-release restart [--with-ingest]
-#       Restart the long-running units that are active (try-restart) so they load current
-#       (the job-queue worker too: it starts no job process itself and a restarted worker
-#       adopts the running jobs; 11-13 it served from a release 6 h old); timer-driven units (delta, proactive, truth check, AI watcher, backup) pick it up on
-#       their next run. plx-ingest restarts only with --with-ingest (a restart ends a build).
-#       Then waits for /api/health. Needs sudo; the supervisor runs it.
+#   plx-release restart [--with-ingest] [--cold]
+#       Restart (start when stopped: the API and the app are always up, 11-14) plx-api and
+#       plx-app, and the other long-running units that are active (try-restart) so they load
+#       current (the job-queue worker too: it starts no job process itself and a restarted
+#       worker adopts the running jobs; 11-13 it served from a release 6 h old); timer-driven
+#       units (delta, proactive, truth check, AI watcher, backup) pick it up on their next
+#       run. A serving API is never restarted cold (ARCH-T6, "Warm switch" below): --cold (or
+#       a host without the warm switch installed) restarts it in place. plx-ingest restarts
+#       only with --with-ingest, as a drain restart: SIGTERM to the host process alone, which
+#       starts no capture and lets each running child end its run at a safe point (cursor
+#       kept, outcome recorded) within ingest.drain_seconds, then exits; the unit then starts
+#       on current. No capture gap is needed (perm-capture-1114).
+#       Then /api/health must answer 200 and one authenticated read (/api/me through the
+#       Ask canary's service session: sudo plx-mint-link --canary into its own link file, the
+#       ticket never printed; the owner's link file is never touched) must answer 200,
+#       and (Postgres mode) no migration of the current release may be pending.
+#       On a failure (or a warm switch that did not switch) it rolls back by itself: switches
+#       to previous, restarts, checks again and raises a host alarm (unit_alarm.py raise:
+#       /var/lib/plx-ops/status.json, which the notifier reads), then exits 1. Needs sudo;
+#       the operator and the deploy step run it.
+#       PLX_RELEASE_PREFLIGHT=required / PLX_RELEASE_AUTH_PROBE=required refuse when the
+#       check unit / plx-mint-link is not installed (default: checked when installed, the
+#       skip logged); PLX_RELEASE_AUTH_PROBE=0 skips the authenticated read. An installed
+#       plx-mint-link without --canary is first refreshed from the serving sealed release;
+#       if it still lacks it the read is skipped (logged), never done through the owner link.
+#   plx-release deploy <id>     migrate, switch to <id> and restart (a release that does not serve is
+#                               rolled back by the restart, exit 1)
+#   plx-release slots [sync]    the warm switch's state (serving port, why it is off);
+#                               sync: mirror plx-api.service's drop-ins for plx-api@.service
 #   plx-release status | list | prune [--keep N]
 #   plx-release verify [<id>]   the release (default: current) is sealed: every file owned by
 #                               $PLX_RELEASE_OWNER, none writable by group or others (exit 1)
@@ -33,12 +67,55 @@
 # release and change nothing in it. PLX_RELEASE_OWNER= (empty) keeps the old unsealed
 # releases (tests, a dev box).
 #
+# Warm switch (ARCH-T6): a restart never routes a reader to a cold API, and Caddy is not
+# reloaded for it (a reload drops requests under way). Caddy sends /api/* to 127.0.0.1:8780
+# (plx-api.service) and, when that takes no connection, to the standby plx-api@standby, which
+# serves only on its unix socket ($PLX_API_STANDBY_SOCKET, /run/plx-api-standby/api.sock, in a
+# directory only the API's user may write: no other listener can be sent readers). A restart
+# writes $PLX_API_HOLD_DIR/hold-plx-api-standby (an API started then opens its socket or port
+# only once warm: operator_api/server.py), starts plx-api@standby on current and waits for its
+# /api/health and /api/ready (its known readers' Today and main screens read ahead and kept
+# under the new code version, at most $PLX_API_READY_S, 660 s); then restarts plx-api.service
+# held the same way (SIGTERM: it closes 8780 and ends what is under way, so Caddy sends the
+# next request to the standby), waits for it, and stops the standby once Caddy sends to 8780
+# again. plx-api.service is the serving unit again at the end, so every tool that starts,
+# stops or reads plx-api and $PLX_API_URL keeps working. A standby that is not ready is
+# stopped and the old API keeps serving (exit 1: the deploy rolls back). Before it starts:
+# plx-api@.service is installed, its drop-ins mirror plx-api.service's (synced here) and every
+# setting that decides what the API may do is the same for both, the host has memory and
+# Postgres has sessions for a second API, and the running Caddy sends to the standby's
+# socket; any of these missing, the API restarts in place (cold) and the reason is printed
+# and logged ("warm switch off"). deploy/release/README-warm-switch.md: host install, undo.
+#
 # Settings: deploy/lib.sh (PLX_REPO, PLX_RELEASES, PLX_STATE, PLX_VENV, PLX_NODE,
-# PLX_RELEASE_OWNER).
+# PLX_RELEASE_OWNER, PLX_API_URL).
 set -euo pipefail
 here=$(cd "$(dirname "$(readlink -f "$0")")" && pwd)
 . "$here/../lib.sh"
 LONG_RUNNING="plx-api plx-app plx-search-follow plx-search-generation plx-rag-backfill plx-jobq-worker"
+ALWAYS_UP="plx-api plx-app"     # started by every restart, stopped or not (Fable 11-14 #2)
+HOST_OPS=${PLX_HOST_OPS:-/var/lib/plx-ops}
+API_UNIT=${PLX_API_UNIT:-plx-api}
+API_PORT=${PLX_API_PORT:-$(sed -n 's|^https\{0,1\}://[^/]*:\([0-9][0-9]*\).*|\1|p' <<<"$PLX_API_URL")}
+API_PORT=${API_PORT:-8780}
+STANDBY=${PLX_API_STANDBY:-standby}               # plx-api@standby
+STANDBY_SOCKET=${PLX_API_STANDBY_SOCKET:-/run/plx-api-$STANDBY/api.sock}
+STANDBY_HOLD=$(basename "$(dirname "$STANDBY_SOCKET")")   # its hold file's name (server.py)
+HOLD_DIR=${PLX_API_HOLD_DIR:-/run/plx-api}        # hold-<port>: open it only once warm
+CADDY_UNIT=${PLX_CADDY_UNIT:-plx-caddy}
+CADDY_ADMIN=${PLX_CADDY_ADMIN:-/var/lib/caddy/admin.sock}   # the caddy user's 0600 socket
+CADDY_USER=${PLX_CADDY_USER:-caddy}
+PASS_OVER_S=${PLX_API_PASS_OVER_S:-3}            # > Caddy's fail_duration (2 s)
+UNIT_DIR=${PLX_SYSTEMD_DIR:-/etc/systemd/system}
+# past the API's own hold limit (operator_api/server.py HOLD_MAX_SECONDS, 600 s): a 300 s wait
+# gave up on a standby still warming (11-15 7:18 AM ET: briefing read 145 s) and rolled back
+READY_S=${PLX_API_READY_S:-660}
+MEM_RESERVE_MB=${PLX_API_MEM_RESERVE_MB:-2048}   # left on the host with both APIs up
+MEM_FLOOR_MB=${PLX_API_MEM_FLOOR_MB:-1024}       # a standby is stopped below this
+PG_MARGIN=${PLX_API_PG_MARGIN:-8}                # sessions left to everyone else
+API_ROLE=${PLX_API_PG_ROLE:-plx_api}
+MEMINFO=${PLX_MEMINFO:-/proc/meminfo}
+CGROUP_ROOT=${PLX_CGROUP_ROOT:-/sys/fs/cgroup}
 
 die() { echo "plx-release: $*" >&2; exit 1; }
 sealed() { [ -n "${PLX_RELEASE_OWNER:-}" ]; }
@@ -86,6 +163,150 @@ if out.get("ok") is not True:
     sys.exit("Postgres holds another schema or step code (%s; code %s, served %s)"
              % (why, out.get("code"), out.get("served")))
 print(out.get("served") or "")' "$out" || die "not built (--no-schema-check to build without the check)"
+}
+
+# ---- Postgres migrations (DEPLOY-MIG 11-15) ------------------------------------------------
+# The deploy applies the release's pending `operating.pg` migrations (operating/pg/migrations,
+# the ledger plx_meta.migrations) itself, after the build and before the switch; 0026-0029
+# were run by hand after the 11-15 5:55 AM deploy because nothing did. Nothing pending: a
+# no-op (no window check, no lock, no write). Pending: refused while a migration window is
+# open (pg_window below), else applied from the release's own tree under the live-Postgres
+# window lock with a short lock_timeout (a migration waiting on a busy table would queue
+# every reader behind it). A failed or partial apply raises the host alarm and switches
+# nothing: the old release keeps serving. A switch refuses a release with any migration
+# pending, and a restart does not call a release healthy while any are pending.
+MIG_TIMEOUT_S=${PLX_MIGRATE_TIMEOUT_S:-1800}
+MIG_LOCK_TIMEOUT=${PLX_MIGRATE_LOCK_TIMEOUT:-30s}
+STAGE_FILE=${PLX_STAGE_FILE:-$PLX_SCRATCH/STAGE-1114.md}
+# the locks a migration window holds (deploy/ops/runbook/live_pg_window.sh); space-separated
+MIG_LOCKS=${PLX_MIGRATION_LOCKS-$PLX_SCRATCH/cfg/live-pg-window.lock}
+# the migration's own working processes (stage_guard.sh TRAIN_PROCS, plus the train runners
+# train_t2/t3c/t4.sh and the applying ontology_migrate commands; its read-only `check` is the
+# build's own gate). A train's chain script is not one: it idles in a sleep loop long after
+# its window closed (chain_t3c.sh at 6:20 AM 11-15) and opens its window through these.
+TRAIN_RE=${PLX_TRAIN_PROC_RE-'operating\.pg\.(migrate_chunks|mention_scope|identifier_reparse|timestamp_rezone|link_apply|step_staging)|operating\.pg\.ontology_migrate (apply|seed-steps)|ontology\.(pg_step_inplace|step_migrate|unit_layer_workers)|train-1113/bin/train[_a-z0-9]*\.sh|train-1113/bin/(gl_record\.py|sched\.py|early)'}
+
+# pg_migrations <tree> status|migrate: one JSON line {applied_now, pending, drift} from the
+# tree's own operating.pg.migrate (the DSN never printed); exit 1 when it could not be read
+pg_migrations() {
+  local dsn; dsn=$(pg_dsn)
+  [ -n "$dsn" ] || { echo '{"error": "no PLX_PG_DSN (caller or plx.env)"}'; return 1; }
+  [ -f "$1/operating/pg/migrate.py" ] || { echo '{"error": "the release has no operating/pg/migrate.py"}'; return 1; }
+  (cd "$1" && PLX_PG_DSN="$dsn" PLX_MIG_LOCK_TIMEOUT="$MIG_LOCK_TIMEOUT" env -u PLX_WORKBENCH_API_KEY \
+     timeout "$MIG_TIMEOUT_S" "$PLX_VENV/bin/python3" -c '
+import json, os, sys
+try:
+    import psycopg
+    from operating.pg import migrate
+    with psycopg.connect(os.environ["PLX_PG_DSN"], connect_timeout=10,
+                         application_name="plx-release-migrate",
+                         options="-c lock_timeout=" + os.environ["PLX_MIG_LOCK_TIMEOUT"]) as conn:
+        ran = migrate.migrate(conn) if sys.argv[1] == "migrate" else []
+        state = migrate.status(conn)
+except Exception as exc:   # one verdict line whatever failed; the DSN is never in it
+    detail = str(exc).splitlines()[0] if str(exc) else ""
+    print(json.dumps({"error": type(exc).__name__, "detail": detail[:300]}))
+    sys.exit(1)
+print(json.dumps({"applied_now": ran, "pending": state["pending"], "drift": state["drift"]}))
+' "$2" 2>/dev/null | tail -1)
+}
+
+# mig_field <json> <key>: the list (space-joined) or text at <key>; "?" when the JSON is not one
+mig_field() {
+  python3 -I -c '
+import json, sys
+try:
+    v = json.loads(sys.argv[1]).get(sys.argv[2])
+except (ValueError, AttributeError):
+    print("?"); sys.exit()
+print(" ".join(v) if isinstance(v, list) else (v or ""))' "$1" "$2"
+}
+
+# pg_window: why a migration window is open now (empty: none). Fails closed: a stage file that
+# names no stage is a window.
+pg_window() {
+  if [ -f "$STAGE_FILE" ]; then
+    local stage; stage=$(sed -n 's/^CURRENT STAGE: *\([A-Za-z]\).*/\1/p' "$STAGE_FILE" | head -1)
+    case $stage in
+      C|E) ;;
+      A|B|D) echo "stage $stage in $STAGE_FILE (the migration owns served Postgres)"; return ;;
+      *) echo "$STAGE_FILE names no stage this tool knows (${stage:-none}): treated as a window"; return ;;
+    esac
+  fi
+  local l fd
+  for l in $MIG_LOCKS; do
+    [ -e "$l" ] || continue
+    [ -r "$l" ] || { echo "$l cannot be read (its holder is not known)"; return; }
+    exec {fd}<"$l"
+    if ! flock -n "$fd"; then
+      exec {fd}<&-
+      local who; who=$(head -c 120 "$(dirname "$l")/$(basename "$l" .lock).holder" 2>/dev/null | tr -d '\n' || true)
+      echo "$l is held (${who:-its holder is not recorded})"
+      return
+    fi
+    exec {fd}<&-
+  done
+  if [ -n "$TRAIN_RE" ]; then
+    local p; p=$(pgrep -f -a -- "$TRAIN_RE" 2>/dev/null | grep -v "^$$ " | head -1 | cut -c1-160)
+    [ -z "$p" ] || { echo "a migration process runs: $p"; return; }
+  fi
+}
+
+# pending_or_die <id> <what>: dies unless Postgres holds every migration of release <id>
+pending_or_die() {
+  local st pend
+  st=$(pg_migrations "$PLX_RELEASES/$1" status) \
+    || die "release $1: its Postgres migrations could not be read ($(mig_field "$st" error) $(mig_field "$st" detail)): $2"
+  pend=$(mig_field "$st" pending)
+  [ -z "$pend" ] || die "release $1 has Postgres migrations pending ($pend): $2 (plx-release migrate $1)"
+}
+
+migrate() {
+  local id=${1:?migrate needs a release id}
+  local dir="$PLX_RELEASES/$id"
+  [ -f "$dir/RELEASE.json" ] || die "no built release $id"
+  pg_only || { echo "migrations: not in Postgres mode, nothing to apply"; return 0; }
+  local st pend drift why
+  if ! st=$(pg_migrations "$dir" status); then
+    raise_alarm release-migrate "release $id not deployed: its Postgres migrations could not be read ($(mig_field "$st" error))"
+    die "release $id: Postgres migrations could not be read ($(mig_field "$st" error) $(mig_field "$st" detail)): not migrated, not switched"
+  fi
+  pend=$(mig_field "$st" pending); drift=$(mig_field "$st" drift)
+  if [ -n "$drift" ]; then
+    raise_alarm release-migrate "release $id not deployed: applied migrations differ from its files ($drift)"
+    die "release $id: applied migrations differ from the release's files ($drift): not migrated, not switched"
+  fi
+  [ -n "$pend" ] || { echo "migrations: none pending"; return 0; }
+  why=$(pg_window)
+  if [ -n "$why" ]; then
+    log "migrate $id held ($pend): $why"
+    echo "plx-release: release $id not deployed: Postgres migrations pending ($pend) and a migration window is open: $why. Nothing applied; the current release keeps serving; deploy again after the window." >&2
+    exit 75
+  fi
+  # held for the apply: no train window opens under it (live_pg_window.sh waits for it)
+  local l fd held=""
+  for l in $MIG_LOCKS; do
+    [ -e "$l" ] || continue
+    [ -r "$l" ] || die "release $id: $l cannot be read: nothing applied, not switched"
+    exec {fd}<"$l"
+    flock -n "$fd" || die "release $id: $l was taken meanwhile: nothing applied, not switched"
+    held="$held $fd"
+  done
+  log "migrate $id: applying $pend"
+  local out after rc=0
+  out=$(pg_migrations "$dir" migrate) || rc=$?
+  after=$(pg_migrations "$dir" status) || true
+  for fd in $held; do exec {fd}<&-; done
+  local left; left=$(mig_field "$after" pending)
+  if [ "$rc" != 0 ] || [ -n "$left" ] || [ "$(mig_field "$after" drift)" != "" ]; then
+    local what=${left:-none}
+    [ "$what" = "?" ] && what="unknown (status unreadable)"
+    raise_alarm release-migrate "release $id not deployed: Postgres migrate failed ($(mig_field "$out" error) $(mig_field "$out" detail)); still pending: $what"
+    log "migrate $id FAILED: $(mig_field "$out" error); pending $what"
+    die "release $id: Postgres migrate failed ($(mig_field "$out" error) $(mig_field "$out" detail)); still pending: $what. Not switched: the current release keeps serving"
+  fi
+  log "migrate $id: applied $(mig_field "$out" applied_now)"
+  echo "migrations applied: $(mig_field "$out" applied_now)"
 }
 
 served_digest() {  # empty: no served projection; fails when one is there but unreadable
@@ -245,12 +466,54 @@ relink() {  # relink <name> <target id>: atomic (rename over the old link)
   as_root mv -Tf "$PLX_RELEASES/.$1.new" "$PLX_RELEASES/$1"
 }
 
+# raise_alarm KEY MESSAGE: the host alarm (deploy/ops/host/unit_alarm.py raise), on the root
+# disk where the notifier reads it; a failure to record it is said, never fatal
+raise_alarm() {
+  python3 "$here/../ops/host/unit_alarm.py" --ops-dir "$HOST_OPS" raise "$1" "$2" >/dev/null 2>&1 \
+    || echo "plx-release: alarm not recorded: $2" >&2
+}
+
+preflight() {  # preflight <id>: the API's own configuration check of release <id>
+  local id=${1:?preflight needs a release id} unit
+  [ -f "$PLX_RELEASES/$id/RELEASE.json" ] || die "no built release $id"
+  unit="plx-api-check@$id.service"
+  if [ "$(systemctl show -p LoadState --value "$unit" 2>/dev/null)" != loaded ]; then
+    [ "${PLX_RELEASE_PREFLIGHT:-auto}" = required ] && die "preflight: $unit is not installed (deploy/ops/host/install.py)"
+    log "preflight $id skipped: check unit not installed"
+    echo "preflight $id skipped: plx-api-check@.service is not installed"
+    return 0
+  fi
+  # the check unit runs one fixed release root (WorkingDirectory=/data/plx-releases/%i); a
+  # release built under another $PLX_RELEASES (a test or staging root) is not the one it would
+  # check, so starting it would judge a different (or missing) tree: said and skipped, or
+  # refused when the preflight is required. An unreadable WorkingDirectory still runs the check.
+  local wd; wd=$(systemctl show -p WorkingDirectory --value "$unit" 2>/dev/null || true)
+  if [ -n "$wd" ] && [ "$(readlink -f "$wd")" != "$(readlink -f "$PLX_RELEASES/$id")" ]; then
+    [ "${PLX_RELEASE_PREFLIGHT:-auto}" = required ] && die "preflight: $unit checks $wd, not $PLX_RELEASES/$id"
+    log "preflight $id skipped: check unit checks another release root"
+    echo "preflight $id skipped: $unit checks $wd, not $PLX_RELEASES/$id"
+    return 0
+  fi
+  if sudo -n systemctl start "$unit"; then
+    log "preflight $id ok"; echo "preflight $id ok"; return 0
+  fi
+  log "preflight $id FAILED"
+  journalctl -u "$unit" -n 15 -o cat --no-pager 2>/dev/null | grep -viE 'key|secret|token|password|dsn' >&2 || true
+  return 1
+}
+
 switch() {
   local id=${1:?switch needs a release id}
   [ -f "$PLX_RELEASES/$id/RELEASE.json" ] || die "no built release $id"
   if sealed; then verify "$id" >/dev/null || die "release $id is not sealed: not switched"; fi
   local old; old=$(current_id)
   [ "$old" = "$id" ] && { echo "already current: $id"; return 0; }
+  if [ "${2:-}" != --no-preflight ]; then
+    preflight "$id" || die "release $id failed its configuration check: not switched (current stays $old)"
+    # DEPLOY-MIG: Postgres must hold the release's migrations (plx-release migrate <id>); a
+    # rollback (--no-preflight) is never held by Postgres
+    pg_only && pending_or_die "$id" "not switched (current stays $old)"
+  fi
   relink current "$id"
   [ "$old" != none ] && relink previous "$old"
   log "switch $old -> $id"
@@ -260,41 +523,459 @@ switch() {
 rollback() {
   local prev; prev=$(basename "$(readlink "$PLX_RELEASES/previous" 2>/dev/null || true)")
   [ -n "$prev" ] || die "no previous release"
-  switch "$prev"
+  # back to what served before: its check passed when it was switched to, and a check that
+  # fails now (the host's configuration) must not keep the broken release in place
+  switch "$prev" --no-preflight
+}
+
+# mint_has_canary <mint>: the installed plx-mint-link knows --canary (the canary's own link)
+mint_has_canary() { grep -qF -- '"--canary"' "$1" 2>/dev/null; }
+
+# refresh_mint_link <mint>: an installed plx-mint-link without --canary is replaced by the
+# serving release's copy, before the probe needs it, so an old host copy (which reads --canary
+# as a TTL and refuses) never rolls a deploy back. Only from a sealed release (owned by the
+# release owner, nothing group/other-writable; never the repo checkout), only a copy that has
+# --canary (never a downgrade), never anything else.
+refresh_mint_link() {
+  local mint=$1 owner=${PLX_RELEASE_OWNER:-root}
+  local src; src="$PLX_RELEASES/$(current_id)/deploy/ops/plx-mint-link"
+  mint_has_canary "$mint" && return 0
+  [ -f "$src" ] && mint_has_canary "$src" || return 0
+  if [ "$(stat -L -c %U "$src")" != "$owner" ] || [ -n "$(find -L "$src" -perm /022)" ]; then
+    log "plx-mint-link not refreshed: $src is not sealed"; return 0
+  fi
+  sudo -n install -m 755 "$src" "$mint" >/dev/null 2>&1 \
+    && log "plx-mint-link refreshed from release $(current_id) (--canary)" \
+    || log "plx-mint-link could not be refreshed from release $(current_id)"
+}
+
+# auth_probe: one authenticated read through the Ask canary's service session (plx-mint-link
+# --canary: its own link file, ask-canary-access-link; the session is served /api/me); 0 = it
+# answered 200 (or the probe is off / not installed and not required). The owner's link file
+# (workbench-access-link) is never minted, read or used: a sign-in ticket works once, so a
+# probe through it left the owner a dead link after every deploy. A plx-mint-link that still
+# lacks --canary after the refresh leaves the check at /api/health (logged; required: refused).
+# Nothing secret is printed.
+auth_probe() {
+  local mode=${PLX_RELEASE_AUTH_PROBE:-auto} mint=${PLX_MINT_LINK:-/usr/local/sbin/plx-mint-link}
+  [ "$mode" = 0 ] && return 0
+  if [ ! -x "$mint" ]; then
+    [ "$mode" = required ] && { echo "auth probe: $mint is not installed" >&2; return 1; }
+    log "auth probe skipped: $mint not installed"; return 0
+  fi
+  refresh_mint_link "$mint"
+  if ! mint_has_canary "$mint"; then
+    [ "$mode" = required ] && { echo "auth probe: $mint has no --canary mode (the owner's link is never used)" >&2; return 1; }
+    log "auth probe skipped: $mint has no --canary mode; checked by /api/health only (the owner's link is never used)"
+    return 0
+  fi
+  local link="$HOME/.config/plx/ask-canary-access-link" jar body code=000
+  sudo -n "$mint" --canary >/dev/null 2>&1 || { echo "auth probe: the canary link could not be minted" >&2; return 1; }
+  jar=$(mktemp); body=$(mktemp); chmod 600 "$jar" "$body"
+  python3 -I -c 'import json,sys;u=open(sys.argv[1]).read().strip();print(json.dumps({"ticket":u.split("#ticket=",1)[1]}))' \
+    "$link" > "$body" 2>/dev/null \
+    && curl -s -m 30 -o /dev/null -c "$jar" -H 'Content-Type: application/json' --data @"$body" \
+         "$PLX_API_URL/api/auth/dev-login" >/dev/null 2>&1 \
+    && code=$(curl -s -m 60 -o /dev/null -w '%{http_code}' -b "$jar" "$PLX_API_URL/api/me" || true)
+  rm -f "$jar" "$body"
+  [ "$code" = 200 ] || { echo "auth probe: /api/me answered $code" >&2; return 1; }
+}
+
+# serving: /api/health 200 (up to 3 min: the API loads its readers) and the authenticated read
+serving() {
+  local code=000 i
+  for i in $(seq 1 60); do
+    code=$(curl -s -m 10 -o /dev/null -w '%{http_code}' "$PLX_API_URL/api/health" || true)
+    [ "$code" = 200 ] && break; sleep 3
+  done
+  [ "$code" = 200 ] || { echo "health=$code"; return 1; }
+  auth_probe || { echo "health=200 auth=failed"; return 1; }
+  # DEPLOY-MIG: never healthy while a migration of the release it serves is pending
+  if pg_only; then
+    local st pend; st=$(pg_migrations "$PLX_RELEASES/$(current_id)" status) || st=""
+    pend=$(mig_field "${st:-x}" pending)
+    [ "$pend" = "?" ] && { echo "health=200 auth=ok migrations=unreadable"; return 1; }
+    [ -z "$pend" ] || { echo "health=200 auth=ok migrations=pending:${pend// /,}"; return 1; }
+    echo "health=200 auth=ok migrations=none-pending"; return 0
+  fi
+  echo "health=200 auth=ok"
+}
+
+# plx-ingest drained, not killed: SIGTERM to its main process only (a host that drains ends each
+# capture at a safe point within its drain bound and exits 0), bounded; then started on current.
+restart_ingest_drained() {
+  systemctl is-active -q plx-ingest || return 0
+  local bound t0
+  bound=$(python3 -I -c 'import json,sys
+try:
+    v = json.load(open(sys.argv[1])).get("drain_seconds")
+    print(int(v) if isinstance(v, (int, float)) and not isinstance(v, bool) and v > 0 else 60)
+except (OSError, ValueError):
+    print(60)' "${PLX_INGEST_STATE:-/data/plx-state}/host/serve-health.json" 2>/dev/null || echo 60)
+  t0=$(date +%s)
+  sudo systemctl kill --kill-whom=main -s TERM plx-ingest
+  until ! systemctl is-active -q plx-ingest || [ $(( $(date +%s) - t0 )) -gt $(( bound + 90 )) ]; do sleep 1; done
+  systemctl is-active -q plx-ingest && sudo systemctl stop plx-ingest
+  sudo systemctl start plx-ingest
+  log "ingest drain restart in $(( $(date +%s) - t0 )) s (bound $bound s)"
+}
+
+api_get() {  # api_get <port|standby> <path> [curl options]: plx-api by $PLX_API_URL, the
+  # standby by its socket
+  local who=$1 path=$2; shift 2
+  if [ "$who" = "$API_PORT" ]; then curl -s -m 5 "$@" "${PLX_API_URL%/}$path"
+  else curl -s -m 5 "$@" --unix-socket "$STANDBY_SOCKET" "http://localhost$path"; fi
+}
+
+api_health() {  # api_health <port|standby>: the HTTP status of /api/health
+  api_get "$1" /api/health -o /dev/null -w '%{http_code}' || true
+}
+
+cold_restart_api() {  # the API restarted in place, then /api/health (the pre-ARCH-T6 restart)
+  # restart, not try-restart: a deploy stopped half way leaves plx-api stopped and the standby
+  # serving, and try-restart would leave 8780 down
+  sudo systemctl restart "$API_UNIT" || true
+  local code=000 i standby; standby=$(slot_unit "$STANDBY")
+  for i in $(seq 1 60); do
+    code=$(api_health "$API_PORT")
+    [ "$code" = 200 ] && break; sleep 3
+  done
+  # 8780 serves again: a standby still up (that half-finished deploy's) stops once Caddy
+  # passes back to 8780, so no reader stays on another release
+  if [ "$code" = 200 ] && systemctl is-active -q "$standby"; then
+    sleep "$PASS_OVER_S"; sudo systemctl stop "$standby" || true
+  fi
+  echo "$code"
 }
 
 restart() {
-  local units=$LONG_RUNNING
-  [ "${1:-}" = "--with-ingest" ] && units="$units plx-ingest"
-  # stopped while unused (it loads current on start) is read before the restart: after it, an
-  # API the new release crashes is "activating" or "failed", never a stopped one
+  local units="" u cold=0 ingest=0 with=""
+  for u in "$@"; do
+    case $u in
+      --with-ingest) ingest=1 ;;
+      --cold) cold=1 ;;
+      *) die "unknown option $u" ;;
+    esac
+    with="$with $u"
+  done
+  for u in $LONG_RUNNING; do [ "$u" = plx-api ] || units="$units $u"; done
+  # stopped while unused is read before the restart: after it, an API the new release
+  # crashes is "activating" or "failed", never a stopped one
   local api_was_active=yes
-  systemctl is-active -q plx-api || api_was_active=no
+  systemctl is-active -q "$API_UNIT" || api_was_active=no
+  if [ "$api_was_active" = no ] && systemctl is-active -q "$(slot_unit "$STANDBY")"; then
+    api_was_active=yes   # a deploy stopped half way: the standby serves
+  fi
   # A oneshot unit (plx-search-follow) restarted mid-run holds try-restart until its whole run
   # ends (11-13: a deploy waited 30+ min); it loads current on its next run, so queue its
   # restart without waiting. Long-running services are still restarted and waited for.
-  local svc="" one="" u
+  # The API and the app are always up: restarted, or started when stopped (11-13 auto-deploy
+  # stopped them after every deploy, and a stopped API skipped the health check entirely).
+  # A serving API is never restarted here: the warm switch (or an in-place restart) below.
+  local svc="" one="" up=""
   for u in $units; do
+    case " $ALWAYS_UP " in *" $u "*) up="$up $u"; continue ;; esac
     if [ "$(systemctl show "$u" -p Type --value 2>/dev/null)" = oneshot ]; then one="$one $u"; else svc="$svc $u"; fi
   done
+  local api=""
+  if [ "$api_was_active" = no ] && [ "${PLX_RELEASE_API_KEPT:-0}" != 1 ]; then
+    up="$API_UNIT$up"; api="started"   # nothing it serves is cut off
+  fi
+  # shellcheck disable=SC2086
+  [ -z "$up" ] || sudo systemctl restart $up || true     # a unit that does not start fails serving
   # shellcheck disable=SC2086
   [ -z "$svc" ] || sudo systemctl try-restart $svc
   # shellcheck disable=SC2086
   [ -z "$one" ] || sudo systemctl try-restart --no-block $one
-  sudo systemctl reload-or-restart plx-caddy 2>/dev/null || true
-  if [ "$api_was_active" = no ]; then
-    log "restart ($units) api=stopped on $(current_id)"
-    echo "$(plx_now) restarted on $(current_id): api stopped (loads current when started)"
-    return 0
+  # a reload drops requests under way: only when the Caddyfile changed with the release
+  if ! cmp -s "$PLX_CURRENT/deploy/Caddyfile" "$PLX_RELEASES/previous/deploy/Caddyfile"; then
+    sudo systemctl reload-or-restart "$CADDY_UNIT" 2>/dev/null || true
   fi
-  local code=000 i
-  for i in $(seq 1 60); do
-    code=$(curl -s -o /dev/null -w '%{http_code}' "$PLX_API_URL/api/health" || true)
-    [ "$code" = 200 ] && break; sleep 3
+  [ "$ingest" = 1 ] && { restart_ingest_drained; units="$units plx-ingest"; }
+  local why="" warm_failed=0
+  if [ "${PLX_RELEASE_API_KEPT:-0}" = 1 ]; then
+    api="kept: it serves the release rolled back to"
+  elif [ -z "$api" ]; then
+    if [ "$cold" = 1 ]; then why="--cold asked"
+    else why=$(warm_refusal); fi
+    if [ -z "$why" ]; then
+      if warm_switch; then api="warm switch"; else api="warm switch failed"; warm_failed=1; fi
+    else
+      echo "$(plx_now) warm switch off: $why; the API restarts in place" >&2
+      cold_restart_api >/dev/null
+      api="cold: $why"
+    fi
+  fi
+  local seen bad
+  if [ "$warm_failed" = 1 ]; then seen="not switched"; bad=1
+  else seen=$(serving) && bad=0 || bad=1; fi
+  log "restart ($units) $seen ($api) on $(current_id)"
+  echo "$(plx_now) restarted on $(current_id): $seen ($api)"
+  [ "$bad" = 0 ] && return 0
+  local failed prev; failed=$(current_id)
+  prev=$(basename "$(readlink "$PLX_RELEASES/previous" 2>/dev/null || true)")
+  local served=""
+  [ "$warm_failed" = 1 ] && served="; the API that served before still serves"
+  if [ "${PLX_RELEASE_NO_ROLLBACK:-0}" = 1 ] || [ -z "$prev" ] || [ "$prev" = "$failed" ]; then
+    if [ "$warm_failed" = 1 ]; then
+      # nothing to roll back to and the other units already run $failed: the API restarts in
+      # place on it too, so the app and the API never run different releases
+      local code; code=$(cold_restart_api)
+      served="; the API was restarted in place on it (health=$code)"
+    fi
+    raise_alarm release "release $failed is not serving ($seen$served) and there is nothing to roll back to"
+    die "API not serving on $failed ($seen$served); no rollback"
+  fi
+  rollback >/dev/null
+  # a warm switch that failed before plx-api.service restarted leaves it serving what it ran
+  # (the release rolled back to): the rollback restarts the other units only
+  local kept=0
+  [ "$warm_failed" = 1 ] && systemctl is-active -q "$API_UNIT" && kept=1
+  local after
+  # shellcheck disable=SC2086
+  after=$(PLX_RELEASE_NO_ROLLBACK=1 PLX_RELEASE_API_KEPT=$kept "$0" restart $with 8>&- 2>&1 | tail -1) && bad=0 || bad=1
+  if [ "$bad" = 0 ]; then
+    raise_alarm release "release $failed was not serving ($seen$served): rolled back to $prev, which serves"
+  else
+    raise_alarm release "release $failed was not serving ($seen$served); rolled back to $prev, which does not serve either ($after)"
+  fi
+  die "API not serving on $failed ($seen$served): rolled back to $prev (${after:-})"
+}
+
+deploy() {
+  local id=${1:?deploy needs a release id}
+  migrate "$id"   # nothing applied and nothing switched when it fails or a window is open
+  switch "$id"
+  restart   # a release that does not serve is rolled back by restart itself (exit 1)
+  echo "$(plx_now) deployed release $id"
+}
+
+# ---- warm switch (ARCH-T6) -----------------------------------------------------------------
+
+slot_unit() {  # the unit that serves on port $1 (8780), else plx-api@$1 (the standby)
+  if [ "$1" = "$API_PORT" ]; then echo "$API_UNIT"; else echo "$API_UNIT@$1"; fi
+}
+
+priv() {  # priv CMD...: as the caller when it may write $HOLD_DIR's parent, else sudo -n
+  if [ -w "$(dirname "$HOLD_DIR")" ]; then "$@"; else sudo -n "$@"; fi
+}
+
+hold() { priv mkdir -p "$HOLD_DIR" && priv touch "$HOLD_DIR/hold-$1"; }
+unhold() { priv rm -f "$HOLD_DIR/hold-$1"; }
+
+caddy_sends_to_standby() {  # whether the running Caddy's config names the standby's socket
+  local config
+  config=$(sudo -n -u "$CADDY_USER" curl -s -m 5 --unix-socket "$CADDY_ADMIN" \
+           http://localhost/config/apps/http/servers 2>/dev/null) || return 1
+  [[ $config == *\"dial\":\"unix/$STANDBY_SOCKET\"* ]]
+}
+
+mem_available_mb() { awk '/^MemAvailable:/{print int($2/1024)}' "$MEMINFO"; }
+
+api_memory_mb() {  # what the serving API holds now: its cgroup's anonymous memory, else all
+  local unit="$API_UNIT"
+  systemctl is-active -q "$unit" >/dev/null || unit=$(slot_unit "$STANDBY")
+  local cg="$CGROUP_ROOT/system.slice/$unit.service/memory.stat" bytes=""
+  [ -r "$cg" ] && bytes=$(awk '$1=="anon"{print $2}' "$cg")
+  [ -n "$bytes" ] || bytes=$(systemctl show -p MemoryCurrent --value "$unit")
+  [[ $bytes =~ ^[0-9]+$ ]] || return 1
+  echo $((bytes / 1048576))
+}
+
+pg_room() {  # empty when Postgres can take a second API's sessions, else why not
+  pg_only || return 0
+  local dsn; dsn=$(pg_dsn)
+  [ -n "$dsn" ] || { echo "no PLX_PG_DSN to count the API's Postgres sessions"; return 0; }
+  local row
+  row=$(psql "$dsn" -XAtq -v ON_ERROR_STOP=1 -v role="$API_ROLE" -v app="$API_UNIT" <<'SQL' 2>/dev/null
+SELECT CASE WHEN r.rolconnlimit < 0 THEN current_setting('max_connections')::int
+            ELSE r.rolconnlimit END,
+       (SELECT count(*) FROM pg_stat_activity a
+         WHERE a.usename = r.rolname OR (r.rolconnlimit < 0 AND a.usename IS NOT NULL)),
+       (SELECT count(*) FROM pg_stat_activity a WHERE a.application_name = :'app')
+  FROM pg_roles r WHERE r.rolname = :'role';
+SQL
+  ) || true
+  [[ $row =~ ^([0-9]+)\|([0-9]+)\|([0-9]+)$ ]] \
+    || { echo "the API's Postgres sessions could not be counted"; return 0; }
+  local limit=${BASH_REMATCH[1]} used=${BASH_REMATCH[2]} api=${BASH_REMATCH[3]}
+  if [ $((used + api + PG_MARGIN)) -gt "$limit" ]; then
+    echo "Postgres has no room for a second API ($API_ROLE: $used of $limit sessions in use, the API holds $api)"
+  fi
+}
+
+# the settings that decide what the API may read, write and run: equal for both units
+PARITY="User Group SupplementaryGroups DynamicUser WorkingDirectory RootDirectory Environment
+EnvironmentFiles UnsetEnvironment PassEnvironment ExecStart ProtectSystem ProtectHome
+ReadWritePaths ReadOnlyPaths InaccessiblePaths BindPaths BindReadOnlyPaths TemporaryFileSystem
+StateDirectory StateDirectoryMode CapabilityBoundingSet AmbientCapabilities SystemCallFilter
+SystemCallErrorNumber NoNewPrivileges UMask PrivateTmp PrivateDevices PrivateNetwork
+RestrictAddressFamilies RestrictNamespaces RestrictSUIDSGID LockPersonality ProtectKernelTunables
+ProtectKernelModules ProtectKernelLogs ProtectControlGroups ProtectClock ProtectHostname
+OOMScoreAdjust CPUWeight IOWeight CPUQuotaPerSecUSec MemoryMax MemoryHigh TasksMax Nice LimitNOFILE
+Restart TimeoutStopUSec Slice"
+
+unit_settings() {  # unit_settings <unit>: PARITY as key=value, the unit's own name and where
+  # it serves (the standby's socket) written as the serving unit's (ExecStart: argv only)
+  systemctl show "$1" $(printf -- '-p %s ' $PARITY) | sed -e 's/^\(ExecStart=\).*argv\[\]=\([^;]*\);.*/\1\2/' \
+    -e "s/$1\b/$API_UNIT/g" -e "s|--unix-socket [^ ]*|--port $API_PORT|g" | sort
+}
+
+slot_conf() {  # the standby's ExecStart drop-in: plx-api.service's own argv, --port %i
+  local argv
+  argv=$(systemctl show -p ExecStart --value "$API_UNIT" | sed -n 's/.*argv\[\]=\([^;]*\) ;.*/\1/p')
+  argv=${argv% }
+  [ "$(grep -o -- "--port $API_PORT\b" <<<"$argv" | wc -l)" = 1 ] || return 1
+  [[ $argv =~ ^[A-Za-z0-9_./=:@$\ -]+$ ]] || return 1
+  printf '%s\n' "# written by plx-release (ARCH-T6): $API_UNIT.service's own ExecStart on the standby's socket;" \
+    "# every other setting comes from the mirrored $API_UNIT.service drop-ins beside this file" \
+    "[Service]" "ExecStart=" "ExecStart=${argv/--port $API_PORT/--unix-socket /run/plx-api-%i/api.sock}"
+}
+
+SYNC_DRY=0   # 1 (plx-release slots): only say whether the mirror is out of date
+slots_sync() {  # mirror plx-api.service's drop-ins into plx-api@.service.d; prints "changed"
+  local dir="$UNIT_DIR/$API_UNIT@.service.d" want conf changed=0 path name
+  want=$(slot_conf) || { echo "$API_UNIT.service's ExecStart does not name --port $API_PORT once"; return 1; }
+  [ "$SYNC_DRY" = 1 ] || sudo -n mkdir -p "$dir" || return 1
+  local keep=" zzzz-slot.conf "
+  for path in $(systemctl show -p DropInPaths --value "$API_UNIT"); do
+    case $path in */"$API_UNIT".service.d/*.conf) ;; *) continue ;; esac   # not the prefix ones
+    name=$(basename "$path")
+    [[ $name < zzzz-slot.conf ]] || { echo "drop-in $name sorts after zzzz-slot.conf"; return 1; }
+    keep="$keep$name "
+    if [ "$(readlink "$dir/$name" 2>/dev/null)" != "$path" ]; then
+      changed=1; [ "$SYNC_DRY" = 1 ] || sudo -n ln -sfn "$path" "$dir/$name" || return 1
+    fi
   done
-  log "restart ($units) api=$code on $(current_id)"
-  echo "$(plx_now) restarted on $(current_id): api=$code"
-  [ "$code" = 200 ] || die "API not healthy; roll back with: $0 rollback && $0 restart"
+  if [ "$(cat "$dir/zzzz-slot.conf" 2>/dev/null)" != "$want" ]; then
+    changed=1
+    if [ "$SYNC_DRY" = 0 ]; then
+      printf '%s\n' "$want" | sudo -n tee "$dir/zzzz-slot.conf" >/dev/null || return 1
+      sudo -n chmod 0644 "$dir/zzzz-slot.conf" || return 1
+    fi
+  fi
+  for path in "$dir"/*; do   # a drop-in plx-api.service no longer has
+    [ -e "$path" ] || [ -L "$path" ] || continue
+    name=$(basename "$path")
+    case $keep in *" $name "*) ;; *) changed=1; [ "$SYNC_DRY" = 1 ] || sudo -n rm -f "$path" || return 1 ;; esac
+  done
+  [ "$changed" = 1 ] || return 0
+  if [ "$SYNC_DRY" = 1 ]; then echo "out of date (plx-release slots sync)"; return 1; fi
+  sudo -n systemctl daemon-reload || return 1
+  echo changed
+}
+
+warm_refusal() {  # empty when the warm switch may run, else why not
+  local standby; standby=$(slot_unit "$STANDBY")
+  [ "$(systemctl show -p LoadState --value "$standby")" = loaded ] \
+    || { echo "$API_UNIT@.service is not installed"; return; }
+  local out; out=$(slots_sync) || { echo "the standby's drop-ins were not synced: $out"; return; }
+  local diff
+  diff=$(diff <(unit_settings "$API_UNIT") <(unit_settings "$standby") \
+         | sed -n 's/^[<>] \([A-Za-z]*\)=.*/\1/p' | sort -u | tr '\n' ' ')
+  [ -z "$diff" ] || { echo "$standby differs from $API_UNIT in: $diff"; return; }
+  local avail have
+  avail=$(mem_available_mb); have=$(api_memory_mb) || { echo "the API's memory could not be read"; return; }
+  if [ $((avail - have)) -lt "$MEM_RESERVE_MB" ]; then
+    echo "memory: ${avail} MB available, a second API needs ~${have} MB and ${MEM_RESERVE_MB} MB stay free"
+    return
+  fi
+  local pg; pg=$(pg_room)
+  [ -z "$pg" ] || { echo "$pg"; return; }
+  caddy_sends_to_standby \
+    || echo "the running Caddy does not send /api/* to $STANDBY_SOCKET (reload plx-caddy on a Caddyfile that does)"
+}
+
+release_code() {  # the code version of current's operator_api (what /api/ready reports)
+  (cd "$PLX_CURRENT" && env -u PLX_WORKBENCH_API_KEY "$PLX_VENV/bin/python3" -c \
+    'from operator_api.page_store import code_version; print(code_version())' 2>/dev/null)
+}
+
+wait_ready() {  # wait_ready <port> <code version>: 0 once ready on that code, else 1 (says why)
+  local port=$1 want=$2 unit; unit=$(slot_unit "$1")
+  local end=$((SECONDS + READY_S)) body state healthy=0
+  while [ $SECONDS -lt $end ]; do
+    state=$(systemctl is-active "$unit" || true)
+    [ "$state" = active ] || { echo "$unit is $state" >&2; return 1; }
+    if [ "$(mem_available_mb)" -lt "$MEM_FLOOR_MB" ]; then
+      echo "memory under ${MEM_FLOOR_MB} MB available while $unit warmed" >&2; return 1
+    fi
+    if [ "$healthy" = 0 ]; then
+      [ "$(api_health "$port")" = 200 ] && healthy=1
+    fi
+    if [ "$healthy" = 1 ]; then
+      body=$(api_get "$port" /api/ready || true)
+      if [[ $body =~ \"ready\":\ *true ]]; then
+        [[ $body =~ \"code_version\":\ *\"$want\" ]] && return 0
+        echo "$unit is ready on another code version than $(current_id)" >&2; return 1
+      fi
+    fi
+    sleep 2
+  done
+  echo "$unit not ready within ${READY_S} s" >&2
+  return 1
+}
+
+hold_of() { if [ "$1" = "$API_PORT" ]; then echo "$API_PORT"; else echo "$STANDBY_HOLD"; fi; }
+
+start_held() {  # start_held <port|standby> <code>: its unit (re)started on current, its port or
+  # socket opened only once warm (the hold file), and ready on that code; 1 (says why) otherwise
+  local unit name; unit=$(slot_unit "$1"); name=$(hold_of "$1")
+  local t0=$SECONDS
+  hold "$name" || { echo "no hold file in $HOLD_DIR" >&2; return 1; }
+  # interrupted: no hold file outlives this run (a later start would hold; server.py also
+  # ignores one older than 15 min)
+  trap "unhold '$name'; exit 130" INT TERM HUP
+  if ! sudo systemctl restart "$unit" || ! wait_ready "$1" "$2"; then
+    unhold "$name"; trap - INT TERM HUP; return 1
+  fi
+  unhold "$name"; trap - INT TERM HUP
+  echo "$(plx_now) $unit warm on $(current_id) in $((SECONDS - t0)) s"
+}
+
+warm_switch() {  # 0: plx-api.service serves current, warm; 1: the API that served still does
+  # the lock is released on every return: the self-rollback's nested restart switches again
+  # (11-15 review: it waited 900 s on this run's lock, plx-api left on the failed release).
+  # flock -u, not only the close: units started meanwhile may hold a copy of fd 8
+  exec 8>"${TMPDIR:-/tmp}/plx-api-switch-$(id -u).lock"
+  flock -w 900 8 || { exec 8>&-; echo "another switch holds the lock" >&2; return 1; }
+  local rc=0
+  warm_switch_locked || rc=$?
+  flock -u 8; exec 8>&-
+  return $rc
+}
+
+warm_switch_locked() {
+  local want standby; standby=$(slot_unit "$STANDBY")
+  unhold "$API_PORT"; unhold "$STANDBY_HOLD"   # an interrupted run's, if any
+  want=$(release_code) && [ -n "$want" ] \
+    || { echo "the code version of $(current_id) could not be read" >&2; return 1; }
+  if systemctl is-active -q "$API_UNIT"; then
+    # the standby, warm on current, takes the readers while plx-api.service restarts
+    if ! start_held "$STANDBY" "$want"; then
+      sudo systemctl stop "$standby" || true
+      echo "$standby was not ready on $(current_id): $API_UNIT keeps serving the release it runs" >&2
+      return 1
+    fi
+  fi
+  # plx-api.service: SIGTERM closes 8780 and ends what is under way (Caddy sends the next
+  # request to the standby), then it starts on current and opens 8780 once warm
+  if ! start_held "$API_PORT" "$want"; then
+    sudo systemctl stop "$API_UNIT" || true
+    echo "$API_UNIT was not ready on $(current_id): $standby keeps serving it" >&2
+    return 1
+  fi
+  # Caddy passes over an upstream that refused for its fail_duration: then 8780 serves again
+  sleep "$PASS_OVER_S"
+  sudo systemctl stop "$standby" || true
+  return 0
+}
+
+slots() {
+  echo "$API_UNIT: $(systemctl is-active "$API_UNIT" || true); $(slot_unit "$STANDBY"): $(systemctl is-active "$(slot_unit "$STANDBY")" || true)"
+  if [ "${1:-}" = sync ]; then slots_sync || true; else SYNC_DRY=1; fi
+  local why; why=$(warm_refusal)
+  echo "warm switch: ${why:-on}"
 }
 
 status() {
@@ -347,6 +1028,6 @@ verify() {   # verify [<id>]: sealed = owned by the release owner, nothing group
 
 cmd=${1:-status}; shift || true
 case $cmd in
-  build|switch|rollback|restart|status|list|prune|verify) "$cmd" "$@" ;;
-  *) die "unknown command $cmd (build|switch|rollback|restart|status|list|prune|verify)" ;;
+  build|preflight|migrate|switch|rollback|restart|deploy|slots|status|list|prune|verify) "$cmd" "$@" ;;
+  *) die "unknown command $cmd (build|preflight|migrate|switch|rollback|restart|deploy|slots|status|list|prune|verify)" ;;
 esac

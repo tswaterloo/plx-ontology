@@ -14,6 +14,8 @@ import unittest
 from ontology import store_ddl
 from operating import customer_profit as cp
 from operating import ontology_tools as ot
+from operating import ontology_tools_policy
+from operating import ontology_tools_results
 from tests.test_customer_profit import FULL, READER, TODAY, World
 
 
@@ -39,7 +41,7 @@ class SnapshotReadsTests(unittest.TestCase):
 
     def read(self, base, actor=FULL) -> dict:
         table: dict = {}
-        ot.register(table, base)
+        ontology_tools_results.register(table, base)
         return table["plx.object"]["handler"]({"object_id": self.customer}, actor)
 
     def test_one_read_per_scope_and_the_same_answer(self) -> None:
@@ -63,7 +65,7 @@ class SnapshotReadsTests(unittest.TestCase):
 
         store._primary_identifiers_read = counted_ids   # type: ignore[method-assign]
         self.addCleanup(lambda: delattr(store, "_primary_identifiers_read"))
-        with ot.snapshot_reads():
+        with ontology_tools_policy.snapshot_reads():
             first = self.read(self.world.base)
             second = self.read(self.world.base)
         self.assertNotIn([self.customer], idents[1:])   # its identifiers read once too
@@ -89,7 +91,7 @@ class SnapshotReadsTests(unittest.TestCase):
 
         store._links_of_read = counted   # type: ignore[method-assign]
         self.addCleanup(lambda: delattr(store, "_links_of_read"))
-        with ot.snapshot_reads():
+        with ontology_tools_policy.snapshot_reads():
             first, narrow = self.read(self.world.base), self.read(self.narrow)
             second = self.read(self.world.base)
         self.assertEqual(reads.count(self.customer), 1)
@@ -100,7 +102,7 @@ class SnapshotReadsTests(unittest.TestCase):
 
     def test_a_narrower_reader_never_sees_through_the_kept_answer(self) -> None:
         self.assertIn("error", self.read(self.narrow))
-        with ot.snapshot_reads():
+        with ontology_tools_policy.snapshot_reads():
             self.assertNotIn("error", self.read(self.world.base))
             narrow = self.read(self.narrow)
             self.assertEqual(narrow["error"]["code"], "object_not_found")
@@ -128,7 +130,7 @@ class SnapshotReadsTests(unittest.TestCase):
         plain = cp.profitability(world.call, customer, today=TODAY)
         self.assertGreater(len(set(seen)), 1)   # outside it each call reads its own now
         seen.clear()
-        with ot.snapshot_reads():
+        with ontology_tools_policy.snapshot_reads():
             first = next(ticks)
             pinned = cp.profitability(world.call, customer, today=TODAY)
         self.assertTrue(seen)
@@ -170,10 +172,10 @@ class SnapshotGateTests(unittest.TestCase):
         plain = {who: t.call("plx.around", args, who) for who in (tot.OPS, tot.FULL)}
         once = len([1 for a, _h in decided if a == tot.OPS])
         decided.clear()
-        with ot.snapshot_reads():
+        with ontology_tools_policy.snapshot_reads():
             ops = [t.call("plx.around", args, tot.OPS) for _ in range(3)]
             full = t.call("plx.around", args, tot.FULL)
-            gates = [g[2] for g in ot.current_snapshot()["gates"].values()]
+            gates = [g[2] for g in ontology_tools_policy.current_snapshot()["gates"].values()]
             self.assertEqual(len(gates), 2)   # one gate per reader
             gate = lambda name, h: t.store.conn.execute(  # noqa: E731
                 f"SELECT {name}(?)", (h,)).fetchone()[0]
@@ -218,8 +220,8 @@ class HopReachTests(unittest.TestCase):
                     and h not in deny)(set(denied))
             t = opened(gate)
             for actor in (tot.FULL, tot.OPS, tot.OUTSIDER):
-                with ot.snapshot_reads(), t.store.lock:
-                    name = t._snapshot_gate(ot.current_snapshot(), actor)
+                with ontology_tools_policy.snapshot_reads(), t.store.lock:
+                    name = t._snapshot_gate(ontology_tools_policy.current_snapshot(), actor)
                     scope = t._scope(actor, {}, name)
                     for lt, d in pairs:
                         sql = t._hop_edges(scope, lt, d, objects)

@@ -54,7 +54,7 @@ class Cached:
     lists: dict[str, list[tuple[str, float]]]
     info: dict[str, dict[str, Any]]
     rerank: dict[str, float]
-    # the targets (``scripts.eval_retrieval``): which target documents a candidate
+    # The retrieval eval targets (``scripts.eval_retrieval``): which target documents a candidate
     # row is (``match(row) -> target keys``) and how many can be found in a top 10
     # (``denominator``); None: ``relevant`` keys matched exactly, recall over all of them.
     match: Callable[[Mapping[str, Any]], set[str]] | None = None
@@ -91,7 +91,7 @@ def gather(rows: Sequence[Mapping[str, Any]], *, dsn: str | None, allowed: Itera
             texts = query.texts()
             linked = [(oid, 0.5 * s) for oid, s in query.candidate_ids()]
             jobs = {"exact_id": lambda: rt.exact(conn, scope, query.resolved_ids(),
-                                                 query.id_tokens(), DEPTH),
+                                                 query.code_tokens(), DEPTH),
                     "bm25": lambda: rt.bm25(conn, scope, texts, DEPTH),
                     "fuzzy": lambda: rt.fuzzy(conn, scope, query.question, DEPTH),
                     "graph": lambda: rt.graph(conn, scope, linked, DEPTH)}

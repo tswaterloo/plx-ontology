@@ -56,6 +56,7 @@ import sqlite3
 import time
 from typing import Any, Callable, Iterable, Iterator, Mapping
 
+from ontology import parent_watch
 from ontology import mentions as M
 
 TASK_GROUPS = 8          # groups a worker reads in one task
@@ -252,7 +253,7 @@ class GroupReader:
                     self._pool = futures.ProcessPoolExecutor(
                         max_workers=self.count,
                         mp_context=multiprocessing.get_context("spawn"),
-                        initializer=_init, initargs=(self._payload,))
+                        **parent_watch.pool_init(_init, (self._payload,)))
             except Exception as exc:  # noqa: BLE001 - every group read here
                 self.reason = f"workers_failed:{type(exc).__name__}"
                 self._broken = True

@@ -1519,8 +1519,8 @@ class SiteResolvedUnitTests(UseCaseIntakeTestCase):
         self.assertEqual(unit["state"], "incomplete")
         self.assertIn("withheld:2", unit["reasons"])
         self.assertEqual(report["summary"]["artifacts"], 5)
-        self.assertNotIn(f"/download/F-PDF", self.fake.calls)
-        self.assertNotIn(f"/download/F-PNG", self.fake.calls)
+        self.assertNotIn("/download/F-PDF", self.fake.calls)
+        self.assertNotIn("/download/F-PNG", self.fake.calls)
 
     def test_ingestion_cli_build_resolves_the_site_for_the_worker_and_live_sources(self):
         # operating.ingestion._build (used by `ingestion run` and the ingest

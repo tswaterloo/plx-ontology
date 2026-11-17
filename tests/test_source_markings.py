@@ -476,6 +476,13 @@ class RelationMarkingTests(unittest.TestCase):
                      NULL);""")
             db.commit()
             db.close()
+            # The committed profile as this state's own, profiled now: its age is not
+            # what this test reads (the committed one ages past MAX_AGE_DAYS on its own).
+            import datetime
+            doc = json.loads(rm.PROFILE.read_text(encoding="utf-8"))
+            doc["profiled_at"] = datetime.datetime.now(
+                datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+            Path(state, rm.STATE_PROFILE).write_text(json.dumps(doc))
             health = truth_check._money_profile(Path(state))
             self.assertEqual(health["problems"], ["mirror_generation_not_profiled"])
             self.assertEqual((health["tripwire"]["columns"], health["tripwire"]["cells"]),

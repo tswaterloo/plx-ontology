@@ -91,7 +91,7 @@ from evals import measure as measuring
 from evals import runner
 from evals import score as scoring
 # The tiers at which an identity link joins one record: the ontology tools' one rule.
-from operating.ontology_tools import _IDENTITY_TIERS as IDENTITY_TIERS
+from operating.ontology_tools_policy import _IDENTITY_TIERS as IDENTITY_TIERS
 
 BASELINE_FORMAT = "plx-eval-dev-baseline/v1"
 METRIC = "dev_set_claim_gate/v1"
@@ -135,6 +135,7 @@ def ontology_tool_table(store_path: Any, *, tenant: str, principals: Sequence[st
     from ontology import store_ddl
     from operating import ontology_host
     from operating import ontology_tools as ot
+    from operating import ontology_tools_results
     from operating import ontology_tools_traverse as tt
 
     granted = set(principals)
@@ -149,7 +150,7 @@ def ontology_tool_table(store_path: Any, *, tenant: str, principals: Sequence[st
     if runtime is not None:
         return ontology_host.tool_table(base, runtime)
     table: dict[str, dict[str, Any]] = {}
-    ot.register(table, base)
+    ontology_tools_results.register(table, base)
     tt.register(table, tt.TraverseTools(base))
     return table
 
@@ -213,7 +214,7 @@ class ToolHost:
 
     def _case_tools(self) -> list[dict[str, Any]]:
         from operating import ontology_tools_investigate, ontology_tools_process
-        from operating.mcp_server import GENERIC_TOOLS
+        from operating.mcp_server_catalog import GENERIC_TOOLS
         own = (set(self._table) & GENERIC_TOOLS) | set(ontology_tools_investigate.TOOL_NAMES) \
             | set(ontology_tools_process.TOOL_NAMES)
         listed = [tool for tool in self.case_host.tools() if tool["name"] not in own]
@@ -244,7 +245,7 @@ class ToolHost:
         """A harness read (the case host's own, as built, including its host-code reads
         such as plx.source_citation); the ontology tools' table results are as built
         already."""
-        from operating.mcp_server import HOST_READS
+        from operating.mcp_server_catalog import HOST_READS
         handle = str(arguments.get("citation") or "")
         if self.documents is not None and name == "plx.source_citation" and \
                 handle.startswith("sharepoint://") and set(arguments) == {"citation"}:
@@ -473,7 +474,7 @@ class DeterministicInvestigator:
         whose stated match may make a root, ``ROOT_REASONS``; the plan resolves it again),
         else the question text itself: a lead (free text, a secondary reading) or a
         candidate stating no reason never binds it."""
-        from operating.ontology_tools import ROOT_REASONS
+        from operating.ontology_tools_policy import ROOT_REASONS
         candidates = found.get("candidates") if isinstance(found, Mapping) else None
         for candidate in candidates or ():
             matched = candidate.get("matched") or {}

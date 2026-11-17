@@ -41,7 +41,7 @@ import datetime as dt
 from decimal import Decimal
 import json
 import time
-from typing import Any, Callable, Mapping, MutableMapping, Sequence
+from typing import Any, Callable, Mapping, MutableMapping
 
 from ontology.json_contract import validate
 from ontology.units import unit_token
@@ -69,7 +69,7 @@ COMPONENTS = ("price", "material_cost", "returns_credits", "mix")
 
 
 def _contracts() -> Mapping[str, Any]:
-    from .ontology_tools import load_contracts
+    from .ontology_tools_policy import load_contracts
     return load_contracts()
 
 

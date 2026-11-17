@@ -16,6 +16,7 @@ import unittest
 from unittest import mock
 
 from verify import live_verify
+from verify import live_verify_policy
 from operating import session_identity
 from operator_api.workspace import console_ticket, session_journal
 from operator_api.workspace.session_journal import SessionJournal
@@ -224,7 +225,7 @@ class EmployeeRecordedTest(unittest.TestCase):
                 self.assertEqual(document["qualifying_sessions"], 0)
                 self.assertRegex(document["blocked_reason"], live_verify.ENUM_STRING)
         self.assertEqual(SPEC["blocked_when"], "blocked_reason")
-        self.assertIn(SPEC["blocked_cause"], live_verify.CAUSES)
+        self.assertIn(SPEC["blocked_cause"], live_verify_policy.CAUSES)
 
     def test_until_the_console_app_registration_exists_it_reads_blocked_as_a_later_ask(self):
         """The registration is checked first: a signed-in session cannot exist without it,

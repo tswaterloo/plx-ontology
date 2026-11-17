@@ -39,7 +39,8 @@ from operating import case_mail
 from operating.case_mail_scope import MailScope, MailScopeError
 from operating.case_runtime import CaseRuntime, build_live_readers
 from operating.cases import CitationUnresolvable
-from integrations.capture_mail import CaptureScope, MailCapture, MailCaptureStore
+from integrations.capture_mail import MailCapture, MailCaptureStore
+from integrations.capture_mail_scope import CaptureScope
 from operating.mcp_server import source_read
 
 PO_BOX = "order-confirmation@petrasoap.com"
@@ -49,8 +50,15 @@ PO_BOX_USER = {"id": VINCE_ID, "userPrincipalName": PO_UPN, "mail": "Order-Confi
                "proxyAddresses": ["SMTP:order-confirmation@petrasoap.com"]}
 OUTSIDE_USER = {"id": CEO_ID, "userPrincipalName": OUTSIDE, "mail": OUTSIDE,
                 "proxyAddresses": [f"SMTP:{OUTSIDE}"]}
+# The colleague copied on the confirmation: a tenant user with no captured mailbox, so only
+# the directory listing clears them (PRIV-1114-1: a tenant address nothing decides is
+# withheld, and its message with it).
+BUYER = "buyer@petrasoap.com"
+BUYER_USER = {"id": "12345678-aaaa-bbbb-cccc-0000000000b0", "userPrincipalName": BUYER,
+              "mail": BUYER, "proxyAddresses": [f"SMTP:{BUYER}"]}
 DIRECTORY = {VINCE_ID: PO_BOX_USER, PO_UPN: PO_BOX_USER, PO_BOX: PO_BOX_USER,
-             CEO_ID: OUTSIDE_USER, OUTSIDE: OUTSIDE_USER}
+             CEO_ID: OUTSIDE_USER, OUTSIDE: OUTSIDE_USER,
+             BUYER_USER["id"]: BUYER_USER, BUYER: BUYER_USER}
 PO_PATH = f"/v1.0/users/{VINCE_ID}/messages"
 OUT_PATH = f"/v1.0/users/{CEO_ID}/messages"
 
@@ -239,7 +247,7 @@ class CaseMailTestCase(unittest.TestCase):
     def project(self, runtime) -> None:
         """Project the state directory (mirror, mail capture, review store) into the
         store whose mention links relate mail to purchase orders."""
-        from operating.case_workspace_live import project_state
+        from operating.case_workspace_live_projection import project_state
         from operating.host import projection_path
 
         runtime.mirror.rows(PURCHASING, "public.app_supplier", limit=50)

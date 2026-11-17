@@ -1,0 +1,32 @@
+# Each person's document templates re-learned from what they sent (operating/doc_style_mine.py
+# learn): Word, Excel and PDF attachments a mailbox's owner sent and SharePoint files by who
+# saved them, the people exclusion first (unavailable: nothing read). Writes
+# ${PLX_INGEST_STATE}/doc-style/templates.json and exemplars/ (0600), which the API lists on
+# Templates ("learned from your documents") and Ask uses ("make a quote in my usual template
+# for ..."). Capture stores read-only; never sends or writes to a business system. Daily.
+[Unit]
+Description=PLX document templates re-learned from sent documents
+After=plx-ingest.service
+
+[Service]
+Type=oneshot
+User=@PLX_USER@
+Group=@PLX_GROUP@
+WorkingDirectory=@PLX_CURRENT@
+EnvironmentFile=/etc/plx/ingest.env
+EnvironmentFile=-@PLX_HOME@/.config/plx/proactive.env
+UnsetEnvironment=AZURE_CLIENT_SECRET BC_CLIENT_SECRET MICROSOFT_GRAPH_CLIENT_SECRET MC_MCP_API_KEY PLX_WORKBENCH_API_KEY AZURE_STORAGE_KEY AZURE_DOC_INTEL_KEY PLX_WORKBENCH_SESSION_SECRET
+Environment=PATH=/data/venv/bin:/usr/local/bin:/usr/bin:/bin
+Environment=PGAPPNAME=%N
+ExecStart=/data/venv/bin/python3 -m operating.doc_style_mine learn --state ${PLX_INGEST_STATE}
+ProtectSystem=strict
+ReadOnlyPaths=/data/plx-state
+ReadWritePaths=/data/plx-state/doc-style
+NoNewPrivileges=true
+PrivateTmp=true
+Nice=15
+CPUWeight=10
+MemoryHigh=2G
+MemoryMax=4G
+TimeoutStartSec=2h
+UMask=0077

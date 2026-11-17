@@ -13,7 +13,6 @@ from __future__ import annotations
 import collections
 import copy
 from datetime import datetime, timedelta, timezone
-import hashlib
 import io
 import json
 from pathlib import Path
@@ -35,6 +34,7 @@ from ontology.store import (ProjectionStore, ReadPolicy, StoreBuilder, StoreErro
                             content_digest)
 from ontology.types import Actor
 from operating import claim_checks
+from operating import claim_checks_parse
 
 KEY = "plxwb_" + "p" * 40
 BASE = "https://api.example.test"
@@ -324,20 +324,8 @@ def compiled_schema(document=DOMAIN):
     problems = json_contract.validate(document, fmt, root=fmt)
     if problems:
         raise AssertionError(problems)
-    try:
-        from ontology.schema import compile_documents  # L4 loader, once it lands
-    except ImportError:
-        compile_documents = None
-    if compile_documents is not None:
-        return compile_documents([("domains/fixture_purchasing.json", document)])
-    resolved = json.loads(json.dumps(document).replace(
-        json.dumps(EVIDENCE[0]), json.dumps(document["evidence_catalog"]["fixture"])))
-    return SimpleNamespace(
-        object_types={t["id"]: t for t in resolved["object_types"]},
-        link_types={link["id"]: link for link in resolved["link_types"]},
-        event_types={e["id"]: e for e in resolved["event_types"]}, action_types={},
-        digest="sha256:" + hashlib.sha256(json.dumps(
-            resolved, sort_keys=True).encode()).hexdigest())
+    from ontology.schema import compile_documents
+    return compile_documents([("domains/fixture_purchasing.json", document)])
 
 
 # ----------------------------------------------------------------------- harness
@@ -435,6 +423,41 @@ class RebuildTests(ProjectionCase):
         self.assertEqual(self.store(second).meta()["content_digest"], report2["content_digest"])
         self.assertEqual(sorted(p.name for p in first.parent.iterdir()),
                          ["one.sqlite", "two.sqlite"])  # no temp file left behind
+
+    def test_freshness_states_the_captures_age_at_the_build_and_stale_past_the_bound(self):
+        # AUD-16: store_meta.freshness said lag_seconds null and stale false for every
+        # source, a week-old capture included. A captured source states its age at the
+        # build and is stale once that age passes its bound.
+        def entry(name, clock, **kwargs):
+            path = Path(self.tmp.name) / name
+            with MirrorCaptures(self.mirror_path) as captures:
+                build_store(path, self.schema, {"portal_api": captures},
+                            normalizer=normalizer, clock=clock, **kwargs)
+            (found,) = json.loads(self.raw(path).execute(
+                "SELECT value FROM store_meta WHERE key = 'freshness'").fetchone()[0])
+            return found
+        base = entry("fresh/store.sqlite", lambda: T2)
+        captured = datetime.fromisoformat(base["captured_at"].replace("Z", "+00:00"))
+        self.assertEqual(base["lag_seconds"], int((T2 - captured).total_seconds()))
+        self.assertFalse(base["stale"])
+        week = timedelta(days=7)
+        old = entry("old/store.sqlite", lambda: T2 + week)
+        self.assertEqual(old["lag_seconds"], base["lag_seconds"] + int(week.total_seconds()))
+        self.assertTrue(old["stale"])
+        # a bound the caller names for the source decides, not the default
+        loose = entry("loose/store.sqlite", lambda: T2 + week,
+                      freshness_bounds={"portal_api": 30 * 86400.0})
+        self.assertFalse(loose["stale"])
+        tight = entry("tight/store.sqlite", lambda: T2 + timedelta(hours=2),
+                      freshness_bounds={"portal_api": 60.0})
+        self.assertTrue(tight["stale"])
+        # the build's clock never enters the content digest: the same captures built a
+        # week apart are the same content (lag_seconds and an age-only stale are volatile)
+        self.assertEqual(content_digest(self.raw(Path(self.tmp.name) / "fresh/store.sqlite")),
+                         content_digest(self.raw(Path(self.tmp.name) / "old/store.sqlite")))
+        from ontology.project import STALE_AFTER_SECONDS
+        from operating.host import DEFAULT_FRESHNESS_HOURS
+        self.assertEqual(STALE_AFTER_SECONDS, DEFAULT_FRESHNESS_HOURS * 3600.0)
 
     def test_counts_and_meta(self):
         counts = self.report["counts"]
@@ -619,7 +642,7 @@ class EvidenceTests(ProjectionCase):
                     claim["unit"] = value["unit"]
             items.append({"id": f"F{index + 1}", "texts": [],
                           "citations": [{"handle": value["l1_handle"], "status": "resolved"}],
-                          "value_claims": claim_checks.parse_value_claims(
+                          "value_claims": claim_checks_parse.parse_value_claims(
                               [claim], [value["l1_handle"]], [])})
         # The schema's quantity roles ground role claims (claim_checks contracts).
         contracts = self.store().claim_contracts(FINANCE)
@@ -652,7 +675,7 @@ class EvidenceTests(ProjectionCase):
         self.assertTrue(identifiers)
         items = [{"id": f"F{i + 1}", "texts": [],
                   "citations": [{"handle": row["l1_handle"], "status": "resolved"}],
-                  "value_claims": claim_checks.parse_value_claims(
+                  "value_claims": claim_checks_parse.parse_value_claims(
                       [{"value": row["raw"].strip(), "citation": row["l1_handle"],
                         "field": row["field_path"]}], [row["l1_handle"]], [])}
                  for i, row in enumerate(identifiers)]
@@ -1250,7 +1273,7 @@ class L8EndToEndTests(ProjectionCase):
             if value["value_type"] in ("money", "decimal", "date"):
                 items.append({"id": f"F{index + 1}", "texts": [], "citations": [
                     {"handle": citation["l1_handle"], "status": "resolved"}],
-                    "value_claims": claim_checks.parse_value_claims(
+                    "value_claims": claim_checks_parse.parse_value_claims(
                         [{"value": value["value"], "citation": citation["l1_handle"],
                           "field": citation["field_path"]}], [citation["l1_handle"]], [])})
         self.assertTrue(items)

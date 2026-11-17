@@ -36,7 +36,7 @@ from __future__ import annotations
 
 import re
 import threading
-from typing import Any, Callable, Iterable, Mapping, Sequence
+from typing import Any, Iterable, Mapping, Sequence
 
 MATCH_AT = 0.85
 DERIVED_SCORE = 0.8   # a code read out of a longer reference: offered, never the same thing

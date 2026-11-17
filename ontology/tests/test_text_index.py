@@ -486,7 +486,6 @@ class FixtureTextTests(unittest.TestCase):
         # file under its identity and content digest: until then (and after any change to
         # the file) a search reads every match, with the same result either way.
         from ontology import chunk_families as cf
-        from operating import ontology_tools_evidence as ev
         with tempfile.TemporaryDirectory() as tmp:
             path = os.path.join(tmp, "store.sqlite")
             store = fx.build()

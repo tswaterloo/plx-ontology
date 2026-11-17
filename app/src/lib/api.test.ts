@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { ask, getLateList, getObject, getSuggestions, logout, getObjectSection, getSource, mergeSection, READING_MOST_MS, READING_POLL_MS, readingDelay, setTokenProvider } from "./api";
+import { ask, ASK_STALL_MS, GET_TIMEOUT_MS, getLateList, getObject, getSuggestions, logout, getObjectSection, getSource, mergeSection, READING_MOST_MS, READING_POLL_MS, readingDelay, setTokenProvider } from "./api";
 import { ApiError } from "./errors";
 import { resetSessionCaches } from "./session-cache";
 import type { AskEvent, ObjectPage, ObjectSection } from "./types";
@@ -230,3 +230,72 @@ describe("Today lists still being read", () => {
     expect((err as ApiError).code).toBe("busy");
   });
 });
+
+describe("a read the server never answers", () => {
+  /** A fetch that only ends when its signal aborts (a frozen or restarting server). */
+  const hanging = vi.fn((_path: string, init?: RequestInit) =>
+    new Promise<Response>((_ok, fail) => {
+      const s = init?.signal;
+      if (s?.aborted) return fail(s.reason);
+      s?.addEventListener("abort", () => fail(s.reason));
+    }),
+  );
+
+  afterEach(() => vi.restoreAllMocks());
+
+  it("times out as a plain 504 instead of spinning for ever", async () => {
+    vi.stubGlobal("fetch", hanging);
+    const asked: number[] = [];
+    vi.spyOn(AbortSignal, "timeout").mockImplementation((ms: number) => {
+      asked.push(ms);
+      return AbortSignal.abort(new DOMException("timed out", "TimeoutError"));
+    });
+    const err = await getSuggestions().catch((e) => e);
+    expect(err).toBeInstanceOf(ApiError);
+    expect([err.status, err.code]).toEqual([504, "read_timeout"]);
+    expect(asked).toEqual([GET_TIMEOUT_MS]);
+  });
+
+  it("leaves the caller's own cancel as a cancel, and never cuts a write", async () => {
+    vi.stubGlobal("fetch", hanging);
+    const own = new AbortController();
+    const pending = getSuggestions(own.signal).catch((e) => e);
+    own.abort();
+    const err = await pending;
+    expect(err).not.toBeInstanceOf(ApiError);
+    const timeout = vi.spyOn(AbortSignal, "timeout");
+    vi.stubGlobal("fetch", vi.fn(async () => new Response("{}", { status: 200 })));
+    await logout().catch(() => undefined);
+    expect(timeout).not.toHaveBeenCalled();
+  });
+});
+
+describe("an Ask stream the server stops feeding", () => {
+  afterEach(() => vi.useRealTimers());
+
+  it("is cut off after a minute of silence, keep-alives keep it open", async () => {
+    vi.useFakeTimers();
+    const enc = new TextEncoder();
+    let push: ((s: string) => void) | undefined;
+    const body = new ReadableStream<Uint8Array>({
+      start(c) {
+        push = (t) => c.enqueue(enc.encode(t));
+        push('event: status\ndata: {"step":"understanding","message":"Reading","elapsed_ms":0}\n\n');
+      },
+    });
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(body, { status: 200 })));
+    const events: AskEvent[] = [];
+    const run = (async () => {
+      for await (const e of ask({ question: "q" })) events.push(e);
+    })();
+    await vi.advanceTimersByTimeAsync(ASK_STALL_MS - 1000);
+    push!(": keep-alive\n\n");          // still being worked on: the wait starts again
+    await vi.advanceTimersByTimeAsync(ASK_STALL_MS - 1000);
+    expect(events.map((e) => e.event)).toEqual(["status"]);
+    await vi.advanceTimersByTimeAsync(2000);
+    await run;
+    expect(events.map((e) => e.event)).toEqual(["status", "error"]);
+    expect((events[1].data as { code: string }).code).toBe("stream_interrupted");
+  });
+});
+

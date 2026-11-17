@@ -54,8 +54,8 @@ def _equal(case: unittest.TestCase, one: str, other: str) -> None:
 
 def _uom_schema():
     """The fixture schema with a made-up line property (every line's values change) and a
-    supplier property's description changed (its units are affected, their rows and
-    links read alike)."""
+    supplier property no captured row holds and its purchase orders' link renamed from its side (its
+    binding and link units are affected, their rows and links read alike). A description alone no longer affects a unit (``build_keys.rows_slice``)."""
     import copy
     from ontology.tests.test_projection import DOMAIN, compiled_schema
     document = copy.deepcopy(DOMAIN)
@@ -65,7 +65,14 @@ def _uom_schema():
         "description": "The unit as the source wrote it (migration probe).",
         "sources": [{"binding": "t.gold_line", "path": "uom", "parser": "trim"}]})
     supplier = next(t for t in document["object_types"] if t["id"] == "Supplier")
-    supplier["properties"][0]["description"] = "The supplier's code (migration probe)."
+    supplier["properties"].append({
+        "name": "fax_as_written", "value_type": "text",
+        "description": "A column no captured supplier row holds (migration probe).",
+        "sources": [{"binding": "t.supplier", "path": "fax", "parser": "trim"}]})
+    # and the purchase order's link to it is named otherwise from the supplier's side: a
+    # link type the unit reads (affected) whose rows hold no name (links read alike)
+    ordered = next(lt for lt in document["link_types"] if lt["id"] == "PurchaseOrder.ordered_from")
+    ordered["reverse_name"] = "purchase_orders_placed"
     return compiled_schema(document)
 
 
@@ -230,6 +237,214 @@ class ChunkedUnitsTests(unittest.TestCase):
         with psycopg.connect(self.other) as pg:   # the coordinator's session lock is gone
             self.assertTrue(pg.execute("SELECT pg_try_advisory_lock(hashtext("
                                        "'ontology_delta'))").fetchone()[0])
+
+
+def _tables(dsn: str) -> dict:
+    """Every row of every table the undo log covers, as text, sorted."""
+    import psycopg
+    from operating.pg.migrate_chunks import UNDO_SCHEMAS
+    with psycopg.connect(dsn) as pg:
+        names = pg.execute("SELECT n.nspname, c.relname FROM pg_class c JOIN pg_namespace n "
+                           "ON n.oid = c.relnamespace WHERE n.nspname = ANY(%s) AND "
+                           "c.relkind = 'r' ORDER BY 1, 2", (list(UNDO_SCHEMAS),)).fetchall()
+        return {f"{a}.{b}": sorted(r[0] for r in pg.execute(f"SELECT t::text FROM {a}.{b} t"))
+                for a, b in names}
+
+
+def _triggers(dsn: str) -> list:
+    import psycopg
+    with psycopg.connect(dsn) as pg:
+        return pg.execute("SELECT tgname FROM pg_trigger WHERE NOT tgisinternal ORDER BY 1"
+                          ).fetchall()
+
+
+class UnitsFirstUndoTests(unittest.TestCase):
+    """The units applied first (committed, the schema not switched), the run ended by the
+    apply naming the step layer, and the whole run taken back by its undo log."""
+
+    setUp = ChunkedUnitsTests.setUp
+
+    def _loaded(self):
+        from ontology.schema_migrate import diff
+        from ontology.tests.test_projection import T1
+        from operating.pg import ontology_load, ontology_migrate
+        case = self.case
+        case.fixture.capture(T1)
+        base = case.full(case.old, "old.sqlite")
+        for dsn in (case.dsn, self.other):
+            ontology_load.load(base, dsn, workers=1, replace=True, log=io.StringIO())
+        layer = case.layer(diff(case.old, case.new, present=()))
+        self.assertTrue(ontology_migrate.apply_migration(layer, case.dsn)["applied"])
+        return layer
+
+    def test_units_first_then_the_end_equals_one_transaction_and_undo_restores_every_row(self):
+        from operating.pg import migrate_chunks, ontology_migrate
+        from scripts.schema_migration_proof import compare, logical_rows
+        import psycopg
+
+        layer = self._loaded()
+        before, served = _tables(self.other), _triggers(self.other)
+        old_digest = _state(self.other)["meta"][0]
+
+        # a rehearsal (units first, logged) writes nothing and leaves no trigger
+        rehearsed = migrate_chunks.apply_chunked(layer, self.other, units_first=True,
+                                                 undo_log="undo_t", rehearse=0.1)
+        self.assertTrue(rehearsed["rehearsed"], rehearsed)
+        self.assertGreater(rehearsed["projected_seconds"], 0)
+        self.assertGreaterEqual(rehearsed["rows"]["rehearsed"], 0.1 * rehearsed["rows"]["total"])
+        self.assertEqual((_tables(self.other), _triggers(self.other)), (before, served))
+
+        out = migrate_chunks.apply_chunked(layer, self.other, units_first=True,
+                                           undo_log="undo_t")
+        self.assertTrue(out["applied"] and out["units_first"], out)
+        self.assertNotIn("final", out["chunks"])
+        mid = _state(self.other)
+        self.assertEqual(mid["meta"][1][0], "schema_digest")   # not switched
+        self.assertEqual(mid["meta"][1], old_digest)
+        self.assertEqual(json.loads(mid["meta"][0][1])["units_first"], True)
+        self.assertEqual(ontology_migrate.check(self.other, self.case.new.digest)["reason"],
+                         "migration_pending")
+        # the units are committed: the rows equal the one-transaction apply's
+        equal = compare(logical_rows(dsn=self.case.dsn), logical_rows(dsn=self.other))
+        self.assertTrue(all(v["equal"] for v in equal.values()), equal)
+        # a rehearsal over a run in progress would time a half-applied store
+        self.assertEqual(migrate_chunks.apply_chunked(layer, self.other, rehearse=0.5)
+                         ["reason"], "migration_in_progress")
+        # another log for the same run is refused, nothing written
+        self.assertEqual(migrate_chunks.apply_chunked(layer, self.other, undo_log="undo_x")
+                         ["reason"], "undo_log_of_another_run")
+
+        end = migrate_chunks.apply_chunked(layer, self.other)
+        self.assertTrue(end["applied"], end)
+        self.assertEqual(end["chunks"]["final"]["undo_triggers_dropped"], 4 * len(before))
+        _equal(self, self.case.dsn, self.other)
+        self.assertEqual(_triggers(self.other), served)
+
+        # a delta layer applied since the log began: undo refused, nothing changed
+        after = _tables(self.other)
+        with psycopg.connect(self.other) as pg:
+            pg.execute("INSERT INTO ontology.applied_owned (layer, object_id) VALUES "
+                       "('later-layer', 'Supplier:t.nowhere:1') RETURNING seq")
+        refused = migrate_chunks.undo_migration(self.other, "undo_t")
+        self.assertEqual(refused["reason"], "delta_applied_since", refused)
+        with psycopg.connect(self.other) as pg:
+            pg.execute("DELETE FROM ontology.applied_owned WHERE layer = 'later-layer'")
+            # another session's writes (the delta's, a reader's) are never logged
+            self.assertEqual(pg.execute("SELECT count(*) FROM undo_t.t_ontology__applied_owned"
+                                        ).fetchone()[0], 0)
+            self.assertGreater(pg.execute("SELECT count(*) FROM undo_t.t_ontology__objects"
+                                          ).fetchone()[0], 0)
+        self.assertEqual(_tables(self.other), after)
+
+        # the undo: every row of every table as before the first chunk (the digests, the
+        # migrations' records, the queue, the chunk records and the flag included)
+        undone = migrate_chunks.undo_migration(self.other, "undo_t")
+        self.assertTrue(undone["undone"], undone)
+        self.assertEqual(_tables(self.other), before)
+        self.assertEqual(_triggers(self.other), served)
+        self.assertEqual(migrate_chunks.undo_migration(self.other, "undo_t")["reason"],
+                         "already_undone")
+        # and the migration applies again from there
+        again = migrate_chunks.apply_chunked(layer, self.other)
+        self.assertTrue(again["applied"], again)
+        _equal(self, self.case.dsn, self.other)
+
+    def test_undo_puts_back_each_key_as_its_first_event_found_it(self):
+        """Inserted then deleted: gone; deleted then inserted again: the old row; updated
+        twice: the first row; a generated column computed again; a TRUNCATE refused."""
+        from operating.pg import migrate_chunks
+        import psycopg
+        with psycopg.connect(self.other) as pg:
+            pg.execute("CREATE SCHEMA IF NOT EXISTS search")
+            pg.execute("CREATE TABLE search.probe (id int PRIMARY KEY, body text, "
+                       "words tsvector GENERATED ALWAYS AS (to_tsvector('simple', body)) "
+                       "STORED, at bytea, n float8)")
+            pg.execute("INSERT INTO search.probe (id, body, at, n) VALUES (1, 'one', "
+                       "'\\x00ff', 0.1), (2, 'two', NULL, 1e-300), (3, 'three', '\\x01', 3)")
+        before, served = _tables(self.other), _triggers(self.other)
+        with psycopg.connect(self.other) as pg, pg.cursor() as cur:
+            cur.execute(migrate_chunks.om.LOCK)
+            migrate_chunks.install_undo_log(cur, "undo_p")
+        with psycopg.connect(self.other) as pg, pg.cursor() as cur:
+            migrate_chunks.log_into(cur, "undo_p")
+            cur.execute("INSERT INTO search.probe (id, body) VALUES (4, 'four')")
+            cur.execute("DELETE FROM search.probe WHERE id IN (4, 1)")
+            cur.execute("INSERT INTO search.probe (id, body) VALUES (1, 'new one')")
+            cur.execute("UPDATE search.probe SET body = 'two again', n = 2 WHERE id = 2")
+            cur.execute("UPDATE search.probe SET body = 'two thrice' WHERE id = 2")
+            cur.execute("INSERT INTO search.probe (id, body) VALUES (3, 'x') ON CONFLICT (id) "
+                        "DO UPDATE SET body = 'upserted'")
+        with psycopg.connect(self.other) as pg, pg.cursor() as cur:
+            migrate_chunks.log_into(cur, "undo_p")
+            with self.assertRaises(psycopg.errors.RaiseException):
+                cur.execute("TRUNCATE search.probe")
+        self.assertNotEqual(_tables(self.other), before)
+        out = migrate_chunks.undo_migration(self.other, "undo_p")
+        self.assertTrue(out["undone"], out)
+        self.assertEqual(out["tables"]["search.probe"], {"deleted": 3, "restored": 3})
+        self.assertEqual(_tables(self.other), before)
+        # no undo trigger left; the served ones (memory.log_append_only, 0020) stay
+        self.assertEqual(_triggers(self.other), served)
+        self.assertFalse([t for t in served if t[0].startswith("undo_p")])
+
+    def test_the_apply_naming_the_steps_takes_over_the_units_first_run(self):
+        """A step layer of the units-first run's unit layer: the run's done unit chunks are
+        its own (none applied twice), its steps and ``final`` follow, the undo log carries
+        on; a step layer of another unit layer, or a units-first run with steps, refused."""
+        import sqlite3
+        from ontology import step_migrate, store_ddl
+        from ontology.schema_migrate import read_layer
+        from operating.pg import migrate_chunks
+        import psycopg
+
+        layer = self._loaded()
+        record = read_layer(layer)
+        with psycopg.connect(self.other) as pg:
+            pg.execute("INSERT INTO ontology.store_meta VALUES ('steps_digest', 'steps:old') "
+                       "ON CONFLICT (key) DO UPDATE SET value = excluded.value")
+        before, served = _tables(self.other), _triggers(self.other)
+        steps = self.case.fixture.root / "steps.sqlite"
+
+        def step_layer(unit):
+            steps.unlink(missing_ok=True)
+            with sqlite3.connect(steps) as conn:
+                conn.execute(f"CREATE TABLE {step_migrate.TABLE} (key TEXT PRIMARY KEY, "
+                             "value TEXT NOT NULL)")
+                conn.execute(f"CREATE TABLE links ({', '.join(store_ddl.LINK_COLUMNS)})")
+                rec = {"id": f"s-{unit}", "unit": unit, "from": "steps:old",
+                       "to": "steps:new", "owned": [], "staged": {}, "steps": [],
+                       "scope": [], "delta_mark": 0}
+                conn.executemany(f"INSERT INTO {step_migrate.TABLE} VALUES (?, ?)",
+                                 [(k, json.dumps(v)) for k, v in rec.items()])
+            return steps
+
+        self.assertEqual(migrate_chunks.apply_chunked(layer, self.other, units_first=True,
+                                                      steps=step_layer(record["id"]))
+                         ["reason"], "units_first_is_a_unit_layer_alone")
+        first = migrate_chunks.apply_chunked(layer, self.other, units_first=True,
+                                             undo_log="undo_k", stop_after=2)
+        self.assertEqual(first["reason"], "stopped")
+        self.assertEqual(migrate_chunks.apply_chunked(layer, self.other,
+                                                      steps=step_layer("other"))["reason"],
+                         "steps_of_another_unit_layer")
+        out = migrate_chunks.apply_chunked(layer, self.other, steps=step_layer(record["id"]))
+        self.assertTrue(out["applied"], out)
+        self.assertEqual(out["took_over"]["chunks"], 2)
+        names = migrate_chunks.chunks(record, step_migrate.read_layer(steps))
+        done_before = [n for n, v in out["chunks"].items() if v == {"skipped": "done"}]
+        self.assertEqual(len(done_before), 2)
+        self.assertEqual(sorted(out["chunks"]), sorted(names))
+        with psycopg.connect(self.other) as pg:
+            meta = dict(pg.execute("SELECT key, value FROM ontology.store_meta").fetchall())
+            ids = [r[0] for r in pg.execute("SELECT id FROM ontology.schema_migrations")]
+        self.assertEqual((meta["schema_digest"], meta["steps_digest"]),
+                         (self.case.new.digest, "steps:new"))
+        self.assertNotIn("migration_in_progress", meta)
+        self.assertEqual(sorted(ids), sorted([record["id"], "steps:s-" + record["id"]]))
+        self.assertEqual(_triggers(self.other), served)
+        undone = migrate_chunks.undo_migration(self.other, "undo_k")
+        self.assertTrue(undone["undone"], undone)
+        self.assertEqual(_tables(self.other), before)
 
 
 class ChunkedStepsTests(unittest.TestCase):

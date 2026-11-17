@@ -69,6 +69,7 @@ import hashlib
 import json
 from datetime import datetime, timezone
 import os
+from operating.file_modes import keep_shared
 from pathlib import Path
 import sys
 import time
@@ -126,20 +127,24 @@ def _os_user() -> str:
 
 
 def append_audit(state_dir: Path, *, event: str, session_ref: str, employee: str | None,
-                 expires_at: int, ttl: int) -> None:
+                 expires_at: int, ttl: int, service: str | None = None) -> None:
     """Append one audit row to ``state_dir/AUDIT_FILE``; ``TicketRefused`` if it cannot
-    be written whole. Holds no ticket, ticket id, e-mail address or secret."""
+    be written whole. Holds no ticket, ticket id, e-mail address or secret; a service
+    session's row names its service (``--service``)."""
     row = {"event": event,
            "at": datetime.now(timezone.utc).isoformat(timespec="seconds")
            .replace("+00:00", "Z"),
            "session_ref": session_ref, "employee": employee, "expires_at": expires_at,
            "ttl": ttl, "os_user": _os_user(),
            "minted_by" if event == "mint" else "revoked_by": MINTED_BY_HOST}
+    if service is not None:
+        row["service"] = service
     line = (json.dumps(row, sort_keys=True) + "\n").encode("utf-8")
     flags = os.O_WRONLY | os.O_APPEND | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0) \
         | getattr(os, "O_CLOEXEC", 0)
     try:
         descriptor = os.open(state_dir / AUDIT_FILE, flags, 0o600)
+        keep_shared(state_dir / AUDIT_FILE, 0o600)
     except OSError:
         raise TicketRefused("audit_unwritable") from None
     try:
@@ -187,7 +192,9 @@ def mint(args: argparse.Namespace, environ: Mapping[str, str]) -> dict[str, Any]
         ticket = session_identity.mint_session_ticket(
             uid=claims["uid"], email=claims["email"], tenant_id=claims["entraTenantId"],
             object_id=claims["entraObjectId"], author=session_identity.AUTHOR_HUMAN,
-            secret=secret, ttl_seconds=args.ttl_minutes * 60)
+            secret=secret, ttl_seconds=args.ttl_minutes * 60,
+            jti=None if getattr(args, "service", None) is None
+            else session_identity.service_jti(args.service))
         # Exactly the console's check, now: a ticket it would refuse is never handed out.
         session = session_identity.employee_session(
             resolver, channel=session_identity.CHANNEL_CONSOLE, ticket=ticket, secret=secret,
@@ -207,7 +214,7 @@ def mint(args: argparse.Namespace, environ: Mapping[str, str]) -> dict[str, Any]
     try:
         append_audit(state_dir, event="mint", session_ref=session.session_ref,
                      employee=session.employee.principal, expires_at=session.expires_at,
-                     ttl=args.ttl_minutes * 60)
+                     ttl=args.ttl_minutes * 60, service=session.service)
     except TicketRefused:
         os.close(descriptor)
         out.unlink()
@@ -407,6 +414,11 @@ def main(argv: Sequence[str] | None = None, *,
                          help="with --employee-policy: the Portal access snapshot")
     minting.add_argument("--reader-env", default=READER_ENV,
                          help="variable holding the employee's JSON identity claims")
+    minting.add_argument("--service", choices=sorted(session_identity.SERVICE_JTI_PREFIX),
+                         default=None,
+                         help="a service session (the Ask canary: ops_canary), never a "
+                              "person's own: served /api/me and /api/ask only, writes and "
+                              "remembers nothing")
     minting.add_argument("--ttl-minutes", type=_ttl, default=480)
     minting.add_argument("--port", type=_port, default=8765,
                          help="the console's loopback port, for the URL")

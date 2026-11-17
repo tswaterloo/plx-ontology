@@ -12,6 +12,7 @@ import time
 import unittest
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+import shutil
 import tempfile
 
 from operating.tests import pg_testdb
@@ -118,8 +119,6 @@ class Recall(MemoryCase):
 
     def test_a_turn_from_early_in_a_long_conversation_survives_compaction(self):
         ana = reader("ana")
-        turns = [("Which carrier takes the Halverson pallets?",
-                  "Halverson pallets go with Northline Freight from dock 4.")] * 0
         for n in range(1, 41):
             self.at(NOW - timedelta(minutes=200 - n * 4))
             q, a = ((f"Which carrier takes the Halverson pallets?",
@@ -173,7 +172,13 @@ class Recall(MemoryCase):
         learned = dict(kind="preference", source="learn", subject="learn.style.signoff",
                        text="Signs off with Thanks, A.")
         first = self.store.remember(ana, **learned, source_ref="l1@1")
+        told: list = []
+        self.store.unlearn = lambda who, subject: told.append((who.key, subject))
         self.assertTrue(self.store.forget(ana, first))
+        # ... and the learner forgets the lesson itself (it stops shaping drafts at once)
+        self.assertEqual(told, [(ana.key, "learn.style.signoff")])
+        self.assertFalse(self.store.forget(ana, first))     # once
+        self.store.unlearn = None
         self.assertIsNone(self.store.remember(ana, **learned, source_ref="l1@2"))
         self.assertEqual(self.store.forgotten(ana, source="learn"), {"learn.style.signoff"})
         self.assertEqual(self.store.forgotten(reader("ben"), source="learn"), set())
@@ -337,6 +342,245 @@ class Privacy(MemoryCase):
         self.assertNotIn("On hold", self.store.context(ana, "lot K-883", conversation="c1",
                                                        decide=closed))
         self.assertEqual(self.store.items(ana, kinds=("fact",), decide=closed), [])
+
+
+class OwnWords(MemoryCase):
+    """The Memory screen: a person writes, corrects and forgets their own items."""
+
+    def test_write_correct_and_the_learner_never_writes_over_it(self):
+        ana, ben = reader("ana"), reader("ben")
+        kept, why = self.store.write(ana, kind="instruction", text="  Always give quantities in cases. ")
+        self.assertIsNone(why)
+        self.assertEqual(self.store.write(ana, kind="instruction",
+                                          text="Always give quantities in cases.")[0], kept)
+        item = self.store.items(ana)[0]
+        self.assertEqual((item["text"], item["source"]), ("Always give quantities in cases.", "you"))
+        self.assertIn("quantities in cases", self.store.context(ana, "how many of SO 5512?"))
+        self.assertEqual(self.store.items(ben), [])
+        # a learned item, corrected in the person's own words: the learner keeps off it
+        learned = dict(kind="preference", source="learn", subject="learn.style.signoff")
+        old = self.store.remember(ana, text="Signs off with Best.", **learned)
+        new, why = self.store.write(ana, kind="preference", text="Sign off with Thanks, Ana.",
+                                    replaces=old)
+        self.assertIsNone(why)
+        texts = [i["text"] for i in self.store.items(ana)]
+        self.assertIn("Sign off with Thanks, Ana.", texts)
+        self.assertNotIn("Signs off with Best.", texts)
+        self.assertIsNone(self.store.remember(ana, text="Signs off with Regards.", **learned))
+        # forgotten later: still not learned again unseen
+        self.assertTrue(self.store.forget(ana, new))
+        self.assertIsNone(self.store.remember(ana, text="Signs off with Regards.", **learned))
+        # a kind change supersedes the old item too
+        fact, _ = self.store.write(ana, kind="fact", text="Mississauga lot codes start with M.")
+        moved, _ = self.store.write(ana, kind="instruction", text="Read M lot codes as Mississauga.",
+                                    replaces=fact)
+        self.assertEqual([i["id"] for i in self.store.items(ana) if i["id"] in (fact, moved)], [moved])
+
+    def test_stated_drafting_rules_follow_the_item(self):
+        ana = reader("ana")
+        told = []
+        self.store.stated = lambda who, item, text: told.append((who.key, item, text))
+        try:
+            rule, _ = self.store.write(ana, kind="instruction", text="Sign off with Thanks, Ana")
+            fact, _ = self.store.write(ana, kind="fact", text="Kestrel ships Tuesdays.")
+            fixed, _ = self.store.write(ana, kind="instruction", text="Sign off with Cheers",
+                                        replaces=rule)
+            self.store.forget(ana, fixed)
+            self.store.from_answer(ana, answer(1, "From now on sign off with Best", "Noted."))
+        finally:
+            self.store.stated = None
+        self.assertEqual([(i, t) for _k, i, t in told][:4], [
+            (rule, "Sign off with Thanks, Ana"), (rule, None), (fixed, "Sign off with Cheers"),
+            (fixed, None)])
+        self.assertEqual(told[4][2], "From now on sign off with Best")
+        self.assertNotIn(fact, [i for _k, i, _t in told])
+        # a later Ask instruction on the same subject supersedes it: its rule goes too
+        told.clear()
+        self.store.stated = lambda who, item, text: told.append((item, text))
+        try:
+            self.store.from_answer(ana, answer(2, "From now on sign off with Cheers", "Noted."))
+        finally:
+            self.store.stated = None
+        texts = [t for _i, t in told]
+        self.assertIn("From now on sign off with Cheers", texts)
+
+    def test_refusals_say_why_and_keep_nothing(self):
+        ana, ben = reader("ana"), reader("ben")
+        mine, _ = self.store.write(ana, kind="fact", text="Kestrel orders ship Tuesdays.")
+        viewing = reader("ana")
+        viewing.session.view_as = True
+        cases = [
+            (viewing, dict(kind="fact", text="Lot K-1 ships Monday."), "view_as"),
+            (ana, dict(kind="summary", text="x"), "kind"),
+            (ana, dict(kind="fact", text="   "), "empty"),
+            (ana, dict(kind="fact", text="x" * 1001), "too_long"),
+            (ana, dict(kind="fact", text="Ben earns 95k a year."), "finance"),
+            (ana, dict(kind="fact", text="Ask Quinn Harrow about lot K-2."), "excluded"),
+            (ana, dict(kind="fact", text=f"Copy {EXCLUDED} on lot K-3."), "excluded"),
+            (ben, dict(kind="fact", text="Kestrel ships Mondays.", replaces=mine), "not_found"),
+        ]
+        for who, body, why in cases:
+            with self.subTest(why=why, text=body["text"][:30]):
+                self.assertEqual(self.store.write(who, **body), (None, why))
+        self.assertEqual([i["text"] for i in self.store.items(ana)], ["Kestrel orders ship Tuesdays."])
+        self.guard.unavailable = "not loaded"
+        self.assertEqual(self.store.write(ana, kind="fact", text="Lot K-4 ships."),
+                         (None, "unavailable"))
+        self.assertEqual(self.count("item"), 1)
+
+
+class Routes(MemoryCase):
+    """GET/POST/PUT/DELETE /api/memory: each person's own, refusals in their words."""
+
+    def client(self, who, history=None, oid=None):
+        from fastapi.testclient import TestClient
+        from operator_api.app import create_app
+        from operator_api.auth import DevAuth, fixture_identity
+        from operator_api.mock import MockBackend
+        backend = MockBackend()
+        backend.memory = self.store
+        backend.instruct_history = history
+        identity = fixture_identity("plx", [f"staff:{who}"])
+        if oid is not None:
+            from operating import session_identity as si
+            session = si.fixture_session("plx", [f"staff:{who}"], channel=si.CHANNEL_CONSOLE,
+                                         client="plx-workbench-app-dev", subject_oid=oid,
+                                         subject_email=f"{who}@plx.example")
+            identity = lambda: session  # noqa: E731
+        app = create_app(backend, DevAuth(identity, mode="mock"), secure_cookie=False)
+        c = TestClient(app, base_url="http://testserver")
+        self.assertEqual(c.post("/api/auth/dev-login", json={}).status_code, 200)
+        return c
+
+    def test_people_and_threads_from_your_own_mail_only(self):
+        from datetime import datetime, timedelta, timezone
+        now = datetime.now(timezone.utc)
+        seen: list = []
+
+        class People:
+            unavailable, internal = False, ("plx.example",)
+
+            def __init__(self, oid):
+                self.directory = {"me@plx.example": oid}
+
+            def identity_clear(self, who):
+                return True
+
+        def history(reader):
+            oid = str(reader.session.subject_oid).lower()
+            seen.append(oid)
+            at = lambda d: (now - timedelta(days=d)).isoformat()  # noqa: E731
+            return People(oid), [
+                {"at": at(1), "in": True, "from": "bob@acme.example", "to": [], "cc": [],
+                 "subject": "PO 1"},
+                {"at": at(2), "to": ["bob@acme.example"], "cc": [], "subject": "PO 1"}]
+        oid = "11111111-1111-4111-8111-111111111111"
+        self.assertFalse(self.client("ana", history).get("/api/memory/people").json()[
+            "available"])                                        # no mailbox of theirs: none
+        got = self.client("ana", history, oid).get("/api/memory/people").json()
+        self.assertTrue(got["available"], got)
+        self.assertEqual([p["address"] for p in got["people"]], ["bob@acme.example"])
+        self.assertEqual(got["people"][0]["name"], "Bob")
+        self.assertEqual(got["threads"][0]["turn"], "yours")
+        self.assertEqual(set(seen), {oid})                       # the reader's own mailbox
+        # nothing readable: said, never guessed
+        self.assertEqual(self.client("ana", lambda r: None, oid).get(
+            "/api/memory/people").json(),
+                         {"available": False, "reading": False, "people": [], "threads": []})
+
+    def test_a_cold_mailbox_says_reading_and_never_holds_the_request(self):
+        import threading
+        import time
+        from operator_api import instruct_assist as ia
+        oid = "22222222-2222-4222-8222-222222222222"
+        gate, read = threading.Event(), threading.Event()
+        real = ia._read_mail
+        self.addCleanup(setattr, ia, "_read_mail", real)
+        ia._read_mail = lambda state, o: (gate.wait(30), read.set(), None)[2]
+        c = self.client("ana", None, oid)
+        state = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, state, True)
+        c.app.state.backend.state_dir = state
+        got = c.get("/api/memory/people").json()
+        self.assertFalse(read.is_set())   # answered while the cold read still waited
+        self.assertEqual((got["available"], got["reading"]), (False, True))
+        gate.set()
+        for _ in range(50):
+            if not ia.HISTORY.reading(state, oid):
+                break
+            time.sleep(0.05)
+        self.assertFalse(c.get("/api/memory/people").json()["reading"])  # read: no mail
+
+    def test_write_correct_forget_and_refuse(self):
+        ana, ben = self.client("ana"), self.client("ben")
+        got = ana.post("/api/memory", json={"kind": "instruction", "text": "Always answer in cases."})
+        self.assertEqual(got.status_code, 200, got.text)
+        item = got.json()
+        self.assertEqual((item["source"], item["kind"]), ("you", "instruction"))
+        fixed = ana.put(f"/api/memory/{item['id']}", json={"kind": "instruction",
+                                                          "text": "Always answer in cases of 12."})
+        self.assertEqual(fixed.status_code, 200, fixed.text)
+        listed = ana.get("/api/memory").json()
+        self.assertEqual([i["text"] for i in listed["items"]], ["Always answer in cases of 12."])
+        self.assertEqual(ben.get("/api/memory").json()["items"], [])
+        self.assertEqual(ben.put(f"/api/memory/{fixed.json()['id']}",
+                                 json={"kind": "fact", "text": "x"}).status_code, 404)
+        refused = ana.post("/api/memory", json={"kind": "fact", "text": "Her hourly rate is 30."})
+        self.assertEqual(refused.status_code, 422)
+        self.assertIn("pay or finance", refused.json()["error"]["message"])
+        self.assertEqual(ana.post("/api/memory", json={"kind": "summary", "text": "x"}).status_code,
+                         422)
+        todo = ana.post("/api/memory", json={"kind": "commitment",
+                                             "text": "Remind me to chase Acme on Nov 20"}).json()
+        self.assertEqual(todo["due"], "2026-11-20")
+        self.assertIsNone(fixed.json()["due"])
+        self.assertEqual(ben.post(f"/api/memory/{todo['id']}/done").status_code, 404)
+        self.assertEqual(ana.post(f"/api/memory/{todo['id']}/done").status_code, 200)
+        self.assertEqual(ana.delete(f"/api/memory/{fixed.json()['id']}").status_code, 200)
+        self.assertEqual(ana.get("/api/memory").json()["items"], [])
+
+
+class Commitments(MemoryCase):
+    """A person's own commitments: when each is due, and done."""
+
+    def test_due_days_read_against_when_said(self):
+        said = "2026-11-12T15:00:00Z"   # a Thursday, 10 AM ET
+        cases = {
+            "Remind me to call Northwind Friday": "2026-11-13",
+            "follow up with Acme tomorrow": "2026-11-13", "by Nov 20": "2026-11-20",
+            "on 3 December": "2026-12-03", "by 11/18": "2026-11-18",
+            "next Friday": "2026-11-20", "next Monday": "2026-11-16",
+            "end of the week": "2026-11-13", "next week": "2026-11-16",
+            "in 3 days": "2026-11-15", "in two weeks": "2026-11-26",
+            "end of the month": "2026-11-30", "today": "2026-11-12",
+            "by 2026-12-01, not Friday": "2026-12-01", "Thursday": "2026-11-19",
+            "by May 4": "2027-05-04",
+            "remind me to chase it": None, "we may 4 ship": None, "the 5 mon fill": None,
+            "ship 12/40 cases": None, "the sun is out": None,
+            "send 3/4 of the pallets": None, "by Feb 29": None, "by Feb 30": None,
+        }
+        for text, want in cases.items():
+            with self.subTest(text=text):
+                self.assertEqual(mem.due_of(text, said), want)
+        # 11 PM ET on the 12th is 04:00 UTC on the 13th: "tomorrow" is still the 13th
+        self.assertEqual(mem.due_of("tomorrow", "2026-11-13T04:00:00Z"), "2026-11-13")
+        self.assertIsNone(mem.due_of("tomorrow", "not a time"))
+        # "Feb 29" said in a year without one is next year's when that year has one
+        self.assertEqual(mem.due_of("by Feb 29", "2027-12-20T15:00:00Z"), "2028-02-29")
+
+    def test_done_is_the_persons_own_and_kept_in_the_log(self):
+        ana, ben = reader("ana"), reader("ben")
+        mine, _ = self.store.write(ana, kind="commitment", text="Call Northwind Friday")
+        fact, _ = self.store.write(ana, kind="fact", text="Northwind ships Tuesdays.")
+        viewing = reader("ana")
+        viewing.session.view_as = True
+        self.assertFalse(self.store.done(ben, mine))
+        self.assertFalse(self.store.done(viewing, mine))
+        self.assertFalse(self.store.done(ana, fact))   # only a commitment is done
+        self.assertTrue(self.store.done(ana, mine))
+        self.assertFalse(self.store.done(ana, mine))
+        self.assertEqual([i["kind"] for i in self.store.items(ana)], ["fact"])
+        self.assertTrue(self.store.search(ana, "Done Call Northwind"))
 
 
 class HeldDecisions(MemoryCase):
@@ -527,6 +771,83 @@ class RulesWithoutStore(unittest.TestCase):
         self.assertFalse(wl._person_excluded(guard, "ana+orders@plx.example"))
         self.assertEqual(fb.clean("cc BSTN@plx.example and bstn+x@plx.example", guard),
                          f"cc {fb.WITHHELD} and {fb.WITHHELD}")
+
+class ApiRoleGrants(MemoryCase):
+    """AUDIT3-05 (11-15): the served API logs in as plx_api, which migration 0020 granted
+    nothing, so every Ask answered and no memory row was written. Migration 0030 grants the
+    role exactly what memory.py runs; the role file grants the same to a role made later."""
+
+    def test_the_api_role_keeps_memory_and_can_do_nothing_else_there(self):
+        from psycopg import conninfo, errors
+        from operating.pg import migrate
+        from operating.pg.scratch_db import superuser_dsn
+        root = Path(__file__).resolve().parents[2]
+        admin = superuser_dsn(self.dsn)
+        grants = ("REVOKE ALL ON SCHEMA memory FROM plx_api",
+                  "REVOKE ALL ON ALL TABLES IN SCHEMA memory FROM plx_api",
+                  "REVOKE ALL ON ALL SEQUENCES IN SCHEMA memory FROM plx_api",
+                  "ALTER DEFAULT PRIVILEGES IN SCHEMA memory REVOKE ALL ON TABLES FROM plx_api",
+                  "ALTER DEFAULT PRIVILEGES IN SCHEMA memory REVOKE ALL ON SEQUENCES "
+                  "FROM plx_api")
+        with psycopg.connect(admin, autocommit=True) as conn:
+            conn.execute((root / "deploy" / "pg" / "plx_api_role.sql").read_text())
+            for statement in grants:   # back to the live state before 0030: nothing
+                conn.execute(statement)
+        role = conninfo.make_conninfo(admin, options="-c role=plx_api")
+        store = mem.Memory.for_dsn(role, sync=True, guard=lambda: self.guard,
+                                   names=lambda: self.names, clock=lambda: self.now)
+        self.addCleanup(store.pool.close)
+        ana = reader("ana")
+        with self.assertRaises(errors.InsufficientPrivilege):   # the live failure
+            store.log_event(ana, kind="note", text="Lot K-9 is on hold")
+        self.assertEqual(self.count("log"), 0)
+        # the migration itself, as the migrations' superuser runs it on the served database
+        migration = root / "operating" / "pg" / "migrations" / "0030_memory_api_grants.sql"
+        self.assertIn(migration, [p for _v, _n, p in migrate.migration_files()])
+        with psycopg.connect(admin, autocommit=True) as conn:
+            conn.execute(migration.read_text())
+            conn.execute(migration.read_text())                 # idempotent
+        logged = store.log_event(ana, kind="note", text="Lot K-9 is on hold",
+                                 source_ref="n1")
+        self.assertIsInstance(logged, int)
+        self.assertIsNone(store.log_event(ana, kind="note", text="Lot K-9 is on hold",
+                                          source_ref="n1"))           # retried: once
+        kept = dict(kind="preference", source="learn", subject="sign-off")
+        first = store.remember(ana, text="Signs off with Best.", log_ids=[logged], **kept)
+        self.assertEqual(store.remember(ana, text="Signs off with Best.", **kept), first)
+        second = store.remember(ana, text="Signs off with Regards.", **kept)
+        self.assertNotEqual(second, first)                       # superseded the first
+        self.assertEqual([i["text"] for i in store.items(ana, kinds=("preference",))],
+                         ["Signs off with Regards."])
+        self.assertTrue(store.search(ana, "Lot K-9 hold"))
+        self.assertTrue(store.forget(ana, second))
+        self.assertEqual(store.items(ana, kinds=("preference",)), [])
+        self.assertEqual((self.count("log"), self.count("item")), (1, 2))
+        with psycopg.connect(admin, autocommit=True) as conn:   # a table a later one adds
+            conn.execute("CREATE TABLE memory.later (x int)")
+        self.addCleanup(self._drop_later, admin)
+        with psycopg.connect(role, autocommit=True) as conn:
+            self.assertEqual(conn.execute("SELECT current_user").fetchone()[0], "plx_api")
+            conn.execute("SELECT count(*) FROM memory.later")   # readable by default
+            conn.execute("SET plx.memory_purge = 'on'")   # the trigger's purge switch
+            for refused in ("DELETE FROM memory.log",
+                            "UPDATE memory.log SET text = 'x'",
+                            "DELETE FROM memory.item",
+                            "TRUNCATE memory.item",
+                            "TRUNCATE memory.log",
+                            "ALTER TABLE memory.log DISABLE TRIGGER log_append_only",
+                            "DROP TRIGGER log_append_only ON memory.log",
+                            "CREATE TABLE memory.planted (x int)",
+                            "SELECT setval('memory.item_id_seq', 1)",
+                            "INSERT INTO memory.later VALUES (1)"):
+                with self.assertRaises(errors.InsufficientPrivilege, msg=refused):
+                    conn.execute(refused)
+
+    @staticmethod
+    def _drop_later(admin):
+        with psycopg.connect(admin, autocommit=True) as conn:
+            conn.execute("DROP TABLE IF EXISTS memory.later")
+
 
 if __name__ == "__main__":
     unittest.main()

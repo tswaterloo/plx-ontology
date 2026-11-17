@@ -114,9 +114,22 @@ class LotCaptureTests(unittest.TestCase):
         for url in lot_gets:
             check_request("GET", url, environ=ENV)
 
-    def test_bc_holding_no_lot_is_a_complete_empty_unit_and_an_unsettled_ledger_reads_none(self):
+    def test_no_lot_row_over_a_held_ledger_is_a_gap_and_an_unsettled_ledger_reads_none(self):
+        # CT-D-05: Page 38 listed no lot row in any company on every run, reported
+        # complete. Over an item ledger that holds entries, zero rows is a gap (the page
+        # unpublished, the filter matching nothing or no lot tracking: not knowable here)
         h = harness(self, ledger_fake([]))
         unit = h.unit(h.run(entity_sets=(LEDGER,)), CO[1], LOT_SET)
+        self.assertEqual((unit["state"], unit["reason"], unit["records_current"]),
+                         ("partial", "no_lot_rows", 0))
+        self.assertFalse(unit["complete"])
+        # and stays one on the next call (never reused as complete)
+        unit = h.unit(h.run(entity_sets=(LEDGER,)), CO[1], LOT_SET)
+        self.assertEqual((unit["state"], unit["reason"]), ("partial", "no_lot_rows"))
+        # an empty item ledger with no lot is complete: nothing to carry a lot
+        fake = ledger_fake([])
+        fake.data[(CO[1], LEDGER)] = []
+        unit = h.unit(harness(self, fake).run(entity_sets=(LEDGER,)), CO[1], LOT_SET)
         self.assertEqual((unit["state"], unit["records_current"]), ("complete", 0))
         fake = ledger_fake([(1, "I1", "LOT-A")])
         fake.fail(rf"{CO[1]}\)/itemLedgerEntries", (403, {}, b'{"error":{"code":"x"}}'))

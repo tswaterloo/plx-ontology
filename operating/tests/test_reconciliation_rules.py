@@ -21,7 +21,7 @@ from integrations import bc_read
 from integrations.bc_read import BusinessCentralReader
 from integrations.live_source_guard import LiveSourceAudience
 from integrations.source_mirror import SourceMirror
-from integrations.tests.test_bc_read_entities import BASE as BASE_BC, Fixture, doc, filtered, gid
+from integrations.tests.test_bc_read_entities import BASE as BASE_BC, doc, filtered, gid
 from integrations.tests.test_source_mirror import BASE, KEY, Clock, FakeWorkbench
 from integrations.workbench_read_api import WorkbenchReadApiClient
 from integrations.tests.test_live_source_adapters import COMPANY, ENV

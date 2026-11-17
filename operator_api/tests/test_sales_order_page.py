@@ -54,6 +54,29 @@ class SalesOrderView(unittest.TestCase):
         self.assertNotIn("total", summary)
         self.assertIn("The order total", [a.what for a in absent])
 
+    def test_a_total_its_lines_contradict_is_not_stated_as_the_orders_total(self):
+        """CC-NY-1: the summary never states a total the order's own lines contradict (the
+        fact with both figures is the caller's, from plx.object's gap)."""
+        summary, _facts, absent = be.sales_order_view(
+            "OR9", [value("total_amount", "117.00")], [], [], "CAD", disputed=True)
+        self.assertEqual(summary, "Customer order OR9; its total and its lines disagree.")
+        self.assertNotIn("117", summary)
+        self.assertNotIn("The order total", [a.what for a in absent])
+        self.assertIn("order_total_disagrees_with_lines", be.ORDER_CHECK_REASONS)
+
+    def test_a_total_that_is_what_is_still_to_ship_is_not_stated_as_the_orders_total(self):
+        """CC-NY-1: Sage's total on a partly shipped order is the value still to ship; the
+        summary states the lines' value and says what the header holds."""
+        summary, _facts, absent = be.sales_order_view(
+            "ORD7", [value("total_amount", "720.00")], [], [], "CAD",
+            m.Money(amount="2050.00", currency="CAD"), "order_lines",
+            outstanding=True)
+        self.assertEqual(summary, "Customer order ORD7; value 2050.00 CAD (from its lines; "
+                                  "the order total holds only what is still to ship).")
+        self.assertNotIn("720", summary)
+        self.assertNotIn("The order total", [a.what for a in absent])
+        self.assertIn("order_total_is_value_still_to_ship", be.ORDER_CHECK_REASONS)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -7,6 +7,7 @@ import { OnboardingChecklist } from "@/components/onboarding-checklist";
 import { RoleGuide } from "@/components/role-guide";
 import { Toolbar } from "@/components/ui/toolbar";
 import { cn } from "@/lib/cn";
+import { desktopBridge } from "@/lib/desktop";
 import { GUIDES, guideFor, guideLabel, roleKey, type GuideRole } from "@/lib/onboarding";
 
 // Help: the first-week guide per role (what the Workbench does for you, how to ask, how
@@ -48,6 +49,9 @@ function Help() {
     router.replace(`/help?role=${r}`, { scroll: false });
   };
   const guide = role ? guideFor(role) : null;
+  // the download is offered in the browser only; inside the desktop app it is already installed
+  const [inBrowser, setInBrowser] = useState(false);
+  useEffect(() => setInBrowser(desktopBridge() === null), []);
   return (
     <div className="flex min-h-0 flex-1 flex-col">
       <Toolbar title="Help" heading />
@@ -77,6 +81,20 @@ function Help() {
           </div>
         </section>
         {principal && <OnboardingChecklist principal={principal} role={role} />}
+        {inBrowser && (
+          <section aria-labelledby="help-desktop" className="space-y-1" data-testid="help-desktop">
+            <h2 id="help-desktop" className="text-[13px] font-semibold">
+              Desktop app
+            </h2>
+            <p className="text-[12px] text-muted">
+              The same Workbench in its own window for Windows and Mac, with notifications when something is waiting on you.{" "}
+              <a href="/desktop/" className="text-fg underline underline-offset-2" data-testid="help-desktop-download">
+                Download the desktop app
+              </a>
+              . The installers are not signed yet: on Windows choose More info, then Run anyway; on a Mac right-click the app and choose Open.
+            </p>
+          </section>
+        )}
         {guide ? (
           <RoleGuide guide={guide} />
         ) : (

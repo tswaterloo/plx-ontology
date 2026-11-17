@@ -173,42 +173,19 @@ from ontology.types import Actor
 from operating.search import document_marks
 # L8's reader, policy and contract helpers (operating/ontology_tools.py): one
 # store reader, one policy, one envelope/gap/completeness shape for every tool.
-from operating.ontology_tools import (  # noqa: F401 - re-exported for hosts
-    _AUDIENCE_SOURCE,
-    _ITEM_ACL_AUDIENCES,
-    _ITEM_ACL_SCHEMES,
-    LIVE_LOOKUP_HINT,
-    SET_TTL_SECONDS,
-    OntologyTools,
-    current_snapshot,
-    encoded_list,
-    reader_grants,
-    run_memo_for,
-    ReadPolicy,
-    SetRegistry,
-    StoreReader,
-    ToolError,
-    _OBJECT_ID,
-    _Scope as _L8Scope,
-    _completeness,
-    _envelope,
-    _envelope_bytes,
-    _error,
-    _filters_verdict,
-    _filter_gaps,
-    _withheld_filter_gap,
-    _fingerprint,
-    _format_time,
-    _gap,
-    _inline_defs,
-    _parse_time,
-    _effective_tier,   # the one link-tier rule (R1); plx.aggregate imports it from here
-    _source_of,
-    _to_ms,
-    NEVER_AUTHORITY,   # plx.evidence reads it from here
-    identity_link_type,
-    load_contracts,
-)
+from operating.ontology_tools_policy import collapse_mention_rows
+from operating.ontology_tools import (OntologyTools, SetRegistry, StoreReader, _envelope,  # the one link-tier rule (R1); plx.aggregate imports it from here  # plx.evidence reads it from here
+                                      _effective_tier)
+from operating.ontology_tools_identity import (LIVE_LOOKUP_HINT, ToolError, _error, _gap,
+                                               _source_of, identity_link_type)
+from operating.ontology_tools_policy import (_AUDIENCE_SOURCE, _ITEM_ACL_AUDIENCES,
+                                             _ITEM_ACL_SCHEMES, SET_TTL_SECONDS, current_snapshot,
+                                             encoded_list, reader_grants, run_memo_for, ReadPolicy,
+                                             _OBJECT_ID, _Scope as _L8Scope, _envelope_bytes,
+                                             _format_time, _parse_time, _to_ms, NEVER_AUTHORITY,
+                                             load_contracts)
+from operating.ontology_tools_results import (_completeness, _filters_verdict, _filter_gaps,
+                                              _withheld_filter_gap, _fingerprint, _inline_defs)
 
 TOOL_NAMES = ("plx.around", "plx.timeline")
 # A set member first captured after as_known_at (root gap reason): not counted at T.
@@ -259,6 +236,8 @@ def order_class(time_basis: str, lineage: str | None) -> int:
 
 DEFAULT_LIMIT = 10
 HOP_SCAN_CAP = 5000
+# plx.around: removal gaps listed one by one for at most this many objects of a page
+REMOVED_GAPS = 5
 # The SQL item gate under which every item is open: only to tell whether the owner-open
 # reader's gate held anything back on a hop (``TraverseTools._owner_hidden``).
 OPEN_GATE = "plx_l9_open"
@@ -710,6 +689,12 @@ class TraverseTools:
                 cache[handle] = 1 if self.base._item_allowed(actor, handle) else 0
             return cache[handle]
 
+        # The reader's audience key under this gate (``operating.pg.item_audiences``): on
+        # Postgres the gate is answered from the decisions recorded for it where they hold
+        # (``ontology.sq_item_gate``), else called as before. None: always called.
+        from operating.pg.item_audiences import reader_key
+        key = reader_key(self.base, actor)
+        check.item_keys = None if key is None else (key,)  # type: ignore[attr-defined]
         return check
 
     # ------------------------------------------------------------------ scope
@@ -896,6 +881,8 @@ class TraverseTools:
         stamp = (_data_version(self.store, conn), conn.total_changes)
         facts = self.store.facts
         if facts is None or facts[0] != stamp:
+            if facts is not None and getattr(conn, "postgres", False):
+                _stash_stale(self.store, facts[1])   # ``_slices_or_stale``
             # Postgres: what is loaded now, read before any fact of this state is, so the
             # facts kept under it hold at least that (``_carried``)
             mark = _pg_layer_mark(conn) if getattr(conn, "postgres", False) else None
@@ -918,7 +905,7 @@ class TraverseTools:
             # one wait per read: a call after one that waited it out only looks
             # Event.wait: False only when it timed out
             ready = done.wait(0 if getattr(self, "_waited", None) is done
-                              else _pg_request_wait(path, deadline=True) if postgres
+                              else _pg_request_wait(path, deadline=True, conn=conn) if postgres
                               else BACKGROUND_WAIT_SECONDS) is not False
             if postgres and not ready:
                 self._waited = done
@@ -938,7 +925,7 @@ class TraverseTools:
                 if again is not None:
                     (path, identity), families, done = again
                     if done.wait(0 if getattr(self, "_waited", None) is done
-                                 else _pg_request_wait(path, deadline=True)) is False:
+                                 else _pg_request_wait(path, deadline=True, conn=conn)) is False:
                         self._waited = done
                     else:
                         self._pending = None
@@ -1240,15 +1227,23 @@ class TraverseTools:
             return "unknown"
         if not all(self.policy.may_read(scope.actor, k) for k in keys):
             return "unknown"
-        marks: set[str] = set()
-        for slice_kind, wanted in (("object", set(object_types)), (kind, set(names))):
-            slices = self._slices_of(slice_kind, wanted)
-            for name in wanted & slices.keys():
-                kept_marks, kept_handles = slices[name]
-                marks.update(kept_marks)
-                if slice_kind != "object" and (kept_handles is None or kept_handles):
-                    return "unknown"
-        if not marks <= set(scope.marking_sets):
+        def covered(slices_of: Callable[[str, set[str]], dict]) -> bool:
+            marks: set[str] = set()
+            for slice_kind, wanted in (("object", set(object_types)), (kind, set(names))):
+                slices = slices_of(slice_kind, wanted)
+                for name in wanted & slices.keys():
+                    kept_marks, kept_handles = slices[name]
+                    marks.update(kept_marks)
+                    if slice_kind != "object" and (kept_handles is None or kept_handles):
+                        return False
+            return marks <= set(scope.marking_sets)
+
+        # the facts of an earlier store state, while this state's are still being kept,
+        # decide only the weaker claim (``_slices_or_stale``)
+        stale = self._stale_reader()
+        if stale is not None and not covered(stale):
+            return "unknown"
+        if not covered(self._slices_of):
             return "unknown"
         sources = {_AUDIENCE_SOURCE.get(k.split(":", 1)[0]) for k in keys} - {None}
         for entry in self.base._freshness(self.base._store_meta(), sources):
@@ -1552,6 +1547,7 @@ class TraverseTools:
         frontiers: list[list[str]] = []
         owner_open = self._owner_open()
         owner_hidden = False
+        specific: dict[str, tuple[int, int, int]] = {}   # the last hop's (_specificity)
         for index, (link_type, direction, _source, target) in enumerate(hops):
             frontiers.append(list(frontier))
             rows, held_back = (self._hop_reach(scope, link_type, direction, frontier)
@@ -1564,6 +1560,7 @@ class TraverseTools:
             reached: dict[str, list[tuple[str, sqlite3.Row]]] = {}
             best_any: dict[str, str] = {}
             solid_next: set[str] = set()
+            last = index == len(hops) - 1
             for row in rows:
                 tier = self._reader_tier(scope, row)
                 forward = direction == "forward"
@@ -1572,10 +1569,18 @@ class TraverseTools:
                     best_any[other] = tier
                 if _TIER_RANK[tier] <= floor_rank:
                     reached.setdefault(other, []).append((tier, row))
+                    if last:
+                        key = _specificity(row)
+                        if other not in specific or key < specific[other]:
+                            specific[other] = key
                     if _TIER_RANK[tier] <= SOLID_RANK and (
                             row["from_object"] if forward else row["to_object"]) in solid:
                         solid_next.add(other)
             solid = solid_next
+            # A document's repeated mentions of one record are one edge, at the best
+            # occurrence's tier (``mention_pair_key``): never the same citation listed
+            # once per occurrence, crowding other records' edges out of the page.
+            reached = {oid: collapse_mention_rows(items) for oid, items in reached.items()}
             tiers: dict[str, int] = {}
             for tier in best_any.values():
                 tiers[tier] = tiers.get(tier, 0) + 1
@@ -1620,9 +1625,16 @@ class TraverseTools:
         lap("trimmed")
         # Only what solid links reach is the answer (its set, count and listing); what a
         # lowered floor reaches beyond it is a separate lead set, said as possibly related.
-        leads = sorted(oid for oid in final if oid not in solid)
+        leads = [oid for oid in final if oid not in solid]
         final = [oid for oid in final if oid in solid]
-        ranked = sorted(final, key=lambda oid: (_TIER_RANK[best[oid]], oid))
+        # Same tier: the most specific link first (the number in the document's own
+        # name, then a document naming fewer records, then named earlier in it), so a
+        # record's own PDF comes before a tracker listing 300 records within the limit
+        # and the plan's max_each (11-14 audit CC-NY-3); read off the hop's own rows.
+        def rank(oid: str) -> tuple:
+            return (_TIER_RANK[best[oid]], specific.get(oid, _MOST_SPECIFIC), oid)
+        ranked = sorted(final, key=rank)
+        leads.sort(key=rank)
         total = len(ranked)
         if total and offset >= total:
             raise ToolError("invalid_cursor", "the cursor is past the end of this result",
@@ -1677,7 +1689,7 @@ class TraverseTools:
         if related is not None:
             # the first few lead records, with the links' reasons, shown apart
             shown = min(arguments.get("limit", DEFAULT_LIMIT), RELATED_OBJECTS)
-            lead_page = sorted(leads, key=lambda oid: (_TIER_RANK[best[oid]], oid))[:shown]
+            lead_page = leads[:shown]
             lead_edges, _, _ = self._page_edges(scope, lead_page, parents, detailed)
             lead_refs = {ref["object_id"]: ref for ref in self._object_refs(scope, lead_page)}
             while True:
@@ -1730,6 +1742,21 @@ class TraverseTools:
                              "it may read, not necessarily all there are"))
         gaps.extend(self.base._dropped_version_gaps(list(roots[:5]) + page[:20]))
         gaps.extend(fresh_gaps)
+        # a reached record its source no longer holds at T is labelled, as plx.object
+        # labels it (a soft-deleted card, a record missing from its source): reached
+        # through a link still live, it is not a live record
+        from operating.ontology_tools_identity import removal_gap
+        listed = [o for o in page if o in refs] + (
+            [o for o in lead_page if o in lead_refs] if related is not None else [])
+        removed = self.store.removals(sorted(set(listed)), scope.t)
+        gaps.extend(removal_gap(basis, since, oid) for oid, (basis, since)
+                    in sorted(removed.items())[:REMOVED_GAPS])
+        if len(removed) > REMOVED_GAPS:
+            gaps.append(_gap("absent_in_source", "missing_from_source",
+                             f"{len(removed)} of the {len(set(listed))} objects listed",
+                             f"{len(removed) - REMOVED_GAPS} more objects listed are "
+                             "no longer held by their sources at T (deleted or missing); "
+                             "plx.object on one says which"))
         lap("gaps")
         result: dict[str, Any] = {
             "set": handle, "hops": hop_out, "edges": [], "objects": [],
@@ -1791,7 +1818,7 @@ class TraverseTools:
         lap("fit")
         # A listing of every member, as known now, is itself the members' exact count
         # (the answer gate binds a count claim citing them to it: claim_checks).
-        from operating.claim_checks import listing_count
+        from operating.claim_checks_counts import listing_count
         listed = listing_count(arguments, out)
         if listed is not None:
             out["exact_count"] = len(listed)
@@ -1834,11 +1861,28 @@ class TraverseTools:
         if not all(self.policy.may_read(scope.actor, key)
                    for name in object_types for key in audiences.get(name, ())):
             return True
+        links, events = list(links), list(events)
+        stale = self._stale_reader()
+        if stale is not None and self._slice_marks_trimmed(scope, object_types, links,
+                                                           events, items, stale):
+            # the facts of an earlier store state, while this state's are still being
+            # kept, decide only "may hide" (``_slices_or_stale``)
+            return True
+        return self._slice_marks_trimmed(scope, object_types, links, events, items,
+                                         self._slices_of, exact=True)
+
+    def _slice_marks_trimmed(self, scope: _Scope, object_types: set[str],
+                             links: Iterable[str], events: Iterable[str], items: bool,
+                             slices_of: Callable[[str, set[str]], dict], *,
+                             exact: bool = False) -> bool:
+        """``_slice_trimmed`` on the slice facts ``slices_of`` gives. Not ``exact`` (an
+        earlier store state's facts): True only from the facts themselves, never from the
+        item gate of their handles (False: not decided)."""
         marks: set[str] = set()
         handles: set[str] = set()
         for kind, names in (("object", object_types), ("link", set(links)),
                             ("event", set(events))):
-            slices = self._slices_of(kind, names)
+            slices = slices_of(kind, names)
             for name in names & slices.keys():
                 kept_marks, kept_handles = slices[name]
                 if kept_handles is None and items:
@@ -1851,7 +1895,7 @@ class TraverseTools:
             return True
         if not marks <= set(scope.marking_sets):
             return True
-        if not handles:
+        if not handles or not exact:
             return False
         listed = json.dumps(sorted(handles))
         conn = self.store.conn
@@ -1864,7 +1908,11 @@ class TraverseTools:
         kept = _store_identity(conn) if shared is not None else None
         if kept is not None:
             cache, lock = _SHARED_SLICE_GATE, _SHARED_SLICE_GATE_LOCK
-            key: tuple = (shared, scope.actor, json.dumps(kept[1], sort_keys=True), digest)
+            # the people exclusion now (``item_gate_stamp``): a person excluded since is a
+            # new key, never a slice the old list let through
+            stamp = getattr(self.base, "item_gate_stamp", None)
+            key: tuple = (shared, stamp() if callable(stamp) else None, scope.actor,
+                          json.dumps(kept[1], sort_keys=True), digest)
         else:
             cache, lock = self._slice_gate, _SHARED_SLICE_GATE_LOCK
             key = (scope.actor, _data_version(self.store, conn), digest)
@@ -1920,6 +1968,60 @@ class TraverseTools:
             return by_object, by_event
 
         return self._store_cached("event_types", read)
+
+    def _stale_reader(self) -> Callable[[str, set[str]], dict] | None:
+        """``_slices_or_stale`` as a ``slices_of`` for a decision taken on it first, on
+        Postgres while this state's facts are read in the background (``prime_lazily``);
+        None otherwise."""
+        if not getattr(self.store.conn, "postgres", False):
+            return None
+        # only while this state's facts are being kept in the background: with no such
+        # read (or once it is done) the exact decision reads or loads them, so the weaker
+        # claim never outlives the read it stands in for
+        self._current_facts(("slices", "object"), wait=False)
+        pending = getattr(self, "_pending", None)
+        if pending is None or pending[2].is_set():
+            return None
+        return lambda kind, names: self._slices_or_stale(kind, names)
+
+    def _slices_or_stale(self, kind: str, names: Iterable[str]
+                         ) -> dict[str, tuple[dict[str, str], dict[str, str] | None]]:
+        """The slice facts of these types for a decision that is kept only when it is the
+        weaker one ("may hide", "unknown"): this store state's when they are held (no read,
+        no wait), else those of an earlier store state of the same database and fact
+        code, held by this process before the data moved (``_stash_stale``) or kept beside
+        the database's marker for an earlier data version (``_stale_kept_slices``: a new
+        process after a migration or any load state written that is no layer's, which no
+        fold carries). Such facts may miss a marking, audience or gated handle the data
+        has since gained, so they can show that a reader may be trimmed, never that it is
+        not: the exact decision then reads this state's facts as before (a wait for the
+        fold, else a read of the types it needs, 8 s + 18 s of a customer margin on
+        2026-11-13), and an answer the earlier facts already decide waits for neither."""
+        names = set(names)
+        held = self._current_facts(("slices", kind), wait=False)
+        whole = held.get(("slices", kind))
+        if whole is not None:
+            return {name: whole[name] for name in names if name in whole}
+        if all(("slice_of", kind, name) in held for name in names):
+            out: dict[str, tuple[dict[str, str], dict[str, str] | None]] = {}
+            for name in names:
+                out.update(held[("slice_of", kind, name)])
+            return out
+        sources = [getattr(self.store, "stale_slices", None) or {}]
+        try:
+            kept = _store_identity(self.store.conn)
+        except sqlite3.Error:
+            kept = None
+        if kept is not None:
+            sources.append(_stale_kept_slices(kept[0]))
+        out = {}
+        for name in names:
+            for source in sources:
+                found = _stale_slice(source, kind, name)
+                if found is not None:
+                    out[name] = found
+                    break
+        return out
 
     def _slices_of(self, kind: str, names: Iterable[str]
                    ) -> dict[str, tuple[dict[str, str], dict[str, str] | None]]:
@@ -2768,7 +2870,7 @@ def _pegging_links() -> frozenset[str] | None:
 
 @lru_cache(maxsize=1)
 def _pegging_links_at(directory: str, stamp: tuple) -> frozenset[str] | None:
-    from operating.ontology_tools_process import load_graphs
+    from operating.ontology_tools_process_graphs import load_graphs
 
     try:
         graphs = load_graphs(directory)
@@ -3205,6 +3307,104 @@ def _read_slice_part(store: str, kind: str, low: Any, high: Any
 
 # The key of a Postgres store state's load mark among its facts (``_pg_layer_mark``).
 _LAYER_MARK = ("layer_mark",)
+
+# Slice facts of an earlier store state (``TraverseTools._slices_or_stale``).
+_STALE_SLICE_KEYS = (("slices",), ("slice_of",))
+
+
+def _slice_facts(facts: Mapping[Any, Any]) -> dict[Any, Any]:
+    return {key: value for key, value in facts.items()
+            if isinstance(key, tuple) and key[:1] in _STALE_SLICE_KEYS}
+
+
+def _stash_stale(store: Any, facts: Mapping[Any, Any]) -> None:
+    """Hold the slice facts of the store state a reader leaves (a data change) beside it,
+    over those of earlier states it held: a decision taken on them is kept only when it is
+    the weaker one (``TraverseTools._slices_or_stale``)."""
+    kept = _slice_facts(facts)
+    if not kept:
+        return
+    try:
+        store.stale_slices = {**(getattr(store, "stale_slices", None) or {}), **kept}
+    except AttributeError:
+        pass
+
+
+def _stale_slice(source: Mapping[Any, Any], kind: str, name: str
+                 ) -> tuple[dict[str, str], dict[str, str] | None] | None:
+    """The type ``name``'s slice in earlier slice facts; None when they do not hold it."""
+    one = source.get(("slice_of", kind, name))
+    if isinstance(one, Mapping) and name in one:
+        return one[name]
+    whole = source.get(("slices", kind))
+    if isinstance(whole, Mapping):
+        return whole.get(name)
+    return None
+
+
+def _fold_expected(conn: Any, marker: str | Path) -> bool:
+    """Whether the facts kept beside ``marker`` can be folded to the data version ``conn``
+    sees (``catch_up_pg_facts``' test, read without the facts): kept by this fact code
+    for the same generation, and nothing but delta layers written to the load state
+    since. True when that cannot be read (the wait stays as it was)."""
+    identity = _stale_kept(marker)[0]
+    if identity is None:
+        return True
+    try:
+        kept = _store_identity(conn)
+        version = int(identity.get("data_version"))
+        changed = _pg_changed_since(conn, version)
+    except Exception:   # noqa: BLE001 - unknown: wait as before
+        return True
+    if kept is None or changed is None:
+        return True
+    now = kept[1]
+    if any(identity.get(k) != now.get(k) for k in ("postgres", "generation", "code")):
+        return False
+    return all(name == "delta_layers" or name.startswith("delta:") for name in changed)
+
+
+_STALE_KEPT: dict[tuple[str, int, int], tuple[dict[str, Any] | None, dict[Any, Any]]] = {}
+_STALE_KEPT_LOCK = threading.Lock()
+
+
+def _stale_kept_slices(marker: str | Path) -> dict[Any, Any]:
+    """The slice facts kept beside ``marker`` (one database) for whatever data version
+    they were read under, by this fact code."""
+    return _stale_kept(marker)[1]
+
+
+def _stale_kept(marker: str | Path) -> tuple[dict[str, Any] | None, dict[Any, Any]]:
+    """(the identity, the slice facts) kept beside ``marker`` whatever data version they
+    were read under, by this fact code; decoded once per kept file per process."""
+    try:
+        path = facts_path(marker)
+        stat = path.stat()
+    except OSError:
+        return None, {}
+    key = (str(path), stat.st_mtime_ns, stat.st_size)
+    with _STALE_KEPT_LOCK:
+        held = _STALE_KEPT.get(key)
+    if held is not None:
+        return held
+    out: tuple[dict[str, Any] | None, dict[Any, Any]] = (None, {})
+    if stat.st_size <= FACTS_MAX_BYTES:
+        try:
+            kept = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError, UnicodeDecodeError):
+            kept = None
+        store = kept.get("store") if isinstance(kept, dict) \
+            and kept.get("format") == FACTS_FORMAT else None
+        if isinstance(store, dict) and store.get("code") == _facts_code_digest():
+            facts = _decode_facts(kept.get("facts"))
+            out = (dict(store), _slice_facts(facts) if isinstance(facts, dict) else {})
+    with _STALE_KEPT_LOCK:
+        if len(_STALE_KEPT) >= 4:   # a few databases (tests), the newest file of each
+            _STALE_KEPT.pop(next(iter(_STALE_KEPT)))
+        for older in [k for k in _STALE_KEPT if k[0] == key[0]]:
+            del _STALE_KEPT[older]
+        _STALE_KEPT[key] = out
+    return out
 # The links with an odd evidence slot text of a Postgres store state (``link_odd``).
 _LINK_ODD = ("link_odd",)
 
@@ -3473,7 +3673,7 @@ BACKGROUND_WAIT_SECONDS = 1800
 PG_REQUEST_WAIT_SECONDS = 8
 
 
-def _pg_request_wait(marker: str | Path, *, deadline: bool = False) -> float:
+def _pg_request_wait(marker: str | Path, *, deadline: bool = False, conn: Any = None) -> float:
     """How long a Postgres call waits for its version's facts: ``PG_REQUEST_WAIT_SECONDS``
     when facts of an earlier version are kept for this database (the background folds
     them over the layers since: seconds), else none: with nothing kept the background
@@ -3485,6 +3685,12 @@ def _pg_request_wait(marker: str | Path, *, deadline: bool = False) -> float:
         wait = PG_REQUEST_WAIT_SECONDS if facts_path(marker).exists() else 0.0
     except OSError:
         wait = PG_REQUEST_WAIT_SECONDS
+    if wait and conn is not None and not _fold_expected(conn, marker):
+        # facts kept for an earlier version that no fold carries to this one (a load, a
+        # migration or any load state written that is no layer's): the background reads
+        # them whole, so the wait only delayed the call (8 s of each customer margin
+        # call after the 11-13 in-place changes)
+        wait = 0.0
     if deadline:   # ``deadline``: never past the thread's SQL deadline (``sql_deadline``)
         from .call_limits import seconds_left
         left = seconds_left()
@@ -4351,6 +4557,13 @@ def _read_pg_facts_parallel(dsn: str, families: Sequence[str], *,
             from ontology.pg_byte_order import key_collate
             collate = key_collate(cur)
         odd = leader.link_odd()
+        # the link slice kept in Postgres (migration 0028, CC-P-07) in the leader's
+        # snapshot: no key range of link_rows read at all (the 128 GB scan every host's
+        # first read of a data version ran); None: read from link_rows as before
+        marks = getattr(leader, "link_marks", None)
+        kept_links = marks(sorted(GATED_SCHEMES)) if marks is not None else None
+        if kept_links is not None:
+            bounds.pop("link")
         # the slices and the event types are read a key range at a time (one statement
         # over a whole table hashed or sorted gigabytes into temp files)
         tasks: list[tuple[Any, Any]] = [(key, None) for key in _fact_keys(families)
@@ -4416,6 +4629,8 @@ def _read_pg_facts_parallel(dsn: str, families: Sequence[str], *,
                 parts.setdefault(key, []).append(value)
         for kind in _SLICE_ROWS:
             facts[("slices", kind)] = _union_slices(parts.get(("slices", kind), ()))
+        if kept_links is not None:
+            facts[("slices", "link")] = _folded_slices(kept_links)
         facts["event_types"] = _union_event_types(parts.get("event_types", ()))
         return identity, facts
     finally:
@@ -4473,6 +4688,38 @@ def _grouped(rows: Iterable[Sequence[Any]]) -> dict[str, tuple[str, ...]]:
     for name, value in rows:
         out.setdefault(name, []).append(value)
     return {name: tuple(values) for name, values in out.items()}
+
+
+# No mention text to weigh (a key, posting or same-record link): as specific as a link is.
+_MOST_SPECIFIC = (0, 0, 0)
+# The document's own name: a file's name, a message's subject.
+_TITLE_FIELDS = frozenset({"row.name", "row.subject"})
+
+
+def _specificity(row: Mapping[str, Any]) -> tuple[int, int, int]:
+    """How specific a link is to the record it names, lowest first: 0 when the mention is
+    in the document's name (``PO #PO10002026.PDF``) else 1; how many records of the
+    type the document lists (its ``list_file`` count, 0 when it lists fewer); the
+    mention's offset. Read from the link's own reason and why_not, no other row."""
+    if row["binding_kind"] != "mention":
+        return _MOST_SPECIFIC
+    mention = next((f for f in _json_list(row["reason"]) if isinstance(f, dict)
+                    and f.get("feature") == "identifier_mention"), None)
+    if mention is None:
+        return (1, 0, 0)
+    cites = mention.get("citations")
+    field = cites[0].get("field_path") if isinstance(cites, list) and cites \
+        and isinstance(cites[0], dict) else mention.get("field_path")
+    listed = 0
+    why_not = row["why_not"]
+    if isinstance(why_not, str) and '"list_file"' in why_not:
+        listed = max((f.get("records") for f in _json_list(why_not) if isinstance(f, dict)
+                      and f.get("feature") == "list_file"
+                      and isinstance(f.get("records"), int)), default=0)
+    span = mention.get("span")
+    offset = span[0] if isinstance(span, list) and span and isinstance(span[0], int) \
+        and not isinstance(span[0], bool) else 0
+    return (0 if field in _TITLE_FIELDS else 1, listed, offset)
 
 
 def _json_list(text: Any) -> list:

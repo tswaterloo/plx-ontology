@@ -12,6 +12,7 @@ from unittest import mock
 
 from operating import derived_status as ds
 from operating import proactive_engine as pe
+from operating import proactive_engine_inbox
 
 NEW = {a.name: f"new-{a.name}" for a in ds.ARTIFACTS if a.roots}
 
@@ -142,7 +143,7 @@ class InboxCodeTest(_Versions):
         with closing(pe._open_inbox(inbox)) as conn:
             conn.execute("INSERT INTO detector_runs VALUES (?, 'complete', '[]', 1, '{}', ?)",
                          (pe.LATE_RULE, "2026-11-06T10:00:00+00:00"))
-            conn.execute("INSERT INTO meta VALUES (?, ?)", (pe._GENERATION_KEY + pe.LATE_RULE,
+            conn.execute("INSERT INTO meta VALUES (?, ?)", (proactive_engine_inbox._GENERATION_KEY + pe.LATE_RULE,
                          json.dumps({"digest": "d1", "since": "2026-11-06T10:00:00+00:00",
                                      "code": "older"})))
             older: set[str] = set()
@@ -150,7 +151,7 @@ class InboxCodeTest(_Versions):
             self.assertIn(pe.LATE_RULE, behind)
             self.assertEqual(older, {pe.LATE_RULE})
             # the deployed engine's run records its code: current again
-            pe._note_generation(conn, pe.LATE_RULE, "d1", "2026-11-06T11:00:00+00:00")
+            proactive_engine_inbox._note_generation(conn, pe.LATE_RULE, "d1", "2026-11-06T11:00:00+00:00")
             older = set()
             current, behind = pe._current_since(conn, "d1", older)
             self.assertIn(pe.LATE_RULE, current)

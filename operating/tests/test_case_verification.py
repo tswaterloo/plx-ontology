@@ -15,7 +15,7 @@ from ontology.core import Actor, ValidationError
 from operating import source_reads
 from operating import case_verification as cv
 from operating.cases import CaseClosed, effect_outcome, effect_values, parse_expected_effect
-from operating.mcp_server import CASE_RUNTIME_TOOLS, TOOLS
+from operating.mcp_server_catalog import CASE_RUNTIME_TOOLS, TOOLS
 from operating.tests.test_customer_po_coverage import (
     GRANTED, OPS, OPS_FINANCE, CoverageTestCase, ProposalTestCase)
 

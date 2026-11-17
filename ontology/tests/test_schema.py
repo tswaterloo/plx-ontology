@@ -447,10 +447,13 @@ class ValidatorTests(unittest.TestCase):
 
     def test_identifier_kinds_must_exist_when_the_registry_is_present(self):
         docs = _docs() + [("domains/example_orders.json", example())]
-        # The skeleton's own kinds (its raw links compare Sage numbers by kind) are held.
+        # The skeleton's own kinds (its raw links compare Sage numbers by kind, and its raw
+        # Sage open documents declare their document numbers) are held.
         own = {pair["identifier_kind"] for _, doc in _docs() for link in doc.get("link_types", [])
                for b in link.get("bindings", []) for pair in b.get("pairs", [])
-               if "identifier_kind" in pair}
+               if "identifier_kind" in pair} | \
+            {p["identifier_kind"] for _, doc in _docs() for t in doc.get("object_types", [])
+             for p in t.get("properties", []) if p.get("identifier_kind")}
         registry = {"format": "plx-identifiers/v1",
                     "kinds": {"so_number": {}, **{kind: {} for kind in own}}}
         errs = errors_of(lambda: compile_docs(docs, identifiers=registry))

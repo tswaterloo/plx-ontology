@@ -50,11 +50,15 @@ class ReadingBudgetTests(unittest.TestCase):
         with self.budget(deadline=time.time() - 1, limit=30):
             self.assertIsNone(ct.captured_text(self.blobs, self.row))
         self.assertEqual(rb.pending(self.log), {self.digest: {rb.BUDGET}})
-        self.assertNotIn((self.digest, "text/plain", "list.txt", None), ct._CACHE)
+        # the process memo holds a reading under its blob root (DOC-001's scope)
+        self.assertNotIn((ct._blob_root(self.blobs), (self.digest, "text/plain", "list.txt",
+                                                      None)), ct._CACHE)
         self.assertIsNone(self.kept.get((self.digest, "text/plain", "list.txt", None)))
         with self.budget(deadline=time.time() + 60, limit=30):
             found = ct.captured_text(self.blobs, self.row)
         self.assertIn("PL-0042", found.text)
+        self.assertIn((ct._blob_root(self.blobs), (self.digest, "text/plain", "list.txt",
+                                                   None)), ct._CACHE)
         # known now: served past the deadline too, nothing more pending
         with self.budget(deadline=time.time() - 1, limit=30, log=str(self.root / "b.tsv")):
             self.assertEqual(ct.captured_text(self.blobs, self.row), found)

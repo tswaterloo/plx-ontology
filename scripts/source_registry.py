@@ -1321,7 +1321,7 @@ class RepoFacts:
 
     def __init__(self, root: Path = ROOT) -> None:
         from integrations import bc_read
-        from integrations.capture_sharepoint import CaptureScope
+        from integrations.capture_sharepoint_scope import CaptureScope
         from integrations.live_source_grammar import BC_DOCUMENT_LINES
         from ontology import project
         from ontology import schema as ontology_schema

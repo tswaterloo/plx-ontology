@@ -119,6 +119,7 @@ class VendorPassRefreshTest(unittest.TestCase):
         from unittest import mock
 
         from operating import proactive_engine as pe
+        from operating import proactive_engine_config
         from operating import vendor_watch
         from operating.tests import test_proactive_engine as tpe
 
@@ -154,8 +155,8 @@ class VendorPassRefreshTest(unittest.TestCase):
                                 clock=lambda: moment.replace(hour=8))
 
             def run(*args, **options):
-                self.assertEqual(options.get("only"), pe.INCREMENTAL)
-                return {"detectors": {name: "complete" for name in pe.INCREMENTAL}}
+                self.assertEqual(options.get("only"), proactive_engine_config.INCREMENTAL)
+                return {"detectors": {name: "complete" for name in proactive_engine_config.INCREMENTAL}}
 
             config = mock.Mock(tenant="plx", principal="svc:workbench-host",
                                mirror_audience=state / "audience.json",
@@ -173,7 +174,7 @@ class VendorPassRefreshTest(unittest.TestCase):
             self.assertEqual(refreshed, [(store, date(2026, 10, 19), 0)])   # once
             self.assertEqual(first["full_refresh"]["state"], "ran")
             self.assertIsNone(second["full_refresh"])
-            self.assertEqual(first["detectors"], {n: "complete" for n in pe.INCREMENTAL})
+            self.assertEqual(first["detectors"], {n: "complete" for n in proactive_engine_config.INCREMENTAL})
             fresh = read()
             self.assertFalse(fresh["stale"])
             late = {g["object_id"] for g in fresh["gaps"] if g["kind"] == "unconfirmed_po"}
@@ -204,3 +205,90 @@ class VendorPassRefreshTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class PassScheduleTest(unittest.TestCase):
+    """Every rule is judged more often than nightly: by the 2-hourly calling pass, the
+    4-hourly whole pass, the vendor stage or the incremental pass (declared inputs). Once
+    a delta layer stopped making every rule behind (11-14), the five mail rules without
+    declared inputs (Replies, R&D, labels) were in none of these and waited a day."""
+
+    def test_no_rule_waits_for_the_nightly_pass(self):
+        from operating import proactive_engine as pe
+        from operating import proactive_engine_config
+        from operating import proactive_incremental as pi
+        from operating import vendor_watch as vw
+        pi._declared()
+        incremental = (set(pi.INPUTS) & set(pi.STORE_ONLY)) | set(pi.WHOLE)
+        scheduled = (vw.CALLING_PASS | vw.WHOLE_PASS | set(proactive_engine_config.INCREMENTAL) | incremental)
+        self.assertEqual(sorted(set(pe.DETECTORS) - scheduled), [])
+        # and no pass names a rule the engine does not have
+        self.assertEqual(sorted((vw.CALLING_PASS | vw.WHOLE_PASS) - set(pe.DETECTORS)), [])
+
+
+class ScheduledPassLockTest(unittest.TestCase):
+    """11-16: the re-enabled timers started the whole pass and the calling pass at once;
+    the second sat on the inbox's lock until its unit's timeout (Result=timeout, every
+    run). A scheduled pass that finds another running now ends at once, skipped, exit 0."""
+
+    def _run(self, state: Path, **kw):
+        from unittest import mock
+
+        from operating import proactive_engine as pe
+        from operating import vendor_watch
+
+        config = mock.Mock(tenant="plx", principal="svc:x",
+                           mirror_audience=state / "a.json", sources={})
+        with mock.patch("operating.case_workspace_live.offline_runtime"), \
+                mock.patch("operating.case_workspace_live._Session"), \
+                mock.patch("integrations.source_mirror.AudienceMap.from_file"), \
+                mock.patch("operating.host.engine_readers", return_value=None), \
+                mock.patch.object(pe, "served_behind", return_value=False), \
+                mock.patch.object(pe, "refresh_pass", return_value={"pass": {}}) as full, \
+                mock.patch.object(pe, "run", return_value={"detectors": {}}) as run:
+            found = vendor_watch.run_pass(state, config, seconds=600, bound=5,
+                                          refresh="whole", **kw)
+        return found, full.call_count + run.call_count
+
+    def test_a_pass_finding_another_running_skips_at_once_and_a_free_one_runs(self):
+        from operating import proactive_engine as pe
+        from operating import vendor_watch
+
+        with tempfile.TemporaryDirectory() as tmp:
+            state = Path(tmp)
+            with pe.pass_lock(vendor_watch.scheduled_lock_path(state), wait=False) as held:
+                self.assertTrue(held)
+                began = time.monotonic()
+                found, calls = self._run(state)
+                self.assertLess(time.monotonic() - began, 5)
+                self.assertEqual(found, {"skipped": "scheduled_pass_running",
+                                         "full_refresh": None})
+                self.assertEqual(calls, 0)   # neither the engine nor the vendor stage ran
+                waited, calls = self._run(state, pass_wait=0.3)   # bounded wait, then skip
+                self.assertEqual(waited["skipped"], "scheduled_pass_running")
+                self.assertEqual(calls, 0)
+            found, calls = self._run(state)   # released: the next pass runs
+            self.assertNotIn("skipped", found)
+            self.assertEqual(calls, 2)
+            with self.assertRaises(ValueError):
+                self._run(state, pass_wait=-1)
+
+    def test_the_cli_exits_0_when_skipped(self):
+        import io
+        import json
+        from contextlib import redirect_stdout
+        from unittest import mock
+
+        from operating import vendor_watch
+
+        out = io.StringIO()
+        skipped = {"skipped": "scheduled_pass_running", "full_refresh": None}
+        with mock.patch("operating.host.HostConfig.from_file"), \
+                mock.patch("ontology.window_lock.skip_report", return_value=None), \
+                mock.patch.object(vendor_watch, "run_pass", return_value=skipped) as ran, \
+                redirect_stdout(out):
+            code = vendor_watch.main(["--state-dir", "s", "--config", "c", "--refresh",
+                                      "whole", "--pass-wait-seconds", "2"])
+        self.assertEqual(code, 0)
+        self.assertEqual(json.loads(out.getvalue())["skipped"], "scheduled_pass_running")
+        self.assertEqual(ran.call_args.kwargs["pass_wait"], 2.0)

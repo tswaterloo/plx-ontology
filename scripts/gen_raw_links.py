@@ -25,7 +25,7 @@ import fnmatch
 import json
 from pathlib import Path
 import sys
-from typing import Any, Iterable, Mapping, Sequence
+from typing import Any, Mapping, Sequence
 
 ROOT = Path(__file__).resolve().parents[1]
 DOMAINS = ROOT / "ontology" / "schema" / "domains"
@@ -338,7 +338,8 @@ def build(compiled: Any, catalog: Mapping[str, Any]) -> dict[str, dict[str, Any]
                 binding_spec["where"] = list(join["where"])
             add(relation, {
                 "id": f"{tid}.{join['name']}", "from": tid, "to": to_tid, "name": join["name"],
-                "reverse_name": f"{_snake(tid[3:])}_rows_by_{join['name']}",
+                "reverse_name": join.get("reverse_name")
+                or f"{_snake(tid[3:])}_rows_by_{join['name']}",
                 "cardinality": "N:1",
                 "description": (f"{relation}: {on}: {join['why']} ({join['tier']}"
                                 + (", one candidate only" if join.get("unique_target") else "")

@@ -1,0 +1,26 @@
+# PLX off-box restore test: the newest copy record from the Spark, decrypted on this box,
+# and a sample (the Postgres set, the capture manifest, the smallest capture pieces, two blob
+# shards; PLX_OFFBOX_RESTORE_MB, default 600) downloaded, ciphertext and plaintext digests
+# checked against the record and the source manifest; then the escrow on s7d3d: the key
+# matches, and the escrowed secrets passphrase opens the secrets archive (recovery without
+# this box). Not green fails the unit (alarm).
+[Unit]
+Description=PLX off-box copy restore test
+After=plx-offbox-copy.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=@PLX_USER@
+Group=@PLX_GROUP@
+Environment=PLX_OFFBOX_SSH_CONFIG=/data/plx-state/ts-petra/ssh_config
+# the data host only: s7d3d holds the key escrow and is never a data host (refused)
+Environment=PLX_OFFBOX_HOSTS=sb4ec
+Environment=PLX_OFFBOX_ESCROW_HOSTS=s7d3d
+ExecStart=/usr/bin/python3 -I /usr/local/lib/plx/offbox_copy.py restore-test
+Nice=15
+IOSchedulingClass=idle
+CPUWeight=20
+MemoryMax=1G
+TimeoutStartSec=3h
+UMask=0077

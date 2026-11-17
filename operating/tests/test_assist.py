@@ -305,6 +305,27 @@ class AnswersTests(unittest.TestCase):
         self.assertEqual([c["outcome"] for c in made["checks"]], ["fact", "not_found"])
 
 
+    def test_a_topic_the_agent_answers_is_asked_as_worded(self):
+        """A line whose topic is a question the fast path no longer answers (shipped, on
+        hand, balance due, a PO's status: ``fast_answer.ROUTED_TO_AGENT``) asks the agent
+        that fact, not the record's status, and the fast path settles none of it."""
+        from operating import fast_answer
+        it = assist.parse("email Acme: when did SO-1234 ship")
+        self.assertFalse(fast_answer.serves(it.topic))
+        self.assertEqual(assist.questions(it), ["when did SO-1234 ship"])
+        ran = []
+
+        def agent(q):
+            ran.append(q)
+            return "SO-1234 shipped on 2026-11-02."
+        answers, settled = assist.answers_for(it, lambda q: ("", None), agent)
+        self.assertEqual((ran, settled), (["when did SO-1234 ship"], ["agent"]))
+        self.assertEqual(answers[0]["facts"][0]["text"], "SO-1234 shipped on 2026-11-02.")
+        # an unknown topic still asks each record's status
+        self.assertEqual(assist.questions(assist.parse("email Acme: SO-1234 thanks")),
+                         ["status of SO-1234"])
+
+
 class RecordChecksTests(unittest.TestCase):
     """Every record the line names ends in a fact in the message or a plain note to the
     person: never left out silently, never a search note told to the recipient."""
@@ -458,3 +479,145 @@ class DraftTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def strict_people(directory, excluded=(), unavailable=False):
+    """The people exclusion as the autopilot and the Ask hold it (``chunking.permissions``):
+    an address of ours the directory does not hold is not cleared."""
+    from integrations.people_exclusion import PeopleExclusion
+    from operating.chunking.permissions import Exclusion
+    guard = PeopleExclusion(unavailable="excluded_people_oids_absent") if unavailable \
+        else PeopleExclusion(list(excluded))
+    return Exclusion(guard, directory=directory, internal_domains=["plx.test"])
+
+
+class ReplyRecipientTests(unittest.TestCase):
+    """``resolve_reply``: a reply's recipients on the same rules as ``resolve``."""
+
+    PEOPLE = {"me@plx.test": ME, "me.alias@plx.test": ME, "boss@plx.test": BOSS,
+              "dana@acme-parts.com": BARRED}
+
+    def reply(self, sender, to=(), cc=(), *, excluded=(BARRED,), **kw):
+        return assist.resolve_reply(sender=sender, to=list(to), cc=list(cc), me=ME,
+                                    people=strict_people(self.PEOPLE, excluded), **kw)
+
+    def test_today_s_reply_all_is_the_base_each_once_in_order_with_its_source(self):
+        got = self.reply("Joe@Atlas.example", ["me@plx.test", "amy@atlas.example",
+                                               "joe@atlas.example"],
+                         ["boss@plx.test", "amy@atlas.example"], source="mail:h1",
+                         sources={"boss@plx.test": "mail:h2"})
+        self.assertEqual((got.to, got.cc), (["joe@atlas.example", "amy@atlas.example"],
+                                            ["boss@plx.test"]))
+        self.assertEqual(got.basis, {"joe@atlas.example": "sender", "amy@atlas.example": "to",
+                                     "boss@plx.test": "cc"})
+        self.assertEqual(got.sources, {"joe@atlas.example": "mail:h1",
+                                       "amy@atlas.example": "mail:h1",
+                                       "boss@plx.test": "mail:h2"})
+        self.assertEqual((got.ask, got.withheld, got.outside), ([], 0, True))
+
+    def test_an_excluded_person_is_left_off_unnamed_and_an_excluded_sender_leaves_nobody(self):
+        got = self.reply("joe@atlas.example", ["dana@acme-parts.com"], ["boss@plx.test"],
+                         excluded=(BARRED, BOSS))
+        self.assertEqual((got.to, got.cc, got.withheld), (["joe@atlas.example"], [], 2))
+        self.assertNotIn("dana", str(got))
+        self.assertNotIn("boss@", str(got))
+        got = self.reply("dana@acme-parts.com", ["amy@atlas.example"], ["boss@plx.test"])
+        self.assertEqual((got.to, got.cc, got.ask, got.withheld), ([], [], [], 1))
+        # an address of ours the directory cannot decide: withheld, never guessed clear
+        got = self.reply("joe@atlas.example", cc=["new.hire@plx.test"])
+        self.assertEqual((got.cc, got.withheld), ([], 1))
+
+    def test_unavailable_exclusion_or_reader_not_cleared_refuses(self):
+        for people in (strict_people(self.PEOPLE, unavailable=True), strict_people({}), None):
+            with self.assertRaises(assist.AssistRefused) as ctx:
+                assist.resolve_reply(sender="joe@atlas.example", me=ME, people=people)
+            self.assertEqual(ctx.exception.code, "people_exclusion_unavailable")
+        with self.assertRaises(assist.AssistRefused) as ctx:
+            assist.resolve_reply(sender="joe@atlas.example", me=BARRED,
+                                 people=strict_people(self.PEOPLE, (BARRED,)))
+        self.assertEqual(ctx.exception.code, "not_an_employee")
+
+    def test_learned_never_is_never_kept_nor_offered_and_to_cc_move_lines(self):
+        many = [f"p{n}@atlas.example" for n in range(12)]
+        got = self.reply("joe@atlas.example", ["kim@atlas.example", *many],
+                         ["boss@plx.test", "lee@atlas.example"],
+                         learned={"p11@atlas.example": "never", "boss@plx.test": "never",
+                                  "kim@atlas.example": "cc", "lee@atlas.example": "to",
+                                  "joe@atlas.example": "never"})
+        # the sender is who the reply answers: a lesson never takes them off
+        self.assertEqual(got.to[:2], ["joe@atlas.example", "lee@atlas.example"])
+        self.assertEqual(got.basis["lee@atlas.example"], "learned_to")
+        self.assertEqual(got.cc, ["kim@atlas.example"])
+        self.assertEqual(got.basis["kim@atlas.example"], "learned_cc")
+        on = got.to + got.cc + [a for q in got.ask for a in q["candidates"]]
+        self.assertNotIn("p11@atlas.example", on)
+        self.assertNotIn("boss@plx.test", on)
+        # a lesson never adds someone who is not on the thread
+        got = self.reply("joe@atlas.example", learned={"amy@atlas.example": "to"})
+        self.assertEqual((got.to, got.cc), (["joe@atlas.example"], []))
+
+    def test_the_reader_s_own_addresses_are_never_on_it(self):
+        got = self.reply("joe@atlas.example", ["me@plx.test", "ME.ALIAS@plx.test"],
+                         ["me@plx.test", "home@mine.example"], own=["home@mine.example"])
+        self.assertEqual((got.to, got.cc), (["joe@atlas.example"], []))
+        # replying to their own message: nobody filled in, the sender unresolved
+        got = self.reply("me.alias@plx.test", ["amy@atlas.example"])
+        self.assertEqual((got.to, got.unresolved), ([], ["sender"]))
+
+    def test_past_the_cap_the_rest_are_asked_never_dropped_or_filled_in(self):
+        to = [f"t{n}@atlas.example" for n in range(14)]
+        cc = [f"c{n}@atlas.example" for n in range(11)]
+        got = self.reply("joe@atlas.example", to, cc)
+        self.assertEqual(got.to, ["joe@atlas.example", *to[:assist.REPLY_ALL_MAX]])
+        self.assertEqual(got.cc, cc[:assist.REPLY_ALL_MAX])
+        asked = {q["field"]: q for q in got.ask}
+        self.assertEqual(asked["to"]["candidates"], to[assist.REPLY_ALL_MAX:])
+        self.assertEqual(asked["cc"]["candidates"], cc[assist.REPLY_ALL_MAX:])
+        self.assertEqual({q["pick"] for q in got.ask}, {"any"})
+        got = self.reply("joe@atlas.example", to[:3], cap=2)
+        self.assertEqual((got.to, got.ask[0]["candidates"]),
+                         (["joe@atlas.example", *to[:2]], to[2:3]))
+
+    def test_every_address_is_kept_asked_or_counted_at_1_10_and_60(self):
+        import time
+        for n in (1, 10, 60):
+            to = [f"t{i}@atlas.example" for i in range(n)]
+            cc = [f"c{i}@atlas.example" for i in range(n)]
+            began = time.process_time()   # CPU time: load never moves it
+            got = self.reply("joe@atlas.example", to + to[:1], cc + to[:1])
+            self.assertLess(time.process_time() - began, 0.5)
+            for line, filled, field_ in ((to, got.to[1:], "to"), (cc, got.cc, "cc")):
+                q = next((q for q in got.ask if q["field"] == field_), None)
+                asked = q["candidates"] if q else []
+                self.assertEqual(filled + asked, line[:len(filled) + len(asked)])
+                self.assertEqual(len(filled) + len(asked) + (q or {}).get("more", 0), n)
+                self.assertEqual(len(filled), min(n, assist.REPLY_ALL_MAX))
+            self.assertEqual(len(set(got.to + got.cc)), len(got.to + got.cc))
+
+    def test_unsure_is_asked_or_unresolved_never_guessed(self):
+        got = self.reply("no-reply@atlas.example", ["amy@atlas.example"])
+        self.assertEqual((got.to, got.cc), ([], []))
+        self.assertEqual(got.ask, [{"field": "to", "pick": "one", "mention": None,
+                                    "candidates": ["no-reply@atlas.example"],
+                                    "why": "an automated address"}])
+        for sender in ("", None, "Joe <joe@atlas.example>", "joe, amy@atlas.example"):
+            got = self.reply(sender, ["amy@atlas.example"])
+            self.assertEqual((got.to, got.unresolved), ([], ["sender"]), sender)
+
+
+class ResolveCapsTests(unittest.TestCase):
+    """The Ask box path (``resolve``) on the same cases: own address and its cap."""
+
+    def test_the_team_never_holds_the_reader_and_stops_at_max_to(self):
+        directory = {"me@plx.test": ME, "me.alias@plx.test": ME, "dana@plx.test": BARRED}
+        members = [ME, BARRED]
+        for n in range(15):
+            oid = f"00000000-0000-0000-0000-0000000001{n:02d}"
+            directory[f"m{n}@plx.test"] = oid
+            members.append(oid)
+        people = strict_people(directory, (BARRED,))
+        got = assist.resolve(assist.parse("weekly update to the team"), me=ME, people=people,
+                             sent=[], roles={"ops": members})
+        self.assertEqual(len(got.to), assist.MAX_TO)
+        self.assertFalse({"me@plx.test", "me.alias@plx.test", "dana@plx.test"} & set(got.to))
+        self.assertEqual(got.withheld, 1)

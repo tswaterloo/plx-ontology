@@ -60,6 +60,7 @@ from typing import Any, Callable, Iterable, Mapping, Sequence
 
 from .proactive_cash import Doc, _norm, ap_docs, ar_docs, similar_numbers
 from .proactive_ops import _cleared
+from . import time_window
 
 CASH_RULE = "cash_application"
 STATEMENT_RULE = "statement_reconciliation"
@@ -101,10 +102,7 @@ class Reading:
 
 
 def _day(raw: Any) -> date | None:
-    try:
-        return date.fromisoformat(str(raw or "")[:10])
-    except ValueError:
-        return None
+    return time_window.business_day(raw)
 
 
 def _internal(people: Any, address: str) -> bool:
@@ -188,7 +186,7 @@ def _fact_day(facts: Mapping[str, Any], *labels: str) -> date | None:
     for label in labels:
         got = facts.get(label)
         if got:
-            from integrations.sheet_readings import parse_date
+            from integrations.sheet_grid import parse_date
             day = _day(got[0]) or parse_date(got[0])
             if day is not None:
                 return day
@@ -550,7 +548,7 @@ def sheet_on_hand(st: Any, as_of: date, readings: Path, people: Any,
                   cites: Callable, skipped: Any) -> dict[str, tuple]:
     """item cluster -> (quantity, unit word, cite group, day) from the latest fresh
     on-hand reading of the items ``wanted``; nothing when people are not cleared."""
-    from integrations.sheet_readings import name_date, parse_date
+    from integrations.sheet_grid import name_date, parse_date
 
     if people is None or getattr(people, "unavailable", None) or not readings.is_file():
         return {}
@@ -613,7 +611,7 @@ def _product_codes(st: Any, item_of: Callable[[str], str]) -> dict[str, set[str]
 
 
 def _reading_day(r: Reading) -> date | None:
-    from integrations.sheet_readings import name_date
+    from integrations.sheet_grid import name_date
     return (_day(_v(r, "date")) or _fact_day(r.facts, "inventory date", "count date",
                                               "as of", "as at", "report date", "date",
                                               "period ending", "week ending", "_first_date")

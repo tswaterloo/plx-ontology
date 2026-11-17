@@ -1,0 +1,10 @@
+[Unit]
+Description=PLX Workbench live Ask canary every 20 minutes
+
+[Timer]
+OnBootSec=10min
+OnUnitActiveSec=20min
+AccuracySec=1min
+
+[Install]
+WantedBy=timers.target

@@ -228,3 +228,93 @@ def for_system(system: str, environ: Mapping[str, str] | None = None) -> _Transp
     if system == "bc":
         return BCWriteTransport(env)
     return GraphWriteTransport(system, env) if system in GRAPH_PERMISSIONS else None
+
+
+class MCTaskTransport:
+    """Mission Control task notes (``mc_report_progress``) through the guarded MCP client
+    (``integrations.mc.MissionControlMcpClient.call_write_tool``) on the Workbench's MC
+    key (``MC_MCP_API_KEY``/``MC_OPERATOR_EMAIL``). Constructed only once the owner placed
+    ``live-mc`` (``autopilot_write.MC_LIVE_ENV``, set by ``opened_environ``).
+
+    The call's ``McWriteAuthorization`` names the person whose own opt-in to the workflow
+    authorizes it (``acting_for``, the item's owner, cleared by the people exclusion), for
+    exactly this tool and these arguments, for 10 minutes, single use (the durable ledger
+    ``MC_WRITE_LEDGER`` beside the write state). ``mc_update_task`` and every other tool
+    are refused here (``mc_tool_policy.json``: never sent). ``__call__`` answers
+    ``(status, body)`` like the HTTP transports; an MC answer whose outcome is not known
+    raises ``OSError`` (never retried, a person reconciles)."""
+
+    system = "mc"
+    TOOLS = frozenset({"mc_report_progress"})
+    WINDOW_MINUTES = 10
+
+    def __init__(self, environ: Mapping[str, str] | None = None, *,
+                 client: Callable[[str, Mapping[str, Any], Any], Any] | None = None,
+                 hub: Any = None, clock: Callable[[], Any] | None = None) -> None:
+        self.environ = dict(os.environ if environ is None else environ)
+        self._client = client
+        self._hub = hub          # an injected ``HubTransport`` (tests: a fake MC)
+        self._clock = clock
+
+    def missing(self) -> list[str]:
+        out = []
+        if self.environ.get("PLX_AUTOPILOT_MC_LIVE") != "1":
+            out.append("MC writes are not opened (live-mc)")
+        out += [f"{n} not configured" for n in ("MC_MCP_API_KEY", "MC_OPERATOR_EMAIL")
+                if not str(self.environ.get(n) or "").strip()]
+        if not str(self.environ.get("MC_WRITE_LEDGER") or "").strip():
+            out.append("MC write ledger path not configured (MC_WRITE_LEDGER)")
+        return out
+
+    def _now(self) -> Any:
+        from datetime import datetime, timezone
+        return self._clock() if self._clock else datetime.now(timezone.utc)
+
+    def _send(self, tool: str, args: Mapping[str, Any], authorization: Any) -> Any:
+        if self._client is not None:
+            return self._client(tool, args, authorization)
+        from pathlib import Path
+        from integrations.mc import MissionControlMcpClient, WriteAuthorizationLedger
+        from integrations.plx_hub_guard import McConfig
+        client = MissionControlMcpClient(
+            McConfig.from_env(self.environ), hub=self._hub, write_tools=self.TOOLS,
+            write_approvers={authorization.approved_by},
+            write_ledger=WriteAuthorizationLedger(Path(self.environ["MC_WRITE_LEDGER"])))
+        return client.call_write_tool(tool, args, authorization=authorization)
+
+    def __call__(self, request: Mapping[str, Any], key: str) -> tuple[int, Mapping[str, Any]]:
+        from datetime import timedelta
+        from integrations.plx_hub_guard import (McWriteAuthorization, canonical_arguments,
+                                                is_human_email, UpstreamError)
+        from integrations.mc import McAnswerRefused
+        if self.missing():
+            return 403, {"code": "write_not_opened"}
+        body = request.get("body") if isinstance(request.get("body"), Mapping) else {}
+        params = body.get("params") if isinstance(body.get("params"), Mapping) else {}
+        tool, args = params.get("name"), params.get("arguments")
+        if tool not in self.TOOLS or not isinstance(args, Mapping):
+            return 400, {"code": "tool_never_sent"}
+        person = str(request.get("acting_for") or "").strip().lower()
+        if not is_human_email(person):
+            return 400, {"code": "no_authorizing_person"}
+        now = self._now()
+        try:
+            authorization = McWriteAuthorization(
+                tool=str(tool), arguments_json=canonical_arguments(dict(args)),
+                approved_by=person, approved_at=now,
+                expires_at=now + timedelta(minutes=self.WINDOW_MINUTES),
+                evidence_ref=f"autopilot opt-in of the person; audit key {str(key)[:40]}")
+        except ValueError:
+            return 400, {"code": "authorization_refused"}
+        try:
+            answer = self._send(str(tool), dict(args), authorization)
+        except guard.ReadOnlyGuardError:
+            return 400, {"code": "guard_refused"}
+        except McAnswerRefused as error:
+            raise OSError(error.code) from None           # MC answered something unreadable
+        except UpstreamError as error:
+            status = getattr(error, "status", None)
+            if isinstance(status, int) and 400 <= status < 500 and status not in (408, 425, 429):
+                return status, {"code": str(getattr(error, "code", "") or "refused")[:40]}
+            raise OSError(str(getattr(error, "code", "upstream"))) from None
+        return 200, answer if isinstance(answer, Mapping) else {}

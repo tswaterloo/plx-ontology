@@ -143,7 +143,7 @@ def _issued_by_own_party(tools: Any, scope: Any, object_id: str, object_type: st
     Only what this reader may read; never a name. A customer's number the identifier
     grammar reads as an own purchase order's number is reported too: a stated doubt,
     never a dismissal of the document."""
-    from operating.ontology_tools import _gap
+    from operating.ontology_tools_identity import _gap
     from ontology.document_fields import own_record_keys
 
     keys = own_record_keys(object_type, evidence)
@@ -322,7 +322,7 @@ def _event_values(tools: Any, scope: Any, record: str, event_type: str
                   ) -> list[dict[str, Any]]:
     """An event of ``record`` as a dated value (its own citation), when the reader may
     read the event's row."""
-    from operating.ontology_tools import _citation, _known_at, _markings
+    from operating.ontology_tools_policy import _citation, _known_at, _markings
     rows = tools.store.conn.execute(
         "SELECT e.* FROM events e JOIN event_objects eo ON eo.event_id = e.event_id "
         "WHERE eo.object_id = ? AND e.event_type = ? ORDER BY e.event_id",
@@ -385,7 +385,7 @@ def _declares(tools: Any, object_type: str, prop: str) -> bool:
 def _undeclared(subject: str, *types: str) -> dict[str, Any]:
     """The gap of a declared comparison whose property the schema does not declare (the
     profile and the schema disagree): reported, never a skipped comparison."""
-    from operating.ontology_tools import _gap
+    from operating.ontology_tools_identity import _gap
     return _gap("unknown", "property_not_declared", subject,
                 f"the schema declares no property of {', '.join(types)} for this declared "
                 "comparison; it is not compared: neither a conflict, a match nor a missing "
@@ -406,7 +406,7 @@ def _same(kind: str, left: dict[str, Any], right: dict[str, Any],
           vocabulary: Iterable[str] = ()) -> bool | None:
     """Whether two values agree; None when they are not the same measure (a code
     compares with the one word of its vocabulary a record's text holds, else not)."""
-    from operating.ontology_tools import compared_text
+    from operating.ontology_tools_identity import compared_text
     a, b = left.get("value"), right.get("value")
     if kind == "money":   # one currency and tax basis: _not_comparable decided that
         try:
@@ -709,7 +709,7 @@ def _not_comparable(subject: str, stated: Mapping[str, Any], basis: str,
                     other: Mapping[str, Any], other_basis: str) -> dict[str, Any] | None:
     """The gap why a document amount and a record amount are not compared (not one
     stated currency or not one declared tax basis), else None."""
-    from operating.ontology_tools import _gap
+    from operating.ontology_tools_identity import _gap
     a, b = stated.get("currency"), other.get("currency")
     if not a or not b:
         reason, why = "currency_unknown", f"currency {a or 'unknown'} vs {b or 'unknown'}"
@@ -735,7 +735,7 @@ def _code_not_comparable(subject: str, other: Mapping[str, Any], rule: Mapping[s
     names no word of the code's vocabulary or several (``several_values`` /
     ``unreadable``, as the extractor names them on the document side), else None: never
     a match, never a conflict."""
-    from operating.ontology_tools import _gap
+    from operating.ontology_tools_identity import _gap
     value = other.get("value")
     text = value.get("untrusted_text") if isinstance(value, Mapping) else value
     codes = _code_words(text, rule["vocabulary"])

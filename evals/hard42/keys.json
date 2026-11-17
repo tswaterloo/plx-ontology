@@ -3,16 +3,8 @@
     "ask": "Dandylion Pet's October 2026 orders not shipped yet, and any hold",
     "made": "2026-11-07",
     "must_list_unshipped": ["OR1000154132", "OR1000154133", "OR1000154134"],
-    "may_list_unshipped": {"OR1000154089": "Sage-only (no Portal row), Sage complete=2 like the three above, no shipment header"},
-    "must_not_list_unshipped": ["OR1000154245", "OR1000154259"],
-    "sage_orders": {
-      "OR1000154089": {"complete": "2", "shipments": []},
-      "OR1000154132": {"complete": "2", "shipments": []},
-      "OR1000154133": {"complete": "2", "shipments": []},
-      "OR1000154134": {"complete": "2", "shipments": []},
-      "OR1000154245": {"complete": "5", "shipments": ["SH1000085766"]},
-      "OR1000154259": {"complete": "5", "shipments": ["SH1000085818"]}
-    },
-    "revisions": [{"at": "2026-11-07", "was": "5 ready-to-ship Portal orders unshipped", "why": "data moved on: the Portal still says READY_TO_SHIP for OR1000154245 and OR1000154259, but Sage has shipments SH1000085766 (2026-10-29) and SH1000085818 (2026-11-02)"}]
+    "must_not_list_unshipped": ["OR1000154089", "OR1000154245", "OR1000154259"],
+    "sage_orders": {"OR1000154089": {"complete": "5", "shipments": ["SH1000085906"]}, "OR1000154132": {"complete": "2", "shipments": []}, "OR1000154133": {"complete": "2", "shipments": []}, "OR1000154134": {"complete": "2", "shipments": []}, "OR1000154245": {"complete": "5", "shipments": ["SH1000085766"]}, "OR1000154259": {"complete": "5", "shipments": ["SH1000085818"]}},
+    "revisions": [{"at": "2026-11-07", "was": "5 ready-to-ship Portal orders unshipped", "why": "data moved on: the Portal still says READY_TO_SHIP for OR1000154245 and OR1000154259, but Sage has shipments SH1000085766 (2026-10-29) and SH1000085818 (2026-11-02)"}, {"at": "2026-11-14", "was": "OR1000154089 optional (Sage-only, complete=2, no shipment header)", "why": "data moved on: Sage now has shipment SH1000085906 (2026-11-10) and complete=5 for OR1000154089, so it is shipped and must not be listed unshipped"}]
   }
 }

@@ -132,8 +132,9 @@ test("demo walkthrough", async ({ page }, info) => {
 
   // Conflict card: both values, the trusted one and why.
   const conflict = card.getByTestId("conflict-card");
-  await expect(conflict).toContainText("2026-10-17");
-  await expect(conflict).toContainText("2026-10-24");
+  // dates in the app's reading form (17 Oct 2026), never ISO
+  await expect(conflict).toContainText("17 Oct 2026");
+  await expect(conflict).toContainText("24 Oct 2026");
   await expect(conflict.getByText("Used")).toHaveCount(1);
   await expect(conflict).toContainText("system of record");
 
@@ -209,7 +210,9 @@ test("demo walkthrough", async ({ page }, info) => {
 
   // 10. Missing objects and malformed types read as plain language.
   await page.goto("/object/PurchaseOrder/PurchaseOrder%3Ademo%3A00000");
-  await expect(page.getByRole("alert").filter({ hasText: "couldn't find that" })).toBeVisible();
+  // a missing record is its own page state (a status, not an error alert), with a way to search
+  await expect(page.getByTestId("record-missing")).toContainText("isn't here, or you don't have access to it");
+  await expect(page.getByRole("button", { name: "Search for it" })).toBeVisible();
   await page.goto("/object/not%20a%20type/1");
   await expect(page.getByText("Page not found")).toBeVisible();
   await expectNoRawErrors(page);

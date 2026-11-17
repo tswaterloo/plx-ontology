@@ -29,6 +29,15 @@ EXCEPTION WHEN duplicate_object THEN
     NULL;
 END $$;
 ALTER ROLE plx_api NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS NOINHERIT;
+-- harden-1114: every session of the role is bounded even where the code sets no limit of
+-- its own (a bare psycopg connection: the feedback log, health reads). The API's own
+-- readers SET their limits per session (sqlite_compat: 120 s; a request's deadline lower),
+-- which these defaults never override. A statement past 5 minutes, or a read queued over
+-- 30 s behind another session's lock (a migration's DDL), ends with an error the route
+-- reports, instead of holding a request worker and its connection with no end.
+ALTER ROLE plx_api SET statement_timeout = '300s';
+ALTER ROLE plx_api SET lock_timeout = '30s';
+ALTER ROLE plx_api SET idle_in_transaction_session_timeout = '15min';
 
 DO $$
 BEGIN
@@ -49,6 +58,16 @@ ALTER DEFAULT PRIVILEGES IN SCHEMA ontology, search, plx_meta GRANT SELECT ON SE
 -- the one superuser setting the API sets (Postgres 15+): bounding its own temporary files
 GRANT SET ON PARAMETER temp_file_limit TO plx_api;
 
+-- CC-C-04: the reader's view without the marked mention repeats (migration 0029), read
+-- only when PLX_PG_MENTION_REPEATS=1 puts ontology_seen on the search_path.
+DO $$
+BEGIN
+    IF to_regclass('ontology_seen.links') IS NOT NULL THEN
+        GRANT USAGE ON SCHEMA ontology_seen TO plx_api;
+        GRANT SELECT ON ontology_seen.links TO plx_api;
+    END IF;
+END
+$$;
 -- templates-1113: each person's saved templates (operator_api/templates.py, migration 0022):
 -- the API lists, saves, changes, counts uses of and deletes them (and the exclusion purge
 -- removes rows). Granted only once the migration made the table.
@@ -58,5 +77,20 @@ BEGIN
         GRANT USAGE ON SCHEMA templates TO plx_api;
         GRANT SELECT, INSERT, UPDATE, DELETE ON templates.template TO plx_api;
         GRANT USAGE ON SEQUENCE templates.template_id_seq TO plx_api;
+    END IF;
+END $$;
+-- grants-1115 (AUDIT3-05): each person's memory (operator_api/memory.py, migration 0020):
+-- the API appends to the log, keeps, refreshes, supersedes and forgets (deleted_at) items,
+-- and reads both; never DELETE (the exclusion purge runs as the schema owner). The same
+-- grants as migration 0030, for a role made after the migrations ran.
+DO $$
+BEGIN
+    IF to_regclass('memory.item') IS NOT NULL THEN
+        GRANT USAGE ON SCHEMA memory TO plx_api;
+        GRANT SELECT, INSERT ON memory.log TO plx_api;
+        GRANT SELECT, INSERT, UPDATE ON memory.item TO plx_api;
+        GRANT USAGE, SELECT ON SEQUENCE memory.log_id_seq, memory.item_id_seq TO plx_api;
+        ALTER DEFAULT PRIVILEGES IN SCHEMA memory GRANT SELECT ON TABLES TO plx_api;
+        ALTER DEFAULT PRIVILEGES IN SCHEMA memory GRANT SELECT ON SEQUENCES TO plx_api;
     END IF;
 END $$;

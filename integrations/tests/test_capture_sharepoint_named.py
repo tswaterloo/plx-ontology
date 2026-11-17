@@ -14,8 +14,8 @@ from urllib.parse import unquote
 
 from integrations import capture_sharepoint as cs
 from integrations import graph_read
-from integrations.capture_sharepoint import (CaptureScope, SharePointCapture,
-                                             SharePointCaptureStore)
+from integrations.capture_sharepoint import SharePointCapture, SharePointCaptureStore
+from integrations.capture_sharepoint_scope import CaptureScope
 from integrations.graph_read import SharePointReader
 from integrations.live_source_guard import BoundedBackoff
 from integrations.tests import test_capture_sharepoint as ts

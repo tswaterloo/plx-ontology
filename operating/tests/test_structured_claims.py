@@ -503,18 +503,19 @@ class OneProseScreenTests(unittest.TestCase):
         """Fail closed: when the ontology schema does not load the screen has no frame
         nouns, so a template framed by one falls back to its line (the column as words)."""
         from operating import claim_checks
-        cached = (claim_checks.frame_nouns, claim_checks._schema_names)
+        from operating import claim_checks_wording
+        cached = (claim_checks_wording.frame_nouns, claim_checks_wording._schema_names)
         for function in cached:
             function.cache_clear()
         try:
             with mock.patch("ontology.schema.load_schema", side_effect=RuntimeError("down")):
-                self.assertEqual(claim_checks.frame_nouns(), frozenset())
+                self.assertEqual(claim_checks_wording.frame_nouns(), frozenset())
                 out = self.gate("The receipt number is {r}.", ("r",))
         finally:
             for function in cached:
                 function.cache_clear()
         self.assertEqual((out["outcome"], out["text"]), ("answered", "receipt number: RC-0042"))
-        self.assertIn("receipt", claim_checks.frame_nouns())
+        self.assertIn("receipt", claim_checks_wording.frame_nouns())
 
     def test_an_mcp_shaped_claim_carries_its_lead_mark(self):
         """A claim in the MCP shape (text, citations, value_claims) marked ``lead`` keeps
@@ -538,11 +539,12 @@ class OneProseScreenTests(unittest.TestCase):
         ``KNOWN_ID_PREFIXES``: the gate has no hand-written frame lists, imports nothing
         private from the claim checks, and the screen's nouns are the schema's."""
         from operating import claim_checks
+        from operating import claim_checks_wording
         for name in ("FRAME_WORDS", "FRAME_CODES", "_frames_only"):
             self.assertFalse(hasattr(answer_gate, name), name)
         source = Path(answer_gate.__file__).read_text(encoding="utf-8")
         self.assertNotIn("_dig", source)
-        nouns = claim_checks.frame_nouns()
+        nouns = claim_checks_wording.frame_nouns()
         for noun in ("lot", "lots", "receipt", "receipts", "supplier", "suppliers", "order",
                      "purchase", "entries"):
             self.assertIn(noun, nouns)
@@ -583,7 +585,7 @@ class OnQuestionTests(unittest.TestCase):
             return {"handle": handle, "revision": "0-1", **self.ROWS[handle]}
         return None
 
-    def gate(self, claim, ontology=None, records=()):
+    def gate(self, claim, ontology=None, records=(), more=()):
         from operating import mcp_server
         session = mock.Mock(case_runtime=None, actor=None)
         rows = lambda runtime, actor, **_kw: self.view
@@ -600,7 +602,7 @@ class OnQuestionTests(unittest.TestCase):
             relevant = mcp_server.MCPServer._relevance(server, "Did PO0103510 arrive?")
         with mock.patch.object(answer_gate, "citation_rows", lambda runtime, **_kw: None), \
                 mock.patch.object(answer_gate, "gate_rows", rows):
-            return answer_gate.gate_answer({"claims": [claim]}, session,
+            return answer_gate.gate_answer({"claims": [claim, *more]}, session,
                                            seen={self.ORDER, self.LINE, self.MOVED,
                                                  self.GONE, self.NAMED, self.OTHER,
                                                  self.ALIEN}, returned={},
@@ -684,6 +686,7 @@ class OnQuestionTests(unittest.TestCase):
         import threading
         import types
         from operating import mcp_server
+        from operating import mcp_server_anchors
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "ontology.sqlite"
 
@@ -697,7 +700,7 @@ class OnQuestionTests(unittest.TestCase):
             store = types.SimpleNamespace(conn=sqlite3.connect(path), lock=threading.Lock())
             server = types.SimpleNamespace(ontology=types.SimpleNamespace(
                 tools=types.SimpleNamespace(store=store)))
-            self.addCleanup(mcp_server._LINK_CONNS.pop, str(path.resolve()), None)
+            self.addCleanup(mcp_server_anchors._LINK_CONNS.pop, str(path.resolve()), None)
             first = mcp_server._link_connection(server)
             self.assertIs(mcp_server._link_connection(server), first)
             self.assertEqual(first.execute("SELECT object_id FROM object_versions")
@@ -734,6 +737,56 @@ class OnQuestionTests(unittest.TestCase):
         self.assertEqual(self.reasons(self.gate(line, hidden, {"PO:1"})),
                          [answer_gate.OFF_QUESTION])
 
+    def test_the_link_check_walks_only_as_far_as_the_cited_record(self):
+        """intel-16c (GW-0882): the walk out of the question's order stops at the hop that
+        reaches the cited line (two links away), never reading a third hop or the cited
+        record's own links (a product's or customer's thousands, past ``LINK_SECONDS`` at
+        load); the walk is kept for the question's next claim; the verdicts are as before."""
+        from unittest import mock
+        from operating import mcp_server
+        ontology = self.linked_world()
+        read = []
+        real = mcp_server._neighbours
+
+        def neighbours(conn, ids):
+            ids = set(ids)
+            read.append(ids)
+            return real(conn, ids)
+        line = {"id": "q", "value": "40", "citation": self.LINE, "field": "row.quantity"}
+        with mock.patch.object(mcp_server, "_neighbours", neighbours):
+            self.assertEqual([c["id"] for c in self.gate(line, ontology, {"PO:1"})["claims"]],
+                             ["q"])
+        self.assertEqual(len(read), 2, read)              # hop 1 and hop 2 only
+        self.assertEqual(read[0], {"PO:1"})
+        self.assertFalse(any("Line:2" in ids for ids in read), read)
+        # walked to the end (the cited record is not near), the verdict is unchanged
+        far = {"id": "n", "value": "40", "citation": self.OTHER, "field": "row.quantity"}
+        self.assertEqual(self.reasons(self.gate(far, ontology, {"PO:1"})),
+                         [answer_gate.OFF_QUESTION])
+        walk = mcp_server._NearWalk(ontology.tools.store.conn, {"PO:1"}, lambda ids: set())
+        self.assertTrue(walk.step(1))
+        self.assertFalse(walk.step(1))                    # at most the hops asked
+        self.assertEqual(walk.seen, {"PO:1"})             # nothing visible: never walked on
+        # a hop cut short by its time limit leaves the walk as it was (review fde0d05b6d)
+        from operating import call_limits
+        walk = mcp_server._NearWalk(ontology.tools.store.conn, {"PO:1"}, set)
+        self.assertTrue(walk.step(3))
+        before = (walk.hops, set(walk.seen), set(walk.frontier))
+
+        def cut(conn, ids):
+            raise call_limits.ToolTimedOut()
+        with mock.patch.object(mcp_server, "_neighbours", cut):
+            with self.assertRaises(call_limits.ToolTimedOut):
+                walk.step(3)
+        self.assertEqual((walk.hops, walk.seen, walk.frontier), before)
+        self.assertTrue(walk.step(3))
+        self.assertIn("Line:2", walk.seen)
+        # the question's records grew (a later find): the walk starts again from them
+        near = {"walk": mcp_server._NearWalk(ontology.tools.store.conn, {"PO:7"}, set)}
+        server = mock.Mock(ontology=ontology)
+        self.assertTrue(mcp_server._linked_to(server, {"PO:1", "PO:7"}, [self.LINE], near))
+        self.assertEqual(near["walk"].roots, {"PO:1", "PO:7"})
+
     def test_a_record_names_the_question_s_code_on_whole_words_only(self):
         """GATE-002: the question's PO0103510 names a row saying PO-0103510, "PO
         0103510" or the number alone as the whole cell, or page text writing the code;
@@ -741,6 +794,7 @@ class OnQuestionTests(unittest.TestCase):
         code (SO-0103510) or prose writing the bare number, or a short name inside a
         longer party's cell."""
         from operating import mcp_server
+        from operating import mcp_server_anchors
         cells = {"PO-0103510": True, "PO 0103510": True, "0103510": True,
                  "Freight for PO0103510/2": True,
                  "PO-01035100": False, "PO01035101": False, "XPO0103510": False,
@@ -756,13 +810,36 @@ class OnQuestionTests(unittest.TestCase):
         text = {"handle": self.OTHER, "row": {}, "text": "Re: PO 0103510 arrived late"}
         self.assertTrue(any(mcp_server._names("PO0103510", said, cell=cell)
                             for said, cell in mcp_server._said_values(text)))
-        name = mcp_server._letters_digits("Acme Foods")
+        name = mcp_server_anchors._letters_digits("Acme Foods")
         for said, on in (("Acme Foods", True), ("ACME-FOODS", True),
                          ("Acme Foods International", False), ("AcmeFoodsCo", False)):
-            self.assertEqual(mcp_server._names(name, mcp_server._tokens(said), cell=True),
+            self.assertEqual(mcp_server._names(name, mcp_server_anchors._tokens(said), cell=True),
                              on, said)
-        self.assertTrue(mcp_server._names(name, mcp_server._tokens(
+        self.assertTrue(mcp_server._names(name, mcp_server_anchors._tokens(
             "Spoke with Acme Foods about the late delivery"), cell=False))
+
+    def test_claims_citing_one_via_walk_out_of_it_once(self):
+        """intel-16c: six claims of one submission citing the same via (the question's
+        order) walk out of its record once (a walk per claim at 10 s each made an 80 s
+        gate call at load); each claim's verdict is its own."""
+        from unittest import mock
+        from operating import mcp_server
+        ontology = self.linked_world()
+        read = []
+        real = mcp_server._neighbours
+
+        def neighbours(conn, ids):
+            read.append(set(ids))
+            return real(conn, ids)
+        line = {"id": "q", "value": "40", "citation": self.LINE, "field": "row.quantity",
+                "via": self.ORDER}
+        other = {"id": "o", "value": "40", "citation": self.OTHER, "field": "row.quantity",
+                 "via": self.ORDER}
+        with mock.patch.object(mcp_server, "_neighbours", neighbours):
+            out = self.gate(line, ontology, more=[{**line, "id": "r"}, other])
+        self.assertEqual(sorted(c["id"] for c in out["claims"]), ["q", "r"])
+        self.assertEqual(self.reasons(out), [answer_gate.OFF_QUESTION])
+        self.assertEqual(sum(ids == {"PO:1"} for ids in read), 1, read)
 
     def test_a_via_that_cannot_be_read_connects_nothing(self):
         line = {"id": "q", "value": "40", "citation": self.LINE, "field": "row.quantity"}

@@ -39,6 +39,7 @@ from typing import Any, Iterator, Sequence
 from . import config
 from . import models as md
 from . import store as st
+from ontology import parent_watch
 
 BLOCK = 512
 BACKFILL_LOCK = Path("search") / "backfill.lock"
@@ -173,7 +174,7 @@ def backfill(args: argparse.Namespace) -> int:
             return 0
         per = dict(values, PLX_EMBED_THREADS=str(args.threads))
         with ProcessPoolExecutor(args.workers, mp_context=mp.get_context("spawn"),
-                                 initializer=md.worker_init, initargs=(per,)) as pool:
+                                 **parent_watch.pool_init(md.worker_init, (per,))) as pool:
             list(pool.map(md.worker_encode, [["warm"]] * args.workers))
             total = 0
             started = time.monotonic()

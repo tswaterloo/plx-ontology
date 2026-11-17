@@ -307,7 +307,7 @@ class ProbeBudgetTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             small, large = synthetic_store(tmp + "/s.sqlite", 500), \
                 synthetic_store(tmp + "/l.sqlite", 5000)
-            (_, _, s_steps), (l_checks, l_asked, l_steps) = run(small, 60), run(large, 60)
+            (_, _, s_steps), (l_checks, _, l_steps) = run(small, 60), run(large, 60)
             # the sample's connection (the first): no scan, no sort, whatever the size
             self.assertLess(l_steps[0], s_steps[0] * 1.5 + 2000, (s_steps, l_steps))
             # the gate never reads the whole store: it looks each claimed handle up by
@@ -498,7 +498,7 @@ class ClaimSampleTest(unittest.TestCase):
         object's role, a visible later object's, none); and ``check_store`` gives the per-claim path's verdicts."""
         from ontology.store import ProjectionStore, ReadPolicy as StorePolicy
         from ontology.types import Actor
-        from operating.ontology_tools import ReadPolicy as ServedPolicy
+        from operating.ontology_tools_policy import ReadPolicy as ServedPolicy
         actor = Actor("plx", frozenset({"staff:reader"}), "restricted")
         with tempfile.TemporaryDirectory() as tmp:
             for shuffled in (False, True):
@@ -622,7 +622,7 @@ class ClaimSampleTest(unittest.TestCase):
         a role changed) changes the verdict instead of passing unnoticed."""
         from ontology.store import ProjectionStore
         from ontology.types import Actor
-        from operating.ontology_tools import ReadPolicy as ServedPolicy
+        from operating.ontology_tools_policy import ReadPolicy as ServedPolicy
         actor = Actor("plx", frozenset({"staff:reader"}), "restricted")
         real = ProjectionStore.claim_contracts
 
@@ -1116,6 +1116,7 @@ class DiskTest(unittest.TestCase):
 
     def test_a_build_short_of_free_space_never_starts(self):
         from verify import live_verify as lv
+        from verify import live_verify_checks
         from ontology import project
         low = {"free_bytes": 1, "total_bytes": 10}
         with tempfile.TemporaryDirectory() as tmp:
@@ -1146,7 +1147,7 @@ class DiskTest(unittest.TestCase):
                                  ("disk_insufficient", "disk_insufficient", "projection",
                                   expected, 1))
                 # The verifier records the code and both byte counts from the line.
-                kept = lv._envelope(line)
+                kept = live_verify_checks._envelope(line)
                 self.assertEqual((kept["code"], kept["need_bytes"], kept["free_bytes"]),
                                  ("disk_insufficient", expected, 1))
                 self.assertGreater(expected, 1)

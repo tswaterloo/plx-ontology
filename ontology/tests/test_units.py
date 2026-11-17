@@ -32,6 +32,8 @@ from ontology.store import ProjectionStore, ReadPolicy, StoreError
 from ontology.tests import test_project_bc as tp
 from ontology.tests import test_projection as fixture
 from operating import claim_checks
+from operating import claim_checks_parse
+from operating import claim_checks_values
 from operating import ontology_tools as ot
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -407,10 +409,10 @@ class LocalCurrencyTests(unittest.TestCase):
 
         # The claim gate re-reads the company record for the reader: a sum stated in USD
         # holds only while the reader can read the currency there.
-        returned = claim_checks.returned_evidence(
+        returned = claim_checks_values.returned_evidence(
             "plx.object", {"object_id": self.INVOICE}, {"values": [full["value"]]})
         money = full["value"]["citation"]
-        claim = claim_checks.parse_value_claims([{
+        claim = claim_checks_parse.parse_value_claims([{
             "value": "1200.00", "op": "sum", "currency": "USD",
             "of": [{"citation": money["l1_handle"], "field": money["field_path"]}]}],
             [money["l1_handle"]], [])

@@ -489,9 +489,10 @@ class TextMarksStepMigrationTests(unittest.TestCase):
         self.assertEqual(other["steps"]["refused"], ["step_unsupported:text_index"])
 
     def test_the_pin_is_the_payroll_marking_change(self):
-        from ontology.step_migrate import MARKS_ONLY, code_digests
-        self.assertIn((code_digests("7aba9f1245^")["text_index"],
-                       code_digests("7aba9f1245")["text_index"]), MARKS_ONLY["text_index"])
+        # a pin made before the v2 table: a pair of byte digests (v1 scheme)
+        from ontology.step_migrate import MARKS_ONLY, byte_digests
+        self.assertIn((byte_digests("7aba9f1245^")["text_index"],
+                       byte_digests("7aba9f1245")["text_index"]), MARKS_ONLY["text_index"])
 
     def test_a_marks_only_change_re_marks_the_served_fields_in_place(self):
         from ontology import text_index

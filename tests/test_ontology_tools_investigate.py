@@ -11,6 +11,7 @@ Evidence label: isolated-fixture (synthetic rows, never live PLX data).
 
 from __future__ import annotations
 
+from collections import Counter
 import copy
 import datetime as dt
 from decimal import Decimal
@@ -24,7 +25,13 @@ from ontology import store_ddl
 from ontology.json_contract import validate
 from ontology.types import Actor
 from operating import ontology_tools as ot
+from operating import ontology_tools_results
 from operating import ontology_tools_investigate as oi
+from operating import ontology_tools_investigate_follow_ups
+from operating import ontology_tools_investigate_gaps
+from operating import ontology_tools_investigate_host
+from operating import ontology_tools_investigate_pages
+from operating import ontology_tools_investigate_plans
 from operating import ontology_tools_process as op
 from operating import ontology_tools_traverse as tt
 
@@ -116,7 +123,7 @@ class Base(unittest.TestCase):
         base = ot.OntologyTools(reader, policy, schema=FixtureWorld.schema,
                                 grammar=ot.default_grammar())
         table: dict = {}
-        ot.register(table, base)
+        ontology_tools_results.register(table, base)
         tt.register(table, tt.TraverseTools(base))
         if process:
             op.register(table, op.ProcessTools(base))
@@ -125,8 +132,8 @@ class Base(unittest.TestCase):
         tools = oi.InvestigateTools(
             table, schema=FixtureWorld.schema,
             rows=oi.citation_rows(FixtureWorld.runtime) if rows else None,
-            complete=oi.relation_complete(base) if complete else None)
-        self.hook = oi.relation_complete(base)
+            complete=ontology_tools_investigate_host.relation_complete(base) if complete else None)
+        self.hook = ontology_tools_investigate_host.relation_complete(base)
         oi.register(table, tools)
         return table, tools
 
@@ -203,8 +210,8 @@ class PlansAreDataTests(unittest.TestCase):
         """Plans are data: no object type, link type, plan id or family appears in the
         executor's code."""
         schema = ot.default_schema()
-        source = (ROOT / "operating/ontology_tools_investigate.py").read_text("utf-8")
-        code = source.split('"""', 2)[2]  # past the module docstring
+        code = "".join(path.read_text("utf-8").split('"""', 2)[2]  # past each module docstring
+                       for path in sorted((ROOT / "operating").glob("ontology_tools_investigate*.py")))
         for name in list(schema.object_types) + list(schema.link_types):
             self.assertNotIn(f'"{name}"', code, name)
         output_keys = set(CONTRACTS["tools"]["plx.investigate"]["output"]["oneOf"][0]
@@ -428,7 +435,7 @@ class FakeHostTests(unittest.TestCase):
             if roles:
                 item["where"] = {"roles": roles}
             return item
-        doc = {"$schema": "_plan.schema.json", "format": oi.PLAN_FORMAT, "id": "fake_match",
+        doc = {"$schema": "_plan.schema.json", "format": ontology_tools_investigate_plans.PLAN_FORMAT, "id": "fake_match",
                "families": ["F7"], "title": "t", "description": "d",
                "root": {"object_types": ["PurchaseOrder"]}, "step_budget": 20,
                "steps": [
@@ -511,7 +518,7 @@ class FakeHostTests(unittest.TestCase):
         def around(sid, frm, *hops):
             return {"id": sid, "tool": "plx.around", "from": frm, "bind": "from",
                     "args": {"path": [{"link_type": l, "direction": d} for l, d in hops]}}
-        doc = {"$schema": "_plan.schema.json", "format": oi.PLAN_FORMAT, "id": "fake_count",
+        doc = {"$schema": "_plan.schema.json", "format": ontology_tools_investigate_plans.PLAN_FORMAT, "id": "fake_count",
                "families": ["F8"], "title": "t", "description": "d",
                "root": {"object_types": ["PurchaseOrder"]}, "step_budget": 20,
                "steps": [around("pol", "root", ("PurchaseOrderLine.line_of", "reverse")),
@@ -652,7 +659,7 @@ class FakeHostTests(unittest.TestCase):
         self.assertIs(CONTRACTS["tools"]["plx.investigate"]["read_only"], False)
         arguments = {"family": "F7", "root": self.PO,
                      "follow_ups": {"case_id": "case-" + "0" * 32}}
-        for recorder in (None, oi.follow_up_recorder(Path(), None)):
+        for recorder in (None, ontology_tools_investigate_follow_ups.follow_up_recorder(Path(), None)):
             with self.subTest(recorder=recorder is not None):
                 tools = oi.InvestigateTools(
                     self.table([(("ordered", "received"), None)], gaps=host_state),
@@ -758,7 +765,7 @@ class FakeHostTests(unittest.TestCase):
                     "meta": self._meta()}
         table = {"plx.object": {"handler": obj}, "plx.around": {"handler": around},
                  "plx.process": {"handler": process}}
-        doc = {"$schema": "_plan.schema.json", "format": oi.PLAN_FORMAT, "id": "fake_cited",
+        doc = {"$schema": "_plan.schema.json", "format": ontology_tools_investigate_plans.PLAN_FORMAT, "id": "fake_cited",
                "families": ["F7"], "title": "t", "description": "d",
                "root": {"object_types": ["PurchaseOrder"]}, "step_budget": budget,
                "steps": steps, "evidence": evidence}
@@ -850,7 +857,7 @@ class FakeHostTests(unittest.TestCase):
                 # The root shows no value of its record, even when read: counted, uncited.
                 self.assertEqual(counted["root_record_count"]["value"], 1)
                 self.assertNotIn("records", counted["root_record_count"])
-                reads = [s for s in result["trace"] if s["step"] == oi.RECORD_READS]
+                reads = [s for s in result["trace"] if s["step"] == ontology_tools_investigate_plans.RECORD_READS]
                 self.assertEqual(sum(s["calls"] for s in reads), 1 + (0 if displays else n))
         # A budget too small to read every counted record: the count stands, uncited.
         result = self._cited_run(evidence, steps, ends=lines[:10], budget=6, displays=False)
@@ -933,7 +940,7 @@ class PartyCheckTests(unittest.TestCase):
         return {"plx.object": {"handler": obj}, "plx.around": {"handler": around}}, calls
 
     def plan(self, budget):
-        doc = {"$schema": "_plan.schema.json", "format": oi.PLAN_FORMAT, "id": "fake_party",
+        doc = {"$schema": "_plan.schema.json", "format": ontology_tools_investigate_plans.PLAN_FORMAT, "id": "fake_party",
                "families": ["F9"], "title": "t", "description": "d",
                "root": {"object_types": ["PurchaseOrder"]}, "step_budget": budget,
                "steps": [{"id": "named", "tool": "plx.around", "from": "root", "bind": "from",
@@ -1061,7 +1068,7 @@ class UnaskedNotServedTests(unittest.TestCase):
         step = {"id": "root_read", "tool": "plx.object", "from": "root", "bind": "object_id"}
         if args is not None:
             step["args"] = args
-        doc = {"$schema": "_plan.schema.json", "format": oi.PLAN_FORMAT, "id": "fake_unasked",
+        doc = {"$schema": "_plan.schema.json", "format": ontology_tools_investigate_plans.PLAN_FORMAT, "id": "fake_unasked",
                "families": ["F9"], "title": "t", "description": "d",
                "root": {"object_types": ["PurchaseInvoice"]}, "step_budget": 8,
                "steps": [step],
@@ -1104,6 +1111,44 @@ class UnaskedNotServedTests(unittest.TestCase):
 
 
 class FamilyTests(Base):
+    def test_f3_a_blank_proven_only_by_a_readable_empty_cell(self):
+        """AUD08-GAPSTATE: the produced gap reads absent in source only when the reader's
+        own re-read of the cell shows it empty. A 0 (a value its tests fail), a withheld
+        column, an absent field, a refused row or no row reader: still not carried."""
+        item = _item("dev-F3-0001-fixture")
+        table, tools = self.table()
+        real = tools.rows
+
+        def produced(rows):
+            tools.rows = rows
+            result = self.investigate(table, "F3", self.root_of(item))
+            return {(g["state"], g["reason"]) for g in result["gaps"]
+                    if g.get("concerns") == "produced"}
+
+        def edited(change):
+            def read(handle, actor):
+                view = real(handle, actor)
+                if isinstance(view, dict) and "app_manufacturing_order" in handle:
+                    view = change(json.loads(json.dumps(view)))
+                return view
+            return read
+
+        def cell(value):
+            def change(view):
+                view["row"]["yield_actual"] = value
+                return view
+            return change
+
+        self.assertEqual(produced(real), {("absent_in_source", "value_empty")})
+        self.assertEqual(produced(edited(cell("  "))), {("absent_in_source", "value_empty")})
+        for name, rows in (("zero", edited(cell("0"))), ("zero number", edited(cell(0))),
+                           ("withheld", edited(lambda v: {**v, "withheld_fields":
+                                                          ["row.yield_actual"]})),
+                           ("absent", edited(lambda v: {**v, "row": {
+                               k: x for k, x in v["row"].items() if k != "yield_actual"}})),
+                           ("refused", edited(lambda v: None)), ("no reader", None)):
+            self.assertEqual(produced(rows), {("unknown", "not_carried")}, name)
+
     def test_f3_quantities_cite_the_ordered_line_and_report_missing_roles(self):
         item = _item("dev-F3-0001-fixture")
         table, _ = self.table()
@@ -1128,8 +1173,14 @@ class FamilyTests(Base):
         # name the same values in their own words, so a scorer ties them by value.
         gaps = {(g["state"], g["reason"], g["subject"], g.get("concerns"))
                 for g in result["gaps"]}
+        # Since AUD-08 a blank or 0 final quantity is never stored (the binding's test is
+        # unmet on this record); the reader re-reads the cell and, blank, says so
+        # (AUD08-GAPSTATE): absent in source, as the oracle says, never 'not carried'.
+        self.assertIn(("unknown", "source_condition_unmet", "AssemblyOrder.final_quantity",
+                       None), gaps)
         self.assertIn(("absent_in_source", "value_empty", "AssemblyOrder.final_quantity",
                        "produced"), gaps)
+        self.assertNotIn("not_carried", {g[1] for g in gaps if g[3] == "produced"})
         # No shipment of the order is not ingested, never absence; named by its role.
         self.assertIn(("not_ingested", "no_object_reached", "shipped quantity", "shipped"), gaps)
         self.assertEqual({g["concerns"] for g in item["known_outcome"]["gaps"]},
@@ -1619,6 +1670,20 @@ class DegradationAndPermissionTests(Base):
                             for e in cut["chain"]["edges"]), len(cited))
         self.assertTrue(cut["completeness"]["truncated"])
         self.assertFalse(cut["completeness"]["complete"])
+        # AUD-11: what the first page shed is on the pages after it, every page in the
+        # contract and the bound, read with the same arguments and next_cursor
+        pages, cursor = [cut], cut["completeness"]["next_cursor"]
+        self.assertIsNotNone(cursor)
+        while cursor:
+            page = self.investigate(table, "F3", root, cursor=cursor)
+            self.assertLessEqual(ot._envelope_bytes(page), tools.limits["max_result_bytes"])
+            pages.append(page)
+            cursor = page["completeness"]["next_cursor"]
+            self.assertLess(len(pages), 50)
+        shown = [e for page in pages[1:] for e in page["chain"]["edges"]]
+        self.assertEqual(shown, whole["chain"]["edges"])   # every edge whole, citations too
+        self.assertEqual([v for page in pages[1:] for v in page["values"]], whole["values"])
+        self.assertEqual({p["answer_page"]["pages"] for p in pages}, {len(pages)})
 
 
 class NoPlanTests(Base):
@@ -1731,7 +1796,8 @@ class McpHostTests(Base):
     plx.process included."""
 
     def test_an_mcp_client_gets_plx_process_verdicts_for_three_way_match(self):
-        from operating.mcp_server import TOOLS, MCPServer
+        from operating.mcp_server import MCPServer
+        from operating.mcp_server_catalog import TOOLS
         from operating.ontology_host import CaseHostTools
         from operating.tests.firewall_view import client_result
         spec = next(tool for tool in TOOLS if tool["name"] == "plx.investigate")
@@ -2181,10 +2247,10 @@ class PurchaseOrderTwinTests(unittest.TestCase):
                                 schema=ot.SchemaView.from_compiled(self.compiled),
                                 grammar=None, contracts=CONTRACTS, clock=lambda: self.now)
         table: dict = {}
-        ot.register(table, base)
+        ontology_tools_results.register(table, base)
         tt.register(table, tt.TraverseTools(base))
         oi.register(table, oi.InvestigateTools(table, rows=lambda h, a: None,
-                                               scope=oi.read_scope(base),
+                                               scope=ontology_tools_investigate_host.read_scope(base),
                                                clock=lambda: self.now))
         result = table["plx.investigate"]["handler"](
             {"family": "F1", "root": 'PurchaseOrder:portal.app_purchase_order:{"id":"p1"}'},
@@ -2240,7 +2306,7 @@ class NamedOrderInvoiceTests(unittest.TestCase):
         base = ot.OntologyTools(reader, policy, schema=ot.default_schema(),
                                 grammar=ot.default_grammar())
         table: dict = {}
-        ot.register(table, base)
+        ontology_tools_results.register(table, base)
         tt.register(table, tt.TraverseTools(base))
         op.register(table, op.ProcessTools(base))
         oi.register(table, oi.InvestigateTools(table, schema=ot.default_schema(), rows=None))
@@ -2419,6 +2485,176 @@ class NamedOrderInvoiceTests(unittest.TestCase):
     answer = staticmethod(Base.answer)
 
 
+class FitOrderTests(unittest.TestCase):
+    """The size cut keeps the evidence last (review-90e00433da): gaps are merged first, then
+    the extra rows go, and only then the records behind a figure, which is then named
+    unsupported. Plain dicts through ``_fit``, no host."""
+
+    @staticmethod
+    def _cite(n: int) -> dict:
+        return {"l1_handle": f"bc://co/salesShipments/{n}@v-{n}", "field_path": "row.no"}
+
+    def _result(self, gaps: int = 40) -> dict:
+        def gap(n):
+            return {"state": "absent_in_source" if n % 2 else "unknown", "reason": "no_match",
+                    "subject": f"Shipment.line_{n} forward",
+                    "detail": f"hop {n} reached nothing in the captured shipments " + "z" * 250,
+                    "searched": {"sources": [f"source_{n % 3}"]},
+                    "who_can_answer": [f"undeclared:owner {n % 3}"]}
+        edges = [{"from": f"o{n}", "to": f"p{n}", "tier": "verified", "reason": [
+            {"feature": "number", "citations": [self._cite(n)["l1_handle"]]}]}
+            for n in range(6)]
+        return {"chain": {"edges": edges,
+                          "objects": [{"id": f"o{n}", "label": "y" * 300} for n in range(6)]},
+                "values": [{"property": "no", "value": str(n), "citation": self._cite(n)}
+                           for n in range(6)],
+                "answer": [{"name": "shipments", "kind": "count", "value": 13,
+                            "records": [self._cite(n) for n in range(13)]}],
+                "gaps": [gap(n) for n in range(gaps)],
+                "completeness": {"complete": True, "truncated": False}}
+
+    @staticmethod
+    def _tools(cap: int) -> oi.InvestigateTools:
+        tools = object.__new__(oi.InvestigateTools)
+        tools.limits = {"max_result_bytes": cap}
+        return tools
+
+    def test_join_empty_hops_merges_one_gap_per_state_keeping_every_search(self):
+        """A links step's empty hops become one gap per state naming every link type, with
+        how many, the union of what each hop searched and who can answer, so a follow-up
+        routes to the searched source's owner; a gap of another reason, or one before the
+        step, stays as it was."""
+        class Run:
+            add_gap = oi._Run.add_gap
+
+            def __init__(self, gaps):
+                self.gaps = gaps
+        before = oi._gap("unknown", "no_match", "Order.lines forward")
+        hops = [dict(oi._gap(state, "no_match", f"{link} forward", "nothing linked"),
+                     searched={"sources": [source]})
+                for state, link, source in (("absent_in_source", "Order.ships", "bc"),
+                                            ("absent_in_source", "Order.bills", "portal"),
+                                            ("absent_in_source", "Order.packs", "bc"),
+                                            ("stale", "Order.quotes", "filemaker"),
+                                            ("stale", "Order.notes", "mail"))]
+        other = oi._gap("unknown", "page_cap", "s2")
+        run = Run([before, *hops, other])
+        ontology_tools_investigate_plans._join_empty_hops(run, "s2", 1, {h["subject"] for h in hops})
+        self.assertIs(run.gaps[0], before)
+        self.assertIn(other, run.gaps)
+        joined = {g["state"]: g for g in run.gaps if g.get("subject", "").startswith("s2: ")}
+        self.assertEqual(set(joined), {"absent_in_source", "stale"})
+        self.assertEqual(joined["absent_in_source"]["subject"],
+                         "s2: Order.bills, Order.packs, Order.ships")
+        self.assertEqual(joined["absent_in_source"]["count"], 3)
+        self.assertEqual(joined["absent_in_source"]["searched"], {"sources": ["bc", "portal"]})
+        self.assertEqual(joined["stale"]["subject"], "s2: Order.notes, Order.quotes")
+        self.assertEqual(joined["stale"]["searched"], {"sources": ["filemaker", "mail"]})
+        self.assertEqual(joined["stale"]["detail"],
+                         "2 declared link types reached nothing: nothing linked")
+        self.assertEqual(len(run.gaps), 4)
+
+    def test_merging_gaps_keeps_held_gaps_and_moves_follow_up_indices(self):
+        """Merging never touches a gap a follow-up records nor a cut-list note, and the
+        follow-up's index still names its gap after the gaps before it merged."""
+        out = self._result(gaps=6)
+        held = dict(out["gaps"][5])
+        out["gaps"].append({"state": "unknown", "reason": ontology_tools_investigate_pages.CONFLICTS_CUT,
+                            "subject": "conflicts", "detail": "2 conflict(s) ..."})
+        out["follow_ups"] = [{"gaps": [5], "record_id": "r1"}]
+        self.assertTrue(ontology_tools_investigate_gaps._merge_one_group(out))
+        self.assertEqual(out["gaps"][out["follow_ups"][0]["gaps"][0]], held)
+        self.assertEqual(sum(g.get("reason") == ontology_tools_investigate_pages.CONFLICTS_CUT for g in out["gaps"]), 1)
+        merged = next(g for g in out["gaps"] if g.get("count"))
+        self.assertEqual(merged["count"], 3)   # gaps 0, 2, 4 (unknown); 5 is held
+        self.assertEqual(merged["subject"], "; ".join(
+            f"Shipment.line_{n} forward" for n in (0, 2, 4)))
+        self.assertEqual(merged["searched"]["sources"], ["source_0", "source_2", "source_1"])
+        self.assertEqual(merged["who_can_answer"],
+                         ["undeclared:owner 0", "undeclared:owner 2", "undeclared:owner 1"])
+
+    def test_a_chain_with_many_gaps_keeps_every_citation_within_the_cap(self):
+        """40 gaps over a counted chain: what the detail pages list whole goes first (the
+        chain and values, ``_detail_lost`` then offers them), then the gaps are merged one
+        per state and reason (all 40 counted), so the count keeps its 13 records and every
+        entry its citation within the cap; no figure is marked unsupported. Before
+        review-90e00433da the records went first (dev-F1-0006 0/13). The room beside the
+        bare result holds the two merged gaps (about 2.8 kB) with margin."""
+        out = self._result()
+        whole = copy.deepcopy(out)
+        bare = dict(copy.deepcopy(out), gaps=[], values=[], chain={"objects": [], "edges": []})
+        cap = ot._envelope_bytes(bare) + 4000
+        self.assertGreater(ot._envelope_bytes(out), cap + 8000)
+        fitted = self._tools(cap)._fit(out)
+        self.assertLessEqual(ot._envelope_bytes(fitted), cap)
+        self.assertEqual(fitted["answer"], whole["answer"])
+        self.assertEqual(len(fitted["answer"][0]["records"]), 13)
+        self.assertTrue(ontology_tools_investigate_pages._detail_lost(fitted, ontology_tools_investigate_pages._detail_of(whole), whole["answer"]))
+        self.assertEqual(len(fitted["gaps"]), 2)
+        self.assertEqual(sum(g["count"] for g in fitted["gaps"]), 40)
+        self.assertEqual({g["state"] for g in fitted["gaps"]}, {"absent_in_source", "unknown"})
+        self.assertNotIn(ontology_tools_investigate_pages.EVIDENCE_CUT, {g["reason"] for g in fitted["gaps"]})
+        self.assertEqual(fitted["completeness"]["reason"], "result_too_large")
+        self.assertEqual(validate(fitted["gaps"], {"type": "array", "items": {
+            "$ref": "#/$defs/gap"}}, root=CONTRACTS, limit=5), [])
+
+    def test_an_over_cap_answer_degrades_rows_then_gaps_then_records(self):
+        """At every cap from whole down: the gaps are touched only once the chain and values
+        (which the detail pages list whole) are gone; a count's records go only once no two
+        gaps share a state and a reason and every gap detail is at its floor; and then the
+        entry says inputs_cut and one evidence_truncated gap names it unsupported."""
+        out = self._result(gaps=12)
+        full = ot._envelope_bytes(out)
+        floor = ot._envelope_bytes(self._tools(1)._fit(copy.deepcopy(out))) + 200
+        seen = set()
+        for cap in range(full, floor, -20):
+            fitted = self._tools(cap)._fit(copy.deepcopy(out))
+            self.assertLessEqual(ot._envelope_bytes(fitted), cap, cap)
+            chain, values = fitted["chain"], fitted["values"]
+            rows_cut = chain != out["chain"] or values != out["values"]
+            rows_gone = not chain["objects"] and not chain["edges"] and not values
+            gaps_cut = fitted["gaps"] != out["gaps"]
+            gaps = [g for g in fitted["gaps"] if not g["reason"].endswith("_truncated")]
+            pairs = [(g["state"], g["reason"]) for g in gaps]
+            gaps_done = len(pairs) == len(set(pairs)) and all(
+                len(g.get("detail") or "") <= ontology_tools_investigate_plans._GAP_DETAIL_FLOOR for g in gaps)
+            records_cut = "records" not in fitted["answer"][0]
+            note = [g for g in fitted["gaps"] if g["reason"] == ontology_tools_investigate_pages.EVIDENCE_CUT]
+            if gaps_cut:
+                self.assertTrue(rows_gone, cap)
+            if records_cut:
+                self.assertTrue(gaps_done, cap)
+                self.assertIs(fitted["answer"][0]["inputs_cut"], True)
+                self.assertEqual(len(note), 1, cap)
+                self.assertIn("unsupported", note[0]["detail"])
+                self.assertIn("shipments", note[0]["detail"])
+                self.assertLessEqual(len(note[0]["detail"]), 600)
+            else:
+                self.assertEqual(note, [], cap)
+                self.assertEqual(fitted["answer"], out["answer"], cap)
+            seen.add((rows_cut, gaps_cut, records_cut))
+        # the sweep went through every stage, records last
+        self.assertIn((False, False, False), seen)
+        self.assertIn((True, False, False), seen)
+        self.assertIn((True, True, False), seen)
+        self.assertIn((True, True, True), seen)
+
+    def test_squeezing_an_entrys_working_names_it_unsupported(self):
+        """An entry wider than any page loses its working (``_squeeze``): it says
+        inputs_cut and the evidence_truncated gap names it."""
+        out = {"chain": {"edges": [], "objects": []}, "values": [], "gaps": [],
+               "answer": [{"name": "margin", "kind": "computed", "value": "1.00",
+                           "steps": ["x" * 3000]}],
+               "completeness": {"complete": True, "truncated": False}}
+        bare = copy.deepcopy(out)
+        del bare["answer"][0]["steps"]
+        squeezed = self._tools(ot._envelope_bytes(bare) + 800)._squeeze(out)
+        self.assertIs(squeezed["answer"][0]["inputs_cut"], True)
+        note = [g for g in squeezed["gaps"] if g["reason"] == ontology_tools_investigate_pages.EVIDENCE_CUT]
+        self.assertEqual(len(note), 1)
+        self.assertIn("margin", note[0]["detail"])
+
+
 class EvalRunnerTests(Base):
     def test_the_eval_runner_records_and_scores_a_plx_investigate_run(self):
         from evals import baseline as bl
@@ -2573,6 +2809,19 @@ class TwinConflictTests(unittest.TestCase):
                 cap = ot._envelope_bytes(dict(shared, conflicts=out["conflicts"][:1])) + 2000
                 self.assertGreater(ot._envelope_bytes(shared), cap)
                 pages = self.pages(out, cap)
+                # AUD-11: the conflicts no answer page has room for are never only cut:
+                # detail pages after the answer's last page list every one of them
+                details = [page for page in pages if not page["answer"]]
+                pages = [page for page in pages if page["answer"]]
+                self.assertTrue(details)
+                self.assertEqual(pages + details, self.pages(out, cap))   # stable
+                self.assertEqual(sorted(c["subject"] for d in details for c in d["conflicts"]),
+                                 sorted(c["subject"] for c in out["conflicts"]))
+                for page in details:
+                    self.assertEqual((page["gaps"], page["answer_page"]["returned"],
+                                      page["answer_page"]["gaps_on_page"]), ([], 0, 1))
+                    self.assertEqual(page["answer_page"]["pages"], len(pages) + len(details))
+                self.assertIsNone(details[-1]["completeness"]["next_cursor"])
                 names = [e["name"] for page in pages for e in page["answer"]]
                 for i in range(lines):   # each line and its input on exactly one page
                     self.assertEqual((names.count(f"line_{i}"), names.count(f"price_{i}")),
@@ -2589,6 +2838,7 @@ class TwinConflictTests(unittest.TestCase):
                 (note,) = [g for g in pages[0]["gaps"] if g["reason"] == "conflicts_truncated"]
                 self.assertTrue(note["detail"].startswith(
                     f"{20 - len(pages[0]['conflicts'])} conflict(s)"), note)
+                self.assertIn("detail pages", note["detail"])
                 for page in pages[1:]:
                     self.assertEqual((page["gaps"], page["answer_page"]["gaps_on_page"]),
                                      ([], 1))
@@ -2606,8 +2856,10 @@ class TwinConflictTests(unittest.TestCase):
 
     def test_gaps_that_fill_every_page_are_summarised_never_refused(self):
         """Live defect (dev F29 item_lineage): 50 long gaps left no page room for one unit
-        and the answer was refused result_too_large. It now pages, the gaps past
-        ``MIN_GAPS_KEPT`` counted by reason in one ``gaps_truncated`` gap."""
+        and the answer was refused result_too_large. It now pages (each unit split first,
+        losing nothing), then summarises the gaps: merged per state and reason, any past
+        ``MIN_GAPS_KEPT`` counted by reason in one ``gaps_truncated`` gap, so every one of
+        the 50 is still counted under its reason and the answer says result_too_large."""
         for lines in (1, 10, 60):
             with self.subTest(lines=lines):
                 out = self.result(lines, conflicts=0)
@@ -2623,11 +2875,16 @@ class TwinConflictTests(unittest.TestCase):
                                      (1, 1))
                 first = pages[0]
                 self.assertEqual(first["completeness"]["reason"], "result_too_large")
-                (note,) = [g for g in first["gaps"] if g["reason"] == "gaps_truncated"]
-                listed = len(first["gaps"]) - 1
-                self.assertGreaterEqual(listed, oi.MIN_GAPS_KEPT)
-                self.assertTrue(note["detail"].startswith(f"{50 - listed} further gap(s)"))
-                self.assertIn("r0 x", note["detail"])
+                counted: Counter = Counter()
+                for gap in first["gaps"]:
+                    if gap["reason"] == ontology_tools_investigate_pages.GAPS_CUT:
+                        counted.update({r: int(n) for r, n in
+                                        ontology_tools_investigate_pages._CUT_COUNT.findall(gap["detail"])})
+                    elif gap["reason"] in ("r0", "r1", "r2"):
+                        counted[gap["reason"]] += gap.get("count", 1)
+                self.assertEqual(dict(counted), {"r0": 17, "r1": 17, "r2": 16})
+                self.assertLess(len(first["gaps"]), 50)
+                self.assertTrue(any(g.get("count", 1) > 1 for g in first["gaps"]))
 
     def test_a_long_answer_lists_its_notes_once_and_pages_its_rows_densely(self):
         """Live defect (dev F29 price history: 74, 49 and 93 pages): every page repeated the
@@ -2684,6 +2941,90 @@ class TwinConflictTests(unittest.TestCase):
                         self.assertTrue(on & {v["citation"]["l1_handle"]
                                               for v in conflict["values"]})
 
+    def test_a_default_answer_too_large_pages_its_chain_and_values_never_cuts_them(self):
+        """AUD-11 (audit C section 6, live 11-05): late_po, chain, order_margin and
+        counterparty_position came back ``truncated, result_too_large``: an answer of
+        property entries alone (never paged) whose chain and values did not fit had them
+        halved away, with no way to read the rest. The first page now keeps the answer
+        whole, and detail pages after it list every chain object, edge, value and
+        conflict, each page within the bound, reached by next_cursor. 1, 10, 60 and 100
+        records: none lost or doubled."""
+        cap = 30000
+        for size in (1, 10, 60, 100):
+            with self.subTest(size=size):
+                out = self.result(0, conflicts=0)
+                out["answer"] = out["answer"][1:]   # the po entry: no computed entry
+                out["chain"] = {
+                    "objects": [{"object_id": f"PurchaseOrder:bc.purchase_orders:o{n}",
+                                 "object_type": "PurchaseOrder", "label": "x" * 300}
+                                for n in range(size)],
+                    "edges": [{"from": f"PurchaseOrder:bc.purchase_orders:o{n}",
+                               "to": "Supplier:bc.vendors:v1", "tier": "verified",
+                               "reason": [{"feature": "stored_key",
+                                           "citations": ["bc://co/v/" + "c" * 200]}]}
+                              for n in range(size)]}
+                out["values"] = [self.value(f"o{n}", text=f"CAD-{n}") for n in range(size)]
+                whole = copy.deepcopy(out)
+                pages = self.pages(out, cap)
+                first, rest = pages[0], pages[1:]
+                self.assertEqual(first["answer"], whole["answer"])
+                self.assertEqual(first["gaps"], whole["gaps"])
+                if ot._envelope_bytes(whole) <= cap:
+                    self.assertEqual(pages, [whole])   # an answer that fits is as before
+                    continue
+                self.assertEqual(first["completeness"]["reason"], "answer_paged")
+                self.assertTrue(rest)
+                for page in pages:
+                    self.assertEqual(page["answer_page"]["pages"], len(pages))
+                    self.assertTrue(page["completeness"]["truncated"])
+                for n, page in enumerate(rest, start=2):
+                    self.assertEqual((page["answer"], page["gaps"], page["answer_page"]["page"],
+                                      page["answer_page"]["returned"]), ([], [], n, 0))
+                    self.assertEqual(page["completeness"]["reason"], "answer_paged")
+                self.assertIsNone(pages[-1]["completeness"]["next_cursor"])
+                for key, held in (("objects", lambda p: p["chain"]["objects"]),
+                                  ("edges", lambda p: p["chain"]["edges"]),
+                                  ("values", lambda p: p["values"])):
+                    listed = [item for page in rest for item in held(page)]
+                    full = whole["chain"][key] if key != "values" else whole["values"]
+                    self.assertEqual(listed, full, key)   # every one, once, in order
+
+    def test_a_detail_cursor_is_bound_to_its_answer_and_fails_closed(self):
+        cap = 30000
+        out = self.result(0, conflicts=0)
+        out["answer"] = out["answer"][1:]
+        out["values"] = [self.value(f"o{n}", text="CAD" + "y" * 200) for n in range(60)]
+        arguments = {"family": "landed_cost", "root": "PurchaseOrder:bc.purchase_orders:x"}
+        tools = object.__new__(oi.InvestigateTools)
+        tools.limits = {"max_result_bytes": cap}
+        first = tools._page(copy.deepcopy(out), arguments, self.ACTOR, None)
+        token = first["completeness"]["next_cursor"]
+        fingerprint = oi._question(arguments, self.ACTOR)
+        cursor = oi._read_cursor(token, fingerprint)
+        self.assertIsNotNone(cursor[3])
+        # another reader or question: not this answer's cursor
+        self.assertIsNone(oi._read_cursor(token, oi._question(dict(arguments, root="x"),
+                                                              self.ACTOR)))
+        # the same page twice is the same page
+        again = [tools._page(copy.deepcopy(out), arguments, self.ACTOR, cursor)
+                 for _ in range(2)]
+        self.assertEqual(again[0], again[1])
+        # values changed since: stale, never a page of another answer
+        changed = copy.deepcopy(out)
+        changed["values"][0] = self.value("o0", text="USD")
+        stale = tools._page(changed, arguments, self.ACTOR, cursor)
+        self.assertEqual(stale["error"]["code"], "cursor_stale")
+        # past the last detail page, or forged: refused
+        past = (cursor[0], cursor[1], cursor[2], (99, cursor[3][1]))
+        self.assertEqual(tools._page(copy.deepcopy(out), arguments, self.ACTOR, past)
+                         ["error"]["code"], "invalid_cursor")
+        forged = ontology_tools_investigate_pages._write_cursor(2, 0, cursor[2], fingerprint, (-1, cursor[3][1]))
+        self.assertIsNone(oi._read_cursor(forged, fingerprint))
+        # an answer whose first page holds everything has no detail page to ask for
+        small = self.result(0, conflicts=0)
+        self.assertEqual(tools._page(copy.deepcopy(small), arguments, self.ACTOR, cursor)
+                         ["error"]["code"], "cursor_stale")
+
     def test_an_entry_wider_than_any_page_keeps_its_value_and_drops_its_working(self):
         out = self.result(2, conflicts=0)
         out["answer"][0]["steps"] = ["s" * 390] * 40
@@ -2718,14 +3059,14 @@ class PlanMenuTests(unittest.TestCase):
             reads.append(path.name)
             return real(path, *args, **kwargs)
         with mock.patch.object(Path, "read_text", counted):
-            first = oi.plan_menu(directory=folder)
-            again = oi.plan_menu(directory=folder)
+            first = ontology_tools_investigate_host.plan_menu(directory=folder)
+            again = ontology_tools_investigate_host.plan_menu(directory=folder)
             self.assertEqual(first, again)
             self.assertIn("fam_a: First title", first)
             self.assertNotIn("no", first.split("fam_a")[0])
             self.assertEqual(reads, ["a.json"])            # the second build read nothing
             plan.write_text(json.dumps({"id": "fam_a", "title": "Second title, longer"}),
                             "utf-8")
-            self.assertIn("fam_a: Second title", oi.plan_menu(directory=folder))
+            self.assertIn("fam_a: Second title", ontology_tools_investigate_host.plan_menu(directory=folder))
             (folder / "b.json").write_text(json.dumps({"id": "fam_b", "title": "B"}), "utf-8")
-            self.assertIn("fam_b: B", oi.plan_menu(directory=folder))
+            self.assertIn("fam_b: B", ontology_tools_investigate_host.plan_menu(directory=folder))

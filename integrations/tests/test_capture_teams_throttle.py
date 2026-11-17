@@ -12,8 +12,8 @@ from __future__ import annotations
 import argparse
 import re
 import tempfile
-import time
 import unittest
+from datetime import datetime, timedelta, timezone
 from urllib.parse import unquote, urlsplit
 
 from integrations import capture_teams, graph_read
@@ -137,17 +137,20 @@ class ThrottledCliTests(unittest.TestCase):
         parser = argparse.ArgumentParser()
         capture_teams.add_cli_arguments(parser)
         slept: list[float] = []
+        # The store's clock moves only when the CLI waits, never while a run reads: however
+        # long run 1 takes on a loaded host, the throttled read's Retry-After is still
+        # running when it ends, and the CLI's wait is what lets it pass.
+        now = [datetime.now(timezone.utc)]
 
-        def sleep(seconds: float) -> None:   # the CLI's wait passes (the store's clock)
+        def sleep(seconds: float) -> None:
             slept.append(seconds)
-            if seconds < 1.5:
-                time.sleep(seconds)
+            now[0] += timedelta(seconds=seconds)
         with tempfile.TemporaryDirectory() as host:
             confirm(host, list(graph.channel_types))
             args = parser.parse_args(self.argv(host)[1:] + ["--workers", "1"])
             report = capture_teams.run_cli(args, environ={**ENV, "XDG_STATE_HOME": host},
                                            sender=throttling, sleep=sleep,
-                                           clock=lambda: 0.0)
+                                           clock=lambda: 0.0, store_clock=lambda: now[0])
         first, second = report["runs"][0], report["runs"][1]
         self.assertFalse(first["throttled"])   # one conversation, not the application
         self.assertEqual(first["retry_after_seconds"], 1.0)

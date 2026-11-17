@@ -2,7 +2,8 @@
 ``twins_parties`` build step): a customer joined to a BC customer only on its code is a
 ``lead`` (the BC company cap) and is raised by a separate ``corroborated`` ``same_record``
 link when the code names one record on each side and the names agree; never on the code
-alone, never with a differing name, never when a code is shared by several records.
+alone, never with a differing name, never when a code is shared by several records or
+carried by cards of two BC companies.
 
 Evidence label: ``isolated-fixture`` (synthetic Sage, Portal and BC captures through the
 real projector and the compiled repository schema).
@@ -64,16 +65,25 @@ ROWS = {
             {"id": "c-1", "erp_code": "GRP01", "company_name": "Group Hotel East",
              "external_id": "sage-cust-GRP01"},
             {"id": "c-2", "erp_code": "GRP01", "company_name": "Group Hotel East",
-             "external_id": "sage-cust-GRP01-2"}]},
+             "external_id": "sage-cust-GRP01-2"}],
+        "public.app_supplier": [
+            {"id": "s-1", "code": "COME01", "name": "COMET CHEMICAL COMPANY LTD.",
+             "external_id": "sage-vendor-COME01"}]},
     "bc": {"customers": [
         {"id": "b1", "number": "ALPH01", "displayName": "ALPHA SOAP"},
         {"id": "b2", "number": "BETA01", "displayName": "Gamma Industries"},
-        # one customer synced to two books: each book's copy is firm
+        # one number in two books: two companies' cards, firm in neither
         {"id": "b3", "number": "DELT01", "displayName": "Delta Hospitality", "_book":
          "bc_manufacturing"},
         {"id": "b4", "number": "DELT01", "displayName": "Delta Hospitality Group Inc",
          "_book": "bc_distribution"},
-        {"id": "b5", "number": "GRP01", "displayName": "Group Hotel East"}]},
+        {"id": "b5", "number": "GRP01", "displayName": "Group Hotel East"}],
+        # the coded vendor card and a blocked, renumbered copy of the same name (served
+        # shape, 11-12): the name lead reaches both, the code only the first
+        "vendors": [
+        {"id": "v1", "number": "COME01", "displayName": "COMET CHEMICAL COMPANY LTD."},
+        {"id": "v2", "number": "V01330", "displayName": "COMET CHEMICAL COMPANY LTD.",
+         "blocked": "All"}]},
 }
 
 
@@ -116,9 +126,13 @@ class PartyTwins(unittest.TestCase):
         self.assertEqual([f["feature"] for f in reason],
                          ["pair", "name", "unique", "corroborates"])
 
-    def test_a_copy_in_each_book_is_firm_when_its_name_agrees(self):
-        self.assertEqual(self.tiers(sage("DELT01"), bc(3)), ["corroborated", "lead"])
-        self.assertEqual(self.tiers(sage("DELT01"), bc(4)), ["corroborated", "lead"])
+    def test_a_number_two_companies_carry_is_firm_in_neither(self):
+        # C-07 (live 2026-11-12): 1,751 distribution customers repeat manufacturing numbers;
+        # a firm copy in each book made the two legal entities one party through Sage
+        self.assertEqual(self.tiers(sage("DELT01"), bc(3)), ["lead"])
+        self.assertEqual(self.tiers(sage("DELT01"), bc(4)), ["lead"])
+        self.assertEqual(self.tiers(bc(3), bc(4)), [])
+        self.assertEqual(self.report["counts"]["Customer.same_record_as"]["two_companies"], 2)
 
     def test_a_differing_name_keeps_the_lead(self):
         self.assertEqual(self.tiers(sage("BETA01"), bc(2)), ["lead"])
@@ -129,7 +143,17 @@ class PartyTwins(unittest.TestCase):
                              self.tiers(f'Customer:portal.app_customer:{{"id":"{app}"}}', bc(5)))
         counts = self.report["counts"]["Customer.same_record_as"]
         self.assertEqual((counts["firm"], counts["name_conflict"], counts["ambiguous"]),
-                         (3, 1, 2))
+                         (1, 1, 2))
+
+    def test_a_name_lead_to_a_second_card_never_makes_the_code_ambiguous(self):
+        portal = 'Supplier:portal.app_supplier:{"id":"s-1"}'
+        vendor = lambda i: f'Supplier:bc.vendors:{{"id":"v{i}"}}'   # noqa: E731
+        tiers = lambda a, b: sorted(r[0] for r in self.conn.execute(   # noqa: E731
+            "SELECT tier FROM links WHERE link_type = 'Supplier.same_record_as' AND "
+            "superseded_at IS NULL AND from_object = ? AND to_object = ?", (a, b)))
+        self.assertEqual(tiers(portal, vendor(1)), ["corroborated", "lead", "lead"])
+        self.assertEqual(tiers(portal, vendor(2)), ["lead"])   # the name alone: no firm copy
+        self.assertEqual(self.report["counts"]["Supplier.same_record_as"]["firm"], 1)
 
     def test_names_agree_word_for_word_or_cut_short_never_by_likeness(self):
         agree = ids.party_names_agree

@@ -84,7 +84,7 @@ class ContractsAreWellFormed(unittest.TestCase):
             with self.subTest(tool=name):
                 self.assertLessEqual(len(tool["description"]), limits["max_description_chars"])
                 self.assertIs(tool["read_only"], name not in WORKBENCH_WRITERS)
-        from operating.mcp_server import MAX_RESULT_BYTES
+        from operating.mcp_server_evidence import MAX_RESULT_BYTES
         self.assertEqual(limits["max_result_bytes"], MAX_RESULT_BYTES)
 
     def test_no_sql_tool(self):
@@ -123,7 +123,7 @@ class EnumerationsAgreeAcrossContracts(unittest.TestCase):
         self.assertEqual(ITEM["$defs"]["gap_state"]["enum"], list(GAP_STATES))
 
     def test_field_path_grammar_is_claim_checks_grammar(self):
-        from operating.claim_checks import _FIELD
+        from operating.claim_checks_grammar import _FIELD
         self.assertEqual(TOOLS["$defs"]["field_path"]["pattern"], "^" + _FIELD.pattern.lstrip("^"))
 
     def test_handle_schemes_are_the_case_runtime_schemes(self):
@@ -612,6 +612,9 @@ class ToolContractsReject(unittest.TestCase):
             "text",  # plx.process stage reading: the engine's plain words for the typed state
             "basis",  # plx.process gap/outcome: the schema's lineage rules and code refs
             "object_type", "property",  # plx.find structured leads: declared schema names, not source text
+            # plx.aggregate item_po_prices: the caller's own input codes (items[].code, at most
+            # 60 characters) handed back unmatched or ambiguous, never text read from a source
+            "codes_not_found", "codes_ambiguous",
         }
         found: set[str] = set()
 

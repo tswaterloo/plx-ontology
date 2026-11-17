@@ -29,6 +29,8 @@ describe("desktop bridge", () => {
     expect(freshOnes(new Set(["a", "b"]), [p("a"), p("b")])).toEqual([]);
     const burst = capNotices(["1", "2", "3", "4", "5"].map(p), 3);
     expect(burst.map((n) => n.title)).toEqual(["t 1", "t 2", "t 3", "2 more need you"]);
+    expect(burst[3].href).toBe("/my-work");
+    expect(capNotices(["1", "2", "3", "4"].map(p), 3, "/")[3].href).toBe("/");
     expect(capNotices([p("1")])).toHaveLength(1);
     expect(capNotices([])).toEqual([]);
   });

@@ -125,7 +125,7 @@ class UnavailableDetailTests(unittest.TestCase):
         import pkgutil
 
         import integrations
-        from verify.live_verify import ENUM_STRING
+        from verify.live_verify_policy import ENUM_STRING
         from operating import ingestion
 
         for info in pkgutil.iter_modules(integrations.__path__):

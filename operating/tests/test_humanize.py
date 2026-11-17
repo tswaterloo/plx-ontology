@@ -26,7 +26,8 @@ class Checker(unittest.TestCase):
                 ("Great question! PO 106001 is late.", "chatbot residue"),
                 ("The delay, highlighting the risk to 400 cases.", "participle tail"),
                 ("So why is it late? Because Acme has no resin.", "rhetorical question"),
-                ("It's worth noting that Acme is late.", "self-grading")):
+                ("It's worth noting that Acme is late.", "self-grading"),
+                ("Late are PO 106001, PO 106002 and 4 more.", "truncated list")):
             report = style.check(text)
             self.assertTrue(report.flagged, text)
             self.assertIn(family, report.families(), text)
@@ -42,6 +43,13 @@ class Checker(unittest.TestCase):
         report = style.check(PLAIN + "The supplier is robust.")
         self.assertEqual(["stock word"], report.families())
         self.assertFalse(report.flagged)
+
+    def test_two_clipped_sentences_count_only_in_a_cluster(self):
+        report = style.check(PLAIN + " Nothing else. All clear.")
+        self.assertEqual(["paired short sentences"], report.families())
+        self.assertFalse(report.flagged)
+        self.assertNotIn("paired short sentences",
+                         style.check("PO 106001 is late. Chase Acme today.").families())
 
     def test_quoted_source_words_are_not_the_writers(self):
         self.assertFalse(style.check('Acme wrote "Great question, I hope this helps" [1].')

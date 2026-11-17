@@ -17,15 +17,17 @@ import sys
 import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
-FILES = ("requirements.txt", "requirements-ml.txt", "requirements-dev.txt")
+FILES = ("requirements.txt", "requirements-ml.txt", "requirements-dev.txt",
+         "requirements-optional.txt")
 # Import name -> distribution name, for every third-party import the code may make.
 IMPORT_TO_DIST = {
     "fastapi": "fastapi", "starlette": "starlette", "pydantic": "pydantic",
-    "uvicorn": "uvicorn", "psycopg": "psycopg", "numpy": "numpy",
+    "uvicorn": "uvicorn", "anyio": "anyio", "psycopg": "psycopg", "numpy": "numpy",
     "onnxruntime": "onnxruntime", "pypdf": "pypdf", "reportlab": "reportlab",
     "PIL": "pillow", "markitdown": "markitdown", "torch": "torch",
     "transformers": "transformers", "sentence_transformers": "sentence-transformers",
     "docx": "python-docx", "pptx": "python-pptx", "mypy": "mypy",
+    "azure": "azure-eventhub",  # the only azure.* import: integrations/graph_notifications.py
 }
 # A submodule import that needs another distribution at import time (the module raises
 # without it), declared beside the import: starlette's TestClient needs httpx2.

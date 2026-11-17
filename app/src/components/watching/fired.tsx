@@ -1,10 +1,11 @@
 "use client";
 
 import Link from "next/link";
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 import { shortSummary } from "@/components/briefing";
+import { ShowMore } from "@/components/ui/show-more";
 import { cn } from "@/lib/cn";
-import { formatDateTime, objectHref, readable, recordLabel, safeHref, typeLabel } from "@/lib/format";
+import { formatDate, formatDateTime, objectHref, readable, recordLabel, safeHref, typeLabel } from "@/lib/format";
 import type { AlertKinds, Briefing, BriefingItem, WatchAlert } from "@/lib/types";
 import { TypeItems } from "./alert-kinds";
 
@@ -98,6 +99,29 @@ export function FiredKind({ f }: { f: Fired }) {
 }
 
 /** Rule and follow alerts by day, newest first. */
+/** A changed value as a person reads it: a date as a day, anything else as it stands. */
+function changeValue(v: string): string {
+  return /^\d{4}-\d{2}-\d{2}(T|$)/.test(v) ? formatDate(v, { short: true }) || v : v;
+}
+
+/** An alert's field changes, the first three in line; the rest open in place. */
+function AlertChanges({ changes }: { changes: NonNullable<WatchAlert["changes"]> }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <span className="block text-[12px] text-fg/80" data-testid="alert-changes">
+      {(open ? changes : changes.slice(0, 3)).map((c, i) => (
+        <span key={`${c.property}-${i}`} className="mr-3 inline-block">
+          <span className="text-muted">{c.property.replace(/_/g, " ")}</span>{" "}
+          {c.before != null && <span className="num text-muted line-through decoration-[color:var(--faint)]">{changeValue(c.before)}</span>}
+          {c.before != null && " → "}
+          <span className="num">{c.after != null ? changeValue(c.after) : "cleared"}</span>
+        </span>
+      ))}
+      <ShowMore hidden={changes.length - 3} open={open} onToggle={() => setOpen((v) => !v)} />
+    </span>
+  );
+}
+
 export function AlertFeed({ alerts }: { alerts: WatchAlert[] }) {
   const days = useMemo(() => {
     const out = new Map<string, WatchAlert[]>();
@@ -126,7 +150,12 @@ export function AlertFeed({ alerts }: { alerts: WatchAlert[] }) {
                     ) : (
                       a.sentence
                     )}
-                    <span className="block truncate text-[12px] text-muted">{a.origin === "rule" ? `Rule: ${a.rule_text ?? ""}` : `Following ${a.about.label ?? typeLabel(a.about.type ?? "")}`}</span>
+                    {(a.changes ?? []).length > 0 && <AlertChanges changes={a.changes ?? []} />}
+                    <span className="block truncate text-[12px] text-muted">
+                      {a.origin === "rule" ? `Rule: ${a.rule_text ?? ""}` : `Following ${a.about.label ?? typeLabel(a.about.type ?? "")}`}
+                      {a.record.object_id !== a.about.object_id && a.record.label ? ` · on ${a.record.label}` : ""}
+                      {typeof a.counted === "number" && a.counted > 1 ? ` · ${a.counted} records` : ""}
+                    </span>
                   </span>
                   <span className="num text-[12px] text-muted">{formatDateTime(a.at).split(", ")[1] ?? ""}</span>
                 </li>

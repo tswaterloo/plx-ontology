@@ -70,6 +70,19 @@ class UnitParkTests(unittest.TestCase):
         self.assertEqual(hashlib.sha256(layer.read_bytes()).hexdigest(), digest)
         self.assertFalse((self.dir / "unit.sqlite.restore").exists())
 
+    def test_a_restore_stopped_after_its_rename_finishes_its_cleanup(self):
+        # CORE-005: the layer is back whole, its parked copy and record not yet removed
+        layer = self.dir / "unit.sqlite"
+        digest = _layer(layer, 300)
+        unit_park.park(layer)
+        zst, meta = Path(f"{layer}.zst"), self.dir / "unit.sqlite.parked.json"
+        subprocess.run(["zstd", "-q", "-d", "-o", str(layer), str(zst)], check=True)
+        got = unit_park.restore(layer)
+        self.assertEqual(got["finished"], "cleanup")
+        self.assertEqual(hashlib.sha256(layer.read_bytes()).hexdigest(), digest)
+        self.assertFalse(zst.exists() or meta.exists())
+        self.assertEqual(unit_park.restore(layer), {"restored": "not_parked"})
+
     def test_a_damaged_or_foreign_parked_layer_is_refused_and_kept(self):
         layer = self.dir / "unit.sqlite"
         _layer(layer, 2_000)
@@ -114,9 +127,10 @@ class UnitParkTests(unittest.TestCase):
             unit_park.park(layer)
         Path(f"{layer}-journal").unlink()
         unit_park.park(layer)
-        _layer(layer, 10)                              # a new layer beside a parked one
+        _layer(layer, 11)                              # another layer beside a parked one
         with self.assertRaises(unit_park.ParkError):
             unit_park.restore(layer)
+        self.assertTrue(Path(f"{layer}.zst").is_file())   # both kept
         self.assertEqual(unit_park.main(["status", str(layer)]), 0)
         self.assertEqual(unit_park.main(["bogus", str(layer)]), 2)
 

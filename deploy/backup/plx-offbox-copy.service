@@ -1,0 +1,35 @@
+# PLX off-box copy (To a DGX Spark, no S3): the newest healthy nightly set of
+# /data/backups and the capture backup of /var/backups/plx-capture, encrypted on this box
+# (gpg AES256, key ~/.config/plx/offbox.key; escrow copy on s7d3d only, never a data host), rsync --checksum to a
+# 0700 directory on sb4ec (an unreachable sb4ec fails the run, no fallback), green only after the Spark's sha256
+# matches. Exit 3 (incomplete) or 1 (failed) fails the unit, so the plx- OnFailure alarm fires.
+# Install: sudo install -D -m 0755 deploy/backup/offbox_copy.py /usr/local/lib/plx/offbox_copy.py
+#          /usr/bin/python3 -I /usr/local/lib/plx/offbox_copy.py init-key   (as $PLX_USER, once)
+# (runs from the root disk, like the capture backup, so it survives the data volume).
+[Unit]
+Description=PLX off-box copy of the backups to a Spark
+After=plx-capture-backup.service plx-backup.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=@PLX_USER@
+Group=@PLX_GROUP@
+Environment=PLX_CAPTURE_BACKUP_DIR=/var/backups/plx-capture
+Environment=PLX_BACKUP_DIR=/data/backups
+Environment=PLX_OFFBOX_SSH_CONFIG=/data/plx-state/ts-petra/ssh_config
+# the data host only: s7d3d holds the key escrow and is never a data host (refused)
+Environment=PLX_OFFBOX_HOSTS=sb4ec
+Environment=PLX_OFFBOX_ESCROW_HOSTS=s7d3d
+Environment=PLX_OFFBOX_STAGE=/data/plx-tmp/offbox-stage
+# upload cap over all 8 streams (KiB/s, ~4 MB/s of the ~5.4 measured): a reseed leaves room
+# for the embedding and test traffic to the Sparks
+Environment=PLX_OFFBOX_BWLIMIT_KBPS=4096
+ExecStart=/usr/bin/python3 -I /usr/local/lib/plx/offbox_copy.py copy
+Nice=15
+IOSchedulingClass=idle
+CPUWeight=20
+MemoryMax=1G
+# the first copy (~59 GB on 8 streams, ~5 MB/s) takes about 3-4 h; it resumes
+TimeoutStartSec=22h
+UMask=0077

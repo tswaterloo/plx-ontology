@@ -34,6 +34,7 @@ from unittest import mock
 from evals import baseline as bl
 from evals import runner
 from integrations import capture_sharepoint as cs
+from integrations import capture_sharepoint_scope
 from integrations.live_source_guard import LiveSourceAudience
 from integrations.tests import test_capture_sharepoint as tsp
 from ontology import document_fields, mentions, reviews
@@ -696,7 +697,7 @@ class QualityPacketTests(unittest.TestCase):
             with mock.patch.object(du.platform, "system", return_value="Linux"), \
                     mock.patch.object(du.shutil, "which", side_effect=lambda t: f"/fake/{t}"), \
                     mock.patch.object(du.child_process, "run", side_effect=run), \
-                    mock.patch.object(du, "_png_size", return_value=(2550, 3300)):
+                    mock.patch.object(du, "_pgm_size", return_value=(2550, 3300)):
                 out = document_fields.extract_fields(PDF, "application/pdf", local_pdf_ocr=True)
                 return out, [document_fields.resolve_citation(
                     PDF, document_fields.full_citation(out, c), mime_type="application/pdf",
@@ -1295,7 +1296,7 @@ class DocumentClassLiveCheckTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             state = Path(tmp) / "state"
             scope_file = Path(tmp) / "scope.json"
-            scope_file.write_text(json.dumps({"schema": cs.SCOPE_SCHEMA, "targets": [
+            scope_file.write_text(json.dumps({"schema": capture_sharepoint_scope.SCOPE_SCHEMA, "targets": [
                 {"id": "quality", "drive_id": tsp.DRIVE, "folders": [tsp.QUALITY_FOLDER]}]}))
             audience_file = Path(tmp) / "audience.json"
             audience_file.write_text(json.dumps({

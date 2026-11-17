@@ -121,7 +121,7 @@ export default function FeedbackSheet({ onClose }: { onClose: () => void }) {
           </fieldset>
           <div>
             <label htmlFor={noteId} className="mb-2 block text-[12px] text-muted">
-              What should we know?
+              Your note
             </label>
             <textarea
               id={noteId}

@@ -55,6 +55,8 @@ import time
 from typing import Any, Callable, Mapping, Sequence
 
 from ontology.units import unit_token
+from operating.prose_style import some_of
+from . import time_window
 
 Call = Callable[[str, dict], Mapping[str, Any]]
 # Runs per-record reads, ``task(call)`` each, in order: a task starts only while ``late()``
@@ -221,10 +223,7 @@ def _day(value: Any) -> date | None:
     text = _text(value)
     if not text:
         return None
-    try:
-        return date.fromisoformat(text[:10])
-    except ValueError:
-        return None
+    return time_window.business_day(text)
 
 
 # ---------------------------------------------------------------------- the question
@@ -1887,9 +1886,7 @@ def next_action(out: Mapping[str, Any], orders: Sequence[Order],
             named = with_loss
             said = (f"{len(with_loss)} of the {len(seq)} orders with it"
                     + (f" in {period}" if period else "") + " ran below item cost")
-        numbers = ", ".join(o.number for o in named[:5])
-        if len(named) > 5:
-            numbers += f", and {len(named) - 5} more"
+        numbers = some_of([o.number for o in named], 5)
         latest, latest_lost = seq[0]
         after = f"; the latest, {latest.number}, did not" \
             if dated and latest_lost is False else ""
@@ -1924,8 +1921,9 @@ def next_action(out: Mapping[str, Any], orders: Sequence[Order],
         codes = sorted({c for o in undecided for c, _ in o.gaps})
         first = undecided[0]
         systems = sorted({"Sage" if o.sage else "Business Central" for o in undecided})
-        return {"text": f"Ask Finance to complete {first.number}"
-                + (f" and {len(undecided) - 1} more order(s)" if len(undecided) > 1 else "")
+        return {"text": (f"Ask Finance to complete {first.number}" if len(undecided) == 1
+                         else f"Ask Finance to complete the {len(undecided)} orders, starting "
+                         f"with {first.number},")
                 + " in " + " and ".join(systems) + " (" + ", ".join(c.lower().replace("_", " ")
                                                        for c in codes[:2])
                 + ") so their margin can be stated.",

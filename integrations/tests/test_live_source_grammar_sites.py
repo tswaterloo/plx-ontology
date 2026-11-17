@@ -36,7 +36,7 @@ class SiteOperationGrammarTests(unittest.TestCase):
             with self.assertRaises(ValueError, msg=name):
                 grammar.url("graph.site_by_path", host=HOST, name=name)
         refused = [
-            f"/v1.0/sites/evil.example.com:/sites/AGENTS",
+            "/v1.0/sites/evil.example.com:/sites/AGENTS",
             f"/v1.0/sites/{HOST}:/sites/AGENTS:",
             f"/v1.0/sites/{HOST}:/sites/AGENTS/drive",
             f"/v1.0/sites/{HOST}:/sites/AGENTS:/drive",

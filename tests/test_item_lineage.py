@@ -25,7 +25,9 @@ from ontology.types import Actor
 from operating import commercial_chain as cc
 from operating import item_lineage as il
 from operating import ontology_tools as ot
+from operating import ontology_tools_results
 from operating import ontology_tools_investigate as oi
+from operating import ontology_tools_investigate_host
 from operating import ontology_tools_traverse as tt
 
 CONTRACTS = ot.load_contracts()
@@ -187,10 +189,10 @@ class PlanTests(unittest.TestCase):
         base = ot.OntologyTools(reader, policy, schema=ot.SchemaView.from_compiled(self.compiled),
                                 grammar=None, contracts=CONTRACTS, clock=lambda: NOW)
         table: dict = {}
-        ot.register(table, base)
+        ontology_tools_results.register(table, base)
         tt.register(table, tt.TraverseTools(base))
         oi.register(table, oi.InvestigateTools(table, rows=lambda h, a: None,
-                                               scope=oi.read_scope(base), clock=lambda: NOW))
+                                               scope=ontology_tools_investigate_host.read_scope(base), clock=lambda: NOW))
         question, answer, out = {"family": "F13", "root": root}, [], None
         while True:   # the answer is paged by computed unit; read every page
             page = table["plx.investigate"]["handler"](question, READER)

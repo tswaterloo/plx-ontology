@@ -5,6 +5,11 @@
 Description=PLX Workbench web app (Next.js)
 After=network-online.target plx-api.service
 Wants=network-online.target
+# always up: a crash loop backs off (3 s doubling to 2 min) instead of
+# restarting 140 times an hour (seen on plx-api), and past 20 starts in 30 min the unit stays
+# failed for plx-liveness.timer to start again after its cooldown, with an alarm
+StartLimitIntervalSec=30min
+StartLimitBurst=20
 
 [Service]
 Type=simple
@@ -18,7 +23,10 @@ Environment=PATH=/data/tools/node/bin:/usr/bin:/bin
 Environment=PGAPPNAME=%N
 # Loopback only: Caddy is the only way in.
 ExecStart=/data/tools/node/bin/node node_modules/next/dist/bin/next start -p 3000 -H 127.0.0.1
-Restart=on-failure
+# always: a clean exit (0, or a stop that was not systemctl's) is brought back too
+Restart=always
+RestartSteps=6
+RestartMaxDelaySec=2min
 # next exits 143 on SIGTERM: a stop is not a failure
 SuccessExitStatus=143
 RestartSec=3

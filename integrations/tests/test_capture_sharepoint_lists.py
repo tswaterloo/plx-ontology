@@ -15,6 +15,7 @@ from __future__ import annotations
 import contextlib
 import datetime as dt
 import io
+import argparse
 import json
 from pathlib import Path
 import re
@@ -219,6 +220,68 @@ class CaptureTests(CaptureCase):
         self.graph.calls.clear()
         self.assertEqual(withheld.run(scope())["lists"][0]["reasons"], ["not_visible"])
         self.assertEqual(self.graph.gets(), [])   # no I/O for a list the actor may not read
+
+
+class BudgetTests(CaptureCase):
+    """``--budget-seconds`` (11-16: a pass with no budget ran 2,105 s under load and the
+    host killed it at its 2,100 s timeout, failed, mid-list)."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.now = [0.0]
+        graph = self.graph
+
+        def sender(method, url, headers, body, timeout, max_bytes):
+            answer = graph(method, url, headers, body, timeout, max_bytes)
+            if re.search(r"/lists/[^/]+/items$", unquote(urlsplit(url).path)):
+                self.now[0] += 30.0   # each items page takes 30 s (under the per-list ACL budget)
+            return answer
+        api, _ = graph_read.build_graph(ENV, sender=sender)
+        self.capture = ListCapture(self.store, api, self.audience, CAPTURE,
+                                   clock=lambda: self.now[0])
+        self.both = scope(page_size=2, lists=[SHIPPED, {**SHIPPED, "list_id": OTHER}])
+        self.other = self.both.lists[1].unit
+
+    def items_read(self) -> list[str]:
+        return [p.split("/lists/")[1].split("/")[0] for p in self.graph.gets()
+                if p.endswith("/items")]
+
+    def test_past_the_budget_a_pass_stops_between_pages_and_the_next_resumes(self):
+        cut = self.capture.run(self.both, deadline=self.now[0] + 20)
+        self.assertFalse(cut["complete"])
+        self.assertEqual([(r["unit"], r["status"], r["reasons"]) for r in cut["lists"]],
+                         [(self.unit, "incomplete", ["budget"]),
+                          (self.other, "incomplete", ["budget"])])
+        self.assertEqual(self.items_read(), [LIST], "one page of the first list, then none")
+        self.assertIsNone(self.store.run(csl.LIST_KIND.name, self.other),
+                          "a list past the budget is not touched")
+        self.graph.calls.clear()
+        rest = self.capture.run(self.both)   # no budget: everything, the cut list resumed
+        self.assertTrue(rest["complete"], rest)
+        self.assertEqual([r["resumed_from"] for r in rest["lists"]], ["cursor", None])
+        self.assertEqual(sorted(int(r["key"]["id"]) for r in self.visible(READER)),
+                         [1, 2, 3, 4, 5], "no row lost or duplicated")
+        # a deadline already gone: no list I/O at all
+        self.graph.calls.clear()
+        none = self.capture.run(self.both, deadline=self.now[0])
+        self.assertEqual({r["status"] for r in none["lists"]}, {"incomplete"})
+        self.assertEqual(self.items_read(), [])
+
+    def test_a_cut_pass_starts_the_next_with_the_list_left_unread(self):
+        whole = scope(page_size=50, lists=[SHIPPED, {**SHIPPED, "list_id": OTHER}])
+        self.assertTrue(self.capture.run(whole)["complete"])   # LIST then OTHER
+        order = []
+        for _ in range(3):
+            self.graph.calls.clear()
+            run = self.capture.run(whole, deadline=self.now[0] + 20)
+            order.append(self.items_read())
+            self.assertEqual([r["status"] for r in run["lists"]], ["complete", "incomplete"])
+        self.assertEqual(order, [[LIST], [OTHER], [LIST]], "stalest list first")
+
+    def test_a_budget_that_is_no_positive_number_is_refused(self):
+        for bad in (0, -5, True, float("nan"), "60"):
+            with self.subTest(bad=bad), self.assertRaises(ValueError):
+                csl.run_cli(argparse.Namespace(runs=1, budget_seconds=bad), environ=ENV)
 
 
 class AudienceTests(CaptureCase):

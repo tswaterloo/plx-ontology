@@ -17,15 +17,13 @@ runs the real projector over an injected-transport fixture world.
 from __future__ import annotations
 
 import copy
-from decimal import Decimal
 from pathlib import Path
 import re
 import tempfile
 import unittest
 
-from operating import landed_cost as lc
-from operating.tests.test_landed_cost_real_inputs import (
-    ARGS, PO, TWO, _entry, _estimate_gap, _gap, _reading, _text, plan)
+from operating.tests.test_landed_cost_real_inputs import (ARGS, TWO, _entry, _estimate_gap, _gap,
+    _reading, _text, plan)
 from scripts import eval_packaging_oracle_check as check
 
 TIER_LINK = "SupplierTier.tier_of"
@@ -421,7 +419,9 @@ class ProjectedWiringTest(unittest.TestCase):
         from ontology import store_ddl
         from ontology.types import Actor
         from operating import ontology_tools as ot
+        from operating import ontology_tools_results
         from operating import ontology_tools_investigate as oi
+        from operating import ontology_tools_investigate_host
         from operating import ontology_tools_traverse as tt
         reader = ot.StoreReader.open(self.product.store)
         self.addCleanup(reader.conn.close)
@@ -433,11 +433,11 @@ class ProjectedWiringTest(unittest.TestCase):
         base = ot.OntologyTools(reader, policy, schema=ot.default_schema(),
                                 grammar=ot.default_grammar())
         table: dict = {}
-        ot.register(table, base)
+        ontology_tools_results.register(table, base)
         tt.register(table, tt.TraverseTools(base))
         oi.register(table, oi.InvestigateTools(
             table, rows=oi.citation_rows(self.runtime, policy.held_markings),
-            scope=oi.read_scope(base)))
+            scope=ontology_tools_investigate_host.read_scope(base)))
         return table["plx.investigate"]["handler"](
             {"family": "landed_cost", "root": {"identifier": number},
              "as_known_at": "2099-01-02T04:00:00Z"}, Actor("plx", frozenset(who)))

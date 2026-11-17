@@ -50,7 +50,9 @@ from operating import source_reads
 from operating.tests import ao_reference_investigation as ao_reference
 from operating.tests.ao_reference_investigation import MissingData, load_paper_leads
 from operating.case_runtime import CaseRuntime
-from operating.mcp_server import HOST_READS, MAX_RESULT_BYTES, MCPServer
+from operating.mcp_server import MCPServer
+from operating.mcp_server_catalog import HOST_READS
+from operating.mcp_server_evidence import MAX_RESULT_BYTES
 from operating.tests.firewall_view import client_result
 from operating.tests.test_case_originals import FIXTURE, local_ocr_available
 

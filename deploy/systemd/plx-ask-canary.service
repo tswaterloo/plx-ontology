@@ -1,0 +1,24 @@
+# The live Ask canary (operating.ask_canary): one small fixed question with a known answer
+# (/etc/plx/ask-canary.json; install_keep_fresh.sh places deploy/ops/ask-canary.json there
+# when missing) asked through the running API's /api/ask every 20 minutes, as the canary's
+# own service session (sudo -n plx-mint-link --canary: its own link file, never the owner's;
+# served /api/me and /api/ask only; no work log, no memory; a fresh conversation each run).
+# The verdict, seconds and steps go to <state>/ask-canary/status.json (never its words),
+# which the reliability alarms read (check ask_canary). Asks, never confirms or sends.
+[Unit]
+Description=PLX Workbench live Ask canary (one known question)
+After=plx-api.service
+
+[Service]
+Type=oneshot
+User=@PLX_USER@
+Group=@PLX_GROUP@
+WorkingDirectory=@PLX_CURRENT@
+EnvironmentFile=/etc/plx/ingest.env
+Environment=PATH=/data/venv/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart=/data/venv/bin/python3 -m operating.ask_canary run --state-dir ${PLX_INGEST_STATE}
+Nice=10
+CPUWeight=20
+MemoryMax=512M
+TimeoutStartSec=5min
+UMask=0077

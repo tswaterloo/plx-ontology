@@ -13,6 +13,8 @@ import unittest
 
 from operating import alert_kinds, briefing
 from operating import proactive_engine as pe
+from operating import proactive_engine_config
+from operating import proactive_engine_population
 from operating import proactive_sync as sync
 from operating.tests.test_proactive_business import money
 from operating.tests.test_proactive_engine import AS_OF, T0, Engine, World
@@ -194,7 +196,8 @@ class SyncGaps(Engine):
         self.assertEqual(gap["follow_up"]["object_id"], odd)
 
     def test_unknown_or_unserved_inputs_fail_closed(self):
-        from operating.proactive_engine import _Store, _cites, _gap, _result, _Skips
+        from operating.proactive_engine import _Store
+        from operating.proactive_engine_findings import _cites, _gap, _result, _Skips
 
         w = World()
         portal_order(w, "SO-SYN-9")
@@ -252,13 +255,15 @@ class SyncGaps(Engine):
 
     def test_the_kinds_are_registered_and_off_until_measured(self):
         from operating import declared_inputs, mcp_server, vendor_watch
+        from operating import mcp_server_catalog
+        from operating import mcp_server_home
 
         for kind in sync.KINDS:
             with self.subTest(kind=kind):
                 self.assertIn(kind, briefing.EVENT_TYPES)
                 self.assertIn(kind, briefing.NEXT_ACTIONS)
                 self.assertIn(kind, briefing.TODAY_WORDS)
-                self.assertIn(kind, mcp_server.HOME_KINDS)
+                self.assertIn(kind, mcp_server_catalog.HOME_KINDS)
                 entry = alert_kinds.entry(kind)
                 self.assertIsNotNone(entry)
                 on = entry["default"] == "on"
@@ -266,11 +271,11 @@ class SyncGaps(Engine):
                 self.assertEqual(on, bool(precision) and precision["value"] >= 0.9
                                  and precision["checked"] >= 15)
         self.assertIn(sync.RULE, pe.DETECTORS)
-        self.assertIn(sync.RULE, pe.REQUIRES_GRANT)
+        self.assertIn(sync.RULE, proactive_engine_config.REQUIRES_GRANT)
         self.assertIn(sync.RULE, briefing.CHECK_WORDS)
         self.assertIn(sync.RULE, vendor_watch.WHOLE_PASS)
         self.assertIn(sync.RULE, declared_inputs.NOT_INCREMENTAL)
-        self.assertIn(sync.RULE, mcp_server._HOME_RULES)
+        self.assertIn(sync.RULE, mcp_server_home._HOME_RULES)
 
 
 class ActivePopulation(Engine):
@@ -358,7 +363,7 @@ class ActivePopulation(Engine):
             st.close()
         self.assertEqual([g["object_id"] for g in results["a_rule"]["gaps"]], [customer])
         self.assertEqual(results["a_rule"]["status"], "failed")
-        self.assertEqual(results["a_rule"]["reasons"], [pe.ACTIVE_UNREADABLE])
+        self.assertEqual(results["a_rule"]["reasons"], [proactive_engine_population.ACTIVE_UNREADABLE])
         self.assertEqual(results["other"]["status"], "complete")
 
 

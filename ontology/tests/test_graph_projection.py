@@ -46,6 +46,7 @@ from ontology.types import Actor
 from operating import host
 from operating.case_runtime import CaseRuntime, LiveReaders
 from operating import ontology_tools as ot
+from operating import ontology_tools_results
 from operating import ontology_tools_aggregate as oa
 from operating import ontology_tools_evidence as oe
 from operating import ontology_tools_process as op
@@ -376,7 +377,7 @@ class TeamsProjectionTests(tct.CaptureCase):
         base = ot.OntologyTools(
             reader, ot.ReadPolicy(tenant="plx", audiences={"teams:*": {
                 "staff:cos", "staff:vince", "staff:teams-member", "staff:teams-outsider"}}),
-            item_gate=ot.item_gate_from_case_runtime(runtime),
+            item_gate=ontology_tools_results.item_gate_from_case_runtime(runtime),
             schema=ot.SchemaView.from_compiled(schema_loader.load_schema()), grammar=None,
             contracts=CONTRACTS, clock=now)
         traverse = tt.TraverseTools(base)
@@ -458,7 +459,7 @@ class TeamsProjectionTests(tct.CaptureCase):
         base = ot.OntologyTools(
             reader, ot.ReadPolicy(tenant="plx", audiences={
                 "teams:*": everyone, "api:*": everyone | {"staff:nobody"}}),
-            item_gate=ot.item_gate_from_case_runtime(runtime),
+            item_gate=ontology_tools_results.item_gate_from_case_runtime(runtime),
             schema=ot.SchemaView.from_compiled(schema_loader.load_schema()), grammar=None,
             contracts=CONTRACTS, clock=now)
         nobody = Actor("plx", frozenset({"staff:nobody"}), "restricted")

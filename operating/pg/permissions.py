@@ -51,7 +51,7 @@ from integrations.knowledge_source import is_personal as _personal_namespace
 from integrations.people_exclusion import PeopleExclusion, is_object_id
 from ontology import store_ddl
 from ontology.types import Actor
-from operating.ontology_tools import ReadPolicy
+from operating.ontology_tools_policy import ReadPolicy
 
 SEARCH_TABLES = ("chunks", "entities")
 _ALIAS = re.compile(r"^[a-z_][a-z0-9_]*$")

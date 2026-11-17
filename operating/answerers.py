@@ -33,7 +33,7 @@ MAX_LABEL = 200  # the gap contract's who_can_answer item maxLength
 @lru_cache(maxsize=1)
 def departments() -> frozenset[str]:
     """The Portal Department codes (ROUTING_DEPARTMENTS, the process format's owner_role)."""
-    from .ontology_tools_process import FORMAT_PATH
+    from .ontology_tools_process_graphs import FORMAT_PATH
     fmt = json.loads(FORMAT_PATH.read_text(encoding="utf-8"))
     return frozenset(fmt["$defs"]["owner_role"]["enum"])
 

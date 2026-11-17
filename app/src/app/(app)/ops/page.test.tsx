@@ -48,4 +48,38 @@ describe("Reliability: job queue", () => {
     await screen.findByTestId("ops-summary");
     expect(screen.queryByTestId("ops-queue")).toBeNull();
   });
+
+  it("counts the open problems by area and names the oldest", async () => {
+    const at = (h: number) => new Date(Date.now() - h * 3_600_000).toISOString();
+    api.body = {
+      ...base,
+      open: [
+        { key: "unit:plx-suite.service", line: "plx-suite.service (system): failed", opened_at: at(5) },
+        { key: "capture:mail", line: "mail capture last refreshed 3 days ago", opened_at: at(50) },
+        { key: "unit:plx-caddy.service", line: "plx-caddy.service (system): failed", opened_at: at(1) },
+      ],
+    } as OpsAlarms;
+    render(<OpsPage />);
+    const line = await screen.findByTestId("ops-by-area");
+    expect(line).toHaveTextContent("Open by areaServices 2Data freshness 1");
+    expect(line).toHaveTextContent("Oldest open 2 days: mail capture last refreshed 3 days ago");
+  });
+});
+
+describe("Reliability: pauses and mail", () => {
+  it("lists what is paused on purpose apart from the open problems, and says whether problems are mailed", async () => {
+    api.body = {
+      ...base,
+      open: [{ key: "backup", line: "Nightly backup: newest complete backup is 50 h old", opened_at: new Date().toISOString(), level: "critical" }],
+      paused: [{ key: "unit:plx-delta.timer", line: "plx-delta.timer (system): stopped: no next run", opened_at: new Date().toISOString(),
+                 paused: { until: new Date(Date.now() + 3600e3).toISOString(), why: "migration window" } }],
+      notify: { sending: false, why_not: "no sender set", recipients: 0, pending: 0 },
+    };
+    render(<OpsPage />);
+    const paused = await screen.findByTestId("ops-paused");
+    expect(paused).toHaveTextContent("plx-delta.timer (system): stopped: no next run");
+    expect(paused).toHaveTextContent("migration window");
+    expect(screen.getByTestId("ops-open")).not.toHaveTextContent("plx-delta.timer");
+    expect(screen.getByTestId("ops-mail")).toHaveTextContent("Problems are not mailed (no sender set): they show only here.");
+  });
 });

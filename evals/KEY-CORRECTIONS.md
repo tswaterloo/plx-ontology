@@ -22,3 +22,9 @@ in the name; the key set now checks clean):
 | ho-F31-0657 | none | count 3 |
 | ho-F31-0660 | none | count 30 |
 | ho-F31-0751 | none | count 2 |
+
+## 2026-11-14
+
+| Key | Was | Now | Why |
+|---|---|---|---|
+| hard42 q05 (`evals/hard42/keys.json`) | OR1000154089 optional (Sage-only, complete 2, no shipment) | OR1000154089 must not be listed: shipped on SH1000085906 (Nov 10), Sage complete 5; unshipped stays OR1000154132/133/134 | Data moved on: the Sage shipment was posted after the key |

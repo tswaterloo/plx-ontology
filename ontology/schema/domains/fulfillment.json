@@ -53,13 +53,13 @@
     {
      "name": "released_at",
      "value_type": "timestamp",
-     "sources": [{"binding": "portal.app_ship_release", "path": "released_at", "parser": "iso_timestamp"}],
+     "sources": [{"binding": "portal.app_ship_release", "path": "released_at", "parser": "iso_timestamp", "naive_zone": "UTC"}],
      "evidence": [{"kind": "ref", "id": "prisma.ship_release"}]
     },
     {
      "name": "fulfilled_at",
      "value_type": "timestamp",
-     "sources": [{"binding": "portal.app_ship_release", "path": "fulfilled_at", "parser": "iso_timestamp"}],
+     "sources": [{"binding": "portal.app_ship_release", "path": "fulfilled_at", "parser": "iso_timestamp", "naive_zone": "UTC"}],
      "evidence": [{"kind": "ref", "id": "prisma.ship_release"}]
     }
    ],
@@ -113,7 +113,7 @@
    "object_type": "ShipRelease",
    "description": "Sales released the order to the warehouse.",
    "time_basis": "source_recorded",
-   "time": {"binding": "portal.app_ship_release", "path": "released_at", "parser": "iso_timestamp"},
+   "time": {"binding": "portal.app_ship_release", "path": "released_at", "parser": "iso_timestamp", "naive_zone": "UTC"},
    "qualifiers": [
     {"qualifier": "release", "object_type": "ShipRelease", "via": "self"},
     {"qualifier": "order", "object_type": "SalesOrder", "via": "ShipRelease.for_sales_order"}
@@ -125,7 +125,7 @@
    "object_type": "ShipRelease",
    "description": "The release was fulfilled.",
    "time_basis": "source_recorded",
-   "time": {"binding": "portal.app_ship_release", "path": "fulfilled_at", "parser": "iso_timestamp"},
+   "time": {"binding": "portal.app_ship_release", "path": "fulfilled_at", "parser": "iso_timestamp", "naive_zone": "UTC"},
    "qualifiers": [
     {"qualifier": "release", "object_type": "ShipRelease", "via": "self"},
     {"qualifier": "order", "object_type": "SalesOrder", "via": "ShipRelease.for_sales_order"}

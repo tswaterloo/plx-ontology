@@ -44,6 +44,8 @@
     "mc_approval": {
       "label": "Approve a routine Mission Control gate",
       "scope_kind_in": ["launch"],
+      "risk_in": ["low", "medium"],
+      "risk_note": "risk_in reads the requester's own stated risk (MC proposal.risk): one more condition on top of the launch scope, the approve precedent and the deny terms, never a reason on its own.",
       "recommendation_in": ["approve"],
       "deny_term_classes": ["money", "price", "credit", "permission", "migration",
                             "production_change", "new_party", "legal_or_people"]
@@ -76,9 +78,11 @@
         "sales_order_create": {"require_precondition": "party", "max_lines": 20},
         "sales_order_line_create": {"require_precondition": "document"},
         "sales_order_comment": {"require_precondition": "document"},
-        "purchase_order_comment": {"require_precondition": "document"}
+        "purchase_order_comment": {"require_precondition": "document"},
+        "sales_order_update": {"require_precondition": "prior"},
+        "purchase_order_update": {"require_precondition": "prior"}
       },
-      "note": "A new purchase order or a purchase line change commits spend: not routine. Lines carry no price (BC prices them from the item card); any price, cost or discount field refuses the action.",
+      "note": "A new purchase order, a purchase line (new or changed) or a sales line quantity change commits spend or changes what is sold: not routine (a person approves it). Deleting an open order has no undo: never routine. Header edits (dates, ship-to, the customer's reference) are routine with the values as read. Lines carry no price (BC prices them from the item card); any price, cost or discount field refuses the action.",
       "deny_term_classes": ["money", "price", "credit", "new_party", "legal_or_people"]
     },
     "sage_write": {

@@ -14,6 +14,7 @@ import unittest
 from fastapi.testclient import TestClient
 
 from operating import autopilot as ap
+from operating import autopilot_queue
 from operating.session_identity import CHANNEL_CONSOLE, fixture_session
 from operator_api.app import create_app
 from operator_api.auth import DevAuth
@@ -124,11 +125,11 @@ class MyWorkApi(unittest.TestCase):
         self.assertEqual(owner.get("/api/my-work/ap_fin_lines/order-import").status_code, 404)
         self.assertEqual(owner.get("/api/my-work/nope/order-import").status_code, 404)
         self.assertEqual(stranger.get("/api/my-work/ap_lines/order-import").status_code, 404)
-        self.backend.writes_environ = {ap.KILL_ENV: "1"}
+        self.backend.writes_environ = {autopilot_queue.KILL_ENV: "1"}
         self.assertEqual(owner.get("/api/my-work/ap_lines/order-import").status_code, 409)
 
     def test_kill_switch_stops_approval(self) -> None:
-        self.backend.writes_environ = {ap.KILL_ENV: "1"}
+        self.backend.writes_environ = {autopilot_queue.KILL_ENV: "1"}
         owner = self.client(OWNER)
         self.assertEqual(owner.get("/api/my-work").json()["status"], "off")
         self.assertEqual(owner.post("/api/my-work/ap_one/write").status_code, 409)

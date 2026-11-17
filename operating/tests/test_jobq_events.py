@@ -12,6 +12,7 @@ import time
 import unittest
 
 from operating import autopilot as ap
+from operating import autopilot_engine
 from operating.jobq import events as ev
 from operating.tests.test_autopilot import NOW, Fixture
 from datetime import timedelta
@@ -205,7 +206,7 @@ class EventQueueTests(unittest.TestCase):
 class AutopilotThroughTheEventQueue(Fixture):
     def setUp(self) -> None:
         super().setUp()
-        q = ev.EventQueue(_DSN, topic=ap.EVQ_TOPIC)
+        q = ev.EventQueue(_DSN, topic=autopilot_engine.EVQ_TOPIC)
         q.conn.execute("DROP SCHEMA IF EXISTS jobq CASCADE")   # its tables and migration record
         q.init()
         self.evq = q
@@ -219,7 +220,7 @@ class AutopilotThroughTheEventQueue(Fixture):
         # Six redeliveries inside the hour, then a free hour
         burst = [self.message(100 + i, f"Could you send the COA for lot {i}?",
                               subject=f"COA {i}") for i in range(35)]
-        self.env = {ap.EVQ_ENV: "1", ap.EVQ_DSN_ENV: _DSN}
+        self.env = {autopilot_engine.EVQ_ENV: "1", autopilot_engine.EVQ_DSN_ENV: _DSN}
         self.cycle(burst, event_queue=True)
         for k in range(6):
             self.evq.conn.execute("UPDATE jobq.event_queue SET visible_after = now()"
@@ -235,7 +236,7 @@ class AutopilotThroughTheEventQueue(Fixture):
 
     def test_an_event_still_pending_locally_is_revived_from_the_dead_letter(self):
         msg = self.message(1, "Could you send the COA for lot 7?", subject="COA")
-        self.env = {ap.EVQ_ENV: "1", ap.EVQ_DSN_ENV: _DSN}
+        self.env = {autopilot_engine.EVQ_ENV: "1", autopilot_engine.EVQ_DSN_ENV: _DSN}
         self.cycle([msg], now=NOW, event_queue=True)
         # as if a consumer had crashed past max_receives while the local queue still waits
         q = self.queue()
@@ -252,7 +253,7 @@ class AutopilotThroughTheEventQueue(Fixture):
         # Two queues with the same five events
         msgs = [self.message(200 + i, f"Could you send the COA for lot {i}?", subject=f"COA {i}")
                 for i in range(5)]
-        self.env = {ap.EVQ_ENV: "1", ap.EVQ_DSN_ENV: _DSN}
+        self.env = {autopilot_engine.EVQ_ENV: "1", autopilot_engine.EVQ_DSN_ENV: _DSN}
         a = self.cycle(msgs, event_queue=True)
         shutil.move(str(self.dir / "q"), str(self.dir / "qA"))
         b = self.cycle(msgs, event_queue=True)
@@ -265,7 +266,7 @@ class AutopilotThroughTheEventQueue(Fixture):
 
     def test_a_replay_never_touches_the_event_queue(self):
         msg = self.message(1, "Could you send the COA for lot 7?", subject="COA")
-        self.env = {ap.EVQ_ENV: "1", ap.EVQ_DSN_ENV: _DSN}
+        self.env = {autopilot_engine.EVQ_ENV: "1", autopilot_engine.EVQ_DSN_ENV: _DSN}
         out = self.cycle([msg])                    # no event_queue=True: not the live follow
         self.assertEqual(out["prepared"], {"customer_request": 1})
         self.assertEqual(self.states(), {})
@@ -276,7 +277,7 @@ class AutopilotThroughTheEventQueue(Fixture):
         with q.conn:
             q.add_event({"event_id": "odd-1", "event_type": "made.up", "object_id": "x",
                          "object_type": "Thing", "at": "2026-10-18T10:00:00Z"}, "s")
-        self.env = {ap.EVQ_ENV: "1", ap.EVQ_DSN_ENV: _DSN}
+        self.env = {autopilot_engine.EVQ_ENV: "1", autopilot_engine.EVQ_DSN_ENV: _DSN}
         out = self.cycle([msg], event_queue=True)
         self.assertEqual(out["prepared"], {"customer_request": 1})
         self.assertEqual(out["skipped"].get("unknown_event_type"), 1)
@@ -285,20 +286,20 @@ class AutopilotThroughTheEventQueue(Fixture):
 
     def test_every_event_type_has_a_priority_and_an_entity(self):
         for kind in ap.EVENT_TYPES:
-            self.assertIsInstance(ap.event_priority({"event_type": kind}), int)
+            self.assertIsInstance(autopilot_engine.event_priority({"event_type": kind}), int)
         with self.assertRaises(ValueError):
-            ap.event_priority({"event_type": "made.up"})
-        self.assertLess(ap.event_priority({"event_type": "message.received", "side": "customer"}),
-                        ap.event_priority({"event_type": "record.changed"}))
-        self.assertEqual(ap.event_group({"event_id": "e", "conversation_id": "c1",
+            autopilot_engine.event_priority({"event_type": "made.up"})
+        self.assertLess(autopilot_engine.event_priority({"event_type": "message.received", "side": "customer"}),
+                        autopilot_engine.event_priority({"event_type": "record.changed"}))
+        self.assertEqual(autopilot_engine.event_group({"event_id": "e", "conversation_id": "c1",
                                          "object_type": "Email", "object_id": "o"}), "thread:c1")
-        self.assertEqual(ap.event_group({"event_id": "e", "object_type": "PurchaseOrder",
+        self.assertEqual(autopilot_engine.event_group({"event_id": "e", "object_type": "PurchaseOrder",
                                          "object_id": "po-1"}), "PurchaseOrder:po-1")
 
     def test_the_cycle_prepares_the_same_work_with_deferred_events_held_back(self):
         burst = [self.message(100 + i, f"Could you send the COA for lot {i}?",
                               subject=f"COA {i}") for i in range(35)]
-        self.env = {ap.EVQ_ENV: "1", ap.EVQ_DSN_ENV: _DSN}
+        self.env = {autopilot_engine.EVQ_ENV: "1", autopilot_engine.EVQ_DSN_ENV: _DSN}
         out = self.cycle(burst, event_queue=True)
         self.assertEqual(out["prepared"], {"customer_request": 30})   # 30 an hour, as without it
         self.assertEqual(self.states(), {"done": 30, "ready": 5})     # the deferred wait
@@ -311,12 +312,12 @@ class AutopilotThroughTheEventQueue(Fixture):
 
     def test_an_unreachable_event_queue_blocks_the_cycle_and_loses_nothing(self):
         msg = self.message(1, "Could you send the COA for lot 7?", subject="COA")
-        self.env = {ap.EVQ_ENV: "1", ap.EVQ_DSN_ENV: "host=/nonexistent dbname=x connect_timeout=1"}
+        self.env = {autopilot_engine.EVQ_ENV: "1", autopilot_engine.EVQ_DSN_ENV: "host=/nonexistent dbname=x connect_timeout=1"}
         out = self.cycle([msg], event_queue=True)
         self.assertEqual(out["status"], "blocked")
         self.assertTrue(out["reason"].startswith("event_queue_unavailable"))
         self.assertEqual(out["prepared"], {})
-        self.env = {ap.EVQ_ENV: "1", ap.EVQ_DSN_ENV: _DSN}
+        self.env = {autopilot_engine.EVQ_ENV: "1", autopilot_engine.EVQ_DSN_ENV: _DSN}
         later = self.cycle([msg], event_queue=True)
         self.assertEqual(later["prepared"], {"customer_request": 1})
 

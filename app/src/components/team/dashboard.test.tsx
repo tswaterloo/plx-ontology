@@ -1,7 +1,7 @@
 import { fireEvent, render, screen, within } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import type { TeamPerson, TeamView } from "@/lib/types";
-import { TeamDashboard, busiest, minutes } from "./dashboard";
+import { TeamDashboard, WeekTracker, busiest, minutes } from "./dashboard";
 
 vi.mock("@/lib/api", () => ({
   getTeamPerson: vi.fn(async (key: string) => ({ person: person(key, "Avery Lindqvist"), items: [], withheld: 0, truncated: false, timeline: [], partners: [] })),
@@ -61,6 +61,16 @@ describe("Team dashboard", () => {
     expect(names()).toEqual(["Avery Lindqvist"]);
   });
 
+  it("with no team or role on record for anyone, the Team column and the Team and Role filters are left out", () => {
+    render(<TeamDashboard data={{ ...view, people: (view.people ?? []).map((p) => ({ ...p, team: null, roles: [] })) }} />);
+    const table = screen.getByTestId("team-table");
+    expect(within(table).queryByText("Team")).toBeNull();
+    expect(screen.queryByTestId("filter-team")).toBeNull();
+    expect(screen.queryByTestId("filter-role")).toBeNull();
+    expect(screen.getByTestId("filter-system")).toBeTruthy();
+    expect(names()).toHaveLength(3);
+  });
+
   it("a reader who sees only their own row gets no filters; an unbuilt count says so", () => {
     const { rerender } = render(<TeamDashboard data={{ ...view, scope: "self", people: [person("k9", "Jo Pemberton", { self: true })] }} />);
     expect(screen.queryByTestId("filter-team")).toBeNull();
@@ -93,5 +103,34 @@ describe("Team dashboard", () => {
       const bar = bars[h];
       expect(Number(labels[i].getAttribute("x"))).toBe(Number(bar.getAttribute("x")) + Number(bar.getAttribute("width")) / 2);
     }
+  });
+});
+
+describe("WeekTracker", () => {
+  const weeks = [
+    { week: "2026-10-19", to: "2026-10-25", partial: false, done: 120, received: 80, closed: 2, reply_minutes: 45, replies: 9, saved_minutes: 30 },
+    { week: "2026-10-26", to: "2026-11-01", partial: false, done: 0, received: 0, closed: 0, reply_minutes: null, replies: 0, saved_minutes: 0 },
+    { week: "2026-11-02", to: "2026-11-08", partial: false, done: 1400, received: 300, closed: 0, reply_minutes: 125, replies: 31, saved_minutes: null },
+    { week: "2026-11-09", to: "2026-11-11", partial: true, done: 40, received: 12, closed: 1, reply_minutes: 20, replies: 3, saved_minutes: 95 },
+  ];
+
+  it("shows each week's work against what came in, the open week marked, and what waits now", () => {
+    render(<WeekTracker weeks={weeks} waiting={4} />);
+    const rows = screen.getAllByTestId("team-week-row");
+    expect(rows).toHaveLength(4);
+    expect(within(rows[2]).getByText("1,400")).toBeTruthy();
+    expect(rows[3].textContent).toContain("to Nov 11");
+    expect(rows[0].textContent).not.toContain("to ");
+    expect(rows[3].textContent).toContain(minutes(95));
+    expect(rows[3].textContent).toContain("(3)");
+    // a week with no replies shows no median, never "0 min"
+    expect(rows[1].textContent).not.toContain("min");
+    expect(screen.getByTestId("team-waiting").textContent).toBe("4 waiting on them now (replies, tasks and alerts).");
+  });
+
+  it("drops the saved column when the reader may see no figure", () => {
+    render(<WeekTracker weeks={weeks.map((w) => ({ ...w, saved_minutes: null }))} waiting={0} />);
+    expect(screen.queryByTitle(/Workbench saved/)).toBeNull();
+    expect(screen.getByTestId("team-waiting").textContent).toBe("Nothing waiting on them now.");
   });
 });

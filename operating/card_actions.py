@@ -33,6 +33,15 @@ more explicit confirm), and every refusal (``problems``). Hard refusals, fail cl
 * a figure, spelled-out number or relative day ("ten thousand", "tomorrow", "next week")
   that no citation or drafted text states, and a drafted figure moved to another label.
 
+A card may name files its message carries (``card["attachments"]``: upload ids of the
+reader's own kept files, a filled form's reply, ``operator_api.doc_fill_api``): only a new
+email and a reply carry them; the person may take one off, never add one; each is re-read
+as the reader's own (``Context.attachment``), its bytes hashed against the digest it was
+prepared with, its type one of the Workbench's documents, the people it names cleared by
+the exclusion guard (fail closed), together at most 3 MB. The payload, the hash and the
+journal hold each file's name, type, size and SHA-256, never its bytes; the bytes are read
+again and re-verified at confirm, just before the send.
+
 ``ActionDesk.confirm`` does an action only on an explicit confirm by a named, signed-in
 person, for the payload hash the preview showed them, once per idempotency key. Every
 confirmed action is an append-only journal row (who, when, card, payload hash, recipients,
@@ -54,12 +63,12 @@ import fcntl
 import hashlib
 import json
 import os
+from operating.file_modes import keep_shared
 from pathlib import Path
 import re
 import threading
 from typing import Any, Callable, Iterable, Mapping, Sequence
 
-from operating.secret_text import mask_secrets
 
 SCHEMA = "plx-card-actions/v1"
 OUTBOUND = ("send_email", "reply_in_thread", "forward", "teams_message")
@@ -76,6 +85,11 @@ MAX_RECIPIENTS = 10
 MAX_SUBJECT = 255
 MAX_BODY = 8000
 MAX_NOTE = 500
+# a message's attached files: at most five, together at most 3 MB (Graph takes a message
+# with attachments in one request up to that size), each a file this Workbench made
+MAX_ATTACHMENTS = 5
+MAX_ATTACHMENT_BYTES = 3_000_000
+_FILE_NAME = re.compile(r"^[A-Za-z0-9 ._()-]{1,200}$")
 FOLLOW_UP_DAYS, SNOOZE_DAYS = 3, 7
 _ADDRESS = re.compile(r"^[A-Za-z0-9._%+'-]{1,64}@[A-Za-z0-9-]{1,63}(?:\.[A-Za-z0-9-]{1,63})+$")
 _CHAT = re.compile(r"^19:[A-Za-z0-9_.-]{1,200}@(?:thread\.v2|unq\.gbl\.spaces)$")
@@ -177,6 +191,9 @@ class Context:
     thread: Callable[[str, str], Mapping[str, Any] | None] | None = None
     # chat id -> its members [{"id": oid, "email": address}]; None: unreadable (refused)
     chat_members: Callable[[str], Sequence[Mapping[str, Any]] | None] | None = None
+    # upload id -> the reader's own kept file a card attaches ({"upload_id", "name", "kind",
+    # "size", "digest", "people", "data": bytes}); None: not theirs or unreadable (refused)
+    attachment: Callable[[str], Mapping[str, Any] | None] | None = None
 
     @property
     def internal_domains(self) -> frozenset[str]:
@@ -213,10 +230,15 @@ def default_payload(kind: str, card: Mapping[str, Any], ctx: Context) -> dict[st
         if to else []
     cc = [a for a in draft.get("cc") or () if isinstance(a, str) and a not in to] if to else []
     note = f"{card.get('headline', '')}. Next: {(card.get('action') or {}).get('text', '')}"
+    # the files a card's message carries (a filled form's reply): the card names them, the
+    # person may only take one off; a forward never carries one
+    files = [a for a in card.get("attachments") or () if isinstance(a, str)][:MAX_ATTACHMENTS]
+    attach = {"attachments": files} if files else {}
     if kind == "send_email":
-        return {"to": to, "cc": cc, "subject": draft.get("subject"), "body": draft.get("body")}
+        return {"to": to, "cc": cc, "subject": draft.get("subject"), "body": draft.get("body"),
+                **attach}
     if kind == "reply_in_thread":
-        return {"to": to, "cc": cc, "subject": None, "body": draft.get("body")}
+        return {"to": to, "cc": cc, "subject": None, "body": draft.get("body"), **attach}
     if kind == "forward":
         return {"to": [], "cc": [], "subject": None, "body": f"For your attention: {note}"}
     if kind == "teams_message":
@@ -324,6 +346,85 @@ def _excluded(guard: Any, value: str | None, internal: bool) -> str | None:
     return "undecided" if internal else None
 
 
+def _attachment_ids(chosen: Any, problems: list[str]) -> list[str]:
+    """The upload ids the person kept attached (ids, or the preview's own entries echoed)."""
+    if chosen is None:
+        return []
+    if not isinstance(chosen, (list, tuple)):
+        problems.append("Attachments: not a list of files.")
+        return []
+    out = []
+    for entry in chosen:
+        uid = entry.get("upload_id") if isinstance(entry, Mapping) else entry
+        if not isinstance(uid, str) or not uid:
+            problems.append("Attachments: a file is not named by its upload.")
+        elif uid not in out:
+            out.append(uid)
+    return out
+
+
+def _attachments(chosen: Any, offered: Sequence[str], ctx: Context, guard: Any,
+                 problems: list[str]) -> list[dict[str, Any]]:
+    """The files the message carries, each re-read as the reader's own kept file, its bytes
+    hashed against the digest it was prepared with, the people it names cleared by the
+    exclusion guard (fail closed). Entries hold no bytes (the hash and journal cover them)."""
+    from operating.instruct_files import MEDIA
+    ids = _attachment_ids(chosen, problems)
+    if any(uid not in offered for uid in ids):
+        problems.append("Only the file prepared for this message can be attached.")
+        return []
+    out, total = [], 0
+    for uid in ids:
+        row = ctx.attachment(uid) if ctx.attachment else None
+        data = (row or {}).get("data")
+        if not isinstance(data, bytes) or not isinstance((row or {}).get("digest"), str):
+            problems.append("The attached file could not be read as yours, so it cannot be "
+                            "sent.")
+            continue
+        name, kind = str(row.get("name") or ""), row.get("kind")
+        if kind not in MEDIA or not _FILE_NAME.fullmatch(name):
+            problems.append(f"The attached file '{name[:80]}' is not one the Workbench sends.")
+            continue
+        digest = hashlib.sha256(data).hexdigest()
+        if digest != row["digest"] or len(data) != row.get("size"):
+            problems.append(f"{name} changed since it was prepared, so it is not sent.")
+            continue
+        for person in row.get("people") or ():
+            address = str(person).lower()
+            if guard is None:
+                break
+            inside = "@" not in address or ctx.is_internal(_domain(address))
+            verdict = _excluded(guard, address, inside)
+            if verdict:
+                problems.append(f"{name} names someone whose data stays out of the Workbench."
+                                if verdict == "excluded" else
+                                f"{name} names someone who could not be checked against the "
+                                "exclusion list.")
+                break
+        total += len(data)
+        out.append({"upload_id": uid, "name": name, "content_type": MEDIA[kind],
+                    "size": len(data), "sha256": digest})
+    if total > MAX_ATTACHMENT_BYTES:
+        problems.append(f"The attached files are {total:,} bytes together: at most "
+                        f"{MAX_ATTACHMENT_BYTES:,} go with one message.")
+    return out
+
+
+def attachment_files(ctx: Context, payload: Mapping[str, Any]) -> list[dict[str, Any]]:
+    """The attached files' bytes for the send, re-read now and refused (409) unless each is
+    still exactly the file the person previewed (same reader, same digest)."""
+    out = []
+    for entry in payload.get("attachments") or ():
+        row = ctx.attachment(entry["upload_id"]) if ctx.attachment else None
+        data = (row or {}).get("data")
+        if not isinstance(data, bytes) or hashlib.sha256(data).hexdigest() != entry["sha256"]:
+            raise ActionRefused([f"{entry['name']} changed since you previewed it: review it "
+                                 "again before you send."], 409)
+        out.append({"name": entry["name"], "content_type": entry["content_type"],
+                    "content": data})
+    return out
+
+
 def payload_hash(card_id: str, kind: str, sender: str | None,
                  payload: Mapping[str, Any]) -> str:
     canon = json.dumps({"card": card_id, "kind": kind, "sender": sender, "payload": payload},
@@ -339,9 +440,10 @@ def review(card: Mapping[str, Any], kind: str, edits: Mapping[str, Any] | None,
         raise ActionRefused(["Unknown action."])
     if kind not in {o["kind"] for o in offers(card)}:
         raise ActionRefused([f"{LABELS[kind]} is not offered on this card."])
-    # a drafted text never carries a credential it quoted from a source: the preview shows,
+    # a drafted text never carries a credential or card number it quoted from a source: the preview shows,
     # the hash covers and the send takes the masked text (the person's own edits are theirs)
-    base = {k: mask_secrets(v) if isinstance(v, str) else v
+    from operating.card_text import mask_served
+    base = {k: mask_served(v) if isinstance(v, str) else v
             for k, v in default_payload(kind, card, ctx).items()}
     # the thread's own recipients are read from the message, never taken from the edits
     edits = {k: v for k, v in (edits or {}).items()
@@ -472,6 +574,11 @@ def review(card: Mapping[str, Any], kind: str, edits: Mapping[str, Any] | None,
                     else:
                         problems.append("A member of this chat could not be checked against "
                                         "the exclusion list.")
+        if "attachments" in base:
+            files = _attachments(raw.get("attachments"), base["attachments"], ctx, guard,
+                                 problems)
+            if files:
+                payload["attachments"] = files
         payload["body"] = _text(raw.get("body"), MAX_BODY + 1)
         if not payload["body"]:
             problems.append("The message is empty.")
@@ -592,6 +699,7 @@ class Journal:
             self._memory.append(line)
         else:
             fd = os.open(self.path, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o600)
+            keep_shared(self.path, 0o600)
             try:
                 os.write(fd, (line + "\n").encode("utf-8"))
                 os.fsync(fd)
@@ -615,6 +723,7 @@ class _Held:
                 self.journal.path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
                 self._fd = os.open(self.journal.path.with_suffix(".lock"),
                                    os.O_RDWR | os.O_CREAT, 0o600)
+                keep_shared(self.journal.path.with_suffix(".lock"), 0o600)
                 fcntl.flock(self._fd, fcntl.LOCK_EX)
             self.rows = self.journal.rows()
         except BaseException:
@@ -794,6 +903,11 @@ class ActionDesk:
                "note": payload.get("note"), "assignee": payload.get("assignee"),
                "citations": [{k: c[k] for k in ("fact", "value", "handle")}
                              for c in found["citations"] if c["present"]]}
+        if payload.get("attachments"):
+            row["attachments"] = [{k: a[k] for k in ("name", "size", "sha256")}
+                                  for a in payload["attachments"]]
+        # the files' bytes, re-read and re-verified before anything is journalled or sent
+        blobs = attachment_files(ctx, payload) if outbound else []
         try:
             with self.journal.locked() as held:
                 same = [r for r in held.rows if r["idempotency_key"] == idempotency_key]
@@ -824,8 +938,9 @@ class ActionDesk:
                     return _result(self._keep(held.append({**row, "at": self._now(),
                                                            "status": _LOCAL_STATUS[kind]})))
             try:
-                sent = self.sender.dispatch(kind, ctx.sender,
-                                            {**payload, "message_id": found["message_id"]})
+                sent = self.sender.dispatch(kind, ctx.sender, {
+                    **payload, "message_id": found["message_id"],
+                    **({"attachments": blobs} if blobs else {})})
                 with self.journal.locked() as held:
                     final = self._keep(held.append({
                         **row, "at": self._now(), "status": sent["status"],

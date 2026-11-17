@@ -32,12 +32,12 @@ from pathlib import Path
 import re
 import shutil
 import subprocess
-import sys
 import tempfile
 import unittest
 from unittest import mock
 
 from verify import live_verify as lv
+from verify import live_verify_report
 from ontology.generator.tool_registration import tool_registration
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -229,7 +229,9 @@ class AllowlistTests(unittest.TestCase):
 
     def test_runner_stays_get_only_and_mc_read_only(self):
         self.assertIn("read-tool tools/call only", lv.MODE)
-        tree = ast.parse((ROOT / "verify/live_verify.py").read_text("utf-8"))
+        tree = ast.Module(body=[node for path in sorted((ROOT / "verify").glob("live_verify*.py"))
+                                for node in ast.parse(path.read_text("utf-8")).body],
+                          type_ignores=[])
         imported = {alias.name for node in ast.walk(tree)
                     if isinstance(node, (ast.Import, ast.ImportFrom))
                     for alias in node.names} | {
@@ -452,7 +454,7 @@ class PortalOutageProbeTests(unittest.TestCase):
         self.assertEqual((check["detail"]["blocked"]["cause"],
                           check["detail"]["blocked"].get("measured")), ("upstream_outage", True))
         self.assertNotIn("failures", check["detail"])
-        tier = lv.tier_summary([check])["projected"]
+        tier = live_verify_report.tier_summary([check])["projected"]
         self.assertEqual((tier["status"], tier["measured_in_part"]), ("partial", [spec_doc["id"]]))
         recorded = json.dumps(check["detail"])
         for value in ("bc://", "graph-mail://", "FXPI", "FXSI", "FXVINV", "petrasoap"):
@@ -524,7 +526,7 @@ class PortalOutageProbeTests(unittest.TestCase):
         self.assertEqual(check["detail"]["reason"],
                          "upstream portal-workbench-api+business-central no_record_source")
         self.assertNotIn("measured", check["detail"]["blocked"])
-        self.assertEqual(lv.tier_summary([check])["projected"]["status"], "blocked")
+        self.assertEqual(live_verify_report.tier_summary([check])["projected"]["status"], "blocked")
 
 
 BC_ENV = {name: value for name, value in __import__(

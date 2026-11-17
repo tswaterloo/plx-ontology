@@ -32,6 +32,7 @@ import sqlite3
 import time
 from typing import Any, Callable, Iterable, Mapping, Sequence
 
+from ontology import parent_watch
 from ontology import mentions
 from ontology import sender_corroboration as sc
 
@@ -165,7 +166,7 @@ class _Pool:
                     self._pool = futures.ProcessPoolExecutor(
                         max_workers=self.count,
                         mp_context=multiprocessing.get_context("spawn"),
-                        initializer=_init, initargs=(self.store,))
+                        **parent_watch.pool_init(_init, (self.store,)))
             except Exception as exc:  # noqa: BLE001 - read here
                 self._broken = True
                 self.reason = f"workers_failed:{type(exc).__name__}"

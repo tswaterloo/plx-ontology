@@ -25,7 +25,9 @@ from ontology.project import build_store
 from ontology.types import Actor
 from operating import customer_profit as cp
 from operating import ontology_tools as ot
+from operating import ontology_tools_results
 from operating import ontology_tools_investigate as oi
+from operating import ontology_tools_investigate_host
 from operating import ontology_tools_traverse as tt
 from tests import test_investigate_people_graph as base
 
@@ -129,10 +131,10 @@ class World:
         tools = ot.OntologyTools(reader, policy, schema=ot.SchemaView.from_compiled(
             self.compiled), grammar=None, contracts=CONTRACTS, clock=lambda: NOW)
         table: dict = {"_reader": reader}
-        ot.register(table, tools)
+        ontology_tools_results.register(table, tools)
         tt.register(table, tt.TraverseTools(tools))
         oi.register(table, oi.InvestigateTools(table, rows=self.rows,
-                                               scope=oi.read_scope(tools), clock=lambda: NOW))
+                                               scope=ontology_tools_investigate_host.read_scope(tools), clock=lambda: NOW))
         return table
 
 

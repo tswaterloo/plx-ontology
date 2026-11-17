@@ -693,7 +693,7 @@
         {
           "name": "required_date",
           "value_type": "date",
-          "description": "Customer required date (a planned date).",
+          "description": "Customer required date (a planned date). When no FM or gold date is held and the date comes from Sage, it is Sage's expected ship date (oe_order_header.expdate), the date the order is promised to leave, not a date the customer asked for; the citation names the field.",
           "sources": [
             {
               "binding": "portal.fm_order_entry",
@@ -704,6 +704,11 @@
               "binding": "portal.app_sales_order",
               "path": "required_date",
               "parser": "iso_date"
+            },
+            {
+              "binding": "portal.sage_oe_order_header",
+              "path": "expdate",
+              "parser": "yyyymmdd_date"
             }
           ],
           "authority": {
@@ -729,8 +734,20 @@
                     "id": "context.critique.r1"
                   }
                 ]
+              },
+              {
+                "lineage": [
+                  "sage_bronze"
+                ],
+                "evidence": [
+                  {
+                    "kind": "ref",
+                    "id": "allowlist.sage.oe_order_header"
+                  }
+                ]
               }
-            ]
+            ],
+            "note": "Sage oe_order_header.expdate is Sage 300's expected ship date, the date the order is promised to leave: the nearest Sage field to a required date, ranked after the FM and gold dates. A 0 (no date) is a gap, not a date (AUD-08)."
           },
           "evidence": [
             {
@@ -870,7 +887,8 @@
               "path": "ordtotal",
               "parser": "decimal_text",
               "currency_from": "orsourcurr",
-              "tax_basis": "unknown"
+              "tax_basis": "excl_tax",
+              "note": "tax_basis (CC-NY-1, host mirror 2026-11-14): of 1,720 non-zero ordtotal headers with lines, 1,492 equal the sum of origqty x unitprice x (1 - discper/100), 1,161 of those with a non-zero teamount (the tax is left out); 221 of the other 228 equal the same sum over qtyordered (the quantity still to ship): on a partly shipped open order ordtotal is the value still to ship. Miscellaneous charge lines (linetype 2) are never in it: 898 headers whose charge lines state an extinvmisc match their item lines alone, none with the charges (operating/order_value.py)."
             },
             {
               "binding": "portal.app_sales_order",
@@ -1201,7 +1219,8 @@
             {
               "binding": "portal.fm_order_entry",
               "path": "audittimestampmodified",
-              "parser": "iso_timestamp"
+              "parser": "iso_timestamp",
+              "wall_clock_zone": "America/New_York"
             }
           ],
           "evidence": [
@@ -1258,7 +1277,8 @@
             {
               "binding": "portal.fm_order_entry",
               "path": "audittimestampcreated",
-              "parser": "iso_timestamp"
+              "parser": "iso_timestamp",
+              "wall_clock_zone": "America/New_York"
             }
           ],
           "evidence": [
@@ -1284,6 +1304,25 @@
             {
               "kind": "ref",
               "id": "data.sage_cost_fields"
+            }
+          ]
+        },
+        {
+          "name": "sage_salesperson_code",
+          "value_type": "text",
+          "description": "The order's Sage salesperson code (O/E order header salesper1, trimmed). The with_owners step (ontology/owner_links.py) looks it up in the Sage AR salesperson rows and links the Sage employee code to the one staff Person whose address local part it is, as a lead (a code is no identity).",
+          "sources": [
+            {
+              "binding": "portal.sage_oe_order_header",
+              "path": "salesper1",
+              "parser": "trim"
+            }
+          ],
+          "evidence": [
+            {
+              "kind": "workbench_code",
+              "path": "ontology/owner_links.py",
+              "note": "salesper1 is the Sage O/E order header salesperson code; the sage.ar_salesperson mirror maps codeslsp to the employee code codeempl."
             }
           ]
         },
@@ -1790,6 +1829,74 @@
                   {
                     "kind": "ref",
                     "id": "portal.etl_sage_open_orders"
+                  }
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "line_discount_percent",
+          "value_type": "decimal",
+          "description": "The line's discount in percent (0-100) off quantity x unit price, as the source states it: Sage O/E discper, BC discountPercent. A line priced from quantity x unit price is net of it (operating/order_value.py); a Sage or BC line without this cell is never priced gross.",
+          "markings": [
+            "finance"
+          ],
+          "sources": [
+            {
+              "binding": "bc.sales_order_lines",
+              "path": "discountPercent",
+              "parser": "decimal_text",
+              "evidence": [
+                {
+                  "kind": "workbench_code",
+                  "path": "integrations/live_source_grammar.py",
+                  "note": "BC_QUERY_SPECS salesOrderLines selects discountPercent (API v2.0 salesOrderLine)."
+                }
+              ]
+            },
+            {
+              "binding": "portal.sage_oe_order_detail",
+              "path": "discper",
+              "parser": "decimal_text",
+              "evidence": [
+                {
+                  "kind": "workbench_code",
+                  "path": "devloop/DECISIONS/2026-11-14-cc-ny-4-line-discount.md",
+                  "note": "11-14 host mirror: on all 574 of 20,000 current oe_order_detail rows with a non-zero discper, extoprice = qtyordered x unitprice x (1 - discper/100)."
+                }
+              ]
+            }
+          ],
+          "evidence": [
+            {
+              "kind": "workbench_code",
+              "path": "operating/order_value.py",
+              "note": "Line pricing takes the discount off; Sage and BC lines without it are refused (line_discount_unknown)."
+            }
+          ],
+          "authority": {
+            "precedence": [
+              {
+                "lineage": [
+                  "bc_manufacturing",
+                  "bc_distribution"
+                ],
+                "evidence": [
+                  {
+                    "kind": "ref",
+                    "id": "context.critique.r1"
+                  }
+                ]
+              },
+              {
+                "lineage": [
+                  "sage_bronze"
+                ],
+                "evidence": [
+                  {
+                    "kind": "ref",
+                    "id": "context.critique.r1"
                   }
                 ]
               }
@@ -6782,6 +6889,10 @@
               "kind": "workbench_code",
               "path": "ontology/demand_pegging.py",
               "note": "supply_pegging step: an open order line's item (and its assembly order's open components) allocated in date order to open purchase order lines of the same item; always a lead with the pegging reason, never verified."
+            },
+            {
+              "kind": "ref",
+              "id": "workbench.bc_same_company_scope"
             }
           ],
           "written_by_step": "supply_pegging"
@@ -6961,6 +7072,10 @@
               "kind": "workbench_code",
               "path": "ontology/demand_pegging.py",
               "note": "supply_pegging step: an open order line's item (and its assembly order's open components) allocated in date order to open purchase order lines of the same item; always a lead with the pegging reason, never verified."
+            },
+            {
+              "kind": "ref",
+              "id": "workbench.bc_same_company_scope"
             }
           ],
           "written_by_step": "supply_pegging"
@@ -7062,52 +7177,6 @@
               "kind": "workbench_code",
               "path": "ontology/schema/identifiers.json",
               "note": "Compared as text_id: the shipment_number grammar is the Portal series (SH + 6-9 digits) and rejects every Sage shipment number (two letters + 10 digits); with it this kind served 0 links (live check 2026-11-11). Both columns are Sage CHAR(22), padded alike."
-            }
-          ]
-        }
-      ]
-    },
-    {
-      "id": "RelSageGlJeHeader.source_shipment",
-      "from": "RelSageGlJeHeader",
-      "to": "Shipment",
-      "name": "source_shipment",
-      "reverse_name": "gl_entries",
-      "cardinality": "N:1",
-      "description": "The Sage OE shipment a GL journal entry posted (drilldwnlk = oe_shipment_header.shiuniq), for entries whose drill-down source is OE shipments only (drilapp OE, drilsrcty 3).",
-      "bindings": [
-        {
-          "kind": "fk",
-          "tier_ceiling": "verified",
-          "from_binding": "gen.sage.gl_je_header",
-          "to_binding": "portal.sage_oe_shipment_header",
-          "pairs": [
-            {
-              "from": "drilldwnlk",
-              "to": "shiuniq",
-              "compare": "text_id"
-            }
-          ],
-          "where": [
-            {
-              "path": "drilapp",
-              "op": "eq",
-              "value": "OE"
-            },
-            {
-              "path": "drilsrcty",
-              "op": "in",
-              "value": [
-                3,
-                "3"
-              ]
-            }
-          ],
-          "evidence": [
-            {
-              "kind": "workbench_code",
-              "path": "ontology/schema/domains/orders.json",
-              "note": "Link-completeness audit round 2, 2026-11-08 (read-only source mirror, counts only): 83,801 of 83,802 OE-shipment-sourced entries reach a shipment; random-shift baseline 0.007 (a real join). The same column on other ledgers' entries is another document's id (shift baseline 1.2-1.9), hence the source predicate."
             }
           ]
         }

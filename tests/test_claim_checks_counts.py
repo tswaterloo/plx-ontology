@@ -15,6 +15,8 @@ from decimal import Decimal
 import unittest
 
 from operating import case_verification, claim_checks
+from operating import claim_checks_parse
+from operating import claim_checks_values
 from operating import playbook_eval as pe
 from operating.tests import test_customer_po_coverage as cpo_tests
 from operating.tests import test_playbook_eval as pe_tests
@@ -37,7 +39,7 @@ COUNT_CALL = {"set": "set:s1", "measure": {"property": "receipt_number", "op": "
 
 
 def counted(handles, arguments=None, **result):
-    return claim_checks.returned_evidence("plx.aggregate", {**COUNT_CALL, **(arguments or {})},
+    return claim_checks_values.returned_evidence("plx.aggregate", {**COUNT_CALL, **(arguments or {})},
                                           count_result(handles, **result))
 
 
@@ -74,9 +76,10 @@ class CountClaimTests(unittest.TestCase):
 
     def test_a_source_read_only_in_part_keeps_its_counts_a_lower_bound(self):
         from operating import ontology_query, ontology_tools
+        from operating import ontology_tools_results
         fresh = [{"source": "portal_api", "stale": True, "label": "old",
                   "completeness": "partial", "relations": []}]
-        gaps = ontology_tools._source_freshness_gaps(fresh)
+        gaps = ontology_tools_results._source_freshness_gaps(fresh)
         self.assertIn("source_partly_read", [g["reason"] for g in gaps])
         aged = [g for g in gaps if g["reason"] == "stale_source"]
         self.assertTrue(self.check("3 receipts.", returned=counted(self.handles,
@@ -197,8 +200,8 @@ class CountClaimTests(unittest.TestCase):
         members = {"set": "set:s1", "measure": {"op": "count"}}
 
         def returned(around, aggregate=bare, call=members):
-            into = claim_checks.returned_evidence("plx.around", {}, around)
-            return claim_checks.returned_evidence("plx.aggregate", call, aggregate, into)
+            into = claim_checks_values.returned_evidence("plx.around", {}, around)
+            return claim_checks_values.returned_evidence("plx.aggregate", call, aggregate, into)
 
         exact = self.check("3 receipts.", returned=returned(listing(self.handles)))
         self.assertTrue(exact["passed"], exact["failures"])
@@ -221,7 +224,7 @@ class CountClaimTests(unittest.TestCase):
         # aggregate is needed, so an aggregate of another set, a grouped or partial one
         # leaves it exact.
         for name, evidence in (
-                ("listing alone", claim_checks.returned_evidence(
+                ("listing alone", claim_checks_values.returned_evidence(
                     "plx.around", {}, listing(self.handles))),
                 ("other set", returned(listing(self.handles, set="set:s2"))),
                 ("grouped", returned(listing(self.handles),
@@ -260,7 +263,7 @@ class CountClaimTests(unittest.TestCase):
                 self.assertEqual(codes(self.check(text, claims, rows=rows, outcome=outcome)),
                                  ["claim_count_lower_bound"])
         # The same claim made by two items covers one occurrence of the outcome only.
-        parsed = claim_checks.parse_value_claims(claims, self.handles, [])
+        parsed = claim_checks_parse.parse_value_claims(claims, self.handles, [])
         items = [{"id": ident, "texts": ["At least 3 receipts; the first has 3 lines."],
                   "value_claims": parsed,
                   "citations": [{"handle": h, "status": "resolved"} for h in self.handles]}
@@ -349,7 +352,7 @@ class CountClaimTests(unittest.TestCase):
         orders = dict(sales_order(index, "100.50") for index in (1, 2))
         order = list(orders)[0]
         returned = {"counts": [], "currencies": {}}
-        claim_checks.returned_evidence("plx.object", {}, {"values": [
+        claim_checks_values.returned_evidence("plx.object", {}, {"values": [
             money(order, "row.total_amount", "USD")]}, returned)
         value = {"value": "100.50", "citation": order, "field": "row.total_amount",
                  "currency": "USD"}
@@ -384,7 +387,7 @@ class CaseVerificationEvidenceTests(cpo_tests.ProposalTestCase):
         finding = self.rt.cases.finding(self.both, self.case_id, statement, "fact",
                                         "supported", citations=handles,
                                         value_claims=[order_count(handles)])["finding_id"]
-        returned = claim_checks.returned_evidence("plx.aggregate", COUNT_CALL,
+        returned = claim_checks_values.returned_evidence("plx.aggregate", COUNT_CALL,
                                                   count_result(handles))
         bare = case_verification.check_claims(self.rt, self.both, self.case_id)
         self.assertIn((finding, "claim_count_lower_bound"),
@@ -453,10 +456,10 @@ class LeadTierCountTests(unittest.TestCase):
                   "completeness": {"complete": True, "truncated": False,
                                    "returned": 2, "total": 2, "next_cursor": None},
                   "meta": {}}
-        self.returned = claim_checks.returned_evidence(
+        self.returned = claim_checks_values.returned_evidence(
             "plx.around", {"from": "Order:x:1", "tier_floor": "lead",
                            "path": [{"link": "receipts"}]}, listed)
-        claim_checks.returned_evidence(
+        claim_checks_values.returned_evidence(
             "plx.aggregate", {"set": "set:lead1", "measure": {"op": "count"}},
             count_result(self.leads, gaps=[{"state": "unknown", "reason": "lead_basis",
                                             "subject": "set:lead1", "detail": "lead"}]),
@@ -515,7 +518,7 @@ class LeadTierCountTests(unittest.TestCase):
                   "completeness": {"complete": True, "truncated": False,
                                    "returned": 2, "total": 2, "next_cursor": None},
                   "meta": {}}
-        self.returned = claim_checks.returned_evidence(
+        self.returned = claim_checks_values.returned_evidence(
             "plx.around", {"from": "Order:x:1", "tier_floor": "lead",
                            "path": [{"link": "receipts"}]}, listed)
         self.assertEqual(self.returned["lead_records"],
@@ -527,7 +530,7 @@ class LeadTierCountTests(unittest.TestCase):
         self.assertFalse(self.lead_refused(self.gate(self.solid)))
 
     def test_a_record_a_solid_result_also_reached_is_no_lead(self):
-        claim_checks.returned_evidence(
+        claim_checks_values.returned_evidence(
             "plx.aggregate", {"set": "set:s9", "measure": {"op": "count"}},
             count_result(self.leads), self.returned)
         self.assertFalse(self.lead_refused(self.gate(self.solid + self.leads)))
@@ -582,7 +585,7 @@ class CountAskedWithRowsTests(unittest.TestCase):
                 args, out = self.query(handles)
                 self.assertEqual(out["rows"]["count"], size)
                 self.assertEqual(out["results"][0]["groups"][0]["value"], str(size))
-                returned = claim_checks.returned_evidence("plx.query", args, out)
+                returned = claim_checks_values.returned_evidence("plx.query", args, out)
                 bound = gate(f"{size} receipts.", handles, [count_of(handles)], rows=rows,
                              calculations=(), returned=returned)
                 self.assertTrue(bound["passed"], bound["failures"])
@@ -634,7 +637,7 @@ class CountAskedWithRowsTests(unittest.TestCase):
                                      "subject": "x"}]}):
             with self.subTest(aggregate=aggregate):
                 args, out = self.query(handles, **aggregate)
-                returned = claim_checks.returned_evidence("plx.query", args, out)
+                returned = claim_checks_values.returned_evidence("plx.query", args, out)
                 self.assertEqual(codes(gate("3 receipts.", handles, [count_of(handles)],
                                             rows=rows, calculations=(),
                                             returned=returned)),
@@ -682,7 +685,7 @@ class CountsAcrossCallsTests(unittest.TestCase):
     def bound(self, arguments, out, oids, value=None, text=None):
         rows = dict(self.view(oid) for oid in oids)
         value = len(oids) if value is None else value
-        returned = claim_checks.returned_evidence("plx.aggregate", arguments, out)
+        returned = claim_checks_values.returned_evidence("plx.aggregate", arguments, out)
         result = gate(text or f"{value} purchase orders.", list(rows),
                       [count_of(list(rows), value)], rows=rows, calculations=(),
                       returned=returned)
@@ -810,7 +813,7 @@ class CountsAcrossCallsTests(unittest.TestCase):
         walk = {"from": cust, "path": [{"link_type": "Contact.bc_customer",
                                         "direction": "reverse"}]}
         around = self.tools.walk.call("plx.around", walk, self.fx.STAFF)
-        return contacts, around, claim_checks.returned_evidence("plx.around", walk, around)
+        return contacts, around, claim_checks_values.returned_evidence("plx.around", walk, around)
 
     def count_of_walked_set(self, unread):
         contacts, around, walked = self.contacts_of_a_customer(unread)
@@ -818,7 +821,7 @@ class CountsAcrossCallsTests(unittest.TestCase):
         out = self.tools.call("plx.aggregate", arguments, self.fx.STAFF)
         rows = dict(self.view(oid) for oid in contacts)
         result = gate("2 contacts.", list(rows), [count_of(list(rows), 2)], rows=rows,
-                      calculations=(), returned=claim_checks.returned_evidence(
+                      calculations=(), returned=claim_checks_values.returned_evidence(
                           "plx.aggregate", arguments, out, walked))
         return around, out, result
 
@@ -980,7 +983,7 @@ class CountsAcrossCallsTests(unittest.TestCase):
                 rows = dict(self.view(oid) for oid in contacts)
                 text = "2 contacts." if complete else "At least 2 contacts."
                 result = gate(text, list(rows), [count_of(list(rows), 2)], rows=rows,
-                              calculations=(), returned=claim_checks.returned_evidence(
+                              calculations=(), returned=claim_checks_values.returned_evidence(
                                   "plx.aggregate", arguments, out))
                 self.assertEqual([c.get("bound") for c in checked(result)], [bound])
 
@@ -1022,7 +1025,7 @@ class CountsAcrossCallsTests(unittest.TestCase):
                     out["set"], self.fx.STAFF)[0], complete)
                 text = "3 purchase orders." if complete else "At least 3 purchase orders."
                 result = gate(text, list(rows), [count_of(list(rows), 3)], rows=rows,
-                              calculations=(), returned=claim_checks.returned_evidence(
+                              calculations=(), returned=claim_checks_values.returned_evidence(
                                   "plx.query", arguments, out))
                 self.assertEqual([c.get("bound") for c in checked(result)], [bound])
 
@@ -1052,7 +1055,7 @@ class AggregateSumBindingTests(unittest.TestCase):
                            for r in gaps],
                   "completeness": {"complete": True, "truncated": False, "returned": 1,
                                    "total": 1}, "meta": {}, **result}
-        return claim_checks.returned_evidence(
+        return claim_checks_values.returned_evidence(
             "plx.aggregate", {"object_type": "SalesOrder",
                               "measure": {"op": "sum", "property": "total_amount"},
                               **(arguments or {})}, answer)
@@ -1095,7 +1098,7 @@ class AggregateSumBindingTests(unittest.TestCase):
         from collections import deque
         from operating import mcp_server
         evidence = mcp_server._session_evidence()
-        claim_checks.returned_evidence("plx.aggregate", {
+        claim_checks_values.returned_evidence("plx.aggregate", {
             "object_type": "SalesOrder", "measure": {"op": "sum", "property": "total_amount"}},
             {"groups": [], "partial": False, "gaps": [], "completeness": {"complete": True}},
             evidence)

@@ -49,9 +49,11 @@ def oc(*lines):
     return pdf([["ORDER CONFIRMATION", *lines]])
 
 
-def world(root: Path, copies: int = 1) -> tuple[Path, dict[str, list]]:
+def world(root: Path, copies: int = 1, cases: list | None = None
+          ) -> tuple[Path, dict[str, list]]:
     """The mail capture (``<root>/mailstate``) of the fixture's messages, ``copies`` times
-    over (message ``n`` is case ``n % 7``), and the Portal rows they name."""
+    over (message ``n`` is case ``n % 7``), and the Portal rows they name. ``cases``: other
+    (sender, subject, body, attachment lines) messages in place of the fixture's."""
     suppliers = [supplier(1, "Amber Polymers Inc.", "https://www.amberpoly.example"),
                  supplier(3, "Cedar Metals", None),
                  supplier(6, "Shared One", "sharedpack.example"),
@@ -72,6 +74,8 @@ def world(root: Path, copies: int = 1) -> tuple[Path, dict[str, list]]:
         ("sales@sharedpack.example", "OC", "attached", ["Your PO: PO#7011"]),
         ("sales@amberpoly.example", "POs PO#7001 and PO#7004", "attached",
          ["Total Amount: USD 20.00"])]                            # names two: no carrier
+    if cases is not None:
+        mail = cases
     graph = FakeGraph()
     for n, (sender, subject, body, lines) in enumerate(mail * copies):
         mid = f"MSG-{n}"

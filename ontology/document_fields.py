@@ -182,13 +182,18 @@ What it decides
   'TOTAL AMOUNT*'; dots, a trailing ':', '#' or '*' and 'number'/'#'/'nbr' for 'no'
   folded), takes the value the page prints beside it or below it (:func:`_placed_reads`).
   A text-layer PDF page is placed by its layout view (``integrations.document_understanding
-  .pdf_layout_pages``: pypdf's layout-mode text, each glyph at its column, made only from
-  the bytes and only for its first ``MAX_LAYOUT_PAGES`` pages; pypdf's plain reading, the
-  pinned text, joins cells in content-stream order) and each value is cited where the
-  pinned page text holds the same literal (the occurrence nearest the label; a literal the
-  pinned text does not hold is no read; OCR's rule and box marks at a cell's edge are
-  not part of it), so every citation still resolves against the
-  pinned text; an OCR page is placed on its pinned text (OCR keeps a scan's columns); a
+  .pdf_layout_pages``: the page rebuilt from its text layer's word boxes, each word at the
+  column of its left edge and two cells abutting on the page kept apart, else pypdf's
+  layout-mode text; made only from the bytes and only for its first ``MAX_LAYOUT_PAGES``
+  pages; pypdf's plain reading, the pinned text, joins cells in content-stream order) and
+  each value is cited where the pinned page text holds the same literal (the occurrence
+  nearest the label; a hyphen the text layer maps to no character may be a space or NUL
+  there, the value then written with the word box's hyphen, and a citation over a NUL or
+  other control character cites the runs of text on either side of it, so no value or
+  citation holds one; failing that, an occurrence
+  glued to the next word at a letter/digit change; a literal the pinned text does not hold
+  is no read; OCR's rule and box marks at a cell's edge are not part of it), so every
+  citation still resolves against the pinned text; an OCR page is placed on its pinned text (OCR keeps a scan's columns); a
   pypdf page without its bytes (an original the capture dropped) is placed on its pinned
   text without columns: only a label alone on its line over a line of one cell. In
   precedence order: ``beside`` (the next cell of the label's line, across a column gap;
@@ -196,7 +201,13 @@ What it decides
   the label's cell: 'Total amount 750.00'; never a text field's but an identifier's) and
   ``below`` (the one cell on the next line with text, one blank line passed, overlapping
   the label's columns and no other cell of its line: a header row 'Order No.  PO Number'
-  over its values). A line of two or more labels whose other cells hold no digit, or of
+  over its values; a number's label whose beside cell is no number, or any label whose
+  beside cell is past ``MAX_PLACED_GAP``, also takes it). A label cell is read with a ':'
+  ending a word ('Purchase Order Number:AB123456') and initials as one word ('P. O.
+  Number'). A money label whose currency stands in a cell or brackets of its own before
+  the amount ('TOTAL   USD   1875.00', 'Amount Due (CAD):   $2,340.00') reads the amount
+  in that currency, citing both. A number, money, quantity or date label the pinned text
+  reads blank ('Amount due:' ending its line there) is placed too. A line of two or more labels whose other cells hold no digit, or of
   one label among three or more short digit-free cells, is a
   header row (no value beside its labels, and no money or quantity below them: under it
   stands a line item, never a total); a line-items header is never placed from. A cell
@@ -211,7 +222,12 @@ What it decides
   ('HST#123456789') names a registration number, never an amount: no read. A value must parse in its field's kind; a field naming a number
   (an identifier field, or one whose label ends in 'no'/'number': 'NUMERO DE FACTURE' is
   no invoice number) takes one token holding a digit, of three letters or digits at
-  least, not ending in '.' and not shaped as a date ('17.' in a clause is no PO); a text
+  least, not ending in '.' and not shaped as a date ('17.' in a clause is no PO), or a code
+  of four characters or more with a letter and a run of digits one space after it
+  ('K7QX2ZPA 0042'), never a postal box ('P.O. Box 1044') nor a line whose first word is
+  an address, contact or account word (the profile file's ``address_words``: 'Suite 400',
+  'Phone 5551234', 'Customer 10023') or another field's label word ('Lot 4410' as a PO); two identifiers joined by a
+  spaced dash ('Lot Number: 31001A – 31002B') are the gap ``several_values``; a text
   field's holds a letter and no prose (a sentence). A text value on an OCR page must read
   as print does: on a word-box page not mostly below the handwriting bound, and shaped as
   words (every word of four letters or more capitalised, no run of five consonants);
@@ -354,11 +370,13 @@ from datetime import date, datetime
 from decimal import Decimal
 from fractions import Fraction
 import functools
+import os
 from hashlib import sha256
 import json
 from pathlib import Path
 import re
-from typing import Any, Callable, Container, Iterable, Iterator, Mapping, NamedTuple
+import threading
+from typing import Any, Callable, Container, Iterable, Iterator, Mapping, NamedTuple, Sequence
 
 from integrations import document_understanding as du
 from integrations.captured_text import (OCR_DEFERRED, OCR_UNAVAILABLE, TEXT_OCR, TEXT_READ,
@@ -399,6 +417,11 @@ def profiles() -> dict[str, Any]:
         if not words or any(w not in words or c not in words or c in synonyms
                             for w, c in synonyms.items()):
             raise ValueError(f"document_field_code_synonyms_invalid:{name}")
+    address = data.get("address_words")
+    if not isinstance(address, dict) or set(address) != {"description", "words"} or \
+            not address["words"] or not all(isinstance(w, str) and w.strip() and
+                                            w == w.casefold() for w in address["words"]):
+        raise ValueError("document_field_address_words_invalid")
     stops = data.get("stop_labels")
     if not isinstance(stops, dict) or set(stops) != {"description", "labels"} or \
             not stops["labels"] or not all(isinstance(w, str) and w.strip()
@@ -582,9 +605,12 @@ def _check_line_items(spec: Mapping[str, Any], profile_id: str,
 
 
 def extractor_version() -> str:
-    """Extractor id plus the digest of the profile file it ran with."""
+    """Extractor id plus the digest of the profile file it ran with and the local poppler
+    its PDF layout views read word boxes with (``du.poppler_version``: 'none' without it,
+    the views then pypdf's)."""
     return (f"{FORMAT}+{du.EXTRACTOR_VERSION}+profiles@"
-            f"{sha256(PROFILES_PATH.read_bytes()).hexdigest()[:16]}")
+            f"{sha256(PROFILES_PATH.read_bytes()).hexdigest()[:16]}"
+            f"+poppler@{du.poppler_version().removeprefix('pdftotext ')}")
 
 
 def _alternation(words: Iterable[str]) -> str:
@@ -766,6 +792,9 @@ _MONEY = re.compile(
     r"(?:[ \t]*(?:/|per[ \t]+)[ \t]*(?P<per>[A-Za-z][A-Za-z0-9.]*))?[ \t]*(?P<rest>.*)$")
 _QUANTITY = re.compile(r"^(?P<approx>~)?[ \t]*(?P<num>" + du.NUMBER_TOKEN.pattern +
                        r")[ \t]*(?P<unit>[A-Za-z][A-Za-z.]*)?[ \t]*(?P<rest>.*)$")
+# A quantity's unit followed by a denominator ('kg/case', 'kg per case', 'kg / pallet'):
+# a compound (rate) unit no single quantity type holds.
+_COMPOUND_UNIT = re.compile(r"^(?:/|per\b|p/)", re.IGNORECASE)
 _MONTHS = {m: i for i, m in enumerate(("jan", "feb", "mar", "apr", "may", "jun", "jul",
                                        "aug", "sep", "oct", "nov", "dec"), 1)}
 _ISO_DATE = re.compile(r"^(\d{4})-(\d{2})-(\d{2})$")
@@ -833,12 +862,22 @@ def date_order(text: str) -> dict[str, str]:
     ambiguous date written with it stays unread)."""
     orders: dict[str, set[str]] = {}
     for m in _NUMERIC_DATE_ANYWHERE.finditer(text):
-        a, b = int(m[1]), int(m[3])
-        if a > 12 >= b >= 1:
+        a, b, year = int(m[1]), int(m[3]), int(m[4])
+        # A witness only when the order it shows makes a real date (DOC-003): 32/01 or
+        # 31/02 is no evidence of how this writer orders day and month.
+        if a > 12 >= b >= 1 and _real_date(year, b, a):
             orders.setdefault(m[2], set()).add("day_first")
-        elif b > 12 >= a >= 1:
+        elif b > 12 >= a >= 1 and _real_date(year, a, b):
             orders.setdefault(m[2], set()).add("month_first")
     return {sep: next(iter(found)) for sep, found in orders.items() if len(found) == 1}
+
+
+def _real_date(year: int, month: int, day: int) -> bool:
+    try:
+        date(year, month, day)
+    except ValueError:
+        return False
+    return True
 
 
 def _date(raw: str) -> tuple[str | None, str | None]:
@@ -880,6 +919,11 @@ def code_fold(word: str) -> str:
     return word
 
 
+# Two identifiers, each holding a digit, joined by a dash with a space on each side: two
+# values written as one ('31001A – 31002B'), never one identifier ('31001A-31002B').
+_TWO_IDENTIFIERS = re.compile(r"[\w/.]*\d[\w/.-]*[ \t]+[-\u2013\u2014][ \t]+[\w/.]*\d[\w/.-]*")
+
+
 def _parse(spec: Mapping[str, Any], raw: str, convention: str | None,
            declared: tuple[str, ...], *, cell: bool = False, past: str = ""
            ) -> tuple[dict[str, Any] | None, str | None, list[dict[str, Any]]]:
@@ -894,6 +938,9 @@ def _parse(spec: Mapping[str, Any], raw: str, convention: str | None,
             return None, "unreadable", []
         if past[:1].isdigit() and ("identifier_kind" in spec or "refers_to" in spec):
             return None, SPLIT_AT_GAP, []   # 'PO: 4500  123': one number or two
+        if _TWO_IDENTIFIERS.fullmatch(raw) and ("identifier_kind" in spec or "refers_to" in spec
+                                                or "refers_to_property" in spec):
+            return None, "several_values", []   # 'Lot Number: 31001A – 31002B': two lots
         return ({"value": raw}, None, []) if len(raw) <= MAX_TEXT_VALUE else \
             (None, "too_long", [])
     if kind == "date":
@@ -933,6 +980,10 @@ def _parse(spec: Mapping[str, Any], raw: str, convention: str | None,
     if kind == "quantity":
         if m["unit"] is None and past[:1].isalpha():   # 'Qty: 2012  cases': cut-off unit
             return None, "unit_unknown", []
+        if _COMPOUND_UNIT.match(m["rest"]):
+            # '10 kg/case', '10 kg per case': a rate over a pack basis, not 10 kg; no
+            # typed quantity is stated (DOC-002), never the first unit alone
+            return None, "compound_unit", []
         unit = _unit(m["unit"], spec)
         if unit is None:
             return None, "unit_unknown", []
@@ -1941,6 +1992,7 @@ def _seen_labels(profile_id: str, pages: list[tuple[int | None, str]], cite: Any
 _NUMBER_WORDS = {"no": "no", "number": "no", "num": "no", "nbr": "no", "nº": "no", "n°": "no",
                  "#": "no"}
 _WORDS = re.compile(r"\S+")
+_LABEL_WORD = re.compile(r"[^\s:]+:?|:")   # a word of a cell's label: ':' ends one
 # Why a placed value is still a reading limit, not a misplaced cell: its number or date is
 # there, only its currency, decimal separator or day/month order is not stated.
 _PLACED_GAPS = frozenset({"currency_unknown", "currency_conflict", "decimal_separator_ambiguous",
@@ -1949,9 +2001,17 @@ PLACED_HOW = ("beside", "single_spaced", "below")   # in precedence order
 MAX_PLACED_GAP = 30          # columns between a text field's label and its value beside it
 MAX_BLOCK_LINES = 4          # lines of a ``block`` field's value below its first line
 # An identifier as a placed value: one token holding a digit ('PO10000001', '99-001'),
-# never one shaped as a date.
-_PLACED_IDENTIFIER = re.compile(r"[#:]?[ \t]*([A-Za-z0-9][\w/.-]{1,39})")
+# never one shaped as a date; or a code of four or more characters with a letter and a
+# run of digits after one space, the whole cell ('K7QX2ZPA 0042': a text layer that maps
+# the hyphen between them to no character; 'PO 4500 123', two numbers, is not one).
+_PLACED_IDENTIFIER = re.compile(r"[#:]?[ \t]*([A-Za-z0-9][\w/.-]{1,39}|"
+                                r"(?=[\w/.-]*[^\W\d_])[A-Za-z0-9][\w/.-]{3,30} \d{2,8})")
 _DATE_SHAPED = re.compile(r"\d{1,4}[./-]\d{1,2}[./-]\d{1,4}")
+# A cell holding a currency alone, bare or in brackets ('USD', '(CAD):'): a money label's
+# value then stands in the cell after it ('TOTAL   USD   1875.00', 'Amount due (CAD):
+# $2,340.00'), the code read with it.
+_CURRENCY_CELL = re.compile(r"[ \t]*[(\[]?[ \t]*(" + currency_token_pattern(bare_sign=False) +
+                            r")[ \t]*[)\]]?[ \t:]*")
 @functools.lru_cache(maxsize=1)
 def _label_vocabulary() -> frozenset[str]:
     """Every word (folded as :func:`_label_words` folds it) of every label, title, column,
@@ -2075,11 +2135,19 @@ def _cell_label(cell: str, fields: Mapping[tuple[str, ...], str], longest: int
                 ) -> tuple[str, int] | None:
     """(field, where the rest of the cell starts) when the cell starts with one of
     ``fields``' labels, the longest first and ending at a word end ('Invoice Date 1/24'
-    is the date's, never 'Invoice'), else None."""
+    is the date's, never 'Invoice'), else None. A ':' ends a word ('Purchase Order
+    Number:AB123456'), and single letters each ending in '.' are one word ('P. O. Number'
+    is 'P.O. Number')."""
     tokens: list[tuple[str, int, int]] = []   # (folded word, its word's index, its end)
-    for index, m in enumerate(_WORDS.finditer(cell)):
+    initials = False   # the last token is letters each written as an initial ('P. O.')
+    for index, m in enumerate(_LABEL_WORD.finditer(cell)):
+        initial = re.fullmatch(r"[^\W\d_]\.", m.group()) is not None
         for word in _label_words(m.group()):
-            tokens.append((word, index, m.end()))
+            if initial and initials:
+                tokens[-1] = (tokens[-1][0] + word, index, m.end())
+            else:
+                tokens.append((word, index, m.end()))
+        initials = initial
         if len(tokens) > longest + 1:
             break
     for n in range(min(longest, len(tokens)), 0, -1):
@@ -2094,14 +2162,38 @@ def _cell_label(cell: str, fields: Mapping[tuple[str, ...], str], longest: int
 def _locate(pinned: str, literal: str, near: int) -> tuple[int, int] | None:
     """The span of ``literal`` in the pinned page text (its words, any whitespace between
     them, not inside a longer word), the occurrence nearest ``near``; None when the pinned
-    text does not hold it."""
+    text does not hold it. A hyphen inside a word of the literal may be a space there (a
+    text layer whose hyphen glyph maps to no character: 'K7QX2ZPA-0042' pinned as
+    'K7QX2ZPA 0042'). Only when the pinned text holds no such occurrence, one glued to the
+    next or previous word at a change between letter and digit counts ('PO10000077' in
+    'PO10000077NORTH-1': two cells the plain reading ran together), never one inside a run
+    of letters or of digits."""
     words = literal.split()
     if not words:
         return None
-    pattern = (r"(?<!\w)" if words[0][0].isalnum() else "") + \
-        r"\s+".join(map(re.escape, words)) + (r"(?!\w)" if words[-1][-1].isalnum() else "")
+    gap = r"[\s\x00-\x08\x0b-\x1f\x7f]+"   # whitespace, or a glyph mapped to a control
+    hyphen = r"(?:-|" + gap + ")"   # a hyphen, or a space or control in its place
+    body = gap.join(hyphen.join(map(re.escape, re.split(r"(?<=\w)-(?=\w)", word)))
+                    for word in words)
+    head, tail = words[0][0], words[-1][-1]
+    pattern = (r"(?<!\w)" if head.isalnum() else "") + body + \
+        (r"(?!\w)" if tail.isalnum() else "")
     found = [m.span() for m in re.finditer(pattern, pinned)]
+    if not found and (head.isalnum() or tail.isalnum()):
+        glued = (_glued_before(head) if head.isalnum() else "") + body + \
+            (_glued_after(tail) if tail.isalnum() else "")
+        found = [m.span() for m in re.finditer(glued, pinned)]
     return min(found, key=lambda span: abs(span[0] - near)) if found else None
+
+
+def _glued_before(char: str) -> str:
+    # Before a literal starting with ``char``: no word character, or one of the other kind
+    # (a digit before a letter, a letter before a digit).
+    return r"(?<![0-9])" if char.isdigit() else r"(?<![^\W\d_])" if char.isalpha() else ""
+
+
+def _glued_after(char: str) -> str:
+    return r"(?![0-9])" if char.isdigit() else r"(?![^\W\d_])" if char.isalpha() else ""
 
 
 class _View(NamedTuple):
@@ -2123,6 +2215,8 @@ def _placed_reads(profile_id: str, views: list[_View], cite: Any
     blocks = {spec["name"] for spec in _profile(profile_id)["fields"] if spec.get("block")}
     titles = {_label_words(title) for title in _profile(profile_id)["titles"]}
     kinds = {spec["name"]: spec["kind"] for spec in _profile(profile_id)["fields"]}
+    numbered = {spec["name"] for spec in _profile(profile_id)["fields"]
+                if _names_a_number(spec)}
     out: dict[str, list[tuple[int, str, list[dict], str, str]]] = {}
     if not fields:
         return out
@@ -2153,12 +2247,37 @@ def _placed_reads(profile_id: str, views: list[_View], cite: Any
             if view.pinned is None:
                 lead = lines[number][a:b].index(raw)
                 start = starts[number] + a + lead
-                return raw, cite(view.page, view.text, start, start + len(raw))
+                # a NUL between characters is a glyph the text layer maps to none: a gap
+                return (re.sub(r"(?<=\S)\x00+(?=\S)", " ", raw),
+                        cite(view.page, view.text, start, start + len(raw)))
             span = _locate(view.pinned, raw, label_at)
             if span is None:
                 return None
-            return (re.sub(r"\s+", " ", view.pinned[span[0]:span[1]]),
+            # the literal as pinned; a hyphen the text layer maps to NUL is the word box's
+            return (re.sub(r"\s+", " ", view.pinned[span[0]:span[1]]).replace("\x00", "-"),
                     cite(view.page, view.pinned, *span))
+
+        def coded_money(name: str, number: int, a: int, b: int, index: int, near: int
+                        ) -> tuple[str, list[dict]] | None:
+            # A money field's value whose currency stands apart, before it: columns a-b
+            # of line ``number`` (cell ``index`` or the rest of it) a currency alone, the
+            # amount the next cell; or a currency in brackets, then the amount, in it.
+            # The amount read with that code after it ('$1,875.00 USD'), both cited.
+            if kinds[name] != "money":
+                return None
+            m = _CURRENCY_CELL.match(lines[number][:b], a)
+            if m is None or m.end() > b or currency_reading(m[1])[0] is None or \
+                    lines[number][a:m.start(1)].strip(" \t([:"):
+                return None
+            amount = (m.end(), b) if lines[number][m.end():b].strip() else \
+                cells[number][index + 1] if index + 1 < len(cells[number]) else None
+            if amount is None or lines[number][m.end():b].strip() and m.end(1) == m.end():
+                return None   # 'TOTAL CAD12' is no code apart from its amount
+            code = place(number, m.start(1), m.end(1), near)
+            got = place(number, *amount, near)
+            if code is None or got is None or not du.NUMBER_TOKEN.search(got[0]):
+                return None
+            return f"{got[0]} {code[0]}", [got[1], code[1]]
 
         def label_at(text: str) -> int:
             if view.pinned is None:
@@ -2240,6 +2359,10 @@ def _placed_reads(profile_id: str, views: list[_View], cite: Any
                 # weak evidence: its value must be mostly digits (:func:`_placed_value`).
                 titled = "_title" if _label_words(text[:rest_at]) in titles else ""
                 rest = text[rest_at:].strip(" \t:#*-")
+                coded = coded_money(name, number, a + rest_at, b, index, label_at(text))
+                if coded is not None:   # 'TOTAL CAD   12,942.81', 'Amount Due (CAD): $2,340'
+                    out.setdefault(name, []).append((1, *coded, "", "single_spaced" + titled))
+                    continue
                 if rest:   # 'Total amount 750.00': a value one space after its label
                     if is_label(rest):
                         continue
@@ -2252,6 +2375,10 @@ def _placed_reads(profile_id: str, views: list[_View], cite: Any
                 if labels < 2 and index + 1 < len(spans):   # the next cell of its line
                     c, d = spans[index + 1]
                     nxt = texts[index + 1]
+                    coded = coded_money(name, number, c, d, index + 1, label_at(text))
+                    if coded is not None:   # 'TOTAL   USD   1875.00'
+                        out.setdefault(name, []).append((0, *coded, "", "beside" + titled))
+                        continue
                     if not is_label(nxt) and _cell_label(nxt, fields, longest) is None \
                             and not _LABELLED_LINE.match(nxt):
                         got = place(number, c, d, label_at(text))
@@ -2265,7 +2392,14 @@ def _placed_reads(profile_id: str, views: list[_View], cite: Any
                                 (0, value, citations, past, ("beside" if c - b <=
                                  MAX_PLACED_GAP or not view.geometric else "beside_far")
                                  + titled))
-                        continue
+                        if name not in numbered and (c - b <= MAX_PLACED_GAP or
+                                                     not view.geometric):
+                            continue
+                        # a number's label with a cell beside it that may be no number (an
+                        # address column: 'Invoice Number   Springfield, ON' over '4321'), or a
+                        # label whose next cell is far off ('BILL TO' across the page from
+                        # 'INVOICE # 5150'): the cell below is read too, taken only when
+                        # the beside one is no value of the field (:func:`_placed_value`)
                 if labels >= 2 and kinds[name] in ("money", "quantity"):
                     continue   # under a header row stands a line item, never a total
                 under = below(number, a, b, 1 if view.geometric else 0)
@@ -2284,6 +2418,35 @@ def _placed_reads(profile_id: str, views: list[_View], cite: Any
     return out
 
 
+@functools.lru_cache(maxsize=1)
+def _address_words() -> frozenset[str]:
+    return frozenset(profiles()["address_words"]["words"])
+
+
+def _own_code(spec: Mapping[str, Any], value: str) -> bool:
+    """Whether a placed identifier of two parts ('K7QX2ZPA 0042', :data:`_PLACED_IDENTIFIER`)
+    may be ``spec``'s: its first part holds a digit, or is a word that starts no address,
+    contact or account line (the profile file's ``address_words``: 'Suite 400', 'Phone
+    5551234') and is no label word of another field ('Lot 4410' under a PO label), only of
+    the field's own labels ('Invoice 0042' under 'Invoice No'). One part: always."""
+    parts = value.split()
+    if len(parts) < 2 or re.search(r"\d", parts[0]):
+        return True
+    if parts[0].casefold().rstrip(".") in _address_words():
+        return False
+    own = {word for label in spec["labels"] for word in _label_words(label)}
+    return all(word in own or word not in _label_vocabulary()
+               for word in _label_words(parts[0]))
+
+
+def _names_a_number(spec: Mapping[str, Any]) -> bool:
+    """Whether a text field names a number (an identifier field, or one whose label ends
+    in 'no'/'number'): its placed value is one identifier token (:func:`_placed_value`)."""
+    return spec["kind"] == "text" and (
+        "identifier_kind" in spec or "refers_to" in spec or "refers_to_property" in spec or
+        any(_label_words(label)[-1:] == ("no",) for label in spec["labels"]))
+
+
 def _placed_value(spec: Mapping[str, Any], reads: list[tuple[int, str, list[dict], str, str]],
                   convention: str | None, declared: tuple[str, ...],
                   plausible: Callable[[str, list[dict], bool], bool] =
@@ -2299,9 +2462,7 @@ def _placed_value(spec: Mapping[str, Any], reads: list[tuple[int, str, list[dict
     holding a digit; a text value OCR read implausibly (``plausible``: its words read
     below the handwriting bound, or not shaped as words) is the gap ``unreadable`` citing
     it, never a value."""
-    identifier = spec["kind"] == "text" and (
-        "identifier_kind" in spec or "refers_to" in spec or "refers_to_property" in spec or
-        any(_label_words(label)[-1:] == ("no",) for label in spec["labels"]))
+    identifier = _names_a_number(spec)
     for tier in sorted({read[0] for read in reads}):
         values, gaps, stated, how = [], [], [], None
         for _, raw, citations, past, placed in (r for r in reads if r[0] == tier):
@@ -2316,10 +2477,14 @@ def _placed_value(spec: Mapping[str, Any], reads: list[tuple[int, str, list[dict
                                         _names_other_field(spec, raw)):
                     continue   # a column head ('Number', 'ORIGINATING CARRIER')
                 if identifier:
+                    if re.match(r"box\b", raw, re.IGNORECASE):
+                        continue   # 'P.O. Box 5678': a postal box under a 'PO' label
                     m = _PLACED_IDENTIFIER.fullmatch(raw)
                     if m is None or not re.search(r"\d", m[1]) or _DATE_SHAPED.fullmatch(m[1]) \
                             or m[1].endswith(".") or len(re.findall(r"[^\W_]", m[1])) < 3:
                         continue   # a clause or list number ('17.', '3') names nothing
+                    if not _own_code(spec, m[1]):
+                        continue   # 'Suite 400', 'Customer 10023': an address or account line
                     raw = m[1]
                 elif not re.search(r"[^\W\d_]", raw) or placed == "single_spaced" or \
                         _PROSE_VALUE.search(raw):
@@ -2685,11 +2850,69 @@ def _fields(read: CapturedText, l1_handle: str | None, issued: str | None = None
     (``integrations.captured_text``) whose file has the provenance signal ``issued``; an
     ambiguous numeric date is read in the document's own date order (:func:`date_order`);
     ``layout``: the layout views of its PDF's text-layer pages (:func:`_layout_of`)."""
+    timed_out = False
+
+    def views() -> Mapping[int, str]:
+        nonlocal timed_out
+        made = layout()
+        timed_out = timed_out or bool(getattr(made, "timed_out", False))
+        return made
+
     token = _DATE_ORDER.set(date_order("\n".join(t for _, t in read.pages)))
     try:
-        return _fields_read(read, l1_handle, issued, layout)
+        result = _fields_read(read, l1_handle, issued, None if layout is None else views)
     finally:
         _DATE_ORDER.reset(token)
+    if timed_out:   # placed on pypdf's view this time: a later read may place otherwise
+        result["gaps"].append({"field": "pages", "reason": LAYOUT_VIEW_TIMED_OUT,
+                               "citations": []})
+    return _without_controls(result)
+
+
+# The gap of a reading whose PDF layout views poppler did not make in its time
+# (``du.LayoutViews.timed_out``): its values were placed on pypdf's views, and the fields
+# are never kept as read (:func:`_fields_of`), so a later read places them again.
+LAYOUT_VIEW_TIMED_OUT = "layout_view_timed_out"
+
+
+def _without_controls(node: Any) -> Any:
+    """``node`` (a reading's fields) with no control character (``du.CONTROL_CHARACTERS``,
+    NUL among them: Postgres text holds none) but in no citation's place: a citation whose
+    text holds one is cited as the runs of text between them, each still its page's text
+    from its start to its end (:func:`_cited_runs`); any other string has a space there."""
+    if isinstance(node, str):
+        return du.without_controls(node) if du.CONTROL_CHARACTERS.search(node) else node
+    if isinstance(node, list):
+        out = []
+        for item in node:
+            if _is_citation(item) and du.CONTROL_CHARACTERS.search(item["text"]):
+                out.extend(_cited_runs(item))
+            else:
+                out.append(_without_controls(item))
+        return out
+    if isinstance(node, dict):
+        return {key: _without_controls(value) for key, value in node.items()}
+    return node
+
+
+def _is_citation(item: Any) -> bool:
+    return isinstance(item, dict) and "source_sha256" in item and \
+        isinstance(item.get("text"), str) and isinstance(item.get("start"), int) and \
+        isinstance(item.get("end"), int)
+
+
+def _cited_runs(citation: Mapping[str, Any]) -> list[dict[str, Any]]:
+    """A citation whose text holds a control character as the citations of the runs of
+    text between them (whitespace at a run's edges left out); one empty citation at its
+    start when no run holds text."""
+    text, start = citation["text"], citation["start"]
+    runs = []
+    for m in re.finditer(r"[^\x00-\x08\x0b-\x1f\x7f]+", text):
+        a = m.start() + len(m.group()) - len(m.group().lstrip())
+        b = m.end() - (len(m.group()) - len(m.group().rstrip()))
+        if b > a:
+            runs.append({**citation, "start": start + a, "end": start + b, "text": text[a:b]})
+    return runs or [{**citation, "end": start, "text": ""}]
 
 
 def _fields_read(read: CapturedText, l1_handle: str | None, issued: str | None = None,
@@ -2828,10 +3051,16 @@ def _fields_read(read: CapturedText, l1_handle: str | None, issued: str | None =
         seen.setdefault(spec["name"], []).append((parsed, problem, citation))
         readings.setdefault(spec["name"], []).extend(stated)
     # A field no labelled read states, whose value stands beside or below its label: placed
-    # by the page's columns (module docstring, *Placed values*).
+    # by the page's columns (module docstring, *Placed values*). A number, money, quantity
+    # or date label read blank on the pinned text ('Amount due:' its line's last word
+    # there) may have its value in the next column of the page: placed too, the blank read
+    # kept when nothing is placed (a party or term's blank label stays blank: the text
+    # below it may be anything).
     placed_how: dict[str, str] = {}
     unplaced = [spec for spec in profile["fields"] if spec["kind"] != "checkbox"
-                and "keyed" not in spec and not seen.get(spec["name"])]
+                and "keyed" not in spec and (not seen.get(spec["name"]) or (
+                    (spec["kind"] != "text" or _names_a_number(spec)) and all(
+                        problem == "value_missing" for _, problem, _ in seen[spec["name"]])))]
     if unplaced and (views := _views(read, pages, ocr, layout_views)):
         placed = _placed_reads(profile_id, views, cite)
         def plausible(raw: str, citations: list[dict], words: bool) -> bool:
@@ -3091,11 +3320,9 @@ _FIELDS: ReadingMemo[dict[str, Any] | None] = ReadingMemo(MAX_FIELDS, lambda _fo
 def _bytes_kept(blobs: str | Path, digest: str, text_digest: str | None) -> bool:
     """Some form of a file's bytes (and of its pinned OCR text) is on disk: as
     ``captured_text`` requires before serving a kept reading."""
-    from integrations.captured_text import COMPRESSED_SUFFIX, DROPPED_SUFFIX, blob_path
+    from integrations.captured_text import reading_kept
 
-    return all(any(blob_path(blobs, d, suffix).exists()
-                   for suffix in ("", COMPRESSED_SUFFIX, DROPPED_SUFFIX))
-               for d in (digest, text_digest) if d is not None)
+    return reading_kept(blobs, digest, text_digest)
 
 
 class KeptFields:
@@ -3215,7 +3442,9 @@ class KeptFields:
 @contextlib.contextmanager
 def kept_fields(path: str | Path, code: str) -> Iterator[KeptFields]:
     """While open, :func:`_fields_of` reads through the fields kept at ``path``."""
-    kept = KeptFields(path, code)
+    # the local poppler the PDF layout views are made with keys the kept fields too
+    # (``du.poppler_version``): an upgrade, or a host without it, parses them again
+    kept = KeptFields(path, f"{code}+poppler@{du.poppler_version()}")
     _FIELDS.backing = kept
     ended = False
     try:
@@ -3229,8 +3458,8 @@ def kept_fields(path: str | Path, code: str) -> Iterator[KeptFields]:
 def _fields_of(key: tuple[str, str, str, str | None, str | None, bool, bool],
                read: Callable[[], CapturedText | None],
                present: Callable[[], bool] | None = None,
-               layout: Callable[[], Mapping[int, str]] | None = None
-               ) -> dict[str, Any] | None:
+               layout: Callable[[], Mapping[int, str]] | None = None,
+               scope: str | None = None) -> dict[str, Any] | None:
     """The fields of one reading of a document (``read``: ``captured_text`` of a
     captured version's pinned bytes or the capture's OCR text of a scan, or a container
     member's reading), parsed once per ``key`` (bytes, MIME type, name, OCR text, the
@@ -3244,15 +3473,18 @@ def _fields_of(key: tuple[str, str, str, str | None, str | None, bool, bool],
         reading = read()
         if reading is None:
             raise NotRemembered(key[0])
-        return _fields(reading, None, key[4], layout=layout)
-    return _FIELDS.read(key, parse, present)
+        found = _fields(reading, None, key[4], layout=layout)
+        if any(gap.get("reason") == LAYOUT_VIEW_TIMED_OUT for gap in found["gaps"]):
+            raise NotRemembered(key[0], found)   # this read's fields, never kept
+        return found
+    return _FIELDS.read(key, parse, present, scope=scope)
 
 
 def _bytes_held(blobs: str | Path, digest: str) -> bool:
     """The original's bytes are on disk (stored or compressed, not its dropped form)."""
-    from integrations.captured_text import COMPRESSED_SUFFIX, blob_path
+    from integrations.captured_text import COMPRESSED_SUFFIX, blob_held
 
-    return any(blob_path(blobs, digest, suffix).exists() for suffix in ("", COMPRESSED_SUFFIX))
+    return any(blob_held(blobs, digest, suffix) for suffix in ("", COMPRESSED_SUFFIX))
 
 
 def _held_layout(blobs: str | Path, digest: str) -> Mapping[int, str]:
@@ -3293,7 +3525,8 @@ def _documents(row: Mapping[str, Any], blobs: str | Path, *, read: bool = False,
                         row.get("text_status") == OCR_DEFERRED, held),
                        (lambda: reading) if read else (lambda: captured_text(blobs, row)),
                        lambda: _bytes_kept(blobs, digest, ocr_digest(row)),
-                       (lambda: _held_layout(blobs, digest)) if held else None)
+                       (lambda: _held_layout(blobs, digest)) if held else None,
+                       os.path.abspath(os.fspath(blobs)))
     yield None, found, reading, issued
     members = container_members(blobs, row)
     for member in () if members is None else members.members:
@@ -3305,7 +3538,8 @@ def _documents(row: Mapping[str, Any], blobs: str | Path, *, read: bool = False,
         yield member, _fields_of((member.sha256, member.mime_type, member.name, None, inner,
                                   False, False),
                                  lambda m=member: m.reading,
-                                 lambda: _bytes_kept(blobs, digest, None)), \
+                                 lambda: _bytes_kept(blobs, digest, None),
+                                 scope=os.path.abspath(os.fspath(blobs))), \
             member.reading if read else None, inner
 
 
@@ -3322,11 +3556,34 @@ def captured(records: Iterable[Any], blobs: str | Path) -> Iterator[Any]:
     from ontology import project_parallel
 
     pool = project_parallel.DOCUMENTS
-    if pool is not None:   # parsed by a build's worker processes, in this order
-        yield from pool.captured(records, signals, blobs)
-        return
-    for rec, issued in zip(records, signals):
-        yield from captured_one(rec, blobs, issued)
+    found = pool.captured(records, signals, blobs) if pool is not None else (
+        out for rec, issued in zip(records, signals)   # else parsed here, in this order
+        for out in captured_one(rec, blobs, issued))
+    for out in found:
+        row = out.row if isinstance(out.row, Mapping) else {}
+        if any(isinstance(gap, Mapping) and gap.get("reason") == LAYOUT_VIEW_TIMED_OUT
+               for gap in (row.get("evidence") or {}).get("gaps") or ()):
+            with _TIMED_OUT_LOCK:
+                _TIMED_OUT.add(str(row.get("content_sha256")))
+        yield out
+
+
+# The documents whose fields this process placed on pypdf's views because poppler ran
+# past its time (``LAYOUT_VIEW_TIMED_OUT``), by bytes digest: a build folds them into its
+# kept ``documentFields`` prints (``project_incremental``), so the next build derives the
+# relation again and parses them anew (their fields are never kept).
+_TIMED_OUT: set[str] = set()
+_TIMED_OUT_LOCK = threading.Lock()
+
+
+def layout_timed_out(*, forget: bool = False) -> frozenset[str]:
+    """The digests :func:`captured` read with a timed-out layout view since the last
+    ``forget``; ``forget``: start a new count (a build's start)."""
+    with _TIMED_OUT_LOCK:
+        out = frozenset(_TIMED_OUT)
+        if forget:
+            _TIMED_OUT.clear()
+        return out
 
 
 def captured_one(rec: Any, blobs: str | Path, issued: str | None) -> Iterator[Any]:
@@ -3393,6 +3650,7 @@ _CARRIER_DATE = (r"(?P<date>\d{4}-\d{2}-\d{2}|\d{1,2}[./-]\d{1,2}[./-]\d{4}|"
                  r"(?![\d/.-]\d)")
 # The words between a cue and its date: no sentence end, no question, at most 60 characters.
 _CARRIER_GAP = r"(?:[^.!?\n]|\.(?=\d)){0,60}?"
+_SENTENCE_STOP = re.compile(r"[.!?\n](?!\d)")
 _NEGATION = re.compile(r"\b(?:not|no longer|cannot|unable|n't)\b|n't\b", re.IGNORECASE)
 # How far a year-less date may lie before the message date and still be in its year (a
 # date the vendor writes days before or after the message); earlier is next year's.
@@ -3439,15 +3697,24 @@ def carrier_promises(profile_id: str, text: str, dated: date | None
     out: dict[str, dict[str, Any]] = {}
     for name, pattern in _carrier_patterns(profile_id):
         days: dict[str, list[dict[str, Any]]] = {}
+        negated: list[dict[str, Any]] = []
         for m in pattern.finditer(text):
             start, end = m.start(), m.end()
             if quoted.overlaps(start, end):
                 continue
             line_start = max(text.rfind("\n", 0, start), text.rfind(". ", 0, start) + 1, 0)
-            stop = re.compile(r"[.!?\n]").search(text, end)
+            stop = _SENTENCE_STOP.search(text, end)
             if stop is not None and stop.group(0) == "?":
                 continue   # a question asks for a date, never states one
-            if _NEGATION.search(text[line_start:end]):
+            # The whole sentence, after the date too ("... on 11/14 is not confirmed."),
+            # DOC-004: a negated date is no promise; it is cited as the sentence.
+            sentence_end = len(text) if stop is None else stop.start()
+            if _NEGATION.search(text[line_start:sentence_end]):
+                first = line_start + (len(text[line_start:sentence_end])
+                                      - len(text[line_start:sentence_end].lstrip()))
+                negated.append({"field_path": CARRIER_FIELD_PATH, "start": first,
+                                "end": sentence_end, "text": text[first:sentence_end],
+                                "negated": True})
                 continue
             day = _carrier_day(m, dated)
             if day is not None:
@@ -3460,7 +3727,7 @@ def carrier_promises(profile_id: str, text: str, dated: date | None
                          "citations": cites}
         else:
             out[name] = {"kind": "date", "value": None, "citations": [
-                c for cites in days.values() for c in cites][:4],
+                c for cites in days.values() for c in cites][:4] or negated[:4],
                 "gap": "several_values" if days else "not_stated"}
     return out
 
@@ -3834,7 +4101,8 @@ def store_document_links(builder: Any, projector: Any, *, aliases: Any = None
                 mentions.mention_link_types(getattr(projector, "links", {}) or {}).items()
                 if pair[0] in types}
     counts = {"documents": 0, "references": 0, "not_found": 0, "undeclared_target": 0,
-              "dropped_count": 0, "links": 0}
+              "dropped_count": 0, "links": 0, "lot_candidates": 0, "lot_no_product_match": 0,
+              "lot_ambiguous": 0, "lot_links": 0, "lines_unmatched": 0}
     rows: list[dict[str, Any]] = []
     marks = ",".join("?" * len(types))
     versions = mentions._query(
@@ -3855,8 +4123,9 @@ def store_document_links(builder: Any, projector: Any, *, aliases: Any = None
             mention = {"identifier_kind": ref["identifier_kind"],
                        "normalized": ref["normalized"], "text": ref["text"]}
             candidates = [(row, window, held) for row in
-                          mentions._store_candidates(conn, mention, source["object_id"],
-                                                     aliases)
+                          (_holder_candidates if ref.get("property")
+                           else mentions._store_candidates)(
+                               conn, mention, source["object_id"], aliases)
                           for held, span in enumerate(spans_doc)
                           if (window := mentions._overlap(
                               span, (row["recorded_at"], row["superseded_at"])))]
@@ -3870,7 +4139,18 @@ def store_document_links(builder: Any, projector: Any, *, aliases: Any = None
             group = _digest(source["object_id"], source["l1_handle"], cite["page"],
                             cite["start"], cite["end"])
             dropped: set[tuple[str, str]] = set()
+            kept_lines = (_kept_lines(conn, source, ref, candidates)
+                          if ref.get("property") == LOT_PROPERTY else None)
+            lots: list[tuple[Any, tuple[str, str | None], int]] = []
             for row, window, held in candidates:
+                if kept_lines is not None and row["object_type"] == "ReceiptLine" \
+                        and row["property"] == "supplier_lot_number" \
+                        and row["object_id"] not in kept_lines:
+                    counts["lines_unmatched"] += 1   # another product's line, or a short lot
+                    continue
+                if _is_lot_candidate(ref, row) and (source["object_type"], "Lot") in declared:
+                    lots.append((row, window, held))   # settled below by lot AND product
+                    continue
                 if ref.get("property") and (row["identifier_kind"] != ref["identifier_kind"]
                                             or f'{row["object_type"]}.{row["property"]}'
                                             != ref["property"]):
@@ -3893,10 +4173,225 @@ def store_document_links(builder: Any, projector: Any, *, aliases: Any = None
                     counts["links"] += builder.add("links", rows)
                     rows = []
             counts["dropped_count"] += len(dropped)
+            if lots:
+                rows += _lot_links(conn, source, {**ref, "citation": cite}, group, lots,
+                                   declared[(source["object_type"], "Lot")], seen, counts)
+                if len(rows) >= STORE_LINK_BATCH:
+                    counts["links"] += builder.add("links", rows)
+                    rows = []
     if rows:
         counts["links"] += builder.add("links", rows)
     return {"format": FORMAT, "extractor": extractor_version(), "tier": TIER,
             "counts": counts, "link_tiers": {TIER: counts["links"]}}
+
+
+def _holder_candidates(conn: Any, mention: Mapping[str, Any], exclude: str,
+                       aliases: Any = None) -> list[Any]:
+    """``mentions._store_candidates`` for a field that names its holder property
+    (``refers_to_property``): the same identifier-index and reviewed-alias rows, but the
+    referring rows (a ReceiptLine's supplier lot) are kept beside the record that owns the
+    number (the Lot, which the business rule of ``_store_candidates`` would let alone answer),
+    and the property filter of :func:`store_document_links` then picks the holder."""
+    rows: list[Any] = []
+    reviewed: list[Any] = []
+    for kind, value in mentions.candidate_keys(mention):
+        rows += mentions._query(
+            conn, "SELECT i.object_id, o.object_type, i.identifier_kind, i.normalized, "
+            "i.property, i.role, i.l1_handle, i.field_path, i.lineage, i.recorded_at, "
+            "i.superseded_at, v.digest, v.markings FROM identifiers i JOIN objects o ON "
+            "o.object_id = i.object_id JOIN object_versions v ON v.object_id = i.object_id "
+            "AND v.l1_handle = i.l1_handle WHERE i.identifier_kind = ? AND i.normalized = ? "
+            "AND i.object_id <> ? ORDER BY i.object_id, i.recorded_at, i.l1_handle, "
+            "i.field_path", (kind, value, exclude)).fetchall()
+        if aliases is not None:
+            reviewed += [row for row in aliases.rows(conn, kind, value)
+                         if row["object_id"] != exclude]
+    return rows + mentions.beside_index(reviewed, rows)
+
+
+LOT_PROPERTY = "ReceiptLine.supplier_lot_number"
+_SUFFIX = re.compile(r"/\d{1,3}$")
+
+
+def _is_lot_candidate(ref: Mapping[str, Any], row: Any) -> bool:
+    """Whether an identifier-index row is a Lot's own supplier-lot number answering a
+    certificate's lot reference (the field that names ``LOT_PROPERTY``)."""
+    return (ref.get("property") == LOT_PROPERTY and row["object_type"] == "Lot"
+            and row["property"] == "lot_number" and row["identifier_kind"] == "lot_number"
+            and ref["identifier_kind"] == "lot_number")
+
+
+def _plain_text(text: Any) -> str:
+    """Case-folded words of a name, punctuation and no-break spaces folded away."""
+    return " ".join(re.sub(r"[^0-9a-z]+", " ", str(text or "").casefold()).split())
+
+
+def _held_values(conn: Any, object_id: str, properties: Sequence[str],
+                 window: tuple[str, str | None]) -> dict[str, set[str]]:
+    """The values of ``properties`` of ``object_id`` held at some time in ``window``."""
+    marks = ",".join("?" * len(properties))
+    out: dict[str, set[str]] = {}
+    for r in mentions._query(
+            conn, "SELECT property, value, recorded_at, superseded_at FROM object_values "
+            f"WHERE object_id = ? AND property IN ({marks}) AND value IS NOT NULL",
+            (object_id, *properties)):
+        if mentions._overlap(window, (r["recorded_at"], r["superseded_at"])):
+            out.setdefault(r["property"], set()).add(r["value"])
+    return out
+
+
+def _held_links(conn: Any, link_type: str, column: str, object_id: str,
+                window: tuple[str, str | None]) -> set[str]:
+    """The other end of ``link_type`` links of ``object_id`` held at some time in ``window``
+    (``column``: the end ``object_id`` is, from_object or to_object)."""
+    other = "to_object" if column == "from_object" else "from_object"
+    return {r[other] for r in mentions._query(
+        conn, f"SELECT {other}, recorded_at, superseded_at FROM links WHERE link_type = ? "
+        f"AND {column} = ?", (link_type, object_id))
+        if mentions._overlap(window, (r["recorded_at"], r["superseded_at"]))}
+
+
+def _supplier_agrees(stated: str, names: Iterable[str]) -> bool | None:
+    """Whether the certificate's supplier text and one of ``names`` hold each other as
+    whole words (at least 3 characters); None when no name is known."""
+    known = [n for n in (_plain_text(n) for n in names) if len(n) >= 3]
+    text = _plain_text(stated)
+    if not known:
+        return None
+    return len(text) >= 3 and any(f" {n} " in f" {text} " or f" {text} " in f" {n} "
+                                  for n in known)
+
+
+def _product_via(fields: Mapping[str, Any], product: Mapping[str, set[str]],
+                 supplier_numbers: set[str]) -> str | None:
+    """How the certificate's product text names the Lot's product, or None: a code (the
+    certificate's product code or product, optionally ``/NN`` revision-suffixed) equal to the
+    Product's code or ERP code (``item_code``) or to the supplier item number of the receiving
+    line (``supplier_item_number``), or the product name equal to the Product's name."""
+    texts = [fields[k].strip() for k in ("product_code", "product")
+             if isinstance(fields.get(k), str) and fields[k].strip()]
+    codes = {_plain_text(v) for p in ("code", "erp_code") for v in product.get(p, ())} - {""}
+    numbers = {_plain_text(v) for v in supplier_numbers} - {""}
+    names = {_plain_text(v) for v in product.get("name", ())} - {""}
+    for text in texts:
+        for candidate in {_plain_text(text), _plain_text(_SUFFIX.sub("", text))}:
+            if len(candidate) >= 3 and candidate in codes:
+                return "item_code"
+            if len(candidate) >= 3 and candidate in numbers:
+                return "supplier_item_number"
+    for text in texts:
+        if len(_plain_text(text)) >= 3 and _plain_text(text) in names:
+            return "product_name"
+    return None
+
+
+def _certificate_fields(conn: Any, source: Any) -> dict[str, Any]:
+    return {r["property"]: r["value"] for r in mentions._query(
+        conn, "SELECT property, value FROM object_values WHERE object_id = ? AND l1_handle = ?"
+        " AND property IN ('product', 'product_code', 'supplier')",
+        (source["object_id"], source["l1_handle"]))}
+
+
+SHORT_LOT = 4   # a lot text shorter than this names a lot only beside the product
+
+
+def _kept_lines(conn: Any, source: Any, ref: Mapping[str, Any],
+                candidates: list[tuple[Any, tuple[str, str | None], int]]) -> set[str]:
+    """The ReceiptLine candidates of a certificate's lot that ``for_receipt_line`` may link.
+    A lot whose lines are of one product stays as it is, unless the lot text is shorter than
+    ``SHORT_LOT`` characters ("16"), which links only lines whose product the certificate
+    names. When the lot's lines span more than one product (lot numbers repeat), only the
+    lines whose product the certificate names are kept (the rule of ``for_lot``); none
+    matching, none linked."""
+    lines = [(row, window) for row, window, _h in candidates
+             if row["object_type"] == "ReceiptLine" and row["property"] == "supplier_lot_number"]
+    products: dict[str, set[str]] = {}
+    for row, window in lines:
+        found = _held_links(conn, "ReceiptLine.for_item", "from_object", row["object_id"],
+                            window)
+        for lot in _held_links(conn, "ReceiptLine.received_lot", "from_object",
+                               row["object_id"], window):
+            found |= _held_links(conn, "Lot.of_item", "from_object", lot, window)
+        products[row["object_id"]] = products.get(row["object_id"], set()) | found
+    distinct = set().union(*products.values()) if products else set()
+    if len(distinct) <= 1 and len(ref["normalized"]) >= SHORT_LOT:
+        return {row["object_id"] for row, _w in lines}
+    fields = _certificate_fields(conn, source)
+    keep: set[str] = set()
+    for row, window in lines:
+        numbers = {v for item in _held_links(conn, "ReceiptLine.supplier_item", "from_object",
+                                             row["object_id"], window)
+                   for v in _held_values(conn, item, ["supplier_item_number"],
+                                         window).get("supplier_item_number", ())}
+        if any(_product_via(fields, _held_values(conn, p, ["code", "erp_code", "name"],
+                                                 window), numbers)
+               for p in products[row["object_id"]]):
+            keep.add(row["object_id"])
+    return keep
+
+
+def _lot_links(conn: Any, source: Any, ref: Mapping[str, Any], group: str,
+               lots: list[tuple[Any, tuple[str, str | None], int]],
+               link_type: str, seen: set[str], counts: dict[str, int]) -> list[dict[str, Any]]:
+    """``CertificateOfAnalysis.for_lot`` rows of one lot reference. A lot number repeats
+    across suppliers and products, so a Lot answers only when the certificate's product
+    names the Lot's product (and its supplier, when it states one, is the Lot's); a
+    certificate that names no product, a product that is not the Lot's, or Lots of several
+    products (an ambiguous product text) link nothing. Always a lead: a Lot is built from its
+    receipt line's lot, so that line agreeing with the certificate's lot is no evidence
+    beyond the lot text itself, and no independent corroboration is read. Each lot a
+    certificate's text names is a reference of its own and is settled alone."""
+    fields = _certificate_fields(conn, source)
+    kept = []
+    for row, window, held in lots:
+        counts["lot_candidates"] += 1
+        products = _held_links(conn, "Lot.of_item", "from_object", row["object_id"], window)
+        line_ids = _held_links(conn, "ReceiptLine.received_lot", "to_object", row["object_id"],
+                               window)
+        numbers = {v for line in line_ids
+                   for item in _held_links(conn, "ReceiptLine.supplier_item", "from_object",
+                                           line, window)
+                   for v in _held_values(conn, item, ["supplier_item_number"],
+                                         window).get("supplier_item_number", ())}
+        via = {p: _product_via(fields, _held_values(conn, p, ["code", "erp_code", "name"],
+                                                    window), numbers) for p in products}
+        matched = sorted(p for p, how in via.items() if how)
+        if len(matched) != 1:
+            counts["lot_no_product_match"] += 1
+            continue
+        if fields.get("supplier"):
+            names: set[str] = set()
+            for receipt in _held_links(conn, "Lot.received_in", "from_object",
+                                       row["object_id"], window):
+                for supplier in _held_links(conn, "Receipt.supplied_by", "from_object",
+                                            receipt, window):
+                    for values in _held_values(conn, supplier, ["name", "code"],
+                                               window).values():
+                        names |= values
+            if _supplier_agrees(fields["supplier"], names) is False:
+                counts["lot_no_product_match"] += 1
+                continue
+        kept.append((row, window, held, matched[0], via[matched[0]]))
+    if len({product for _r, _w, _h, product, _v in kept}) > 1:
+        counts["lot_ambiguous"] += len(kept)
+        return []
+    out = []
+    for row, window, held, product, how in kept:
+        link_id = ("docfield:" + _digest(group, row["object_id"], row["l1_handle"])
+                   + (f"#{held}" if held else "") + mentions.candidate_piece(row))
+        if link_id in seen:
+            continue
+        seen.add(link_id)
+        link = _link(source, ref, row, window, link_type, link_id, group)
+        reason = json.loads(link["reason"])
+        reason.append({"feature": "product_match", "agrees": True, "via": how,
+                       "product": product})
+        handles = json.loads(link["evidence_handles"])
+        link["reason"] = json.dumps(reason, sort_keys=True, separators=(",", ":"))
+        link["evidence_handles"] = json.dumps(handles, separators=(",", ":"))
+        out.append(link)
+    counts["lot_links"] += len(out)
+    return out
 
 
 def _digest(*parts: Any) -> str:

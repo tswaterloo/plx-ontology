@@ -33,7 +33,7 @@ from integrations.tests import test_capture_sharepoint as tsp
 from integrations.tests.test_source_mirror import BASE, KEY, FakeWorkbench
 from ontology.tests.test_container_members import zipped
 from operating.host import HostError
-from operating.mcp_server import _marking_grants, add_host_arguments
+from operating.mcp_server_host import _marking_grants, add_host_arguments
 from scripts import eval_packaging_oracle_check as harness
 
 ROOT = Path(__file__).resolve().parents[1]

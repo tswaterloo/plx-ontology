@@ -63,7 +63,34 @@ FREIGHTCOM_TEST = "customer-external-api.ssd-test.freightcom.com"
 SP_API_HOSTS: dict[str, str] = {"na": "sellingpartnerapi-na.amazon.com",
                                 "eu": "sellingpartnerapi-eu.amazon.com",
                                 "fe": "sellingpartnerapi-fe.amazon.com"}
-EXTERNAL_HOSTS = frozenset({FREIGHTCOM_TEST, *SP_API_HOSTS.values()})
+# Order-intake and meeting sources, disabled until their credential
+# settings exist: Zendesk (one tenant host ``<subdomain>.zendesk.com``), Shopify (one shop host
+# ``<shop>.myshopify.com``) and the Granola public API. A tenant host is named by the
+# configured setting, never by a caller string; the grammar admits only a single
+# DNS label under the vendor domain (no dot, no port, no userinfo).
+GRANOLA_HOST = "public-api.granola.ai"
+TENANT_HOST_SUFFIXES: dict[str, str] = {"*.zendesk.com": ".zendesk.com",
+                                        "*.myshopify.com": ".myshopify.com"}
+_TENANT_LABEL = re.compile(r"[a-z0-9](?:[a-z0-9-]{0,60}[a-z0-9])?")
+EXTERNAL_HOSTS = frozenset({FREIGHTCOM_TEST, GRANOLA_HOST, *SP_API_HOSTS.values()})
+
+
+def tenant_host_pattern(host: str) -> str | None:
+    """The pattern key (``*.zendesk.com``) a single-label tenant host belongs to, else None."""
+    for pattern, suffix in TENANT_HOST_SUFFIXES.items():
+        if isinstance(host, str) and host.endswith(suffix) \
+                and _TENANT_LABEL.fullmatch(host[:-len(suffix)]):
+            return pattern
+    return None
+
+
+def is_external_host(host: str) -> bool:
+    return host in EXTERNAL_HOSTS or tenant_host_pattern(host) is not None
+
+
+def _host_ok(op_host: str, host: str) -> bool:
+    return host == op_host or (op_host in TENANT_HOST_SUFFIXES
+                               and tenant_host_pattern(host) == op_host)
 
 # Identifier grammars (ontology/schema/identifiers.json ``system_kinds``); every
 # validator below uses ``fullmatch``.
@@ -119,7 +146,8 @@ BC_PARTY_CONTACTS_SELECT = "id,number"
 BC_DOCUMENT_LINES: dict[str, str] = {
     "purchaseOrders": "purchaseOrderLines", "purchaseReceipts": "purchaseReceiptLines",
     "purchaseInvoices": "purchaseInvoiceLines", "salesOrders": "salesOrderLines",
-    "salesInvoices": "salesInvoiceLines", "salesCreditMemos": "salesCreditMemoLines",
+    "salesInvoices": "salesInvoiceLines", "salesShipments": "salesShipmentLines",
+    "salesCreditMemos": "salesCreditMemoLines",
     "purchaseCreditMemos": "purchaseCreditMemoLines", "salesQuotes": "salesQuoteLines",
     "customerPaymentJournals": "customerPayments", "vendorPaymentJournals": "vendorPayments"}
 # The field a line names its header by (BC API v2.0): document lines ``documentId``,
@@ -267,6 +295,11 @@ TYPES: dict[str, ParamType] = {t.name: t for t in (
     # Graph ids in the shared Graph id grammar (an id outside it is never addressed).
     ParamType("meeting_id", _rx(_MAIL_ID), _SEG, lambda v: v),
     ParamType("planner_id", _rx(_MAIL_ID), _SEG, lambda v: v),
+    ParamType("vendor_numeric_id", _rx(re.compile(r"[0-9]{1,20}")), r"[0-9]{1,20}", lambda v: v),
+    ParamType("shopify_version", _rx(re.compile(r"20[0-9]{2}-(?:01|04|07|10)")),
+              r"20[0-9]{2}-(?:01|04|07|10)", lambda v: v),
+    ParamType("granola_note_id", _rx(re.compile(r"not_[A-Za-z0-9]{10,32}")),
+              r"not_[A-Za-z0-9]{10,32}", lambda v: v),
     ParamType("freightcom_id", _rx(_ids.system_pattern("freightcom_id")), _SEG, lambda v: v),
     ParamType("amazon_shipment_id", _rx(_ids.system_pattern("amazon_shipment_id")), _SEG,
               lambda v: v),
@@ -456,6 +489,20 @@ TEMPLATES: dict[str, tuple[str, str]] = {
     "freightcom.shipment": (FREIGHTCOM_TEST, "/shipment/{shipment:freightcom_id}"),
     "freightcom.shipment_tracking": (FREIGHTCOM_TEST,
                                      "/shipment/{shipment:freightcom_id}/tracking-events"),
+    # Zendesk Support API (tickets of the order queue, their comments and attachment
+    # metadata), Shopify Admin REST (orders with line items, customers, fulfilments) and the
+    # Granola public API (notes): GET only, paths from each vendor's public documentation,
+    # unverified until the matching live check passes. Fixed vendor API versions.
+    "zendesk.incremental_tickets": ("*.zendesk.com", "/api/v2/incremental/tickets/cursor.json"),
+    "zendesk.ticket_comments": ("*.zendesk.com",
+                                "/api/v2/tickets/{ticket:vendor_numeric_id}/comments.json"),
+    "shopify.orders": ("*.myshopify.com", "/admin/api/{version:shopify_version}/orders.json"),
+    "shopify.order_fulfillments": ("*.myshopify.com", "/admin/api/{version:shopify_version}"
+                                   "/orders/{order:vendor_numeric_id}/fulfillments.json"),
+    "shopify.customers": ("*.myshopify.com",
+                          "/admin/api/{version:shopify_version}/customers.json"),
+    "granola.notes": (GRANOLA_HOST, "/v1/notes"),
+    "granola.note": (GRANOLA_HOST, "/v1/notes/{note:granola_note_id}"),
     # Amazon SP-API, GET only, one set per region host (sp_api.<region>.<operation>).
     **{f"sp_api.{region}.{name}": (host, path)
        for region, host in SP_API_HOSTS.items()
@@ -544,6 +591,11 @@ def url(op: str, query: Mapping[str, str] | None = None, **params: str) -> str:
     if op not in TEMPLATES:
         raise ValueError("unknown operation")
     host, template = TEMPLATES[op]
+    if host in TENANT_HOST_SUFFIXES:
+        tenant = params.pop("tenant_host", None)
+        if tenant is None or tenant_host_pattern(tenant) != host:
+            raise ValueError(f"{op}: tenant_host is not a {host} host")
+        host = tenant
     _pattern, fields = _COMPILED[op][1], _COMPILED[op][2]
     if set(params) != {name for name, _t in fields}:
         raise ValueError("operation parameters mismatch")
@@ -562,7 +614,7 @@ def url(op: str, query: Mapping[str, str] | None = None, **params: str) -> str:
 def match(host: str, path: str) -> str | None:
     """The operation whose template this (encoded) path parses into, else None."""
     for op, (op_host, pattern, fields) in _COMPILED.items():
-        if op_host != host:
+        if not _host_ok(op_host, host):
             continue
         found = pattern.fullmatch(path)
         if found is None:
@@ -685,6 +737,13 @@ BC_QUERY_SPECS: dict[str, BcQuerySpec] = {
         "customerNumber customerName orderId orderNumber " + _HEADER_MONEY,
         orderby="postingDate invoiceDate number"),
     "salesInvoiceLines": _spec({}, _LINE + " unitPrice shipmentDate", line=True),
+    # Posted sales shipment lines (CT-D-04: the header was read, its lines never were):
+    # the fields of the pinned ``$metadata`` salesShipmentLine entity (bc_metadata.json),
+    # which has no line amounts or itemId. UNVERIFIED live until
+    # live check ``bc.sales_shipment_lines`` passes.
+    "salesShipmentLines": _spec({}, "documentNo sequence lineType lineObjectNumber description "
+                                "description2 unitOfMeasureCode unitPrice quantity "
+                                "discountPercent taxPercent shipmentDate", line=True),
     # Field names from the BC API v2.0 salesCreditMemo / salesCreditMemoLine resources
     # (MicrosoftDocs/dynamics365smb-devitpro-pb, api-reference/v2.0
     # ``dynamics_salescreditmemo.md``, ``dynamics_salescreditmemoline.md``); invoiceId /
@@ -736,13 +795,13 @@ BC_QUERY_SPECS: dict[str, BcQuerySpec] = {
         "appliesToInvoiceNumber description lastModifiedDateTime").split()),
         frozenset({"id", "journalId"})),
     "items": _spec({"number": "number"},
-        "number displayName type itemCategoryCode blocked inventory unitPrice unitCost "
-        "baseUnitOfMeasureCode"),
+        "number displayName displayName2 type itemCategoryCode blocked inventory unitPrice "
+        "unitCost baseUnitOfMeasureCode gtin"),
     "vendors": _spec({"number": "number"},
         "number displayName currencyCode paymentTermsId blocked balance"),
     "customers": _spec({"number": "number"},
         "number displayName type currencyCode paymentTermsId shipmentMethodId blocked "
-        "balanceDue creditLimit"),
+        "balanceDue creditLimit salespersonCode"),
 }
 
 
@@ -1237,10 +1296,67 @@ SP_QUERIES: dict[str, tuple[frozenset[str], dict[str, Callable[[str], bool]]]] =
 }
 
 
+_VENDOR_INSTANT = re.compile(r"(?:19|20)[0-9]{2}-[01][0-9]-[0-3][0-9](?:T[0-2][0-9]:[0-5][0-9]:[0-5][0-9]"
+                      r"(?:\.[0-9]{1,6})?(?:Z|[+-][0-9]{2}:[0-9]{2}))?")
+_PAGE_TOKEN = re.compile(r"[A-Za-z0-9_=.+/-]{1,2000}")
+_FIELD_LIST = re.compile(r"[a-z_]{1,40}(?:,[a-z_]{1,40}){0,59}")
+
+
+def _count(low: int, high: int) -> Callable[[Any], bool]:
+    return lambda v: isinstance(v, str) and v.isdigit() and low <= int(v) <= high
+
+
+# Order-intake and meeting sources: per operation the (one-of required groups, checks) of
+# its query. ``paged``: the keys a continuation page may carry besides its page token.
+VENDOR_QUERIES: dict[str, tuple[tuple[frozenset[str], ...], dict[str, Any]]] = {
+    "zendesk.incremental_tickets": ((frozenset({"start_time"}), frozenset({"cursor"})), {
+        "start_time": _count(0, 4_102_444_800), "cursor": _rx(_PAGE_TOKEN),
+        "per_page": _count(1, 1000), "exclude_deleted": _one_of("true", "false")}),
+    "zendesk.ticket_comments": ((frozenset(),), {
+        "page[size]": _count(1, 100), "page[after]": _rx(_PAGE_TOKEN)}),
+    "shopify.orders": ((frozenset({"status", "updated_at_min"}), frozenset({"page_info"})), {
+        "status": _one_of("any"), "updated_at_min": _rx(_VENDOR_INSTANT), "limit": _count(1, 250),
+        "page_info": _rx(_PAGE_TOKEN), "fields": _rx(_FIELD_LIST)}),
+    "shopify.customers": ((frozenset({"updated_at_min"}), frozenset({"page_info"})), {
+        "updated_at_min": _rx(_VENDOR_INSTANT), "limit": _count(1, 250),
+        "page_info": _rx(_PAGE_TOKEN), "fields": _rx(_FIELD_LIST)}),
+    "shopify.order_fulfillments": ((frozenset(),), {"limit": _count(1, 250),
+                                                    "fields": _rx(_FIELD_LIST)}),
+    "granola.notes": ((frozenset(),), {
+        "created_after": _rx(_VENDOR_INSTANT), "created_before": _rx(_VENDOR_INSTANT),
+        "updated_after": _rx(_VENDOR_INSTANT), "cursor": _rx(_PAGE_TOKEN),
+        "page_size": _count(1, 30)}),
+    "granola.note": ((frozenset(),), {"include": _one_of("transcript")}),
+}
+
+
+def _vendor_query_ok(op: str, query: str) -> bool:
+    groups, checks = VENDOR_QUERIES[op]
+    if not query:
+        return frozenset() in groups
+    try:
+        pairs = parse_qsl(query, keep_blank_values=True, strict_parsing=True)
+    except ValueError:
+        return False
+    given = dict(pairs)
+    if len(given) != len(pairs) or set(given) - set(checks):
+        return False
+    # exactly one of the required key groups opens the query (a first page or a continuation)
+    if not any(group and group <= set(given) for group in groups) and groups != (frozenset(),):
+        return False
+    if "page_info" in given and set(given) - {"page_info", "limit", "fields"}:
+        return False   # Shopify refuses (and the grammar never builds) a mixed continuation
+    if "cursor" in given and "start_time" in given:
+        return False
+    return all(isinstance(v, str) and checks[k](v) for k, v in given.items())
+
+
 def external_query_ok(op: str | None, query: str) -> bool:
     """Whether ``query`` is one the closed grammar of external operation ``op`` allows."""
     if not isinstance(op, str) or not isinstance(query, str):
         return False
+    if op in VENDOR_QUERIES:
+        return _vendor_query_ok(op, query)
     if op.startswith("freightcom."):
         return query == ""
     parts = op.split(".")
@@ -1265,12 +1381,12 @@ def external_query_ok(op: str | None, query: str) -> bool:
 __all__ = ["BC_PARTY_CONTACTS", "BC_PARTY_CONTACTS_SELECT", "bc_party_contacts_query", "BC_ODATA_LOT_FIELDS", "BC_ODATA_LOT_FILTER", "BC_ODATA_LOT_SELECT", "BC_ODATA_PO_FIELDS", "BC_ODATA_PO_SELECT", "BC_PLX_API_SETS", "bc_odata_item_lot_query", "bc_odata_item_lot_query_ok", "BC_PINNED_COMPANY_NAMES",
            "bc_company_name_ok", "bc_odata_purchase_order_query",
            "bc_odata_purchase_order_query_ok", "BC_CALCULATED_FIELDS", "BC_DOCUMENT_LINES", "BC_ENTITY_SETS", "BC_LINE_PARENT_FIELD",
-           "BC_RECORD_KEY_FIELD", "BC_INSTANT_FORMAT", "BC_KEY_SELECT",
+           "BC_RECORD_KEY_FIELD", "BC_VENDOR_INSTANT_FORMAT", "BC_KEY_SELECT",
            "BC_MAX_TOP", "BC_MODIFIED_FIELD", "BC_MODIFIED_SINCE_SETS", "BC_QUERY_SPECS",
            "DRIVE_DOWNLOAD_URL_KEY", "DRIVE_DOWNLOAD_URL_SELECT", "LIST_ITEM_FIELDS_QUERY",
            "TEAMS_THREAD_SUFFIXES", "TEMPLATES", "TYPES", "WELL_KNOWN_MAIL_FOLDERS", "bc_has_calculated_fields", "bc_instant_ok", "bc_number_ok",
            "bc_query",
            "bc_query_ok", "bc_request_query_ok", "column_name_ok",
            "drive_item_select", "drive_list_item_fields_url", "encode_share_id",
-           "drive_list_item_fields_url_ok", "EXTERNAL_HOSTS", "FREIGHTCOM_TEST",
+           "drive_list_item_fields_url_ok", "EXTERNAL_HOSTS", "is_external_host", "tenant_host_pattern", "VENDOR_QUERIES", "GRANOLA_HOST", "FREIGHTCOM_TEST",
            "SP_API_HOSTS", "SP_QUERIES", "external_query_ok", "match", "search_text_ok", "segments_clean", "url"]

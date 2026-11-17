@@ -160,7 +160,8 @@ class RecordAndReplayTests(Temp):
                       "there", prompt)
         self.assertIn("omit it for non-quantities and for a figure on a page", prompt)
         from operating import claim_checks
-        checked = claim_checks._check_text_figure(
+        from operating import claim_checks_text
+        checked = claim_checks_text._check_text_figure(
             {"value": "68160", "role": "produced"}, {}, "Total 68,160", "page 11")
         self.assertEqual(checked.get("code"), "claim_role_unverified")
         self.assertNotIn("sum|count|equal", prompt)
@@ -172,7 +173,7 @@ class RecordAndReplayTests(Temp):
             self.assertIn(said, prompt)
         # The shapes the rule names are the ones the gate parses; the one it refuses (a
         # calculation object over page figures) is never asked for.
-        from operating.claim_checks import parse_value_claims
+        from operating.claim_checks_parse import parse_value_claims
         from ontology.types import ValidationError
         rows = ["api://public.t/%7B%22id%22%3A1%7D@1", "api://public.t/%7B%22id%22%3A2%7D@1"]
         parse_value_claims([{"value": "5", "op": "sum", "of": [
@@ -454,7 +455,7 @@ class HeldOutTests(Temp):
             with self.env(), self.assertRaises(runner.RunnerError) as caught:
                 runner.load_items(directory, split="held_out")
             message = str(caught.exception)
-            self.assertIn(f"held_out_overlaps_visible:", message)
+            self.assertIn("held_out_overlaps_visible:", message)
             self.assertIn(kind, message)
             for value in HELD_VALUES + ("5447", "P-02289", "F-18-0025", "DEV-005", sha[18:],
                                         "ho-F3-0901"):
@@ -1244,7 +1245,7 @@ class CaseHostInjectedTransportTests(Temp):
         """The command `evals.runner run` hands the agent starts and lists the case tools."""
         import os
         import subprocess
-        from operating.mcp_server import CASE_RUNTIME_TOOLS
+        from operating.mcp_server_catalog import CASE_RUNTIME_TOOLS
         self.assertIn("--fixture", command["args"])
         env = {key: value for key, value in os.environ.items()
                if not key.startswith(("PLX_", "MICROSOFT_GRAPH_", "SHAREPOINT_", "BC_",
@@ -1356,7 +1357,6 @@ class RealAgentEvalTests(Temp):
         # The real stdio case host over the fixture world's mirror and projection, behind
         # the tool gate, driven by scripted MCP calls (injected-transport).
         import subprocess
-        import sys
         from scripts import eval_real_agent as era
         items, host_for, pin_for = era.fixture_parts(self.root / "work")["fixture_sample"]
         item = items[0]

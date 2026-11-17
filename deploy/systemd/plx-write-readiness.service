@@ -1,0 +1,28 @@
+# Write readiness probe (`python3 -m operating.autopilot_write_readiness probe`): every
+# 15 minutes it records, per system (BC, calendar, Planner, SharePoint, MC), whether an
+# autopilot can write there now: ready-live, ready-dry-run, ready-but-scope-missing (the
+# exact permission) or blocked. Reads only: the apps' tokens are issued and their
+# permission claims read; BC's company list is one GET through the GET-only client; MC by
+# configuration. It never writes to a business system and never creates a live-<system>
+# file (a person's switch). Credentials: the API's env file plus every
+# /etc/plx/vince-*.env (owned by the service user, mode 0600), read again on every run,
+# so an admin consent or a new credential file counts within 15 minutes, no restart.
+# Output: <state>/autopilot/write-readiness.json (owner-only).
+[Unit]
+Description=PLX Workbench write readiness probe (reads only)
+
+[Service]
+Type=oneshot
+User=@PLX_USER@
+Group=@PLX_GROUP@
+WorkingDirectory=@PLX_CURRENT@
+EnvironmentFile=-/etc/plx/workbench-api.env
+Environment=PATH=/data/venv/bin:/usr/local/bin:/usr/bin:/bin
+Environment=PLX_WRITE_ENV_FILES=/etc/plx/vince-*.env
+ExecStart=/data/venv/bin/python3 -m operating.autopilot_write_readiness probe --state /data/plx-state/autopilot-write
+Nice=10
+CPUWeight=20
+MemoryHigh=256M
+MemoryMax=512M
+TimeoutStartSec=5min
+UMask=0077

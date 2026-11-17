@@ -8,7 +8,7 @@ isolated-fixture.
 
 from __future__ import annotations
 
-from datetime import date, timedelta
+from datetime import timedelta
 from decimal import Decimal
 import time
 import unittest
@@ -518,7 +518,7 @@ class CeoSignals(Engine):
         (who, item), _other = sorted(eroding.items())
         reads: list[str] = []
 
-        from operating.ontology_tools import ReadPolicy
+        from operating.ontology_tools_policy import ReadPolicy
 
         class Reader:
             def __init__(self, principal: str, markings=("finance",)) -> None:

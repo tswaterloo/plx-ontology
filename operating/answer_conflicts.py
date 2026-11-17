@@ -641,31 +641,6 @@ def self_contradictions(handle: str, parts: Sequence[tuple[str, str]], *,
     return out
 
 
-def document_contradictions(conn: Any, scope: Mapping[str, Any], handles: Sequence[str],
-                            *, item_allowed: Callable[[str], bool]) -> list[dict[str, Any]]:
-    """``self_contradictions`` of each document the reader may open, read from its
-    search chunks (``search.chunks``: the permission predicate inside the SQL, then the
-    item gate per document); a document they may not open is never read."""
-    from operating.search.retrievers import PERM
-    handles = sorted({h for h in handles if isinstance(h, str) and h})
-    if not handles:
-        return []
-    rows = conn.execute(
-        f"""SELECT c.source_handle, c.kind, c.chunk_id, c.body FROM search.chunks c
-            WHERE c.source_handle = ANY(%(handles)s::text[]) AND {PERM}
-            ORDER BY c.source_handle, c.chunk_id""", dict(scope, handles=handles)).fetchall()
-    parts: dict[str, list[tuple[str, str]]] = {}
-    kinds: dict[str, str] = {}
-    for handle, kind, chunk_id, body in rows:
-        parts.setdefault(handle, []).append((chunk_id, body or ""))
-        kinds[handle] = kind
-    out = []
-    for handle in sorted(parts):
-        if item_allowed(handle):
-            out += self_contradictions(handle, parts[handle], kind=kinds[handle])
-    return out
-
-
 # ------------------------------------------------------------------------ duplicates
 
 def collapse_copies(items: Sequence[Mapping[str, Any]], *,

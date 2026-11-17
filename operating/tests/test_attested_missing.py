@@ -619,6 +619,7 @@ class CustomerPoLiveCheckTests(_NeedsPdf):
         import argparse
         from verify import live_verify as lv
         from integrations import capture_sharepoint as cs
+        from integrations import capture_sharepoint_scope
         from integrations.tests import test_capture_sharepoint as tsp
         from operating import sharepoint_host_check as check
         from scripts import eval_document_fields_live as live
@@ -629,7 +630,7 @@ class CustomerPoLiveCheckTests(_NeedsPdf):
                    pdf(customer_po("4500000001", "OR1000777001")))
         with tempfile.TemporaryDirectory() as tmp:
             scope_file, audience_file = Path(tmp) / "scope.json", Path(tmp) / "audience.json"
-            scope_file.write_text(json.dumps({"schema": cs.SCOPE_SCHEMA, "targets": [
+            scope_file.write_text(json.dumps({"schema": capture_sharepoint_scope.SCOPE_SCHEMA, "targets": [
                 {"id": "customers", "drive_id": tsp.DRIVE, "folders": [tsp.QUALITY_FOLDER]}],
                 "list_item_columns": "portal_taxonomy"}))
             audience_file.write_text(json.dumps({

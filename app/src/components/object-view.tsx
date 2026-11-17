@@ -6,7 +6,7 @@ import { ArrowUpRight, Bookmark, CalendarClock, ChevronDown, FolderOpen, Message
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
-import { BRIEF_TYPES, PACK_TYPES, getActionStates, getObject, getObjectSection, getSuggestions, mergeSection, PAGE_SECTIONS } from "@/lib/api";
+import { BRIEF_TYPES, DOCUMENT_LIST_TYPES, PACK_TYPES, getActionStates, getObject, getObjectSection, getSuggestions, mergeSection, PAGE_SECTIONS } from "@/lib/api";
 import { cn } from "@/lib/cn";
 import { useStaleRefresh } from "@/lib/stale-refresh";
 import { custodyOf } from "@/lib/custody";
@@ -14,9 +14,10 @@ import { ApiError, noticeKind, plainError } from "@/lib/errors";
 import { formatDate, groupDigits, money, objectHref, plural, readable, recordLabel, safeHref, SYSTEM_LABEL, typeLabel } from "@/lib/format";
 import { activityTitle, factMap, groupLinked, groupRelated, linkSections, moneyText, productionSteps, receivedOf, recordHead, type RecordHead, type Thread } from "@/lib/record";
 import { toggleSaved, useSaved } from "@/lib/saved";
-import { RecordWorkLog } from "@/components/work-log";
+import { Related } from "@/components/related";
+import type { TemplateDocType } from "@/lib/types";
 import { lateness, recordState, type Shown } from "@/lib/status";
-import type { ActionResult, Conflict, CustomerAmount, CustomerSummary, LandedCost, LateLine, KnownRecord, LinkedItem, LinkGroup, LinkRef, ObjectPage, PersonKnows, ObjectRef, OrderRow, Person, ProactiveSuggestion, Profitability, SectionName, Source, TimelineEvent, Tone } from "@/lib/types";
+import type { ActionResult, Conflict, CustomerAmount, CustomerSummary, LandedCost, LateLine, KnownRecord, LinkedItem, LinkGroup, LinkRef, ObjectPage, PersonKnows, ProductFormula, MaterialCost, ObjectRef, OrderRow, Person, ProactiveSuggestion, Profitability, SectionName, Source, TimelineEvent, Tone } from "@/lib/types";
 import { conflictSentence, ConflictCard, FreshnessLabel, HiddenNotice, missingText, SourceLine } from "./answer-parts";
 import { CostBreakdown, MarginHeadline, NoMargin, ProfitabilityView, SageMargin } from "./cost-breakdown";
 import { CustodyRail } from "./custody-rail";
@@ -40,14 +41,28 @@ import { Toolbar, ToolbarButton } from "./ui/toolbar";
 import { useCommandPalette } from "./command-palette";
 import { LoadProblem, StaleNote } from "./ui/notice";
 import { Situation } from "./record/situation";
+import { AskNext } from "./record/ask-next";
 import { OnRecord } from "./record/on-record";
 import { KindSections } from "./record/kind-sections";
+import { DocumentLists } from "./record/document-lists";
+import { ShowMore } from "./ui/show-more";
 import { STATUS_INK, StatusBadge, StatusWord } from "./ui/status-badge";
 
 /** Status words the API uses, mapped to a tone (kept for callers outside the record page). */
 export function toneOf(state: string): Tone {
   const s = recordState(state);
   return s === "late" ? "bad" : s === "risk" ? "warn" : s === "ok" ? "good" : "neutral";
+}
+
+/** The template types a record of this kind is written up with (the Related panel's fill). */
+function relatedDocTypes(type: string): TemplateDocType[] {
+  if (type === "SalesOrder") return ["order_confirmation", "customer_email"];
+  if (type === "PurchaseOrder") return ["po_note", "supplier_email"];
+  if (type === "Customer") return ["customer_email", "quote", "price_list"];
+  if (type === "Supplier" || type === "Vendor") return ["supplier_email"];
+  if (type === "Lot") return ["coa", "spec_sheet"];
+  if (type === "Item") return ["spec_sheet", "price_list"];
+  return [];
 }
 
 function refHref(r: ObjectRef): string {
@@ -417,14 +432,21 @@ function ThreadRow({ t }: { t: Thread }) {
   );
 }
 
-function Linked({ items }: { items: LinkedItem[] }) {
+function linkedCount(n: number, countedAll: boolean): string {
+  const words = n === 1 ? "1 linked document" : `${n} linked documents`;
+  return countedAll ? words : `at least ${words}`;
+}
+
+function Linked({ items, withheld = 0, unavailable = 0, countedAll = true }: {
+  items: LinkedItem[]; withheld?: number; unavailable?: number; countedAll?: boolean;
+}) {
   const [all, setAll] = useState(false);
   const threads = groupLinked(items);
-  if (threads.length === 0) return null;
+  if (threads.length === 0 && withheld === 0 && unavailable === 0) return null;
   const shown = all ? threads : threads.slice(0, 8);
   return (
     <section data-testid="linked">
-      <SectionTitle aside={threads.length > 8 ? <MoreButton onClick={() => setAll((v) => !v)} expanded={all}>{all ? "Fewer" : `All ${threads.length}`}</MoreButton> : <span className="text-[12px] text-muted">{threads.reduce((n, t) => n + t.count, 0)}</span>}>
+      <SectionTitle aside={threads.length > 8 ? <MoreButton onClick={() => setAll((v) => !v)} expanded={all}>{all ? "Fewer" : `All ${threads.length}`}</MoreButton> : threads.length > 0 ? <span className="text-[12px] text-muted">{threads.reduce((n, t) => n + t.count, 0)}</span> : undefined}>
         Messages and documents
       </SectionTitle>
       <ul className="-mx-3 grid gap-x-4 2xl:grid-cols-2">
@@ -432,6 +454,16 @@ function Linked({ items }: { items: LinkedItem[] }) {
           <ThreadRow key={`${t.kind}-${t.subject}`} t={t} />
         ))}
       </ul>
+      {withheld > 0 && (
+        <p className="mt-1 text-[12px] text-muted" data-testid="linked-withheld">
+          Not listed: {linkedCount(withheld, countedAll)} you can&apos;t open.
+        </p>
+      )}
+      {unavailable > 0 && (
+        <p className="mt-1 text-[12px] text-muted" data-testid="linked-unavailable">
+          Not listed: {linkedCount(unavailable, countedAll)} not available yet.
+        </p>
+      )}
     </section>
   );
 }
@@ -485,6 +517,134 @@ function KnowsCard({ k }: { k: PersonKnows | null }) {
   );
 }
 
+/** A sheet's raw-material cost per kg from the last PO prices: what it covers, and every
+ *  line left out and why (never filled in). */
+function MaterialCostLine({ cost }: { cost: MaterialCost }) {
+  const missing = cost.missing ?? [];
+  return (
+    <div className="mt-2 max-w-3xl text-[13px] leading-[18px]" data-testid="material-cost">
+      {cost.per_kg ? (
+        <p>
+          Materials {cost.per_kg} {cost.currency ?? ""} per kg at the last PO prices
+          {cost.complete ? "" : <span className="text-muted">{` · ${cost.priced_share}% of the formula priced`}</span>}
+        </p>
+      ) : (
+        <p className="text-muted">Materials cost not worked out.</p>
+      )}
+      {missing.length > 0 && (
+        <ul className="mt-0.5 text-[12px] leading-4 text-muted">
+          {missing.map((m) => <li key={m}>{m}</li>)}
+        </ul>
+      )}
+    </div>
+  );
+}
+
+/** What a product is made of, read from its formula sheets as this reader may read them:
+ *  each sheet's lines as the sheet states them, a part linked to the raw material its code
+ *  names. Shares are the sheet's own text, never recomputed or filled in. */
+function FormulaCard({ f }: { f: ProductFormula | null }) {
+  if (!f || (f.sheets ?? []).length === 0) return null;
+  const notes = [
+    f.unresolved_parts ? `${f.unresolved_parts} part code${f.unresolved_parts === 1 ? "" : "s"} name no record` : "",
+    f.withheld ? `${f.withheld} line${f.withheld === 1 ? "" : "s"} or sheet${f.withheld === 1 ? "" : "s"} you can't open` : "",
+    f.complete ? "" : "not every sheet could be read",
+  ].filter(Boolean);
+  return (
+    <section data-testid="formula">
+      <SectionTitle>Formula</SectionTitle>
+      {(f.sheets ?? []).map((sh) => {
+        const priced = (sh.components ?? []).some((c) => c.last_price);
+        return (
+        <div key={sh.document.object_id} className="mb-4">
+          <p className="mb-1 text-[13px] leading-[18px]">
+            <a href={sh.document.open_url} className="hover:underline">{sh.formula_code ?? sh.document.label}</a>
+            <span className="text-muted">
+              {sh.formula_code ? ` · ${sh.document.label}` : ""}
+              {sh.dated ? ` · ${sh.dated}` : ""}
+              {sh.status === "partial" ? ` · ${sh.missing_lines || "some"} line${sh.missing_lines === 1 ? "" : "s"} unreadable` : ""}
+              {sh.basis === "name" ? " · matched by name, no code on the sheet" : ""}
+            </span>
+          </p>
+          <table className="w-full max-w-3xl text-[13px]">
+            <thead>
+              <tr className="border-b border-border text-left text-[12px] text-muted">
+                <th className="py-1.5 pr-3 font-normal">Part</th>
+                <th className="py-1.5 pr-3 font-normal">Material</th>
+                <th className="py-1.5 pr-3 text-right font-normal">Share %</th>
+                <th className="py-1.5 pr-3 text-right font-normal">Qty</th>
+                {priced && <th className="py-1.5 text-right font-normal">Last PO price</th>}
+              </tr>
+            </thead>
+            <tbody>
+              {(sh.components ?? []).map((c, i) => (
+                <tr key={`${c.part}-${i}`} className="border-b border-border align-top">
+                  <td className="py-1.5 pr-3 num whitespace-nowrap">{c.item ? <a href={c.item.open_url} className="hover:underline">{c.part}</a> : c.part}</td>
+                  <td className="py-1.5 pr-3">
+                    {c.description}
+                    {c.check ? <span className="block text-[12px] text-risk">{c.check}</span> : null}
+                  </td>
+                  <td className="py-1.5 pr-3 text-right num">{c.share_percent ?? ""}</td>
+                  <td className="py-1.5 pr-3 text-right num whitespace-nowrap">{c.quantity ? `${c.quantity}${c.unit ? ` ${c.unit}` : ""}` : ""}</td>
+                  {priced && (
+                    <td className="py-1.5 text-right num whitespace-nowrap">
+                      {c.last_price ? (
+                        <a href={c.last_price.po?.open_url ?? undefined} className="hover:underline" title={[c.last_price.po?.label, c.last_price.dated].filter(Boolean).join(", ")}>
+                          {c.last_price.price} {c.last_price.currency ?? ""}{c.last_price.uom ? ` / ${c.last_price.uom}` : ""}
+                        </a>
+                      ) : ""}
+                    </td>
+                  )}
+                </tr>
+              ))}
+            </tbody>
+            {sh.share_total ? (
+              <tfoot>
+                <tr className="text-muted">
+                  <td className="py-1.5 pr-3" colSpan={2}>Total</td>
+                  <td className="py-1.5 pr-3 text-right num">{sh.share_total}</td>
+                  <td />
+                  {priced && <td />}
+                </tr>
+              </tfoot>
+            ) : null}
+          </table>
+          {sh.material_cost && <MaterialCostLine cost={sh.material_cost} />}
+        </div>
+        );
+      })}
+      {notes.length > 0 && <p className="text-[12px] leading-4 text-muted">{notes.join(" · ")}</p>}
+      {!f.portal_lines_served && <p className="text-[12px] leading-4 text-muted">From the formula sheets; the Portal&apos;s formula lines aren&apos;t read yet.</p>}
+    </section>
+  );
+}
+
+function RelatedGroup({ g }: { g: ReturnType<typeof groupRelated>[number] }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <div>
+      <p className="mb-0.5 text-[12px] text-muted">
+        {g.label}
+        {g.items.reduce((n, x) => n + x.times, 0) + g.unnamed > 1 && <span className="ml-1.5 tabular-nums text-faint">{g.items.reduce((n, x) => n + x.times, 0) + g.unnamed}</span>}
+      </p>
+      <ul className="-mx-2">
+        {g.items.slice(0, open ? undefined : 6).map((r) => (
+          <li key={r.object_id}>
+            <LinkRow href={refHref(r)} aside={r.times > 1 ? <span className="text-[12px] text-muted">×{r.times}</span> : undefined}>
+              {recordLabel(r.type, readable(r.label))}
+            </LinkRow>
+          </li>
+        ))}
+        {g.items.length > 6 && (
+          <li className="px-2">
+            <ShowMore hidden={g.items.length - 6} open={open} onToggle={() => setOpen((v) => !v)} />
+          </li>
+        )}
+      </ul>
+    </div>
+  );
+}
+
 function RelatedCard({ refs }: { refs: ObjectRef[] }) {
   // a group of rows named only by their type ("PO line", "Receipt") says nothing: left out
   const groups = groupRelated(refs).filter((g) => g.items.length > 0);
@@ -494,22 +654,7 @@ function RelatedCard({ refs }: { refs: ObjectRef[] }) {
       <SectionTitle>Linked</SectionTitle>
       <div className="space-y-3">
         {groups.map((g) => (
-          <div key={g.type}>
-            <p className="mb-0.5 text-[12px] text-muted">
-              {g.label}
-              {g.items.reduce((n, x) => n + x.times, 0) + g.unnamed > 1 && <span className="ml-1.5 tabular-nums text-faint">{g.items.reduce((n, x) => n + x.times, 0) + g.unnamed}</span>}
-            </p>
-            <ul className="-mx-2">
-              {g.items.slice(0, 6).map((r) => (
-                <li key={r.object_id}>
-                  <LinkRow href={refHref(r)} aside={r.times > 1 ? <span className="text-[12px] text-muted">×{r.times}</span> : undefined}>
-                    {recordLabel(r.type, readable(r.label))}
-                  </LinkRow>
-                </li>
-              ))}
-              {g.items.length > 6 && <li className="px-2 text-[12px] text-muted">and {g.items.length - 6} more</li>}
-            </ul>
-          </div>
+          <RelatedGroup key={g.type} g={g} />
         ))}
       </div>
     </section>
@@ -527,12 +672,18 @@ function TierNote({ tier, possible }: { tier?: string | null; possible?: boolean
 
 /** One link group's records, each opening its page, with the mail, documents and rows its link was read from. */
 function LinkGroupRows({ s, max, evidence }: { s: LinkSection; max: number; evidence: boolean }) {
-  // solid records are counted; possibly related ones (lead links) are said apart, never counted
-  const shown = s.records.slice(0, max);
+  const [open, setOpen] = useState(false);
+  // solid records are counted; possibly related ones (lead links) are said apart, never counted;
+  // what is loaded opens in place, what the page never loaded is said as a count of its own
+  const shown = open ? s.records : s.records.slice(0, max);
   const solidShown = shown.filter((r) => !r.possible).reduce((n, r) => n + (r.times ?? 1), 0);
   const count = Math.max(s.group.count ?? 0, s.records.filter((r) => !r.possible).reduce((n, r) => n + (r.times ?? 1), 0));
   const moreSolid = count - solidShown;
   const morePossible = Math.max(0, (s.group.possible ?? 0) - shown.filter((r) => r.possible).reduce((n, r) => n + (r.times ?? 1), 0));
+  // loaded but folded: the Show control opens these, so the "not listed" counts leave them out
+  const folded = s.records.slice(shown.length);
+  const unopened = folded.filter((r) => !r.possible).reduce((n, r) => n + (r.times ?? 1), 0);
+  const unopenedPossible = folded.filter((r) => r.possible).reduce((n, r) => n + (r.times ?? 1), 0);
   return (
     <div data-testid={`link-group-${s.group.link_type}`}>
       <p className="mb-0.5 text-[12px] text-muted">
@@ -553,8 +704,13 @@ function LinkGroupRows({ s, max, evidence }: { s: LinkSection; max: number; evid
             )}
           </li>
         ))}
-        {moreSolid > 0 && <li className="px-2 text-[12px] text-muted">and {moreSolid} more</li>}
-        {morePossible > 0 && <li className="px-2 text-[12px] text-muted">and {morePossible} more possibly related</li>}
+        {s.records.length > max && (
+          <li className="px-2">
+            <ShowMore hidden={s.records.length - max} open={open} onToggle={() => setOpen((v) => !v)} />
+          </li>
+        )}
+        {moreSolid - unopened > 0 && <li className="px-2 text-[12px] text-muted">{plural(moreSolid - unopened, "other record")} not listed here</li>}
+        {morePossible - unopenedPossible > 0 && <li className="px-2 text-[12px] text-muted">{plural(morePossible - unopenedPossible, "possibly related record")} not listed here</li>}
       </ul>
     </div>
   );
@@ -822,7 +978,10 @@ function MarginCard({ p, order, objectId, revenue, choices = [] }: { p: Profitab
   );
 }
 
-const SECTION_WORDS: Record<SectionName, string> = { late: "late lines", people: "people", landed_cost: "landed cost", trail: "evidence", margin: "margin", knows: "what they work on" };
+/** The record types whose page reads a formula section (the API's FORMULA_TYPES). */
+const FORMULA_TYPES: readonly string[] = ["Product", "FgItem"];
+
+const SECTION_WORDS: Record<SectionName, string> = { late: "late lines", people: "people", landed_cost: "landed cost", trail: "evidence", margin: "margin", knows: "what they work on", documents: "sheets and mail", formula: "formula" };
 
 /** "lateness, people and how we know": the sections named in reading order. */
 export function sectionWords(names: ReadonlySet<SectionName>): string {
@@ -894,9 +1053,11 @@ function salesFigures(obj: ObjectPage) {
   const derived = f.get("order_value");
   const amount = derived ? /^(-?[\d,]+(?:\.\d+)?\s*[A-Z]{3})\b/.exec(derived.value)?.[1] : undefined;
   const from = derived && /from its invoices/.test(derived.value) ? "Value from invoices" : "Value from lines";
+  // the header's total contradicted by the order's own lines (the API's fact says both figures)
+  const disputed = (obj.facts ?? []).some((x) => x.text.startsWith("No order value is given:"));
   return {
     total: total ?? moneyText(amount, currency),
-    totalLabel: total || !amount ? "Total" : from,
+    totalLabel: disputed && total ? "Total (lines disagree)" : total || !amount ? "Total" : from,
     totalSource: total ? undefined : derived?.source,
     ordered: dayOf(get("order_date", "document_date")),
     needed: dayOf(get("requested_delivery_date", "promised_delivery_date", "shipment_date", "requested_date")),
@@ -989,8 +1150,8 @@ export function ObjectView({ type, id, missing }: { type: string; id: string; mi
           return;
         }
         // the margin is a customer's or a sales order's only
-        // what a person corresponds about is a person's only
-        const names = PAGE_SECTIONS.filter((n) => (n !== "margin" || first.type === "Customer" || first.type === "SalesOrder") && (n !== "knows" || first.type === "Person"));
+        // what a person corresponds about is a person's only; the sheets-and-mail lists a customer's, supplier's or item's; a formula is a product's
+        const names = PAGE_SECTIONS.filter((n) => (n !== "margin" || first.type === "Customer" || first.type === "SalesOrder") && (n !== "knows" || first.type === "Person") && (n !== "documents" || DOCUMENT_LIST_TYPES.includes(first.type)) && (n !== "formula" || FORMULA_TYPES.includes(first.type)));
         if (!quiet) setPending(new Set(names));
         else setFailed(new Set());
         // a quiet read states the sections' age once they have all landed, so the "refreshing"
@@ -1357,7 +1518,7 @@ export function ObjectView({ type, id, missing }: { type: string; id: string; mi
       {header}
       {tabs}
       {isCustomer && conflictsOpen && <ConflictRows conflicts={conflicts} />}
-      <Situation obj={obj} />
+      <Situation obj={obj} party={counterpart && "object_id" in counterpart && counterpart.object_id ? (counterpart as ObjectRef) : null} />
       {figures}
       <OnRecord obj={obj} />
       {isParty && <PartyPulse obj={obj} />}
@@ -1396,11 +1557,13 @@ export function ObjectView({ type, id, missing }: { type: string; id: string; mi
       ) : (
         obj.landed_cost && obj.landed_cost.status !== "not_established" && <LandedCostCard lc={obj.landed_cost} />
       )}
+      {FORMULA_TYPES.includes(obj.type) && (pending.has("formula") ? <SectionSkeleton name="formula" title="Formula" lines={3} /> : <FormulaCard f={obj.formula ?? null} />)}
       <FulfilmentCard sections={links.fulfilment} />
       {(isCustomer || isSalesOrder) && <History events={obj.timeline ?? []} linked={obj.linked ?? []} partial={hiddenSome(obj)} />}
       <ImpactCard type={obj.type} id={obj.object_id} />
+      {DOCUMENT_LIST_TYPES.includes(obj.type) && (pending.has("documents") ? <SectionSkeleton name="documents" title="Sheets and mail" lines={3} /> : <DocumentLists docs={obj.documents} />)}
       {PACK_TYPES.includes(obj.type) && <DocumentsSection type={obj.type} id={obj.object_id} />}
-      <Linked items={obj.linked ?? []} />
+      <Linked items={obj.linked ?? []} withheld={obj.linked_withheld ?? 0} unavailable={obj.linked_unavailable ?? 0} countedAll={obj.linked_counted_all ?? true} />
       {obj.type === "Product" && <LabelChangesSection objectId={obj.object_id} />}
       {["Product", "Customer", "SalesOrder", "AssemblyOrder"].includes(obj.type) && (
         <LabelRevisionsSection objectId={obj.object_id} />
@@ -1427,7 +1590,7 @@ export function ObjectView({ type, id, missing }: { type: string; id: string; mi
                 {k.status && k.status !== "neutral" ? (
                   <span>
                     <StatusGlyph status={k.status} size={12} className="mr-1.5 inline-block align-[-1px]" />
-                    {k.value.replace(/\s*⚠$/, "")}
+                    {k.value}
                   </span>
                 ) : k.label === "Supplier" && counterpart && "object_id" in counterpart && counterpart.object_id ? (
                   <Link href={refHref(counterpart as ObjectRef)} className="hover:underline">
@@ -1460,7 +1623,11 @@ export function ObjectView({ type, id, missing }: { type: string; id: string; mi
         </section>
       )}
       {!(isCustomer || isSalesOrder) && <Activity events={obj.timeline ?? []} />}
-      <RecordWorkLog objectId={obj.object_id} />
+      {/* a record whose header holds every fact: the questions asked next about its kind, not the header again */}
+      {facts.length === 0 && sources.length === 0 && (obj.people ?? []).length === 0 && !byLink && otherRelated.length === 0 && (
+        <AskNext type={obj.type} objectId={obj.object_id} label={head.title || recordLabel(obj.type, obj.label)} party={counterpart?.label ?? null} />
+      )}
+      <Related records={[obj.object_id]} label={head.title || recordLabel(obj.type, obj.label)} docTypes={relatedDocTypes(obj.type)} className="mt-6" />
       <div className="text-[12px]">
         <FreshnessLabel freshness={obj.freshness} />
       </div>

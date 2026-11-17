@@ -1,19 +1,21 @@
 "use client";
 
 import * as Menu from "@radix-ui/react-dropdown-menu";
-import { Activity, BellRing, Bookmark, Bot, CalendarClock, Clock3, FileText, Gauge, History, Inbox, MessageCircle, MoreHorizontal, RefreshCw, Search, TriangleAlert, Users, type LucideIcon } from "lucide-react";
+import { Activity, BellRing, Bookmark, Bot, Briefcase, Database, Inbox, List, MessageCircle, MoreHorizontal, Pin, RefreshCw, Search, TriangleAlert, type LucideIcon } from "lucide-react";
 import Link from "next/link";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { lazy, Suspense, useEffect, useState } from "react";
 import { getHome, getLateList, getOpsAlarms, getOpsHealth, type OpsAlarms, type OpsCheck, type OpsHealth } from "@/lib/api";
 import { DesktopBridge } from "./desktop-bridge";
 import { CommandPaletteProvider, useCommandPalette } from "./command-palette";
+import { LISTS as ALL_LISTS, listsFor } from "@/lib/lists";
 import { FeedbackButton, FeedbackProvider, useFeedbackDialog } from "./feedback-dialog";
 import { eastern, opsHeadline, plainServerNote, SYSTEM_LABEL } from "@/lib/format";
 import { cn } from "@/lib/cn";
 import { stashPending } from "@/lib/pending";
 import { useShortcut } from "@/lib/platform";
 import { useSaved } from "@/lib/saved";
+import { usePins, type PinReader } from "@/lib/pins";
 import { readAllLate } from "@/lib/late";
 import { readAheadRoute } from "@/lib/route-reads";
 import { onSessionReset } from "@/lib/session-cache";
@@ -66,20 +68,48 @@ export function Logo({ className }: { className?: string }) {
   );
 }
 
+type SignInKind = "microsoft" | "access_link" | "demo";
+
 function useBanner() {
   const { state } = useAuth();
   const me = state.status === "signed-in" ? state.me : null;
   const mode = me?.auth ?? state.config?.mode;
-  const dev = me ? me.dev_mode || me.auth !== "entra" : !!mode && mode !== "entra";
-  return { dev, me, access: me?.access_label ?? null };
+  // The server says how this reader signed in; an older server (no sign_in) falls back to
+  // the mode, so a session that is not a Microsoft sign-in still reads as a demo.
+  const said = me ? me.sign_in : state.config?.sign_in;
+  const kind: SignInKind =
+    said === "microsoft" || said === "access_link" || said === "demo"
+      ? said
+      : (me ? me.dev_mode || me.auth !== "entra" : !!mode && mode !== "entra")
+        ? "demo"
+        : "microsoft";
+  // A server that says microsoft for a session it marks dev is not believed.
+  const dev = kind === "demo" || (kind === "microsoft" && !!me && (me.dev_mode || me.auth !== "entra"));
+  return { dev, link: !dev && kind === "access_link" && !!me, me, access: me?.access_label ?? null };
 }
 
 /**
- * DEV mode, said once in the sidebar: "Demo sign-in", with the full-read label under it when
- * the reader holds the grant. The data label (e.g. FIXTURE) is its tooltip and screen-reader text.
+ * How this session signed in, said once in the sidebar. A demo (mock or fixture data, or a
+ * test identity): "Demo sign-in", with the full-read label under it when the reader holds
+ * the grant; the data label (e.g. FIXTURE) is its tooltip and screen-reader text. A console
+ * access link: "Signed in with your access link". Microsoft sign-in says nothing here.
  */
 export function DevBanner({ className, compact }: { className?: string; compact?: boolean }) {
-  const { dev, me, access } = useBanner();
+  const { dev, link, me, access } = useBanner();
+  if (link) {
+    return (
+      <div role="note" title="Signed in with your access link" className={cn("text-meta text-muted", className)} data-testid="link-banner">
+        <span className={compact ? "text-faint" : undefined}>{compact ? "Access link" : "Signed in with your access link"}</span>
+        {compact && <span className="sr-only">: signed in with your access link</span>}
+        {access && (
+          <span className={compact ? "sr-only" : "block"} data-testid="access-banner">
+            <span className="sr-only">. </span>
+            {access}
+          </span>
+        )}
+      </div>
+    );
+  }
   if (!dev) return null;
   const label = plainServerNote(me?.data_label);
   return (
@@ -103,8 +133,8 @@ export function DevBanner({ className, compact }: { className?: string; compact?
 
 /** The full-read label under Microsoft sign-in (DEV mode says it in its own line). */
 export function AccessBanner({ className }: { className?: string }) {
-  const { dev, access } = useBanner();
-  if (!access || dev) return null;
+  const { dev, link, access } = useBanner();
+  if (!access || dev || link) return null;
   return (
     <div role="note" className={cn("text-meta text-muted", className)} data-testid="access-banner">
       <span>{access}</span>
@@ -199,21 +229,146 @@ function lateOf(home: HomeResponse | null): number | null {
   return na?.status === "read" ? (na.late_total ?? (na.late_pos ?? []).length) : null;
 }
 
-/** The places. Team shows to every reader (their own row at least), Reliability and Trust
- * only to an ops reader (the owner and the Team readers); Feedback triage is in the account menu. */
-export const NAV: { href: string; label: string; icon: LucideIcon; late?: boolean; grant?: boolean; ops?: boolean }[] = [
-  { href: "/", label: "My work", icon: Inbox },
-  { href: "/late", label: "Late POs", icon: Clock3, late: true },
-  { href: "/autopilot", label: "Autopilot", icon: Bot },
-  { href: "/meetings", label: "Meetings", icon: CalendarClock },
-  { href: "/team", label: "Team", icon: Users },
-  { href: "/ask", label: "Ask", icon: MessageCircle },
-  { href: "/watching", label: "Watching", icon: BellRing },
-  { href: "/work-log", label: "Work log", icon: History },
-  { href: "/templates", label: "Templates", icon: FileText },
-  { href: "/ops", label: "Reliability", icon: Activity, ops: true },
-  { href: "/trust", label: "Trust", icon: Gauge, ops: true },
+/** One place in the nav. `ops`: an ops reader only; `admin`: the owner or a feedback admin. */
+export interface NavPlace {
+  href: string;
+  label: string;
+  late?: boolean;
+  ops?: boolean;
+  admin?: boolean;
+  /** Quality and production-planning readers, ops readers and the owner (seesQuality). */
+  quality?: boolean;
+}
+
+/** A top-level section: where its own link goes, the places under it, and the paths it holds. */
+export interface NavSection extends NavPlace {
+  key: string;
+  /** PlaceIcon's key for the section (its own icon). */
+  place: string;
+  icon: LucideIcon;
+  children: NavPlace[];
+  /** Path prefixes that belong to the section (its children's paths are added). */
+  holds: string[];
+}
+
+/**
+ * The places, in six sections and Records. Every old page is still here, under the section it
+ * belongs to; nothing was removed and every old URL still opens. Team shows to every reader
+ * (their own row at least); Admin only to an ops reader or a feedback admin, each of its
+ * places to the readers it serves.
+ */
+export const NAV_SECTIONS: NavSection[] = [
+  {
+    key: "home", href: "/", label: "Home", place: "/", icon: Inbox, holds: ["/my-work", "/activity"],
+    children: [
+      { href: "/", label: "My work" },
+      { href: "/my-work", label: "Prepared for you" },
+      { href: "/activity", label: "Your actions" },
+    ],
+  },
+  {
+    key: "ask", href: "/ask", label: "Ask", place: "/ask", icon: MessageCircle, holds: ["/help"],
+    children: [
+      { href: "/ask", label: "Ask" },
+      { href: "/memory", label: "Memory" },
+      { href: "/templates", label: "Templates" },
+    ],
+  },
+  {
+    key: "watching", href: "/watching", label: "Watching", place: "/watching", icon: BellRing, holds: [],
+    children: [
+      { href: "/watching", label: "Alerts" },
+      { href: "/late", label: "Late POs", late: true },
+      { href: "/watching#data-health", label: "Data health" },
+      { href: "/qc", label: "Quality", quality: true },
+    ],
+  },
+  {
+    key: "autopilot", href: "/autopilot", label: "Autopilot", place: "/autopilot", icon: Bot, holds: [],
+    children: [
+      { href: "/autopilot", label: "Autopilot" },
+      { href: "/team#approvals", label: "Approvals" },
+    ],
+  },
+  {
+    key: "work", href: "/meetings", label: "Work", place: "/work", icon: Briefcase, holds: [],
+    children: [
+      { href: "/meetings", label: "Meetings" },
+      { href: "/work-log", label: "Work log" },
+      { href: "/team", label: "Team" },
+      { href: "/team#workload", label: "Workload" },
+    ],
+  },
+  {
+    key: "records", href: "/records", label: "Records", place: "/records", icon: Database,
+    holds: ["/customer", "/supplier", "/po", "/ao", "/object", "/source"],
+    children: [],
+  },
+  {
+    key: "admin", href: "/ops", label: "Admin", place: "/admin", icon: Activity, holds: [],
+    children: [
+      { href: "/ops", label: "Reliability", ops: true },
+      { href: "/trust", label: "Trust", ops: true },
+      { href: "/feedback", label: "Feedback triage", admin: true },
+    ],
+  },
 ];
+
+type NavReader = (Parameters<typeof hasTeamGrant>[0] & { ops_reader?: boolean; feedback_admin?: boolean; owner?: boolean; roles?: string[] | null }) | null | undefined;
+
+/** Whether the QC packs are for this reader: quality or production planning by role, an ops
+ * reader or the owner. The nav's gate only; the server shows the lines to quality_controlled readers. */
+export function seesQuality(me: NavReader): boolean {
+  return !!me && (isOpsReader(me) || !!me.owner || (me.roles ?? []).some((r) => r === "quality" || r === "production_planning"));
+}
+
+function placeFor(p: NavPlace, me: NavReader): boolean {
+  if (p.quality && !seesQuality(me)) return false;
+  if (p.ops && p.admin) return isOpsReader(me) || !!me?.feedback_admin;
+  if (p.ops) return isOpsReader(me);
+  if (p.admin) return !!me?.feedback_admin;
+  return true;
+}
+
+/** The sections this reader sees, each with the places under it they may open; a section
+ * with none of its gated places left is dropped, and its link goes to the first place left. */
+export function navSectionsFor(me: NavReader): NavSection[] {
+  const out: NavSection[] = [];
+  for (const s of NAV_SECTIONS) {
+    const children = s.children.filter((c) => placeFor(c, me));
+    if (s.children.length && !children.length) continue;
+    const gated = s.children.length > 0 && s.children.every((c) => c.ops || c.admin);
+    out.push({ ...s, href: gated ? children[0].href : s.href, children });
+  }
+  return out;
+}
+
+/** Every place this reader may open from the nav (each section, then the places under it). */
+export function navFor(me: NavReader): NavPlace[] {
+  const out: NavPlace[] = [];
+  for (const s of navSectionsFor(me)) {
+    for (const p of [s, ...s.children]) if (!out.some((o) => o.href === p.href)) out.push(p);
+  }
+  for (const p of listsFor(me)) if (!out.some((o) => o.href === p.href)) out.push(p);
+  return out;
+}
+
+/** The section a path belongs to (null: none, e.g. the sign-in page). */
+export function sectionOf(path: string, sections: NavSection[] = NAV_SECTIONS, hash = ""): NavSection | null {
+  const under = (prefix: string) => (prefix === "/" ? path === "/" : path === prefix || path.startsWith(`${prefix}/`));
+  // a #fragment place names its section only on that exact fragment (/team#approvals is
+  // Autopilot's); otherwise the page's own section wins (/team is Work's, not Autopilot's)
+  const exact = sections.find((s) => s.children.some((c) => c.href.includes("#") && isOn(path, c.href, hash)));
+  if (exact) return exact;
+  for (const s of sections) {
+    const prefixes = [s.href, ...s.holds, ...s.children.filter((c) => !c.href.includes("#")).map((c) => c.href.split("?")[0])];
+    if (prefixes.some(under)) return s;
+  }
+  for (const s of sections) {
+    if (s.children.some((c) => under(c.href.split(/[?#]/)[0]))) return s;
+  }
+  return null;
+}
 
 /** Whether this reader holds a team grant (a declared full-read grant or the owner): Team approvals. */
 export function hasTeamGrant(me: { access_label?: string | null; feedback_admin?: boolean } | null | undefined): boolean {
@@ -226,16 +381,26 @@ export function isOpsReader(me: { ops_reader?: boolean } | null | undefined): bo
   return !!me?.ops_reader;
 }
 
-/** The nav this reader sees. */
-export function navFor(me: (Parameters<typeof hasTeamGrant>[0] & { ops_reader?: boolean }) | null | undefined) {
-  return NAV.filter((n) => (!n.grant || hasTeamGrant(me)) && (!n.ops || isOpsReader(me)));
+/** Phone tabs: Home, Ask, Watching, Work, then More for the rest. */
+export const TABS = ["home", "ask", "watching", "work"];
+
+function isOn(path: string, href: string, hash = "") {
+  const [base, frag] = href.split("#");
+  if (frag !== undefined) return (base === "/" ? path === "/" : path === base) && hash === `#${frag}`;
+  return href === "/" ? path === "/" : path === href || path.startsWith(`${href}/`);
 }
 
-/** Phone tabs: My work, Late POs, Ask, Meetings, then More for the rest. */
-export const TABS = ["/", "/late", "/ask", "/meetings"];
-
-function isOn(path: string, href: string) {
-  return href === "/" ? path === "/" : path === href || path.startsWith(`${href}/`);
+/** The location's #fragment, kept current as it changes (a sub-place like /team#workload). */
+export function useHash(): string {
+  const [hash, setHash] = useState("");
+  const path = usePathname();
+  useEffect(() => {
+    const read = () => setHash(window.location.hash);
+    read();
+    window.addEventListener("hashchange", read);
+    return () => window.removeEventListener("hashchange", read);
+  }, [path]);
+  return hash;
 }
 
 /** The sidebar's sync line: when the data was read, the systems that are behind, each system on click. */
@@ -430,11 +595,12 @@ export function OpsAlarmBanner({ every = 60_000, className }: { every?: number; 
   if (!owner || !seen || !seen.configured) return null;
   const open = seen.open ?? [];
   if (open.length === 0 && seen.running && !unavailable) return null;
-  // one line: each problem by its headline (the server's line up to its first "; "), the
-  // detail in the tooltip and on the Reliability page, so the count and "N more" stay in view
+  // one line: the count first, so a narrow window that cuts the line keeps it, then every
+  // problem by its headline (the server's line up to its first "; "); the detail is in the
+  // tooltip and on the Reliability page. Never "A · B · N more".
   const headline = opsHeadline;
   const base = open.length > 0
-    ? `${open.length} reliability problem${open.length === 1 ? "" : "s"}: ${open.slice(0, 2).map((i) => headline(i.line)).join(" · ")}${open.length > 2 ? ` · ${open.length - 2} more` : ""}`
+    ? `${open.length} reliability problem${open.length === 1 ? "" : "s"}: ${open.map((i) => headline(i.line)).join(" · ")}`
     : seen.running
       ? ""
       : `Reliability checks are not running${seen.checked_at ? ` (last ${eastern(seen.checked_at)})` : ""}; a new problem would not show here.`;
@@ -457,23 +623,23 @@ export function OpsAlarmBanner({ every = 60_000, className }: { every?: number; 
   );
 }
 
-function NavItem({ href, label, count, onNavigate }: { href: string; label: string; count?: number | null; onNavigate?: () => void }) {
+function NavItem({ href, label, place, count, on, onNavigate }: { href: string; label: string; place?: string; count?: number | null; on?: boolean; onNavigate?: () => void }) {
   const path = usePathname();
-  const on = isOn(path, href);
+  const current = on ?? isOn(path, href);
   return (
     <Link
       href={href}
       onClick={onNavigate}
       onPointerEnter={() => readAheadRoute(href)}
       onFocus={() => readAheadRoute(href)}
-      aria-current={on ? "page" : undefined}
+      aria-current={current ? "page" : undefined}
       title={label}
       className={cn(
         "group flex h-7 items-center gap-2.5 rounded-r-[2px] border-l-2 px-2 text-[13px] leading-none max-xl:justify-center max-xl:px-0",
-        on ? "border-accent bg-nav-on font-medium text-fg" : "border-transparent text-fg/90 hover:bg-hover",
+        current ? "border-accent bg-nav-on font-medium text-fg" : "border-transparent text-fg/90 hover:bg-hover",
       )}
     >
-      <PlaceIcon href={href} className={on ? undefined : "opacity-85 group-hover:opacity-100"} />
+      <PlaceIcon href={place ?? href} className={current ? undefined : "opacity-85 group-hover:opacity-100"} />
       <span className="flex-1 truncate max-xl:sr-only">{label}</span>
       {typeof count === "number" && count > 0 && (
         <span className="num text-[12px] text-muted max-xl:hidden" aria-label={`${count} late`}>
@@ -481,6 +647,171 @@ function NavItem({ href, label, count, onNavigate }: { href: string; label: stri
         </span>
       )}
     </Link>
+  );
+}
+
+/** The place under a section that this location is: a #fragment place first, else the longest path match. */
+export function currentChild(children: NavPlace[], path: string, hash: string): string | null {
+  const exact = children.find((c) => c.href.includes("#") && isOn(path, c.href, hash));
+  if (exact) return exact.href;
+  const plain = children.filter((c) => !c.href.includes("#") && isOn(path, c.href.split("?")[0]));
+  plain.sort((a, b) => b.href.length - a.href.length);
+  return plain[0]?.href ?? null;
+}
+
+/** The sidebar's sections; the open section lists its places under it (wide sidebar only). */
+function SectionNav({ me, late }: { me: NavReader; late: number | null }) {
+  const path = usePathname();
+  const hash = useHash();
+  const sections = navSectionsFor(me);
+  const open = sectionOf(path, sections, hash);
+  return (
+    <div className="space-y-0.5" data-testid="nav-sections">
+      {sections.map((s) => {
+        const isOpen = open?.key === s.key;
+        const child = isOpen ? currentChild(s.children, path, hash) : null;
+        const lateChild = s.children.find((c) => c.late);
+        return (
+          <div key={s.key}>
+            <NavItem href={s.href} label={s.label} place={s.place} on={isOpen && (!s.children.length || child === s.href)} count={lateChild && !isOpen ? late : undefined} />
+            {isOpen && s.children.length > 1 && (
+              <ul className="mt-px mb-1 space-y-px pl-[26px] max-xl:hidden" aria-label={s.label} data-testid={`nav-${s.key}`}>
+                {s.children.filter((c) => c.href !== s.href).map((c) => {
+                  const on = child === c.href;
+                  return (
+                    <li key={c.href}>
+                      <Link
+                        href={c.href}
+                        onPointerEnter={() => readAheadRoute(c.href)}
+                        aria-current={on ? "page" : undefined}
+                        className={cn("flex h-7 items-center rounded-[2px] px-2 text-[13px]", on ? "bg-nav-on font-medium text-fg" : "text-muted hover:bg-hover hover:text-fg")}
+                      >
+                        <span className="flex-1 truncate">{c.label}</span>
+                        {c.late && typeof late === "number" && late > 0 && <span className="num text-[12px] text-muted" aria-label={`${late} late`}>{late}</span>}
+                      </Link>
+                    </li>
+                  );
+                })}
+              </ul>
+            )}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+/** A section's places as tabs: Watching's own pages draw it under their title at every width
+ * (Alerts, Late POs, Data health, Quality: the owner's "Late POs as a tab"); the shell draws
+ * it for the other sections where the sidebar is a rail and cannot list them (1024 to 1279). */
+export function SectionTabs({ section, className }: { section: string; className?: string }) {
+  const { state } = useAuth();
+  const me = state.status === "signed-in" ? state.me : null;
+  const path = usePathname() ?? "";
+  const hash = useHash();
+  const s = navSectionsFor(me).find((x) => x.key === section);
+  if (!s || s.children.length < 2) return null;
+  const current = currentChild(s.children, path, hash);
+  return (
+    <nav aria-label={s.label} className={cn("flex h-10 shrink-0 items-stretch gap-5 overflow-x-auto border-b border-border px-4 [scrollbar-width:none] lg:px-5 [&::-webkit-scrollbar]:hidden", className)} data-testid={`section-tabs-${s.key}`}>
+      {s.children.map((c) => {
+        const on = current === c.href;
+        return (
+          <Link
+            key={c.href}
+            href={c.href}
+            onPointerEnter={() => readAheadRoute(c.href)}
+            aria-current={on ? "page" : undefined}
+            className={cn("relative flex shrink-0 items-center whitespace-nowrap text-[13px]", on ? "font-medium text-fg after:absolute after:inset-x-0 after:bottom-0 after:h-0.5 after:bg-accent" : "text-muted hover:text-fg")}
+          >
+            {c.label}
+          </Link>
+        );
+      })}
+    </nav>
+  );
+}
+
+/** The shell's strip of the open section's places, on the rail widths only (Watching draws its own). */
+function RailSectionTabs() {
+  const { state } = useAuth();
+  const me = state.status === "signed-in" ? state.me : null;
+  const path = usePathname() ?? "";
+  const hash = useHash();
+  const open = sectionOf(path, navSectionsFor(me), hash);
+  if (!open || open.key === "watching") return null;
+  return <SectionTabs section={open.key} className="hidden lg:flex xl:hidden" />;
+}
+
+/** What is the reader's own, a click away from every section (the owner's nav decision,
+ * 11-14): memory, templates and the logs. A place the open section already lists is left
+ * out there; the autopilot's run log is the owner's only. */
+export const YOURS: NavPlace[] = [
+  { href: "/memory", label: "Memory" },
+  { href: "/templates", label: "Templates" },
+  { href: "/work-log", label: "Work log" },
+];
+
+/** The lists, under "Lists" on every page (the owner, 11-16: the block went away on the Work
+ * pages, which also named them, so it seemed to come and go). No section names them, so the
+ * sidebar is the same on every route; each page shows only the items its reader may open.
+ * The MRP testing list is gone (the owner, 11-17: not ours). */
+export const LISTS: NavPlace[] = ALL_LISTS;
+
+/** No search params read. Each list only for its readers (lib/lists); none: no block at all. */
+export function ListsNav({ me }: { me: NavReader }) {
+  const path = usePathname() ?? "";
+  const lists = listsFor(me);
+  if (!lists.length) return null;
+  return (
+    <div className="mt-4 space-y-px max-xl:mt-3 max-xl:border-t max-xl:border-border max-xl:pt-3" data-testid="nav-lists">
+      <div className="px-2 pb-1 text-[11px] font-medium leading-4 tracking-[0.01em] text-faint max-xl:sr-only">Lists</div>
+      {lists.map((p) => <NavItem key={p.href} href={p.href} label={p.label} place={p.href} on={isOn(path, p.href)} />)}
+    </div>
+  );
+}
+
+export function yoursFor(me: NavReader, open: NavSection | null): NavPlace[] {
+  const listed = new Set((open?.children ?? []).map((c) => c.href));
+  const all = me?.owner ? [...YOURS, { href: "/autopilot?tab=audit", label: "Autopilot log" }] : YOURS;
+  return all.filter((p) => !listed.has(p.href));
+}
+
+function YoursNav({ me }: { me: NavReader }) {
+  const path = usePathname() ?? "";
+  const params = useSearchParams();
+  const places = yoursFor(me, sectionOf(path, navSectionsFor(me)));
+  if (!places.length) return null;
+  return (
+    <div className="mt-4 space-y-px max-xl:mt-3 max-xl:border-t max-xl:border-border max-xl:pt-3" data-testid="nav-yours">
+      <div className="px-2 pb-1 text-[11px] font-medium leading-4 tracking-[0.01em] text-faint max-xl:sr-only">Yours</div>
+      {places.map((p) => {
+        const [base, query] = p.href.split("?");
+        // a place with a query (the run log, a tab of Autopilot) never claims the page: its section does
+        const on = !query && isOn(path, base) && !params.get("tab");
+        return <NavItem key={p.href} href={p.href} label={p.label} place={base} on={on} />;
+      })}
+    </div>
+  );
+}
+
+/** The person's pinned pages in the sidebar (their role's defaults until they change them). */
+function PinnedNav({ me }: { me: PinReader | null }) {
+  const { pins, defaults } = usePins(me);
+  if (!pins.length) return null;
+  return (
+    <SidebarSection title={defaults ? "Pinned for your role" : "Pinned"}>
+      <div className="space-y-px" data-testid="nav-pinned">
+        {pins.slice(0, 8).map((p) => (
+          <Link key={p.href} href={p.href} className="flex h-8 items-center gap-2.5 rounded-md px-2 text-[13px] text-fg/90 hover:bg-hover">
+            <span className="flex size-5 shrink-0 items-center justify-center" aria-hidden>
+              <Pin className="size-3.5 text-muted" strokeWidth={2} />
+            </span>
+            <span className="truncate">{p.label}</span>
+          </Link>
+        ))}
+      </div>
+    </SidebarSection>
   );
 }
 
@@ -552,7 +883,8 @@ function Sidebar() {
   const { shortcut } = useShortcut();
   const late = lateOf(home);
   const { state } = useAuth();
-  const nav = navFor(state.status === "signed-in" ? state.me : null);
+  const signedIn = state.status === "signed-in" ? state.me : null;
+  const savedOnly = saved.filter((s) => s.kind !== "page");
   const recent = (home?.recent_questions ?? []).filter(
     (r, i, all) => all.findIndex((x) => x.question.trim().toLowerCase() === r.question.trim().toLowerCase()) === i,
   );
@@ -582,18 +914,19 @@ function Sidebar() {
         </button>
       </div>
       <nav aria-label="Main" className="mt-3 flex min-h-0 flex-1 flex-col overflow-y-auto px-3 pb-3">
-        <div className="space-y-0.5">
-          {nav.map((n) => (
-            <NavItem key={n.href} href={n.href} label={n.label} count={n.late ? late : undefined} />
-          ))}
-        </div>
+        <SectionNav me={signedIn} late={late} />
+        <ListsNav me={signedIn} />
+        <Suspense>
+          <YoursNav me={signedIn} />
+        </Suspense>
+        <PinnedNav me={signedIn} />
         <Suspense>
           <LateBySupplier />
         </Suspense>
-        {saved.length > 0 && (
+        {savedOnly.length > 0 && (
           <SidebarSection title="Saved">
             <div className="space-y-px">
-              {saved.slice(0, 6).map((s) => (
+              {savedOnly.slice(0, 6).map((s) => (
                 <Link key={s.key} href={s.href} className="flex h-8 items-center gap-2.5 rounded-md px-2 text-[13px] text-fg/90 hover:bg-hover">
                   <span className="flex size-5 shrink-0 items-center justify-center" aria-hidden>
                     <Bookmark className="size-3.5 text-muted" strokeWidth={2} />
@@ -703,7 +1036,7 @@ function AccountMenuContent({ name, email, onViewAs }: { name: string; email?: s
 
 function UserMenu() {
   const { state } = useAuth();
-  const { dev } = useBanner();
+  const { dev, link } = useBanner();
   const desktop = useDesktopShell();
   const [picking, setPicking] = useState(false);
   if (state.status !== "signed-in") return null;
@@ -720,7 +1053,7 @@ function UserMenu() {
         <Avatar name={name} className="size-5 text-[9px]" />
         <span className="min-w-0 flex-1 max-xl:hidden">
           <span className="block truncate text-[13px] font-medium leading-4">{name}</span>
-          {dev && desktop && <DevBanner compact className="truncate text-[11px] leading-4" />}
+          {(dev || link) && desktop && <DevBanner compact className="truncate text-[11px] leading-4" />}
         </span>
         <MoreHorizontal className="size-4 shrink-0 text-faint max-xl:hidden" aria-hidden />
       </Menu.Trigger>
@@ -731,15 +1064,22 @@ function UserMenu() {
 }
 
 /** Phone: the tab bar along the bottom, as an iPhone app has it. */
-function TabBar() {
+export function TabBar() {
   const path = usePathname();
   const home = useHome();
   const late = lateOf(home);
   const { state } = useAuth();
-  const nav = navFor(state.status === "signed-in" ? state.me : null);
-  const tabs = TABS.map((href) => NAV.find((n) => n.href === href)!);
-  const rest = nav.filter((n) => !TABS.includes(n.href));
-  const moreOn = rest.some((n) => isOn(path, n.href));
+  const reader = state.status === "signed-in" ? state.me : null;
+  const sections = navSectionsFor(reader);
+  const lists = listsFor(reader);
+  const open = sectionOf(path, sections);
+  const tabs = TABS.map((key) => sections.find((s) => s.key === key)).filter((s): s is NavSection => !!s)
+    .map((s) => ({ ...s, late: s.children.some((c) => c.late) }));
+  // More: every other section, and each place under a section that is not its own link
+  const rest = sections.flatMap((s) => (TABS.includes(s.key) ? s.children.filter((c) => c.href !== s.href).map((c) => ({ ...c, section: s })) : [s, ...s.children.filter((c) => c.href !== s.href).map((c) => ({ ...c, section: s }))]))
+    .map((p) => ({ href: p.href, label: p.label, icon: ("icon" in p && p.icon) || ("section" in p ? p.section.icon : Inbox), sub: "section" in p }))
+    .concat(lists.map((p) => ({ href: p.href, label: p.label, icon: List, sub: false })));
+  const moreOn = (!!open && !TABS.includes(open.key)) || lists.some((p) => isOn(path ?? "", p.href));
   return (
     <nav
       aria-label="Main"
@@ -747,8 +1087,8 @@ function TabBar() {
       data-testid="tab-bar"
     >
       <div className="mx-auto grid h-[52px] max-w-md grid-cols-5">
-        {tabs.map(({ href, label, icon: Icon, late: showLate }) => {
-          const on = isOn(path, href);
+        {tabs.map(({ key, href, label, icon: Icon, late: showLate }) => {
+          const on = open?.key === key;
           return (
             <Link key={href} href={href} onPointerDown={() => readAheadRoute(href)} aria-current={on ? "page" : undefined} className={cn("relative flex flex-col items-center justify-center gap-0.5 text-[10px] font-medium", on ? "text-accent" : "text-muted")}>
               <Icon className="size-[22px]" strokeWidth={on ? 2 : 1.7} aria-hidden />
@@ -763,11 +1103,11 @@ function TabBar() {
             More
           </Menu.Trigger>
           <Menu.Portal>
-            <Menu.Content side="top" align="end" sideOffset={8} className="z-50 w-48 rounded-xl bg-raised p-1.5 shadow-pop">
-              {rest.map(({ href, label, icon: Icon }) => (
+            <Menu.Content side="top" align="end" sideOffset={8} collisionPadding={8} className="z-50 max-h-[70dvh] w-56 overflow-y-auto rounded-xl bg-raised p-1.5 shadow-pop" data-testid="more-menu">
+              {rest.map(({ href, label, icon: Icon, sub }) => (
                 <Menu.Item key={href} asChild>
-                  <Link href={href} className="flex items-center gap-2.5 rounded-md px-2 py-2 text-row outline-none data-[highlighted]:bg-hover">
-                    <Icon className="size-4 text-muted" aria-hidden />
+                  <Link href={href} className={cn("flex items-center gap-2.5 rounded-md px-2 py-2 text-row outline-none data-[highlighted]:bg-hover", sub && "pl-8 text-muted")}>
+                    {!sub && <Icon className="size-4 text-muted" aria-hidden />}
                     {label}
                   </Link>
                 </Menu.Item>
@@ -791,7 +1131,7 @@ export function MobileAccount({ quiet }: { quiet?: boolean } = {}) {
     <div className="flex items-center gap-1 lg:hidden">
       {desktop === false && <DevBanner compact className={cn("shrink-0 whitespace-nowrap text-[11px] leading-4", quiet && "max-sm:hidden")} />}
       <Menu.Root>
-        <Menu.Trigger aria-label={`Account: ${name}`} className="flex size-9 items-center justify-center rounded-full cursor-pointer">
+        <Menu.Trigger aria-label={`Account: ${name}`} className="flex size-9 items-center justify-center rounded cursor-pointer">
           <Avatar name={name} className="size-7 text-[11px]" />
         </Menu.Trigger>
         <AccountMenuContent name={name} email={state.me.email} />
@@ -804,7 +1144,7 @@ export function MobileAccount({ quiet }: { quiet?: boolean } = {}) {
 export function MobileSearch() {
   const { open } = useCommandPalette();
   return (
-    <button type="button" onClick={open} aria-label="Search or ask" className="flex size-9 items-center justify-center rounded-full text-accent hover:bg-hover lg:hidden cursor-pointer">
+    <button type="button" onClick={open} aria-label="Search or ask" className="flex size-9 items-center justify-center rounded text-accent hover:bg-hover lg:hidden cursor-pointer">
       <Search className="size-5" strokeWidth={2} aria-hidden />
     </button>
   );
@@ -827,7 +1167,7 @@ function MobileTitleBar() {
 }
 
 /** Pages that draw their own Toolbar; the shell adds no phone title bar over them.*/
-export const TOOLBAR_PAGES: string[] = ["/late", "/meetings", "/team", "/ask", "/po", "/ao", "/so", "/customer", "/supplier", "/object", "/source", "/activity", "/feedback", "/watching", "/my-work", "/rd-projects", "/uat-feedback", "/autopilot", "/ops", "/trust", "/work-log", "/templates", "/help"];
+export const TOOLBAR_PAGES: string[] = ["/late", "/meetings", "/team", "/ask", "/po", "/ao", "/customer", "/supplier", "/object", "/source", "/activity", "/feedback", "/watching", "/my-work", "/rd-projects", "/autopilot", "/ops", "/trust", "/work-log", "/templates", "/memory", "/help", "/records", "/qc"];
 
 function ShellSkeleton() {
   return (
@@ -860,6 +1200,9 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           <MobileTitleBar />
           <ViewAsBar />
           <OpsAlarmBanner />
+          <Suspense>
+            <RailSectionTabs />
+          </Suspense>
           {signOutError && (
             <div role="alert" className="border-b border-late-line bg-late-soft px-5 py-1.5 text-[13px] leading-5 text-late" data-testid="sign-out-failed">
               {signOutError}{" "}

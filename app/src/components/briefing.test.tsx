@@ -2,7 +2,7 @@ import { fireEvent, render, screen, waitFor, within } from "@testing-library/rea
 import { describe, expect, it, vi } from "vitest";
 import * as api from "@/lib/api";
 import type { Briefing, BriefingItem } from "@/lib/types";
-import { BriefingCard, BriefingRow, itemFacts } from "./briefing";
+import { BriefingCard, BriefingRow, checksLine, itemFacts } from "./briefing";
 
 const item = (over: Partial<BriefingItem>): BriefingItem => ({
   rank: 1,
@@ -188,6 +188,24 @@ describe("BriefingCard", () => {
     expect(text).toContain("Batch on quality hold: checked · none found in the live data yet");
     expect(text).toContain("Lot near expiry: checked · first found 2026-10-30");
     expect(text).not.toContain("Vendor has not replied: not checked this run · none found");
+  });
+
+  it("names the checks a run did not make whole by what happened to each, never a bare count", () => {
+    const checks = [
+      { check: "vendor_no_reply", label: "supplier replies", status: "not_checked", words: "supplier replies: not checked this run" },
+      { check: "negative_margin", label: "order margins", status: "failed", words: "order margins: failed" },
+      { check: "eta_slipped", label: "slipped delivery dates", status: "not_checked", words: "slipped delivery dates: not checked this run" },
+      { check: "late_or_unconfirmed_po", label: "late purchase orders", status: "partial", words: "late purchase orders: cannot check 3 records" },
+      { check: "lot_attention", label: "lots near expiry", status: "complete", words: "lots near expiry: checked" },
+    ] as Briefing["checks"];
+    render(<BriefingCard briefing={{ ...briefing, checks }} />);
+    const counts = screen.getByTestId("briefing-counts");
+    expect(within(counts).getByText(/^Failed this run/).textContent).toBe(
+      "Failed this run: order margins; not run this time: supplier replies and slipped delivery dates; partly read: late purchase orders",
+    );
+    expect(counts.textContent).not.toMatch(/\d+ checks/);
+    expect(counts.textContent).not.toContain("lots near expiry");
+    expect(checksLine([])).toBe("");
   });
 
   it("states a total its own lines disagree with neutrally, both figures and no blame", () => {

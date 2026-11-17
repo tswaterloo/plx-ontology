@@ -7,7 +7,6 @@ declined to the agent."""
 from __future__ import annotations
 
 from datetime import date, datetime, timedelta, timezone
-import json
 import unittest
 
 from operating import answer_gate, fast_answer, time_window

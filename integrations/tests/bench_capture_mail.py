@@ -31,8 +31,8 @@ for _name in [k for k in os.environ if k.startswith(("MICROSOFT_GRAPH_", "PLX_WO
     os.environ.pop(_name)
 
 from integrations import graph_read  # noqa: E402
-from integrations.capture_mail import (ATTACHMENT_DEFERRED, CaptureScope,  # noqa: E402
-                                       MailCapture, MailCaptureStore)
+from integrations.capture_mail import ATTACHMENT_DEFERRED, MailCapture, MailCaptureStore  # noqa: E402
+from integrations.capture_mail_scope import CaptureScope
 from integrations.graph_read import GraphMailReader  # noqa: E402
 from integrations.live_source_guard import BoundedBackoff  # noqa: E402
 from integrations.tests.test_capture_mail import (BOX_A, BOX_B, CAPTURE, ENV,  # noqa: E402

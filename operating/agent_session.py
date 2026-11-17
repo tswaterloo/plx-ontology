@@ -33,6 +33,7 @@ import tempfile
 import time
 from typing import Any, Callable, Iterable, Mapping, Protocol, Sequence
 
+from ontology import tmp_root
 from operating import handle_aliases, host_peers, tool_results
 from operating.handle_aliases import Aliases
 from operating.agent_environment import agent_environment
@@ -116,7 +117,13 @@ ANSWER_GATE_RULE = (
     "\"day\" or none, no role); the days from a day the question writes in full, or "
     "today, to one cited date (days left before an expiry, days past it) is \"op\": "
     "\"days\" over that one date field with \"day\": \"<YYYY-MM-DD>\" (x0 - day, "
-    "negative once the date has passed): never a day count of your own. An expression over "
+    "negative once the date has passed): never a day count of your own. The day a cited "
+    "whole number of days falls after a date (an order date plus its supplier's lead time "
+    "days, an invoice date plus its terms days) is \"op\": \"add_days\" with the ISO day "
+    "(YYYY-MM-DD) as its value, over a cited date field then a cited days field (x0 + "
+    "x1), or over the one days field with \"day\": \"<YYYY-MM-DD>\" (a day the question "
+    "writes in full, or today: day + x0; no unit, no role): never a date of your own "
+    "reckoning. An expression over "
     "figures printed in cited texts is one value claim too: {\"value\": <the result>, "
     "\"op\": \"expression\", \"expression\": \"x0 - x1\", \"of\": [{\"citation\": "
     "<handle>, \"field\": \"text\", \"value\": \"<the figure as printed>\", \"quote\": "
@@ -306,7 +313,7 @@ def _value_claim(value: Mapping[str, Any], stated: Any) -> dict[str, Any] | None
                   if isinstance(given, Mapping) and isinstance(given.get("l1_handle"), str)]
         op = calculation.get("op")
         if not inputs or op not in ("expression", "count", "count_distinct", "days",
-                                    *NUMERIC_OPS):
+                                    "add_days", *NUMERIC_OPS):
             return None
         of = []
         for given in inputs:
@@ -323,7 +330,7 @@ def _value_claim(value: Mapping[str, Any], stated: Any) -> dict[str, Any] | None
         claim = {"value": stated, "op": op, "of": of}
         if op == "expression":
             claim["expression"] = calculation.get("expression")
-        if op == "days" and "day" in calculation:
+        if op in ("days", "add_days") and "day" in calculation:
             claim["day"] = calculation["day"]
     else:
         cites = [cite for cite in value.get("citations") or []
@@ -479,6 +486,7 @@ def gate_final_reply(final_text: str, events: Sequence[Mapping[str, Any]],
     withheld (names), the claims the gate refused, sentences seen and removed, the
     unbacked statements."""
     from operating import answer_gate, claim_checks
+    from operating import claim_checks_grammar
 
     gate, refused = _gate_results(events)
     passed = answer_gate.passed_cells(gate)
@@ -495,6 +503,17 @@ def gate_final_reply(final_text: str, events: Sequence[Mapping[str, Any]],
     # name in the reply, never a figure (``answer_gate.returned_names``).
     names = answer_gate.returned_names(events, skip_tools=(ANSWER_GATE_TOOL,
                                                            *NOT_EVIDENCE_TOOLS))
+    # an amount a tool returned that the reply writes with no currency beside it gets
+    # one footnote line, never an edit of its sentences (``answer_gate.currency_footnote``)
+    amounts = answer_gate.returned_amounts(events, skip_tools=(ANSWER_GATE_TOOL,
+                                                               *NOT_EVIDENCE_TOOLS))
+
+    def footnote(*replies: dict[str, Any]) -> None:
+        for reply in replies:
+            noted = answer_gate.currency_footnote(reply["text"], amounts)
+            if noted != reply["text"]:
+                reply["text"], reply["modified"] = noted, True
+                report["currency_footnote"] = True
 
     def lead_figures(*replies: dict[str, Any]) -> None:
         # The count or total the question asks for leads the reply when none of its texts
@@ -541,6 +560,7 @@ def gate_final_reply(final_text: str, events: Sequence[Mapping[str, Any]],
     if answer is None:
         reply = screen(final_text)
         lead_figures(reply)
+        footnote(reply)
         if reply["modified"]:
             report.update(rewritten=True, answer_error=error)
         return reply["text"], report
@@ -605,7 +625,7 @@ def gate_final_reply(final_text: str, events: Sequence[Mapping[str, Any]],
     claims = [{"text": f"{value['name']}: "
                + ("at least " if value.get("bound") == "at_least" else "")
                + f"{value['value']}" + (
-                   "%" if value.get("unit") and claim_checks._page_unit(str(value["unit"]))
+                   "%" if value.get("unit") and claim_checks_grammar._page_unit(str(value["unit"]))
                    == "percent" and not str(value["value"]).endswith("%") else ""),
                # One value claim per quote the gate checked it with (the reply screen
                # reads what each is about: ``answer_gate._denied``).
@@ -633,6 +653,9 @@ def gate_final_reply(final_text: str, events: Sequence[Mapping[str, Any]],
     fence = _JSON_FENCE
     outside = screen(fence.sub(" ", final_text))
     lead_figures(text, outside)
+    # a reader sees the prose around the block or, with none, the answer's own text: the
+    # line goes in each text that may be shown, never into an empty one
+    footnote(text, outside)
     stated = (gate or {}).get("answerability")
     stated = stated.get("state") if isinstance(stated, Mapping) else None
     # A decision that passed nothing says only that (``blocked``): the reply's own
@@ -642,7 +665,7 @@ def gate_final_reply(final_text: str, events: Sequence[Mapping[str, Any]],
     # makes an agent's partial or blocked answerable (its own gaps, kept above, say what
     # it could not establish), and makes an answerable one partial. An agent's blocked
     # beside a claim the gate passed is partial: a passed claim is a cited answer, never
-    # blocked. A withheld value still makes it partial
+    # blocked (decision 2026-10-29). A withheld value still makes it partial
     # (the gate never saw a value never submitted).
     own = answer.get("answerability")
     answerability = max((label for label in (stated, own) if label in CERTAINTY),
@@ -1287,7 +1310,7 @@ def serve_gate(allowed: Iterable[str], server: Sequence[str], log: Path, *,
     def start_helper() -> _Peer | None:
         # A helper of the same reader, initialized before its first call (lines are
         # served in order, so the call waits for nothing but the helper's start-up).
-        from operating.mcp_server import PROTOCOL_VERSION
+        from operating.mcp_server_evidence import PROTOCOL_VERSION
         if started[0] >= HOST_HELPER_STARTS or finished.is_set():
             return None
         started[0] += 1
@@ -1666,7 +1689,7 @@ class EarlyStart:
             self.initialized.set()
 
     def _initialize(self, seconds: float) -> bool:
-        from operating.mcp_server import PROTOCOL_VERSION
+        from operating.mcp_server_evidence import PROTOCOL_VERSION
         self.ids.add(json.dumps(self.INIT_ID))
         if not self._send({"jsonrpc": "2.0", "id": self.INIT_ID, "method": "initialize",
                            "params": {"protocolVersion": PROTOCOL_VERSION, "capabilities": {},
@@ -1827,7 +1850,7 @@ class HostSpares:
                 while len(self._held) >= self.most:
                     oldest = min(self._held, key=lambda k: self._held[k].expires)
                     stale.append(self._held.pop(oldest))
-                directory = Path(tempfile.mkdtemp(prefix="plx-host-spare-"))
+                directory = Path(tmp_root.mkdtemp(prefix="plx-host-spare-"))
                 deadline = directory / "deadline"
                 env = {name: value for name, value in env.items()
                        if name not in (call_limits.DEADLINE_ENV, host_peers.TICKET_FILE_ENV)}
@@ -2289,9 +2312,12 @@ class HostGate:
 
 def connect(to: Path, back: Path) -> int:
     """``connect``: the agent's MCP server process: its stdin written to the host's gate
-    (``to``) and the gate's answers (``back``) to its stdout, byte for byte, until either
-    side ends (``HostGate``)."""
+    (``to``) and the gate's answers (``back``) to its stdout, line by line, until either
+    side ends (``HostGate``). A tool result goes to the model with no card number or
+    credential in it (``operating.card_text.masked_mcp_line``); every other line byte
+    for byte."""
     import threading
+    from operating.card_text import masked_mcp_line
     up = os.open(to, os.O_WRONLY)
     down = os.open(back, os.O_RDONLY)
 
@@ -2306,15 +2332,26 @@ def connect(to: Path, back: Path) -> int:
             pass
         os.close(up)
     threading.Thread(target=upstream, daemon=True).start()
+    held = b""
     try:
         while True:
             chunk = os.read(down, 1 << 16)
             if not chunk:
                 break
-            os.write(sys.stdout.fileno(), chunk)
+            held += chunk
+            *lines, held = held.split(b"\n")
+            for line in lines:
+                _write_all(sys.stdout.fileno(), masked_mcp_line(line + b"\n"))
+        if held:
+            _write_all(sys.stdout.fileno(), masked_mcp_line(held))
     except OSError:
         pass
     return 0
+
+
+def _write_all(fd: int, data: bytes) -> None:
+    while data:
+        data = data[os.write(fd, data):]
 
 
 def _timed_out(result: Any) -> bool:
@@ -2353,8 +2390,12 @@ def _stream(argv: list[str], cwd: str, env: dict[str, str], timeout: int,
     session); once ``stop(line)`` is true the group is killed and the stream read up to
     and including that line is returned with exit code 0 (``GateEnd``: the session's
     answer is decided). ``feed``: the session's input, written to its stdin once
-    ``feed()`` returns (it may wait: the session starts meanwhile), then closed."""
+    ``feed()`` returns (it may wait: the session starts meanwhile), then closed. The task
+    in ``argv`` and the fed input go masked: no card number or credential reaches the
+    model (``operating.card_text``)."""
     import threading
+    from operating.card_text import mask_served
+    argv = [mask_served(arg) for arg in argv]
     child = subprocess.Popen(argv, cwd=cwd, env=env,
                              stdin=subprocess.DEVNULL if feed is None else subprocess.PIPE,
                              stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
@@ -2363,7 +2404,7 @@ def _stream(argv: list[str], cwd: str, env: dict[str, str], timeout: int,
     if feed is not None:
         def write() -> None:
             try:
-                child.stdin.write(feed())
+                child.stdin.write(mask_served(feed()))
                 child.stdin.flush()
             except (OSError, ValueError):
                 pass
@@ -3022,7 +3063,7 @@ class ClaudeCodeAgent:
         that cannot start another server of its reader, or no tool a helper may serve
         (the read-only tools whose results are evidence, ``mcp_server.RETURNING_TOOLS``)."""
         import secrets
-        from operating.mcp_server import RETURNING_TOOLS
+        from operating.mcp_server_catalog import RETURNING_TOOLS
         if self.helpers <= 0 or not callable(getattr(host, "mcp_server", None)):
             return None
         pooled = frozenset(tool["name"] for tool in tools
@@ -3340,7 +3381,8 @@ def _answer_value(name: str, given: Mapping[str, Any]) -> dict[str, Any] | None:
         if isinstance(given.get("quote"), str) and given["quote"].strip():
             cite["quote"] = given["quote"]
         out["citations"] = [cite]
-    elif given.get("op") in ("count", "count_distinct", "expression", "days", *NUMERIC_OPS) \
+    elif given.get("op") in ("count", "count_distinct", "expression", "days", "add_days",
+                             *NUMERIC_OPS) \
             and isinstance(given.get("of"), list):
         inputs = []
         for item in given["of"]:
@@ -3354,7 +3396,8 @@ def _answer_value(name: str, given: Mapping[str, Any]) -> dict[str, Any] | None:
             inputs.append(entry)
         out["calculation"] = {"op": given["op"], "inputs": inputs, **(
             {"expression": given.get("expression")} if given["op"] == "expression" else {}),
-            **({"day": given["day"]} if given["op"] == "days" and "day" in given else {})}
+            **({"day": given["day"]} if given["op"] in ("days", "add_days")
+               and "day" in given else {})}
     else:
         return None
     for key, field_name in (("role", "quantity_role"), ("unit", "unit"),
@@ -3561,13 +3604,18 @@ def task_prompt(question: str, pinned: str, roles: str = ", ".join(QUANTITY_ROLE
         "value with \"calculation\" has no \"citations\" (citations_beside_calculation "
         "drops the whole answer): its inputs are its evidence. Compute nothing else (no "
         "comparison of your own): the gate checks only a count, sum, avg, min, max, "
-        "difference, ratio or days over cited records or such an expression, so any other result is null with a gap. "
+        "difference, ratio, days or add_days over cited records or such an expression, so any other result is null with a gap. "
         "The whole days from one cited date to another (how late a receipt came, a "
         "payment term from invoice to due date) is op \"days\" over exactly two date "
         "inputs (l1_handle, field_path): x0 - x1 in whole days. The days from a day the "
         "question writes in full, or today, to one cited date (days left before an expiry, "
         "days since it passed) is op \"days\" over that one input with \"day\": "
-        "\"<YYYY-MM-DD>\" beside \"op\": x0 - day, negative once the date has passed.",
+        "\"<YYYY-MM-DD>\" beside \"op\": x0 - day, negative once the date has passed. "
+        "The day a cited whole number of days falls after a date (an order date plus its "
+        "supplier's lead time days: when it arrives) is op \"add_days\", its value that "
+        "ISO day (YYYY-MM-DD): over a cited date then a cited days field (x0 + x1), or "
+        "over the one days field with \"day\": \"<YYYY-MM-DD>\" (a day the question writes "
+        "in full, or today: day + x0).",
         "State a unit only when the cited text prints it beside the figure or the cited "
         "field's record states it, and a currency only when it is printed or recorded "
         "there; otherwise leave it out (a bare \"$\" names no currency).",
@@ -3660,8 +3708,15 @@ SEARCH_ENV = ("PLX_SEARCH", "PLX_PG_DSN", "PLX_SEARCH_WEIGHTS", "PLX_SEARCH_OWNE
 # The store the host reads (no credential: a switch and a local folder): a host started by
 # an API process reading Postgres (``PLX_ONTOLOGY_PG``) reads it too, with the same kept
 # traverse facts (``PLX_PG_FACTS_DIR``). Without them every agent's host read the SQLite
-# generation and every delta layer over it while the API served Postgres.
-STORE_ENV = ("PLX_ONTOLOGY_PG", "PLX_PG_FACTS_DIR")
+# generation and every delta layer over it while the API served Postgres. The libpq
+# connection settings (no credential: a role, a socket host, a port, a database) reach it
+# too: the API's unit names its role in ``PGUSER`` (``plx_api``) and a DSN with no user
+# (``postgresql:///plx``), so a host without ``PGUSER`` connected as its OS user
+# (``plx-workbench``), which Postgres refuses, and every Ask's reads failed (ASK-FIX
+# 11-15: tool_execution_failed, freshness_unknown, audience_not_granted). ``PGPASSWORD``
+# and ``PGPASSFILE`` never pass.
+STORE_ENV = ("PLX_ONTOLOGY_PG", "PLX_PG_FACTS_DIR", "PGUSER", "PGHOST", "PGPORT",
+             "PGDATABASE")
 LIST_SECONDS = 180.0   # the host's start-up and its tool list
 
 

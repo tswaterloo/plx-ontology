@@ -328,24 +328,20 @@ ISO_DATE = re.compile(r"\b(\d{4})-(\d{2})-(\d{2})(?:T\d{2}:\d{2}(?::\d{2}(?:\.\d
 
 
 def date_words(text: str) -> str:
-    """Every ISO date or timestamp in ``text`` as ``Jul 10, 2026`` (the day the ISO text
-    states; a timestamp's time is not shown)."""
-    from datetime import datetime
-    from zoneinfo import ZoneInfo
+    """Every ISO date or timestamp in ``text`` as ``Jul 10, 2026``: the business day it
+    names (``operating.time_window.business_day``: a timestamp is the Eastern day it falls
+    on, a date or a midnight written as a timestamp is its own day; the time is not
+    shown)."""
+    from operating.time_window import business_day
 
     def said(found: re.Match) -> str:
         whole = found.group(0)
-        year, month, day = int(found.group(1)), int(found.group(2)), int(found.group(3))
-        if not 1 <= month <= 12:
+        if not 1 <= int(found.group(2)) <= 12:
             return whole
-        if len(whole) > 10 and re.search(r"(?:Z|[+-]\d{2}:?\d{2})$", whole):
-            try:   # a timestamp is the Toronto day it falls on
-                moment = datetime.fromisoformat(whole.replace("Z", "+00:00")).astimezone(
-                    ZoneInfo("America/Toronto"))
-                year, month, day = moment.year, moment.month, moment.day
-            except ValueError:
-                pass
-        return f"{_MONTHS[month - 1]} {day}, {year}"
+        day = business_day(whole)
+        if day is None:
+            return whole
+        return f"{_MONTHS[day.month - 1]} {day.day}, {day.year}"
     return ISO_DATE.sub(said, text)
 
 
@@ -700,10 +696,12 @@ def period_notice(question: str, freshness: Any, now: "datetime", *,
         key=lambda pair: pair[0])
     if not late and not behind:
         return None
-    lagging = ", ".join(f"{system} to {_when_words(at, time_too=False)}"
-                        for at, system in behind)
+    # A source's time is its stalest part's last read (one chat or folder the capture
+    # has not re-read), never where its data ends: newer records of it are served.
+    lagging = "some records last read: " + ", ".join(
+        f"{system} {_when_words(at, time_too=False)}" for at, system in behind)
     if late:
         said = (f"Note: the data runs to {_when_words(cut_off, time_too=True)}"
-                + (f" ({lagging})" if lagging else ""))
+                + (f" ({lagging})" if behind else ""))
         return said if said.endswith(".") else said + "."
-    return f"Note: {lagging} only."
+    return f"Note: {lagging[0].upper()}{lagging[1:]}."

@@ -474,10 +474,13 @@ def mode() -> str:
 def rewriter(binary: str = "claude", model: Optional[str] = None,
              seconds: Optional[float] = None) -> Callable[[str], Optional[str]]:
     """One ``claude -p`` turn with no tools and no settings on the operator's login
-    (``agent_environment``); the reply text or None (a timeout, an error)."""
+    (``agent_environment``), its prompt masked first (``operating.card_text``: no card
+    number or credential reaches the model); the reply text or None (a timeout, an error)."""
     def call(prompt: str) -> Optional[str]:
         from . import model_ledger
         from .agent_environment import agent_environment
+        from .card_text import mask_served
+        prompt = mask_served(prompt)   # no card number or credential reaches the model
         argv = [binary, "-p", "--setting-sources", "", "--tools", "",
                 "--no-session-persistence", "--max-turns", "1", "--output-format", "json",
                 "--model", model or os.environ.get(MODEL_ENV) or MODEL]
@@ -574,27 +577,35 @@ def polish(text: str, *, kind: str = "answer", person: Optional[str] = None,
     # the model is asked only about spots it may fix (``DELETABLE``): a flagged text
     # with none (a reveal, a stock word) keeps its wording and costs no model turn
     if after.flagged and call is not None and any(h.family in DELETABLE for h in after.hits):
+        # the model is shown the text masked (``operating.card_text``: no card number or
+        # credential reaches it, whichever ``rewrite`` a caller passes), and its rewrite
+        # is checked against that masked text: a rewrite used shows them masked too
+        from .card_text import mask_served
+        base, base_after, original = mask_served(out), after, text
+        if base != out:
+            original = mask_served(text)
+            base_after = style.check(base, kind=kind, allow=allow)
         try:
-            said = call(rewrite_prompt(out, after, kind=kind, person=person,
+            said = call(rewrite_prompt(base, base_after, kind=kind, person=person,
                                        learned=learned or False))
         except Exception:  # noqa: BLE001 - the rewrite is optional: keep what we have
             said = None
         candidate = _strip_reply(said) if isinstance(said, str) else ""
         if not candidate:
             reason = "no_reply"
-        elif not preserved(text, candidate, kind=kind):
+        elif not preserved(original, candidate, kind=kind):
             reason = "facts_changed"
-        elif _frame(candidate) - _frame(out):
+        elif _frame(candidate) - _frame(base):
             reason = "greeting_or_signoff_added"
-        elif not confined(out, candidate, after):
+        elif not confined(base, candidate, base_after):
             reason = "outside_flagged"
-        elif len(candidate) > len(out) + 2:      # a rewrite only deletes
+        elif len(candidate) > len(base) + 2:      # a rewrite only deletes
             reason = "length"
         elif verify is not None and not verify(candidate):
             reason = "gate"
         else:
             redone = style.check(candidate, kind=kind, allow=allow)
-            if len(redone.hits) < len(after.hits):
+            if len(redone.hits) < len(base_after.hits):
                 out, action, after = candidate, "rewritten", redone
             else:
                 reason = "not_better"

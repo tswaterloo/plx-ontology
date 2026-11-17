@@ -46,6 +46,11 @@ SNIPPET_CHARS = 300
 RERANK_PASSAGE_CHARS = 1200
 RERANK_FLOOR = 0.1
 STATEMENT_TIMEOUT_MS = 3000
+# The dense list's own statement timeout. Its filtered HNSW walk reads index and heap pages
+# at random; on a loaded host with the index out of cache it ran past the 3 s every other
+# list keeps in 143 of 187 gold-card queries (2026-11-15), and each search then ranked by
+# words alone. Warm, it takes 0.1-0.6 s; this bounds the cold case.
+DENSE_TIMEOUT_MS = 8000
 # One deadline for a search's question embedding, from the search's start: the dense list
 # and the fused answer wait for it no longer, and the search ranks without vectors
 # (lexical), saying so. And at most this many embeddings running or queued in a process:
@@ -66,9 +71,31 @@ class SearchResult:
     notes: list[str] = field(default_factory=list)
     query_log_id: int | None = None
 
+    @property
+    def failed(self) -> list[str]:
+        """The ranked lists this answer was made without (``failed``): each retriever
+        that failed or was cut off (``<name>_failed:``, a statement timeout included) and
+        ``dense`` when the question could not be embedded. Empty: every list ranked."""
+        return failed_lists(self.notes)
+
     def to_dict(self) -> dict[str, Any]:
         return {"hits": self.hits, "hidden": self.hidden, "timings": self.timings,
-                "notes": self.notes, "query_log_id": self.query_log_id}
+                "notes": self.notes, "failed": self.failed,
+                "query_log_id": self.query_log_id}
+
+
+def failed_lists(notes: Sequence[str]) -> list[str]:
+    """The retriever lists ``notes`` say did not rank (sorted, each once): a
+    ``<name>_failed:<error>`` note, or ``dense_unavailable:<why>`` (no question vector).
+    A failed hidden count is not a list (``hidden`` says ``unknown``)."""
+    out: set[str] = set()
+    for note in notes:
+        head = str(note).partition(":")[0]
+        if head.endswith("_failed") and head != "hidden_failed":
+            out.add(head[:-len("_failed")])
+        elif head == "dense_unavailable":
+            out.add("dense")
+    return sorted(out)
 
 
 def connect(target: str | None = None) -> Any:
@@ -256,7 +283,7 @@ def search(understanding: Any, actor: Any, *, k: int = 20,
         # Each list reads at least k: a k past the per-retriever depth never loses rows.
         n = max(weights.candidates_per_retriever, k)
         jobs: dict[str, Callable[[Any], Any]] = {
-            "exact_id": lambda c: rt.exact(c, scope, resolved, query.id_tokens(), n),
+            "exact_id": lambda c: rt.exact(c, scope, resolved, query.code_tokens(), n),
             "bm25": lambda c: rt.bm25(c, scope, texts, n),
             "fuzzy": lambda c: rt.fuzzy(c, scope, query.question, n),
         }
@@ -266,7 +293,8 @@ def search(understanding: Any, actor: Any, *, k: int = 20,
                 if not vectors:
                     raise _NoVectors()
                 return rt.dense(c, scope, vectors, model, n,
-                                ef_search=weights.dense_ef_search)
+                                ef_search=weights.dense_ef_search,
+                                timeout_ms=DENSE_TIMEOUT_MS)
             jobs["dense"] = dense_job
         if resolved or candidates:
             def graph_job(c: Any) -> Any:
@@ -329,7 +357,7 @@ def search(understanding: Any, actor: Any, *, k: int = 20,
 
         t = time.perf_counter()
         hits: list[dict[str, Any]] = []
-        denied: list[tuple[str, str]] = []   # (audience_key, duplicate key)
+        denied: list[tuple[str, str, str]] = []   # (audience_key, duplicate key, body)
         taken: set[str] = set()              # source items shown
         for score, cid, signals in scored:
             if len(hits) >= k:
@@ -338,7 +366,8 @@ def search(understanding: Any, actor: Any, *, k: int = 20,
             if row["source_handle"] in taken:
                 continue       # already shown (a copy stood in for another hit)
             if not reader.item_allowed(row["source_handle"]):
-                denied.append((row["audience_key"], row["dup_group"] or row["source_handle"]))
+                denied.append((row["audience_key"], row["dup_group"] or row["source_handle"],
+                               row["body"] or ""))
                 # another copy of the same text the reader may open stands in for it
                 row = _readable_copy(row, info, reader, taken)
                 if row is None:
@@ -370,11 +399,30 @@ def search(understanding: Any, actor: Any, *, k: int = 20,
                 found, units = {}, {}
             for hit in hits:
                 if hit["dup_group"] in found:
-                    hit["also_in"] = cp.also_in(hit, found[hit["dup_group"]],
-                                                reader.item_allowed, units)
+                    # a copy is listed only when its text is the hit's (``same_text``):
+                    # a stored cluster may be stale or a MinHash false match. also_in
+                    # gates GATED copies at most, so no more than GATED + LIMIT are read.
+                    body = info[hit["chunk_id"]]["body"] or ""
+                    same: list[dict[str, Any]] = []
+                    others = [c for c in found[hit["dup_group"]]
+                              if c["handle"] != hit["handle"]]
+                    for copy in others[:cp.GATED + cp.LIMIT]:
+                        if _same_text(body, copy.get("body") or ""):
+                            same.append(copy)
+                            if len(same) >= cp.GATED:
+                                break
+                    hit["also_in"] = cp.also_in(hit, same, reader.item_allowed, units)
             timings["duplicates"] = _ms(t)
-        shown_groups = {h["dup_group"] or h["handle"] for h in hits}
-        hidden_out = (_with_denied(hidden_lists, denied, shown_groups, pg_scope)
+        # a denied match is told about unless a shown hit is its text: its own item
+        # (a readable copy stood in) or the same text in its cluster (``same_text``),
+        # never merely a member of a stored cluster, which may hold distinct texts
+        shown_text: dict[str, list[str]] = {}
+        for h in hits:
+            shown_text.setdefault(h["dup_group"] or h["handle"], []).append(
+                info[h["chunk_id"]]["body"] or "")
+        told = [(audience, key) for audience, key, body in denied
+                if not any(_same_text(body, b) for b in shown_text.get(key, ())[:k])]
+        hidden_out = (_with_denied(hidden_lists, told, set(), pg_scope)
                       if hidden else {"asked": False})
         timings["total"] = _ms(started)
         result = SearchResult(hits, hidden_out, timings, notes)
@@ -600,6 +648,11 @@ def _signal(ranked: Sequence[tuple[str, float]] | None, cid: str) -> float | Non
     return None
 
 
+def _same_text(a: str, b: str) -> bool:
+    from operating.chunking.dedup import same_text   # numpy: loaded on first use
+    return same_text(a, b)
+
+
 def _readable_copy(row: Mapping[str, Any], info: Mapping[str, Mapping[str, Any]],
                    reader: SearchReader, taken: set[str]) -> Mapping[str, Any] | None:
     """A copy of a denied representative's cluster among the candidates read (readable
@@ -610,7 +663,8 @@ def _readable_copy(row: Mapping[str, Any], info: Mapping[str, Mapping[str, Any]]
         return None
     members = [r for r in info.values() if r["dup_group"] == group
                and r["source_handle"] != row["source_handle"]
-               and r["source_handle"] not in taken]
+               and r["source_handle"] not in taken
+               and _same_text(row["body"] or "", r["body"] or "")]
     from operating.chunking.dedup import representative
     while members:
         best = representative([(r["chunk_id"], r["authority"] or 0,
@@ -630,16 +684,22 @@ def _representatives(fused: Sequence[tuple[str, float]], info: Mapping[str, dict
     dropped."""
     out: list[tuple[str, float]] = []
     seen: set[str] = set()
+    kept: dict[str, list[str]] = {}     # dup_group -> the bodies already standing for it
     for cid, score in fused:
         row = info.get(cid)
         if row is None:
             continue
-        keys = {"h:" + row["source_handle"]}
-        if row["dup_group"]:
-            keys.add("g:" + row["dup_group"])
-        if keys & seen:
+        handle = "h:" + row["source_handle"]
+        if handle in seen:
             continue
-        seen |= keys
+        group, body = row["dup_group"], row["body"] or ""
+        # one candidate per cluster only among the same text (``same_text``): a stale
+        # cluster or a MinHash false match never hides a distinct document
+        if group and any(_same_text(body, other) for other in kept.get(group, ())):
+            continue
+        seen.add(handle)
+        if group:
+            kept.setdefault(group, []).append(body)
         out.append((cid, score))
         if len(out) >= limit:
             break
@@ -728,7 +788,7 @@ def _log(conn: Any, actor: str, query: Query, result: SearchResult) -> int | Non
     results = {"hits": [{"rank": i + 1, "handle": h["handle"], "chunk_id": h["chunk_id"],
                          "object_id": h["object_id"], "kind": h["kind"], "score": h["score"],
                          "signals": h["signals"]} for i, h in enumerate(result.hits)],
-               "hidden": result.hidden, "notes": result.notes}
+               "hidden": result.hidden, "notes": result.notes, "failed": result.failed}
     entities = [{"text": e.text, "resolved": e.resolved, "ambiguous": e.ambiguous,
                  "candidates": [list(c) for c in e.candidates[:5]]} for e in query.entities]
     try:

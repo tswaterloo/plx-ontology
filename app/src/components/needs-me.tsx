@@ -76,7 +76,9 @@ export function needsOf(s: NeedsSources, now = new Date()): { needs: Need[]; unr
       if (isMe(s.me, g.waiting_on)) {
         for (const a of g.items) needs.push({ key: `a:${a.id}`, kind: "approve", title: a.summary || a.kind, detail: `${a.asked_by ? `Asked by ${a.asked_by} · ` : ""}${plural(a.days, "day")} waiting`, href: a.object_id ? objectHref(a.object_id.split(":")[0], a.object_id) : "/team", rank: -a.days });
       } else if (g.oldest_days >= STUCK_DAYS) {
-        needs.push({ key: `ag:${g.waiting_on}`, kind: "blocked", title: `${plural(g.count, "approval")} waiting on ${g.waiting_on}`, detail: `${oldest}; a nudge is drafted on Team`, href: "/team", rank: -g.oldest_days });
+        const who = g.waiting_on === "not recorded" ? "an approver not on record" : g.waiting_on;
+        const drafted = g.items.some((a) => a.nudge?.body);
+        needs.push({ key: `ag:${g.waiting_on}`, kind: "blocked", title: `${plural(g.count, "approval")} waiting on ${who}`, detail: `${oldest}${drafted ? "; a nudge is drafted on Team" : "; no nudge drafted yet"}`, href: "/team#approvals", rank: -g.oldest_days });
       }
     }
   } else unread.push("the approvals queue");

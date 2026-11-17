@@ -100,6 +100,34 @@ class FrontDoorReads(unittest.TestCase):
             self.assertIsNotNone(front.read("which p o r late"))
         self.assertEqual(len(started), 1)
 
+    def test_a_closed_door_closes_its_sessions_and_starts_none(self):
+        """``close`` (the scoreboard's run end): every warm session is closed, one coming
+        back from a question is closed rather than kept, none is started again, and a
+        read after it is None at once (no wait on the queue)."""
+        started = []
+
+        class Counted(Scripted):
+            def __init__(self, argv, env):
+                super().__init__(argv, env)
+                started.append(self)
+        Scripted.replies = [reply("Which purchase orders are late?")]
+        front = fd.FrontDoor(spawn=Counted, pool=2)
+        front.warm()
+        self.assertTrue(front.ready(5.0))
+        session = front._free.get()   # one busy with a question when the run ends
+        front.close()
+        self.assertTrue(all(s.closed for s in started if s is not session))
+        front._keep(session)   # its question done: closed, not kept
+        self.assertTrue(session.closed)
+        self.assertEqual(front._free.qsize(), 0)
+        took = time.monotonic()
+        self.assertIsNone(front.read("which p o r late"))
+        self.assertLess(time.monotonic() - took, 1.0)
+        front.warm()
+        time.sleep(0.1)
+        self.assertEqual(len(started), 2)
+        self.assertFalse(front.ready(0.3))
+
     def test_the_model_picks_a_ready_answer_and_the_phrase_rules_stay_the_fallback(self):
         from operator_api import backend
         from operator_api import models as m

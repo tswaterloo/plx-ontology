@@ -132,7 +132,8 @@ from pathlib import Path
 import re
 from typing import Any, Mapping, Sequence
 
-from integrations.source_mirror import MAX_ROWS_LIMIT, portal_trim_text
+from integrations.source_mirror import MAX_ROWS_LIMIT
+from integrations.source_mirror_values import portal_trim_text
 from ontology.core import Actor
 
 from .capability_guards import own_identifiers, property_carriers, read_field, value_state
@@ -1293,7 +1294,7 @@ def _key_text(value: Any) -> str | None:
 def _related_rows(mirror: Any, actor: Actor, relation: str, max_staleness: float | None,
                   ) -> tuple[dict[str, Any] | None, str | None]:
     """All rows of a related relation through the mirror (audience first), or why not."""
-    from integrations.source_mirror import MirrorError
+    from integrations.source_mirror_values import MirrorError
 
     try:
         scan = _scan(mirror, actor, [], max_staleness, MAX_SCAN_ROWS, relation)

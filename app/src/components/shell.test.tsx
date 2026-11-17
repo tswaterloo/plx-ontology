@@ -61,6 +61,41 @@ describe("page banners", () => {
     expect(screen.getAllByText("Viewing with full-read access")).toHaveLength(1);
   });
 
+  it("an access-link sign-in says so, with no Demo or not-for-staff wording", () => {
+    auth.state = { ...me({ sign_in: "access_link", data_label: "source-mirror captures" }), config: { mode: "dev", sign_in: "access_link" } };
+    render(<Banners />);
+    expect(screen.queryByTestId("dev-banner")).toBeNull();
+    const link = screen.getByTestId("link-banner");
+    expect(link).toHaveTextContent("Signed in with your access link");
+    expect(document.body.innerHTML).not.toMatch(/demo|not for staff/i);
+  });
+
+  it("a demo server keeps the Demo line even when it says access_link for a fixture", () => {
+    auth.state = me({ sign_in: "demo" });
+    render(<Banners />);
+    expect(screen.getByTestId("dev-banner")).toHaveTextContent("Demo sign-in");
+    expect(screen.queryByTestId("link-banner")).toBeNull();
+  });
+
+  it("an unknown sign-in kind fails closed to the Demo line", () => {
+    auth.state = me({ sign_in: "something_new" });
+    render(<Banners />);
+    expect(screen.getByTestId("dev-banner")).toHaveTextContent("Demo sign-in");
+  });
+
+  it("a server claiming Microsoft for a dev session still shows the Demo line", () => {
+    auth.state = me({ sign_in: "microsoft" });
+    render(<Banners />);
+    expect(screen.getByTestId("dev-banner")).toBeInTheDocument();
+  });
+
+  it("the sign-in page says nothing about an access link before anyone signs in", () => {
+    auth.state = { status: "signed-out", config: { mode: "dev", sign_in: "access_link" } };
+    render(<Banners />);
+    expect(screen.queryByTestId("link-banner")).toBeNull();
+    expect(screen.queryByTestId("dev-banner")).toBeNull();
+  });
+
   it("no grant, no label", () => {
     auth.state = { ...me({ auth: "entra", dev_mode: false }), config: { mode: "entra" } };
     render(<Banners />);
@@ -165,7 +200,9 @@ describe("reliability banner on every page", () => {
     api.alarms = { ...alarms, open: [long(1), long(2), long(3), long(4)] };
     render(<OpsAlarmBanner every={30} />);
     const banner = await screen.findByTestId("ops-alarm-banner");
-    expect(banner).toHaveTextContent("4 reliability problems: mail capture last refreshed 1 days ago (target 5 h) · mail capture last refreshed 2 days ago (target 5 h) · 2 more");
+    expect(banner.textContent).toMatch(/^4 reliability problems: mail capture last refreshed 1 days ago \(target 5 h\) · /);
+    expect(banner).toHaveTextContent("· mail capture last refreshed 4 days ago (target 5 h)");
+    expect(banner).not.toHaveTextContent(/\d+ more/);
     expect(banner).not.toHaveTextContent("child_timeout");
     // the detail is not lost: every line in full in the tooltip
     expect(banner.getAttribute("title")).toContain("4 days ago (target 5 h); stale since Nov 10; last error child_timeout");
@@ -256,5 +293,7 @@ describe("phone title bar", () => {
       .map((d) => `/${d.name}`);
     expect(routes.length).toBeGreaterThan(10);
     expect(routes.filter((r) => !TOOLBAR_PAGES.includes(r))).toEqual([]);
+    // and the list names no page that does not exist (it once held "/so")
+    expect(TOOLBAR_PAGES.filter((p) => !routes.includes(p))).toEqual([]);
   });
 });

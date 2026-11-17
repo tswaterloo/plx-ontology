@@ -8,7 +8,7 @@ is committed; the units name them as ``@PLX_USER@``, ``@PLX_GROUP@``, ``@PLX_HOM
 System units (default): ``deploy/systemd/*.{service,timer,path}``, the host drop-ins
 ``deploy/systemd/host/<unit>.d/*.conf`` and ``deploy/backup/*.{service,timer}`` land in DIR
 laid out as ``/etc/systemd/system`` (``DIR/<unit>`` and ``DIR/<unit>.d/<conf>``), for the
-supervisor to copy with sudo. ``--user`` renders the user units (``deploy/user``) laid out
+operator to copy with sudo. ``--user`` renders the user units (``deploy/user``) laid out
 as ``~/.config/systemd/user``. A placeholder without a value stops the render (exit 1).
 """
 from __future__ import annotations
@@ -22,6 +22,7 @@ import sys
 DEPLOY = Path(__file__).resolve().parent
 PLACEHOLDER = re.compile(r"@(PLX_[A-Z_]+)@")
 UNIT = ("*.service", "*.timer", "*.path")
+CHECK_DROPINS = "plx-api-check@.service.d"
 
 
 def load_env(path: Path, environ=os.environ) -> dict[str, str]:
@@ -56,6 +57,9 @@ def sources(user: bool, api_user: bool = False) -> list[tuple[Path, str]]:
     for folder in folders:
         for conf in sorted(folder.glob("*.d/*.conf")):
             found.append((conf, f"{conf.parent.name}/{conf.name}"))
+            if conf.parent.name == "plx-api.service.d":
+                # the preflight runs under the API's very configuration (plx-api-check@)
+                found.append((conf, f"{CHECK_DROPINS}/{conf.name}"))
     return found
 
 

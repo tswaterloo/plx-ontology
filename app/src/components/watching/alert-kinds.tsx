@@ -28,6 +28,64 @@ export function surfaceWord(k: { label: string; surface: string; types: Pick<Ale
   return where.toLowerCase() === k.label.trim().toLowerCase() ? on : `${on} · ${where}`;
 }
 
+/** Where a kind with a page of its own is shown (null: an alert, shown here). */
+export function surfaceHref(surface: string): string | null {
+  return surface === "data_health" ? "/watching#data-health" : surface === "weekly" ? "/meetings?view=weekly" : null;
+}
+
+/**
+ * Data health: each on data-health check (customers or suppliers entered twice, key fields
+ * missing, orders without a customer PO, records that differ in their other system) with
+ * how many it holds for this reader now and its records, read as this reader. The checks
+ * that are off are named once under them.
+ */
+export function DataHealthSection({ reg, briefing, error, retry }: { reg: AlertKinds | null; briefing: Briefing | null; error: unknown; retry: () => void }) {
+  const types = (reg?.types ?? []).filter((t) => reg?.kinds.find((k) => k.kind === t.kind)?.surface === "data_health");
+  const on = types.filter((t) => t.default === "on");
+  const off = types.filter((t) => t.default !== "on");
+  const read = briefing?.status === "read";
+  const count = (type: string) => (read ? ((briefing.groups ?? []).find((g) => g.event_type === type)?.count ?? 0) : null);
+  return (
+    <section aria-labelledby="data-health-title" id="data-health" className="scroll-mt-16" data-testid="data-health">
+      <h2 id="data-health-title" className="text-[15px] font-semibold">Data health</h2>
+      <p className="mt-0.5 text-[12px] text-muted">Records entered twice, missing a key field or out of step with their other system, as you may read them.</p>
+      {error ? (
+        <LoadProblem message={plainError(error)} busy={noticeKind(error) === "busy"} onRetry={retry} className="mt-2" />
+      ) : !reg || !briefing ? (
+        <Pending label="Reading data health" />
+      ) : !read ? (
+        <p className="mt-2 text-[13px] text-muted">The checks couldn&rsquo;t be read just now. Try again in a few minutes.</p>
+      ) : on.length === 0 ? (
+        <p className="mt-2 text-[13px] text-muted">No data-health check is on.</p>
+      ) : (
+        <ul className="mt-2 divide-y divide-border border-y border-border" data-testid="data-health-checks">
+          {on.map((t) => {
+            const n = count(t.type) ?? 0;
+            return (
+              <li key={t.type} className="py-2 text-[13px]" data-testid={`data-health-${t.type}`}>
+                <div className="flex items-baseline gap-3">
+                  <span className="min-w-0 flex-1 font-medium">{t.label}</span>
+                  <span className="shrink-0 tabular-nums text-muted">{n > 0 ? n : "None"}</span>
+                </div>
+                {n > 0 && (
+                  <div className="mt-1 text-[12px]">
+                    <TypeItems type={t.type} count={n} more={n === 1 ? "Show it" : `Show the ${n}`} />
+                  </div>
+                )}
+              </li>
+            );
+          })}
+        </ul>
+      )}
+      {reg && off.length > 0 && (
+        <p className="mt-2 text-[12px] text-faint" data-testid="data-health-off">
+          Off until a check of 15 live items finds 90% right: {off.map((t) => t.label.toLowerCase()).join("; ")}.
+        </p>
+      )}
+    </section>
+  );
+}
+
 /** One alert type's items, read when asked for: a count on Watching opens what it counts. */
 export function TypeItems({ type, count, more: label }: { type: string; count: number; more?: string }) {
   const [items, setItems] = useState<BriefingItem[] | null>(null);
@@ -129,7 +187,13 @@ export function AlertKindsSection({ data, compact = false }: { data?: { reg: Ale
                 <summary className={cn("flex cursor-pointer items-baseline gap-3", compact ? "text-[12px]" : "text-[13px]")}>
                   <span className="min-w-0 flex-1 font-medium text-fg">{k.label}</span>
                   <span className="shrink-0 tabular-nums text-muted">{k.n > 0 ? k.n : ""}</span>
-                  <span className="shrink-0 text-[12px] text-faint">{surfaceWord(k)}</span>
+                  {surfaceHref(k.surface) ? (
+                    <Link href={surfaceHref(k.surface)!} className="shrink-0 text-[12px] text-faint underline-offset-2 hover:text-fg hover:underline" data-testid={`surface-${k.kind}`}>
+                      {surfaceWord(k)}
+                    </Link>
+                  ) : (
+                    <span className="shrink-0 text-[12px] text-faint">{surfaceWord(k)}</span>
+                  )}
                 </summary>
                 <ul className="mt-1.5 space-y-1 pl-3 text-[12px]">
                   {k.types.map((t) => (

@@ -148,7 +148,7 @@ def _listed(lines: list[str]) -> list[dict[str, Any]]:
 
 
 def _table(text: str, form: str) -> list[dict[str, Any]]:
-    from integrations import sheet_readings as sr
+    from integrations import sheet_grid as sr
     out: list[dict[str, Any]] = []
     for sheet in sr.grid(text, form):
         rows = sheet.rows
@@ -203,10 +203,14 @@ def read_lines(text: str, form: str = "text") -> list[dict[str, Any]]:
 
 def po_numbers(text: str) -> list[str]:
     """PO numbers a document states by label (``PO #``, ``Purchase Order Number``,
-    ``Order No.``) on the same line or the next."""
+    ``Order No.``) on the same line or, when the label ends its line, the next. The label
+    is a whole word: "po" opening another word ("Poids", "posted", "Point") is no label
+    (tuning 02-02..05-03: both wrong cited PO numbers were the next line's code under
+    such a word), and a "P.O. Box" is an address."""
     out: list[str] = []
     lines = (text or "").splitlines()
-    label = re.compile(r"\b(?:p\.?\s?o\.?|purchase\s+order)\s*(?:#|no\.?|number|num)?\s*"
+    label = re.compile(r"\b(?:p\.?\s?o\.?|purchase\s+order)(?![^\W\d_])(?!\s*\.?\s*box\b)"
+                       r"\s*(?:#|no\.?|number|num)?(?![^\W\d_])\s*"
                        r"[:.#]?\s*(?P<v>[A-Z0-9][A-Z0-9-]{2,24})?", re.I)
     glued = re.compile(r"(?<![\w-])(P\.?O-?\d[\w-]{2,22})(?![\w-])", re.I)
     for n, line in enumerate(lines[:80]):
@@ -217,7 +221,7 @@ def po_numbers(text: str) -> list[str]:
             if glued.match(line, m.start()):
                 continue                  # the number is the label's own word
             value = m["v"]
-            if not value or not any(c.isdigit() for c in value):
+            if not value and not line[m.end():].strip(" \t:#.-|"):
                 nxt = lines[n + 1] if n + 1 < len(lines) else ""
                 got = [t for t in code_tokens(nxt) if any(c.isdigit() for c in t)]
                 value = got[-1] if len(got) == 1 else None

@@ -15,9 +15,10 @@ import unittest
 
 from ontology.types import Actor
 from operating import ontology_tools_investigate as oi
+from operating import ontology_tools_investigate_plans
 from tests import test_ontology_tools_investigate as fixture
 
-EXAMPLES = json.loads(oi.INLINE_EXAMPLES.read_text("utf-8"))["examples"]
+EXAMPLES = json.loads(ontology_tools_investigate_plans.INLINE_EXAMPLES.read_text("utf-8"))["examples"]
 STORED = json.loads((oi.PLAN_DIR / "order_quantities.json").read_text("utf-8"))  # F3
 ROOTS = {"Supplier": 'Supplier:portal.app_supplier:{"id":"fx-supp-1"}',
          "PurchaseOrder": 'PurchaseOrder:portal.app_purchase_order:{"id":"fx-po-1"}',

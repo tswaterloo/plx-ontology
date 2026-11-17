@@ -51,7 +51,24 @@
 	# this path so nothing buffers the stream.
 	handle /api/* {
 		header Content-Security-Policy "default-src 'none'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'"
-		reverse_proxy {$PLX_API_UPSTREAM:127.0.0.1:8780} {
+		# a deploy's readiness probe (/api/ready) is for loopback only, never served here
+		@ready path /api/ready
+		respond @ready 404
+		# Which API serves (ARCH-T6, deploy/release/plx-release): 127.0.0.1:8780
+		# (plx-api.service), and when it takes no connection the deploy's standby
+		# (plx-api@standby), which serves only on its unix socket in a directory nobody but
+		# the API's own user can write: no dev or mock API anyone starts can be sent readers.
+		# A deploy starts the standby held until warm, restarts 8780 held the same way (it
+		# closes its port, ends what is under way, exits; readers go to the standby) and stops
+		# the standby once 8780 serves again. A request that cannot connect to one is sent to
+		# the other (nothing was sent yet, so any request may go again); one that refused is
+		# passed over for 2 s. Caddy is never reloaded for it: a reload drops requests under
+		# way (measured: 6-12 in 30 reloads at ~350 requests/s).
+		reverse_proxy {$PLX_API_UPSTREAM:127.0.0.1:8780} {$PLX_API_STANDBY:unix//run/plx-api-standby/api.sock} {
+			lb_policy first
+			lb_try_duration 15s
+			lb_try_interval 50ms
+			fail_duration 2s
 			flush_interval -1
 			transport http {
 				dial_timeout 5s
@@ -65,7 +82,9 @@
 	# access). Files only, nothing proxied; before the catch-all so the web app never sees it.
 	handle_path /desktop/* {
 		root * {$PLX_DESKTOP_FEED:/data/plx-desktop-feed}
-		header Content-Security-Policy "default-src 'none'"
+		# the feed's index.html download page carries its own <style>: styles may be inline,
+		# nothing else loads or runs (no script, no frame, no form)
+		header Content-Security-Policy "default-src 'none'; style-src 'unsafe-inline'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'"
 		file_server
 	}
 

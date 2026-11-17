@@ -111,10 +111,13 @@ class OffMeansNothing(unittest.TestCase):
         import re
         from pathlib import Path
         root = Path(__file__).resolve().parents[2]
+        split = [str(p.relative_to(root)) for pattern in ("operating/mcp_server_*.py",
+                                                           "operator_api/backend_*.py")
+                 for p in sorted(root.glob(pattern))]
         for path in ("operating/mcp_server.py", "operator_api/watch.py",
                      "operating/briefing.py", "operator_api/backend.py",
                      "operator_api/answers.py", "operator_api/page_parts.py",
-                     "operator_api/briefing_view.py", "operator_api/serving.py"):
+                     "operator_api/briefing_view.py", "operator_api/serving.py", *split):
             text = (root / path).read_text(encoding="utf-8")
             for m in re.finditer(r"include_off=True", text):
                 line = text[text.rfind("\n", 0, m.start()) + 1:text.find("\n", m.end())]

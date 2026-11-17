@@ -224,6 +224,21 @@ describe("autopilot studio: workflows, modes and the owner's controls", () => {
     expect(screen.queryByTestId("autopilot-gate-notices")).toBeNull();
   });
 
+  it("several passes read as one notice with a line each; Got it for all acknowledges every one", async () => {
+    const a = { role: "role:purchasing", workflow: "teams_chat", passed_at: "2026-11-12T12:09:00Z" };
+    const b = { role: "role:rd", workflow: "teams_chat", passed_at: "2026-11-12T12:09:00Z" };
+    api.ack.mockResolvedValue(area({ gate_notices: [] }));
+    render(<AutopilotView area={area({ gate_notices: [a, b] })} onReload={vi.fn()} />);
+    const box = screen.getByTestId("autopilot-gate-notices");
+    expect(box).toHaveTextContent("2 workflows passed their check.");
+    expect(box.textContent?.match(/runs? for nobody/g)).toHaveLength(1);
+    expect(within(box).getAllByRole("listitem")).toHaveLength(2);
+    fireEvent.click(within(box).getByRole("button", { name: "Got it for all" }));
+    await waitFor(() => expect(api.ack).toHaveBeenCalledTimes(2));
+    expect(api.ack).toHaveBeenCalledWith("role:rd", "teams_chat");
+    await waitFor(() => expect(screen.queryByTestId("autopilot-gate-notices")).toBeNull());
+  });
+
   it("an opt-in whose score fell under the bar says it turned itself off and why, and cannot be turned on until it passes", () => {
     const bar = { judged: 40, matched: 30, percent: 75, need_judged: 15, need_percent: 90 };
     const held = { workflow: "teams_chat", eligible: false, on: false, since: null, score: bar, suspended: { at: "2026-11-13T15:00:00Z", reason: "below_bar", score: bar } };

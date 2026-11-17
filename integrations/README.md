@@ -15,6 +15,7 @@ repos are read as checked-out source, never as business evidence.
 | Microsoft live sources | `live_source_guard.py` (the one Graph/BC sender), `live_source_grammar.py`, `http.py`, `graph_read.py`, `graph_evidence.py`, `graph_directory.py`, `bc_read.py`, `bc_purchase.py`, `bc_case_evidence.py` (config `bc_company_books.json`) |
 | Versioned captures (L1) | `capture_store.py`, `capture_mail.py` (scope `mail_capture_scope.json`), `capture_sharepoint.py` (scope `sharepoint_capture_scope.json`; every readable library: `sharepoint_estate_scope.json`), `capture_teams.py` (Teams channel and chat messages; scope `teams_capture_scope.json`) |
 | Documents | `document_understanding.py` (see `DOCUMENT_UNDERSTANDING.md`), `doc_convert.py`, `xlsx_extract.py`, `macos_pdf_ocr.swift` |
+| Order intake and meetings (off until their settings exist) | `zendesk_read.py` (order@ queue tickets, messages, attachment metadata; scope `zendesk_scope.json`), `shopify_read.py` (orders, lines, customers, fulfilments), `granola_read.py` (meeting notes, decisions, action items via `meeting_transcripts`), `edi_read.py` (X12 850/855/856 from a drop folder or a supplied `RemoteFiles`), `vendor_sweep.py` (cursor, freshness, deadline), `capture_vendor.py` (their capture-store kinds; saved before the cursor moves) |
 | Mission Control and brain | `mc.py`, `plx_hub_guard.py`, `vmc.py`, `mc_brain_probe.py` |
 
 All clients are labelled live-unverified until a the live-check specs<id>.json` spec has run

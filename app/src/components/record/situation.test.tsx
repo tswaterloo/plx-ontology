@@ -28,11 +28,35 @@ describe("an order's situation band", () => {
     expect(band).not.toHaveTextContent("X");
   });
 
-  it("says in words what a customer order has not on record, and stays off other record types", () => {
+  it("says in words what a customer order has not on record, and stays off party pages", () => {
     render(<Situation obj={{ ...ao, type: "SalesOrder", related: [], people: [], timeline: [] } as ObjectPage} />);
     const band = screen.getByTestId("situation");
     for (const t of ["Customer not linked", "No production or purchase order linked", "No one named on record", "No change recorded"]) expect(band).toHaveTextContent(t);
-    const { container } = render(<Situation obj={{ ...ao, type: "PurchaseOrder" } as ObjectPage} />);
-    expect(container).toBeEmptyDOMElement();
+    for (const type of ["Supplier", "Customer", "Person"]) {
+      const { container } = render(<Situation obj={{ ...ao, type } as ObjectPage} />);
+      expect(container).toBeEmptyDOMElement();
+    }
+  });
+
+  it("reads a purchase order against its supplier and the orders it is needed for, the supplier from the header when no link names it", () => {
+    const po = { ...ao, type: "PurchaseOrder", related: [ref("SalesOrder", "SalesOrder:demo:77120", "77120"), ref("AssemblyOrder", "AssemblyOrder:demo:AO-7712", "AO-7712")] } as unknown as ObjectPage;
+    render(<Situation obj={po} party={ref("Supplier", "Supplier:demo:maple-leaf", "Maple Leaf Soapworks")} />);
+    const band = screen.getByTestId("situation");
+    expect(band).toHaveTextContent(/^SupplierMaple Leaf Soapworks/);
+    expect(band).toHaveTextContent("Needed forSO 77120AO-7712");
+    expect(screen.getByRole("link", { name: "Maple Leaf Soapworks" })).toHaveAttribute("href", "/object/Supplier/Supplier%3Ademo%3Amaple-leaf");
+  });
+
+  it("gives a lot, a shipment and each invoice its own pair of cells", () => {
+    const words = (type: string) => {
+      const { unmount } = render(<Situation obj={{ ...ao, type, related: [], people: [], timeline: [] } as ObjectPage} />);
+      const text = screen.getByTestId("situation").textContent;
+      unmount();
+      return text;
+    };
+    expect(words("Lot")).toMatch(/^Received onNo purchase order linkedUsed inNot linked to an order or shipment/);
+    expect(words("Shipment")).toMatch(/^OrderNo customer order linkedCustomerCustomer not linked/);
+    expect(words("SalesInvoice")).toMatch(/^OrderNo order or shipment linkedCustomer/);
+    expect(words("PurchaseInvoice")).toMatch(/^Purchase orderNo purchase order linkedSupplierSupplier not linked/);
   });
 });

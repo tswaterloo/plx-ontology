@@ -12,14 +12,22 @@ form for PO 1234" with the form attached, and the Autopilot page's form filler
   (``form_sources``, ``operating.doc_gather.form_facts``), planned nearest source first
   (``doc_gather.plan_form``). With no record and nothing read, nothing is filled (the
   answer says to name the record). A value that names a person the people exclusion
-  keeps out never enters the file.
+  keeps out never enters the file, nor a payment card's number, security code or expiry
+  (``_card_fact``): a card authorisation form gets those blanks left for the reader to
+  write themselves, even when an earlier filled copy holds them. One rule for every form
+  (no guess at which form is the reader's own payment form): the filled file is served
+  raw (``/api/instruct/files/{id}``, the upload desk), its JSON preview masked, and both
+  agree that the Workbench never writes a card number it read.
 * **The result** is a new file kept for this reader only (``instruct_files.UploadDesk``:
   served to them, never to another reader), every blank listed with its outcome and source.
   When the form came from a SharePoint file the reader opened, the copy is prepared as an
   upload beside it (``<name> (filled).<ext>``, never a replace) that the reader previews
   and approves through the gated write path (dry run until the owner opens SharePoint).
-  When it came in an email, a reply carrying the file is prepared but never sent: the send
-  path takes no file.
+  When it came in an email, a reply carrying the file is prepared as a card
+  (``fill:<upload id>``, ``fill_reply_card``) the reader opens in the action dialog: the
+  confirmed send path (``operating.card_actions``) previews the exact message with the file
+  attached and sends it only on the reader's own confirm (their own mailbox, recipients
+  checked, the file re-read and re-hashed, the people it names cleared, fail closed).
 
 Nothing here sends, writes or uploads. Evidence label of tests: ``isolated-fixture``.
 """
@@ -33,6 +41,7 @@ from typing import Any, Iterable, Mapping, Optional
 from urllib.parse import quote
 
 from operating import doc_fill as df
+from operating import card_actions as ca
 from operating import doc_gather as dg
 from operating import instruct_files as files
 
@@ -57,8 +66,11 @@ FILL_REFUSED = {
     "people_exclusion_unavailable": "This is paused: the list of people whose data stays "
                                     "out is not loaded.",
 }
-REPLY_MISSING = ("A reply can't carry a file yet: the send path takes text only. Download "
-                 "the filled copy and attach it to your reply.")
+REPLY_MISSING = ("No reply can carry the filled copy: nothing was filled into a file. "
+                 "Download what was filled and reply yourself.")
+FILL_CARD = "fill:"
+# the actions a filled copy's reply offers: the two that carry the file
+FILL_KINDS = ("reply_in_thread", "send_email")
 # "fill this in", "fill out the form", "complete this questionnaire"; never "fill me in"
 _FILL = re.compile(r"\b(?:fill(?:\s+(?:in|out))?|complete)\b(?!\s+(?:me|us)\b)", re.I)
 _RECORDISH = re.compile(r"(?:\b([A-Za-z]{1,12})[ #:.-]{0,3})?\b([A-Za-z]{0,6}[-#]?\d{3,}"
@@ -68,6 +80,22 @@ _SYSTEM = {"bc": "BC", "graph-mail": "Email", "sharepoint": "File", "api": "Port
            "portal": "Portal", "sage": "Sage", "filemaker": "FileMaker", "mc": "MC",
            "teams": "Teams"}
 MAX_LOOKUPS = 3
+
+
+# a record property or form field that holds a card's number, security code or expiry
+_CARD_KEY = re.compile(r"(?:^|[._\s:|/-])(?:cvv2?|cvc2?|csc|cvn|security[._\s:|/-]?code|"
+                       r"card[._\s:|/-]?(?:number|no|num|code|exp\w*)|(?:credit|debit)[._\s:|/-]?"
+                       r"card\w*|cc[._\s:|/-]?(?:number|no|num|exp\w*))(?:$|[._\s:|/-])", re.I)
+
+
+def _card_fact(fact: "df.Fact") -> bool:
+    """Whether ``fact`` carries a payment card's number (by the masking rule,
+    ``operating.card_text``) or is a card field (number, security code, expiry): never
+    written into a filled file."""
+    from operating.card_text import has_card_number, mask_served
+    value = fact.value if isinstance(fact.value, str) else ""
+    return has_card_number(value) or mask_served(value) != value \
+        or bool(_CARD_KEY.search(str(fact.key or "")))
 
 
 def _refuse(code: str, status: int = 422) -> UserFacing:
@@ -183,8 +211,10 @@ class DocFillMixin:
         except df.FillRefused as refused:
             raise _refuse(refused.code) from None
         facts, notes, ref = facts + more, notes + more_notes, ref or found
-        # a value naming a person kept out (or a secret-looking string) is not used
-        facts = [f for f in facts if clean(f.value, guard, len(f.value) + 1) == f.value]
+        # a value naming a person kept out (or a secret-looking string) is not used, nor a
+        # payment card's number, security code or expiry (``_card_fact``)
+        facts = [f for f in facts if clean(f.value, guard, len(f.value) + 1) == f.value
+                 and not _card_fact(f)]
         if named is None and not facts:
             raise _refuse("no_record")
         try:
@@ -203,18 +233,22 @@ class DocFillMixin:
             except (KeyError, LookupError, ValueError, PermissionError):
                 raise _refuse("not_open") from None
             target = files.target_of(source, opened.fields or {}, opened.label)
-        upload_id = download_url = None
+        upload_id = download_url = card_id = None
         if result.data is not None:
             people = sorted({a.lower() for f in result.fields if f.status == "filled"
                              for a in _ADDRESS.findall(f.after)})
             row = self._uploads().prepare(  # type: ignore[attr-defined]
                 reader.key, name=new_name, kind=kind, data=result.data, target=target,
-                people=people)
+                people=people,
+                reply_to=reply_to if reply_to and reply_to.startswith("graph-mail://")
+                else None)
             download_url = f"/api/instruct/files/{row['file_id']}"
             upload_id = row["upload_id"] if target is not None else None
+            if row.get("reply_to"):
+                card_id = FILL_CARD + row["upload_id"]
         reply = None
         if reply_to:
-            reply = self._fill_reply(reader, reply_to, new_name, guard)
+            reply = self._fill_reply(reader, reply_to, new_name, guard, card_id)
 
         def opens(handle: str) -> str:
             return f"/source?handle={quote(handle, safe='')}"
@@ -233,13 +267,56 @@ class DocFillMixin:
             download_url=download_url,
             upload_id=upload_id, folder=target.folder if target else None, reply=reply)
 
-    def _fill_reply(self, reader: Reader, handle: str, attachment: str, guard: Any
-                    ) -> m.FillReply:
+    def _fill_reply(self, reader: Reader, handle: str, attachment: str, guard: Any,
+                    card_id: Optional[str]) -> m.FillReply:
         mat = self._source_material(reader, "E1", handle, guard)  # type: ignore[attr-defined]
         to = (self._reply_to(reader, mat) or {}).get("to")  # type: ignore[attr-defined]
         subject = mat.label if mat.label.lower().startswith("re:") else f"RE: {mat.label}"
+        card = self._fill_card(reader, card_id, attachment, handle, mat) if card_id else None
         return m.FillReply(to=[to] if to else [], subject=subject[:200], attachment=attachment,
-                           status="not_available", missing=[REPLY_MISSING])
+                           status="ready" if card else "not_available",
+                           missing=[] if card else [REPLY_MISSING],
+                           card_id=card["id"] if card else None,
+                           actions=[o for o in ca.offers(card) if o["kind"] in FILL_KINDS]
+                           if card else [])
+
+    def _fill_card(self, reader: Reader, card_id: str, name: str, handle: str,
+                   mat: Any) -> dict[str, Any]:
+        """The card of a filled copy's reply: a reply in the thread when the email is in the
+        reader's own mailbox, else a new email to its sender; either carries the file."""
+        found = self._reply_to(reader, mat) or {}  # type: ignore[attr-defined]
+        to = found.get("to") or None
+        label = mat.label or "your request"
+        subject = label if label.lower().startswith("re:") else f"RE: {label}"
+        facts = [{"fact": "last_vendor_message", "value": label,
+                  "source": {"handle": handle}}] if found.get("in_reply_to") else []
+        return {"id": card_id, "headline": f"Send back {name}"[:300],
+                "subject": {"label": label[:200]}, "action": {"text": ""},
+                "draft": {"channel": "email",
+                          "to": {"address": to, "source": handle} if to else None,
+                          "subject": subject[:255],
+                          "body": f"Please find {name} attached, filled in from our records.",
+                          "facts": facts},
+                "attachments": [card_id[len(FILL_CARD):]], "teams_draft": None,
+                "playbook": True}
+
+    def fill_reply_card(self, reader: Reader, card_id: str) -> Optional[dict[str, Any]]:
+        """The reply carrying a filled copy, rebuilt now from this reader's own kept file
+        and the email it answers, read again as them (None: not theirs, or the email is
+        no longer one they can open)."""
+        upload = self._uploads().get(  # type: ignore[attr-defined]
+            reader.key, card_id[len(FILL_CARD):])
+        handle = (upload or {}).get("reply_to")
+        guard = self._instruct_guard()  # type: ignore[attr-defined]
+        if not isinstance(handle, str) or not handle.startswith("graph-mail://") \
+                or guard is None:
+            return None
+        try:
+            mat = self._source_material(reader, "E1", handle,  # type: ignore[attr-defined]
+                                        guard)
+        except UserFacing:
+            return None
+        return self._fill_card(reader, card_id, upload["name"], handle, mat)
 
     def doc_fill_request(self, reader: Reader, request: m.DocFillRequest) -> m.InstructFill:
         """``POST /api/doc-fill``."""

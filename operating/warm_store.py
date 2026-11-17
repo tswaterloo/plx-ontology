@@ -82,7 +82,7 @@ import sqlite3
 import tempfile
 from typing import Any, Callable, Iterable, Mapping
 
-from integrations.capture_mail import CaptureError, assert_outside_git
+from integrations.capture_mail_scope import CaptureError, assert_outside_git
 from integrations.mirror_capture import STATE_ENV
 
 FORMAT = "plx-live-verify-warm/v1"

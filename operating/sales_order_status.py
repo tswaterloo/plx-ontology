@@ -49,6 +49,7 @@ import functools
 from typing import Any, Iterable, Mapping, Sequence
 
 from . import source_defaults
+from . import time_window
 
 OPEN, CLOSED, DRAFT, UNKNOWN = "open", "closed", "draft", "unknown"
 TYPE = "SalesOrder"
@@ -195,10 +196,7 @@ def spellings(prop: str) -> frozenset[str]:
 def day_of(value: Any) -> date | None:
     if isinstance(value, Mapping):
         value = value.get("value")
-    try:
-        return date.fromisoformat(str(value).strip()[:10])
-    except ValueError:
-        return None
+    return time_window.business_day(value)
 
 
 def date_defaults(records_by_binding: Mapping[Any, Iterable[tuple[date | None, Iterable[Any]]]]
@@ -284,7 +282,7 @@ def requested_date(records: Sequence[tuple[Sequence[Mapping[str, Any]], Iterable
 @functools.lru_cache(maxsize=1)
 def _schema() -> tuple[tuple[str, ...], frozenset, tuple[str, ...]]:
     from ontology.schema import load_schema
-    from .ontology_tools import identity_link_type
+    from .ontology_tools_identity import identity_link_type
 
     schema = load_schema()
     twins = tuple(sorted(lid for lid, link in schema.link_types.items()

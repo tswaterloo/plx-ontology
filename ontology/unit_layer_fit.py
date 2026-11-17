@@ -57,11 +57,11 @@ import re
 import secrets
 import shutil
 import sqlite3
-import sys
 import time
 from itertools import groupby
 from typing import Any, Iterator, Mapping, Sequence
 
+from ontology import parent_watch
 from ontology import project as P
 
 # ----------------------------------------------------------------------------- mirror
@@ -110,8 +110,8 @@ class CollapsingMirror(P.MirrorCaptures):
         self.collapse = {rel: tuple(minted) for rel, minted in collapse.items()}
         self.unread: dict[str, int] = {}
         # where the kept copies of a snapshot are kept once computed (``_kept_file``):
-        # the parent of a parallel build computes them there once, for every relation it
-        # collapses; its workers get the file itself (``kept_file``) and only load it
+        # the parent of a parallel build computes them there once, for the relations its
+        # pooled units read; its workers get the file itself (``kept_file``) and only load it
         # (a missing or unreadable file fails their open, never computed again)
         self.kept_dir = kept_dir
         self.kept_file = kept_file
@@ -152,9 +152,11 @@ class CollapsingMirror(P.MirrorCaptures):
                 raise P.ProjectionError("kept_copies_missing", f"kept_copies_missing:{path}")
             self.kept_loaded = True
             return out
+        # only the relations asked for: a parallel build's parent asks for every relation
+        # its pooled units read (``build_parallel`` ``pin``), so its workers' files hold
+        # theirs. (11-13: all 7 collapsible relations, 53.7M rows, 33 min on one core,
+        # for a train whose units read one of them, 22k rows.)
         asked = set(wanted)
-        if self.kept_dir is not None:
-            wanted = sorted(self.collapse)   # once, for every relation it collapses
         path = self.kept_path = _kept_file(self, wanted)
         if path is not None and _load_kept(path, conn, self.unread, only=sorted(asked)):
             self.kept_loaded = True
@@ -173,12 +175,6 @@ class CollapsingMirror(P.MirrorCaptures):
             self.unread[relation] = unread
         if path is not None:
             _save_kept(path, conn, self.unread)
-        if set(wanted) != asked:   # the others are kept in the file, not read here
-            conn.execute(f"DELETE FROM temp.plx_keep WHERE relation NOT IN "
-                         f"({', '.join('?' for _ in asked)})", sorted(asked))
-            conn.execute(f"DELETE FROM temp.plx_collapsed WHERE relation NOT IN "
-                         f"({', '.join('?' for _ in asked)})", sorted(asked))
-            self.unread = {r: n for r, n in self.unread.items() if r in asked}
         return out
 
     def watermark(self) -> list[Any] | None:
@@ -294,8 +290,8 @@ def _kept_copies(conn: sqlite3.Connection, relation: str, minted: frozenset[str]
         "SELECT DISTINCT key_json FROM main.row_version WHERE relation = ?", (relation,))}
     paths = ", ".join("?" for _ in minted)
     keep: set[str] = set()
-    best: dict[tuple[bytes, bool], tuple[str, str, str]] = {}
-    refused: set[tuple[bytes, bool]] = set()
+    best: dict[bytes, tuple[bool, str, str, str]] = {}
+    refused: set[bytes] = set()
     single = 0
     for key, length, capture, present, ok, natural, created, kind, ident in conn.execute(
             f"SELECT key_json, run_length, capture_id, missing IS NULL, ok, "
@@ -315,7 +311,9 @@ def _kept_copies(conn: sqlite3.Connection, relation: str, minted: frozenset[str]
                 or not isinstance(ident, str) or P._blank(ident)):
             keep.add(key)
             continue
-        group = (hashlib.sha256(natural.encode("utf-8")).digest(), bool(present))
+        # one group per natural key: a present copy before every removed one
+        # (``Projector._collapse_reinserted``, CC-NY-2)
+        group = hashlib.sha256(natural.encode("utf-8")).digest()
         if group in refused:
             keep.add(key)
             continue
@@ -334,10 +332,10 @@ def _kept_copies(conn: sqlite3.Connection, relation: str, minted: frozenset[str]
                 keep.add(key)
                 single -= 1
                 continue
-            best[group] = (rank, oid, key)
-        elif (rank, oid) < held[:2]:
-            best[group] = (rank, oid, key)
-    keep.update(item[2] for item in best.values())
+            best[group] = (not present, rank, oid, key)
+        elif (not present, rank, oid) < held[:3]:
+            best[group] = (not present, rank, oid, key)
+    keep.update(item[3] for item in best.values())
     return keep, single - len(best)
 
 
@@ -368,10 +366,10 @@ _TEMP_DDL = (
         binding_kind TEXT, from_object TEXT NOT NULL, to_object TEXT NOT NULL,
         from_vid INTEGER NOT NULL, to_vid INTEGER NOT NULL, from_type TEXT NOT NULL,
         to_type TEXT NOT NULL, tier TEXT NOT NULL, recorded_at TEXT NOT NULL,
-        superseded_at TEXT, row BLOB NOT NULL)""",
+        superseded_at TEXT, row BLOB NOT NULL, ident TEXT NOT NULL DEFAULT '')""",
 )
 _LINK_COLUMNS = ("link_type, binding_kind, from_object, to_object, from_vid, to_vid, "
-                 "from_type, to_type, tier, recorded_at, superseded_at, row")
+                 "from_type, to_type, tier, recorded_at, superseded_at, row, ident")
 _SERIAL_LINKS = P.Projector._project_links
 _SERIAL_PAIRS = P.Projector._link_pairs
 _SERIAL_CANDIDATES = P.Projector._candidates
@@ -724,7 +722,7 @@ def parallel_links(projector: P.Projector, workers: int | None = None, *,
     count = max(1, min(count, len(todo)))
     pool = futures.ProcessPoolExecutor(max_workers=count,
                                        mp_context=multiprocessing.get_context("spawn"),
-                                       initializer=_init, initargs=(payload,)) \
+                                       **parent_watch.pool_init(_init, (payload,))) \
         if todo else None
     try:
         with main_not_imported():
@@ -1136,12 +1134,17 @@ def parallel_units(projector: P.Projector, builder: Any, serial_into: Any, *,
                 b = the_plan.bindings[bid][1]
                 if b["source"] in sources:
                     wanted.setdefault(b["source"], set()).add(b["relation"])
-        for name, relations in sorted(wanted.items()):
-            source = sources[name]
+        def collapsing_(name: str) -> bool:   # its kept copies computed by this process
+            inner = getattr(projector.sources[name], "_inner", projector.sources[name])
+            return (isinstance(inner, CollapsingMirror) and inner.kept_file is None
+                    and bool(set(wanted.get(name, ())) & set(inner.collapse)))
+
+        def pin(name: str, relations: set[str]) -> None:
+            source = projector.sources[name]
             inner = getattr(source, "_inner", source)
-            collapsing = isinstance(inner, CollapsingMirror) and inner.kept_file is None
+            collapsing = collapsing_(name)
             if collapsing and inner.kept_dir is None:
-                # computed once here, for every relation it collapses (``_kept_file``)
+                # computed once here, for every relation the pooled units read of it
                 inner.kept_dir = str(resume.dir if resume is not None else
                                      projector.scratch_dir or Path(builder.temp).parent)
                 shared.append(inner)
@@ -1158,11 +1161,44 @@ def parallel_units(projector: P.Projector, builder: Any, serial_into: Any, *,
                     "pinned": [mark, inner.relation_marks(sorted(relations))]})
             marks[name] = {"mark": P.canonical(mark) if mark is not None else None}
             sources[name] = pi._Pinned(source, records)
-        hints = _hints()
-        sub = replace(the_plan, units={u: the_plan.units[u] for u in sorted(todo)},
-                      rows={u: the_plan.rows[u] for u in sorted(todo)})
+
+        def to_serial(names: set[str]) -> None:
+            """The units reading ``names`` (and a same_record unit whose end is one of
+            them) are projected in this process; the rest stay on the workers."""
+            nonlocal todo
+            out_ = {u for u in todo if any(the_plan.bindings[b][1]["source"] in names
+                                           for b in the_plan.units[u])}
+            while True:
+                more = {u for u in todo - out_ if the_plan.rows[u][0] == "links"
+                        and the_plan.rows[u][4] == "same_record"
+                        and any(x in out_ for x in todo if the_plan.rows[x][0] in
+                                ("binding", "shard") and the_plan.rows[x][1]
+                                in the_plan.rows[u][2:4])}
+                if not more:
+                    break
+                out_ |= more
+            todo -= out_
+            stats["serial_sources"] = sorted(set(stats.get("serial_sources", ())) | names)
+            for name in names:
+                marks.pop(name, None)
+                sources[name] = projector.sources[name]
+
+        # A mirror whose re-inserted copies are computed here (``CollapsingMirror``: half
+        # an hour on the 11-13 Portal mirror) opens first, so every other source's mark is
+        # taken just before the workers open it again: the 11-13 build marked the live
+        # mail capture first, the workers found it changed 33 minutes later, and all 96
+        # units were projected on one core.
+        for name, relations in sorted(wanted.items(), key=lambda kv: (not collapsing_(kv[0]), kv[0])):
+            pin(name, relations)
+        # A source whose snapshot has no watermark (a capture written while it opened) is
+        # one a worker cannot reopen as the same snapshot: the units reading it are
+        # projected in this process, the rest still on the workers (a whole layer on one
+        # core for one live capture store was the 11-13 rehearsal's bug). A same_record
+        # unit goes with its ends' units (it compares the values they write).
+        unmarked = {name for name, m in marks.items() if m["mark"] is None}
+        if unmarked:
+            to_serial(unmarked)
         merge_rows = par._merge_rows
-        order = par.tasks(sub, par.pieces(max(1, min(count, len(todo)))))
 
         def recorded(builder_: Any, main: sqlite3.Connection, links: Any) -> None:
             merge_rows(builder_, main, links)
@@ -1176,33 +1212,73 @@ def parallel_units(projector: P.Projector, builder: Any, serial_into: Any, *,
 
         saved = (par._init, par._merge_rows)
         par._init, par._merge_rows = _units_init, recorded
+        repinned: dict[str, int] = {}
         try:
-            result = par.project(builder, schema=projector.schema, sources=sources,
-                                 marks=marks, the_plan=sub, normalizer=projector.normalizer,
-                                 as_known_at=projector.cut, batch_size=projector.batch,
-                                 shards=projector.shards,
-                                 scratch_dir=projector.scratch_dir or Path(builder.temp).parent,
-                                 count=count, hints=hints)
-        except par.ParallelUnavailable as why:
-            if "kept_copies_missing" in str(why):   # never computed again in a worker
-                raise P.ProjectionError("kept_copies_missing", str(why)) from None
-            result = None
-            stats["unavailable"] = str(why)
+            while True:
+                hints = _hints()
+                sub = replace(the_plan, units={u: the_plan.units[u] for u in sorted(todo)},
+                              rows={u: the_plan.rows[u] for u in sorted(todo)})
+                order = par.tasks(sub, par.pieces(max(1, min(count, len(todo)))))
+                try:
+                    if not todo:   # every unit reads an unmarked source: all in this process
+                        raise par.ParallelUnavailable("source_watermark_unknown:" +
+                                                      ",".join(stats.get("serial_sources", ())))
+                    result = par.project(builder, schema=projector.schema, sources=sources,
+                                         marks=marks, the_plan=sub, normalizer=projector.normalizer,
+                                         as_known_at=projector.cut, batch_size=projector.batch,
+                                         shards=projector.shards,
+                                         scratch_dir=projector.scratch_dir or Path(builder.temp).parent,
+                                         count=count, hints=hints)
+                except par.ParallelUnavailable as why:
+                    if "kept_copies_missing" in str(why):   # never computed again in a worker
+                        raise P.ProjectionError("kept_copies_missing", str(why)) from None
+                    result = None
+                    stats["unavailable"] = str(why)
+                    why_text = str(why)
+                else:
+                    why_text = str(result.unavailable or "")
+                    if result.done:
+                        done |= set(result.done)
+                        todo -= set(result.done)
+                        for k in ("tasks", "task_seconds"):
+                            stats.setdefault(k, 0 if k == "tasks" else {})
+                        stats["tasks"] += len(result.seconds)
+                        stats["task_seconds"].update(result.seconds)
+                        stats["merge_seconds"] = round(stats.get("merge_seconds", 0)
+                                                       + result.merge_seconds, 3)
+                        stats["part_bytes"] = stats.get("part_bytes", 0) + result.part_bytes
+                        stats["work_peak"] = max(stats.get("work_peak", 0), result.work_peak)
+                    stats.update(workers=result.workers, unavailable=result.unavailable)
+                    if "kept_copies_missing" in why_text:
+                        raise P.ProjectionError("kept_copies_missing", why_text)
+                # A live capture written between its mark and the workers' opening: opened
+                # and marked again (none of its tasks merged: each failed as it opened) at
+                # most SOURCE_REPINS times, then its units are projected here and the rest
+                # on the workers.
+                changed = why_text.split(":", 1)[1] if why_text.startswith("source_changed:") else None
+                if not todo or changed not in marks:
+                    break
+                if not conn.in_transaction:
+                    conn.execute("BEGIN IMMEDIATE")
+                stats.setdefault("repinned", {})
+                if repinned.get(changed, 0) < SOURCE_REPINS:
+                    repinned[changed] = repinned.get(changed, 0) + 1
+                    stats["repinned"][changed] = repinned[changed]
+                    pin(changed, wanted[changed])
+                    if marks[changed]["mark"] is None:   # written while it opened again
+                        to_serial({changed})
+                else:
+                    to_serial({changed})
+                if log is not None:
+                    print(f"units: {changed} changed under the workers: "
+                          f"{'marked again' if changed in marks else 'projected here'}",
+                          file=log, flush=True)
         finally:
             par._init, par._merge_rows = saved
             if resume is None:   # a resumed build keeps them in its directory to resume
                 for inner in shared:
                     if inner.kept_path is not None:
                         inner.kept_path.unlink(missing_ok=True)
-        if result is not None and "kept_copies_missing" in str(result.unavailable or ""):
-            raise P.ProjectionError("kept_copies_missing", str(result.unavailable))
-        if result is not None:
-            done |= set(result.done)
-            stats.update(workers=result.workers, tasks=len(result.seconds),
-                         merge_seconds=result.merge_seconds,
-                         work_peak=result.work_peak, part_bytes=result.part_bytes,
-                         unavailable=result.unavailable)
-            stats["task_seconds"] = dict(result.seconds)
         if not conn.in_transaction:
             conn.execute("BEGIN IMMEDIATE")
     elif not conn.in_transaction:
@@ -1221,6 +1297,8 @@ def parallel_units(projector: P.Projector, builder: Any, serial_into: Any, *,
     conn.execute(f"DROP TABLE IF EXISTS main.{DONE_TABLE}")
     return stats
 
+
+SOURCE_REPINS = 2   # a live capture changed under the workers: marked again this often, then serial
 
 HINTS_ENV = "PLX_UNIT_LAYER_HINTS"   # a JSON file: task (first unit) -> seconds measured
 

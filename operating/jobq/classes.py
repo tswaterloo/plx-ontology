@@ -15,13 +15,14 @@ from pathlib import Path
 from typing import Mapping
 
 OVERRIDES_ENV = "PLX_JOBQ_CLASSES"
-SHORT_RUNTIME_S = 600.0         # A short job never waits behind a blocked head
+SHORT_RUNTIME_S = 600.0         # a short job never waits behind a blocked head
 
 
 @dataclass(frozen=True)
 class JobClass:
     name: str
-    priority: int               # lower first: delta 10 < alerts 20 < search 30 < backup 40 < land 50 < tests 60
+    priority: int               # lower first: delta 10 < alerts 20 < search 30 < backup 40
+                                # < land 50 < workspace 55 < tests 60
     mem_gb: float               # declared need (what it may reach)
     cpus: float                 # declared CPUs
     max_concurrent: int         # running at once in this class
@@ -35,6 +36,10 @@ class JobClass:
     queued: bool = True         # False: never enqueued, only accounted when its unit is active
     max_runtime_s: float = 0.0  # declared longest run; 0: unbounded. Under SHORT_RUNTIME_S a
                                 # job may pass a blocked head when it fits beside the floor
+    pool: str = "host"          # "workspaces": also counted against that pool's budget (the
+                                # cores and memory of plx-workspaces.slice, workspace_budget)
+    reserve: bool = False       # workspaces pool: its cores and memory stay free for it while
+                                # none of it runs (the lander's reserved class)
 
     @property
     def short(self) -> bool:
@@ -48,15 +53,22 @@ class JobClass:
 _CLASSES = (
     JobClass("delta", 10, 24, 12, 1, unit="plx-delta.service", cooldown_s=300,
              max_attempts=3, backoff_s=120, preempt_after_s=120),
-    JobClass("proactive-whole", 20, 8, 4, 1, unit="plx-proactive-whole.service",
+    JobClass("proactive-whole", 20, 22, 6, 1, unit="plx-proactive-whole.service",
              max_attempts=2, backoff_s=300, preempt_after_s=300),
     JobClass("proactive-inc", 20, 5, 1, 1, unit="plx-proactive-inc.service", cooldown_s=60,
              max_attempts=2, backoff_s=60, preempt_after_s=300),
     JobClass("search-follow", 30, 8, 6, 1, unit="plx-search-follow.service", cooldown_s=60,
              preemptible=True, max_attempts=3, backoff_s=60),
     JobClass("backup", 40, 3, 2, 1, max_attempts=3, backoff_s=600),
-    JobClass("land", 50, 1, 1, 1, max_attempts=1, max_runtime_s=540),
-    JobClass("tests", 60, 4, 1, 15, preemptible=True, max_attempts=1, max_runtime_s=540),
+    # The workspaces pool: every workspace job goes through tools/job.py or
+    # tools/testslot.py and declares its own cores, memory and disk (these are defaults);
+    # admission counts cores, not runs, so max_concurrent is only a backstop. The lander
+    # keeps 4 cores and 6 GB of the pool for itself while no landing runs.
+    JobClass("land", 50, 6, 4, 1, max_attempts=1, max_runtime_s=540, pool="workspaces",
+             reserve=True),
+    JobClass("workspace", 55, 4, 2, 64, preemptible=True, max_attempts=1, pool="workspaces"),
+    JobClass("tests", 60, 4, 2, 64, preemptible=True, max_attempts=1, max_runtime_s=540,
+             pool="workspaces"),
     # Not queued yet: counted against the headroom while their unit is active.
     JobClass("proactive", 20, 16, 4, 1, unit="plx-proactive.service", queued=False),
     JobClass("proactive-nightly", 20, 16, 4, 1, unit="plx-proactive-nightly.service",

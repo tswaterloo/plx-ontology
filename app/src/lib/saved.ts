@@ -10,8 +10,8 @@ import { useSyncExternalStore } from "react";
 import { logSaved } from "./api";
 
 export interface SavedItem {
-  key: string; // "q:<question>" or "o:<type>/<id>"
-  kind: "question" | "object";
+  key: string; // "q:<question>", "o:<type>/<id>" or "p:<page href>" (a pinned page, lib/pins)
+  kind: "question" | "object" | "page";
   label: string;
   href: string;
   at: string;
@@ -86,13 +86,24 @@ function read(): SavedItem[] {
 
 function write(items: SavedItem[]) {
   if (!user) return;
-  cache = items.slice(0, 50);
+  // up to 50 saved questions and records, plus the pinned pages (lib/pins caps those at 20)
+  const pages = items.filter((s) => s.kind === "page").slice(0, 21);
+  cache = [...pages, ...items.filter((s) => s.kind !== "page").slice(0, 50)];
   try {
     window.localStorage.setItem(storageKey(user), JSON.stringify(cache));
   } catch {
     /* storage full or blocked: keep in memory */
   }
   emit();
+}
+
+/** Replace this person's pinned pages (kind "page"; lib/pins) and keep everything else.
+ * False when nobody is signed in. Pins are kept in the browser only, not the work log. */
+export function writePages(pages: SavedItem[]): boolean {
+  if (!user) return false;
+  const rest = read().filter((s) => s.kind !== "page");
+  write([...pages.filter((p) => p.kind === "page"), ...rest.slice(0, 50)]);
+  return true;
 }
 
 export function useSaved(): SavedItem[] {
@@ -107,7 +118,7 @@ export function useSaved(): SavedItem[] {
 }
 
 /** Returns whether the item is now saved. No-op (false) when nobody is signed in. */
-export function toggleSaved(item: Omit<SavedItem, "at">): boolean {
+export function toggleSaved(item: Omit<SavedItem, "at"> & { kind: "question" | "object" }): boolean {
   if (!user) return false;
   const items = read();
   const saved = !items.some((s) => s.key === item.key);

@@ -703,7 +703,9 @@ class ReloadingExclusion:
                  config: Path = CONFIG, clock: Any = None, state_dir: Any = None) -> None:
         import time
         self._state_dir = state_dir   # the mail capture's directory is attached from it
-        self._environ = dict(environ)
+        # only the two names the guard reads: a copy of the whole environment would read (and
+        # hold) every variable, including the credentials of sources this host never serves
+        self._environ = {name: environ[name] for name in (ENV_IDS, ENV_FILE) if name in environ}
         self._ttl, self._config = ttl, config
         self._clock = clock or time.monotonic
         self._stamp: Any = None

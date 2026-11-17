@@ -61,6 +61,7 @@ from typing import Any, Callable, Iterable, Mapping, Sequence
 from ontology.units import unit_token
 
 from . import proactive_business as pb
+from operating.prose_style import some_of
 
 SLOW_RULE = "slow_moving_stock"
 LOT_RULE = "expiring_lot_stock"
@@ -924,9 +925,9 @@ def assembly_component_shortfall(st: Any, as_of: date, *, gap: Callable, cites: 
                 else "An assembly order")
         made = gap(ASSEMBLY_SHORT, ASSEMBLY_RULE, order, ASSEMBLY, f"short|{day.isoformat()}",
                    summary=f"{name} starts {day.isoformat()} and "
-                           f"{_plural(len(hits), 'component')} will be short: "
-                           + "; ".join(h[1] for h in hits[:3])
-                           + (f"; and {len(hits) - 3} more" if len(hits) > 3 else ""),
+                           f"{_plural(len(hits), 'component')} will be short"
+                           + (": " if len(hits) <= 3 else "; ")
+                           + some_of([h[1] for h in hits], 3, sep="; "),
                    missing="Can the components arrive in time (expedite the purchase "
                            "order, use another lot), or should the start move?",
                    why="The order's components need more than is on hand plus what open "

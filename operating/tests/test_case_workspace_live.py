@@ -25,6 +25,9 @@ from unittest import mock
 from integrations.source_mirror import AUDIENCE_SCHEMA, AudienceMap
 from ontology.core import Actor
 from operating import case_workspace_live as live_ws
+from operating import case_workspace_live_cli
+from operating import case_workspace_live_model
+from operating import case_workspace_live_projection
 from operating.case_runtime import CaseRuntime
 from operating.ingestion import Ingestor, load_sources
 
@@ -416,13 +419,13 @@ class LiveMirrorWorkspaceTest(unittest.TestCase):
 
         causes: dict = {}
         with live_ws._StderrCauses(causes):
-            for index in range(live_ws.STDERR_CAUSES_MAX + 3):
+            for index in range(case_workspace_live_cli.STDERR_CAUSES_MAX + 3):
                 warnings.warn("x", type(f"Lib{index}Warning", (UserWarning,), {}))
             warnings.warn("again", UserWarning)
             warnings.warn("again", UserWarning)
             warnings.warn("y", type("9-not a name", (UserWarning,), {}))
-        self.assertEqual(causes["records"], live_ws.STDERR_CAUSES_MAX + 6)
-        self.assertEqual(len(causes["by_cause"]), live_ws.STDERR_CAUSES_MAX + 1)
+        self.assertEqual(causes["records"], case_workspace_live_cli.STDERR_CAUSES_MAX + 6)
+        self.assertEqual(len(causes["by_cause"]), case_workspace_live_cli.STDERR_CAUSES_MAX + 1)
         self.assertEqual(causes["by_cause"]["warning:Lib0Warning"], 1)
         self.assertEqual(causes["by_cause"]["other"], 6)
 
@@ -711,11 +714,11 @@ class RelationshipCountTest(unittest.TestCase):
                 objects = [f"O{i}" for i in range(n)]
                 projection = self.projection(temp, objects + ["S0"])
                 out = live_ws.relationships(self.tools(n), projection, self.view(objects))
-                self.assertEqual(out["relationship_nodes"], min(n, live_ws.MAP_OBJECTS))
+                self.assertEqual(out["relationship_nodes"], min(n, case_workspace_live_model.MAP_OBJECTS))
                 self.assertEqual(out["relationship_edges"],
                                  {"Doc.next": n - 1} if n > 1 else {})
                 self.assertEqual(out["relationship_truncated"],
-                                 ["objects"] if n > live_ws.MAP_OBJECTS else [])
+                                 ["objects"] if n > case_workspace_live_model.MAP_OBJECTS else [])
 
     def test_pages_are_read_hidden_objects_skipped_and_a_cut_read_named(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -727,18 +730,18 @@ class RelationshipCountTest(unittest.TestCase):
                                    "relationship_edges": {"Doc.many": 120, "Doc.next": 1}})
             out = live_ws.relationships(self.tools(3, fan=250), projection, self.view(objects))
             self.assertEqual(out["relationship_edges"]["Doc.many"],
-                             live_ws.MAP_PAGES * live_ws.MAP_PAGE)
+                             case_workspace_live_model.MAP_PAGES * case_workspace_live_model.MAP_PAGE)
             self.assertEqual(out["relationship_truncated"], ["links"])
             plain = self.tools(1)
 
             def twins(tool: str, args: dict) -> dict:   # a card listing its maximum
                 card = plain(tool, args)
                 card["identity"] = [{"link_id": f"t{i}", "link_type": "Doc.same_record_as"}
-                                    for i in range(live_ws.CARD_IDENTITY)]
+                                    for i in range(case_workspace_live_model.CARD_IDENTITY)]
                 return card
             out = live_ws.relationships(twins, projection, self.view(["O0"]))
             self.assertEqual((out["relationship_edges"], out["relationship_truncated"]),
-                             ({"Doc.same_record_as": live_ws.CARD_IDENTITY}, ["card"]))
+                             ({"Doc.same_record_as": case_workspace_live_model.CARD_IDENTITY}, ["card"]))
         gone = live_ws.relationships(self.tools(1), Path(temp) / "ontology.sqlite",
                                      self.view(["O0"]))
         self.assertEqual(gone, {"relationship_nodes": 0, "relationship_edges": {},
@@ -1263,6 +1266,7 @@ class GapDateTest(unittest.TestCase):
 
     def test_a_gap_shows_the_dates_its_claims_cover_and_masks_the_rest(self):
         from operating import claim_checks
+        from operating import claim_checks_parse
 
         recorded = self.record()
         self.assertEqual(recorded["why"], "value_disagreement: The Portal says 2026-01-07, FM "
@@ -1271,7 +1275,7 @@ class GapDateTest(unittest.TestCase):
                           "row": {"expected_date": "2026-01-07T00:00:00Z"}},
                 self.FM: {"relation": "public.generated_purchase_order",
                           "row": {"expected": "2026-01-09"}}}
-        claims = claim_checks.parse_value_claims(recorded["value_claims"],
+        claims = claim_checks_parse.parse_value_claims(recorded["value_claims"],
                                                  recorded["citations"], [])
         report = claim_checks.check_items([{
             "id": "G1", "texts": [recorded["missing"], recorded["why"]], "value_claims": claims,
@@ -2045,7 +2049,7 @@ class CaseProjectionConfirmationTest(unittest.TestCase):
                     "FROM object_values WHERE lineage = 'workbench' AND binding_id = ? "
                     "ORDER BY 1, 2, 4", (kind_confirmation.PROJECTED_BINDING,)).fetchall()
 
-        live_ws.project_state(state, path, tenant="plx")   # the case's projection, before
+        case_workspace_live_projection.project_state(state, path, tenant="plx")   # the case's projection, before
         self.assertEqual(values(path), [])
         with contextlib.closing(sqlite3.connect(path)) as db:
             files = db.execute(
@@ -2092,7 +2096,7 @@ class CaseProjectionConfirmationTest(unittest.TestCase):
                     for store, log in zip(stores, wal)]
 
         before = snapshot()
-        live_ws.project_state(state, path, tenant="plx")
+        case_workspace_live_projection.project_state(state, path, tenant="plx")
         self.assertEqual(snapshot(), before)   # read-only: nothing written, nothing imported
         self.assertEqual([p.name for p in path.parent.iterdir()], [path.name])
         case_values = values(path)

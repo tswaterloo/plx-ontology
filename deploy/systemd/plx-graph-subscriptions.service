@@ -1,0 +1,32 @@
+# PLX Workbench Graph change-notification subscription renewer (AUD-05;
+# integrations.graph_subscriptions): one short pass that renews each configured mail / Teams
+# subscription at half its lifetime and recreates a missing or expired one, through the one
+# pinned sender (the token URL and Graph /subscriptions only). It reads no mail or message.
+# Not enabled by the build; inert without PLX_GRAPH_SUBS_CONFIG (prints not_configured, exits 0).
+#
+# Switch-on (after Vince's Azure setup, OPEN-1111 row V-33):
+#   1. a JSON file of the wanted subscriptions (see the module docstring; no secret in it) and
+#      PLX_GRAPH_SUBS_CONFIG=<its path> in plx.env, beside the receiver's
+#      PLX_GRAPH_NOTIFY_CLIENT_STATE_SECRET; AZURE_TENANT_ID/_CLIENT_ID/_CLIENT_SECRET with the
+#      app's Subscription permissions as in plx.env already;
+#   2. systemctl enable --now plx-graph-subscriptions.timer
+[Unit]
+Description=PLX Workbench Graph subscription renewer (change notifications)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=@PLX_USER@
+Group=@PLX_GROUP@
+WorkingDirectory=@PLX_CURRENT@
+EnvironmentFile=/etc/plx/ingest.env
+EnvironmentFile=@PLX_HOME@/.config/plx/plx.env
+Environment=PATH=/data/venv/bin:/usr/local/bin:/usr/bin:/bin
+# SEC-S-05: only the Azure app (token + /subscriptions) is used; the other business
+# credentials of the shared env file are dropped
+UnsetEnvironment=BC_CLIENT_SECRET MICROSOFT_GRAPH_CLIENT_SECRET MC_MCP_API_KEY
+ExecStart=/data/venv/bin/python3 -m integrations.graph_subscriptions once --state ${PLX_INGEST_STATE}
+Nice=5
+MemoryMax=256M
+TimeoutStartSec=120

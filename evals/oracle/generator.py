@@ -49,7 +49,7 @@ from . import keys as K
 from .families import (BC_VENDOR_SETS, INTERFACE, ORACLES, Context, Node, Sources,
                        resolve_root, run)
 from .source import (BUDGET_STOP, DocumentPort, ReadFailed, canonical, decimal_of, digest,
-                     field_value, instant, key_text, sql_trim)
+                     field_value, instant, key_text)
 
 ITEM_FORMAT = "plx-eval-item/v1"
 STRATA = ("sales_order", "purchase_order", "assembly_order", "receipt", "bc_invoice", "mail",

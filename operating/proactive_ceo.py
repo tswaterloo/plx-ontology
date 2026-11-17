@@ -339,6 +339,12 @@ def customer_demand_drop(st: Any, as_of: date, *, gap: Callable, cites: Callable
                          else "customer_currencies_mixed" if len(currencies[customer]) > 1
                          else "customer_same_name_unlinked", [customer],
                          [(o[0], FINANCE) for o in got]
+                         # the customer's orders in its other currencies are the cause
+                         + [(o[0], FINANCE) for (k, c), held in sorted(series.items())
+                            if k == customer and c != currency
+                            and customer not in unknown_value
+                            and customer not in unknown_status
+                            and customer not in twin_active for o in held]
                          # the other same-name customers' recent orders are the cause
                          + [part for k in sorted(same_name_of.get(customer, ()))
                             if customer in same_name_active

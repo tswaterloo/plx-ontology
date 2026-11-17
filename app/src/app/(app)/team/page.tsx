@@ -9,6 +9,7 @@ import { LoadProblem } from "@/components/ui/notice";
 import { Pending } from "@/components/ui/skeleton";
 import { Toolbar } from "@/components/ui/toolbar";
 import { TeamDashboard } from "@/components/team/dashboard";
+import { WorkloadSection } from "@/components/team/workload";
 import { getLabour, getTeam } from "@/lib/api";
 import { ApiError, noticeKind, plainError } from "@/lib/errors";
 import type { LabourPage, TeamView } from "@/lib/types";
@@ -41,6 +42,17 @@ export default function TeamPage() {
   const people = useLoad<TeamView>(getTeam, !!me);
   const labour = useLoad<LabourPage>(getLabour, !!me);
   const labourOn = !!labour.data && labour.data.state !== "not_granted";
+  // /labour lands on #labour: a reader without the grant is told so there, never left on Team
+  // wondering where the hours went (nobody else sees a word about labour)
+  const [hash, setHash] = useState("");
+  useEffect(() => {
+    const read = () => setHash(window.location.hash);
+    read();
+    window.addEventListener("hashchange", read);
+    return () => window.removeEventListener("hashchange", read);
+  }, []);
+  const labourRefused =
+    (labour.data?.state === "not_granted" || (labour.error instanceof ApiError && (labour.error.status === 403 || labour.error.status === 404))) && hash === "#labour";
   const heading = people.data?.scope === "self" ? "Your activity" : "People";
   return (
     <div className="flex min-h-0 flex-1 flex-col">
@@ -59,8 +71,14 @@ export default function TeamPage() {
             )}
           </section>
         )}
+        {me && (
+          <section id="workload" aria-labelledby="workload-title" className="max-w-6xl scroll-mt-16 space-y-3">
+            <h2 id="workload-title" className="text-[15px] font-semibold">Workload</h2>
+            <WorkloadSection owner={!!me.owner} />
+          </section>
+        )}
         {team && (
-          <section id="approvals" aria-labelledby="approvals-title" className="max-w-3xl scroll-mt-16 space-y-3">
+          <section id="approvals" aria-labelledby="approvals-title" className="max-w-6xl scroll-mt-16 space-y-3">
             <h2 id="approvals-title" className="text-[15px] font-semibold">Approvals waiting on others</h2>
             <TeamApprovals />
           </section>
@@ -69,6 +87,14 @@ export default function TeamPage() {
           <section id="labour" aria-labelledby="labour-title" className="max-w-3xl scroll-mt-16 space-y-3" data-testid="team-labour">
             <h2 id="labour-title" className="text-[15px] font-semibold">Labour hours</h2>
             <LabourView page={labour.data} />
+          </section>
+        )}
+        {labourRefused && (
+          <section id="labour" aria-labelledby="labour-title" className="max-w-3xl scroll-mt-16 space-y-2" data-testid="team-labour-refused">
+            <h2 id="labour-title" className="text-[15px] font-semibold">Labour hours</h2>
+            <p className="text-[13px] leading-5 text-muted">
+              Labour hours by department are open to readers with the HR or operations-management grant, which you don&apos;t have. Ask the owner if you need them.
+            </p>
           </section>
         )}
         {labour.error && !(labour.error instanceof ApiError && (labour.error.status === 403 || labour.error.status === 404)) ? (

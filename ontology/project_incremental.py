@@ -60,8 +60,7 @@ A schema change rewrites unit by unit only while every binding of the base keeps
 type and every event type of the base its definition (``units.json`` ``shape``), and a
 unit it removes is a shard or a link unit whose rows are found by its id; otherwise the
 build is cold. A base built under the earlier keys (one context of whole code files) is
-rebuilt cold unless the operator names the commit that built it and that commit proves
-every part (``ontology.build_adopt``; ``Generation.need`` ``adopted`` says how or why not).
+rebuilt cold.
 
 A report entry made outside every unit (a projection hook naming none) is in no unit's
 part: every build leaves it out of its report and counts it (``Generation.unattributed``,
@@ -162,19 +161,18 @@ import sqlite3
 import time
 from typing import Any, Callable, Iterable, Iterator, Mapping, Sequence
 
-from ontology.project import (_PROJECTED_LINK_KINDS, _REC_FIELDS, DEFAULT_BATCH, ETL_REINSERTED,
-                              POST_PROJECT, SHARD_BUCKETS, CaptureSource, Normalizer,
-                              ProjectionError, Projector, _default_normalizer,
-                              _fingerprint_cells, _get, binding_key, binding_unit,
-                              derivation_code, event_id_of, finish_generation, link_ends,
-                              link_unit, merge_reports, object_bucket, object_id_of,
-                              object_unit,
+from ontology.project import (_PROJECTED_LINK_KINDS, DEFAULT_BATCH, ETL_REINSERTED, POST_PROJECT,
+                              SHARD_BUCKETS, CaptureSource, Normalizer, ProjectionError, Projector,
+                              _default_normalizer, _fingerprint_cells, _get, binding_key,
+                              binding_unit, derivation_code, event_id_of, finish_generation,
+                              link_ends, link_unit, merge_reports, object_bucket, object_id_of,
                               open_generation, projected_counts, shard_of, shard_unit,
                               stream_fingerprint)
 from integrations.captured_text import kept_readings
 from integrations.kept_members import MEMBERS_FILE, kept_members
-from ontology.document_fields import kept_fields
-from ontology import build_adopt, build_keys, build_prints, store_ddl
+from ontology.document_fields import (LAYOUT_VIEW_TIMED_OUT, RELATION as _FIELDS_RELATION,
+                                     kept_fields, layout_timed_out)
+from ontology import build_keys, build_prints, store_ddl
 from ontology.build_timings import BuildTimings
 from ontology.finish_digest import ParallelBuilder
 from ontology.store import (_DIRTY_TRIGGERS, StoreBuilder, StoreError, _fsync_dir, canonical,
@@ -1206,7 +1204,7 @@ def planned_need(state_dir: str | Path, *, schema: Any = None,
     """The space estimate of the next build of ``state_dir`` before its captures are
     fingerprinted (hours on a large store): the smallest mode that would run. Cold
     (:func:`space_need`) when only a cold build can run: no generation committed, the
-    base's keys of another scheme (naming no commit to adopt), another shared context of
+    base's keys of another scheme, another shared context of
     the keys (:func:`build_context` of ``normalizer``, by default the build's, and
     ``as_known_at``), or another schema (``schema``'s digest, or ``schema_digest``,
     against the store's ``schema_digest`` meta) the base cannot be rewritten under unit by
@@ -1225,8 +1223,7 @@ def planned_need(state_dir: str | Path, *, schema: Any = None,
     reason = None
     if base is None:
         reason = "no_generation"
-    elif not units or (units.get("scheme") != build_keys.KEY_SCHEME
-                       and not build_adopt.code_sha(units)):
+    elif not units or units.get("scheme") != build_keys.KEY_SCHEME:
         reason = "key_scheme"
     elif units.get("scheme") == build_keys.KEY_SCHEME and units.get("context") != context:
         reason = "build_code"
@@ -1439,6 +1436,26 @@ def build_generation(state_dir: str | Path, schema: Any, sources: Mapping[str, C
     return replace(generation, seconds=dict(timings))
 
 
+def _with_layout_timeouts(marks: Mapping[str, Any]) -> dict[str, Any]:
+    """The sources' kept watermarks and prints (``_pin``) with every ``documentFields``
+    print folded with the documents this build placed on a timed-out layout view
+    (``document_fields.layout_timed_out``): the next build takes a print no build keyed
+    its units with, so it derives the relation again and parses those documents anew
+    (their fields were never kept); unchanged when none timed out."""
+    late = layout_timed_out()
+    if not late:
+        return dict(marks)
+    token = _sha(f"{LAYOUT_VIEW_TIMED_OUT}\x00{sorted(late)}")
+    out: dict[str, Any] = {}
+    for name, mark in marks.items():
+        prints = (mark or {}).get("prints") or {}
+        if _FIELDS_RELATION in prints:
+            mark = {**mark, "prints": {**prints, _FIELDS_RELATION: _sha(
+                f"{prints[_FIELDS_RELATION]}\x00{token}")}}
+        out[name] = mark
+    return out
+
+
 def _build(state: Path, schema: Any, sources: Mapping[str, CaptureSource],
            base: Generation | None, *, normalizer: Normalizer | None, as_known_at: Any,
            clock: Callable[[], datetime] | None, batch_size: int,
@@ -1452,24 +1469,13 @@ def _build(state: Path, schema: Any, sources: Mapping[str, CaptureSource],
     started = time.monotonic()
     seconds = timings if timings is not None else BuildTimings()
     seconds.begin("fingerprint")
+    layout_timed_out(forget=True)   # this build's count of timed-out layout views
     the_plan = plan(schema)
     # What every unit's rows share: the scheme and version of the rows code
     # (``ontology.build_keys``), the cut and the normalizer's code. The schema and the
     # captures enter each unit's key by its own slice and fingerprints only.
     context = build_context(normalizer, as_known_at)
     units = _units_of(base) if base is not None else None
-    # A base of the earlier keys whose commit the operator names is adopted when every
-    # part is proven (``ontology.build_adopt``), else the build is cold as before.
-    adoption, adopted = None, None
-    if units is not None and units.get("scheme") is None and build_adopt.code_sha(units):
-        try:
-            adoption = build_adopt.prepare(
-                units, context=context, report=base.report, state=state, sources=sources,
-                normalizer=normalizer, fmt=FORMAT, plan=plan,
-                cut=known_at(as_known_at) if as_known_at is not None else None)
-            units = adoption.units
-        except build_adopt.NotAdopted as why:
-            adopted = {"code_sha": build_adopt.code_sha(units), "refused": str(why)}
     ours = units is not None and units.get("scheme") == build_keys.KEY_SCHEME
     # Held fingerprints: a source's when the code that read and fingerprinted it is the
     # same; a sharded binding's when its binding and the shard code are (``build_keys``).
@@ -1555,10 +1561,6 @@ def _build(state: Path, schema: Any, sources: Mapping[str, CaptureSource],
                 {"schema": slices[shard_unit(bid, k)], "binding": bid,
                  "shards": shards["shards"], "shard": k, "print": print_,
                  "reader": reader_of.get(the_plan.bindings[bid][1]["source"])}))
-    if adoption is not None:
-        units = {**units, "keys": adoption.keys(context, keys, slices, the_plan.units,
-                                                captured, sharded)}
-        adopted = {"code_sha": adoption.sha, "kept": adoption.kept, "of": len(units["keys"])}
     shape = schema_parts.shape()
     gone = _gone_units(units, keys, the_plan, shape) \
         if the_plan.acyclic and ours and units.get("context") == context else None
@@ -1594,8 +1596,6 @@ def _build(state: Path, schema: Any, sources: Mapping[str, CaptureSource],
     except BaseException:
         _discard(sidecar)
         raise
-    if adopted is not None:   # how a base of the earlier keys was taken, or why not
-        need = {**need, "adopted": adopted}
     if need["mode"] == "cold":   # every unit projected again, into a new store
         incremental, dirty = False, set(keys)
         for bid in delta:   # rebuilt whole, each object's part kept
@@ -1763,6 +1763,7 @@ def _build(state: Path, schema: Any, sources: Mapping[str, CaptureSource],
             seconds.begin("project.counts")
             counted = projected_counts(builder, report)
             seconds["project.counts"] = round(time.monotonic() - laid, 3)
+            marks = _with_layout_timeouts(marks)
             held = {
                 "format": CHECKPOINT_FORMAT, "id": token, "context": context, "code": code,
                 "keys": keys,
@@ -2314,13 +2315,25 @@ _CANDIDATE_ROWS = (
     "WHERE i.object_id >= ? AND i.object_id < ?")
 
 
+def _shard_function(conn: sqlite3.Connection) -> None:
+    """``plx_shard(object_id, count)`` (``shard_of``) on ``conn``, registered once: SQLite
+    refuses to replace a function while a statement of the connection is active
+    ("Error creating function"), so the ``after`` pass of a build whose ``before`` pass
+    registered it keeps that one (only this module registers ``plx_shard``)."""
+    try:
+        conn.create_function("plx_shard", 2, shard_of, deterministic=True)
+    except sqlite3.OperationalError:
+        if conn.execute("SELECT plx_shard('', 1)").fetchone() is None:   # raises if absent
+            raise
+
+
 def _identifier_rows(conn: sqlite3.Connection, the_plan: Plan, dirty: Iterable[str],
                      when: str, delta: Iterable[str] = ()) -> None:
     """Keep the identifier rows of the objects of the ``dirty`` units (``when``:
     ``before`` their rows are deleted from the seed, ``after`` they are projected
     again) in ``temp.plx_ident_<when>``: only those can differ between the base and
     this generation (no other unit's rows are written)."""
-    conn.create_function("plx_shard", 2, shard_of, deterministic=True)
+    _shard_function(conn)
     table = f"temp.plx_ident_{when}"
     conn.execute(f"DROP TABLE IF EXISTS {table}")
     conn.execute(f"CREATE TABLE {table} AS {_CANDIDATE_ROWS} AND 0", ("", ""))

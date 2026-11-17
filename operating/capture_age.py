@@ -10,11 +10,17 @@ recorded guarded capture (``operating.case_runtime``) both decide through
 
 from __future__ import annotations
 
+from contextvars import ContextVar
 from datetime import datetime, timedelta
 from typing import Any
 
 # One missed daily capture tolerated.
 MAX_CAPTURE_AGE = timedelta(hours=48)
+# Every decision ``capture_decides`` makes while this holds a list is appended to it as
+# (the stamp read as an aware time or None, max_age, answer): the item audience producer
+# (``operating.pg.item_audiences``) records how long a gate decision it keeps stays the
+# gate's own decision. Decides nothing.
+DECISIONS: ContextVar[list | None] = ContextVar("capture_age_decisions", default=None)
 
 
 def capture_decides(stamp: Any, now: datetime, max_age: timedelta = MAX_CAPTURE_AGE) -> bool:
@@ -23,13 +29,20 @@ def capture_decides(stamp: Any, now: datetime, max_age: timedelta = MAX_CAPTURE_
     ``stamp`` is ISO 8601 text with an offset or ``Z`` (``capture_sharepoint._stamp``,
     or ``isoformat()`` of an aware time). False for anything else, a naive time, a time
     after ``now`` and one older than ``max_age``."""
+    moment = _moment(stamp)
+    answer = moment is not None and timedelta(0) <= now - moment <= max_age
+    seen = DECISIONS.get()
+    if seen is not None:
+        seen.append((moment, max_age, answer))
+    return answer
+
+
+def _moment(stamp: Any) -> datetime | None:
     if not isinstance(stamp, str):
-        return False
+        return None
     try:
         moment = datetime.fromisoformat(stamp[:-1] + "+00:00" if stamp.endswith("Z")
                                         else stamp)
     except ValueError:
-        return False
-    if moment.tzinfo is None:
-        return False
-    return timedelta(0) <= now - moment <= max_age
+        return None
+    return None if moment.tzinfo is None else moment

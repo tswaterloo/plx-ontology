@@ -14,7 +14,6 @@ import argparse
 import json
 import random
 import sqlite3
-import sys
 from typing import Any, Sequence
 
 from ontology import store as S

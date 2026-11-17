@@ -24,7 +24,12 @@ what changed since its last run:
 
 ``--mode all`` does both in one run. The people exclusion is loaded first; without it
 nothing is written (exit 2). Prints one JSON report (counts and timings only). Exit: 0
-done or nothing to do, 2 refused, 1 failed.
+done or nothing to do, 2 refused, 1 failed, 3 the embedded share gate failed
+(``--embedded-gate-strict``).
+
+The report's ``embedded_gate`` (layers and all modes) is the share of each kind's chunks
+with a vector; below 95% for any kind it says ``fail`` (dense search cannot see the rest).
+It is expected to fail until the DI-06 GPU backfill has run.
 """
 
 from __future__ import annotations
@@ -525,6 +530,71 @@ def layers_follow(args: argparse.Namespace, state: Path, now_served: dict[str, A
         conn.close()
 
 
+EMBEDDED_MIN_SHARE = 0.95   # of any kind's chunks that must have a vector (audit B #2)
+# Kinds with fewer chunks than this are not judged (a share of three rows says nothing).
+EMBEDDED_MIN_CHUNKS = 50
+
+
+def embedded_gate(conn: Any, min_share: float = EMBEDDED_MIN_SHARE) -> dict[str, Any]:
+    """Whether dense search can see the chunks: the share of each kind's chunks with a
+    vector. ``status`` is ``fail`` when any judged kind is below ``min_share`` (listed in
+    ``failing``), ``pass`` otherwise. Dense search is blind to a chunk without a vector, so a
+    low share is a failing report line, not a note. Expected to FAIL until the DI-06 GPU
+    backfill has run (the 11-06 audit measured 38.6% overall; mail 79%, SharePoint 7.7%,
+    Teams 6.2%, every pre-2026 mail chunk 0%)."""
+    rows = conn.execute(
+        "SELECT kind, count(*), count(embedding) FROM search.chunks GROUP BY kind "
+        "ORDER BY kind").fetchall()
+    by_kind, failing = {}, []
+    for kind, total, embedded in rows:
+        share = round(embedded / total, 4) if total else 1.0
+        by_kind[kind] = {"chunks": total, "embedded": embedded, "share": share}
+        if total >= EMBEDDED_MIN_CHUNKS and share < min_share:
+            failing.append(kind)
+    total = sum(v["chunks"] for v in by_kind.values())
+    done = sum(v["embedded"] for v in by_kind.values())
+    return {"status": "fail" if failing else "pass", "min_share": min_share,
+            "failing": failing, "overall_share": round(done / total, 4) if total else 1.0,
+            "by_kind": by_kind}
+
+
+EMBEDDED_GATE_FILE = Path("search") / "embedded_gate.json"
+EMBEDDED_GATE_TTL_S = 3600.0   # the scan reads every chunk row: at most once an hour
+
+
+def _embedded_gate(values: dict[str, str], state: Path | None = None, *, force: bool = False,
+                   now: Callable[[], float] = time.time) -> dict[str, Any]:
+    """The gate, from the state's cached result when it is under an hour old (the follow
+    timer runs every minute and the scan reads every chunk row), else computed and cached
+    with its time. ``force`` recomputes. An unreadable share is never cached."""
+    path = state / EMBEDDED_GATE_FILE if state is not None else None
+    if path is not None and not force:
+        held = load_cursor(path)
+        at = held.get("at")
+        if isinstance(at, (int, float)) and isinstance(held.get("gate"), dict) \
+                and 0 <= now() - at < EMBEDDED_GATE_TTL_S:
+            return dict(held["gate"], cached=True, checked_at=at)
+    try:
+        conn = st.connect(values.get("PLX_PG_DSN") or config.DEFAULT_DSN)
+        try:
+            gate = embedded_gate(conn)
+        finally:
+            conn.close()
+    except Exception as exc:  # noqa: BLE001 - an unreadable share is not a pass
+        return {"status": "unknown", "error": type(exc).__name__}
+    gate["checked_at"] = now()
+    if path is not None:
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            temp = path.with_name(path.name + ".tmp")
+            temp.write_text(json.dumps({"at": gate["checked_at"], "gate": gate}),
+                            encoding="utf-8")
+            os.replace(temp, path)
+        except OSError:
+            pass
+    return gate
+
+
 def follow(args: argparse.Namespace) -> dict[str, Any]:
     state = Path(args.state)
     report: dict[str, Any] = {"command": "follow", "mode": args.mode, "started_at": _now()}
@@ -544,6 +614,8 @@ def follow(args: argparse.Namespace) -> dict[str, Any]:
             return report
     if args.mode in ("layers", "all"):
         layers_follow(args, state, now_served, values, exclusion, report)
+        report["embedded_gate"] = _embedded_gate(
+            values, state, force=getattr(args, "embedded_gate_now", False))
     return report
 
 
@@ -576,18 +648,42 @@ def parser() -> argparse.ArgumentParser:
                    help="wait this long for a run holding the lock (a backfill slice)")
     p.add_argument("--min-free-gb", type=float, default=0.0,
                    help="write nothing heavy while the state disk has less free")
+    p.add_argument("--embedded-gate-strict", action="store_true",
+                   help="exit 3 when the embedded share of any kind is below 95% (or "
+                        "unreadable); default: the report line says fail, the exit stays 0")
+    p.add_argument("--embedded-gate-now", action="store_true",
+                   help="recompute the embedded share now (default: reuse the result of the "
+                        "last hour; the scan reads every chunk row)")
     return p
 
 
 def main(argv: Sequence[str] | None = None) -> int:
     args = parser().parse_args(argv)
+    try:   # a broken window lock never stops the job
+        from ontology import window_lock
+        held = window_lock.skip_report("search-follow", state_dir=args.state)
+    except Exception as exc:  # noqa: BLE001 - logged, the job runs
+        print(f"window check failed, running anyway: {exc}", file=sys.stderr)
+        held = None
+    if held:
+        print(json.dumps(held, indent=1, sort_keys=True))
+        return 0
     try:
         report = follow(args)
     except st.SchemaMissing as missing:
         print(json.dumps({"refused": str(missing)}))
         return 2
     print(json.dumps(report, indent=1, sort_keys=True, default=str))
-    return 2 if report.get("refused") else 1 if report.get("layer_failed") else 0
+    if report.get("refused"):
+        return 2
+    if report.get("layer_failed"):
+        return 1
+    # A failing embedded share is a failed report line (the JSON above says so); it fails
+    # the run only on request, so the timer does not flap while DI-06 is pending.
+    if getattr(args, "embedded_gate_strict", False) \
+            and report.get("embedded_gate", {}).get("status") != "pass":
+        return 3
+    return 0
 
 
 if __name__ == "__main__":

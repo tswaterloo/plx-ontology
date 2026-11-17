@@ -15,6 +15,7 @@ import unittest
 from unittest import mock
 
 from operating import case_tools_host as host
+from operating import case_tools_host_index
 
 
 class LookupDirTests(unittest.TestCase):
@@ -40,7 +41,7 @@ class LookupDirTests(unittest.TestCase):
         gone = self.make(f"{host.LOOKUP_DIR_PREFIX}{dead.pid}-abc")
         alive = self.make(f"{host.LOOKUP_DIR_PREFIX}{os.getppid()}-abc")
         mine = self.make(f"{host.LOOKUP_DIR_PREFIX}{os.getpid()}-abc")
-        old = self.make(f"{host.LOOKUP_DIR_PREFIX}k2j3h4", age=host.STALE_UNNAMED_SECONDS + 60)
+        old = self.make(f"{host.LOOKUP_DIR_PREFIX}k2j3h4", age=case_tools_host_index.STALE_UNNAMED_SECONDS + 60)
         young = self.make(f"{host.LOOKUP_DIR_PREFIX}q9w8e7")
         other = self.make("unrelated-dir", age=10 * 3600)
         removed = host._sweep_stale_lookup_dirs([str(self.root), str(self.root)])

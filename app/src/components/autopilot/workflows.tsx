@@ -314,7 +314,7 @@ function WorkflowSheet({ workflow, area, builder, onClose, onChanged }: { workfl
             <section>
               <h3 className="mb-1 text-[11px] font-semibold tracking-[0.04em] text-muted uppercase">History</h3>
               {(d.history ?? []).length === 0 ? (
-                <p className="text-[12px] text-muted">{area.owner ? "Nothing on the audit log for it yet." : "The history is the owner's."}</p>
+                <p className="text-[12px] text-muted">{area.owner ? "Nothing on the audit log for it yet." : "Only the owner can see the history."}</p>
               ) : (
                 <ul className="space-y-1.5">
                   {(d.history ?? []).map((h, i) => (

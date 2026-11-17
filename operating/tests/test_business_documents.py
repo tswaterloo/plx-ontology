@@ -12,6 +12,7 @@ from __future__ import annotations
 
 from datetime import date
 import json
+import re
 import sqlite3
 import tempfile
 import time
@@ -351,6 +352,39 @@ class BusinessDocuments(unittest.TestCase):
             whole = self.ask(self.conn(f), "uat_feedback")
             self.assertIn(hidden, [r["record"] for r in whole["rows"]])
 
+    def test_uat_feedback_reads_only_the_uat_lists_items(self) -> None:
+        """SP-01 (11-15): 311 of the served 10,549 list items are UAT feedback, and every
+        item's fields were read and its gate decided on each page (3.5 s a page). Items on
+        other lists are never read past their address, whatever their number; the UAT
+        items are all listed, N=1/10/60 beside 60 others."""
+        class Recording:
+            def __init__(self, conn):
+                self.conn, self.params = conn, []
+
+            def execute(self, sql, *params):
+                self.params.append(json.dumps(params, default=str))
+                return self.conn.execute(sql, *params)
+
+        base = "https://synth.sharepoint.example/sites/ops/Lists"
+        for n in (1, 10, 60):
+            f = Fixture()
+            items = [f.w.obj("SharePointListItem", {
+                "web_url": f"{base}/UAT%20Feedback/DispForm.aspx?ID={i}",
+                "fields": json.dumps({"Title": f"Item {i}", "Status": "Failed Retest"})})
+                for i in range(n)]
+            others = [f.w.obj("SharePointListItem", {
+                "web_url": f"{base}/SOP%20Index/DispForm.aspx?ID={i}",
+                "fields": json.dumps({"Title": f"Other {i}", "Status": "Failed Retest"})})
+                for i in range(60)]
+            rec = Recording(self.conn(f))
+            out = self.ask(rec, "uat_feedback")
+            self.assertEqual(sorted(r["record"] for r in out["rows"]), sorted(items), n)
+            self.assertEqual(sum(out["totals"].values()), n)
+            asked = "".join(rec.params)
+            named = lambda oid: re.search(re.escape(oid) + r"(?!\d)", asked) is not None
+            self.assertTrue(all(named(oid) for oid in items), n)   # the reads name ids
+            self.assertEqual([oid for oid in others if named(oid)], [], n)
+
     def test_uat_feedback_pages_past_the_rows_cap_by_offset(self) -> None:
         f = Fixture()
         base = "https://synth.sharepoint.example/sites/ops/Lists"
@@ -610,7 +644,7 @@ class ReviewProbes(unittest.TestCase):
 
     def _list_world(self, sender: str):
         f = Fixture()
-        a = f.customer("Alpha Buyer Co", "alpha.example")
+        f.customer("Alpha Buyer Co", "alpha.example")
         b = f.customer("Beta Buyer Co", "beta.example")
         b_order = f.w.obj("SalesOrder", {"order_number": "SO-99001"})
         f.w.link("SalesOrder.ordered_by", b_order, b)

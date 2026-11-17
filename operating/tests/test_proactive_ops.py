@@ -23,8 +23,7 @@ RULES = list(po.RULES)
 OTHER_OID = "00000000-0000-4000-8000-0000000000b2"
 CHANNEL = "teams:channel:synth-team/synth-channel"
 # what a schema projecting these would declare (none of them is declared today)
-DECLARED = {"mc_task_due": ("due_at",),
-            "production_due": (("AssemblyOrder", "scheduled_date", "realized_date",
+DECLARED = {"production_due": (("AssemblyOrder", "scheduled_date", "realized_date",
                                 "status", "fx"),),
             "damage_date": (("AssemblyOrder", "fm_created_at"),),
             "ask_text": {"TeamsChatMessage": ("subject",),
@@ -40,12 +39,10 @@ def person(w: World, oid: str) -> str:
     return w.obj("Person", {"object_id": oid}, audience="people:dir")
 
 
-def task(w: World, stage: str, *, updated: int = 1, due: int | None = None,
+def task(w: World, stage: str, *, updated: int = 1,
          who: str | None = None, audience: str = "mc:ops") -> str:
     values = {"task_id": f"TASK-{w.n + 1}", "title": "Synthetic task", "stage": stage,
               "updated_at": day(updated) + "T09:00:00Z"}
-    if due is not None:
-        values["due_at"] = day(due) + "T17:00:00Z"
     oid = w.obj("MCTask", values, audience=audience)
     if who:
         w.link("MCTask.with_person", oid, person(w, who))
@@ -165,27 +162,20 @@ class OpsAlerts(Engine):
 
     def test_mc_tasks_overdue_and_stuck_by_stage_and_people(self):
         w = World()
-        late = task(w, "progress", due=5)
         stuck = task(w, "review", updated=20)
         task(w, "backlog", updated=90)                   # parked: never stuck
-        task(w, "verified", updated=90, due=30)          # closed
-        task(w, "progress", due=-3)                      # due later
+        task(w, "verified", updated=90)                  # closed
         task(w, "Waiting", updated=90)                   # an unknown stage
-        task(w, "progress", updated=90, due=30, who=EXCLUDED_OID)   # not cleared
+        task(w, "progress", updated=90, who=EXCLUDED_OID)   # not cleared
         task(w, "progress", updated=1, who=OURS_OID)     # cleared, recent: nothing
         summary = self.run_rules(w)
-        (overdue,) = self.kinds(po.MC_OVERDUE)
-        self.assertEqual(overdue["object_id"], late)
-        self.assertIn("5 days past its due date", overdue["summary"])
         (idle,) = self.kinds(po.MC_STUCK)
         self.assertEqual(idle["object_id"], stuck)
         self.assertIn("stage review with no update for 20 days", idle["summary"])
         self.assertEqual(summary["not_evaluated"][po.MC_STUCK],
                          {"not_judged": 1, "stage_unmapped": 1})
-        # no due date declared by the schema: blocked, never a clean "nothing overdue"
-        summary = self.run_rules(World(), sources={"mc_task_due": ()})
-        self.assertEqual(summary["detectors"][po.MC_OVERDUE], "blocked")
-        self.assertEqual(summary["detectors"][po.MC_STUCK], "complete")
+        self.assertEqual(self.run_rules(World())["detectors"][po.MC_STUCK], "complete")
+        self.assertNotIn("mc_task_overdue", self.run_rules(World())["detectors"])
 
     def test_an_approval_waiting_is_raised_and_never_decided(self):
         w = World()
@@ -242,7 +232,7 @@ class OpsAlerts(Engine):
         message(w, OURS_OID, 9, mentions=(OTHER_OID,), subject="Can you check?")
         summary = self.run_rules(w, people=people(unavailable=True))
         requisition(w, "PENDING_APPROVAL", 9)
-        for rule in (po.MC_OVERDUE, po.MC_STUCK, po.MC_APPROVAL, po.PORTAL_APPROVAL, po.PLANNER,
+        for rule in (po.MC_STUCK, po.MC_APPROVAL, po.PORTAL_APPROVAL, po.PLANNER,
                      po.TEAMS):
             self.assertEqual(summary["detectors"][rule], "blocked", rule)
         self.assertEqual([g for g in self.read(limit=1000)["gaps"]
@@ -472,8 +462,7 @@ def build_one_of_each(w: World) -> dict[str, str]:
     for n in range(3):
         damage(w, assembly(w, item, created=2 + n, due=None), "10")
     ask = message(w, OURS_OID, 6, mentions=(OTHER_OID,), subject="Can you check?")
-    return {po.MC_OVERDUE: task(w, "progress", due=5),
-            po.MC_STUCK: task(w, "qa", updated=30),
+    return {po.MC_STUCK: task(w, "qa", updated=30),
             po.MC_APPROVAL: gate(w, "pending", 6),
             po.PORTAL_APPROVAL: requisition(w, "PENDING_APPROVAL", 9),
             po.PLANNER: planner(w, 5),

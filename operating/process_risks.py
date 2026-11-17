@@ -38,8 +38,9 @@ import re
 from typing import Any, Mapping, Sequence
 
 from operating.attested_conflicts import conflicts as attested_conflicts
-from operating.ontology_tools import _gap
-from operating.ontology_tools_process import NEVER_AUTHORITY, Dated, ProcessTools, _Ctx
+from operating.ontology_tools_identity import _gap
+from operating.ontology_tools_process import NEVER_AUTHORITY, ProcessTools
+from operating.ontology_tools_process_answer import Dated, _Ctx
 from operating.ontology_tools_traverse import WITHHELD
 
 SCHEDULE_RISK = "schedule_risk"

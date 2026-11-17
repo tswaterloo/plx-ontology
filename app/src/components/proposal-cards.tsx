@@ -37,7 +37,7 @@ function Draft({ p }: { p: Proposal }) {
   const input = "h-10 min-w-0 flex-1 bg-transparent text-fg placeholder:text-faint focus:outline-none";
   return (
     <div className="space-y-3">
-      <div className="overflow-hidden rounded-xl bg-bg shadow-lift focus-within:shadow-[var(--lift),0_0_0_2px_color-mix(in_srgb,var(--accent)_35%,transparent)]">
+      <div className="overflow-hidden rounded-xl bg-bg shadow-lift focus-within:shadow-[0_0_0_1px_var(--accent)]">
         <label className={row}>
           <span className="w-14 shrink-0 text-muted">To</span>
           {!to && <OpenRing size={12} className="-mr-1" />}

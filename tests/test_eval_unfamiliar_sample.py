@@ -25,6 +25,7 @@ import warnings
 from urllib.parse import quote
 
 from verify import live_verify
+from verify import live_verify_policy
 from evals import measure
 from evals.oracle import PortalReads, Sources
 from evals.oracle.cross_sample import (DOCUMENT_KINDS, KINDS, THREE_WAY, Item, names_exactly,
@@ -772,11 +773,16 @@ class BudgetAndCoverageTest(unittest.TestCase):
             self.assertEqual(info["objects"], 0)
             self.assertEqual(complete, frozenset())
             product = ev.open_product(store, info=info, complete_relations=complete)
-            self.addCleanup(product.close)
-            self.assertEqual(product.object_count, 0)
-            drawn, _, _ = fixture_sample()
-            report = ev.run_eval(drawn, product, run_id="seed-a",
-                                 evidence_label="injected-transport", configured={})
+            try:
+                self.assertEqual(product.object_count, 0)
+                drawn, _, _ = fixture_sample()
+                report = ev.run_eval(drawn, product, run_id="seed-a",
+                                     evidence_label="injected-transport", configured={})
+            finally:
+                # closed before the directory goes: plx.changes' prime thread writes its
+                # kept index beside the store until the close joins it (a cleanup ran
+                # after the directory's removal, which then raced that thread's writes)
+                product.close()
         self.assertEqual(report["eval"]["product"]["object_count"], 0)
         self.assertFalse(report["eval"]["complete"])
         self.assertIn("mirror_incomplete", report["eval"]["incomplete"])
@@ -1129,7 +1135,9 @@ class BuildShareAndCoverageTest(unittest.TestCase):
         def portal_500(url, headers, **_):
             raise SourceHttpError("read-only source GET failed: HTTPError", status=500)
 
-        with tempfile.TemporaryDirectory() as tmp:
+        # The product closes before the directory goes (the stack unwinds first): its
+        # background work writes beside the generation until it is closed.
+        with tempfile.TemporaryDirectory() as tmp, contextlib.ExitStack() as products:
             state = Path(tmp) / "state"
             (state / "bc-capture").mkdir(parents=True)   # the host's BC capture
             tb.Harness(self, purchase_world(), db=state / "bc-capture" / "capture.sqlite"
@@ -1161,7 +1169,7 @@ class BuildShareAndCoverageTest(unittest.TestCase):
             self.assertEqual(complete, frozenset())
             product = ev.open_product(store, info=info, complete_relations=complete,
                                       upstream_failed=info["upstream_failed"])
-            self.addCleanup(product.close)
+            products.callback(product.close)
             self.assertTrue(product.available)
             self.assertTrue(any(k.startswith("bc:") for k in product.audience_keys))
             self.assertFalse(any(product.holds_relation(r) for r in relations))
@@ -1987,7 +1995,7 @@ class CommandAndVerifierTest(unittest.TestCase):
         self.assertNotIn("fields_truncated", detail)
         # Room left for live data (more skip codes, read failures, longer edge lists).
         self.assertLess(len(json.dumps(detail, sort_keys=True)),
-                        live_verify.MAX_DETAIL_CHARS - 1000)
+                        live_verify_policy.MAX_DETAIL_CHARS - 1000)
         for path in spec["record"]:
             self.assertIn(path, detail["fields"])
         self.assertNotIn("items", " ".join(p for p in spec["record"] if p.startswith("items[")))

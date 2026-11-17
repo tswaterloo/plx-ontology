@@ -58,26 +58,28 @@ KEY_SCHEME = "plx-unit-keys/v1"
 # Bump when the code that writes a unit's rows (``ROWS_CODE_ROOTS``) changes what it
 # writes; ``ontology/tests/test_build_keys.py`` checks that code's digest is one this
 # number names.
-PROJECTION_ROWS_VERSION = 1
+PROJECTION_ROWS_VERSION = 2
 
 # PROJECTION_ROWS_VERSION -> the digests (``rows_code_digest``) of the code that writes
 # the rows it names. Code that writes other rows (or reports other entries) for the same
 # captures and schema is a new version; a change that writes the same rows (a refactor)
-# adds its digest to the current one. A generation built by code of another digest is
-# adopted only when that digest is here (``ontology.build_adopt``).
+# adds its digest to the current one.
 ROWS_CODE_DIGESTS: dict[int, frozenset[str]] = {
     1: frozenset({
         # commit 39cf8a190c (generation 8 of the host)
         "0cd15d521f3a755fee6c013001e1c71eabc1cafa032d1b64a78fa711281801df",
         # per-unit keys; the parallel projection's shards side by side and early merges
-        # and its report entries
+        # (rows equal a serial cold build's) and its report entries
         # outside every unit counted, not a serial rerun; the store builder's checkpoint
-        # to resume
+        # to resume (a meta key removed before the digest)
         "f587572f8410564da3da08bc04f12b0f2a1b829b48075ca26b2a31266d1d94d4",
-        # object-local bindings rewritten object by object (rows and report equal a cold build's)
+        # object-local bindings rewritten object by object (the
+        # projector writes only the chosen objects' rows and keeps each object's report
+        # entries apart; rows and report equal a cold build's)
         "81aa94c9cdac274f8a9a6ee9eddc8684736b8efa2b75c5559fb79a9580d7f422",
         # an incremental build's changed units projected by worker processes into parts
-        # merged into its seed
+        # merged into its seed (rows equal a serial incremental build's
+        # and a cold build's)
         "4a57d4fed7080b57658ccf0859c282a1553795442ab3aa2b064120c37fc49d01",
         # the commit's invariant queries run by threads over the committed rows (rows untouched)
         "0bc0be9cd031e1fe6083948df73ee87723dc09678f36813d7f95803e37a64294",
@@ -94,6 +96,17 @@ ROWS_CODE_DIGESTS: dict[int, frozenset[str]] = {
         # proven equal on captures), so a v1 generation stays current and the next build
         # is not cold; not a new version, by that proof and not as a refactor
         "55eddc877f4e54d2e0b0f50088bf6f7fe5a561d5c188ef121d221060d6c7c40f",
+    }),
+    # CC-NY-2: a removed ETL copy whose natural key a present copy holds is that row
+    # re-inserted and leaves the projection (``Projector._collapse_reinserted``): the
+    # units over ETL_REINSERTED relations write other rows. Generation 12 (v1) keeps
+    # its copies until ``operating.pg.etl_copies`` removes them in place.
+    2: frozenset({
+        "8c33acf1c46a2c8f7c6c7c1a9aa8eb17f20a7e2201c5cfc8e5171c1214d37b1d",
+        # the 11-14 migration train (identifiers.py): no generation is built any more; the train rewrote in place every
+        # unit whose rows the change moves (build_keys.rows_slice), so the served v2 rows are
+        # this code's and no kept v2 unit is read under other rows
+        "7181b0c2c4a224e2ff9aa44b79b732e4c061b74de1d0d583ac1588f5f3bc7121",
     }),
 }
 
@@ -148,6 +161,12 @@ READER_STOPS: frozenset[tuple[str, str]] = frozenset({
     ("ontology.project", "derivation_code"),
     # likewise the earlier commit's value a proven-equivalent memo code keeps
     ("ontology.code_equivalence", "earlier_value"),
+    # the documentFields records a capture source derives (the document parser, its PDF
+    # layout views and placement): that relation's fingerprint is its inputs with the
+    # derivation code (``ontology.project.derived_fingerprint``), which digests this code,
+    # and its fields are kept under that code; no other relation a reader gives reads it,
+    # so a document-field change re-derives document fields and re-reads no mail or file
+    ("ontology.document_fields", "captured"),
 })
 
 # What a sharded binding's shard prints are computed by.
@@ -572,6 +591,8 @@ class SchemaParts:
         links = dict(_get(schema, "link_types") or {})
         events = dict(_get(schema, "event_types") or {})
         self.types = {tid: _sha(_canonical(t)) for tid, t in types.items()}
+        # the declarations themselves, for :func:`rows_slice`
+        self.raw_types, self.raw_links, self.raw_events = types, links, events
         self.links = {lid: _sha(_canonical(link)) for lid, link in links.items()}
         self.events = {eid: _sha(_canonical(ev)) for eid, ev in events.items()}
         self.binding_type = {b["id"]: tid for tid, t in types.items()
@@ -645,9 +666,172 @@ def unit_slice(parts: SchemaParts, unit: str, deps: Iterable[str]) -> str:
     return _sha(_canonical(sliced))
 
 
+# Keys of a declaration the projector never reads (``ontology.project``): what a type,
+# property, binding, link type, link binding or event type says to a person. No row holds
+# them, so a change to one alone rewrites no row (:func:`rows_slice`).
+_DOC_KEYS = frozenset(("description", "display", "evidence", "note"))
+
+
+def _undoc(value: Any) -> Any:
+    """``value`` without its documentation keys (:data:`_DOC_KEYS`) at any depth."""
+    if isinstance(value, Mapping):
+        return {k: _undoc(v) for k, v in value.items() if k not in _DOC_KEYS}
+    if isinstance(value, (list, tuple)):
+        return [_undoc(v) for v in value]
+    return value
+
+
+def _link_paths(lb: Mapping[str, Any]) -> list[tuple[str, str]]:
+    """(binding, path) of every value a link binding compares (its pairs, its join's)."""
+    out = [(lb.get("from_binding"), p.get("from")) for p in lb.get("pairs", ())]
+    out += [(lb.get("to_binding"), p.get("to")) for p in lb.get("pairs", ())]
+    via = lb.get("via") or {}
+    out += [(lb.get("from_binding"), p.get("from")) for p in via.get("from_pairs", ())]
+    out += [(via.get("binding"), p.get("to")) for p in via.get("from_pairs", ())]
+    out += [(via.get("binding"), p.get("from")) for p in via.get("to_pairs", ())]
+    out += [(lb.get("to_binding"), p.get("to")) for p in via.get("to_pairs", ())]
+    return [(b, path) for b, path in out if isinstance(b, str) and isinstance(path, str)]
+
+
+# ``ontology.project._PROJECTED_LINK_KINDS`` (not imported: this module stays light)
+_PROJECTED = frozenset(("fk", "json_path", "same_record", "text_match"))
+
+
+def _whole_selection(parts: SchemaParts, unit: str, deps: Iterable[str], *,
+                     undoc: bool) -> dict[str, Any]:
+    """:func:`unit_slice`'s selection of declarations (``undoc``: without documentation)."""
+    deps = set(deps)
+    tids = {parts.binding_type[b] for b in deps if b in parts.binding_type}
+    lids: set[str] = set()
+    for b in deps:
+        lids |= parts.touching.get(b, set())
+    for tid in tids:
+        lids |= parts.named.get(tid, set())
+    eids: set[str] = set()
+    for tid in tids:
+        eids |= parts.events_of.get(tid, set())
+    if unit.startswith("l:"):
+        own = unit[2:].split("|")[0].split("#")[0]
+        lids |= {own} if own in parts.links else set(parts.links)
+    clean = _undoc if undoc else (lambda v: v)
+    return {"types": {t: clean(parts.raw_types[t]) for t in sorted(tids)},
+            "links": {lid: clean(parts.raw_links[lid]) for lid in sorted(lids)
+                      if lid in parts.raw_links},
+            "events": {e: clean(parts.raw_events[e]) for e in sorted(eids)}}
+
+
+def rows_slice(parts: SchemaParts, unit: str, deps: Iterable[str],
+               rows: tuple | None) -> str:
+    """Digest of the schema a unit's ROWS are a function of: never more than
+    :func:`unit_slice`, used where only the rows matter (``ontology.schema_migrate.diff``
+    picks the units an in-place migration rewrites; a build key keeps :func:`unit_slice`).
+    ``rows``: the unit's kind of rows (``project_incremental.plan(...).rows[unit]``).
+
+    * Documentation keys (:data:`_DOC_KEYS`) are left out everywhere.
+    * A binding (or shard) unit of binding B: of B's type the properties with a source
+      on B (values, identifiers, placeholders and authority ranks are of B's own sources)
+      and its event types; per dependency binding its declaration in declared order; per
+      dependency type its head (everything but ``properties``, ``bindings`` and
+      documentation); the link types those name (a lineage hop or ``inherit``, a marking
+      rule's hop, a unit or currency read through one, an event qualifier) or a
+      ``from_lines`` marking rule reads by name. The other dependency bindings are read as
+      records, lineage and link hops only (``Projector._ref_cell``, ``_hop``, ``_related``,
+      ``_header_marks_of``); a link type merely having one of them as an end writes its
+      links into a link unit, never into B's rows (one a build step writes stays in: its
+      change re-runs that step over B's objects).
+    * A link unit of kind ``fk``, ``json_path`` or ``text_match`` (one projection,
+      ``Projector._link_pairs``/``_link_via``; the kind only caps the tier): its own link type; per dependency
+      binding (its ends and their lineage, ``project_incremental.plan``) the binding's
+      declaration in declared order; per dependency type what the link projection reads
+      of it (``markings``, ``anchor``, ``availability``, ``identity_keys``, ``interfaces``:
+      everything but ``properties``, ``bindings`` and documentation); the markings each
+      compared path reveals (``Projector._marks_for_path``) and every link type a
+      dependency binding names (its lineage hops). Not its ends' other properties, their
+      event types or the other link types touching them: a property added to an end type
+      changes no link of this unit unless a compared path feeds it.
+    * Any other unit (``same_record`` compares values and writes conflicts, gaps only,
+      unknown kinds): :func:`unit_slice`'s declarations, without documentation."""
+    deps = set(deps)
+    kind = rows[0] if rows else None
+    link_kind = rows[4] if kind == "links" and len(rows) > 4 else None
+    tids = {parts.binding_type[b] for b in deps if b in parts.binding_type}
+    unknown = sorted(b for b in deps if b not in parts.binding_type)
+    types, links, events = parts.raw_types, parts.raw_links, parts.raw_events
+    etl = {b: parts.etl[b] for b in sorted(deps) if b in parts.etl}
+
+    def bdecl(bid: str) -> Any:
+        return next(b for b in types[parts.binding_type[bid]].get("bindings", ())
+                    if b.get("id") == bid)
+
+    def head(tid: str) -> Any:
+        return _undoc({k: v for k, v in types[tid].items()
+                       if k not in ("properties", "bindings")})
+
+    order = {t: [b.get("id") for b in types[t].get("bindings", ()) if b.get("id") in deps]
+             for t in sorted(tids)}
+    decls = {b: _undoc(bdecl(b)) for b in sorted(deps) if b in parts.binding_type}
+    if kind in ("binding", "shard") and len(rows) > 1 and rows[1] in parts.binding_type:
+        own_b = rows[1]
+        own_t = parts.binding_type[own_b]
+        # a property no source of which is this binding writes no row of it (values,
+        # identifiers, placeholders and authority ranks are of its own sources); the
+        # other dependency bindings are read as records, lineage and link hops only
+        props = [_undoc(p) for p in types[own_t].get("properties", ())
+                 if any(src.get("binding") == own_b for src in p.get("sources", ()))]
+        eids = sorted(parts.events_of.get(own_t, set()))
+        evs = {e: _undoc(events[e]) for e in eids}
+        lids = {s for s in _strings([props, evs, decls]) if s in links}
+        # a link type with a link binding no projector unit writes (a build step's, a key
+        # join's) touching a dependency binding: its change re-runs that step over these
+        # objects, so it stays in (``test_schema_migrate_units`` key join)
+        for b in decls:
+            lids |= {lid for lid in parts.touching.get(b, set())
+                     if any(lb.get("kind") not in _PROJECTED
+                            for lb in links[lid].get("bindings", ()))}
+        for b in decls:
+            for rule in bdecl(b).get("marking_rules", ()):
+                names = set(rule.get("from_lines", ()))
+                lids |= {lid for lid, link in links.items()
+                         if names and link.get("to") == parts.binding_type[b]
+                         and link.get("name") in names}
+        sliced: dict[str, Any] = {
+            "rows": "binding", "own": own_b, "types": {t: head(t) for t in sorted(tids)},
+            "order": order, "bindings": decls, "properties": props, "events": evs,
+            "links": {lid: _undoc(links[lid]) for lid in sorted(lids)}}
+    elif kind == "links" and link_kind in ("fk", "json_path", "text_match"):
+        own = unit[2:].split("|")[0]
+        if own not in links:
+            return _sha(_canonical({"rows": "whole", "unknown": unknown, "etl": etl,
+                                    **_whole_selection(parts, unit, deps, undoc=True)}))
+        marks: dict[str, list[str]] = {}
+        for lb in links[own].get("bindings", ()):
+            for bid, path in _link_paths(lb):
+                if bid not in parts.binding_type:
+                    continue
+                t = types[parts.binding_type[bid]]
+                found = set(t.get("markings", ()))
+                for p in t.get("properties", ()):
+                    if any(s.get("binding") == bid and s.get("path") == path
+                           for s in p.get("sources", ())):
+                        found |= set(p.get("markings", ()))
+                marks[f"{bid}|{path}"] = sorted(found)
+        named = {s for s in _strings(decls) if s in links}
+        sliced = {"rows": "links", "own": _undoc(links[own]),
+                  "types": {t: head(t) for t in sorted(tids)},
+                  "order": order, "bindings": decls, "marks": dict(sorted(marks.items())),
+                  "hops": {lid: _undoc(links[lid]) for lid in sorted(named - {own})}}
+    else:
+        sliced = {"rows": "whole", **_whole_selection(parts, unit, deps, undoc=True)}
+    sliced["unknown"] = unknown
+    if etl:
+        sliced["etl"] = etl
+    return _sha(_canonical(sliced))
+
+
 __all__ = ["FINGERPRINT_ROOTS", "KEY_SCHEME", "PROJECTION_ROWS_VERSION", "ROWS_CODE_DIGESTS",
            "ROWS_CODE_ROOTS",
            "SHARD_ROOTS", "SchemaParts", "code_digest", "code_parts", "normalizer_digest",
            "normalizer_parts",
            "reader_digest", "reader_parts",
-           "rows_code_digest", "shard_code_digest", "unit_slice", "with_reader"]
+           "rows_code_digest", "rows_slice", "shard_code_digest", "unit_slice",
+           "with_reader"]

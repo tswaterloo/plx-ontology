@@ -94,7 +94,6 @@ from __future__ import annotations
 import argparse
 from dataclasses import dataclass
 import json
-import os
 from pathlib import Path
 import re
 import time
@@ -103,9 +102,10 @@ from typing import Any, Callable, Mapping, Sequence
 from ontology.types import Actor
 
 from . import live_source_grammar as grammar
-from .capture_mail import assert_outside_git, blocked_reason, graph_block
+from .capture_mail_scope import assert_outside_git
+from .capture_mail_standing import blocked_reason, graph_block
 from .capture_store import (ITEM_ACL_MAX_AGE, CaptureError, CaptureStore, CapturedRecord,
-                            SourceKind, register_source_kind)
+                            SourceKind, keep_store_dir_mode, register_source_kind)
 from .graph_read import permission_acl
 from .live_source_guard import (LiveSourceAudience, SourceUnavailable, jsonable,
                                 nextlink_refused, unavailable_detail)
@@ -175,6 +175,11 @@ ACL_RETRY_PAUSE_SECONDS = 10.0
 # and the list is incomplete with the reason, read again next run.
 ACL_MAX_TRANSIENT_IN_A_ROW = 3
 ACL_LIST_BUDGET_SECONDS = 180.0
+# A pass's own time budget (``--budget-seconds``; the host passes its source budget and
+# kills the child only after its grace): past it the pass stops between pages, resumable.
+# 11-16: with no budget, a pass that took 1,150-1,700 s took 2,105 s under load 50-70 and
+# was killed at the host's 2,100 s timeout, recorded failed, mid-list.
+BUDGET_REASON = "budget"
 RETRY_BUDGET_SECONDS = 240   # the run's GET retry sleep, within the host's list timeout
 
 
@@ -388,8 +393,8 @@ def open_store(state_dir: str | Path, audience: Any) -> CaptureStore:
     """The list-item capture store under ``state_dir`` (outside every git work tree)."""
     root = assert_outside_git(state_dir) / STORE_DIR
     root.mkdir(parents=True, exist_ok=True, mode=0o700)
+    keep_store_dir_mode(root)
     store = CaptureStore(root / DB_FILE, audience)
-    os.chmod(root / DB_FILE, 0o600)
     return store
 
 
@@ -402,21 +407,47 @@ class ListCapture:
                  clock: Callable[[], float] = time.monotonic) -> None:
         self.store, self.api, self.audience, self.actor = store, api, audience, actor
         self.targets: tuple[ListTarget, ...] = ()   # the lists the last run took
+        self._deadline: float | None = None
         self._sleep = sleep
         self._clock = clock
 
-    def run(self, scope: ListScope, *, discover_only: bool = False) -> dict[str, Any]:
+    def run(self, scope: ListScope, *, discover_only: bool = False,
+            deadline: float | None = None) -> dict[str, Any]:
+        """One pass over the scope's lists. ``deadline`` (this capture's ``clock``): past
+        it no list starts and a list being read stops at its next page, kept resumable
+        from its cursor, reason ``budget`` (incomplete, never a failure); the lists are
+        taken stalest first (:meth:`_stalest_first`), so a pass the budget cuts never
+        leaves the same tail unread every time."""
         blocked: list[dict[str, Any]] = []
         found, discovery = self.discover(scope, blocked)
         self.targets = scope.lists + tuple(found)
+        self._deadline = deadline
         results = ([] if discover_only else
-                   [self.capture(target, scope, blocked) for target in self.targets])
+                   [self.capture(target, scope, blocked)
+                    for target in self._stalest_first(self.targets)])
         unique = list({json.dumps(p, sort_keys=True): p for p in blocked}.values())
         return {"complete": discovery["status"] in ("not_requested", "complete")
                 and all(r["status"] == "complete" for r in results), "lists": results,
                 "blocked_upstream": unique, "discovery": discovery,
                 "complete_bound": sum(r["status"] == "complete" for r in results),
                 "bound_total": len(results)}
+
+    def _stalest_first(self, targets: Sequence[ListTarget]) -> list[ListTarget]:
+        """A stopped run (resumed from its cursor) first, then lists never captured, then
+        the rest by when their last complete run finished, oldest first; ties keep the
+        scope's order (named lists, then discovery's)."""
+        def key(item: tuple[int, ListTarget]) -> tuple[int, str, int]:
+            index, target = item
+            last = self.store.run(LIST_KIND.name, target.unit)
+            if last is None:
+                return (1, "", index)
+            if last["state"] != "complete":
+                return (0, "", index)
+            return (2, str(last.get("finished_at") or ""), index)
+        return [t for _, t in sorted(enumerate(targets), key=key)]
+
+    def _past_deadline(self) -> bool:
+        return self._deadline is not None and self._clock() >= self._deadline
 
     def discover(self, scope: ListScope, blocked: list[dict[str, Any]]
                  ) -> tuple[list[ListTarget], dict[str, Any]]:
@@ -546,6 +577,8 @@ class ListCapture:
                                   "resumed_from": None, "counts": counts}
         if not self.audience.allows(self.actor, target.resource):
             return self._result(result, {"not_visible"})   # no I/O for a withheld list
+        if self._past_deadline():
+            return self._result(result, {BUDGET_REASON})   # no I/O: the next pass takes it
         try:
             listed = self.api.get_json(target.url("graph.site_list", {"$select": "id,list"}))
         except SourceUnavailable as exc:
@@ -570,6 +603,10 @@ class ListCapture:
         pages = items = 0
         restarted = False
         while True:
+            if pages and self._past_deadline():   # a started list reads one page at least
+                self.store.pause_run(run_id, reason=BUDGET_REASON)
+                return self._result(result, reasons | self._acl_reasons(acl_state, counts)
+                                    | {BUDGET_REASON})
             if pages >= scope.max_pages_per_run or items >= scope.max_items_per_run:
                 cap = "page_cap" if pages >= scope.max_pages_per_run else "item_cap"
                 self.store.pause_run(run_id, reason=f"cap:{cap}")
@@ -752,6 +789,9 @@ def add_cli_arguments(parser: argparse.ArgumentParser) -> None:
                         help="a principal the audience does not grant")
     parser.add_argument("--runs", type=int, default=2,
                         help="capture runs; run 2+ resumes a stopped run from its cursor")
+    parser.add_argument("--budget-seconds", type=float, default=None,
+                        help="stop the capture between pages after this many seconds "
+                             "(resumable; the read-back checks still run)")
     parser.add_argument("--discover-only", action="store_true",
                         help="list the sites and lists a run would capture (counts only) "
                              "and read no list item")
@@ -794,6 +834,10 @@ def run_cli(args: argparse.Namespace, *, environ: Mapping[str, str] | None = Non
 
     if isinstance(args.runs, bool) or not 1 <= args.runs <= 5:
         raise ValueError("runs must be 1..5")
+    budget = getattr(args, "budget_seconds", None)
+    if budget is not None and (isinstance(budget, bool) or not isinstance(budget, (int, float))
+                               or not 0 < budget <= 86400 or budget != budget):
+        raise ValueError("budget_seconds must be over 0 and at most 86400")
     scope = ListScope.from_file(args.scope)
     audience = LiveSourceAudience.from_file(args.live_audience)
     actors = {name: Actor(audience.tenant, frozenset({principal}), "restricted")
@@ -812,8 +856,9 @@ def run_cli(args: argparse.Namespace, *, environ: Mapping[str, str] | None = Non
                               **({"sleep": sleep} if sleep else {}))
         runs, blocked = [], []
         only = bool(getattr(args, "discover_only", False))
+        deadline = None if budget is None else capture._clock() + budget
         for number in range(1, (1 if only else args.runs) + 1):
-            run = capture.run(scope, discover_only=only)
+            run = capture.run(scope, discover_only=only, deadline=deadline)
             runs.append(_report_run(number, run))
             blocked += [p for p in run["blocked_upstream"] if p not in blocked]
         units = [t.unit for t in capture.targets

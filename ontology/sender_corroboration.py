@@ -47,6 +47,7 @@ import json
 import re
 from typing import Any, Callable, Iterable, Iterator, Mapping
 
+from ontology import mention_occurrences as MO
 from ontology import mentions
 from ontology.store import canonical
 
@@ -270,9 +271,9 @@ def _carrier_rows(facts: _Facts, doc: Mapping[str, Any], link_type: str, target_
         "SELECT to_object FROM links WHERE from_object = ? AND link_type = ? AND "
         "superseded_at IS NULL", [doc["object_id"], link_type])}
     named: dict[str, list[Any]] = defaultdict(list)
-    for link in facts.query("SELECT * FROM links WHERE from_object = ? AND link_type = ? "
-                            "AND superseded_at IS NULL ORDER BY link_id",
-                            [email, email_link]):
+    for link in as_uncollapsed(facts.query(
+            "SELECT * FROM links WHERE from_object = ? AND link_type = ? "
+            "AND superseded_at IS NULL ORDER BY link_id", [email, email_link])):
         handles = json.loads(link["evidence_handles"])
         why = {f.get("feature") for f in json.loads(link["why_not"])}
         reason = json.loads(link["reason"])
@@ -325,6 +326,33 @@ def _carrier_rows(facts: _Facts, doc: Mapping[str, Any], link_type: str, target_
             "markings": mentions._marks(doc["markings"], link["markings"]),
             "recorded_at": window[0], "superseded_at": window[1]})
     return rows
+
+
+def as_uncollapsed(rows: Iterable[Any]) -> list[dict[str, Any]]:
+    """Stored link rows as the store held them before ``operating.pg.mention_collapse``
+    folded them (``ontology.mention_occurrences``): each ``mention:`` keeper as itself
+    (its own reason) and as each twin it holds, the twin's id restored (``mention:``, its
+    occurrence digest, the suffix the keeper and its twins share) with its own reason and
+    why_not; every other column is the keeper's, as the collapse requires of a twin. The
+    rows in id order (code point, the stores' binary order), as the step's reads give
+    them; rows holding no twins are returned as they are, in their order. This step
+    judges and writes one row per occurrence (a ``doccarrier:``/``docfirm:`` id digests
+    the occurrence's own id), so on a collapsed store it writes the rows it writes on the
+    uncollapsed one."""
+    rows = [dict(r) for r in rows]
+    if not any(r["link_id"].startswith(MO.LEAD_PREFIX) and MO.FEATURE in (r.get("reason") or "")
+               and MO.folded(r["reason"]) is not None for r in rows):   # parsed only then
+        return rows
+    out = []
+    keep = len(MO.LEAD_PREFIX) + MO.DIGEST_CHARS
+    for view in MO.views(rows):
+        occ = view.pop(MO.OCCURRENCE, None)
+        if occ is not None and view["link_id"].startswith(MO.LEAD_PREFIX):
+            view["link_id"] = MO.LEAD_PREFIX + occ + view["link_id"][keep:]
+        out.append(view)
+    if len({r["link_id"] for r in out}) != len(out):   # a twin's id held by another row
+        raise ValueError("collapsed_twin_id_twice")
+    return sorted(out, key=lambda r: r["link_id"])
 
 
 def _screen(lead: Mapping[str, Any], rejected: set[tuple[str, str]]) -> tuple[str, Any]:
@@ -397,11 +425,11 @@ def _firm_links(facts: _Facts, parties: _Parties | None, link_type: str, own: se
     the leads, in order, given the leads, their screens and the window each message's
     sender is read over (:func:`_verdicts` over ``parties`` by default)."""
     counts = defaultdict(int)
-    leads = [dict(r) for r in facts.query(
+    leads = as_uncollapsed(facts.query(
         "SELECT * FROM links WHERE link_type = ? AND tier = ? AND binding_kind = ? AND "
         "superseded_at IS NULL AND substr(link_id, 1, ?) <> ? ORDER BY link_id",
         [link_type, mentions.TIER, mentions.BINDING_KIND, len(CARRIER_PREFIX),
-         CARRIER_PREFIX])] + [dict(r) for r in extra]
+         CARRIER_PREFIX])) + [dict(r) for r in extra]
     rejected = {(r["from_object"], r["to_object"]) for r in facts.query(
         "SELECT from_object, to_object FROM links WHERE link_type = ? AND tier = "
         "'contradicted'", [link_type])}
@@ -483,5 +511,6 @@ def sender_corroboration_step(builder: Any, projector: Any) -> dict[str, Any]:
     return report
 
 
-__all__ = ["CARRIER_PREFIX", "DOMAIN_PROPERTIES", "FIRM_PREFIX", "corroborable_types",
+__all__ = ["CARRIER_PREFIX", "DOMAIN_PROPERTIES", "FIRM_PREFIX", "as_uncollapsed",
+           "corroborable_types",
            "message_of", "properties_read_by_name", "sender_corroboration_step"]

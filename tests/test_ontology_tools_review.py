@@ -31,6 +31,7 @@ from ontology.project import CapturedRecord, build_store
 from ontology.resolve import ReviewedAliases
 from ontology.types import Actor
 from operating import ontology_tools as ot
+from operating import ontology_tools_results
 from operating import kind_confirmation
 from operating import ontology_tools_review as rt
 from operating.employee_permissions import (EmployeeActorGate, EmployeePermissionPolicy,
@@ -637,6 +638,66 @@ class ReviewToolTests(unittest.TestCase):
         # The mail changed after the decision: the link no longer holds now.
         self.assertIsNone(tiers(CHANGED, self.session_a.actor, LATER)[0])
 
+    def test_a_link_decision_citing_records_by_digest_alone_is_walked_never_a_crash(self):
+        """A decision recorded straight into the store (the G/L crosswalk's 768 accepted
+        links, 11-14) cites each record by id, digest and field, no L1 handle. Walking the
+        reviewed link reads its review through the cited version's handle (the version the
+        projection itself cites), under the reader's grants and item gate as a plx.review
+        decision is; a cited digest no projected version holds is withheld (fail closed),
+        never a KeyError (it made every crosswalked account's page and explorer a 404)."""
+        from operating import ontology_tools_traverse as tt
+        store = reviews.ReviewStore(self.dir / "state" / "direct-reviews.sqlite",
+                                    clock=lambda: REVIEWED_AT)
+        plain = self.dir / "projection-plain.sqlite"
+        build(plain, FIRST)   # the PO's version digest, as the projection holds it
+        with closing(sqlite3.connect(plain)) as conn:
+            po_digest = conn.execute("SELECT digest FROM object_versions WHERE object_id = ?",
+                                     (PO9,)).fetchone()[0]
+
+        def decide(mail_digest):
+            return store.record(
+                tenant="plx", author={"principal": f"employee:{OID_A}"},
+                decision="accept_link", subject=EMAIL, target=PO9, link_type=LINK,
+                evidence=[{"object_id": EMAIL, "digest": mail_digest,
+                           "field_path": "row.subject"},
+                          {"object_id": PO9, "digest": po_digest}])[0]
+
+        record = decide(D1)
+        projected = self.dir / "projection-direct.sqlite"
+        build(projected, FIRST, store)
+        reader = ot.StoreReader.open(projected)
+        self.addCleanup(reader.conn.close)
+        base = ot.OntologyTools(
+            reader, policy(), item_gate=item_gate, grammar=identifiers,
+            schema=ot.SchemaView.from_compiled(schema_loader.load_schema()),
+            contracts=CONTRACTS, clock=lambda: NOW, reviews=store)
+        table: dict = {}
+        ontology_tools_results.register(table, base)
+        tt.register(table, tt.TraverseTools(base))
+
+        def walk(actor):
+            answer = table["plx.around"]["handler"](
+                {"from": PO9, "path": [{"link_type": LINK, "direction": "reverse"}],
+                 "response_format": "detailed"}, actor)
+            answer = answer.get("structuredContent", answer)
+            self.assertNotIn("error", answer, json.dumps(answer)[:1500])
+            return [e for e in answer.get("edges") or () if e.get("link_type") == LINK]
+
+        edges = walk(self.session_a.actor)
+        self.assertEqual(len(edges), 1, edges)
+        self.assertEqual((edges[0]["review"].get("review_id"), edges[0]["review"]["decision"]),
+                         (record["review_id"], "accept_link"))
+        self.assertEqual(walk(self.session_b.actor), [])   # the mail end is never shown
+        # the review itself, as link_review reads it: served to the mail's reader only
+        scope = lambda actor: base._scope(actor, NOW)  # noqa: E731
+        self.assertEqual(tt.link_review(base, scope(self.session_a.actor),
+                                        record["review_id"])["review_id"], record["review_id"])
+        self.assertEqual(tt.link_review(base, scope(self.session_b.actor),
+                                        record["review_id"]), {"withheld": "not_readable"})
+        # a cited digest no projected version holds: withheld, never read on a guess
+        stale = decide(D2)
+        self.assertEqual(tt.link_review(base, scope(self.session_a.actor), stale["review_id"]),
+                         {"withheld": "not_readable"})
 
 if __name__ == "__main__":
     unittest.main()

@@ -55,7 +55,7 @@ import re
 import sqlite3
 from typing import Any, Callable, Mapping, Sequence
 
-from integrations.source_mirror import MirrorError
+from integrations.source_mirror_values import MirrorError
 from ontology.core import LEVELS, Actor
 
 from . import ingestion

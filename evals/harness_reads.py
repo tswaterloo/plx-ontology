@@ -134,7 +134,8 @@ class Session:
              "snippet": h.get("snippet"), "kind": h.get("kind"),
              "signals": {**(h.get("signals") or {}), "score": h.get("score")}}
             for h in result.hits], "extra": {**extra, "timings": result.timings,
-                                             "notes": list(result.notes)}}
+                                             "notes": list(result.notes),
+                                             "failed": result.failed}}
 
     def record_read(self, arguments: Mapping[str, Any]) -> dict[str, Any]:
         """A ``RECORD_SCHEMES`` citation as the reader may read it now (module docstring)."""

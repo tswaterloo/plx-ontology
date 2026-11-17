@@ -176,7 +176,7 @@ def _vocab_queries(conn: sqlite3.Connection, count: int, seed: int) -> list[str]
 def _policies(conn: sqlite3.Connection) -> tuple[Any, Any, Any, Any]:
     from ontology.store_ddl import MARKINGS
     from ontology.types import Actor
-    from operating.ontology_tools import ReadPolicy
+    from operating.ontology_tools_policy import ReadPolicy
     prefixes = sorted({k.split(":", 1)[0] for (k,) in
                        conn.execute("SELECT DISTINCT audience_key FROM objects")})
     audiences = {f"{p}:*": {"full"} for p in prefixes}
@@ -209,8 +209,8 @@ def compare(sample_path: str, *, queries: Sequence[str], vocab: int, keep: bool,
             seed: int = 11) -> dict[str, Any]:
     import psycopg
     from ontology import identifiers
-    from operating.ontology_tools import (OntologyTools, StoreReader, default_schema,
-                                          load_contracts)
+    from operating.ontology_tools import OntologyTools, StoreReader, default_schema
+    from operating.ontology_tools_policy import load_contracts
     from operating.pg import ontology_load, ontology_reader
     from operating.pg.migrate import MIGRATIONS_DIR
     from operating.pg.sqlite_compat import PgCompatConnection

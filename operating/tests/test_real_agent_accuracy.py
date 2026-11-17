@@ -18,7 +18,7 @@ import unittest
 
 from evals import runner
 from ontology.json_contract import validate
-from operating.ontology_tools import load_contracts
+from operating.ontology_tools_policy import load_contracts
 from operating.tests.test_agent_loop import QUESTION, AgentLoopTests, _plain, model
 from operating.tests.test_session_identity import OID_A, OID_B
 from operating import agent_loop
@@ -273,14 +273,22 @@ class HomeRuleCoverageTests(unittest.TestCase):
     it left unjudged, and is incomplete (rule_not_evaluated) while any is."""
 
     def setUp(self):
+        import os
+        from unittest import mock
+        from integrations.tests.test_live_source_adapters import ENV
         from operating.tests import test_connector_home as home
+        # The fixture's own exclusion: never the host's env file (a host without one
+        # blocks the mail rules on people_exclusion_unavailable, Home then inbox_incomplete)
+        patcher = mock.patch.dict(os.environ, {
+            "PLX_EXCLUDED_PEOPLE_OIDS": ENV["PLX_EXCLUDED_PEOPLE_OIDS"]})
+        patcher.start()
+        self.addCleanup(patcher.stop)
         self.home = home
         self.base = home.Base("setUp")
         self.base.setUp()
         self.addCleanup(self.base.doCleanups)
 
     def run_all_rules(self, world, coverage):
-        from datetime import datetime, timezone
         from operating import proactive_engine as pe
         from operating.tests.test_proactive_engine import ON_HAND, people
         world.build(self.base.store)
@@ -424,20 +432,21 @@ class FreeTextQuestionTests(unittest.TestCase):
 
     def test_the_primer_and_home_phrases_route_business_questions(self):
         from operating import mcp_server
+        from operating import mcp_server_catalog
         starters = {question: family for question, _tools, family
-                    in mcp_server.PRIMER_STARTERS}
+                    in mcp_server_catalog.PRIMER_STARTERS}
         self.assertEqual(starters["Which purchase orders are late?"], "late_po")
         for question in ("What should I worry about?", "What should I worry about today?",
                          "What do I need to worry about?", "Are there any problems?",
                          "Any issues today?", "What's late?", "What is behind?"):
-            self.assertEqual(mcp_server.home_kinds(question), (), question)
+            self.assertEqual(mcp_server_catalog.home_kinds(question), (), question)
         for question in ("Are there any problems with my purchase orders?",
                          "Which purchase orders should I worry about?"):
-            self.assertIn("late_po", mcp_server.home_kinds(question) or (), question)
+            self.assertIn("late_po", mcp_server_catalog.home_kinds(question) or (), question)
         # A question naming a record is never home mode, however it is worded.
         for question in ("problems with PO 5447", "What is late on SO100201?",
                          "issues 5447", "worry"):
-            self.assertIsNone(mcp_server.home_kinds(question), question)
+            self.assertIsNone(mcp_server_catalog.home_kinds(question), question)
 
 
 def _resolve_case():
@@ -614,6 +623,7 @@ class ChainPartyNameTests(unittest.TestCase):
 
     def investigate(self, store, root, policy, actor):
         from operating import ontology_tools as ot
+        from operating import ontology_tools_results
         from operating import ontology_tools_investigate as oi
         from operating import ontology_tools_process as op
         from operating import ontology_tools_traverse as tt
@@ -621,7 +631,7 @@ class ChainPartyNameTests(unittest.TestCase):
         table: dict = {}
         base = ot.OntologyTools(ot.StoreReader(store.conn), policy, schema=tp.SCHEMA,
                                 contracts=CONTRACTS, clock=lambda: tp.NOW)
-        ot.register(table, base)
+        ontology_tools_results.register(table, base)
         tt.register(table, tt.TraverseTools(base))
         op.register(table, op.ProcessTools(base, tp.GRAPHS))
         oi.register(table, oi.InvestigateTools(table, schema=tp.SCHEMA, rows=None))
@@ -791,10 +801,11 @@ class GapConcernsTests(unittest.TestCase):
 
     def test_the_instructions_say_to_copy_concerns_as_given(self):
         from operating import mcp_server
+        from operating import mcp_server_catalog
         prompt = runner.build_prompt({"as_known_at": {"time": "2099-01-02T03:04:05Z",
                                                       "l1_generations": {}}},
                                      "Q?")
-        for text in (mcp_server.PRIMER, " ".join(prompt.split())):
+        for text in (mcp_server_catalog.PRIMER, " ".join(prompt.split())):
             self.assertIn("a gap with no concerns concerns no value", text)
 
 

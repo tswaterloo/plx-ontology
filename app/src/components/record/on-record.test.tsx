@@ -20,7 +20,7 @@ describe("on record: who, linked, last change and next step on a record without 
     const box = screen.getByTestId("on-record");
     for (const t of ["No person named on record", "Nothing linked yet", "No change recorded"]) expect(box).toHaveTextContent(t);
     expect(box).not.toHaveTextContent("Item");
-    expect(screen.getByRole("link", { name: "Ask what matters about it" }).getAttribute("href")).toContain("/ask?q=What+should+I+know+about+BAR-LAV-100");
+    expect(screen.getByRole("link", { name: "Ask about it" }).getAttribute("href")).toContain("/ask?q=What+should+I+know+about+BAR-LAV-100");
   });
 
   it("names the people, the links, the newest change by date and the proposed step", () => {
@@ -42,8 +42,12 @@ describe("on record: who, linked, last change and next step on a record without 
       ],
       proposals: [{ id: "p", kind: "record_update", title: "Release the hold once the retest passes", sent: false, subject: {} }],
     } as unknown as ObjectPage;
-    expect(answer(rich, "Who is on it").a).toBe("Ana (QC lead, PLX); Bo (Buyer); Cy (Planner); 1 more");
-    expect(answer(rich, "Linked to").a).toBe("Lot L-24-0917, QC note, #qc and 1 more");
+    // four of each: counted, never "A, B, C and 1 more" (each is listed on the page)
+    expect(answer(rich, "Who is on it").a).toBe("4 people named on record");
+    expect(answer(rich, "Linked to").a).toBe("4 linked records");
+    const three = { ...rich, people: rich.people!.slice(0, 3), linked: rich.linked!.slice(0, 2) } as ObjectPage;
+    expect(answer(three, "Who is on it").a).toBe("Ana (QC lead, PLX); Bo (Buyer); Cy (Planner)");
+    expect(answer(three, "Linked to").a).toBe("Lot L-24-0917, QC note and #qc");
     expect(answer(rich, "Linked to").href).toBe("/object/Lot/Lot%3Ademo%3AL-24-0917");
     expect(answer(rich, "Last change").a).toMatch(/^Put on hold, /);
     expect(answer(rich, "Next step").a).toBe("Release the hold once the retest passes");
@@ -53,7 +57,7 @@ describe("on record: who, linked, last change and next step on a record without 
   it("names each linked record once and never the record itself", () => {
     const inv = (n: number) => ({ label: n < 3 ? "IN1000180804" : `IN10001808${n}`, object_id: `RelSageArIbh:x:${n}`, type: "RelSageArIbh", open_url: "" });
     const rows = { ...base, label: "IN1000180804", related: [0, 1, 2, 5, 6].map(inv) } as unknown as ObjectPage;
-    expect(answer(rows, "Linked to").a).toBe("IN100018085, IN100018086");
+    expect(answer(rows, "Linked to").a).toBe("IN100018085 and IN100018086");
     const self = { ...base, label: "IN1000180804", related: [0, 1, 2].map(inv) } as unknown as ObjectPage;
     expect(answer(self, "Linked to").a).toBe("3 linked records");
   });

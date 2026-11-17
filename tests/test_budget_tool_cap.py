@@ -1,7 +1,7 @@
 """A long pass asks plx.investigate for no more time than the tool accepts."""
 import unittest
 
-from operating.proactive_engine import Budget, TOOL_BUDGET_MAX_MS
+from operating.proactive_engine_budget import Budget, TOOL_BUDGET_MAX_MS
 
 
 class BudgetToolCapTest(unittest.TestCase):

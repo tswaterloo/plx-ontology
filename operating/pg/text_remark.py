@@ -421,8 +421,18 @@ def judge_others(state: str, work: Path, readings: Path | None = None,
 
 
 def _code() -> str:
+    """The text index's step code a judged shard and an apply are bound to: its files'
+    exact bytes (the v1 scheme the ``MARKS_ONLY`` pins before v2 hold)."""
     from ontology import step_migrate as sm
-    return sm.code_digests()["text_index"]
+    return sm.byte_digests()["text_index"]
+
+
+def _marks_only_target(code: str) -> bool:
+    """Whether this tree's text index code is the new side of a ``MARKS_ONLY`` pin: by its
+    bytes (``code``, a pin made before v2) or by its definitions (a v2 pin)."""
+    from ontology import step_migrate as sm
+    codes = {code, sm.code_digests()["text_index"]}
+    return any(to in codes for pairs in sm.MARKS_ONLY.values() for _f, to in pairs)
 
 
 def judge(state: str, work: Path, shards: int, workers: int,
@@ -578,7 +588,7 @@ def apply(work: Path, dsn: str, *, dry_run: bool) -> dict[str, Any]:
     from ontology import step_migrate as sm
     started = time.monotonic()
     code = _code()
-    if not any(code == to for pairs in sm.MARKS_ONLY.values() for _f, to in pairs):
+    if not _marks_only_target(code):
         raise Refused(f"text_index_code_not_a_marks_only_target:{code[:12]}")
     if tuple(sm.SENSITIVE_MARKS) != MARKS:
         raise Refused("marks_differ_from_step_migration")
@@ -663,7 +673,7 @@ def check(work: Path, dsn: str) -> dict[str, Any]:
     from ontology import step_migrate as sm
     code = _code()
     report: dict[str, Any] = {"code": code, "applied": False}
-    if not any(code == to for pairs in sm.MARKS_ONLY.values() for _f, to in pairs):
+    if not _marks_only_target(code):
         report["reason"] = "text_index_code_not_a_marks_only_target"
         return report
     path = work / "undo.jsonl"

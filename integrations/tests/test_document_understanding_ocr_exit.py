@@ -74,9 +74,8 @@ class Poppler:
         elif role == "pdftoppm":
             dpi = int(command[command.index("-r") + 1])
             width, height = round(612 * dpi / 72), round(792 * dpi / 72)
-            Path(command[-1] + ".png").write_bytes(
-                b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR" + width.to_bytes(4, "big") +
-                height.to_bytes(4, "big"))
+            Path(command[-1] + ".pgm").write_bytes(   # pdftoppm -gray: PGM
+                b"P5\n%d %d\n255\n" % (width, height) + bytes(width * height))
         elif role == "osd":
             return CompletedProcess(command, 1, b"", b"Too few characters\n")
         elif role == "tesseract":

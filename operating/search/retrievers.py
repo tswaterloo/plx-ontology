@@ -9,7 +9,8 @@ so a row the reader may not read never takes a slot of a retriever's list.
 * ``graph``: chunks of objects linked to a resolved object (the caller's neighbours) and
   of the candidates of an ambiguous entity.
 * ``dense``: pgvector HNSW kNN with iterative index scans (pgvector 0.8,
-  ``hnsw.iterative_scan = relaxed_order``) so the permission filter keeps recall.
+  ``hnsw.iterative_scan = relaxed_order``) so the permission filter keeps recall; with
+  ``PLX_SEARCH_BQ=1`` the binary-quantized index's candidates re-ranked by exact cosine.
 * ``bm25``: Okapi BM25 (k1 1.2, b 0.75) with OR semantics (a document need not hold every
   word; a lexeme in more than a quarter of the rows is left out while rarer ones remain):
   every readable row of each rare lexeme is a candidate, common lexemes come from the
@@ -25,7 +26,9 @@ import math
 import re
 import threading
 import time
-from typing import Any, Iterable, Mapping, Sequence
+from typing import Any, Iterable, Sequence
+
+from operating.search import codes
 
 PERM = ("c.audience_key = ANY(%(allowed)s::text[]) "
         "AND c.markings <@ %(held)s::text[]")
@@ -97,9 +100,16 @@ def _params(scope: dict[str, Any], **extra: Any) -> dict[str, Any]:
 
 def exact(conn: Any, scope: dict[str, Any], ids: Sequence[str], tokens: Sequence[str],
           limit: int) -> list[tuple[str, float]]:
+    """Chunks of the resolved ``ids`` and of the codes the question names (``tokens``:
+    ``reader.Query.code_tokens``), each code in every spelling and kind normal form a
+    chunk's ``linked_ids`` may hold (``codes.linked_forms``: ``PO-106001``, ``PO 106001``
+    and ``106001`` all read ``petra_po:PO106001``). A bare number under five digits (a
+    year, a quantity) is not read here (``codes.exact_tokens``)."""
+    tokens = codes.exact_tokens(tokens)
     if not ids and not tokens:
         return []
-    forms = list(dict.fromkeys([*tokens, *(t.upper() for t in tokens)]))
+    forms = list(dict.fromkeys([*tokens, *(t.upper() for t in tokens),
+                                *codes.linked_forms(tokens)]))
     rows = conn.execute(
         f"""SELECT c.chunk_id,
                    CASE WHEN c.object_id = ANY(%(ids)s::text[]) THEN 1.0
@@ -155,27 +165,57 @@ def column_dim(conn: Any) -> int | None:
     return int(row[0]) if row and row[0] and row[0] > 0 else None
 
 
+# Index tuples one filtered HNSW walk may visit (pgvector ``hnsw.max_scan_tuples``): past
+# it the walk returns what passed the reader's filter so far. Measured on the owner
+# eval reader's scope (621k readable rows of 5.2M, 30 gold-card questions): 20,000 keeps
+# 0.97 of the top 30 that 40,000 finds, at a fraction of the random reads when cold.
+MAX_SCAN_TUPLES = 20000
+
+
 def dense(conn: Any, scope: dict[str, Any], vectors: Sequence[Sequence[float]], model: str,
-          limit: int, *, ef_search: int = 100) -> list[tuple[str, float]]:
+          limit: int, *, ef_search: int = 100, timeout_ms: int | None = None
+          ) -> list[tuple[str, float]]:
     """kNN per query vector (the question and each rewrite), best cosine similarity per
-    chunk. Only chunks embedded by ``model`` (the query's model) are compared."""
+    chunk. Only chunks embedded by ``model`` (the query's model) are compared.
+    ``timeout_ms``: this list's own statement timeout (the connection's otherwise)."""
     if not vectors:
         return []
+    from operating.pg.dense import BQ_EF_CAP, bq_candidates, bq_enabled, bq_order
     dim = column_dim(conn)
-    best: dict[str, float] = {}
-    with conn.transaction():
-        conn.execute("SET LOCAL hnsw.iterative_scan = relaxed_order")
-        conn.execute(f"SET LOCAL hnsw.ef_search = {min(max(int(ef_search), limit * DEEP), 1000)}")
-        conn.execute("SET LOCAL hnsw.max_scan_tuples = 40000")
-        for vector in vectors:
-            rows = conn.execute(
-                _per_item(f"""SELECT c.chunk_id, 1 - (c.embedding <=> %(v)s::halfvec) AS s
+    deep = limit * DEEP
+    bq = dim is not None and bq_enabled()
+    if bq:
+        # PLX_SEARCH_BQ: the bit index's Hamming order yields the candidates (permission
+        # filter in the scan), the exact halfvec cosine re-ranks them.
+        cand = bq_candidates(deep)
+        inner = f"""SELECT b.chunk_id, b.s FROM (
+                    SELECT c.chunk_id, 1 - (c.embedding <=> %(v)s::halfvec) AS s
+                    FROM search.chunks c
+                    WHERE c.embed_model = %(model)s AND {PERM} {KINDS}
+                    ORDER BY {bq_order("c.embedding", "%(v)s", dim)}
+                    LIMIT %(cand)s) b
+                    ORDER BY b.s DESC, b.chunk_id LIMIT %(deep)s"""
+        ef = min(max(int(ef_search), cand), BQ_EF_CAP)
+    else:
+        cand = 0
+        inner = f"""SELECT c.chunk_id, 1 - (c.embedding <=> %(v)s::halfvec) AS s
                     FROM search.chunks c
                     WHERE c.embed_model = %(model)s AND {PERM} {KINDS}
                     ORDER BY c.embedding <=> %(v)s::halfvec
-                    LIMIT %(deep)s"""),
+                    LIMIT %(deep)s"""
+        ef = min(max(int(ef_search), deep), 1000)
+    best: dict[str, float] = {}
+    with conn.transaction():
+        if timeout_ms is not None:
+            conn.execute(f"SET LOCAL statement_timeout = {max(int(timeout_ms), 1)}")
+        conn.execute("SET LOCAL hnsw.iterative_scan = relaxed_order")
+        conn.execute(f"SET LOCAL hnsw.ef_search = {ef}")
+        conn.execute(f"SET LOCAL hnsw.max_scan_tuples = {MAX_SCAN_TUPLES}")
+        for vector in vectors:
+            rows = conn.execute(
+                _per_item(inner),
                 _params(scope, v=_vector(vector, dim), model=model, limit=limit,
-                        deep=limit * DEEP)).fetchall()
+                        deep=deep, cand=cand)).fetchall()
             for chunk_id, sim in rows:
                 if sim is not None and float(sim) > best.get(chunk_id, -2.0):
                     best[chunk_id] = float(sim)
@@ -225,16 +265,23 @@ class _Stats:
 STATS = _Stats()
 
 
-def _lexemes(conn: Any, terms: Sequence[str]) -> list[str]:
+def _lexemes(conn: Any, terms: Sequence[str], spelled: Sequence[str] = ()) -> list[str]:
     """The index lexemes of the content words: English stems of every word, plus the
-    words with a digit as typed (ids and codes, in the ``simple`` half of the tsv)."""
-    codes = [t for t in terms if any(ch.isdigit() for ch in t)]
+    words with a digit as typed (ids and codes, in the ``simple`` half of the tsv), plus
+    the lexemes with a digit of every spelling of the question's codes (``spelled``:
+    ``codes.lexeme_texts``; ``PO 106001`` also reads ``po106001`` and ``-106001``, the
+    lexemes ``PO106001`` and ``PO-106001`` are indexed under)."""
+    digits = [t for t in terms if any(ch.isdigit() for ch in t)]
     return [r[0] for r in conn.execute(
         """SELECT DISTINCT lexeme FROM (
                SELECT unnest(tsvector_to_array(to_tsvector('english', %(text)s))) AS lexeme
-               UNION SELECT unnest(tsvector_to_array(to_tsvector('simple', %(codes)s)))) q
+               UNION SELECT unnest(tsvector_to_array(to_tsvector('simple', %(codes)s)))
+               UNION SELECT l FROM unnest(%(spelled)s::text[]) s,
+                     unnest(tsvector_to_array(to_tsvector('simple', s))) l
+                     WHERE l ~ '[0-9]') q
            ORDER BY lexeme""",
-        {"text": " ".join(terms), "codes": " ".join(codes)}).fetchall()]
+        {"text": " ".join(terms), "codes": " ".join(digits),
+         "spelled": list(spelled)}).fetchall()]
 
 
 # A lexeme in at most this many readable rows is "rare": all of its rows are candidates,
@@ -308,7 +355,7 @@ def bm25(conn: Any, scope: dict[str, Any], texts: Sequence[str], limit: int
     terms = words(texts)
     if not terms:
         return []
-    lexemes = _lexemes(conn, terms)
+    lexemes = _lexemes(conn, terms, codes.lexeme_texts(texts))
     if not lexemes:
         return []
     n, avgdl = STATS.get(conn, scope)

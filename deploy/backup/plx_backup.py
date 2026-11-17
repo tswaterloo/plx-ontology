@@ -60,16 +60,19 @@ from __future__ import annotations
 import argparse
 import datetime as dt
 import hashlib
+import io
 import json
 import os
 from pathlib import Path
 import re
 import shutil
+import signal
 import sqlite3
 import subprocess
 import sys
 import tarfile
 import tempfile
+import time
 from typing import Any
 
 import psycopg
@@ -241,6 +244,18 @@ def _pg_env(dsn: str) -> dict[str, str]:
     return env
 
 
+# The dump's own sessions (the snapshot holder and pg_dump) must outlive a slow, niced run:
+# no idle-in-transaction kill while pg_dump works on the exported snapshot, no statement cap.
+# Set for these sessions only, never on the server.
+DUMP_SESSION_OPTIONS = "-c idle_in_transaction_session_timeout=0 -c statement_timeout=0"
+
+
+def _dump_env(dsn: str) -> dict[str, str]:
+    env = _pg_env(dsn)
+    env["PGOPTIONS"] = (env.get("PGOPTIONS", "") + " " + DUMP_SESSION_OPTIONS).strip()
+    return env
+
+
 def _schema_only() -> list[str]:
     return [x.strip() for x in _env_keep("PLX_BACKUP_PG_SCHEMA_ONLY", "search,ontology")
             .split(",") if x.strip()]
@@ -252,6 +267,8 @@ def _dump(dsn: str, target: Path) -> dict[str, int | None]:
     tables of the ``_schema_only`` schemas are dumped without data (count: None)."""
     skip = _schema_only()
     with psycopg.connect(dsn, application_name="plx-backup") as conn:
+        conn.execute("SET idle_in_transaction_session_timeout = 0")
+        conn.execute("SET statement_timeout = 0")
         conn.execute("BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY")
         snapshot = conn.execute("SELECT pg_export_snapshot()").fetchone()[0]
         counts = table_counts(conn, skip_schemas=skip)
@@ -259,7 +276,7 @@ def _dump(dsn: str, target: Path) -> dict[str, int | None]:
                         f"--lock-wait-timeout={_env('PLX_BACKUP_LOCK_WAIT', '300s')}",
                         *(f"--exclude-table-data={schema}.*" for schema in skip),
                         "-f", str(target)],
-                       check=True, stdin=subprocess.DEVNULL, env=_pg_env(dsn))
+                       check=True, stdin=subprocess.DEVNULL, env=_dump_env(dsn))
         conn.rollback()
     return counts
 
@@ -379,6 +396,25 @@ def _config_files(patterns: list[str]) -> list[Path]:
     return found
 
 
+ROOT_SECRETS_DIR = "/run/plx-backup"
+ROOT_SECRETS_MAX_AGE = 2 * 3600
+
+
+def _root_staged(directory: Path | None = None) -> tuple[Path | None, set[str]]:
+    """The archive the root pre-step (``root_secrets.sh``) staged: (archive, listed paths), or
+    (None, empty) unless both files exist, belong to this user and are fresh."""
+    d = directory or Path(os.environ.get("PLX_BACKUP_ROOT_SECRETS_DIR", ROOT_SECRETS_DIR))
+    arc, lst = d / "root-secrets.tar.gpg", d / "root-secrets.list"
+    try:
+        for f in (arc, lst):
+            st = f.stat()
+            if st.st_uid != os.getuid() or time.time() - st.st_mtime > ROOT_SECRETS_MAX_AGE:
+                return None, set()
+        return arc, {x.strip() for x in lst.read_text().splitlines() if x.strip()}
+    except OSError:
+        return None, set()
+
+
 def _config_tar(patterns: list[str], target: Path, secrets_target: Path,
                 passphrase_file: str | None) -> dict[str, Any]:
     """The configuration as a tar (absolute paths without the leading slash; mode, owner and
@@ -410,14 +446,24 @@ def _config_tar(patterns: list[str], target: Path, secrets_target: Path,
                            "secret_files": listed, "unreadable": unreadable,
                            "secrets": "omitted"}
     # restore-needed files that did not reach the plain archive; encrypted ones are kept
-    out["restore_files_missing"] = [] if (secret and passphrase_file) else \
-        sorted([str(p) for p in secret if _restore_needed(p)] + unreadable)
-    if secret and passphrase_file:
+    staged, staged_paths = _root_staged() if passphrase_file else (None, set())
+    unreadable_left = [u for u in unreadable if u not in staged_paths]
+    # a restore-needed file the run could not read and the root step did not stage is always
+    # missing (exit 7), passphrase or not; readable secret files are covered by a passphrase
+    covered = [] if (secret and passphrase_file) else [str(p) for p in secret if _restore_needed(p)]
+    out["restore_files_missing"] = sorted(covered + unreadable_left)
+    if staged is not None:
+        out["root_staged"] = sorted(staged_paths & set(unreadable))
+    else:
+        out["root_staged"] = []
+    if passphrase_file and (secret or staged is not None):
         with tempfile.TemporaryDirectory(prefix="plx-secrets-", dir=target.parent) as tmp:
             inner = Path(tmp) / "secrets.tar"
             with tarfile.open(inner, "w") as tar:
                 for path in secret:
                     add(tar, path)
+                if staged is not None:
+                    tar.add(staged, arcname="root-secrets.tar.gpg", recursive=False)
             subprocess.run(["gpg", "--batch", "--yes", "--quiet", "--symmetric",
                             "--cipher-algo", "AES256", "--pinentry-mode", "loopback",
                             "--passphrase-file", passphrase_file, "-o", str(secrets_target),
@@ -601,6 +647,7 @@ def backup(now: dt.datetime | None = None) -> tuple[int, dict[str, Any]]:
                            "config_files": configured["plain_files"],
                            "config_secrets": configured["secrets"],
                            "config_secret_files": len(configured["secret_files"]),
+                           "root_staged": configured["root_staged"],
                            "bytes": {p.name: p.stat().st_size for p in parts}}
     out.update(rotate(root, stamp))
     out["total_bytes"] = _sets_bytes(root)
@@ -616,6 +663,38 @@ def backup(now: dt.datetime | None = None) -> tuple[int, dict[str, Any]]:
     else:
         out["offsite"] = "not_configured"
     return code, out
+
+
+def _check_root_secrets(daily: Path, stamp: str, manifest: dict[str, Any]) -> list[str]:
+    """Decrypt ``secrets-<stamp>.tar.gpg`` and the root archive nested in it with the
+    passphrase, and check that every file the manifest lists as root-staged is present and
+    non-empty. Empty when the set staged none."""
+    staged = (manifest.get("config") or {}).get("root_staged") or manifest.get("root_staged") or []
+    if not staged:
+        return []
+    passphrase = os.environ.get("PLX_BACKUP_SECRETS_PASSPHRASE_FILE")
+    secrets = daily / f"secrets-{stamp}.tar.gpg"
+    if not passphrase or not Path(passphrase).is_file():
+        return ["root_secrets_no_passphrase"]
+
+    def decrypt(src: Path | None, data: bytes | None) -> bytes:
+        cmd = ["gpg", "--batch", "--quiet", "--decrypt", "--pinentry-mode", "loopback",
+               "--passphrase-file", passphrase] + ([str(src)] if src else [])
+        return subprocess.run(cmd, input=data, check=True, stdout=subprocess.PIPE,
+                              stderr=subprocess.DEVNULL).stdout
+
+    try:
+        outer = decrypt(secrets, None)
+        with tarfile.open(fileobj=io.BytesIO(outer)) as tar:
+            member = tar.extractfile("root-secrets.tar.gpg")
+            nested = member.read() if member else b""
+        inner = decrypt(None, nested)
+        with tarfile.open(fileobj=io.BytesIO(inner)) as tar:
+            have = {m.name: m.size for m in tar.getmembers() if m.isfile()}
+    except (subprocess.CalledProcessError, tarfile.TarError, OSError, KeyError):
+        return ["root_secrets_unreadable"]
+    return [f"root_secrets_missing:{path}" for path in staged
+            if have.get(str(path).lstrip("/"), 0) <= 0]
 
 
 def restore_test(now: dt.datetime | None = None) -> tuple[int, dict[str, Any]]:
@@ -683,6 +762,7 @@ def restore_test(now: dt.datetime | None = None) -> tuple[int, dict[str, Any]]:
                         problems.append(f"state_corrupt:{rel}")
                 finally:
                     conn.close()
+    problems += _check_root_secrets(daily, stamp, manifest)
     config_files = 0
     if config.name in manifest["files"]:
         try:
@@ -698,10 +778,17 @@ def restore_test(now: dt.datetime | None = None) -> tuple[int, dict[str, Any]]:
                                     "problems": problems}
 
 
+def _terminated(signum: int, frame: Any) -> None:
+    raise SystemExit(128 + signum)
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="plx_backup")
     parser.add_argument("command", choices=("backup", "restore-test"))
     args = parser.parse_args(argv)
+    # A stop (systemd's SIGTERM: a timeout, a window, the memory ladder) unwinds like an
+    # error: backup() removes the set's partial files, and the run exits 143, never 0.
+    signal.signal(signal.SIGTERM, _terminated)
     try:
         code, out = backup() if args.command == "backup" else restore_test()
     except subprocess.CalledProcessError as exc:
@@ -711,8 +798,34 @@ def main(argv: list[str] | None = None) -> int:
     except (psycopg.Error, OSError, RuntimeError, ValueError, KeyError) as exc:
         code, out = 1, {"error": type(exc).__name__,
                         "detail": (str(exc).splitlines() or [""])[0]}
+    if args.command == "restore-test":
+        record_restore_test(code, out)
     print(json.dumps(out, indent=2, sort_keys=True))
     return code
+
+
+RESTORE_RECORD = "restore-test.json"
+
+
+def record_restore_test(code: int, out: dict[str, Any],
+                        now: dt.datetime | None = None) -> None:
+    """``<PLX_BACKUP_DIR>/restore-test.json``: when the last restore test ran and whether it
+    passed (counts only), so the alarms know its age from the backups themselves, not from
+    systemd (a reboot or a paused timer loses that)."""
+    now = now or dt.datetime.now(dt.timezone.utc)
+    root = Path(_env("PLX_BACKUP_DIR", "/data/backups"))
+    problems = out.get("problems")
+    record = {"schema": "plx-restore-test/v1",
+              "at": now.strftime("%Y-%m-%dT%H:%M:%SZ"), "ok": code == 0,
+              "stamp": out.get("stamp"), "tables": out.get("tables"),
+              "problems": len(problems) if isinstance(problems, (list, dict)) else 0,
+              "error": out.get("error")}
+    try:
+        tmp = root / (RESTORE_RECORD + ".tmp")
+        tmp.write_text(json.dumps(record, indent=1, sort_keys=True))
+        os.replace(tmp, root / RESTORE_RECORD)
+    except OSError:
+        pass   # the unit's own result still says it
 
 
 if __name__ == "__main__":

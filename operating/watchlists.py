@@ -628,8 +628,10 @@ def _moment(text: Any) -> datetime:
 
 def signal_alerts(rules: Iterable[Mapping[str, Any]],
                   findings: Callable[[Sequence[str], str], Sequence[Mapping[str, Any]]],
-                  read: Iterable[str] = ()) -> list[dict[str, Any]]:
-    """The alerts of a reader's signal rules, read now: ``findings(kinds, since)`` is the
+                  read: Iterable[str] = (), *, failed: list[str] | None = None
+                  ) -> list[dict[str, Any]]:
+    """The alerts of a reader's signal rules, read now (an inbox that cannot be read: none,
+    with ``"inbox_not_read"`` appended to ``failed``, so the page says so): ``findings(kinds, since)`` is the
     reader's own inbox read under their grant (``proactive_engine.read_inbox``), newest
     first and only findings first seen at or after ``since`` (an older backlog never uses
     up its bound), so a finding they may not see, or whose figure they may not open, is
@@ -652,7 +654,9 @@ def signal_alerts(rules: Iterable[Mapping[str, Any]],
     oldest = min(at for _r, _s, at in live)
     try:
         gaps = list(findings(kinds, oldest.isoformat()))
-    except Exception:  # noqa: BLE001 - an inbox that cannot be read shows nothing
+    except Exception:  # noqa: BLE001 - an inbox that cannot be read shows nothing, said so
+        if failed is not None:
+            failed.append("inbox_not_read")
         return []
     out: list[dict[str, Any]] = []
     for rule, signal, made in live:
@@ -1405,13 +1409,15 @@ def _rule_alert(alerts: list, rule: Mapping[str, Any], spec: Mapping[str, Any], 
 
 def trim(rows: Iterable[Mapping[str, Any]], may_read: Callable[[str], bool],
          held: Iterable[str], decide: Callable[[Sequence[str]], Mapping[str, Any]],
-         current: Callable[[Iterable[str]], Mapping[str, Any]]) -> list[dict[str, Any]]:
+         current: Callable[[Iterable[str]], Mapping[str, Any]], *,
+         failed: list[str] | None = None) -> list[dict[str, Any]]:
     """The alerts this reader may see now, each stating only values whose markings it
     holds. Each record an alert rests on is checked as it stands now (``current``: id ->
     ``_Record`` of the served store): its current audience, its current markings with
     those kept (a link's), its current handles with those kept; a record no longer held
     keeps the gate it had (it cannot have been narrowed since). Fails closed: a check
-    that fails hides the alert."""
+    that fails hides the alert, and when the whole check fails ``"alerts_not_read"`` is
+    appended to ``failed`` (the page then says its alerts could not be read, never "none")."""
     from ontology import store_ddl
     held = set(store_ddl.with_implied(held))
     rows = list(rows)
@@ -1419,6 +1425,8 @@ def trim(rows: Iterable[Mapping[str, Any]], may_read: Callable[[str], bool],
         stored = {r["alert_id"]: json.loads(r["gates"]) for r in rows}
         now = current(sorted({g["object_id"] for gates in stored.values() for g in gates}))
     except Exception:  # noqa: BLE001 - the records cannot be read now: nothing is shown
+        if failed is not None:
+            failed.append("alerts_not_read")
         return []
     for gates in stored.values():
         for g in gates:
@@ -1432,6 +1440,8 @@ def trim(rows: Iterable[Mapping[str, Any]], may_read: Callable[[str], bool],
         refused = {h for h, why in (decide(handles) if handles else {}).items()
                    if why is not None}
     except Exception:  # noqa: BLE001 - an undecidable item is not shown
+        if failed is not None:
+            failed.append("alerts_not_read")
         return []
     out = []
     for row in rows:
@@ -1452,7 +1462,9 @@ def trim(rows: Iterable[Mapping[str, Any]], may_read: Callable[[str], bool],
                        <= held]
             if body.get("changes") and not changes:
                 continue
-        except Exception:  # noqa: BLE001 - an unreadable alert is not shown
+        except Exception:  # noqa: BLE001 - an unreadable alert is not shown, said so
+            if failed is not None and "alerts_not_read" not in failed:
+                failed.append("alerts_not_read")
             continue
         out.append({"alert_id": row["alert_id"], "at": row["at"], "origin": row["origin"],
                     "kind": row["kind"], "about": body["about"], "record": body["record"],

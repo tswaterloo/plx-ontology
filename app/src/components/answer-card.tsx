@@ -1,7 +1,8 @@
 "use client";
 
-import { ArrowRight, ArrowUpRight, Bookmark, Check, ChevronRight, CornerDownRight } from "lucide-react";
+import { ArrowRight, ArrowUpRight, Bookmark, Check, ChevronRight, CornerDownRight, RotateCw } from "lucide-react";
 import Link from "next/link";
+import { Related } from "@/components/related";
 import { useEffect, useState } from "react";
 import { cn } from "@/lib/cn";
 import type { NoticeKind } from "@/lib/errors";
@@ -245,11 +246,11 @@ function Progress({ turn }: { turn: Turn }) {
   );
 }
 
-/** The answer's own "What I couldn't confirm: …" line (any case, bulleted or bold). */
+/** The answer's own couldn't-confirm line ("…I couldn't confirm: …", any case, bulleted or bold). */
 const MISSING_LINE = /^\s*(?:[-*•]\s+)?(?:\*\*)?What I couldn['’]t confirm\b(?:\*\*)?:?(?:\*\*)?\s*/i;
 
 /**
- * The text without its "What I couldn't confirm" line, and that line's words (null when
+ * The text without its couldn't-confirm line, and that line's words (null when
  * absent, or when it only points at the list below).
  */
 export function missingLine(text: string): { text: string; missing: string | null } {
@@ -650,6 +651,9 @@ function whoToAsk(a: Answer): string | null {
   return null;
 }
 
+/** Words of a read that failed, as an answer or its not-found list says them. */
+const READ_FAILED = /could(?:n['\u2019]t| not) be read|\b(?:execution|lookup|read|search|query) failed\b|\btimed out\b/i;
+
 export function AnswerCard({ turn, onPick, onRetry, onAsk, onInstruct, onClarify }: { turn: Turn; onPick?: (p: Pick) => void; onRetry?: () => void; onAsk?: (q: string) => void; onInstruct?: (q: string, extra: InstructAsk) => void; onClarify?: (words: string, reply: ClarifyReply) => void }) {
   const a = turn.answer;
   const busy = turn.phase === "thinking" || turn.phase === "streaming";
@@ -691,14 +695,20 @@ export function AnswerCard({ turn, onPick, onRetry, onAsk, onInstruct, onClarify
   const { numbers, cited, owners } = citationsOf(a, facts, used);
   // a list of late orders reads as a ledger when every fact is one late-order line
   const ledger = typeof a?.list_total === "number" && lines.length === 0 ? lateRows(otherFacts) : null;
-  // what the answer couldn't confirm, in one line: its own words, else the gaps it lists
+  // what the answer couldn't confirm, in one line: its own words, else the one or two gaps it
+  // lists; three or more are counted beside "Not found" and listed when opened
   const gaps = (a?.not_found ?? []).filter((n) => !internalWords(n.what)).map((n) => missingText(n).replace(/[.:].*$/, "")).filter(Boolean);
-  const missing = a ? ((missingSaid && !internalWords(missingSaid) ? missingSaid : null) ?? (gaps.length ? gaps.slice(0, 2).join("; ") + (gaps.length > 2 ? `; ${gaps.length - 2} more` : "") : null)) : null;
+  const missing = a ? ((missingSaid && !internalWords(missingSaid) ? missingSaid : null) ?? (gaps.length && gaps.length <= 2 ? gaps.join("; ") : null)) : null;
+  // an answer that says a read failed (a lookup that errored, a source that couldn't be read)
+  // offers the same question again: the failure may be gone on a second try
+  const readFailed =
+    !!a &&
+    (READ_FAILED.test(a.direct_answer ?? "") || (a.not_found ?? []).some((n) => READ_FAILED.test(`${n.what ?? ""} ${n.where_it_would_live ?? ""}`)));
   const followUps = (a?.follow_ups ?? []).filter((q) => !internalWords(q));
   const proposals = a?.proposals ?? [];
   return (
     <CiteNumbers.Provider value={a ? numbers : null}>
-    <article className="grid grid-cols-1 gap-x-12 gap-y-8 xl:grid-cols-[minmax(0,1fr)_248px]" aria-busy={busy} data-testid="answer-card">
+    <article className="grid min-w-0 grid-cols-1 [overflow-wrap:anywhere] gap-x-12 gap-y-8 xl:grid-cols-[minmax(0,1fr)_248px]" aria-busy={busy} data-testid="answer-card">
       <div className="min-w-0 space-y-7">
         <div className="space-y-3">
           <SubjectsLine refs={refs} timeFrame={u?.time_frame} className={ledger ? "hidden" : a && refs.length ? "xl:hidden" : undefined} />
@@ -810,6 +820,19 @@ export function AnswerCard({ turn, onPick, onRetry, onAsk, onInstruct, onClarify
                 </span>
               </p>
             ) : null}
+            {readFailed && onRetry && (
+              <p className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[13px] leading-5" data-testid="read-failed-retry">
+                <span className="text-muted">Part of this couldn&apos;t be read just now.</span>
+                <button
+                  type="button"
+                  onClick={onRetry}
+                  className="-mx-2 inline-flex h-7 cursor-pointer items-center gap-1.5 rounded-md px-2 font-medium text-fg hover:bg-hover"
+                >
+                  <RotateCw className="size-3.5" strokeWidth={2.2} aria-hidden />
+                  Try again
+                </button>
+              </p>
+            )}
             {a.profitability && <ProfitabilityView p={a.profitability} />}
             {(a.conflicts ?? []).map((c, i) => (
               <ConflictCard key={i} conflict={c} />
@@ -856,6 +879,7 @@ export function AnswerCard({ turn, onPick, onRetry, onAsk, onInstruct, onClarify
             <SectionTitle>Checked</SectionTitle>
             <CheckedList freshness={a.freshness} facts={a.facts} />
           </section>
+          {refs.length > 0 && <Related records={refs.map((r) => r.object_id)} label={refs.length === 1 ? recordLabel(refs[0].type, refs[0].label) : null} dense />}
         </aside>
       )}
 

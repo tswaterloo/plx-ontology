@@ -20,8 +20,9 @@ SCHEMA = "plx.jobq.status.v1"
 STALE_S = 120
 CLOCK_SKEW_S = 30
 _KEEP = {"running": ("id", "class", "kind", "unit", "label", "state", "mem_mb", "current_mb",
-                     "running_s", "waited_s", "attempts", "preemptions"),
-         "waiting": ("id", "class", "kind", "label", "priority", "mem_mb", "waiting_s",
+                     "running_s", "waited_s", "attempts", "preemptions", "cpus", "disk_mb",
+                     "workspace"),
+         "waiting": ("id", "class", "kind", "label", "workspace", "priority", "mem_mb", "waiting_s",
                      "not_before_s", "attempts", "refusals", "last_refusal"),
          "dead": ("id", "class", "label", "attempts", "result", "last_error", "finished_at"),
          "recent": ("id", "class", "state", "result", "exit_code", "waited_s", "ran_s",
@@ -31,7 +32,8 @@ _KEEP = {"running": ("id", "class", "kind", "unit", "label", "state", "mem_mb", 
 
 
 def _trim(status: dict[str, Any]) -> dict[str, Any]:
-    out = {k: status.get(k) for k in ("depth", "queued", "last_hour", "memory", "cpu_budget")}
+    out = {k: status.get(k) for k in ("depth", "queued", "last_hour", "memory", "cpu_budget",
+                                     "workspace_pool", "workspaces")}
     for name, fields in _KEEP.items():
         out[name] = [{f: row.get(f) for f in fields} for row in status.get(name) or []]
     for row in out["dead"]:
@@ -83,6 +85,13 @@ def render(status: dict[str, Any]) -> str:
              f" to running jobs, floor {_mb(mem['floor_mb'])}, headroom {_mb(mem['headroom_mb'])}",
              "queued: " + (", ".join(f"{k} {v}" for k, v in sorted(status["depth"].items()))
                            or "none")]
+    pool = status.get("workspace_pool")
+    if pool:
+        lines.append(f"workspaces pool: {pool['cpus_held']:g} of {pool['cpus']:g} cores,"
+                     f" {_mb(pool['mem_held_mb'])} of {_mb(pool['mem_mb'])} declared")
+    for workspace, row in (status.get("workspaces") or {}).items():
+        lines.append(f"  workspace {workspace}: {row['held']} held ({row['cpus']:g} cores,"
+                     f" {_mb(row['mem_mb'])}), {row['waiting']} waiting")
     lines.append(f"running ({len(status['running'])}):")
     for j in status["running"]:
         lines.append(f"  #{j['id']} {j['class']} {j['state']} {j['running_s'] or 0}s"

@@ -14,6 +14,7 @@ import time
 from pathlib import Path
 from typing import Any
 
+from ontology import parent_watch
 from ontology.core import Actor
 from operating.cases import CaseStore, CitationError
 
@@ -51,7 +52,7 @@ def measure() -> dict[str, Any]:
         second = store.finding(ACTOR, case_id, " quantity IS one ", "fact", "supported", [ROW])
         store.read_tail(ACTOR, case_id, "early")
         start = time.time() + 1.0
-        with ProcessPoolExecutor(max_workers=SESSIONS) as pool:
+        with ProcessPoolExecutor(max_workers=SESSIONS, **parent_watch.pool_init()) as pool:
             created = sum(pool.map(_writer, [(str(path), case_id, f"s{n}", start)
                                              for n in range(SESSIONS)]))
         view = store.get(ACTOR, case_id)

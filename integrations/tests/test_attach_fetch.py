@@ -16,7 +16,6 @@ injected-transport.
 
 from __future__ import annotations
 
-from hashlib import sha256
 import json
 import os
 from pathlib import Path
@@ -25,6 +24,7 @@ from unittest import mock
 from urllib.parse import unquote, urlsplit
 
 from integrations import attach_fetch, capture_mail, captured_text as ct, graph_read
+from integrations import capture_mail_extract
 from integrations import live_source_guard as guard
 from integrations.graph_read import GraphMailReader
 from integrations.live_source_guard import BoundedBackoff, ReadOnlyGuardError
@@ -273,10 +273,10 @@ class FastPathTests(FastPathCase):
         self.fast()
         read = attach_fetch.read_pass(self.fetch_dir, workers=1, budget_seconds=600,
                                       seconds_each=0.001)
-        self.assertEqual(read["by_status"], {capture_mail.EXTRACTION_TIMED_OUT: 3})
+        self.assertEqual(read["by_status"], {capture_mail_extract.EXTRACTION_TIMED_OUT: 3})
         self.assertEqual(self.apply()["applied"], 3)
         self.assertEqual({r[1] for r in self.rows().values()},
-                         {capture_mail.EXTRACTION_TIMED_OUT})
+                         {capture_mail_extract.EXTRACTION_TIMED_OUT})
 
     def test_a_row_read_since_by_ingest_is_not_applied_again(self):
         self.fast()
@@ -331,6 +331,46 @@ class FastPathTests(FastPathCase):
                                "--budget-seconds", "1"])
             self.assertEqual((run.call_args.kwargs["text_first"],
                               run.call_args.kwargs["ocr_limits"]), (False, (2, 150)))
+
+    def test_bytes_the_mail_store_already_read_are_not_read_again(self):
+        _planned, _report, fetch = self.fast()
+        self.read()
+        self.apply()   # the mail store now holds a reading of each file's bytes
+        rows = {json.loads(r[1])["name"]: (r[0], json.loads(r[1])) for r in fetch.db.execute(
+            "SELECT content_sha256, read_meta FROM work")}
+        digest, meta = next(v for v in rows.values())
+        status, text = attach_fetch.mail_reading(self.store, digest, meta, set())
+        self.assertIn(status, ("extracted", ct.TEXT_OCR))
+        self.assertTrue(text.strip())
+        boxes = {r[0] for r in self.store.db.execute("SELECT mailbox_id FROM attachments")}
+        self.assertIsNone(attach_fetch.mail_reading(self.store, digest, meta, boxes))
+        self.assertIsNone(attach_fetch.mail_reading(   # same bytes as another kind of file
+            self.store, digest, {"name": "x.png", "content_type": "image/png"}, set()))
+        self.assertIsNone(attach_fetch.mail_reading(self.store, "0" * 64, meta, set()))
+        # A fresh read pass takes the mail store's readings instead of reading the bytes.
+        before = {r[0]: (r[2], r[3]) for r in attach_fetch.Readings(self.fetch_dir).db.execute(
+            "SELECT read_key, sha256, text_status, text FROM readings")}
+        (Path(self.fetch_dir) / attach_fetch.READINGS_DB).unlink()
+        for extra in ("-wal", "-shm"):
+            Path(self.fetch_dir, attach_fetch.READINGS_DB + extra).unlink(missing_ok=True)
+        calls = []
+
+        def reader(content, metadata, image_ocr):
+            calls.append(metadata)
+            return attach_fetch.inline_reader(content, metadata, image_ocr)
+        again = attach_fetch.read_pass(self.fetch_dir, workers=2, budget_seconds=600,
+                                       reader=reader, mail=self.store, reuse_withheld=[])
+        self.assertEqual((again["read"], again["reused"], calls), (3, 3, []))
+        after = {r[0]: (r[2], r[3]) for r in attach_fetch.Readings(self.fetch_dir).db.execute(
+            "SELECT read_key, sha256, text_status, text FROM readings")}
+        self.assertEqual(after, before)
+        # A withheld mailbox's reading is never taken: those bytes are read.
+        (Path(self.fetch_dir) / attach_fetch.READINGS_DB).unlink()
+        for extra in ("-wal", "-shm"):
+            Path(self.fetch_dir, attach_fetch.READINGS_DB + extra).unlink(missing_ok=True)
+        third = attach_fetch.read_pass(self.fetch_dir, workers=2, budget_seconds=600,
+                                       reader=reader, mail=self.store, reuse_withheld=boxes)
+        self.assertEqual((third["reused"], len(calls)), (0, 3))
 
     def test_without_batch_the_same_rows_land(self):
         _planned, report, _fetch = self.fast(batch=False)
@@ -507,6 +547,14 @@ class PageCappedOcrTests(unittest.TestCase):
                                             "--budget-seconds", "1", "--full-ocr",
                                             "--ocr-pages", "2"]), 2)
 
+    def test_a_page_capped_mail_reading_is_not_reused(self):
+        content = _scan_pdf(["ORDER 4500011111", "ORDER 4500022222", "ORDER 4500033333"])
+        meta = {"name": "scan.pdf", "content_type": "application/pdf"}
+        status, capped, _made = self.read(content, (2, 200))
+        self.assertIsNotNone(attach_fetch._capped_pages(content, meta, status, capped))
+        status, full, _made = self.read(content, None)
+        self.assertIsNone(attach_fetch._capped_pages(content, meta, status, full))
+
     def test_the_prefilter_skips_only_textless_looks(self):
         self.assertTrue(attach_fetch.text_likely(_image("INVOICE 4500012345 TOTAL 12.00")))
         self.assertFalse(attach_fetch.text_likely(_image(None)))
@@ -554,9 +602,30 @@ class StoredPlanTests(tcm.CompactCase):
 
     def apply(self, env=None):
         api, _ = graph_read.build_graph(env or tm.ENV, sender=self.graph)
-        return capture_mail.apply_fetched_pass(
-            self.store, GraphMailReader(api, tm.capture_audience()), tm.CAPTURE,
-            self.fetch_dir, budget_seconds=600)
+        statements: list[str] = []
+        self.store.db.set_trace_callback(statements.append)
+        try:
+            counts = capture_mail.apply_fetched_pass(
+                self.store, GraphMailReader(api, tm.capture_audience()), tm.CAPTURE,
+                self.fetch_dir, budget_seconds=600)
+        finally:
+            self.store.db.set_trace_callback(None)
+        self.assert_found_by_digest(statements)
+        return counts
+
+    def assert_found_by_digest(self, statements):
+        # DI-05 stall: with no planner statistics (as on the live store) the carriers of
+        # a reading were searched through the text-status index, i.e. every 'unsupported'
+        # (or 'extracted_ocr') attachment in the store per reading: 13-100 s each live.
+        # Every carrier lookup of the apply goes by the digest (or text digest) instead.
+        lookups = [q for q in statements if q.lstrip().upper().startswith("SELECT")
+                   and "a.content_sha256=" in q]
+        for query in lookups:
+            plan = " | ".join(r[3] for r in self.store.db.execute(
+                "EXPLAIN QUERY PLAN " + query))
+            self.assertNotIn("attachments_by_text_status", plan, query)
+            self.assertRegex(plan, r"SEARCH a USING INDEX attachments_by_(content|text) ")
+        self.carrier_lookups = getattr(self, "carrier_lookups", 0) + len(lookups)
 
     def test_plan_read_apply(self):
         self.assertEqual(self.rows()["ATT-3"], ct.OCR_PENDING)
@@ -629,16 +698,134 @@ class StoredPlanTests(tcm.CompactCase):
             self.assertIn("4500033333", row["content_text"])
             self.assertIsNone(row.get("skipped_by_cap"))
         self.assertEqual(self.apply(env)["recapped"]["applied"], 0)   # idempotent
+        self.assertGreaterEqual(self.carrier_lookups, 4)   # stored + recapped lookups checked
+
+
+    def test_stored_walk_resumes_where_the_last_run_stopped(self):
+        # A run drained after two rows (CAP-L177): the next one starts at the third row,
+        # not the top, ends the lap and leaves no cursor, so the one after starts over.
+        attach_fetch.FetchStore(self.fetch_dir).close()
+        env = {**tm.ENV, "PLX_EXCLUDED_PEOPLE_OIDS": tm.BOX_B}
+        self.assertEqual(attach_fetch.main(["plan-stored", "--state-dir", str(self.state),
+                                            "--fetch-dir", str(self.fetch_dir)],
+                                           environ=env), 0)
+        mail = capture_mail.MailCaptureStore.open_read_only(self.state, timeout=10)
+        attach_fetch.read_pass(self.fetch_dir, workers=1, budget_seconds=600,
+                               reader=lambda c, m, i: attach_fetch.inline_reader(
+                                   c, m, i, (2, 200)),
+                               ocr_limits=(2, 200), prefilter=True, mail=mail)
+        readings = attach_fetch.Readings(self.fetch_dir, read_only=True)
+        self.addCleanup(readings.db.close)
+        ticks = iter([0, 0, 99])
+
+        def drained():   # two rows in time, then the drain's infinitely late clock
+            return next(ticks, 99)
+        first = capture_mail.apply_stored_pass(self.store, self.fetch_dir, readings, set(),
+                                               deadline=1, monotonic=drained)
+        self.assertEqual((first["walked"], first["budget_spent"]), (2, 1))
+        self.assertNotIn("lap_done", first)
+        self.assertIsNotNone(self.store.walk_cursor("stored"))
+        rest = capture_mail.apply_stored_pass(self.store, self.fetch_dir, readings, set(),
+                                              deadline=float("inf"))
+        self.assertEqual((rest["walked"], rest["resumed"], rest["lap_done"]), (2, 1, 1))
+        self.assertIsNone(self.store.walk_cursor("stored"))
+        self.assertEqual((first["applied"] + rest["applied"],
+                          first["attachments_filled"] + rest["attachments_filled"]), (3, 4))
+        self.assertEqual(self.rows(), {"ATT-1": ct.TEXT_OCR, "ATT-2": "unsupported",
+                                       "ATT-3": ct.TEXT_OCR, "ATT-4": ct.TEXT_OCR,
+                                       "ATT-5": ct.TEXT_OCR})
+
+
+class DroppedOriginalTests(StoredPlanTests):
+    """DI-05: an unread image whose original the mail store dropped (kept as readings
+    only) is fetched again by its ids, read once and applied as a new text version;
+    the stored plan never reads it from the store (no bytes there)."""
+
+    def drop(self, name):
+        digest = self.store.db.execute(
+            "SELECT content_sha256 FROM attachments WHERE json_extract(metadata,'$.name')=?",
+            (name,)).fetchone()[0]
+        with self.store.db:
+            self.store.db.execute("UPDATE blobs SET dropped_at='2026-11-01T00:00:00Z' WHERE "
+                                  "sha256=?", (digest,))
+        ct.blob_path(self.store.blobs, digest).unlink()
+        return digest
+
+    def test_plan_read_apply(self):   # the stored-plan path alone is the parent's
+        pass
+
+    def test_a_dropped_original_is_fetched_again_read_and_applied(self):
+        digest = self.drop("table.png")
+        env = {**tm.ENV, "PLX_EXCLUDED_PEOPLE_OIDS": tm.BOX_B}
+        unguarded = {k: v for k, v in tm.ENV.items() if k != "PLX_EXCLUDED_PEOPLE_OIDS"}
+        args = ["--state-dir", str(self.state), "--fetch-dir", str(self.fetch_dir)]
+        self.assertEqual(attach_fetch.main(["plan-dropped", *args], environ=unguarded), 3)
+        self.assertFalse((self.fetch_dir / attach_fetch.STORED_DB).exists())
+        fetch = attach_fetch.FetchStore(self.fetch_dir)
+        self.addCleanup(fetch.close)
+        self.assertEqual(fetch.counts()["rows"], 0)   # refused: nothing listed
+        # plan-dropped lists the stored plan too (its read keys apply the readings)
+        self.assertEqual(attach_fetch.main(["plan-dropped", *args, "--min-bytes", "10000000000"],
+                                           environ=env), 0)
+        plan = attach_fetch.StoredPlan(self.fetch_dir, read_only=True)
+        self.addCleanup(plan.db.close)
+        self.assertEqual(plan.db.execute("SELECT COUNT(*) FROM stored").fetchone()[0], 4)
+        self.assertEqual(fetch.counts()["rows"], 0)   # every image under the size bound
+        mail = capture_mail.MailCaptureStore.open_read_only(self.state, timeout=10)
+        api, _ = graph_read.build_graph(env, sender=self.graph,
+                                        retry=BoundedBackoff(sleep=lambda s: None,
+                                                             jitter=lambda: 0.0))
+        reader = GraphMailReader(api, tm.capture_audience())
+        reader.prepare_people()
+        withheld = self.store.withheld_mailboxes(reader.people)
+        counts = fetch.plan_dropped(mail, withheld, min_bytes=1)
+        # table.png and copy.png in BOX_A (two names: two readings), never BOX_B's copy
+        self.assertEqual((counts["distinct"], counts["added"], counts["withheld"]), (2, 2, 1))
+        self.assertEqual(fetch.plan_dropped(mail, withheld, min_bytes=1)["added"], 0)
+        self.assertEqual(fetch.plan_dropped(mail, withheld, min_bytes=10 ** 9)["small"], 2)
+        # Before the download the reader leaves the dropped images (no bytes to read).
+        read = attach_fetch.read_pass(self.fetch_dir, workers=2, budget_seconds=600,
+                                      reader=attach_fetch.inline_reader, mail=mail,
+                                      prefilter=False)
+        self.assertEqual((read["stored_dropped"], read["digest_mismatch"]), (2, 0))
+        self.assertEqual(self.rows()["ATT-1"], "unsupported")
+        down = attach_fetch.Downloader(fetch, reader, tm.CAPTURE, threads=2,
+                                       per_mailbox=2, batch=False,
+                                       free_bytes=lambda p: 1 << 50)
+        with reader.directory_cache():
+            report = down.run(fetch.todo(), withheld=withheld, budget_seconds=600)
+        self.assertEqual(report["fetched"], 2)
+        self.assertEqual({r[0] for r in fetch.db.execute("SELECT content_sha256 FROM work")},
+                         {digest})
+        read = attach_fetch.read_pass(self.fetch_dir, workers=2, budget_seconds=600,
+                                      reader=attach_fetch.inline_reader, mail=mail,
+                                      prefilter=False)
+        self.assertEqual((read["read"] + read["deduped"], read["digest_mismatch"]), (2, 0))
+        out = self.apply(env)
+        self.assertEqual(out["not_deferred"], 2)   # not a deferred row: the stored plan's
+        self.assertEqual(out["stored"]["withheld"], 1)
+        rows = self.rows()
+        self.assertEqual((rows["ATT-1"], rows["ATT-5"], rows["ATT-4"]),
+                         (ct.TEXT_OCR, ct.TEXT_OCR, "unsupported"))
+        self.assertEqual(out["stored"]["dropped_settled"], 2)   # each reading joined .dropped
+        self.assertTrue(mail.original_dropped(digest))   # the bytes are not kept again
+        self.assertFalse(ct.blob_path(self.store.blobs, digest).exists())
+        handle = self.store.db.execute(
+            "SELECT l1_handle FROM attachments WHERE attachment_id='ATT-1'").fetchone()[0]
+        with tcm.fresh_memos():
+            row = self.store.resolve(handle, tcm.READER, self.audience, text=True)["row"]
+            self.assertIn("4500012345", row["content_text"])
 
 
 class IngestOptionTests(unittest.TestCase):
-    def test_the_mail_child_gets_the_apply_step(self):
+    def test_the_mail_backlog_child_gets_the_apply_step(self):
         import tempfile
         from operating import ingest_forever as ingest
         with tempfile.TemporaryDirectory() as tmp:
             fetch = Path(tmp) / "fetch"
             fetch.mkdir()
-            spec = ingest.SOURCES["mail"]
+            spec = ingest.SOURCES["mail_backlog"]   # never the mail capture child
+            self.assertNotIn("apply_fetched_dir", ingest.SOURCES["mail"].fields)
             self.assertEqual(ingest._option(spec.fields["apply_fetched_dir"], "fetch",
                                             Path(tmp)), str(fetch.resolve()))
             with self.assertRaises(ingest.IngestError):   # not a directory: refused

@@ -65,6 +65,26 @@ class DeltaCase(unittest.TestCase):
         self.clock.now = at
         self.mirror.sync(OPS, relations=sorted(CATALOG), full=True)
 
+    def generation_readings(self, blobs):
+        """The readings a generation build keeps beside the generations (``state/projection``,
+        ``project_incremental``), which a cycle seeds its own from (``delta.seed_readings``):
+        a cycle parses only the files no build parsed. Since DOC-001 a cycle's sub-capture
+        (its blobs a symlink to the live ones) shares no in-process memo entry with the
+        build, so without these the build's files are parsed again."""
+        import contextlib
+        from integrations.captured_text import kept_readings
+        from integrations.kept_members import kept_members
+        from ontology.document_fields import kept_fields
+        from ontology.project import derivation_code
+        from ontology.project_incremental import FIELDS, MEMBERS, READINGS
+        kept = self.state / "projection"
+        kept.mkdir(parents=True, exist_ok=True)
+        stack = contextlib.ExitStack()
+        stack.enter_context(kept_readings(kept / READINGS))
+        stack.enter_context(kept_members(kept / MEMBERS, blobs))
+        stack.enter_context(kept_fields(kept / FIELDS, derivation_code()))
+        return stack
+
     def full(self, name):
         with MirrorCaptures(self.mirror_path) as captures:
             build_store(self.root / name, self.schema, {"portal_api": captures},
@@ -324,7 +344,8 @@ class DeltaDocumentTests(DeltaCase):
     def full(self, name):
         from ontology.project import SharePointCaptures
         with MirrorCaptures(self.mirror_path) as captures, \
-                SharePointCaptures(self.state) as files:
+                SharePointCaptures(self.state) as files, \
+                self.generation_readings([files.blobs]):
             build_store(self.root / name, self.schema,
                         {"portal_api": captures, "sharepoint": files},
                         normalizer=normalizer, clock=lambda: T2,
@@ -526,7 +547,8 @@ class DeltaMailDocumentTests(DeltaCase):
     def full(self, name):
         from ontology.project import MailCaptures
         with MirrorCaptures(self.mirror_path) as captures, MailCaptures(
-                self.state, internal_domains=delta._internal_domains(self.environ)) as mail:
+                self.state, internal_domains=delta._internal_domains(self.environ)) as mail, \
+                self.generation_readings([mail.blobs]):
             build_store(self.root / name, self.schema,
                         {"portal_api": captures, "graph_mail": mail},
                         normalizer=normalizer, clock=lambda: T2,
@@ -659,6 +681,216 @@ class DeltaMailDocumentTests(DeltaCase):
         read = set(owned) - set(first_owned)
         self.assertTrue(read and all("ATT-D1" in o for o in read), (first_owned, owned))
         self.assertEqual(delta.compare(Path(second["store"]), full, owned)["differ"], 0)
+
+
+    def test_an_attachment_the_current_version_dropped_is_not_left_current(self):
+        """CAP-L96: a message whose current version no longer carries an attachment (live
+        11-14: 101 Attachment objects in Postgres whose message's current version dropped
+        them, still live). The changed message's layer closes the dropped attachment as a
+        full build does, never leaves it current."""
+        self.capture(T1)
+        base = self.full("gen1.sqlite")
+        self.graph.put(self.tcm.BOX_A, "MSG-D0", "CK-D0b", subject="Documents 0 (edited)",
+                       body="Attached for PO100230.", attachments=[])
+        self.capture(T2)
+        with mock.patch.dict(os.environ, {"PLX_BUILD_WORKERS": "1"}):
+            report = self.cycle(base)
+        self.assertFalse(report.get("mail_skipped"), report)
+        full = self.full("gen2.sqlite")
+        owned = self.owned(report["store"])
+        attachment = [o for o in owned if "ATT-D0" in o and o.startswith("Attachment")]
+        self.assertTrue(attachment, owned)
+        self.assertEqual(delta.compare(Path(report["store"]), full, owned)["differ"], 0)
+        for store in (full, Path(report["store"])):
+            conn = sqlite3.connect(store)
+            try:
+                live = conn.execute(
+                    "SELECT count(*) FROM object_versions WHERE object_id = ? AND "
+                    "superseded_at IS NULL", (attachment[0],)).fetchone()[0]
+                missing = conn.execute("SELECT missing_from_source_since FROM objects WHERE "
+                                       "object_id = ?", (attachment[0],)).fetchone()
+            finally:
+                conn.close()
+            # missing from the source since the version that carried it was superseded,
+            # as a removed message's attachments are; never current and unmarked
+            self.assertTrue(missing and missing[0], (store, live, missing))
+        # a current version whose attachment listing was cut says nothing about the
+        # attachment: superseded as before, never marked missing on a guess
+        capture = sqlite3.connect(self.state / "mail-capture" / "capture.db")
+        try:
+            capture.execute("UPDATE messages SET attachments_status = 'truncated' "
+                            "WHERE superseded_at IS NULL AND message_id = 'MSG-D0'")
+            capture.commit()
+        finally:
+            capture.close()
+        cut = self.full("gen3.sqlite")
+        conn = sqlite3.connect(cut)
+        try:
+            self.assertEqual(conn.execute(
+                "SELECT count(*) FROM object_versions WHERE object_id = ? AND "
+                "superseded_at IS NULL", (attachment[0],)).fetchone()[0], 0)
+            self.assertIsNone(conn.execute("SELECT missing_from_source_since FROM objects "
+                                           "WHERE object_id = ?", (attachment[0],)).fetchone()[0])
+        finally:
+            conn.close()
+
+    def test_a_stale_served_attachment_is_reopened_and_marked_missing(self):
+        """CAP-L96: served mail objects still current although the store says they are gone
+        (live 11-15: 101 attachments the current complete listing dropped, 10 of messages
+        deleted, each found by no later cycle) are found (``delta_reopen``), opened in the
+        delta state, and the next cycle's layer marks them missing exactly as a full build
+        does. An excluded or undecidable mailbox, or no usable exclusion, opens nothing."""
+        from integrations.people_exclusion import PeopleExclusion
+        from operating import delta_reopen
+        self.graph.put(self.tcm.BOX_A, "MSG-D9", "CK-D9", subject="Documents 9",
+                       body="Attached for PO100231.",
+                       attachments=[self.tcm.file_attachment("ATT-D9", self.quote, "doc9.pdf")])
+        self.capture(T1)
+        base = self.full("gen1.sqlite")
+        with mock.patch.dict(os.environ, {"PLX_BUILD_WORKERS": "1"}):
+            self.cycle(base)   # the state now counts from this generation
+        self.graph.put(self.tcm.BOX_A, "MSG-D0", "CK-D0b", subject="Documents 0 (edited)",
+                       body="Attached for PO100230.", attachments=[])
+        self.graph.delete(self.tcm.BOX_A, "MSG-D9")
+        self.capture(T2)
+        capture_db = self.state / "mail-capture" / "capture.db"
+        # a discovery that already went past these versions and events (as the live
+        # cycles did): no cycle would project them again
+        conn = sqlite3.connect(capture_db)
+        try:
+            top = conn.execute("SELECT MAX(version_id) FROM messages").fetchone()[0]
+            events = conn.execute("SELECT MAX(rowid) FROM message_events").fetchone()[0]
+        finally:
+            conn.close()
+        state = delta.State(self.root / "delta" / "state.sqlite")
+        try:
+            state.put("mail_version", top)
+            state.put("mail_event", events + 1)
+            state.put("mail_text_since", "9999")
+            state.put("mail_event_basis", delta.MAIL_EVENT_BASIS)
+        finally:
+            state.close()
+        with mock.patch.dict(os.environ, {"PLX_BUILD_WORKERS": "1"}):
+            missed = self.cycle(base)
+        self.assertFalse([o for o in self.owned(missed["store"]) if "ATT-D" in o]
+                         if missed.get("store") else [], missed)
+
+        def served():
+            with sqlite3.connect(base) as conn:
+                rows = conn.execute(
+                    "SELECT binding_id, native_key FROM objects WHERE "
+                    "missing_from_source_since IS NULL").fetchall()
+            return rows + [("graph_mail.attachments", "not json"),
+                           ("graph_mail.messages", json.dumps({"mailbox": 1}))]
+        ro = sqlite3.connect(f"file:{capture_db}?mode=ro", uri=True)
+        try:
+            records, counts = delta_reopen.stale_mail_records(ro, served())
+        finally:
+            ro.close()
+        self.assertEqual(records, {(self.tcm.BOX_A, "MSG-D0"), (self.tcm.BOX_A, "MSG-D9")})
+        self.assertEqual((counts["dropped"], counts["gone"], counts["unreadable_keys"]),
+                         (1, 1, 2), counts)
+        state_path = self.root / "delta" / "state.sqlite"
+        guard = PeopleExclusion.from_env(self.environ)
+        # fail closed: no guard, an excluded mailbox, a mailbox the guard cannot decide
+        self.assertEqual(delta_reopen.reopen(state_path, records, None)["opened"], 0)
+        with mock.patch.object(PeopleExclusion, "is_excluded", lambda g, v: True):
+            self.assertEqual(delta_reopen.reopen(state_path, records, guard),
+                             {"opened": 0, "excluded": 2, "refused": 0})
+        with mock.patch.object(PeopleExclusion, "decides", lambda g, v: False):
+            self.assertEqual(delta_reopen.reopen(state_path, records, guard)["opened"], 0)
+        state = delta.State(state_path)
+        try:
+            self.assertEqual(state.changed("graph_mail", open_only=True), [])
+        finally:
+            state.close()
+        self.assertEqual(delta_reopen.reopen(state_path, records, guard)["opened"], 2)
+        with mock.patch.dict(os.environ, {"PLX_BUILD_WORKERS": "1"}):
+            report = self.cycle(base)
+        full = self.full("gen2.sqlite")
+        owned = self.owned(report["store"])
+        stale = [o for o in owned if ("ATT-D0" in o or "ATT-D9" in o)
+                 and o.startswith("Attachment")]
+        self.assertEqual(len(stale), 2, owned)
+        self.assertEqual(delta.compare(Path(report["store"]), full, owned)["differ"], 0)
+        with sqlite3.connect(report["store"]) as conn:
+            for oid in stale:
+                self.assertTrue(conn.execute(
+                    "SELECT missing_from_source_since FROM objects WHERE object_id = ?",
+                    (oid,)).fetchone()[0], oid)
+        # found again: nothing left to reopen once the layer is served
+        with sqlite3.connect(report["store"]) as conn:
+            layer = {r[0] for r in conn.execute(
+                "SELECT native_key FROM objects WHERE missing_from_source_since IS NOT NULL")}
+        ro = sqlite3.connect(f"file:{capture_db}?mode=ro", uri=True)
+        try:
+            again, _ = delta_reopen.stale_mail_records(
+                ro, [r for r in served() if r[1] not in layer])
+        finally:
+            ro.close()
+        self.assertEqual(again, set())
+
+
+class DeltaReopenCardinalityTests(unittest.TestCase):
+    """``delta_reopen.stale_mail_records`` over 1, 10 and 60 messages of each kind: every
+    gone and every dropped message found once, none of the others, nothing lost or
+    doubled, and in the store's own key casing."""
+
+    def test_each_kind_found_once_at_n_1_10_60(self):
+        from integrations.capture_mail import MailCaptureStore
+        from integrations.tests import test_capture_mail as tcm
+        from operating import delta_reopen
+        for n in (1, 10, 60):
+            with self.subTest(n=n), tempfile.TemporaryDirectory() as tmp:
+                MailCaptureStore(Path(tmp), clock=tcm.Clock()).close()
+                conn = sqlite3.connect(Path(tmp) / "mail-capture" / "capture.db")
+                conn.execute("PRAGMA foreign_keys = OFF")
+                box = "Box-1"
+                conn.execute("INSERT INTO mailboxes VALUES (?, 'u', '[]', '[]', '[]', 't', 't')",
+                             (box,))
+                served, version = [], 0
+
+                def message(mid, handle, *, sup=None, removed=None, status="complete"):
+                    nonlocal version
+                    version += 1
+                    conn.execute(
+                        "INSERT INTO messages (version_id, l1_handle, mailbox_id, message_id, "
+                        "change_key, folder_id, record, digest, body_status, "
+                        "attachments_status, recorded_at, superseded_at, removed_reason, "
+                        "last_seen_at) VALUES (?, ?, ?, ?, 'c', 'f', '{}', 'd', 'none', ?, "
+                        "'2026-11-01', ?, ?, '2026-11-01')",
+                        (version, handle, box, mid, status, sup, removed))
+
+                def attachment(handle, aid):
+                    conn.execute("INSERT INTO attachments (message_handle, attachment_id, "
+                                 "mailbox_id, metadata, content_status, recorded_at) VALUES "
+                                 "(?, ?, ?, '{}', 'stored', '2026-11-01')", (handle, aid, box))
+                for i in range(n):
+                    for kind in ("gone", "dropped", "kept", "cut"):
+                        mid = f"{kind}-{i}"
+                        old, new = f"h-{mid}-1", f"h-{mid}-2"
+                        message(mid, old, sup="2026-11-02")
+                        attachment(old, "A")
+                        if kind == "gone":
+                            message(mid, old, sup="2026-11-02", removed="deleted")
+                        else:
+                            message(mid, new, status="truncated" if kind == "cut" else "complete")
+                            if kind == "kept":
+                                attachment(new, "A")
+                        served.append(("graph_mail.attachments", json.dumps(
+                            {"mailbox": box.lower(), "message_id": mid, "attachment_id": "A"})))
+                        served.append(("graph_mail.messages",
+                                       json.dumps({"mailbox": box.upper(), "id": mid})))
+                served.append(("graph_mail.messages", json.dumps({"mailbox": box, "id": "nope"})))
+                served.append(("portal_api.orders", json.dumps({"id": "x"})))
+                conn.commit()
+                records, counts = delta_reopen.stale_mail_records(conn, served)
+                conn.close()
+                self.assertEqual(records, {(box, f"{k}-{i}") for k in ("gone", "dropped")
+                                           for i in range(n)})
+                self.assertEqual((counts["gone"], counts["dropped"], counts["truncated_listing"],
+                                  counts["absent"], counts["messages"], counts["served"]),
+                                 (n, n, n, 1, 4 * n + 1, 8 * n + 1), counts)
 
 
 class HeldQueueTests(unittest.TestCase):
@@ -1252,3 +1484,54 @@ class LayerReleaseTests(unittest.TestCase):
         again = delta.prune(self.dir, keep={self.small.resolve()})
         self.assertEqual((again["removed"], again["held_open"]), ([self.big.name], []))
         self.assertTrue(self.small.exists())
+
+
+class EtlCopyDeltaTests(DeltaCase):
+    """CC-NY-2: the ETL re-inserts a sales order line under a fresh id and the old id
+    leaves the source. A delta cycle over both changes drops the old copy (the projector
+    keeps the present one) and owns its object with no rows, so the served object goes,
+    as a full build of the same captures has none."""
+
+    LINE_COLUMNS = ["id", "sales_order_id", "description", "quantity", "unit_price",
+                    "total_price", "created_at", "updated_at"]
+
+    def setUp(self):
+        from ontology.tests import test_projection as tp
+        patched = mock.patch.dict(tp.CATALOG, {
+            "public.app_sales_order": ["id", "order_number", "created_at"],
+            "public.app_sales_order_line": self.LINE_COLUMNS})
+        patched.start()
+        self.addCleanup(patched.stop)
+        super().setUp()
+        from ontology.schema import load_schema
+        self.schema = load_schema()   # the served schema: its SalesOrderLine binding
+        self.fake.tables["public.app_sales_order"] = [
+            {"id": "so-1", "order_number": "SO-1", "created_at": "2026-01-01T00:00:00"}]
+        self.fake.tables["public.app_sales_order_line"] = [self.line("old", "01")]
+
+    @staticmethod
+    def line(ident, day):
+        stamp = f"2026-09-{day}T00:00:00"
+        return {"id": ident, "sales_order_id": "so-1", "description": "Tub 500 g",
+                "quantity": "10", "unit_price": "2.50", "total_price": "25.00",
+                "created_at": stamp, "updated_at": stamp}
+
+    def lines(self, store):
+        with sqlite3.connect(store) as conn:
+            return sorted(r[0].split(":", 2)[2] for r in conn.execute(
+                "SELECT object_id FROM objects WHERE binding_id = "
+                "'portal.app_sales_order_line'"))
+
+    def test_the_old_copy_of_a_re_inserted_line_is_owned_and_dropped(self):
+        self.capture(T1)
+        base = self.full("gen1.sqlite")
+        self.assertEqual(self.lines(base), ['{"id":"old"}'])
+        self.fake.tables["public.app_sales_order_line"] = [self.line("new", "02")]
+        self.capture(T2)
+        report = self.cycle(base)
+        full = self.full("gen2.sqlite")
+        self.assertEqual(self.lines(full), ['{"id":"new"}'])
+        self.assertEqual(self.lines(report["store"]), ['{"id":"new"}'])
+        owned = [o.split(":", 2)[2] for o in self.owned(report["store"])
+                 if o.startswith("SalesOrderLine:")]
+        self.assertEqual(sorted(owned), ['{"id":"new"}', '{"id":"old"}'])

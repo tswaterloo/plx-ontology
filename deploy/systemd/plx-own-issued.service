@@ -1,0 +1,36 @@
+# PLX Workbench own-issued guard refresh at low priority: one run of
+# `python3 -m operating.pg.own_issued refresh`. Judges the document of every
+# SupplierInvoice / SupplierConfirmation object no pass judged yet (the ones the delta
+# added; the first run judges them all) by the Sage OE record-line rule (PLX's own sales
+# invoices and order confirmations the served store holds as supplier documents) and adds
+# their rows to ontology.own_issued_documents / own_issued_judged in one transaction;
+# readers withhold those ids. Reads the served store and the capture stores' kept readings
+# only; writes only those two tables.
+# Does nothing until migration 0038 is applied (--if-migrated); skipped in a migration
+# window (window_lock). Started by plx-own-issued.timer.
+[Unit]
+Description=PLX own-issued guard refresh (one run)
+After=postgresql.service
+
+[Service]
+Type=oneshot
+User=@PLX_USER@
+Group=@PLX_GROUP@
+WorkingDirectory=@PLX_CURRENT@
+EnvironmentFile=/etc/plx/ingest.env
+EnvironmentFile=@PLX_HOME@/.config/plx/plx.env
+# Reads no business system: the credentials that can send, write or reach one are dropped
+# (SEC-S-05; tests/test_deploy_release.py names the units that may keep them).
+UnsetEnvironment=AZURE_CLIENT_SECRET BC_CLIENT_SECRET MICROSOFT_GRAPH_CLIENT_SECRET MC_MCP_API_KEY PLX_WORKBENCH_API_KEY AZURE_STORAGE_KEY AZURE_DOC_INTEL_KEY PLX_WORKBENCH_SESSION_SECRET
+Environment=PATH=/data/venv/bin:/usr/local/bin:/usr/bin:/bin
+Environment=PGAPPNAME=%N
+ExecCondition=/bin/sh -c '/data/venv/bin/python3 -c "import ontology.window_lock" 2>/dev/null || exit 0; exec /data/venv/bin/python3 -m ontology.window_lock check delta'
+ExecStart=/data/venv/bin/python3 -m operating.pg.own_issued refresh --if-migrated --workers 12
+Nice=19
+CPUWeight=20
+IOWeight=20
+IOSchedulingClass=idle
+MemoryHigh=6G
+MemoryMax=8G
+TimeoutStartSec=8h
+UMask=0077

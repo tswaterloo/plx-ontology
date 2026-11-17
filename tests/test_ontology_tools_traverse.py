@@ -30,6 +30,7 @@ from ontology import store_ddl
 from ontology.json_contract import validate
 from ontology.types import Actor
 from operating import ontology_tools as ot
+from operating import ontology_tools_policy
 from operating import ontology_tools_aggregate as oa
 from operating import ontology_tools_traverse as tt
 
@@ -818,6 +819,51 @@ class AroundTests(unittest.TestCase):
                 self.assertEqual(answer.get("matches"), find_serial.get("matches"))
             else:
                 self.assertEqual(answer, serial[name])
+
+
+class MentionCollapseTests(unittest.TestCase):
+    """CC-C-04 read side: a mail that names an order three times (three stored mention
+    rows of one document version and one order) is one link to every reader."""
+
+    @staticmethod
+    def _repeats(s):
+        s.link("l-mo-0", "MailMessage.mentions_order", M1, O1, "lead", kind="mention")
+        s.link("l-mo-2", "MailMessage.mentions_order", M1, O1, "lead", kind="mention")
+
+    def test_around_lists_one_edge_per_mention_pair(self):
+        t, _ = tools(build(extra=self._repeats))
+        out = ok(self, "plx.around", t.call("plx.around", {"from": O1, "tier_floor": "lead",
+                                                          "path": [{"link_type":
+                                                                    "MailMessage.mentions_order",
+                                                                    "direction": "reverse"}]},
+                                            OPS))
+        related = out["possibly_related"]
+        self.assertEqual(ids(related), [M1])
+        self.assertEqual([e["link_id"] for e in related["edges"]], ["l-mo-0"])
+        self.assertEqual(related["count"], 1)
+
+    def test_object_counts_a_mention_pair_once(self):
+        t, _ = tools(build(extra=self._repeats))
+        card = ok(self, "plx.object", t.base.call("plx.object", {"object_id": O1}, OPS))
+        mentions = [c for c in card["linked_counts"]
+                    if c["link_type"] == "MailMessage.mentions_order"]
+        self.assertEqual(mentions, [{"link_type": "MailMessage.mentions_order",
+                                     "direction": "reverse", "count": 1,
+                                     "tiers": {"lead": 1}}])
+
+    def test_collapse_keeps_the_best_occurrence(self):
+        def row(link_id, *, kind="mention", handles=("doc@v1", "ord@v1"), to=O1):
+            return {"link_id": link_id, "binding_kind": kind,
+                    "link_type": "MailMessage.mentions_order", "from_object": M1,
+                    "to_object": to, "evidence_handles": json.dumps(list(handles))}
+        kept = ontology_tools_policy.collapse_mention_rows([
+            ("lead", row("m-a")), ("corroborated", row("m-b")), ("corroborated", row("m-c")),
+            ("lead", row("m-d", handles=("doc@v2", "ord@v1"))),   # another document version
+            ("lead", row("m-e", to=O2)),                          # another record
+            ("verified", row("fk-1", kind="fk")), ("verified", row("fk-2", kind="fk"))])
+        self.assertEqual([(tier, r["link_id"]) for tier, r in kept],
+                         [("corroborated", "m-b"), ("lead", "m-d"), ("lead", "m-e"),
+                          ("verified", "fk-1"), ("verified", "fk-2")])
 
 
 class OneVersionPerCallTests(unittest.TestCase):
@@ -1964,7 +2010,7 @@ class AsKnownAtTests(unittest.TestCase):
             extra.values())
         policy = ot.ReadPolicy("plx", dict(POLICY.audiences, **{
             f"{k}:*": frozenset({"full"}) for k in extra}), POLICY.markings)
-        with mock.patch.dict(ot._AUDIENCE_SOURCE, extra):
+        with mock.patch.dict(ontology_tools_policy._AUDIENCE_SOURCE, extra):
             base = ot.OntologyTools(ot.StoreReader(build().conn), policy, item_gate=item_gate,
                                     schema=SCHEMA, contracts=contracts, clock=lambda: NOW)
             t = tt.TraverseTools(base)

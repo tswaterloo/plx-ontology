@@ -668,6 +668,20 @@ class ProseRecordLabelTests(unittest.TestCase):
         self.assertEqual(self.read("BC-26119A"),
                          [("batch_code", "BC-26119A", "BC-26119A", "shape")])
 
+    def test_a_po_number_written_with_its_prefix_has_three_digits_or_its_context(self):
+        # live 2026-11-12 (C-03): bare 1-2 digit tokens (a product "SOLO PO75", a project
+        # code's "PO-26-") made 58,086 mention links to 2016 FileMaker POs; FileMaker's own
+        # zero-padded "PO#0004" names that PO and stays
+        for text in ("PO1", "line PO#23 x", "PO-7", "DPO12", "UAT-PO#5", "SOLO PO75 cups",
+                     "PROJECT / PO-26-041 /", "Phosphate (PO4)"):
+            with self.subTest(text=text):
+                self.assertEqual([r for r in self.read(text) if r[0] == "petra_po"], [])
+        for text, normalized in (("PO123", "PO123"), ("PO#0001", "PO1"), ("PO-012", "PO12"),
+                                 ("DPO100", "DPO100"), ("PO Number: PO#0004;", "PO4")):
+            with self.subTest(text=text):
+                self.assertIn(normalized, [r[2] for r in self.read(text) if r[0] == "petra_po"])
+        self.assertIn("PO12", [r[2] for r in self.read("Petra PO: 12 ") if r[0] == "petra_po"])
+
     def test_the_labels_scan_in_linear_work(self):
         for label in ("receipt", "receipt lab id", "BC document", "Business Central no"):
             text = (label + " " * 20_000 + ":") * 4
@@ -902,18 +916,30 @@ _ALLOWED_REGEX_NAMES = {
         # OCR tool output lines and the word-box layout mark line, PDF page sizes, pptx
         # markdown escapes, attachment marker sanitisation; written numbers and their
         # thousands groups; HTML text's blank-line collapse.
-        "<_only_line>", "_LAYOUT_LINE", "<_portable_pdf_text>", "<_converted_claims>", "<extract_document>",
+        "<_only_line>", "<_image_retries>", "_LAYOUT_LINE", "<_portable_pdf_text>", "<_converted_claims>", "<extract_document>",
         "NUMBER_TOKEN", "<_grouped>", "<html_text>",
         # RTF control-word tokens and XML tag/CDATA stripping: file-format parsers that
         # turn a document into text, matching no business identifier.
-        "<rtf_text>", "<xml_text>", "_RTF_TOKEN", "_XML_CDATA", "_XML_DROP", "_XML_TAG"},
+        "<rtf_text>", "<xml_text>", "_RTF_TOKEN", "_XML_CDATA", "_XML_DROP", "_XML_TAG",
+        # the binary PGM image header (magic, width, height) of a rendered page
+        "_PGM_HEADER",
+        # AUD-07: pdftotext -bbox page/word markup, control characters cut out of a citation,
+        # the poppler version line and an inline style's display:none: tool and file
+        # formats, matching no business identifier
+        "_BBOX_PAGE", "_BBOX_WORD", "CONTROL_CHARACTERS", "<poppler_version>", "<_HTMLText>"},
     "integrations/graph_evidence.py": set(),
     # _INSTANT is an ISO-instant time format, _VERSION_ID a SharePoint file version
     # label (major.minor) and _BC_COMPANY_NAME a BC company display name (checked
     # against the pinned map), not identifier grammars.
     "integrations/live_source_grammar.py": {"_BC_COMPANY_NAME", "_DRIVE_SEGMENT_BAD",
                                             "_FIELD", "_INSTANT", "_VERSION_ID",
-                                            "<_compile>"},
+                                            "<_compile>",
+                                            # d62c95a1c8 connectors: request-parameter
+                                            # shapes (tenant label, vendor timestamp, page
+                                            # token, field list) and the parameter-type
+                                            # table's checks: no business identifier
+                                            "_TENANT_LABEL", "_VENDOR_INSTANT",
+                                            "_PAGE_TOKEN", "_FIELD_LIST", "<module>"},
 }
 _RE_CALLS = {"compile", "search", "match", "fullmatch", "finditer", "findall", "sub", "subn",
              "split"}

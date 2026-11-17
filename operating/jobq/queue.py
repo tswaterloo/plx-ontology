@@ -21,6 +21,22 @@ ops alarm ``jobq_head_wait`` opens when a head has waited over 20 minutes. Backu
 alerts keep waiting behind it. A due job that fits but is not the
 caller's to take (another waiter's, or a unit job for the worker) is reserved and the
 pass goes on, so several jobs start together when they all fit.
+
+What a job declares: its class gives the defaults, and the caller (``tools/job.py``,
+``tools/testslot.py``) may declare the job's own cores, memory and peak disk, and names the
+workspace that started it. Three more checks then hold a job back, each a refusal with its
+own reason prefix:
+
+- ``workspaces:`` a job of a class in the ``workspaces`` pool fits only when the declared
+  cores and memory of the pool's held jobs plus its own stay within ``workspace_budget``
+  (the cores and memory of ``plx-workspaces.slice``: ``PLX_JOBQ_WORKSPACE_CPUS``,
+  ``PLX_JOBQ_WORKSPACE_MEM_GB``),
+  less the share a ``reserve`` class (the lander) keeps while none of it is held: cores are
+  counted, not runs, so fifteen 16-worker test runs can no longer start at once;
+- ``disk:`` a job declaring disk fits only when its file system's free space, less what
+  the held jobs on that file system declared, keeps ``ops_health.disk_floor_bytes`` free;
+- ``workspace:`` a workspace holds at most ``PLX_JOBQ_WORKSPACE_MAX`` (default 2) jobs at
+  once, landings aside (``status()["workspaces"]`` shows each workspace's load).
 """
 from __future__ import annotations
 
@@ -39,6 +55,13 @@ CPU_ENV = "PLX_JOBQ_CPU_BUDGET"
 DSN_ENV = "PLX_JOBQ_DSN"
 DEFAULT_DSN = "dbname=plx_jobq"
 DEFAULT_FLOOR_GB = 4.0
+WORKSPACE_CPUS_ENV = "PLX_JOBQ_WORKSPACE_CPUS"
+WORKSPACE_MEM_ENV = "PLX_JOBQ_WORKSPACE_MEM_GB"
+WORKSPACE_MAX_ENV = "PLX_JOBQ_WORKSPACE_MAX"
+DEFAULT_WORKSPACE_MEM_GB = 26.0   # plx-workspaces.slice MemoryHigh (MemoryMax 28G)
+HOST_CORES = 2               # cores outside plx-workspaces.slice (AllowedCPUs): Postgres, the API
+DEFAULT_WORKSPACE_MAX = 2
+DEFAULT_DISK_PATH = "/data"
 MAX_PREEMPTIONS = 3
 REFUSAL_EVERY_S = 60   # a waiting job's refusal count grows at most once a minute per reason
 CHANNEL = "jobq"
@@ -49,7 +72,7 @@ TERMINAL = ("done", "failed", "dead", "cancelled")
 COLUMNS = ("id, class, kind, unit, idem_key, label, priority, mem_mb, cpus, state, attempts, "
            "max_attempts, preemptions, run_after, enqueued_at, started_at, finished_at, owner, "
            "lease_until, host, pid, pid_start, pgid, invocation, exit_code, result, last_error, "
-           "refusals, last_refusal, last_refusal_at, waited_s")
+           "refusals, last_refusal, last_refusal_at, waited_s, disk_mb, disk_path, workspace")
 
 
 def dsn(environ: Mapping[str, str] = os.environ) -> str:
@@ -72,6 +95,48 @@ def cpu_budget(environ: Mapping[str, str] = os.environ) -> float:
     return value if value > 0 else 2.0 * (os.cpu_count() or 1)
 
 
+def _positive(environ: Mapping[str, str], name: str) -> float | None:
+    try:
+        value = float(environ.get(name, ""))
+    except ValueError:
+        return None
+    return value if value > 0 else None
+
+
+def workspace_budget(environ: Mapping[str, str] = os.environ) -> tuple[float, int]:
+    """(cores, memory MB) of the workspaces pool: ``plx-workspaces.slice``'s AllowedCPUs and
+    MemoryHigh unless the environment says otherwise."""
+    cpus = (_positive(environ, WORKSPACE_CPUS_ENV)
+            or float(max(1, (os.cpu_count() or 1) - HOST_CORES)))
+    mem = _positive(environ, WORKSPACE_MEM_ENV) or DEFAULT_WORKSPACE_MEM_GB
+    return cpus, int(mem * 1024)
+
+
+def workspace_ceiling(cls: jc.JobClass, classes: Mapping[str, jc.JobClass],
+                 environ: Mapping[str, str] = os.environ) -> tuple[float, int]:
+    """The most cores and memory MB one job of workspaces class `cls` can ever be admitted with:
+    the pool, less the reserve classes' share unless `cls` is one (a bigger declaration
+    would wait for good and hold the workspace jobs behind it)."""
+    cpus, mem = workspace_budget(environ)
+    if not cls.reserve:
+        for other in classes.values():
+            if other.pool == "workspaces" and other.reserve:
+                cpus -= other.cpus
+                mem -= other.mem_mb
+    return cpus, mem
+
+
+def workspace_max(environ: Mapping[str, str] = os.environ) -> int:
+    value = _positive(environ, WORKSPACE_MAX_ENV)
+    return int(value) if value else DEFAULT_WORKSPACE_MAX
+
+
+def disk_floor_mb(mount: str, environ: Mapping[str, str] = os.environ) -> int:
+    """The floor of mount point `mount` (``ops_health.DISK_FLOOR_GB``), in MB."""
+    from operating import disk_floor
+    return disk_floor.mount_floor_bytes(mount, environ) >> 20
+
+
 class Probe:
     """What admission reads from the machine; tests give their own."""
 
@@ -80,6 +145,14 @@ class Probe:
 
     def unit_memory_mb(self, unit: str) -> int | None:
         return hygiene.unit_memory_mb(unit)
+
+    def disk_free_mb(self, path: str) -> int:
+        import shutil
+        return shutil.disk_usage(path).free >> 20
+
+    def mount(self, path: str) -> str:
+        from operating import disk_floor
+        return disk_floor.mount_of(path)
 
 
 @dataclass
@@ -110,6 +183,9 @@ class Queue:
         self.lease_s = lease_s
         self.floor_mb = floor_mb(environ)
         self.cpu_budget = cpu_budget(environ)
+        self.workspace_cpus, self.workspace_mem_mb = workspace_budget(environ)
+        self.workspace_max = workspace_max(environ)
+        self.environ = environ
         self.host = os.uname().nodename
         self.conn = psycopg.connect(self.conninfo, autocommit=True, row_factory=dict_row,
                                     connect_timeout=connect_timeout,
@@ -139,11 +215,15 @@ class Queue:
 
     # ------------------------------------------------------------------ enqueue
     def enqueue(self, class_name: str, *, key: str | None = None, label: str | None = None,
-                kind: str = "unit", once: bool = False, waiter_pid: int | None = None
-                ) -> tuple[int | None, str]:
+                kind: str = "unit", once: bool = False, waiter_pid: int | None = None,
+                mem_gb: float | None = None, cpus: float | None = None,
+                disk_gb: float | None = None, disk_path: str | None = None,
+                workspace: str | None = None) -> tuple[int | None, str]:
         """(job id, what happened): ``queued``, ``coalesced`` (a job of the key was already
         queued: that one's id; an inline caller must not run it), ``done_once`` (``once``
-        and the key already succeeded: no id). ``kind='unit'`` needs a class with a unit."""
+        and the key already succeeded: no id). ``kind='unit'`` needs a class with a unit.
+        `mem_gb`, `cpus`, `disk_gb` (on `disk_path`, default ``/data``) declare this job's own
+        need over its class's defaults; `workspace` names the workspace that started it."""
         cls = jc.get(class_name, self.classes)
         if kind not in ("unit", "inline"):
             raise ValueError(f"unknown job kind {kind!r}")
@@ -151,6 +231,19 @@ class Queue:
             raise ValueError(f"class {class_name!r} has no unit to start")
         idem = key or (class_name if kind == "unit" else f"{class_name}:{os.getpid()}:{random.getrandbits(48):x}")
         pid = waiter_pid if kind == "inline" else None
+        need_cpus = cls.cpus if cpus is None else float(cpus)
+        need_mem = cls.mem_mb if mem_gb is None else int(float(mem_gb) * 1024)
+        need_disk = 0 if not disk_gb else int(float(disk_gb) * 1024)
+        if need_cpus < 0 or need_mem < 0 or need_disk < 0:
+            raise ValueError("a job's declared cores, memory and disk are never negative")
+        if cls.pool == "workspaces":
+            most_cpus, most_mem = workspace_ceiling(cls, self.classes, self.environ)
+            if need_cpus > most_cpus:
+                raise ValueError(f"{need_cpus:g} cores is more than the {most_cpus:g} a {cls.name}"
+                                 " job of the workspaces pool can ever be admitted with")
+            if need_mem > most_mem:
+                raise ValueError(f"{need_mem} MB is more than the {most_mem} MB a {cls.name}"
+                                 " job of the workspaces pool can ever be admitted with")
         with self.conn.transaction():
             self.conn.execute("SELECT pg_advisory_xact_lock(hashtext(%s))", (idem,))
             if once and self.conn.execute(
@@ -159,18 +252,22 @@ class Queue:
                 return None, "done_once"
             row = self.conn.execute(
                 "INSERT INTO jobq.jobs (class, kind, unit, idem_key, label, priority, mem_mb, cpus,"
-                " state, max_attempts, run_after, host, pid, pid_start, lease_until)"
+                " state, max_attempts, run_after, host, pid, pid_start, lease_until, disk_mb,"
+                " disk_path, workspace)"
                 " SELECT %(class)s, %(kind)s, %(unit)s, %(key)s, %(label)s, %(prio)s, %(mem)s,"
                 " %(cpus)s, 'queued', %(att)s,"
                 " greatest(now(), coalesce((SELECT max(finished_at) FROM jobq.jobs"
                 "   WHERE idem_key = %(key)s AND state = 'done'), '-infinity')"
                 "   + make_interval(secs => %(cool)s)),"
                 " %(host)s, %(pid)s, %(start)s,"
-                " CASE WHEN %(kind)s = 'inline' THEN now() + make_interval(secs => %(lease)s) END"
+                " CASE WHEN %(kind)s = 'inline' THEN now() + make_interval(secs => %(lease)s) END,"
+                " %(disk)s, %(disk_path)s, %(workspace)s"
                 " ON CONFLICT (idem_key) WHERE state = 'queued' DO NOTHING RETURNING id",
                 {"class": cls.name, "kind": kind, "unit": cls.unit if kind == "unit" else None,
-                 "key": idem, "label": label, "prio": cls.priority, "mem": cls.mem_mb,
-                 "cpus": cls.cpus, "att": cls.max_attempts if kind == "unit" else 1,
+                 "key": idem, "label": label, "prio": cls.priority, "mem": need_mem,
+                 "cpus": need_cpus, "disk": need_disk,
+                 "disk_path": (disk_path or DEFAULT_DISK_PATH) if need_disk else None,
+                 "workspace": workspace, "att": cls.max_attempts if kind == "unit" else 1,
                  "cool": cls.cooldown_s, "host": self.host, "pid": pid,
                  "start": hygiene.process_start(pid) if pid else None,
                  "lease": self.lease_s}).fetchone()
@@ -208,6 +305,74 @@ class Queue:
             keys.add(cls.name)  # a unit job's default key is its class
         return mem, cpus, per_class, keys
 
+    def _pool_load(self, running: list[dict[str, Any]]) -> dict[str, Any]:
+        """The workspaces pool's declared cores and memory held, the reserve classes held, the
+        jobs held per workspace and the declared disk held per file system."""
+        load = {"cpus": 0.0, "mem": 0, "reserve_held": set(), "workspaces": {}, "disk": {}}
+        for job in running:
+            self._count(load, job)
+        return load
+
+    def _count(self, load: dict[str, Any], job: Mapping[str, Any]) -> None:
+        cls = self.classes.get(job["class"])
+        if cls is not None and cls.pool == "workspaces":
+            load["cpus"] += job["cpus"]
+            load["mem"] += job["mem_mb"]
+            if cls.reserve:
+                load["reserve_held"].add(cls.name)
+        if job.get("workspace") and not (cls and cls.reserve):
+            load["workspaces"][job["workspace"]] = load["workspaces"].get(job["workspace"], 0) + 1
+        if job.get("disk_mb"):
+            mount = self._mount(job.get("disk_path") or DEFAULT_DISK_PATH)
+            load["disk"][mount] = load["disk"].get(mount, 0) + job["disk_mb"]
+
+    def _mount(self, path: str) -> str:
+        try:
+            return self.probe.mount(path)
+        except OSError:
+            return path
+
+    def _declared_refusal(self, job: Mapping[str, Any], load: dict[str, Any]
+                          ) -> tuple[str | None, bool]:
+        """Why the workspaces pool, the disk or the job's workspace holds `job` back (None:
+        it fits), and whether the refusal blocks the jobs behind it (the workspaces pool) or
+        only this one (a full disk, a workspace at its cap: other jobs still start)."""
+        cls = self.classes.get(job["class"])
+        workspace = job.get("workspace")
+        held_here = load["workspaces"].get(workspace, 0) if workspace else 0
+        if workspace and not (cls and cls.reserve) and held_here >= self.workspace_max:
+            return (f"workspace: {workspace} already holds {held_here} of its "
+                    f"{self.workspace_max} jobs at once", False)
+        if job.get("disk_mb"):
+            path = job.get("disk_path") or DEFAULT_DISK_PATH
+            mount = self._mount(path)
+            try:
+                free = self.probe.disk_free_mb(path)
+            except OSError:
+                free = None
+            floor = disk_floor_mb(mount, self.environ)
+            held = load["disk"].get(mount, 0)
+            if free is not None and free - held - job["disk_mb"] < floor:
+                return (f"disk: {free} MB free on {mount}, {held} MB declared by held jobs, "
+                        f"needs {job['disk_mb']} MB above a {floor} MB floor", False)
+        if cls is not None and cls.pool == "workspaces":
+            keep_cpus = keep_mem = 0.0
+            if not cls.reserve:
+                for other in self.classes.values():
+                    if other.pool == "workspaces" and other.reserve \
+                            and other.name not in load["reserve_held"]:
+                        keep_cpus += other.cpus
+                        keep_mem += other.mem_mb
+            if load["cpus"] + job["cpus"] > self.workspace_cpus - keep_cpus:
+                return (f"workspaces: {load['cpus']:g} of {self.workspace_cpus:g} workspace cores "
+                        f"declared by held jobs, {keep_cpus:g} kept for the lander, needs {job['cpus']:g}",
+                        True)
+            if load["mem"] + job["mem_mb"] > self.workspace_mem_mb - keep_mem:
+                return (f"workspaces: {load['mem']} of {self.workspace_mem_mb} MB workspace memory "
+                        f"declared by held jobs, {int(keep_mem)} MB kept for the lander, needs "
+                        f"{job['mem_mb']} MB", True)
+        return None, False
+
     def try_admit(self, owner: str, take: Callable[[dict[str, Any]], bool],
                   renew: Iterable[int] = (), pid: int | None = None) -> Decision:
         """One admission pass for `owner` (module docstring). `take(job)` says whether the
@@ -238,6 +403,7 @@ class Queue:
                 " ORDER BY priority, enqueued_at, id LIMIT 500 FOR UPDATE SKIP LOCKED").fetchall()
             avail = self.probe.mem_available_mb()
             outstanding, cpus, per_class, keys = self._outstanding(running)
+            load = self._pool_load(running)
             decision.headroom_mb = avail - outstanding - self.floor_mb
             for job in queued:
                 cls = self.classes.get(job["class"])
@@ -248,21 +414,28 @@ class Queue:
                     continue          # behind a blocked head only short jobs may start
                 short_mem = avail - outstanding - job["mem_mb"] < self.floor_mb
                 short_cpu = cpus + job["cpus"] > self.cpu_budget
+                blocks = True
                 if short_mem or short_cpu:
                     reason = (f"memory: {avail} MB available, {outstanding} MB promised to "
                               f"running and earlier admitted jobs, needs {job['mem_mb']} MB above a "
                               f"{self.floor_mb} MB floor" if short_mem else
                               f"cpu: {cpus:g} of {self.cpu_budget:g} declared CPUs in use, "
                               f"needs {job['cpus']:g}")
+                else:
+                    reason, blocks = self._declared_refusal(job, load)
+                if reason is not None:
                     self._refuse(job, reason)
-                    if decision.blocked is None:
+                    if blocks and decision.blocked is None:
                         decision.blocked, decision.reason = job, reason
+                    elif not blocks and take(job) and decision.reason is None:
+                        decision.reason = reason   # the caller's own job, held back alone
                     continue
                 if take(job):
                     decision.claimed = self._claim(job, owner, pid)
                     return decision
                 outstanding += job["mem_mb"]
                 cpus += job["cpus"]
+                self._count(load, job)
                 per_class[job["class"]] = per_class.get(job["class"], 0) + 1
                 keys.add(job["idem_key"])
                 decision.reserved.append(job["id"])
@@ -441,12 +614,14 @@ class Queue:
         q = self.conn.execute
         depth = {r["class"]: r["n"] for r in q(
             "SELECT class, count(*) AS n FROM jobq.jobs WHERE state = 'queued' GROUP BY class")}
-        held = q("SELECT id, class, kind, unit, label, state, mem_mb, attempts, preemptions,"
+        held = q("SELECT id, class, kind, unit, label, state, mem_mb, cpus, disk_mb, workspace,"
+                 " attempts, preemptions,"
                  " extract(epoch FROM now() - started_at)::int AS running_s, waited_s"
                  " FROM jobq.jobs WHERE state IN ('running', 'preempting') ORDER BY priority, id").fetchall()
         for job in held:
             job["current_mb"] = self.probe.unit_memory_mb(job["unit"]) if job["unit"] else None
-        waiting = q("SELECT id, class, kind, label, priority, mem_mb, attempts, refusals, last_refusal,"
+        waiting = q("SELECT id, class, kind, label, workspace, priority, mem_mb, cpus, attempts,"
+                    " refusals, last_refusal,"
                     " extract(epoch FROM now() - enqueued_at)::int AS waiting_s,"
                     " greatest(0, extract(epoch FROM run_after - now()))::int AS not_before_s"
                     " FROM jobq.jobs WHERE state = 'queued' ORDER BY priority, enqueued_at, id"
@@ -490,4 +665,32 @@ class Queue:
                 "memory": {"available_mb": avail, "promised_mb": outstanding,
                            "floor_mb": self.floor_mb,
                            "headroom_mb": None if avail is None else avail - outstanding - self.floor_mb},
-                "cpu_budget": self.cpu_budget}
+                "cpu_budget": self.cpu_budget,
+                "workspace_pool": self._workspace_pool(held),
+                "workspaces": self._workspaces(held, waiting)}
+
+    def _workspace_pool(self, held: list[dict[str, Any]]) -> dict[str, Any]:
+        mine = [j for j in held
+                if getattr(self.classes.get(j["class"]), "pool", "") == "workspaces"]
+        return {"cpus_held": round(sum(float(j["cpus"]) for j in mine), 1),
+                "cpus": self.workspace_cpus,
+                "mem_held_mb": sum(j["mem_mb"] for j in mine), "mem_mb": self.workspace_mem_mb}
+
+    @staticmethod
+    def _workspaces(held: list[dict[str, Any]], waiting: list[dict[str, Any]]) -> dict[str, Any]:
+        """Each workspace's load: held jobs, their declared cores and memory, and waiting jobs
+        (who is using the machine)."""
+        workspaces: dict[str, dict[str, Any]] = {}
+        for rows, held_row in ((held, True), (waiting, False)):
+            for j in rows:
+                if not j.get("workspace"):
+                    continue
+                row = workspaces.setdefault(j["workspace"], {"held": 0, "cpus": 0.0, "mem_mb": 0,
+                                                   "waiting": 0})
+                if held_row:
+                    row["held"] += 1
+                    row["cpus"] = round(row["cpus"] + float(j["cpus"]), 1)
+                    row["mem_mb"] += j["mem_mb"]
+                else:
+                    row["waiting"] += 1
+        return dict(sorted(workspaces.items()))

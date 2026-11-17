@@ -1,0 +1,32 @@
+# Daily per-person, per-system activity (operating.system_activity): counts by ISO week (and
+# by day for the last 35), system and workflow, resolved to people through the directory
+# only; no row content. The Team view's snapshot (plx-team-activity) reads it; it is ignored
+# after 8 days. Retention: 13 weekly aggregates. A person
+# the exclusion does not clear is counted only as "withheld" (PLX_EXCLUDED_PEOPLE_OIDS from
+# the env file; unavailable guard clears nobody). Read only: every store opens mode=ro.
+# A system unit run as the Workbench user (formerly a user unit): its groups come from
+# /etc/group at each start, so it opens the capture stores the API user shares
+# (plx-state); a user manager started before that group was added ran it without it.
+[Unit]
+Description=PLX daily system activity snapshot (counts per person, system and workflow)
+
+[Service]
+Type=oneshot
+User=@PLX_USER@
+Group=@PLX_GROUP@
+WorkingDirectory=@PLX_CURRENT@
+EnvironmentFile=-@PLX_HOME@/.config/plx/proactive.env
+Environment=PATH=/data/venv/bin:/usr/local/bin:/usr/bin:/bin
+Environment=PGAPPNAME=%N
+UnsetEnvironment=PLX_WORKBENCH_API_KEY AZURE_CLIENT_SECRET
+ExecStart=/data/venv/bin/python3 -m operating.system_activity \
+  --state-dir /data/plx-state \
+  --out /data/plx-state/system-activity.json \
+  --aliases /data/plx-state/system-actors.json --weeks 13
+Nice=10
+CPUWeight=20
+IOSchedulingClass=idle
+MemoryHigh=3G
+MemoryMax=4G
+TimeoutStartSec=1h
+UMask=0077

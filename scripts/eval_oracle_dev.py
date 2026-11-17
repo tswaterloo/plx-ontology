@@ -1945,7 +1945,7 @@ def mail_scope_target(path: Path) -> tuple[list[tuple[str, str, str]], list[tupl
     names mailboxes only: ``allowlisted_mailboxes``, ``all_mailboxes`` enabled or an
     unrestricted allowlist would widen it past the file and are refused, as is anything the
     capture refuses (a ValueError either way, so a bad scope fails closed)."""
-    from integrations.capture_mail import CaptureError, CaptureScope
+    from integrations.capture_mail_scope import CaptureError, CaptureScope
 
     scope = CaptureScope.from_file(path)   # the capture's own validation first
     document = json.loads(Path(path).read_text(encoding="utf-8"))

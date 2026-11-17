@@ -379,20 +379,6 @@
    ]
   },
   {
-   "type": "mc_task_overdue",
-   "kind": "task_overdue",
-   "label": "Mission Control task overdue",
-   "precision": null,
-   "actionable": true,
-   "default": "off",
-   "home": false,
-   "roles": [
-    "OPS",
-    "PROD"
-   ],
-   "unmeasured": "not measurable yet: the Mission Control capture states a due day on 17 of 4,648 tasks (16 without a year, never guessed; capture read 2026-11-11)"
-  },
-  {
    "type": "mc_task_stuck",
    "kind": "task_overdue",
    "label": "Mission Control task stuck",

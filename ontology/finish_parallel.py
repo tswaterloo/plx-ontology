@@ -59,6 +59,7 @@ import tempfile
 import time
 from typing import Any, Callable, Iterable, Iterator, Mapping, Sequence
 
+from ontology import parent_watch
 from ontology import mentions as M
 from ontology.store_ddl import LINK_COLUMNS
 
@@ -368,7 +369,7 @@ def _decide(builder: Any, conn: sqlite3.Connection, side: _Scratch, types: Seque
         with open(side.spill, "wb") as spill, main_not_imported(), \
                 futures.ProcessPoolExecutor(
                     max_workers=count, mp_context=multiprocessing.get_context("spawn"),
-                    initializer=_init, initargs=(store, str(side.path), held)) as pool:
+                    **parent_watch.pool_init(_init, (store, str(side.path), held))) as pool:
             pending: list[Any] = []
             window = count * 3
             chunks = _chunks(reader, types)

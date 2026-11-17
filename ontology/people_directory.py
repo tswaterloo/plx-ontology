@@ -47,7 +47,7 @@ from hashlib import sha256
 import json
 import re
 import sqlite3
-from typing import Any, Iterable, Iterator, Mapping, Sequence
+from typing import Any, Iterable, Mapping, Sequence
 
 HANDLE_PART = "/person/"
 PEOPLE_HOST = "people"      # the host of an outside contact's citation: no mailbox
@@ -75,6 +75,30 @@ def object_id(value: Any) -> str | None:
 
 def address_key(value: str) -> str:
     return sha256(value.encode("utf-8")).hexdigest()
+
+
+def plus_base(value: Any) -> str | None:
+    """The mailbox a plus-addressed address delivers to (``local+tag@domain`` ->
+    ``local@domain``, RFC 5233 subaddressing), the address itself when it has no tag;
+    None for no whole address or an empty local part before the ``+``."""
+    found = address(value)
+    if found is None:
+        return None
+    local, domain = found.rsplit("@", 1)
+    base = local.split("+", 1)[0]
+    return f"{base}@{domain}" if base else None
+
+
+def alias_key(value: Any) -> str | None:
+    """The key a person's address aliases share: its plus base at the registrable domain
+    (``a+x@mail.acme.com`` and ``a@acme.com``: ``a@acme.com``). Equal keys under
+    different plus bases are only possibly one person (a lead); None as ``plus_base``."""
+    from ontology.mentions import mail_domain, registrable_domain
+    base = plus_base(value)
+    domain = mail_domain(base) if base else None
+    if base is None or domain is None:
+        return None
+    return f"{base.rsplit('@', 1)[0]}@{registrable_domain(domain)}"
 
 
 def person_handle(mailbox: str, key: str) -> str:
@@ -207,14 +231,26 @@ def people(boxes: Sequence[Mailbox], counts: Mapping[tuple[str, str], int], excl
         except ExclusionUnavailable:
             return True
 
+    def excluded_alias(value: str) -> bool:
+        # An address another form of which is an excluded person's (its plus base, the
+        # base at the registrable domain) is theirs too: decided wherever the guard can
+        # decide that form; a form it cannot decide is no outside contact's evidence.
+        forms = {f for f in (value, plus_base(value), alias_key(value)) if f}
+        try:
+            return any(exclusion.decides(f) and exclusion.is_excluded(f) for f in forms)
+        except ExclusionUnavailable:
+            return True
+
     out: list[dict[str, Any]] = []
     staff_addresses: set[str] = set()
+    withheld_aliases: set[str] = set()   # alias keys of every withheld mailbox's addresses
     kept: dict[str, Mailbox] = {}
     for box in boxes:
         oid = object_id(box.mailbox_id)
         found = sorted({a for a in (address(box.upn), *map(address, box.identities)) if a})
         if oid is None or withheld(oid) or any(withheld(a) for a in found):
             stats["withheld_staff"] += 1
+            withheld_aliases.update(k for k in map(alias_key, found) if k)
             continue
         kept[box.mailbox_id] = box
         staff_addresses.update(found)
@@ -247,6 +283,9 @@ def people(boxes: Sequence[Mailbox], counts: Mapping[tuple[str, str], int], excl
             continue
         if automated_sender(found):
             stats["automated"] += 1
+            continue
+        if alias_key(found) in withheld_aliases or excluded_alias(found):
+            stats["withheld_alias"] += 1   # a withheld or excluded person's other address
             continue
         held = senders[sender]
         audience = min(held, key=lambda m: (-held[m], m))
@@ -319,6 +358,7 @@ def decode_audience(key: Any, every: Sequence[str]) -> tuple[str, ...] | None:
     return chosen
 
 
-__all__ = ["COMPOSITE", "HANDLE_PART", "PEOPLE_HOST", "Mailbox", "address", "address_key", "audience_key",
+__all__ = ["COMPOSITE", "HANDLE_PART", "PEOPLE_HOST", "Mailbox", "address", "address_key",
+           "alias_key", "audience_key", "plus_base",
            "decode_audience", "is_composite", "mailboxes", "object_id", "parse_person_handle", "people",
            "person_handle", "sender_counts"]

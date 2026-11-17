@@ -330,6 +330,36 @@ class Store(unittest.TestCase):
         self.assertEqual(self.as_("ana").get("/api/templates/suggest",
                                              params={"doc_type": "nope"}).status_code, 422)
 
+    def test_mail_sent_again_and_again_is_offered_as_a_template(self):
+        from operating import learning
+        asked = []
+        body = "Hi,\n\nThanks for your order.\n...\nLet me know if you need anything else."
+
+        class Held:
+            def repeats(self, person):
+                asked.append(person)
+                return [{"side": "customer", "count": 4, "last_at": "2026-11-10T15:00:00Z",
+                         "body": body, "first": "Thanks for your order."},
+                        {"side": "supplier", "count": 3, "last_at": "2026-11-09T15:00:00Z",
+                         "body": "Hi,\n\nPlease confirm the ship date.\n...",
+                         "first": "Please confirm the ship date."}]
+        real = learning.Lessons.load
+        self.addCleanup(setattr, learning.Lessons, "load", real)
+        learning.Lessons.load = classmethod(lambda cls, *a, **k: Held())
+        got = self.as_("ana").get("/api/templates/suggest",
+                                  params={"doc_type": "customer_email"}).json()["suggestions"]
+        self.assertEqual([(s["kind"], s["label"], s["detail"], s["body"]) for s in got],
+                         [("repeated", "Mail you sent 4 times", "Thanks for your order.", body)])
+        self.assertEqual(len(set(asked)), 1)                 # the reader's own person id
+        self.assertEqual(self.as_("ana").get("/api/templates/suggest",
+                                             params={"doc_type": "quote"}).json()[
+            "suggestions"], [])                                  # mail only
+        # once saved, it is offered as the saved template, not again to save
+        self.save("ana", name="Order thanks", doc_type="customer_email", body=body)
+        got = self.as_("ana").get("/api/templates/suggest",
+                                  params={"doc_type": "customer_email"}).json()["suggestions"]
+        self.assertEqual([s["kind"] for s in got], ["saved"])
+
     def test_use_my_template_in_the_one_box(self):
         self.save("ana")
         said = self.backend.template_answer(
@@ -361,3 +391,39 @@ class Store(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+@unittest.skipIf(psycopg is None, "psycopg not installed")
+class ApiRoleGrants(unittest.TestCase):
+    """SP-01 (11-15): /api/templates answered 500 on the served database ("permission
+    denied for schema templates"): the API's role (deploy/pg/plx_api_role.sql) was made
+    before migration 0022, which granted it nothing. The migrations alone now let the role
+    do what the store runs, and nothing on another schema's tables beyond its grants."""
+
+    def test_the_api_role_uses_templates_after_the_migrations_alone(self):
+        from psycopg import conninfo, errors
+        from operating.pg import migrate
+        from operating.pg.scratch_db import superuser_dsn
+        db, dsn = pg_testdb.create_db()
+        self.addCleanup(pg_testdb.drop_db, db)
+        admin = superuser_dsn(dsn)
+        with psycopg.connect(admin, autocommit=True) as conn:
+            conn.execute("DO $$ BEGIN CREATE ROLE plx_api LOGIN NOSUPERUSER NOCREATEDB "
+                         "NOCREATEROLE NOREPLICATION NOBYPASSRLS NOINHERIT; EXCEPTION WHEN "
+                         "duplicate_object THEN NULL; END $$")
+        with psycopg.connect(dsn) as conn:
+            migrate.migrate(conn, values={"embed_model": "m", "embed_dim": 3})
+        role = conninfo.make_conninfo(admin, options="-c role=plx_api")
+        with psycopg.connect(role, autocommit=True) as conn:
+            self.assertEqual(conn.execute("SELECT current_user").fetchone()[0], "plx_api")
+            (tid,) = conn.execute(
+                "INSERT INTO templates.template (owner, name, doc_type, body) VALUES "
+                "('r', 'n', 'order_confirmation', 'b') RETURNING id").fetchone()
+            conn.execute("UPDATE templates.template SET uses = uses + 1 WHERE id = %s", (tid,))
+            self.assertEqual(conn.execute("SELECT uses FROM templates.template WHERE id = %s",
+                                          (tid,)).fetchone()[0], 1)
+            conn.execute("DELETE FROM templates.template WHERE id = %s", (tid,))
+            with self.assertRaises(errors.InsufficientPrivilege):
+                conn.execute("CREATE TABLE templates.planted (x int)")
+            with self.assertRaises(errors.InsufficientPrivilege):
+                conn.execute("TRUNCATE templates.template")

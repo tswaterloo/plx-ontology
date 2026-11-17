@@ -9,10 +9,11 @@ from pathlib import Path
 import unittest
 
 from operating import autopilot as ap
+from operating import autopilot_handlers
 from operating import day_coverage as dc
 from operating.tests.test_autopilot_replay import World
 from operating.tests.test_proactive_engine import EXCLUDED_OID, OURS_OID
-from operating.tests.test_proactive_threads import APPROVER_OID, people
+from operating.tests.test_proactive_threads import APPROVER, APPROVER_OID, BOSS, OURS, people
 
 SINCE, UNTIL = "2026-10-20T07:00:00Z", "2026-10-23T07:00:00Z"
 
@@ -62,6 +63,23 @@ class Activity(World):
         # the excluded person is neither attributed nor counted anywhere
         self.assertNotIn(EXCLUDED_OID, json.dumps([acts, sorted(map(str, lost.items()))]))
         self.assertEqual(sum(n for (s, k, _r), n in lost.items() if s in ("planner",)), 0)
+
+    def test_a_list_item_a_curated_type_takes_is_still_list_upkeep(self):
+        # the generated list item and the two curated types taking some of its rows
+        def by(address):
+            return json.dumps({"user": {"email": address, "displayName": "x"}})
+        for otype, who in (("SharePointListItem", OURS), ("ExpenseReceipt", APPROVER),
+                           ("VendorInvoiceEntry", OURS), ("VendorInvoiceEntry", BOSS)):
+            self.w.obj(otype, {"created_date_time": "2026-10-21T14:00:00Z",
+                               "created_by": by(who),
+                               "last_modified_date_time": "2026-10-22T14:00:00Z",
+                               "last_modified_by": by(who)})
+        acts, _lost = dc.system_actions(self.store(), people(), {OURS_OID, APPROVER_OID},
+                                        SINCE, UNTIL)
+        got = sorted((a["person"], a["kind"]) for a in acts if a["kind"] == "sharepoint_edit")
+        self.assertEqual(got, sorted([(OURS_OID, "sharepoint_edit")] * 4
+                                     + [(APPROVER_OID, "sharepoint_edit")] * 2))
+        self.assertNotIn(EXCLUDED_OID, json.dumps(acts))
 
     def test_cache_gives_the_same_rows_for_a_narrower_window(self):
         self.build_world()
@@ -240,7 +258,7 @@ class InvoiceSend(World):
         owners, why = ap.owners_of("hinted", {**got[due], "owner_hint": None},
                                    directory=directory, addresses_of={}, roles={})
         self.assertEqual((owners, why), ([], "owner_unknown"))
-        ctx = ap.Ctx(st, date(2026, 10, 21), float("inf"), domains)
+        ctx = autopilot_handlers.Ctx(st, date(2026, 10, 21), float("inf"), domains)
         work = aw.h_invoice_send(ctx, got[due])
         self.assertIn("IN-2", work["draft"]["body"])
         self.assertIn("120.50 CAD", work["draft"]["body"])
@@ -251,7 +269,7 @@ class InvoiceSend(World):
         # a total without its currency is never written to the customer as a bare figure
         bare = self.w.obj("SalesInvoice", {"invoice_number": "IN-5", "invoice_date":
                                            "2026-10-21", "total_amount": "120.50"})
-        work = aw.h_invoice_send(ap.Ctx(self.store(), date(2026, 10, 21), float("inf"),
+        work = aw.h_invoice_send(autopilot_handlers.Ctx(self.store(), date(2026, 10, 21), float("inf"),
                                         domains), {**got[due], "object_id": bare})
         self.assertNotIn("120.5", work["draft"]["body"])
         self.assertEqual(work["gaps"], ["total not stated"])

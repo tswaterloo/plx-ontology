@@ -58,6 +58,9 @@ def item(i: int, owner: str, kind: str = "reply_owed", days: int = 3, cites=None
                           "who_can_answer": ["OPS"] if kind != "reply_owed" else []}}
 
 
+NAMES_OF = {"Customer:1": "Acme Foods", "Customer:2": "Borealis Naturals"}
+
+
 class Backend(be.WorkspaceBackend):
     owner = False
     gaps: list = []
@@ -76,7 +79,12 @@ class Backend(be.WorkspaceBackend):
                 reader_policy=lambda: (None, SimpleNamespace(unrestricted=self.owner)),
                 decide=lambda handles: {h: ({"reason": "no"} if h in self.refuse else None)
                                         for h in handles}),
-            _request=lambda: mock.MagicMock())
+            _request=lambda: mock.MagicMock(),
+            # a record's display as this reader reads it: refused, no object at all
+            _call=lambda tool, args: ({"error": {"code": "not_found"}}
+                                      if args.get("object_id") in self.refuse else
+                                      {"object": {"display": NAMES_OF.get(
+                                          args.get("object_id"), "")}}))
         return job(view)
 
 
@@ -90,7 +98,7 @@ class Owner(unittest.TestCase):
         conn.execute("CREATE TABLE gaps (kind TEXT, follow_up TEXT, state TEXT, "
                      "resolved_at TEXT)")
         rows = [("reply_owed", ME, "open", None), ("reply_owed", B, "open", None),
-                ("mc_task_overdue", B, "open", None), ("price_below_cost", C, "open", None),
+                ("mc_task_stuck", B, "open", None), ("price_below_cost", C, "open", None),
                 ("reply_owed", EXCLUDED, "open", None), ("reply_owed", OWNER, "open", None),
                 ("reply_owed", B, "resolved", "2999-01-01"),
                 ("reply_owed", C, "resolved", "2000-01-01"),
@@ -157,6 +165,20 @@ class Owner(unittest.TestCase):
 
     def listed(self, found) -> list[str]:
         return sorted(p["name"] for p in found.json()["people"])
+
+    def test_me_carries_only_the_readers_own_roles(self):
+        """The app's per-role defaults read /api/me roles: the reader's own snapshot row only,
+        unknown role names dropped; no snapshot: none."""
+        data = json.loads((self.dir / ta.SNAPSHOT_FILE).read_text())
+        data["people"][ME]["roles"] = ["quality", "purchasing", "made_up"]
+        data["people"][B]["roles"] = ["finance"]
+        (self.dir / ta.SNAPSHOT_FILE).write_text(json.dumps(data))
+        me = self.client().get("/api/me")
+        self.assertEqual(me.status_code, 200, me.text)
+        self.assertEqual(me.json()["roles"], ["purchasing", "quality"])
+        self.assertEqual(self.client(B).get("/api/me").json()["roles"], ["finance"])
+        (self.dir / ta.SNAPSHOT_FILE).unlink()
+        self.assertEqual(self.client().get("/api/me").json()["roles"], [])
 
     def test_everyone_else_sees_only_their_own_row_whatever_the_request_claims(self):
         self.assertEqual(self.client(login=False).get("/api/team").status_code, 401)
@@ -301,17 +323,168 @@ class Owner(unittest.TestCase):
         gone = self.team(OWNER).json()
         self.assertEqual((gone["state"], gone["people"]), ("not_built", []))
 
+    # ---- the weekly tracker (AUDIT2-12) -----------------------------------------------------
+
+    def _close_today(self, owner: str) -> None:
+        conn = sqlite3.connect(pe.inbox_path(self.dir / "store.sqlite"))
+        conn.execute("INSERT INTO gaps VALUES (?, ?, 'resolved', ?)", (
+            "reply_owed", json.dumps({"owner": owner}),
+            datetime.now(timezone.utc).isoformat(timespec="seconds")))
+        conn.commit()
+        conn.close()
+
+    def _saved(self, oid: str, n: int) -> None:
+        """``n`` answered Asks in ``oid``'s work log (each counts as one lookup saved)."""
+        from operator_api import work_log as wl
+        store = wl.WorkLog.for_backend(self.backend)
+        reader = SimpleNamespace(key=f"employee:{oid},staff:demo", display_name=NAMES[oid],
+                                 email=None, session=SimpleNamespace(identities=(oid,)))
+        for i in range(n):
+            self.assertIsNotNone(store.record(reader, kind="ask", verb="asked", title="q",
+                                              thread=f"ask:t{oid[-2:]}{i}", source="ask",
+                                              source_id=f"a{oid[-2:]}{i}"))
+        store.close()
+
+    def test_tracker_weeks_count_work_done_closed_and_replies(self):
+        self.backend.owner = True
+        self._close_today(B)
+        by = {p["name"]: p for p in self.team(OWNER).json()["people"]}
+        weeks = by[NAMES[B]]["weeks"]
+        today = date.today()
+        monday = today - timedelta(days=today.weekday())
+        self.assertEqual([w["week"] for w in weeks],
+                         [(monday - timedelta(days=7 * k)).isoformat() for k in (3, 2, 1, 0)])
+        # one mail sent a day: 7 a full week, the current week up to today; mail received
+        # is not work done
+        self.assertEqual([w["done"] for w in weeks], [7, 7, 7, today.weekday() + 1])
+        self.assertEqual(weeks[-1]["to"], today.isoformat())
+        self.assertEqual(weeks[-1]["partial"], today.weekday() != 6)
+        self.assertFalse(any(w["partial"] for w in weeks[:3]))
+        # B's alert closed today counts in this week; the far-future one in no week
+        self.assertEqual([w["closed"] for w in weeks], [0, 0, 0, 1])
+        self.assertEqual([w["closed"] for w in by[NAMES[C]]["weeks"]], [0, 0, 0, 0])
+        # the snapshot carries no per-week reply figures: none invented
+        self.assertTrue(all(w["reply_minutes"] is None and w["replies"] == 0 for w in weeks))
+        self.assertEqual(tv.DONE_CHANNELS, frozenset(ta.CHANNELS) - {"mail_received"})
+
+    def test_reply_weeks_are_medians_per_monday_week(self):
+        until = date(2026, 11, 12)                       # a Thursday
+        replies = [(date(2026, 11, 9), 10.0), (date(2026, 11, 12), 30.0),
+                   (date(2026, 11, 13), 999.0),          # after the snapshot's day
+                   (date(2026, 11, 2), 5.0), (date(2026, 10, 1), 1.0)]
+        got = ta.reply_weeks(replies, until)
+        self.assertEqual(list(got), ["2026-10-19", "2026-10-26", "2026-11-02", "2026-11-09"])
+        self.assertEqual(got["2026-11-09"], {"median": 20, "n": 2})
+        self.assertEqual(got["2026-11-02"], {"median": 5, "n": 1})
+        self.assertEqual(got["2026-10-19"], {"median": None, "n": 0})
+
+    def test_time_saved_joins_per_person_and_only_the_owner_sees_others(self):
+        from operator_api import work_log as wl
+        per = wl.saved_minutes()["record"]
+        self._saved(B, 2)
+        self._saved(C, 1)
+        self._saved(OWNER, 5)
+        self.backend.owner = True
+        found = self.team(OWNER)
+        by = {p["name"]: p["weeks"] for p in found.json()["people"]}
+        self.assertEqual(by[NAMES[B]][-1]["saved_minutes"], 2 * per)
+        self.assertEqual(by[NAMES[C]][-1]["saved_minutes"], per)
+        self.assertEqual(by[NAMES[ME]][-1]["saved_minutes"], 0)   # counted, nothing used
+        self.assertNotIn(NAMES[OWNER], found.text)                 # the owner never appears
+        detail = self.client(OWNER).get(f"/api/team/{tv.key_of(B)}").json()["person"]
+        self.assertEqual(detail["weeks"][-1]["saved_minutes"], 2 * per)
+        # a named Team reader sees everyone's activity but only their own time saved
+        self.backend.owner = False
+        with mock.patch.dict(os.environ, {tv.READERS_ENV: C}):
+            named = {p["name"]: p["weeks"] for p in self.team(C).json()["people"]}
+        self.assertEqual(sorted(named), sorted([NAMES[ME], NAMES[B], NAMES[C]]))
+        self.assertEqual(named[NAMES[C]][-1]["saved_minutes"], per)
+        self.assertIsNone(named[NAMES[B]][-1]["saved_minutes"])
+        self.assertIsNone(named[NAMES[ME]][-1]["saved_minutes"])
+        with mock.patch.dict(os.environ, {tv.READERS_ENV: C}):
+            other = self.client(C).get(f"/api/team/{tv.key_of(B)}").json()["person"]
+        self.assertIsNone(other["weeks"][-1]["saved_minutes"])
+        # a plain reader: their own row and their own figure only
+        [mine] = self.team(B).json()["people"]
+        self.assertEqual((mine["name"], mine["weeks"][-1]["saved_minutes"]), (NAMES[B], 2 * per))
+
     def test_rows_cardinality_one_ten_sixty(self):
         self.backend.owner = True
         for n in (1, 10, 60):
             with self.subTest(n=n):
                 people = [f"00000000-0000-4000-8000-{i:012d}" for i in range(1, n + 1)]
                 self.snapshot(people)
-                started = time.monotonic()
+                started = time.process_time()   # the route's work (every thread of it)
                 body = self.team(OWNER).json()
-                self.assertLess(time.monotonic() - started, 1.0)
+                self.assertLess(time.process_time() - started, 1.0)
                 self.assertEqual(len(body["people"]), n)
                 self.assertEqual(len({p["key"] for p in body["people"]}), n)
+
+    # ---- the owner's workload grant sheet ---------------------------------------------------
+
+    def grants_file(self) -> dict:
+        return json.loads((self.dir / "workload-grants.json").read_text())
+
+    def test_grant_sheet_is_the_owners_and_never_lists_the_owner_or_the_excluded(self):
+        (self.dir / "workload-grants.json").write_text(json.dumps(
+            {"teams": {ME: "SALES", EXCLUDED: "SALES", OWNER: "OPS"},
+             "managers": {B: ["SALES"], EXCLUDED: ["OPS"]}}))
+        for oid in (ME, B):
+            self.assertEqual(self.client(oid).get("/api/workload/grants").status_code, 403)
+        self.assertEqual(self.client(login=False).get("/api/workload/grants").status_code, 401)
+        self.backend.owner = True
+        found = self.client(OWNER).get("/api/workload/grants")
+        self.assertEqual(found.status_code, 200, found.text)
+        body = found.json()
+        self.assertEqual([p["name"] for p in body["people"]], [NAMES[ME], NAMES[B], NAMES[C]])
+        self.assertEqual({p["oid"]: (p["team"], p["sees"]) for p in body["people"]},
+                         {ME: ("SALES", []), B: (None, ["SALES"]), C: (None, [])})
+        self.assertNotIn(EXCLUDED, found.text)
+        self.assertNotIn(OWNER, found.text)
+        self.assertEqual(body["held_back"], 2)   # EXCLUDED (team and grant), OWNER
+        # the exclusion unavailable: neither read nor written, the file as it was
+        before = self.grants_file()
+        with mock.patch("operating.briefs.env_people", return_value=None):
+            client = self.client(OWNER)
+            self.assertEqual(client.get("/api/workload/grants").status_code, 503)
+            self.assertEqual(client.post("/api/workload/grants",
+                                         json={"teams": {}, "managers": {}}).status_code, 503)
+        self.assertEqual(self.grants_file(), before)
+
+    def test_saving_the_sheet_keeps_the_entries_it_never_shows(self):
+        (self.dir / "workload-grants.json").write_text(json.dumps(
+            {"teams": {ME: "SALES", EXCLUDED: "SALES", OWNER: "OPS"},
+             "managers": {EXCLUDED: ["OPS"]}}))
+        self.backend.owner = True
+        client = self.client(OWNER)
+        # the sheet's whole assignment, plus an attempt to move the excluded person
+        saved = client.post("/api/workload/grants", json={
+            "teams": {B: "SALES", EXCLUDED: "OPS"}, "managers": {C: ["SALES"]}})
+        self.assertEqual(saved.status_code, 200, saved.text)
+        self.assertEqual(saved.json(), {"teams": {B: "SALES"}, "managers": {C: ["SALES"]}})
+        self.assertEqual(self.grants_file(), {
+            "teams": {B: "SALES", EXCLUDED: "SALES", OWNER: "OPS"},
+            "managers": {C: ["SALES"], EXCLUDED: ["OPS"]}})
+        self.assertEqual(client.post("/api/workload/grants",
+                                     json={"teams": {ME: "sales"}}).status_code, 422)
+        self.backend.owner = False
+        # the manager now sees the team's people by name on Workload
+        seen = self.client(C).get("/api/workload").json()["people"]
+        self.assertIn((B, NAMES[B]), [(p["person"], p["name"]) for p in seen])
+        self.assertEqual(self.client(ME).post("/api/workload/grants",
+                                              json={"teams": {}}).status_code, 403)
+        self.assertEqual(self.grants_file()["teams"][B], "SALES")
+
+    def test_grant_sheet_cardinality_one_ten_sixty(self):
+        self.backend.owner = True
+        for n in (1, 10, 60):
+            with self.subTest(n=n):
+                people = [f"00000000-0000-4000-8000-{i:012d}" for i in range(1, n + 1)]
+                self.snapshot(people)
+                started = time.process_time()
+                body = self.client(OWNER).get("/api/workload/grants").json()
+                self.assertLess(time.process_time() - started, 1.0)
+                self.assertEqual(sorted(p["oid"] for p in body["people"]), people)
 
     # ---- the drill-down: a person's open items ----------------------------------------------
 
@@ -333,7 +506,7 @@ class Owner(unittest.TestCase):
     def test_drill_shows_the_items_with_their_fields_and_a_link(self):
         self.backend.owner = True
         self.bound_guard()
-        self.backend.gaps = [item(1, B, days=4), item(2, B, kind="mc_task_overdue", days=9),
+        self.backend.gaps = [item(1, B, days=4), item(2, B, kind="mc_task_stuck", days=9),
                              item(3, B, kind="price_below_cost", days=2), item(4, C, days=7)]
         body = self.items_of(B).json()
         by = {i["bucket"]: i for i in body["items"]}
@@ -384,13 +557,13 @@ class Owner(unittest.TestCase):
         for n in (1, 10, 60):
             with self.subTest(n=n):
                 self.backend.gaps = [item(i, B, days=i) for i in range(n)]
-                t0 = time.monotonic()
+                t0 = time.process_time()   # the route's work, which load does not add to
                 body = self.items_of(B).json()
                 self.assertEqual(len(body["items"]), n)
                 self.assertEqual(len({i["id"] for i in body["items"]}), n)
                 self.assertEqual([i["age_days"] for i in body["items"]],
                                  sorted((i["age_days"] for i in body["items"]), reverse=True))
-                self.assertLess(time.monotonic() - t0, 20)
+                self.assertLess(time.process_time() - t0, 20)
 
     # ---- the R&D board --------------------------------------------------------------------
 
@@ -406,6 +579,7 @@ class Owner(unittest.TestCase):
         self.assertEqual(found.text.count("synth-customer.example"), 1)   # only inside the draft
         self.assertNotIn("contact", project)
         self.assertEqual((project["waiting_on"], project["owner"]), ("us", B))
+        self.assertEqual(project["customer_name"], "Acme Foods")   # its header names it
 
     def test_restricted_reader_loses_a_project_whose_record_it_cannot_open(self):
         self.backend.gaps = [rd_line(1, "p1", "Customer:1"), rd_line(2, "p2", "Customer:2")]
@@ -414,6 +588,7 @@ class Owner(unittest.TestCase):
         ids = [p["id"] for p in found.json()["projects"]]
         self.assertEqual(ids, ["p1"])
         self.assertNotIn("Customer:2", found.text)
+        self.assertNotIn("Borealis", found.text)
         self.assertNotIn("buyer2@", found.text)
         # and its card cannot be rebuilt by guessing the id
         card = self.client().post("/api/actions/preview", json={
@@ -424,12 +599,15 @@ class Owner(unittest.TestCase):
         for n in (1, 10, 60):
             with self.subTest(n=n):
                 self.backend.gaps = [rd_line(i, f"p{i}", f"Customer:{i}") for i in range(n)]
-                t0 = time.monotonic()
+                t0 = time.process_time()   # the route's work, which load does not add to
                 body = self.client().get("/api/rd-projects").json()
                 self.assertEqual(len(body["projects"]), n)
                 self.assertEqual(len({p["id"] for p in body["projects"]}), n)
                 self.assertEqual(len({p["customer"] for p in body["projects"]}), n)
-                self.assertLess(time.monotonic() - t0, 20)
+                # a customer with no display gets no name, never another's
+                self.assertEqual([p["customer_name"] for p in body["projects"]],
+                                 [NAMES_OF.get(p["customer"]) for p in body["projects"]])
+                self.assertLess(time.process_time() - t0, 20)
 
 
 if __name__ == "__main__":

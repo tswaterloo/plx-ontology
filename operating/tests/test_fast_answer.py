@@ -11,7 +11,6 @@ nothing of a record it may not read.
 
 from __future__ import annotations
 
-import contextlib
 import copy
 from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
@@ -138,7 +137,7 @@ class UnderstandTests(unittest.TestCase):
                          "how many lots from Acme are in quarantine",
                          "glycerin lots expiring this week",
                          "how many batches of shampoo are on QC hold",
-                         # another act or record than a task's stage and owner (dev 11-10)
+                         # another act or record than a task's stage and owner
                          "Who reported MC task TASK-2207?",
                          "who rqeuseted mission control approval TASK-4639?",
                          "who decided Mission Control approval TASK-3874",
@@ -188,7 +187,7 @@ class AsksMoreTests(unittest.TestCase):
                          ["who last touched PO#5262", "when"])
         self.assertEqual(fast_answer.question_parts(None), [])
         # a follow-up of the same question, or a part the intent's answer states, stays
-        for question in ("wheres PO#4720 at? is it late", "margin on S-ORD101132? and why",
+        for question in ("margin on S-ORD101132? and why",
                          "who last touched PO#5262 and when",
                          "where's TASK-1145 at and who owns it",
                          "who do we buy R-0342 (Ozokerite) from and what did we pay last time",
@@ -208,6 +207,46 @@ class AsksMoreTests(unittest.TestCase):
                          "its file"):
             with self.subTest(question=question):
                 self.assertFalse(fast_answer.serves(question))
+
+
+class RoutedToAgentTests(unittest.TestCase):
+    """The families the router eval (CAP-L180, 2026-11-15) sent to the agent: on hand, open
+    AR, an order's ship date and a purchase order's status are still recognised (their
+    meaning, overrides and the agent's first reads stand) but never answered here, while
+    the families it kept are."""
+
+    ROUTED = {"on_hand": ("how much R-0162 (Ethyl Alcohol 100% SDAG) do we have on hand",
+                          "stock on NP-006-35GRNEW?", "how much R-0162 on hand in BC?"),
+              "open_ar": ("what does A1 American owe us", "open AR for 7654321 ONT. LTD",
+                          "what was Maple Soap Co's balance in Sage"),
+              "order_shipped": ("when did order 1000012345 ship",
+                                "ship date for S-ORD101085?"),
+              "po_status": ("wheres PO#4720 at? is it late", "PO#5008 - received?",
+                            "status on PO5447?", "is 100055 late")}
+    KEPT = {"customer_account": "what's the account number for ACME Corp?",
+            "open_sos": "open orders for ACME Corp?",
+            "task_status": "where's TASK-1145 at",
+            "lot_expiry": "lot 160-3732-22412 - when does it go bad",
+            "po_followup": "PO#4720 is late, who do we chase"}
+
+    def test_a_routed_familys_question_goes_to_the_agent_before_any_read(self):
+        for intent, questions in self.ROUTED.items():
+            for question in questions:
+                with self.subTest(question=question):
+                    self.assertEqual(fast_answer.understand(question).intent, intent)
+                    self.assertFalse(fast_answer.serves(question))
+                    why: list = []
+                    # no reads given: any read attempted would raise, so none is made
+                    self.assertIsNone(fast_answer.answer(question, None, why))
+                    self.assertEqual(why, ["routed_to_agent"])
+        self.assertEqual(set(self.ROUTED), fast_answer.ROUTED_TO_AGENT)
+        self.assertFalse(fast_answer.ROUTED_TO_AGENT & set(fast_answer._RECIPES))
+
+    def test_the_kept_families_are_still_answered_here(self):
+        for intent, question in self.KEPT.items():
+            with self.subTest(question=question):
+                self.assertEqual(fast_answer.understand(question).intent, intent)
+                self.assertTrue(fast_answer.serves(question))
 
 
 class FollowReadsTests(unittest.TestCase):
@@ -268,6 +307,15 @@ class FollowReadsTests(unittest.TestCase):
 
 class FastAnswerTests(EmployeeDoorTestCase):
     server = test_agent_loop.AgentLoopTests.server   # the loop's fixture employee session
+
+    def setUp(self):
+        super().setUp()
+        # ``po_status`` answers nothing of its own (``ROUTED_TO_AGENT``) but is
+        # ``fast_chain``'s first read of a purchase order's follow-up: read here through
+        # the answer path so its gate and permission checks stay proven
+        patched = mock.patch.dict(fast_answer._RECIPES, {"po_status": fast_answer.po_status})
+        patched.start()
+        self.addCleanup(patched.stop)
 
     def answer(self, oid: str, question: str) -> tuple[fast_answer.FastRun | None, list[str]]:
         why: list[str] = []
@@ -507,7 +555,7 @@ class NamesReadTests(unittest.TestCase):
         # A typed find ends once its name pass named records (the word passes would read
         # every row of a common prefix): cut, but with every card of the name read, so a
         # name held by several cards is answered, never declined as cut.
-        from operating.ontology_tools import NAMED_READ_NOTE
+        from operating.ontology_tools_policy import NAMED_READ_NOTE
         cards = [{"object": {"object_id": f'Customer:portal.sage_ar_customer:{{"id":"{n}"}}',
                              "object_type": "Customer",
                              "display": _cell("ACME WEBSTORE", f"api://c/{n}", "row.namecust")},
@@ -809,9 +857,11 @@ class NewRecipeTests(unittest.TestCase):
     def gated(self, draft, reads, rows):
         """The draft's values through the claim gate, bound to what its reads returned."""
         from operating import agent_session, claim_checks
+        from operating import claim_checks_parse
+        from operating import claim_checks_values
         returned = {"counts": [], "currencies": {}}
         for name, args in reads.calls:
-            claim_checks.returned_evidence(name, args, reads.answers(name, args), returned)
+            claim_checks_values.returned_evidence(name, args, reads.answers(name, args), returned)
         # As the fast path submits it (``host_submission``: each value one claim citing at
         # most the gate's per-claim citations), each claim parsed against its own citations.
         block = {"format": fast_answer.ANSWER_FORMAT, "answerability": "answerable",
@@ -821,7 +871,7 @@ class NewRecipeTests(unittest.TestCase):
         self.assertEqual(len(submission["claims"]), len(draft.values))
         items = []
         for at, claim in enumerate(submission["claims"]):
-            parsed = claim_checks.parse_value_claims(claim["value_claims"],
+            parsed = claim_checks_parse.parse_value_claims(claim["value_claims"],
                                                      claim["citations"], [])
             items.append({"id": f"F{at}", "texts": [claim["text"]], "value_claims": parsed,
                           "citations": [{"handle": h, "status": "resolved"}
@@ -1306,204 +1356,6 @@ class NewRecipeTests(unittest.TestCase):
         self.assertEqual(served[0]["response_format"], "detailed")   # never the session text
         got = reads.call("plx.find", {"query": "PO100055"})
         self.assertEqual((got["status"], len(served)), ("not_found", 1))
-
-    def order(self, ship_values, around_extra=None):
-        order = {"object": {"object_id": "SalesOrder:portal.sage_oe_order_header:{}",
-                            "object_type": "SalesOrder",
-                            "display": _cell("1000012345", "api://o/1", "row.ordnumber")},
-                 "matched": {"raw": _cell("1000012345", "api://o/1", "row.ordnumber"),
-                             "normalized": "1000012345"}, "tier": "verified"}
-
-        def answers(name, args):
-            if name == "plx.find":
-                return {"candidates": [order]}
-            if name == "plx.around":
-                return {"objects": [{"object_id": f"Shipment:s:{i}", "object_type": "Shipment"}
-                                    for i in range(len(ship_values))], **(around_extra or {})}
-            i = int(args["object_id"].rsplit(":", 1)[1])
-            return {"values": [{"property": "ship_date", "value": v,
-                                "citation": {"l1_handle": f"api://s/{i}/{at}",
-                                             "field_path": "row.shidate"}}
-                               for at, v in enumerate(ship_values[i])]}
-        return answers
-
-    def test_an_order_ships_on_each_cited_shipment_date_or_declines(self):
-        ask = fast_answer.Ask("order_shipped", "1000012345", None)
-        draft, _ = _run(fast_answer.order_shipped, self.order(
-            [["2017-10-03"], ["2017-08-24", "2017-08-24T00:00:00Z"]]), ask)
-        said = " ".join(draft.sentences)
-        self.assertIn("1000012345 shipped in parts, on 2017-08-24 and 2017-10-03", said)
-        self.assertEqual(sorted(v["citations"][0]["l1_handle"] for v in draft.values
-                                if v["name"].startswith("ship_date")),
-                         ["api://s/0/0", "api://s/1/0"])
-        for broken in (self.order([["2017-08-24", "2017-08-25"]]),      # one shipment, 2 days
-                       self.order([]),                                    # no shipment read
-                       self.order([["2017-08-24"]], {"withheld": {"objects": 1}})):
-            with self.assertRaises(fast_answer.Unanswerable):
-                _run(fast_answer.order_shipped, broken, ask)
-
-    def sage(self, home, own):
-        card = {"object": {"object_id": "Customer:portal.sage_ar_customer:{}",
-                           "object_type": "Customer",
-                           "display": _cell("Maple Soap Co", "api://c/1",
-                                            "row.namecust")}}
-        row = {"row.idcust": "MAPLE01", "row.amtbaldueh": home, "row.amtbalduet": own,
-               "row.codecurn": "CAD"}
-        return lambda name, args: {"candidates": [card]} if name == "plx.find" else {
-            "status": "resolved", "citation": "api://c/1",
-            "fields": row if "field_path" not in args else {args["field_path"]: row[
-                args["field_path"]]},
-            "completeness": {"truncated": "field_path" not in args}}
-
-    def test_a_sage_balance_is_one_agreed_figure_read_whole(self):
-        ask = fast_answer.Ask("open_ar", "Maple Soap Co", "sage")
-        draft, _ = _run(fast_answer.open_ar, self.sage("1234.560", "1234.56"), ask)
-        self.assertIn("balance due in Sage (customer MAPLE01) is 1234.56 CAD",
-                      " ".join(draft.sentences))
-        with self.assertRaises(fast_answer.Unanswerable):   # two balances: no one figure
-            _run(fast_answer.open_ar, self.sage("1234.56", "100"), ask)
-
-    BOOKS = {"production": {"co-m": "manufacturing", "co-d": "distribution"}}
-
-    def bc_cards(self, cards):
-        """BC customer cards of one name: (number, balance due, company) each."""
-        handles = [f"bc://production/{co}/customers/{i}" for i, (_n, _b, co) in enumerate(cards)]
-        found = [{"object": {"object_id": f"Customer:bc.customers:{{\"id\": \"{i}\"}}",
-                             "object_type": "Customer",
-                             "display": _cell("SIDIA", h, "row.displayName")}}
-                 for i, h in enumerate(handles)]
-        rows = {h: {"row.number": n, "row.balanceDue": b, "row.currencyCode": "CAD"}
-                for h, (n, b, _co) in zip(handles, cards)}
-
-        def answers(name, args):
-            if name == "plx.find":
-                return {"candidates": found}
-            return {"status": "resolved", "citation": args["citation"],
-                    "fields": rows[args["citation"]], "completeness": {}}
-        return answers
-
-    def test_each_same_named_card_says_its_own_balance_those_owing_first(self):
-        """A name three BC cards hold, one number in two companies, the owing card last
-        found: "the open AR of each: customer C01210: 0; ..." read as the first card's 0
-        against the 115960.5 owed (a false answer). Each card's balance is said in its
-        own clause, the owing card first, each told apart by its number and company; no
-        value name carries an index figure ("open_ar_1: 0" reads as 1)."""
-        from evals import live_ops, live_ops_keys
-        ask = fast_answer.Ask("open_ar", "SIDIA", None)
-        books = mock.patch.object(fast_answer, "_company_books", lambda: self.BOOKS)
-        books.start()
-        self.addCleanup(books.stop)
-        draft, reads = _run(fast_answer.open_ar, self.bc_cards([
-            ("C01210", "0", "co-m"), ("SIDIA01", "0", "co-d"),
-            ("SIDIA01", "115960.5", "co-m")]), ask)
-        # the company is the cited record's own: no read more than the card's row
-        self.assertEqual(sorted({n for n, _a in reads.calls}), ["plx.find", "plx.read"])
-        said = " ".join(draft.sentences)
-        self.assertIn("named SIDIA; customer SIDIA01 (manufacturing company) has a balance "
-                      "due of 115960.5 CAD; customer C01210 (manufacturing company) has a "
-                      "balance due of 0 CAD; customer SIDIA01 (distribution company) has a "
-                      "balance due of 0 CAD.", said)
-        self.assertFalse([v["name"] for v in draft.values if re.search(r"\d", v["name"])])
-        for owed in ("115960.5", "0"):
-            fact = {"kind": "number", "id": "open_ar", "value": owed, "tolerance": "1",
-                    "label": live_ops_keys.LABELS["open_ar"]}
-            self.assertEqual(live_ops.contradicted(fact, said, draft.values, ask.mention), [])
-            self.assertTrue(live_ops.stated(fact, said, []))
-        # one company's cards: told apart by number alone
-        draft, _ = _run(fast_answer.open_ar, self.bc_cards([
-            ("C01", "0", "co-m"), ("S01", "5", "co-m")]), ask)
-        self.assertIn("SIDIA; customer S01 has a balance due of 5 CAD; customer C01 has a "
-                      "balance due of 0 CAD.", " ".join(draft.sentences))
-
-    def test_a_sage_card_past_a_full_first_find_is_looked_for_once_more(self):
-        """Ten other cards fill the first find (the name held in other systems, near names
-        ranked first): the Sage card is found by one wider find, never declined; not found
-        even then, the fast path declines."""
-        ask = fast_answer.Ask("open_ar", "Maple Soap Co", "sage")
-        others = [{"object": {"object_id": f"Customer:bc.customers:{{\"id\": \"{i}\"}}",
-                              "object_type": "Customer",
-                              "display": _cell(f"Maple Soap Co {i}", f"bc://c/{i}",
-                                               "row.displayName")}}
-                  for i in range(fast_answer.FIND_LIMIT)]
-        for wide_has_it in (True, False):
-            with self.subTest(wide_has_it=wide_has_it):
-                sage = self.sage("1234.56", "1234.56")
-
-                def answers(name, args):
-                    out = sage(name, args)
-                    if name == "plx.find":
-                        out = {"candidates": others[:args["limit"]] + (
-                            out["candidates"] if args["limit"] > fast_answer.FIND_LIMIT
-                            and wide_has_it else [])}
-                    return out
-                if not wide_has_it:
-                    with self.assertRaises(fast_answer.Unanswerable):
-                        _run(fast_answer.open_ar, answers, ask)
-                    continue
-                draft, reads = _run(fast_answer.open_ar, answers, ask)
-                self.assertEqual([a["limit"] for n, a in reads.calls if n == "plx.find"],
-                                 [fast_answer.FIND_LIMIT, fast_answer.WIDE_FIND_LIMIT])
-                self.assertIn("balance due in Sage (customer MAPLE01) is 1234.56 CAD",
-                              " ".join(draft.sentences))
-
-    def test_a_name_dozens_of_cards_share_is_read_to_the_finds_end(self):
-        """The name held by dozens of other systems' cards (a chain's locations): the Sage
-        cards are on the wide find's later pages, read page by page to its end, each card
-        of that name named; a find still going on past the page bound declines, and so
-        does one never naming the card (N = 1, 10, 60 other cards before it)."""
-        ask = fast_answer.Ask("open_ar", "Maple Soap Co", "sage")
-        size = 17     # a page cut by its size, not its limit
-
-        def world(before, sage_cards=1, after=0):
-            cards = [{"object": {"object_id": f"Customer:bc.customers:{{\"id\": \"{i}\"}}",
-                                 "object_type": "Customer",
-                                 "display": _cell("Maple Soap Co", f"bc://c/{i}",
-                                                  "row.displayName")}}
-                     for i in range(max(before, fast_answer.FIND_LIMIT))]
-            cards += [{"object": {"object_id": f"Customer:portal.sage_ar_customer:{{{i}}}",
-                                  "object_type": "Customer",
-                                  "display": _cell("Maple Soap Co", f"api://c/{i}",
-                                                   "row.namecust")}}
-                      for i in range(1, sage_cards + 1)]
-            cards += [dict(cards[0]) for _ in range(after)]
-            rows = {f"api://c/{i}": {"row.idcust": f"MAPLE0{i}", "row.amtbaldueh": "10.5",
-                                     "row.amtbalduet": "10.5", "row.codecurn": "CAD"}
-                    for i in range(1, sage_cards + 1)}
-
-            def answers(name, args):
-                if name == "plx.read":
-                    return {"status": "resolved", "citation": args["citation"],
-                            "fields": rows[args["citation"]], "completeness": {}}
-                start = int(args.get("cursor", "0"))
-                step = fast_answer.FIND_LIMIT if args["limit"] == fast_answer.FIND_LIMIT \
-                    else size
-                page = cards[start:start + step]
-                more = start + step < len(cards)
-                return {"candidates": page, "completeness": {
-                    "complete": not more, "truncated": more,
-                    "next_cursor": str(start + step) if more else None}}
-            return answers
-
-        for before in (1, 10, 60):
-            with self.subTest(before=before):
-                draft, reads = _run(fast_answer.open_ar, world(before, after=20), ask)
-                self.assertIn("(customer MAPLE01) is 10.5 CAD", " ".join(draft.sentences))
-                finds = [(a["limit"], a.get("cursor")) for n, a in reads.calls
-                         if n == "plx.find"]
-                self.assertEqual(finds[:2], [(fast_answer.FIND_LIMIT, None),
-                                             (fast_answer.WIDE_FIND_LIMIT, None)])
-                self.assertTrue(all(cursor for _limit, cursor in finds[2:]))
-                self.assertTrue(reads.names_complete)
-        # two Sage cards of the name, on different pages: both named
-        draft, _ = _run(fast_answer.open_ar, world(30, sage_cards=2, after=40), ask)
-        said = " ".join(draft.sentences)
-        self.assertIn("customer MAPLE01 has a balance due of 10.5 CAD", said)
-        self.assertIn("customer MAPLE02 has a balance due of 10.5 CAD", said)
-        # the find goes on past the page bound, or never names the Sage card: declined
-        past = size * fast_answer.MAX_NAME_PAGES
-        for answers in (world(30, after=past), world(30, sage_cards=0, after=10)):
-            with self.assertRaises(fast_answer.Unanswerable):
-                _run(fast_answer.open_ar, answers, ask)
 
     def mail(self, docs, gaps=()):
         card = {"object": {"object_id": "Customer:bc.customers:{}", "object_type": "Customer",
@@ -2476,6 +2328,7 @@ class FastScopeAndLeadTests(unittest.TestCase):
 
     def test_a_lead_cell_stays_a_lead_through_the_fast_gate(self):
         from operating import claim_checks, mcp_server
+        from operating import claim_checks_values
         investigated = {"answer": [{"name": "last_price", "kind": "property",
                                     "check": "passed", "lead_basis": True, "value": "9.50",
                                     "citation": {"l1_handle": self.LINE,
@@ -2483,7 +2336,7 @@ class FastScopeAndLeadTests(unittest.TestCase):
         claim = {"id": "p", "value": "9.50", "citation": self.LINE, "field": "row.unitCost"}
         row = {"handle": self.LINE, "revision": "0-1", "relation": "bc.purchaseInvoiceLines",
                "row": {"unitCost": "9.50"}}
-        evidence = claim_checks.returned_evidence("plx.investigate", {}, investigated)
+        evidence = claim_checks_values.returned_evidence("plx.investigate", {}, investigated)
         self.assertEqual(fast_answer.evidence_copy(evidence)["leads"],
                          {(self.LINE, "row.unitCost"): True})
 
@@ -2498,7 +2351,7 @@ class FastScopeAndLeadTests(unittest.TestCase):
             may_repair=False, repairs_left=0, unread=None)[0])
         reads = fast_answer.Reads(None, None, None, server)
         reads.seen[self.LINE] = None
-        claim_checks.returned_evidence("plx.investigate", {}, investigated, reads.returned)
+        claim_checks_values.returned_evidence("plx.investigate", {}, investigated, reads.returned)
         fast = decided(lambda: reads.gate({"claims": [claim]}))
         self.assertEqual(fast["outcome"], agent["outcome"])
         self.assertEqual([u["reason"] for u in fast["unsupported_claims"]],
@@ -2513,16 +2366,14 @@ class FastScopeAndLeadTests(unittest.TestCase):
             "line")["value"], "9.50")
 
     def test_a_constraint_the_recipe_cannot_read_declines_to_the_agent(self):
-        served = ("how much stock of R-0162 do we have?",
-                  "how much R-0162 on hand in BC?",
-                  "R-0162 (Ethyl Alcohol 100% SDAG) on hand?",
+        served = ("open orders for ACME Corp?", "open orders for ACME Corp in BC?",
                   "what stage is TASK-123 at?")
         for question in served:
             self.assertTrue(fast_answer.serves(question), question)
-        for question in ("how much stock of R-0162 at the Toronto warehouse?",
-                         "how much stock of R-0162 next month?",
-                         "how much stock of R-0162 in Sage?",
-                         "how much stock of R-0162 as of 2025-01-01?",
+        for question in ("open orders for ACME Corp at the Toronto warehouse?",
+                         "open orders for ACME Corp next month?",
+                         "what stage is TASK-123 at in Sage?",
+                         "open orders for ACME Corp as of 2025-01-01?",
                          "what stage is TASK-123 (and TASK-456) at?"):
             self.assertFalse(fast_answer.serves(question), question)
 
@@ -2648,7 +2499,7 @@ class HomeGapFiguresTests(unittest.TestCase):
     def test_a_home_gap_carries_the_briefings_ranking_amount_and_a_lots_expiry_days(self):
         """Home shows the figure the briefing ranks by, only a usable one the reader was
         shown with its citation, and a near-expiry lot's days to expiry."""
-        from operating.mcp_server import _home_gap
+        from operating.mcp_server_home import _home_gap
         base = {"id": "pe-0123456789abcdef", "kind": "late_po", "state": "open",
                 "object_id": "PurchaseOrder:portal.app_purchase_order:x",
                 "object_type": "PurchaseOrder", "first_seen": "2026-11-01",

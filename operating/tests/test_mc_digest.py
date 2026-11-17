@@ -15,6 +15,7 @@ import unittest
 from unittest import mock
 
 from operating import autopilot as ap
+from operating import autopilot_reading
 from operating import mc_digest as md
 from operating.tests.test_autopilot import OTHER, READER, everyone, opens_all
 from operating.tests.test_autopilot_replay import DAY, World, at
@@ -40,9 +41,9 @@ class Digest(World):
              task: str | None = None, task_id: str | None = None) -> str:
         oid = self.w.obj("MCApproval", {
             "gate_id": f"apg_{i}", "task_id": task_id or f"TASK-{1000 + i}",
-            # asked by an agent no one in the directory is: an asker never decides their
-            # own gate when another can (autopilot.owners_of)
-            "status": "pending", "reason": reason, "requested_by": "agent@synth-tenant.example",
+            # asked by an agent no one in the directory is, outside our domains: an asker
+            # never decides their own gate when another can (autopilot.owners_of)
+            "status": "pending", "reason": reason, "requested_by": "agent@synth-agents.example",
             "requested_at": at(hour)}, audience=audience)
         if task:
             self.w.link("MCApproval.gate_of", oid, task)
@@ -94,8 +95,8 @@ class Digest(World):
     def test_twenty_gates_group_rank_route_and_link(self):
         ids = self.twenty()
         q = self.prepare(ids)
-        mine = ap.visible(q, reader=READER, may_read=everyone, held=[], decide=opens_all)
-        theirs = ap.visible(q, reader=OTHER, may_read=everyone, held=[], decide=opens_all)
+        mine = autopilot_reading.visible(q, reader=READER, may_read=everyone, held=[], decide=opens_all)
+        theirs = autopilot_reading.visible(q, reader=OTHER, may_read=everyone, held=[], decide=opens_all)
         ours_d = md.digest(mine, NOW)
         their_d = md.digest(theirs, NOW)
         # routing: our project's 18 gates go to OURS (who decided there), theirs' 2 to the
@@ -164,10 +165,10 @@ class Digest(World):
 
     def test_a_reader_who_may_not_read_mc_sees_no_gate(self):
         q = self.prepare(self.twenty())
-        none = ap.visible(q, reader=READER, may_read=lambda a: not a.startswith("mc:"),
+        none = autopilot_reading.visible(q, reader=READER, may_read=lambda a: not a.startswith("mc:"),
                           held=[], decide=opens_all)
         self.assertEqual(md.digest(none, NOW)["deciders"], [])
-        stranger = ap.visible(q, reader="synth-tenant:admin", may_read=everyone, held=[],
+        stranger = autopilot_reading.visible(q, reader="synth-tenant:admin", may_read=everyone, held=[],
                               decide=opens_all)
         self.assertEqual(md.digest(stranger, NOW)["pending"], 0)
 
@@ -178,7 +179,7 @@ class Digest(World):
                 self.decided(OURS_P, OURS, REASONS["merge"])
                 ids = [self.gate(i, REASONS["launch" if i % 2 else "money"]) for i in range(n)]
                 q = self.prepare(ids)
-                got = md.digest(ap.visible(q, reader=READER, may_read=everyone, held=[],
+                got = md.digest(autopilot_reading.visible(q, reader=READER, may_read=everyone, held=[],
                                            decide=opens_all), NOW)
                 rows = [e["item_id"] for d in got["deciders"] for g in d["groups"]
                         for e in g["items"]]
@@ -221,7 +222,7 @@ class Digest(World):
                 mock.patch.object(socket, "create_connection",
                                   side_effect=AssertionError("network")):
             q = self.prepare(ids)
-            got = md.digest(ap.visible(q, reader=READER, may_read=everyone, held=[],
+            got = md.digest(autopilot_reading.visible(q, reader=READER, may_read=everyone, held=[],
                                        decide=opens_all), NOW)
         self.assertEqual(got["approves"], 0)
         self.assertTrue(all(e["recommendation"] in md.RECOMMENDATIONS

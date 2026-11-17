@@ -51,6 +51,7 @@ SCHEMA = "plx-team-activity/v1"
 SNAPSHOT_FILE = "team-activity.json"
 WINDOW_DAYS = sa.DAYS_KEPT
 PERIODS = (7, 28)
+TRACKER_WEEKS = 4                   # the Team view's weekly tracker: Monday weeks, current last
 MAX_AGE = timedelta(days=3)
 TZ = ZoneInfo("America/New_York")
 REPLY_MAX = timedelta(days=14)      # a later message after this long is not a reply
@@ -248,6 +249,24 @@ def _median(values: Sequence[float]) -> Optional[int]:
     return round(statistics.median(values)) if values else None
 
 
+def week_starts(until: date, weeks: int = TRACKER_WEEKS) -> list[date]:
+    """The Mondays of the last ``weeks`` weeks (US Eastern days), the week holding ``until``
+    last: the same weeks the work log's time saved counts in."""
+    first = until - timedelta(days=until.weekday() + 7 * (weeks - 1))
+    return [first + timedelta(days=7 * i) for i in range(weeks)]
+
+
+def reply_weeks(replies: Sequence[tuple[date, float]], until: date
+                ) -> dict[str, dict[str, Optional[int]]]:
+    """Per tracker week (its Monday): the median minutes to reply and how many replies."""
+    out: dict[str, dict[str, Optional[int]]] = {}
+    for start in week_starts(until):
+        end = min(start + timedelta(days=6), until)
+        minutes = [m for d, m in replies if start <= d <= end]
+        out[start.isoformat()] = {"median": _median(minutes), "n": len(minutes)}
+    return out
+
+
 def fold(*, mail: Iterable[tuple], teams: Iterable[tuple], cal_names: Mapping[str, Counter],
          directory: sa.Directory, groups: Iterable[str], excluded: Callable[[str], bool],
          system: Optional[Mapping[str, Any]], roles: Mapping[str, list[str]],
@@ -409,6 +428,7 @@ def fold(*, mail: Iterable[tuple], teams: Iterable[tuple], cal_names: Mapping[st
                                        if d > until - timedelta(days=p)]) for p in PERIODS},
             "reply_n": {str(p): sum(1 for d, _m in mine if d > until - timedelta(days=p))
                         for p in PERIODS},
+            "reply_weeks": reply_weeks(mine, until),
             "with": {o: n for o, n in with_.get(oid, Counter()).most_common()
                      if o != oid and not excluded(o)}}
     for row in people.values():   # partners kept only when they are listed themselves
@@ -482,7 +502,8 @@ def main(argv: Optional[list[str]] = None) -> int:
     args.out.parent.mkdir(parents=True, exist_ok=True)
     tmp = args.out.with_suffix(".tmp")
     tmp.write_text(json.dumps(snap, sort_keys=True))
-    os.chmod(tmp, 0o600)
+    # owner and group (plx-state, the state directory's): the API user reads it; others none
+    os.chmod(tmp, 0o640)
     tmp.replace(args.out)
     print(json.dumps({"status": snap["status"], "people": len(snap["people"]),
                       "withheld": snap.get("withheld", {})}, sort_keys=True))

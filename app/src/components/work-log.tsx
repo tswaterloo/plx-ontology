@@ -3,13 +3,9 @@
 import { BellRing, Bookmark, Bot, Eye, FileText, Mail, MessageCircle, Pin, StickyNote, type LucideIcon } from "lucide-react";
 import Link from "next/link";
 import { useCallback, useEffect, useState } from "react";
-import { getWorkLog, getWorkThread, organiseWorkThread } from "@/lib/api";
-import { cn } from "@/lib/cn";
-import { plainError } from "@/lib/errors";
+import { getWorkThread, organiseWorkThread } from "@/lib/api";
 import { clockET, formatDateTime, objectHref, recordLabel, typeLabel } from "@/lib/format";
 import type { WorkLogEvent, WorkLogKind } from "@/lib/types";
-
-const TZ = "America/Toronto";
 
 export const KIND_ICON: Record<WorkLogKind, LucideIcon> = {
   ask: MessageCircle,
@@ -128,7 +124,7 @@ export function LoopLine({ e }: { e: WorkLogEvent }) {
 }
 
 /** A dry-run action (nothing went out) is logged as "prepared"; never read it as sent. */
-function verbLabel(e: Pick<WorkLogEvent, "kind" | "verb">): string {
+export function verbLabel(e: Pick<WorkLogEvent, "kind" | "verb">): string {
   if (e.kind === "action" && e.verb === "prepared") return "Prepared (not sent)";
   return VERB[e.verb] ?? e.verb;
 }
@@ -193,36 +189,6 @@ export function WorkLogRow({ e, onChanged, showWho }: { e: WorkLogEvent; onChang
         )}
       </div>
     </li>
-  );
-}
-
-/** The record page's section: your own work on this record. */
-export function RecordWorkLog({ objectId }: { objectId: string }) {
-  const [events, setEvents] = useState<WorkLogEvent[] | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const load = useCallback(() => {
-    const c = new AbortController();
-    getWorkLog({ record: objectId, limit: 10 }, c.signal)
-      .then((p) => setEvents(p.events))
-      .catch((e) => !c.signal.aborted && setError(plainError(e)));
-    return () => c.abort();
-  }, [objectId]);
-  useEffect(() => load(), [load]);
-  if (error || !events || events.length === 0) return null;
-  return (
-    <section aria-label="Your work on this record" className="mt-6" data-testid="record-work-log">
-      <div className="flex items-baseline justify-between px-3">
-        <h2 className="text-[12px] font-medium text-muted">Your work on this record</h2>
-        <Link href={`/work-log?record=${encodeURIComponent(objectId)}`} className={cn("text-[12px] text-muted hover:text-fg hover:underline")}>
-          All of it
-        </Link>
-      </div>
-      <ul className="mt-1">
-        {events.map((e) => (
-          <WorkLogRow key={e.seq} e={e} onChanged={load} />
-        ))}
-      </ul>
-    </section>
   );
 }
 

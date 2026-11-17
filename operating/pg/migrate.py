@@ -30,6 +30,19 @@ _NAME = re.compile(r"^(\d{4})_[a-z0-9_]+\.sql$")
 _PLACEHOLDER = re.compile(r"\{\{\s*([a-z_]+)\s*\}\}")
 LOCK_KEY = 0x504C58_5047  # "PLXPG": one migrate at a time per database
 
+# search.chunks' bit-quantized HNSW index (migration 0034); the embedding switch below
+# rebuilds it at the new dimension. operating.pg.bulk re-exports both.
+CHUNKS_BQ_HNSW = "chunks_embedding_bq_hnsw"
+
+
+def chunks_bq_hnsw_ddl(dim: int) -> str:
+    """The bit index's definition at the column's dimension (migration 0034's)."""
+    if not isinstance(dim, int) or isinstance(dim, bool) or not 1 <= dim <= 64000:
+        raise ValueError(f"bq_dim_invalid:{dim!r}")
+    return (f"CREATE INDEX IF NOT EXISTS {CHUNKS_BQ_HNSW} ON search.chunks USING hnsw "
+            f"((binary_quantize(embedding)::bit({dim})) bit_hamming_ops) "
+            "WITH (m = 16, ef_construction = 64)")
+
 LEDGER = "plx_meta"
 _META_DDL = """
 CREATE SCHEMA IF NOT EXISTS {schema};
@@ -166,6 +179,7 @@ def set_embedding(conn: psycopg.Connection, model: str, dim: int | None = None) 
         if current == (model, dim):
             return {"changed": False, "model": model, "dim": dim, "cleared": 0}
         conn.execute("DROP INDEX IF EXISTS search.chunks_embedding_hnsw")
+        conn.execute("DROP INDEX IF EXISTS search.chunks_embedding_bq_hnsw")
         conn.execute("DROP INDEX IF EXISTS search.entities_name_embedding_hnsw")
         cleared = conn.execute(
             "UPDATE search.chunks SET embedding = NULL, embed_model = NULL "
@@ -178,6 +192,7 @@ def set_embedding(conn: psycopg.Connection, model: str, dim: int | None = None) 
                              "TYPE halfvec({})").format(sql.Literal(dim)))
         conn.execute("CREATE INDEX chunks_embedding_hnsw ON search.chunks USING hnsw "
                      "(embedding halfvec_cosine_ops) WITH (m = 16, ef_construction = 64)")
+        conn.execute(chunks_bq_hnsw_ddl(dim))
         conn.execute("CREATE INDEX entities_name_embedding_hnsw ON search.entities USING hnsw "
                      "(name_embedding halfvec_cosine_ops) WITH (m = 16, ef_construction = 64)")
         conn.execute("UPDATE search.embedding_config SET model = %s, dim = %s, changed_at = now()",

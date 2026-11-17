@@ -511,10 +511,18 @@ class DocumentUnderstandingTest(unittest.TestCase):
         self.assertNotIn("uncertain", next(c for c in same.claims
                                            if c["field"] == "customer_po"))
         # An image is OCR-read with the same interword-space profile as a PDF page.
-        done = subprocess.CompletedProcess([], 0, stdout=b"Total Qty: 2012     cases")
+        def done(command, **kwargs):   # the reading's text and word boxes beside it
+            base = Path(next(c for c in command if c.endswith("-read")))
+            base.with_suffix(".txt").write_bytes(b"Total Qty: 2012     cases\n")
+            base.with_suffix(".tsv").write_text(
+                "level\tpage_num\tblock_num\tpar_num\tline_num\tword_num\tleft\ttop\twidth"
+                "\theight\tconf\ttext\n" + "".join(
+                    f"5\t1\t1\t1\t1\t{i}\t1\t1\t9\t9\t96\t{word}\n"
+                    for i, word in enumerate(("Total", "Qty:", "2012", "cases"), 1)))
+            return subprocess.CompletedProcess(command, 0, b"", b"")
         with unittest.mock.patch("shutil.which", return_value="/usr/bin/tesseract"), \
                 unittest.mock.patch("integrations.child_process.run",
-                                    return_value=done) as run:
+                                    side_effect=done) as run:
             self.assertEqual(local_image_text(b"png"), "Total Qty: 2012     cases")
         self.assertIn("preserve_interword_spaces=1", run.call_args.args[0])
 
@@ -739,6 +747,94 @@ class HtmlTableTest(unittest.TestCase):
         self.assertEqual([line.strip("\t ").split("\t") for line in lines],
                          [["Item", "Qty"], ["BTL-100", "10"]])
         self.assertNotIn("Qty10", document.text)
+
+
+class HtmlHiddenTextTest(unittest.TestCase):
+    """DOC-006: text a reader never sees (``hidden``, ``<template>``, inline
+    ``display:none``) is not read, however deep, and what follows it is."""
+
+    def test_hidden_subtrees_are_skipped(self):
+        from integrations.document_understanding import html_text
+        html = ('<p>Ship 10 cases</p>'
+                '<div hidden><div>PO 4501 cancelled</div><p>secret</p></div>'
+                '<template><p>Template 77</p></template>'
+                '<span style="color:red; DISPLAY : none">preheader 99</span>'
+                '<div style="display:none"><div><div>nested 55</div></div>tail 66</div>'
+                '<img hidden src="x"><p>Lot A12 released</p>')
+        text = html_text(html)
+        for gone in ("4501", "secret", "Template 77", "preheader", "nested", "tail 66"):
+            self.assertNotIn(gone, text)
+        self.assertIn("Ship 10 cases", text)
+        self.assertIn("Lot A12 released", text)
+        self.assertIn("shown", html_text('<div style="display:block">shown</div>'))
+
+    def test_a_hidden_element_ends_where_html_ends_it_without_its_end_tag(self):
+        """Review of DOC-006: a hidden td, li or p left unclosed ends at the tag that
+        implies its end or at its parent's end; what follows is read."""
+        from integrations.document_understanding import html_text
+        cases = {'<table><tr><td style="display:none">x<td>PO 123</table>': ("PO 123", "x"),
+                 '<ul><li hidden>a<li>PO 999</ul>': ("PO 999", "a"),
+                 '<li hidden>a<li>PO 999': ("PO 999", "a"),
+                 '<div><p hidden>gone 1<div>Lot 7</div></div>': ("Lot 7", "gone 1"),
+                 '<div><span hidden>gone 2</div><p>after 8</p>': ("after 8", "gone 2"),
+                 '<table><tr><td hidden>gone 3</tr><tr><td>row 9</td></tr></table>':
+                     ("row 9", "gone 3"),
+                 '<dl><dt hidden>gone 4<dd>def 10</dl>': ("def 10", "gone 4"),
+                 # a nested list inside a hidden item stays hidden; the next item is read
+                 '<ul><li hidden>a<ul><li>gone 5<li>gone 6</ul><li>PO 11</ul>':
+                     ("PO 11", "gone 5"),
+                 # a stray end tag never ends it
+                 '<div hidden>gone 7</span>gone 8</div>shown 12': ("shown 12", "gone 8")}
+        for html, (shown, gone) in cases.items():
+            with self.subTest(html=html):
+                text = html_text(html)
+                self.assertIn(shown, text)
+                self.assertNotIn(gone, text)
+        self.assertNotIn("gone 6", html_text(
+            '<ul><li hidden>a<ul><li>gone 5<li>gone 6</ul><li>PO 11</ul>'))
+
+    def test_a_hidden_element_holding_an_unclosed_child_ends_with_its_element(self):
+        """Second review of DOC-006: the hidden scope follows HTML's implied ends at
+        every depth, so an unclosed td, p or span inside a hidden row or item ends with
+        it, and a nested table or list inside keeps its own rows and items hidden."""
+        from integrations.document_understanding import html_text
+        cases = [
+            # (html, read, never read)
+            ('<ul><li hidden><p>x<li>PO 8</ul>', ["PO 8"], ["x"]),
+            ('<table><tr hidden><td>x<tr><td>PO 5<td>qty 3</table>after',
+             ["PO 5", "qty 3", "after"], ["x"]),
+            ('<table><tr><td hidden><p>x<td>PO 7</table>', ["PO 7"], ["x"]),
+            ('<table><tbody hidden><tr><td>x<tbody><tr><td>PO 10</table>', ["PO 10"], ["x"]),
+            ('<ul><li hidden><span>x<b>y<li>PO 13</ul>', ["PO 13"], ["x", "y"]),
+            ('<table><tr hidden><td>x<td><p>y<span>z<tr><td>PO 14</table>',
+             ["PO 14"], ["x", "y", "z"]),
+            ('<dl><dt hidden><p>x<dd>def 15</dl>', ["def 15"], ["x"]),
+            # nested: a hidden row's own cells end inside it, the row stays hidden
+            ('<table><tr hidden><td>x<td>y</td><td>z<tr><td>PO 16</table>',
+             ["PO 16"], ["x", "y", "z"]),
+            # a nested table inside a hidden cell keeps its rows hidden, then the next
+            # cell of the outer row is read
+            ('<table><tr><td hidden><table><tr><td>x<tr><td>y</table><td>PO 17</table>',
+             ["PO 17"], ["x", "y"]),
+            # a nested list inside a hidden item, unclosed p inside its items
+            ('<ul><li hidden><ul><li><p>x<li><p>y</ul><p>z<li>PO 18</ul>',
+             ["PO 18"], ["x", "y", "z"]),
+            # a hidden p with an open span ends at a block; at a table cell it does not
+            ('<div><p hidden><span>x<div>Lot 19</div></div>', ["Lot 19"], ["x"]),
+            # hidden items in a row: each ends at the next
+            ('<ul><li hidden><p>x<li hidden><p>y<li>PO 20<li>PO 21</ul>',
+             ["PO 20", "PO 21"], ["x", "y"]),
+            # an li inside a hidden table cell is that cell's own list item, never the end
+            ('<ul><li><table><tr><td hidden><ul><li>x<li>y</ul></table><li>PO 22</ul>',
+             ["PO 22"], ["x", "y"]),
+        ]
+        for html, read, gone in cases:
+            with self.subTest(html=html):
+                text = html_text(html)
+                for want in read:
+                    self.assertIn(want, text)
+                for word in gone:
+                    self.assertNotRegex(text, rf"\b{word}\b")
 
 
 @unittest.skipUnless(_importable("pypdf") and _importable("reportlab"),
@@ -986,8 +1082,11 @@ class OnePdfReaderTest(unittest.TestCase):
     READ_CALLS = {"PdfReader", "extract_text", "local_pdf_text_layer", "doc_convert.convert",
                   "convert_stdlib", "_portable_pdf_text", "_macos_pdf_text", "MarkItDown"}
     # pdf_layout_pages: the layout view a field reader places values by, never pinned text.
+    # pdf_page_text: a page's text for a structural walk over open_pdf's reader (a form's
+    # blanks, a document's style), never pinned text.
     READERS = {"_pypdf_open", "_pypdf_pages", "_pdftotext_pages", "_ocr_reading",
-               "_pdf_reading", "_office_reading", "local_pdf_text_layer", "pdf_layout_pages"}
+               "_pypdf_layout_pages", "_pdf_reading", "_office_reading",
+               "local_pdf_text_layer", "pdf_layout_pages", "pdf_page_text"}
 
     @classmethod
     def references(cls, source):
@@ -1165,11 +1264,14 @@ class OcrPageCapTest(unittest.TestCase):
         self.assertIn({"path": "big.pdf!/page/201-250", "kind": "pdf_page",
                        "state": "skipped_by_cap", "cap": "pages", "limit": du.MAX_PAGES},
                       container.gaps)
-        # Within the bound nothing is skipped, and a pinned text needs no page count.
+        # Within the bound nothing is skipped. A pinned text of a paged file is counted
+        # (page-capped OCR text holds fewer pages than the file, c3d7cfa93d): one page
+        # of one is no cap, and an unknown count under the bound is no refusal.
         small = make_pdf([["Petra PO: PPO-200"]])
-        with patch.object(du, "pdf_page_count", side_effect=AssertionError("counted")):
-            self.assertIsNone(ct.read_text(small, "application/pdf", filename="po.pdf",
-                                           text="Petra PO: PPO-200").skipped_by_cap)
+        for count in (1, None):
+            with patch.object(du, "pdf_page_count", return_value=count):
+                self.assertIsNone(ct.read_text(small, "application/pdf", filename="po.pdf",
+                                               text="Petra PO: PPO-200").skipped_by_cap)
         self.assertIsNone(ct.read_text(small, "application/pdf").skipped_by_cap)
 
     @unittest.skipUnless(all(shutil.which(tool) for tool in
@@ -1404,9 +1506,8 @@ class OcrFailureCauseTest(unittest.TestCase):
                 elif tool == "pdftoppm":
                     dpi = int(command[command.index("-r") + 1])   # a letter page at dpi
                     width, height = render or (round(612 * dpi / 72), round(792 * dpi / 72))
-                    Path(command[-1] + ".png").write_bytes(
-                        b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR" + width.to_bytes(4, "big") +
-                        height.to_bytes(4, "big"))
+                    Path(command[-1] + ".pgm").write_bytes(   # pdftoppm -gray: PGM
+                        b"P5\n%d %d\n255\n" % (width, height) + bytes(width * height))
                     out = b""
                 elif command[-1] == "0":   # orientation: too little text is no answer
                     return CompletedProcess(command, 1, b"", b"Too few characters\n")
@@ -1433,7 +1534,8 @@ class OcrFailureCauseTest(unittest.TestCase):
         # test_document_understanding_ocr_exit; the byte-shape causes of a PDF poppler
         # refuses through test_pdf_unreadable_typed_by_bytes.
         self.assertEqual({cause for cause, _, _ in cases} | {
-            "text_layer_exit", "tool_exit", "not_a_pdf", "pdf_truncated", "pdf_stub"},
+            "text_layer_exit", "tool_exit", "not_a_pdf", "pdf_truncated", "pdf_stub",
+            "not_an_image"},   # not_an_image: capture_text, test_text_terminal_classes
                          set(du.OCR_FAILURE_CAUSES))
         record = {"name": "scan.pdf", "mime_type": "application/pdf"}
         with unittest.mock.patch.object(du.platform, "system", return_value="Linux"), \
@@ -1511,6 +1613,29 @@ class RaisedReadNotRememberedTest(unittest.TestCase):
         (self.blobs / digest[:2]).mkdir(exist_ok=True)
         (self.blobs / digest[:2] / digest).write_bytes(content)
         return {"content_sha256": digest, "content_type": mime, "name": name}
+
+    def test_a_warm_read_after_the_bytes_are_deleted_equals_the_cold_read(self):
+        """DOC-001: a memo hit is served only while its bytes are still on disk, and an
+        entry made from one blob root is never served for another."""
+        import io
+        import zipfile
+        from integrations import captured_text as ct
+        tag = os.urandom(8).hex()
+        row = self.store(f"PO Number: {tag}\n".encode(), "text/plain", f"po-{tag}.txt")
+        self.assertIn(tag, ct.captured_text(self.blobs, row).text)   # warm
+        other = tempfile.TemporaryDirectory()
+        self.addCleanup(other.cleanup)
+        self.assertIsNone(ct.captured_text(other.name, row))   # another store lacks it
+        (self.blobs / row["content_sha256"][:2] / row["content_sha256"]).unlink()
+        self.assertIsNone(ct.captured_text(self.blobs, row))   # as a cold read would be
+        buffer = io.BytesIO()
+        with zipfile.ZipFile(buffer, "w") as archive:
+            archive.writestr(f"m-{tag}.txt", f"Lot {tag}\n")
+        zipped = self.store(buffer.getvalue(), "application/zip", f"z-{tag}.zip")
+        self.assertIsNotNone(ct.container_members(self.blobs, zipped))
+        self.assertIsNone(ct.container_members(other.name, zipped))
+        (self.blobs / zipped["content_sha256"][:2] / zipped["content_sha256"]).unlink()
+        self.assertIsNone(ct.container_members(self.blobs, zipped))
 
     def test_captured_text_reads_again_after_a_raise_and_remembers_no_text(self):
         from integrations import captured_text as ct, child_process
@@ -1629,7 +1754,8 @@ class RaisedReadNotRememberedTest(unittest.TestCase):
                 self.assertFalse(reader.is_alive())
                 self.assertEqual(len(fresh), 0)
         self.assertEqual(got[0].text, f"PO Number: {tag}\n")
-        self.assertIn((row["content_sha256"], "text/plain", row["name"], None), old)
+        self.assertIn((ct._blob_root(self.blobs),
+                       (row["content_sha256"], "text/plain", row["name"], None)), old)
 
     def test_container_members_reads_again_after_a_raise_and_remembers_a_result(self):
         import zipfile

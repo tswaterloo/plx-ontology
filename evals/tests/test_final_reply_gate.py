@@ -17,6 +17,8 @@ import unittest
 from evals import runner, score as sc
 from evals.tests import fixtures as fx
 from operating import answer_gate, claim_checks
+from operating import claim_checks_parse
+from operating import claim_checks_text
 
 DOC = "sharepoint://drive/item@%22v1%22"
 MAP = "sharepoint://drive/map@%22v2%22"
@@ -131,7 +133,7 @@ class FinalReplyGateTests(unittest.TestCase):
         self.assertEqual(parsed["text"].splitlines(), [
             "The map starts with a blank bottle PO.", answer_gate.WITHHELD_STATEMENTS])
         self.assertNotRegex(text.split("```json")[0], r"\d")
-        self.assertEqual(claim_checks.prose_numbers(parsed["text"], ["Blank bottle PO"]), [])
+        self.assertEqual(claim_checks_text.prose_numbers(parsed["text"], ["Blank bottle PO"]), [])
         self.assert_states_only(text, parsed)
 
     def test_a_reply_stating_only_passed_claims_and_the_question_leaves_as_written(self):
@@ -489,7 +491,7 @@ class FinalReplyGateTests(unittest.TestCase):
             reply = answer_gate.final_reply(f"- Billed at {loose} per KG.", claims)
             self.assertEqual(reply["unbacked"], [loose], loose)
         # a value written with more places than its cell is never "rounded" from it
-        self.assertFalse(claim_checks.rounded_from(claim_checks.to_decimal("1.2500"),
+        self.assertFalse(claim_checks_parse.rounded_from(claim_checks.to_decimal("1.2500"),
                                                    [claim_checks.to_decimal("1.25")]))
 
     def test_a_sentence_writing_a_passed_text_value_negated_is_dropped_value_kept(self):
@@ -802,7 +804,7 @@ class FinalReplyGateTests(unittest.TestCase):
         # it. The plan's direction entry carries its sentence (``say_direction``); the
         # reply screen backs its percent only as the change between the two passed prices
         # the sentence writes, in the direction it says.
-        from operating.ontology_tools_investigate import say_direction
+        from operating.ontology_tools_investigate_plans import say_direction
         entries = [{"name": "p_last_price", "kind": "computed", "value": "12.65"},
                    {"name": "p_previous_price", "kind": "computed", "value": "12.14"},
                    {"name": "p_direction", "kind": "computed", "value": "up",

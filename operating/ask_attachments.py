@@ -130,22 +130,25 @@ def _clip(text: str) -> tuple[str, bool]:
 
 
 def _pdf_text(data: bytes) -> tuple[str, bool]:
-    from pypdf import PdfReader       # optional dependency (requirements.txt); absent: unread
-    reader = PdfReader(io.BytesIO(data))
-    if reader.is_encrypted:
+    # The one reading of a PDF (document_understanding.read_pages: pypdf, else Portal's
+    # converter or poppler's text layer), on its first MAX_PDF_PAGES pages; no OCR.
+    from integrations import document_understanding as du
+    reading = du.read_pages(data, "pdf", max_pages=MAX_PDF_PAGES, max_text=None,
+                            first_pages=True)
+    if reading.failure == "encrypted":
         raise _Unread("It is password-protected: attach an unlocked copy.")
-    pages = reader.pages
-    parts = []
-    for number, page in enumerate(pages):
-        if number >= MAX_PDF_PAGES:
-            break
-        parts.append(f"[page {number + 1}]\n{(page.extract_text() or '').strip()}")
-    text = "\n\n".join(parts)
+    if reading.status == "unsupported":
+        raise ValueError(reading.failure or "pdf_unread")   # not read: the generic reason
+    if reading.pages:
+        text = "\n\n".join(f"[page {page.number}]\n{page.text.strip()}"
+                           for page in reading.pages)
+    else:
+        text = reading.text.strip()
     if not re.search(r"\w", re.sub(r"\[page \d+\]", "", text)):
         raise _Unread("It has no text to read (a scan): attach a screenshot of the pages "
                       "instead.")
     text, cut = _clip(text)
-    return text, cut or len(pages) > MAX_PDF_PAGES
+    return text, cut or reading.skipped_pages is not None
 
 
 def _xml(archive: zipfile.ZipFile, name: str, budget: list[int]) -> Optional[ElementTree.Element]:

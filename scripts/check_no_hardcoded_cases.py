@@ -69,6 +69,7 @@ The candidate cannot loosen the gate that admits it. The base (``--base``, defau
     every file counts as changed.
 
 Usage: python3 scripts/check_no_hardcoded_cases.py [ROOT] [--base REF] [--strict-expiry]
+       [--cache DIR]   (per-file findings reused by git blob sha under the same rules)
 (exit 0 clean, 1 findings)
 """
 
@@ -83,6 +84,7 @@ import fnmatch
 import functools
 import json
 from json.decoder import scanstring
+import os
 from pathlib import Path
 import re
 import subprocess
@@ -455,15 +457,99 @@ def candidate_files(root: Path) -> list[Path]:
     return keep
 
 
-def scan_tree(root: Path, deny: Denylist) -> list[Finding]:
+def rules_digest(deny: Denylist) -> str:
+    """What a file's findings depend on besides its own path and bytes: this scanner's
+    code and the identifier, glob and name rules (with the derived eval identifiers). The
+    allowlist, ratchet and expiry are applied after the scan, every run, so they are not
+    part of it."""
+    import hashlib
+    h = hashlib.sha256(Path(__file__).read_bytes())
+    for case_id, pattern in deny.identifiers:
+        h.update(f"\0id\0{case_id}\0{pattern.pattern}\0{pattern.flags}".encode())
+    for glob in deny.module_globs:
+        h.update(f"\0glob\0{glob}".encode())
+    for regex in deny.name_regexes:
+        h.update(f"\0name\0{regex.pattern}\0{regex.flags}".encode())
+    return h.hexdigest()
+
+
+def blob_sha(data: bytes) -> str:
+    """git's blob id of ``data`` (``git hash-object``), computed without git."""
+    import hashlib
+    return hashlib.sha1(b"blob %d\0" % len(data) + data).hexdigest()
+
+
+class VerdictCache:
+    """Per-file findings keyed by (path, git blob sha) under one rules digest: an unchanged
+    file under unchanged rules is not parsed or scanned again (AUD-17). One JSON file per
+    rules digest in ``directory``; a changed rule, scanner or denylist is a new digest,
+    so a new file, so nothing cached under the old rules is ever read. A changed file is a
+    new blob sha, so it is scanned. An unreadable or malformed cache is ignored (scanned
+    as if empty); a write failure only loses the cache."""
+
+    def __init__(self, directory: Path, digest: str):
+        self.path = Path(directory) / f"no-hardcoded-cases-{digest[:32]}.json"
+        self.entries: dict[str, list[Finding]] = {}
+        self.dirty = False
+        try:
+            data = json.loads(self.path.read_text(encoding="utf-8"))
+            if data.get("digest") == digest and isinstance(data.get("files"), dict):
+                for key, found in data["files"].items():
+                    if isinstance(found, list) and all(
+                            isinstance(f, list) and len(f) == 5 and isinstance(f[1], int)
+                            and all(isinstance(x, str) for i, x in enumerate(f) if i != 1)
+                            for f in found):
+                        self.entries[key] = [tuple(f) for f in found]
+        except (OSError, ValueError, AttributeError):
+            self.entries = {}
+        self.digest = digest
+
+    def get(self, relative: str, blob: str) -> list[Finding] | None:
+        return self.entries.get(f"{relative}\0{blob}")
+
+    def put(self, relative: str, blob: str, found: list[Finding]) -> None:
+        self.entries[f"{relative}\0{blob}"] = list(found)
+        self.dirty = True
+
+    def save(self, keep: set[str] | None = None) -> None:
+        if not self.dirty:
+            return
+        files = {k: v for k, v in self.entries.items() if keep is None or k in keep}
+        try:
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            tmp = self.path.with_name(f".{self.path.name}.{os.getpid()}.tmp")
+            tmp.write_text(json.dumps({"digest": self.digest, "files": files}), encoding="utf-8")
+            os.replace(tmp, self.path)
+        except OSError:
+            pass
+
+
+def scan_tree(root: Path, deny: Denylist, cache_dir: Path | None = None) -> list[Finding]:
     found: list[Finding] = []
+    cache = VerdictCache(cache_dir, rules_digest(deny)) if cache_dir else None
+    seen: set[str] = set()
     for path in candidate_files(root):
         relative = path.relative_to(root).as_posix()
+        data = path.read_bytes()
+        blob = blob_sha(data) if cache else ""
+        hit = cache.get(relative, blob) if cache else None
+        if hit is not None:
+            found.extend(hit)
+            seen.add(f"{relative}\0{blob}")
+            continue
+        mine: list[Finding] = []
         if any(fnmatch.fnmatch(path.name.lower(), glob) for glob in deny.module_globs):
-            found.append((relative, 1, "module_name", path.name, path.name))
-        text = path.read_text(encoding="utf-8")
+            mine.append((relative, 1, "module_name", path.name, path.name))
+        # the same text read_text gives (universal newlines)
+        text = data.decode("utf-8").replace("\r\n", "\n").replace("\r", "\n")
         scanner = {".py": scan_python, ".json": scan_json, ".js": scan_js}[path.suffix]
-        found.extend(scanner(text, relative, deny))
+        mine.extend(scanner(text, relative, deny))
+        if cache:
+            cache.put(relative, blob, mine)
+            seen.add(f"{relative}\0{blob}")
+        found.extend(mine)
+    if cache:
+        cache.save(keep=seen)
     return sorted(set(found))
 
 
@@ -720,9 +806,10 @@ def _effective_ratchet(candidate: Denylist | None, base: Denylist | None
 
 
 def evaluate(root: Path, today: dt.date | None = None, base: str | None = "origin/main",
-             strict_expiry: bool = False) -> tuple[int, list[str]]:
+             strict_expiry: bool = False, cache_dir: Path | None = None) -> tuple[int, list[str]]:
     """(exit code, report lines) for the tree at ``root`` on ``today`` (UTC), judged
-    against the denylist at ``base``."""
+    against the denylist at ``base``. ``cache_dir``: reuse the identifier/name findings of
+    files unchanged under unchanged rules (``VerdictCache``); the verdict is the same."""
     today = today or dt.datetime.now(dt.timezone.utc).date()
     candidate_path = root / DENYLIST
     candidate = load_denylist(root) if candidate_path.is_file() else None
@@ -748,7 +835,7 @@ def evaluate(root: Path, today: dt.date | None = None, base: str | None = "origi
     derived = eval_identifiers(tree_eval_documents(root) + base_eval_documents(root, base),
                                deny.identifiers)
     deny = replace(deny, identifiers=deny.identifiers + derived)
-    found = scan_tree(root, deny) + scan_eval_references(root)
+    found = scan_tree(root, deny, cache_dir) + scan_eval_references(root)
     lines.extend(refused + ratchet_refused)
     failures, used, matched = len(refused) + len(ratchet_refused), set(), set()
     counts = {rule: [0, 0] for rule in (*RULES, EVAL_REFERENCE)}  # [total, allowlisted]
@@ -799,9 +886,11 @@ def main(argv: list[str] | None = None) -> int:
                         help="authoritative ref for scanner data and allowlist")
     parser.add_argument("--strict-expiry", action="store_true",
                         help="fail every expired entry (daily audit)")
+    parser.add_argument("--cache", type=Path,
+                        help="per-file verdict cache directory (by git blob sha and rules digest)")
     args = parser.parse_args(sys.argv[1:] if argv is None else argv)
     code, lines = evaluate(Path(args.root).resolve(), base=args.base,
-                           strict_expiry=args.strict_expiry)
+                           strict_expiry=args.strict_expiry, cache_dir=args.cache)
     print("\n".join(lines))
     print("no-hardcoded-cases: " + ("FAIL" if code else "clean"))
     return code

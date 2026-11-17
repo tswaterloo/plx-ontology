@@ -16,11 +16,10 @@ import unittest
 from unittest import mock
 
 from ontology.json_contract import validate
-from ontology.types import Actor
 from operating import delta_overlay
 from operating.case_runtime import CaseRuntime
 from operating.ontology_host import CaseHostTools
-from operating.ontology_tools import load_contracts
+from operating.ontology_tools_policy import load_contracts
 from tests import test_ontology_tools as fx
 
 CONTRACTS = load_contracts()

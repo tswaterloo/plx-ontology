@@ -1759,7 +1759,7 @@
       "properties": {
         "mode": {"type": "string", "enum": ["business_documents"]},
         "format": {"type": "string", "enum": ["plx-business-documents/v1"]},
-        "view": {"type": "string", "enum": ["forecasts", "forecast_accuracy", "priority_fill", "price_sheets", "compliance_pack", "answer_bank", "supplier_issues", "uat_feedback", "formula_lines", "item_on_hand_sheets"]},
+        "view": {"type": "string", "enum": ["forecasts", "forecast_accuracy", "priority_fill", "price_sheets", "compliance_pack", "answer_bank", "supplier_issues", "uat_feedback", "formula_lines", "item_on_hand_sheets", "item_po_prices"]},
         "rows": {"type": "array", "maxItems": 200, "items": {"type": "object", "required": ["cites"], "properties": {"cites": {"type": "array", "minItems": 1, "items": {"type": "object", "additionalProperties": false, "required": ["object_id"], "properties": {"object_id": {"$ref": "#/$defs/object_id"}}}}, "markings": {"type": "array", "items": {"type": "string", "enum": ["finance", "l5", "pii", "purchasing_prices", "quality_controlled"]}}}}},
         "counts": {"type": "object", "additionalProperties": {"type": "integer", "minimum": 0}},
         "withheld_counts": {"type": "object", "additionalProperties": {"type": "integer", "minimum": 0}},
@@ -1767,9 +1767,12 @@
         "draft": {"type": "boolean"},
         "seconds": {"type": "number", "minimum": 0},
         "withheld": {"type": "string", "enum": ["people_exclusion_unavailable"]},
+        "note": {"type": "string", "maxLength": 300},
         "trend": {"type": "array", "maxItems": 50, "items": {"type": "object"}},
         "reported_by_trend": {"type": "array", "maxItems": 50, "items": {"type": "object"}},
-        "totals": {"type": "object", "additionalProperties": {"type": "integer", "minimum": 0}}
+        "totals": {"type": "object", "additionalProperties": {"type": "integer", "minimum": 0}},
+        "codes_not_found": {"type": "array", "maxItems": 200, "items": {"type": "string", "maxLength": 60}},
+        "codes_ambiguous": {"type": "array", "maxItems": 200, "items": {"type": "string", "maxLength": 60}}
       }
     },
     "cash_forecast_answer": {
@@ -3176,6 +3179,17 @@
         },
         "lineage": {
           "$ref": "#/$defs/lineage"
+        },
+        "company": {
+          "description": "A Business Central record's company: its lineage's book agreeing with the company its handle names by the pinned books, and the name BC lists. Numbers recur across companies, so two BC records of one number are told apart by it; absent for other sources or when the two disagree.",
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["book", "name", "l1_handle"],
+          "properties": {
+            "book": {"type": "string", "pattern": "^[a-z][a-z0-9_]{0,31}$"},
+            "name": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9 .,&'()/-]{0,119}$"},
+            "l1_handle": {"$ref": "#/$defs/handle"}
+          }
         }
       },
       "required": [
@@ -3430,7 +3444,7 @@
         "count": {
           "type": "integer",
           "minimum": 2,
-          "description": "How many captured documents give this same not-compared gap (operating/attested_conflicts.py); absent is one."
+          "description": "How many captured documents give this same not-compared gap (operating/attested_conflicts.py), or how many gaps of one state and reason plx.investigate merged into this one to fit the response (their subjects named, their searches joined); absent is one."
         },
         "who_can_answer": {
           "type": "array",
@@ -5401,7 +5415,6 @@
                         "price_below_typical",
                         "price_below_cost",
                         "customer_price_drop",
-                        "mc_task_overdue",
                         "mc_task_stuck",
                         "mc_approval_pending",
                         "portal_approval_pending",
@@ -5519,7 +5532,6 @@
                         "early_pay_discounts",
                         "duplicate_payables",
                         "price_consistency",
-                        "mc_task_overdue",
                         "mc_task_stuck",
                         "mc_approval_pending",
                         "portal_approval_pending",
@@ -5562,7 +5574,7 @@
                     },
                     "maxItems": 80
                   },
-                  "rules_clean": {"type": "array", "maxItems": 80, "description": "The rules that finished cleanly: complete, nothing this reader may read left unjudged.", "items": {"type": "string", "enum": ["late_or_unconfirmed_po", "po_receipt_quantity_mismatch", "receipt_without_qc", "order_without_customer_po", "expired_quote", "conflicting_quantity", "late_order", "orders_at_risk", "card_rules", "eta_slipped", "lot_attention", "accepted_quote_no_order", "invoice_quantity_mismatch", "vendor_no_reply", "vendor_terms_unapplied", "negative_margin", "late_customer_order", "stock_out_risk", "overdue_receivable", "unit_cost_jump", "customer_demand_drop", "promise_date_slip", "margin_erosion", "supplier_reliability", "shipped_not_invoiced", "duplicate_customer_order", "recurring_component_damage", "customer_chase", "quality_holds", "expedite_requests", "supplier_shortage", "payment_chase", "return_requests", "customer_payment_behaviour", "early_pay_discounts", "duplicate_payables", "price_consistency", "mc_task_overdue", "mc_task_stuck", "mc_approval_pending", "portal_approval_pending", "planner_task_overdue", "aged_balance_worsening", "production_late", "assembly_damage_spike", "teams_unanswered_ask", "commitments", "needs_reply", "approvals_waiting", "chase_escalation", "party_chases", "internal_chases", "slow_moving_stock", "expiring_lot_stock", "assembly_component_shortfall", "certificate_expiry", "freight_cost_anomaly", "stale_quote", "duplicate_parties", "key_fields_missing", "twin_disagreement", "stale_captures", "sync_gaps", "reorder_soon", "inventory_adjustment", "blocked_account_activity", "gl_posting_errors", "recurring_task_missed", "returns_and_credits", "priority_fill_unmet", "inbox_triage", "label_changes", "label_revisions", "rd_projects", "cash_application", "statement_reconciliation"]}},
+                  "rules_clean": {"type": "array", "maxItems": 80, "description": "The rules that finished cleanly: complete, nothing this reader may read left unjudged.", "items": {"type": "string", "enum": ["late_or_unconfirmed_po", "po_receipt_quantity_mismatch", "receipt_without_qc", "order_without_customer_po", "expired_quote", "conflicting_quantity", "late_order", "orders_at_risk", "card_rules", "eta_slipped", "lot_attention", "accepted_quote_no_order", "invoice_quantity_mismatch", "vendor_no_reply", "vendor_terms_unapplied", "negative_margin", "late_customer_order", "stock_out_risk", "overdue_receivable", "unit_cost_jump", "customer_demand_drop", "promise_date_slip", "margin_erosion", "supplier_reliability", "shipped_not_invoiced", "duplicate_customer_order", "recurring_component_damage", "customer_chase", "quality_holds", "expedite_requests", "supplier_shortage", "payment_chase", "return_requests", "customer_payment_behaviour", "early_pay_discounts", "duplicate_payables", "price_consistency", "mc_task_stuck", "mc_approval_pending", "portal_approval_pending", "planner_task_overdue", "aged_balance_worsening", "production_late", "assembly_damage_spike", "teams_unanswered_ask", "commitments", "needs_reply", "approvals_waiting", "chase_escalation", "party_chases", "internal_chases", "slow_moving_stock", "expiring_lot_stock", "assembly_component_shortfall", "certificate_expiry", "freight_cost_anomaly", "stale_quote", "duplicate_parties", "key_fields_missing", "twin_disagreement", "stale_captures", "sync_gaps", "reorder_soon", "inventory_adjustment", "blocked_account_activity", "gl_posting_errors", "recurring_task_missed", "returns_and_credits", "priority_fill_unmet", "inbox_triage", "label_changes", "label_revisions", "rd_projects", "cash_application", "statement_reconciliation"]}},
                   "rules": {
                     "type": "array",
                     "description": "The rules that did not finish cleanly (rules_clean names the rest), each with its last run's status and not_evaluated: the records this reader may read the rule left unjudged, of the skips whose whole cause it may read (null: unknown). A rule not run or with not_evaluated other than 0 makes the home result incomplete (reason rule_not_evaluated): an empty kind is then not 'none'.",
@@ -5616,7 +5628,6 @@
                             "early_pay_discounts",
                             "duplicate_payables",
                             "price_consistency",
-                            "mc_task_overdue",
                             "mc_task_stuck",
                             "mc_approval_pending",
                             "portal_approval_pending",
@@ -5803,7 +5814,6 @@
                             "price_below_typical",
                             "price_below_cost",
                             "customer_price_drop",
-                            "mc_task_overdue",
                             "mc_task_stuck",
                             "mc_approval_pending",
                             "portal_approval_pending",
@@ -7228,7 +7238,7 @@
       }
     },
     "plx.aggregate": {
-      "description": "Decimal count/sum/min/max of a set or object_type, filtered, grouped by 1-2 properties; readable rows only; >20 groups: summary+cursor. Refuses mixed roles/units/currencies, unknowns, fan-out sums, unreviewed N:M hops. Totals carry markings. Modes: cash_forecast; demand_forecast(bucket; group_by customer); business_documents(+view,customer,question; views formula_lines|item_on_hand_sheets+customer=a product); margin_variance(variance{subject,from,to,baseline_from,baseline_to}); quote_conversion; cross_sell(+customer); who_knows(+person); qc_compliance(+view compliance|audit|daily).",
+      "description": "Decimal count/sum/min/max of a set or object_type, filtered, grouped by 1-2 properties; readable rows only; >20 groups: summary+cursor. Refuses mixed roles/units/currencies, unknowns, fan-out sums, unreviewed N:M hops. Totals carry markings. Modes: cash_forecast; demand_forecast(bucket; group_by customer); business_documents(+view,customer,question; views formula_lines|item_on_hand_sheets+customer=a product; item_po_prices+items,currency); margin_variance(+variance); quote_conversion; cross_sell(+customer); who_knows(+person); qc_compliance(+view compliance|audit|daily).",
       "read_only": true,
       "input": {
         "type": "object",
@@ -7237,8 +7247,10 @@
           "mode": {"enum": ["cash_forecast", "demand_forecast", "margin_variance", "quote_conversion", "cross_sell", "who_knows", "business_documents", "qc_compliance"]},
           "view": {"type": "string"},
           "question": {"type": "string"},
+          "items": {"type": "array", "description": "business_documents view item_po_prices: up to 200 {code, cost}; per item the last and the quantity-weighted average purchase order price against the stated cost.", "minItems": 1, "maxItems": 200, "items": {"type": "object", "additionalProperties": false, "properties": {"code": {"type": "string", "minLength": 1, "maxLength": 60}, "item": {"type": "string", "minLength": 1, "maxLength": 700}, "cost": {"type": ["string", "integer"]}}}},
+          "currency": {"type": "string", "pattern": "^[A-Za-z]{3}$"},
           "person": {"type": "string"},
-          "variance": {"type": "object"},
+          "variance": {"type": "object", "description": "margin_variance: {subject, from, to, baseline_from, baseline_to}."},
           "customer": {"type": "string", "maxLength": 700},
           "set": {
             "$ref": "#/$defs/set_handle"
@@ -7421,6 +7433,7 @@
                       },
                       "description": "Group key per group_by property; a string key is source text and is enveloped."
                     },
+                    "party_name": {"type": "object", "maxProperties": 2, "description": "Per group_by property whose key is a party's code (a customer or vendor number): the party's name as this reader reads it on a readable party record holding the code, cited. Absent when no readable party holds the code, or any record holding it (readable or not) names a different party: the code then stands alone. Write it as given.", "additionalProperties": {"$ref": "#/$defs/untrusted_text"}},
                     "key_dimensions": {"type": "object", "maxProperties": 2, "description": "Per group_by property holding an amount or a quantity: the currency and unit its key value is in (a key of 10 CAD and one of 10 USD are two groups).", "additionalProperties": {"type": "object", "additionalProperties": false, "properties": {"currency": {"type": "string", "pattern": "^[A-Z]{3}$"}, "unit": {"$ref": "#/$defs/unit"}}}},
                     "value": {
                       "type": [
@@ -7446,6 +7459,7 @@
                       "type": "string",
                       "pattern": "^[A-Z]{3}$"
                     },
+                    "currency_basis": {"type": "string", "enum": ["document", "counterparty_record", "not_stated"], "description": "Where the group's currency comes from: the documents themselves (document); the party's own Business Central record read now, because the documents state none (counterparty_record: write \"(from customer/vendor record)\" after the code); or nowhere (not_stated: write \"$ (currency not stated)\"). Never guessed or converted."},
                     "quantity_role": {
                       "$ref": "#/$defs/quantity_role"
                     },
@@ -10565,7 +10579,7 @@
       }
     },
     "plx.query": {
-      "description": "One read from records, codes (a sheet's items), an entity (all systems), a set, or all of an object_type its where selects; traverse links hop by hop or {\"to\": a type} (each route walked, counted), a hop with without: true keeps the records with no such link; measures by a property or linked record's (group_path), a date by period (bucket), windowed; having keeps groups by value. Past 20 groups: summary; cursor pages; groups cite inputs. rows: what is reached; per_code: each code alone. Use for every count, total, date range over links; latest/earliest mail of a record or Teams of a channel: max/min of sent_at or created_at.",
+      "description": "One read from records, codes (a sheet's items), an entity (all systems), a set, or an object_type its where selects; traverse links hop by hop or {\"to\": a type} (routes counted); a hop with without: true keeps records lacking it; measures by a property or linked record's (group_path), a date by period (bucket), windowed; having keeps groups by value. Past 20 groups: summary; cursor pages; groups cite inputs. rows: what is reached; per_code: each code alone. Use for every count, total, date range over links; latest/earliest mail of a record, Teams of a channel: max/min of sent_at or created_at.",
       "read_only": true,
       "input": {
         "type": "object",

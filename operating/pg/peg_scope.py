@@ -51,7 +51,12 @@ SCOPE_TABLE = "whole_steps_scope"
 _LINKS_SQL = ("SELECT from_object, to_object, tier FROM link_rows WHERE link_type = ? "
               "AND superseded_at IS NULL")
 _CELLS_TAIL = "AND s.superseded_at IS NULL"
-_IN_SCOPE = f"(SELECT object_id FROM {SCOPE_TABLE})"
+# a link from no scope object: an anti-join on the scope's key, never ``NOT IN`` (a scope
+# past hash_mem plans an unhashed subplan reading the whole scope per candidate link: the
+# delta apply's served link read did that at 741k owned ids on 11-15, a statement past
+# the follower's 30 min limit that cancelled a 4 h apply)
+_NOT_FROM_SCOPE = (f"NOT EXISTS (SELECT 1 FROM {SCOPE_TABLE} w "
+                   "WHERE w.object_id = l.from_object)")
 _PG_CELLS_FROM = ("FROM value_cells c JOIN value_sources s ON s.src = c.src JOIN "
                   "object_versions v ON v.rowid = s.ver")
 SOURCES_TABLE = SCOPE_TABLE + "_src"
@@ -120,7 +125,7 @@ class ScopedConnection(SplitConnection):
                 f"{end} = sc.object_id AND link_type = ? AND superseded_at IS NULL) l"
                 + extra for end, extra in (
                     ("from_object", ""),
-                    ("to_object", f" WHERE l.from_object NOT IN {_IN_SCOPE}")))
+                    ("to_object", f" WHERE {_NOT_FROM_SCOPE}")))
             params = tuple(params) * 2
         elif "FROM value_layout_fields lf JOIN value_cells c" in flat \
                 and flat.endswith(_CELLS_TAIL):

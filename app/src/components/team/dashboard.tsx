@@ -7,7 +7,7 @@ import { getTeamPerson } from "@/lib/api";
 import { cn } from "@/lib/cn";
 import { plainError } from "@/lib/errors";
 import { eastern } from "@/lib/format";
-import type { TeamItem, TeamPerson, TeamPersonDetail, TeamView } from "@/lib/types";
+import type { TeamItem, TeamPerson, TeamPersonDetail, TeamTrackerWeek, TeamView } from "@/lib/types";
 
 // The Team view: one dense row per person, every captured system over 7 or 28 days, open
 // work, reply time, a 28-day trend and busiest hours. Sort by any column, filter by team,
@@ -45,7 +45,21 @@ const GROUPS: Record<string, { label: string; tone: string }> = {
 };
 
 type Period = 7 | 28;
-type SortKey = "name" | "team" | "total" | Channel | "awaiting_reply" | "tasks" | "alerts" | "reply";
+type SortKey = "name" | "team" | "total" | "week" | "saved" | Channel | "awaiting_reply" | "tasks" | "alerts" | "reply";
+
+function thisWeek(p: TeamPerson): TeamTrackerWeek | undefined {
+  const weeks = p.weeks ?? [];
+  return weeks[weeks.length - 1];
+}
+
+function lastWeek(p: TeamPerson): TeamTrackerWeek | undefined {
+  const weeks = p.weeks ?? [];
+  return weeks[weeks.length - 2];
+}
+
+function weekOf(iso: string): string {
+  return new Date(`${iso}T12:00:00`).toLocaleDateString("en-US", { month: "short", day: "numeric" });
+}
 
 function counts(p: TeamPerson, period: Period): Record<string, number> {
   return (period === 7 ? p.d7 : p.d28) ?? {};
@@ -157,6 +171,8 @@ export function TeamDashboard({ data }: { data: TeamView }) {
         case "name": return p.name.toLowerCase();
         case "team": return (p.team ?? "~").toLowerCase();
         case "total": return total(p, period);
+        case "week": return thisWeek(p)?.done ?? 0;
+        case "saved": return thisWeek(p)?.saved_minutes ?? -1;
         case "awaiting_reply": case "tasks": case "alerts": return p[sort.key];
         case "reply": return replyOf(p, period) ?? (sort.desc ? -1 : Number.MAX_SAFE_INTEGER);
         default: return counts(p, period)[sort.key] ?? 0;
@@ -177,6 +193,9 @@ export function TeamDashboard({ data }: { data: TeamView }) {
     else acc.push({ system: c.system, span: 1 });
     return acc;
   }, []);
+
+  // time saved is only ever filled for rows the reader may see a figure for
+  const savedShown = people.some((p) => thisWeek(p)?.saved_minutes != null);
 
   const sum = (f: (p: TeamPerson) => number) => rows.reduce((s, p) => s + f(p), 0);
   const replies = rows.map((p) => replyOf(p, period)).filter((n): n is number => n != null).sort((a, b) => a - b);
@@ -213,8 +232,8 @@ export function TeamDashboard({ data }: { data: TeamView }) {
         </div>
         {data.scope === "everyone" && (
           <>
-            <Select label="Team" value={team} onChange={setTeam} testId="filter-team" options={[["", "All"], ...teams.map((t) => [t, t] as [string, string]), ["-", "No team"]]} />
-            <Select label="Role" value={role} onChange={setRole} testId="filter-role" options={[["", "All"], ...roles.map((r) => [r, r] as [string, string])]} />
+            {teams.length > 0 && <Select label="Team" value={team} onChange={setTeam} testId="filter-team" options={[["", "All"], ...teams.map((t) => [t, t] as [string, string]), ["-", "No team"]]} />}
+            {roles.length > 0 && <Select label="Role" value={role} onChange={setRole} testId="filter-role" options={[["", "All"], ...roles.map((r) => [r, r] as [string, string])]} />}
             <Select label="System" value={system} onChange={setSystem} testId="filter-system" options={[["", "All"], ...[...new Set(CHANNELS.map((c) => c.system))].map((s) => [s, GROUPS[s].label] as [string, string])]} />
             <input type="search" placeholder="Find a person" value={query} onChange={(e) => setQuery(e.target.value)} aria-label="Find a person"
               className="h-7 w-44 rounded-md border border-control bg-bg px-2 text-[12px]" />
@@ -243,7 +262,8 @@ export function TeamDashboard({ data }: { data: TeamView }) {
         <table className="w-full border-collapse text-[12.5px]" data-testid="team-table">
           <thead className="sticky top-0 z-10 bg-bg text-left text-[11.5px] text-muted">
             <tr className="text-[11px] uppercase tracking-[0.04em] text-faint">
-              <th colSpan={3} />
+              {/* person, team (when any is on record), all, this week and saved (when shown) */}
+              <th colSpan={(teams.length > 0 ? 3 : 2) + 1 + (savedShown ? 1 : 0)} />
               {groups.map((g) => (
                 <th key={g.system} colSpan={g.span} scope="colgroup" className="whitespace-nowrap border-b-2 px-2 pt-1 text-center font-normal"
                   style={{ borderColor: GROUPS[g.system].tone }}>{GROUPS[g.system].label}</th>
@@ -253,8 +273,10 @@ export function TeamDashboard({ data }: { data: TeamView }) {
             </tr>
             <tr className="border-b border-border">
               {head("name", "Person", "Name", "min-w-[150px]")}
-              {head("team", "Team", "Team, from the owner's assignment, the directory or the role the work shows")}
+              {teams.length > 0 && head("team", "Team", "Team, from the owner's assignment, the directory or the role the work shows")}
               {head("total", "All", "Everything they did in the period except mail received", "text-right")}
+              {head("week", "Week", "Work done this week so far (Monday on): everything but mail received", "text-right")}
+              {savedShown && head("saved", "Saved", "Time the Workbench saved them this week (the work log's estimate)", "text-right")}
               {shown.map((c) => head(c.key, c.head, c.title, cn("text-right", system === c.system && "text-fg")))}
               {head("awaiting_reply", "Reply", "Threads awaiting their reply", "text-right")}
               {head("tasks", "Tasks", "Open tasks", "text-right")}
@@ -277,8 +299,13 @@ export function TeamDashboard({ data }: { data: TeamView }) {
                     {p.self && <span className="ml-1.5 text-[11px] text-muted">you</span>}
                     {(p.roles ?? []).some((r) => r !== p.team) && <div className="truncate text-[11px] text-muted" data-testid="team-roles">{(p.roles ?? []).filter((r) => r !== p.team).join(", ")}</div>}
                   </td>
-                  <td className="whitespace-nowrap px-2 py-1.5 text-muted">{p.team ?? <span className="text-faint">·</span>}</td>
+                  {teams.length > 0 && <td className="whitespace-nowrap px-2 py-1.5 text-muted">{p.team ?? <span className="text-faint">·</span>}</td>}
                   <td className="px-2 py-1.5 text-right"><Figure n={total(p, period)} strong /></td>
+                  <td className="whitespace-nowrap px-2 py-1.5 text-right" data-testid="team-week"
+                    title={lastWeek(p) ? `Last week: ${lastWeek(p)!.done.toLocaleString("en-US")}` : undefined}>
+                    <Figure n={thisWeek(p)?.done} />
+                  </td>
+                  {savedShown && <td className="whitespace-nowrap px-2 py-1.5 text-right num">{thisWeek(p)?.saved_minutes ? minutes(thisWeek(p)!.saved_minutes) : <span className="text-faint">·</span>}</td>}
                   {shown.map((ch) => (
                     <td key={ch.key} className={cn("px-2 py-1.5 text-right", system === ch.system && "bg-accent-soft/40")}><Figure n={c[ch.key]} /></td>
                   ))}
@@ -308,6 +335,42 @@ const BUCKETS: { key: TeamItem["bucket"]; label: string }[] = [
   { key: "alerts", label: "Other alerts" },
 ];
 
+// The productivity tracker (internal; the owner is never listed): per week what they got
+// done against what came in, alerts closed, reply time and the time the Workbench saved.
+export function WeekTracker({ weeks, waiting }: { weeks: TeamTrackerWeek[]; waiting: number }) {
+  const saved = weeks.some((w) => w.saved_minutes != null);
+  const cell = "px-2 py-1 text-right num";
+  return (
+    <div className="space-y-1.5">
+      <table className="w-full border-collapse text-[12.5px]" data-testid="team-weeks">
+        <thead className="text-left text-[11.5px] text-muted">
+          <tr className="border-b border-border">
+            <th scope="col" className="px-2 py-1 font-normal">Week of</th>
+            <th scope="col" className="px-2 py-1 text-right font-normal" title="Everything they sent or did: mail, Teams, meetings and each system's recorded actions">Done</th>
+            <th scope="col" className="px-2 py-1 text-right font-normal" title="Mail they received from people">Came in</th>
+            <th scope="col" className="px-2 py-1 text-right font-normal" title="Their alerts closed that week">Closed</th>
+            <th scope="col" className="px-2 py-1 text-right font-normal" title="Median time to reply that week, and how many replies it rests on">Median reply</th>
+            {saved && <th scope="col" className="px-2 py-1 text-right font-normal" title="Time the Workbench saved them: an estimate from the work log">Saved</th>}
+          </tr>
+        </thead>
+        <tbody>
+          {weeks.map((w) => (
+            <tr key={w.week} className="border-b border-border" data-testid="team-week-row">
+              <td className="whitespace-nowrap px-2 py-1">{weekOf(w.week)}{w.partial && <span className="ml-1.5 text-[11px] text-muted">to {weekOf(w.to)}</span>}</td>
+              <td className={cn(cell, "font-medium")}>{w.done.toLocaleString("en-US")}</td>
+              <td className={cell}>{w.received.toLocaleString("en-US")}</td>
+              <td className={cell}>{w.closed || <span className="text-faint">·</span>}</td>
+              <td className={cn(cell, "whitespace-nowrap")}>{w.reply_minutes != null ? <>{minutes(w.reply_minutes)}<span className="ml-1 text-[11px] text-muted">({w.replies})</span></> : <span className="text-faint">·</span>}</td>
+              {saved && <td className={cell}>{w.saved_minutes ? minutes(w.saved_minutes) : <span className="text-faint">·</span>}</td>}
+            </tr>
+          ))}
+        </tbody>
+      </table>
+      <p className="text-[12px] text-muted" data-testid="team-waiting">{waiting ? `${waiting.toLocaleString("en-US")} waiting on them now (replies, tasks and alerts).` : "Nothing waiting on them now."}</p>
+    </div>
+  );
+}
+
 function dayLabel(iso: string): string {
   return new Date(`${iso}T12:00:00`).toLocaleDateString("en-GB", { weekday: "short", day: "numeric", month: "short" }).replace("Sept", "Sep");
 }
@@ -336,6 +399,13 @@ function PersonSheet({ personKey, onClose, onOpen }: { personKey: string; onClos
             ))}
             <div title="Median time to reply, last 28 days"><dt className="text-muted">Median reply</dt><dd className="num text-[15px]">{minutes(p.reply_minutes_28) || "·"}</dd></div>
           </dl>
+
+          {(p.weeks ?? []).length > 0 && (
+            <section className="space-y-2">
+              <h3 className="text-[12px] font-medium text-muted">Week by week</h3>
+              <WeekTracker weeks={p.weeks ?? []} waiting={p.awaiting_reply + p.tasks + p.alerts} />
+            </section>
+          )}
 
           <section className="space-y-2">
             <h3 className="text-[12px] font-medium text-muted">Each day, last 28 days</h3>

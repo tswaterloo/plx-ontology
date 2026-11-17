@@ -359,7 +359,8 @@ def _probe(args: argparse.Namespace, client: Any = None) -> dict[str, Any]:
     from ontology import schema as schema_loader
     from ontology.project import build_store
     from ontology.project_knowledge import KnowledgeCaptures
-    from operating.ontology_tools import OntologyTools, ReadPolicy, StoreReader
+    from operating.ontology_tools import OntologyTools, StoreReader
+    from operating.ontology_tools_policy import ReadPolicy
 
     principal = "probe:knowledge"
     actor = Actor("plx", frozenset({principal}))

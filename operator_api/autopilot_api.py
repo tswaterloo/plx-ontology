@@ -9,6 +9,8 @@ here."""
 
 from __future__ import annotations
 
+import json
+
 from datetime import datetime, timezone
 import os
 from pathlib import Path
@@ -16,6 +18,9 @@ import re
 from typing import Any, Optional
 
 from operating import autopilot as ap
+from operating import autopilot_queue as ap_queue
+from operating import autopilot_engine
+from operating import autopilot_reading
 from operating import card_actions as ca
 
 from . import models as m
@@ -60,8 +65,8 @@ class AutopilotMixin:
         found = grants() if callable(grants) else None
         return found.load() if found is not None else {"teams": {}, "managers": {}}
 
-    def _ap_visible(self, reader: Reader, everyone: bool = False
-                    ) -> Optional[list[dict[str, Any]]]:
+    def _ap_visible(self, reader: Reader, everyone: bool = False,
+                    states: tuple[str, ...] = ("open",)) -> Optional[list[dict[str, Any]]]:
         """The reader's visible items; ``everyone`` (the owner-open reader only, decided by
         the caller): every person's items, still under the same audience, marking and
         citation checks."""
@@ -74,7 +79,8 @@ class AutopilotMixin:
             from operating.proactive_commitments import owner_ids
             mine = owner_ids(_principals(reader))
             owners = {r[0] for r in queue.conn.execute(
-                "SELECT DISTINCT owner FROM items WHERE state = 'open'")}
+                "SELECT DISTINCT owner FROM items WHERE state IN (SELECT value FROM "
+                "json_each(?))", (json.dumps(list(states)),))}
 
             def grants() -> dict[str, Any]:   # every owner one team the reader holds
                 return {"teams": {o: "\x00all" for o in owners},
@@ -82,8 +88,9 @@ class AutopilotMixin:
         try:
             if self.autopilot_grant is not None:
                 may_read, held, decide = self.autopilot_grant
-                return ap.visible(queue, reader=_principals(reader), may_read=may_read,
-                                  held=held, decide=decide, grants=grants())
+                return autopilot_reading.visible(queue, reader=_principals(reader), may_read=may_read,
+                                  held=held, decide=decide, grants=grants(),
+                                  states=states)
 
             def job(view: Any) -> Any:
                 access = getattr(view, "access", None)
@@ -91,9 +98,9 @@ class AutopilotMixin:
                     return []          # no grant to check: nothing is shown
                 with view._request():
                     may_read, held = access.grant()
-                    return ap.visible(queue, reader=_principals(reader), may_read=may_read,
+                    return autopilot_reading.visible(queue, reader=_principals(reader), may_read=may_read,
                                       held=held, decide=access.decide,
-                                      grants=grants())
+                                      grants=grants(), states=states)
             return self.reads.run(reader, job, timeout=60)  # type: ignore[attr-defined]
         finally:
             queue.close()
@@ -102,31 +109,34 @@ class AutopilotMixin:
         from operating import autopilot_work as aw
         now = datetime.now(timezone.utc)
         path = self._ap_queue_path()
-        off = path is not None and (path.parent / ap.KILL_FILE).exists() or \
-            str(self._ap_env().get(ap.KILL_ENV, "")).lower() in ("1", "true", "yes", "on")
+        off = path is not None and (path.parent / ap_queue.KILL_FILE).exists() or \
+            str(self._ap_env().get(ap_queue.KILL_ENV, "")).lower() in ("1", "true", "yes", "on")
         items = self._ap_visible(reader)
         if items is None:
             return m.MyWork(status="off" if off else "not_scheduled", items=[],
                             digest=m.MyWorkDigest(**ap.digest([], now)), sent=0, writes=0)
         out = []
         for item in items:
-            card = ap.card_of(item) if item["mine"] else None
+            card = autopilot_reading.card_of(item) if item["mine"] else None
+            # a sender shown by address or "Someone", never a bare object id
+            shown = autopilot_engine.shown_item(item)
             out.append(m.MyWorkItem(
                 item_id=item["item_id"], autopilot=item["autopilot"],
-                label=item["body"].get("label") or item["autopilot"], title=item["title"],
-                mine=item["mine"], happened=item["body"].get("happened") or {},
-                prepared=item["body"].get("prepared") or {}, citations=item["citations"],
+                label=item["body"].get("label") or item["autopilot"], title=shown["title"],
+                mine=item["mine"], happened=shown["body"].get("happened") or {},
+                prepared=shown["body"].get("prepared") or {}, citations=item["citations"],
                 due_at=item["due_at"], created_at=item["created_at"],
                 card_id=card["id"] if card else None,
                 offers=[m.CardActionOffer(**o) for o in ca.offers(card)] if card else [],
-                write_ready=bool(item["mine"] and ap.write_spec(item)),
-                order_import=bool(item["mine"] and aw.order_import_csv(ap.write_spec(item)))))
+                write_ready=bool(item["mine"] and autopilot_reading.write_spec(item)),
+                order_import=bool(item["mine"] and aw.order_import_csv(autopilot_reading.write_spec(item)))))
         return m.MyWork(status="off" if off else "read", items=out,
-                        digest=m.MyWorkDigest(**ap.digest(items, now)), sent=0, writes=0)
+                        digest=m.MyWorkDigest(**ap.digest([autopilot_engine.shown_item(i) for i in items],
+                                                          now)), sent=0, writes=0)
 
     def _own_item(self, reader: Reader, item_id: str) -> dict[str, Any]:
         """An item of the reader's own (a manager sees a report's items but approves none)."""
-        if str(self._ap_env().get(ap.KILL_ENV, "")).lower() in ("1", "true", "yes", "on"):
+        if str(self._ap_env().get(ap_queue.KILL_ENV, "")).lower() in ("1", "true", "yes", "on"):
             raise UserFacing("action_refused", "The autopilot is switched off.", 409)
         for item in self._ap_visible(reader) or ():
             if item["item_id"] == item_id and item["mine"]:
@@ -134,19 +144,19 @@ class AutopilotMixin:
         raise UserFacing("not_found", "That item is not on your list.", 404)
 
     def my_work_card_of(self, reader: Reader, card_id: str) -> Optional[dict[str, Any]]:
-        item_id = card_id[len(ap.CARD_PREFIX):]
+        item_id = card_id[len(ap_queue.CARD_PREFIX):]
         try:
             item = self._own_item(reader, item_id)
         except UserFacing:
             return None
-        return ap.card_of(item)
+        return autopilot_reading.card_of(item)
 
     def my_work_order_import(self, reader: Reader, item_id: str) -> tuple[str, bytes]:
         """Your item's prepared order as an import file (CSV, one row per line): copy-ready
         for the Portal or Business Central. Only your own item; nothing is entered."""
         from operating import autopilot_work as aw
         item = self._own_item(reader, item_id)
-        text = aw.order_import_csv(ap.write_spec(item))
+        text = aw.order_import_csv(autopilot_reading.write_spec(item))
         if text is None:
             raise UserFacing("not_found", "That item has no prepared order with lines.", 404)
         name = re.sub(r"[^A-Za-z0-9_-]", "", item_id)[:60] or "order"
@@ -157,7 +167,7 @@ class AutopilotMixin:
         person holding the write grant who did not prepare it approves it)."""
         from operating import write_intents as wi
         item = self._own_item(reader, item_id)
-        spec = ap.write_spec(item)
+        spec = autopilot_reading.write_spec(item)
         if spec is None:
             raise UserFacing("not_found", "That item has no prepared entry.", 404)
         try:

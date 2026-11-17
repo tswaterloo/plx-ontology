@@ -57,11 +57,12 @@ from __future__ import annotations
 import argparse
 from collections import Counter, defaultdict
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 import difflib
 import hashlib
 import json
 import os
+from operating.file_modes import keep_shared
 from pathlib import Path
 import re
 import sqlite3
@@ -88,10 +89,17 @@ DECISION_PRIOR = PRIOR  # "not known yet" for an act/leave decision
 ROLE_MIN_PEOPLE = 2
 EVIDENCE_KEPT = 20
 EXAMPLES = 3
+REPEAT_AT = 3     # the same reply shape this many times: offered as a template
 SHAPE_ENDS = 2       # a reply's first and last sentences kept as templates (few-shot)
 # role lessons: categorical keys only (never a fact, a phrase or a sender)
 ROLE_KEYS = re.compile(r"^(?:greeting|signoff|length|source:[a-z_]+|detector:[a-z_]+|"
                        r"decision:[a-z_]+\|[a-z_]+\|[a-z_]+)$")
+
+# the sides of a correspondent a person's greeting and sign-off are learned for apart (a
+# person writes "Hi Bob," to a customer and "Bob -" to a colleague), and the frame keys
+# learned per side (``side:<side>:<key>``) and per correspondent (``sender:<digest>:<key>``)
+AUDIENCES = {"customer": "customers", "supplier": "suppliers", "internal": "colleagues"}
+FRAME_KEYS = ("greeting", "signoff")
 
 GREETINGS = ("hi_name", "hello_name", "hey_name", "dear_name", "good_morning_name",
              "name_only", "hi", "hello", "good_morning", "none")
@@ -513,6 +521,13 @@ class _Votes:
 
 
 def _text_of(kind: str, key: str, value: str, extra: str = "") -> str:
+    if kind == "style" and key.startswith(("side:", "sender:")):
+        scope, base = key.split(":", 1)[0], key.rsplit(":", 1)[1]
+        said = _text_of(kind, base, value, extra)
+        if scope == "sender":
+            return said.replace("replies", "replies to this person", 1)
+        who = AUDIENCES.get(key.split(":")[1], "")
+        return said.replace("replies", f"replies to {who}", 1) if who else said
     if kind == "style":
         if key == "greeting":
             return {"none": "Starts replies without a greeting",
@@ -562,6 +577,16 @@ def distil(signals: Iterable[Signal], *, now: datetime,
                       now, s.ref)
             votes.add(s.person, "style", "signoff", str(d.get("signoff") or "none"), at, now,
                       s.ref, text=str(d.get("signoff_text") or ""))
+            side = _slug(d.get("side"))
+            for key in FRAME_KEYS:
+                value = str(d.get(key) or "none")
+                text = str(d.get("signoff_text") or "") if key == "signoff" else ""
+                if side in AUDIENCES:
+                    votes.add(s.person, "style", f"side:{side}:{key}", value, at, now, s.ref,
+                              text=text)
+                if d.get("sender"):
+                    votes.add(s.person, "style", f"sender:{d['sender']}:{key}", value, at,
+                              now, s.ref, text=text)
             if s.kind == "draft_sent":
                 drafted[s.person] += _weight(at, now, "style")
             if isinstance(d.get("words"), int) and d["words"] > 0:
@@ -609,8 +634,9 @@ def distil(signals: Iterable[Signal], *, now: datetime,
     gone = {(p, k, key) for p, k, key in forgotten}
     lessons: list[Lesson] = []
     for (person, kind, key), values in votes.w.items():
-        if (person, kind, key) in gone:
-            continue
+        if (person, kind, key) in gone or kind == "style" and key.startswith(
+                ("side:", "sender:")) and (person, kind, key.rsplit(":", 1)[1]) in gone:
+            continue   # forgetting a greeting or sign-off forgets it for every audience
         total = sum(values.values())
         value, top = max(values.items(), key=lambda kv: (kv[1], kv[0]))
         if kind == "style" and key.startswith(("add:", "drop:")):
@@ -695,10 +721,10 @@ class Ledger:
     def __init__(self, directory: Path) -> None:
         self.directory = Path(directory)
         self.directory.mkdir(parents=True, exist_ok=True, mode=0o700)
-        os.chmod(self.directory, 0o700)
+        keep_shared(self.directory, 0o700)   # a shared-group directory keeps its group + setgid
         self.path = self.directory / FILE
         os.close(os.open(self.path, os.O_RDWR | os.O_CREAT, 0o600))
-        os.chmod(self.path, 0o600)
+        keep_shared(self.path, 0o600)
         self.conn = sqlite3.connect(str(self.path), timeout=30, check_same_thread=False)
         self.conn.execute("PRAGMA journal_mode = WAL")
         from operating import declared_schema
@@ -707,7 +733,7 @@ class Ledger:
         for side in ("-wal", "-shm"):
             extra = self.path.with_name(self.path.name + side)
             if extra.exists():
-                os.chmod(extra, 0o600)
+                keep_shared(extra, 0o600)
 
     def close(self) -> None:
         self.conn.close()
@@ -734,9 +760,16 @@ class Ledger:
         with self.conn:
             self.conn.execute("INSERT OR IGNORE INTO forgotten VALUES (?, ?, ?, ?)",
                               (who, kind, key, _iso(now)))
-            return self.conn.execute(
+            done = self.conn.execute(
                 "DELETE FROM lessons WHERE scope = 'person' AND who = ? AND kind = ? AND "
                 "key = ?", (who, kind, key)).rowcount > 0
+            if kind == "style" and key in FRAME_KEYS:
+                # a greeting or sign-off forgotten for everyone: for every audience too
+                self.conn.execute(
+                    "DELETE FROM lessons WHERE scope = 'person' AND who = ? AND kind = ? "
+                    "AND (key LIKE 'side:%:' || ? OR key LIKE 'sender:%:' || ?)",
+                    (who, kind, key, key))
+            return done
 
     def write(self, lessons: Sequence[Lesson], summary: Mapping[str, Any], now: datetime
               ) -> None:
@@ -788,6 +821,162 @@ _CACHE: dict[str, tuple[tuple, "Lessons"]] = {}
 _CACHE_LOCK = threading.Lock()
 
 
+# ------------------------------------------------------------------- rules a person stated
+
+STATED_FILE = "stated.json"
+_STATED_LOCK = threading.Lock()
+_MAILS = r"(?:(?:all\s+|every\s+|each\s+)?(?:of\s+)?(?:my\s+|the\s+)?(?:e-?mails?|replies|messages|drafts|mails?)\s+)?"
+_STATED_SIGNOFF = re.compile(
+    r"\b(?:sign(?:ing)?[\s-]*off|end|close|finish)\s+" + _MAILS +
+    r"with\s+[\"“']?(?P<words>[^\"”\n]{2,60}?)[\"”']?\s*[.!]?\s*$", re.I)
+_STATED_GREET = re.compile(
+    r"\b(?:start|open|begin|greet)\s+" + _MAILS +
+    r"with\s+[\"“']?(?P<word>hi|hello|hey|dear|good\s+morning)\b", re.I)
+_STATED_NO_GREET = re.compile(r"\b(?:no greeting|without (?:a |any )?greeting|skip the "
+                              r"greeting|don'?t (?:start|open) with (?:a )?greeting)\b", re.I)
+_STATED_DROP = re.compile(
+    r"\b(?:never|don'?t|do not|stop)\s+(?:ever\s+)?(?:say|write|use|open with|end with|put|"
+    r"add|saying|writing|using)\s+[\"“](?P<words>[^\"”]{4,160})[\"”]", re.I)
+# "to customers sign off with ...": a greeting or sign-off stated for one side only
+_STATED_SIDE = re.compile(
+    r"\b(?:when\s+(?:writing|replying|emailing)\s+)?(?:to|for)\s+(?:my\s+|our\s+|the\s+)?"
+    r"(?P<side>customers?|clients?|suppliers?|vendors?|colleagues?|co-?workers?|team|"
+    r"internal\s+(?:mail|e-?mails?|people)|staff)\b,?", re.I)
+_SIDE_WORD = {"customer": "customer", "client": "customer", "supplier": "supplier",
+              "vendor": "supplier", "colleague": "internal", "coworker": "internal",
+              "co-worker": "internal", "team": "internal", "internal": "internal",
+              "staff": "internal"}
+_GREET_FORM = {"hi": "hi_name", "hello": "hello_name", "hey": "hey_name", "dear": "dear_name",
+               "good morning": "good_morning_name"}
+
+
+def stated_rules(text: Any) -> list[dict[str, str]]:
+    """The drafting rules a person stated in their own words ("sign off with Thanks, Ana",
+    "start my emails with Hi <name>", "no greeting", "never write \"hope this finds you
+    well\""), as style lessons ({key, value, text}) the drafter applies over anything
+    learned. Nothing for pay or finance, a sign-off that is no closing words, or a
+    sentence that names someone or carries a figure (``template``)."""
+    text = " ".join(str(text or "").split())
+    if not text or finance_text(text):
+        return []
+    sentences = [x for x in re.split(r"(?<=[.!?\u201d\"])\s+(?=[A-Z])", text) if x]
+    if len(sentences) > 1:   # one rule per sentence; a later one wins for the same key
+        merged: dict[str, dict[str, str]] = {}
+        for sentence in sentences:
+            for rule in stated_rules(sentence):
+                merged[rule["key"]] = rule
+        return list(merged.values())
+    side_said = _STATED_SIDE.search(text)
+    if side_said and side_said.start() > 0 and text[side_said.end():].strip(" .!"):
+        side_said = None   # mid-sentence ("..., and write to the team ..."): not a side
+    if side_said:
+        word = side_said.group("side").lower().split()[0]
+        side = _SIDE_WORD.get(word.rstrip("s")) or _SIDE_WORD.get(word)
+        rest = " ".join((text[:side_said.start()] + " " + text[side_said.end():]).split())
+        rest = rest.strip(" ,")
+        return [({**r, "key": f"side:{side}:{r['key']}",
+                  "text": _text_of("style", f"side:{side}:{r['key']}", r["value"],
+                                   _quoted(r["text"]))}
+                 if side and r["key"] in FRAME_KEYS else r)
+                for r in stated_rules(rest[:1].upper() + rest[1:])]
+    out: list[dict[str, str]] = []
+    found = _STATED_SIGNOFF.search(text)
+    if found:
+        words = found.group("words").strip().rstrip(".!").strip()
+        close = _CLOSE.match(words.split(",")[0])
+        if close and len(words) <= 60 and not re.search(r"[\d@]", words):   # no phone/mail
+            form = signoff_of(words.split(",")[0])[0]
+            out.append({"key": "signoff", "value": form,
+                        "text": _text_of("style", "signoff", form, words)})
+    if _STATED_NO_GREET.search(text):
+        out.append({"key": "greeting", "value": "none",
+                    "text": _text_of("style", "greeting", "none")})
+    else:
+        found = _STATED_GREET.search(text)
+        if found:
+            form = _GREET_FORM[re.sub(r"\s+", " ", found.group("word").lower())]
+            out.append({"key": "greeting", "value": form,
+                        "text": _text_of("style", "greeting", form)})
+    for found in _STATED_DROP.finditer(text):
+        generic = template(found.group("words"))
+        if generic:
+            out.append({"key": "drop:" + digest(generic), "value": "yes",
+                        "text": _text_of("style", "drop:", "yes", generic)})
+    return out
+
+
+def _quoted(text: str) -> str:
+    return text.split("\"")[1] if text.count("\"") >= 2 else ""
+
+
+def _stated_path(directory: Optional[Path]) -> Optional[Path]:
+    return Path(directory) / STATED_FILE if directory is not None else None
+
+
+def _stated_read(path: Path) -> dict[str, dict[str, list[dict[str, str]]]]:
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    return raw if isinstance(raw, dict) else {}
+
+
+def set_stated(directory: Optional[Path], person: str, item: Any, text: Optional[str]
+               ) -> list[dict[str, str]]:
+    """Keep (``text``) or drop (None) the rules one memory item of the person's states;
+    the rules kept. The file is the person's stated rules by item (0600 in a 0700 folder),
+    read by ``Lessons.load``; nothing else of the item is kept."""
+    path = _stated_path(directory)
+    if path is None or not person:
+        return []
+    rules = stated_rules(text) if text is not None else []
+    with _STATED_LOCK:
+        held = _stated_read(path)
+        mine = dict(held.get(person) or {})
+        if rules:
+            mine[str(item)] = rules
+        elif str(item) not in mine:
+            return []
+        else:
+            mine.pop(str(item), None)
+        if mine:
+            held[person] = mine
+        else:
+            held.pop(person, None)
+        path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        tmp = path.with_suffix(f".{os.getpid()}.{threading.get_ident()}.tmp")
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        keep_shared(tmp, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            json.dump(held, fh, sort_keys=True)
+        os.replace(tmp, path)
+    return rules
+
+
+def _stated_lessons(directory: Optional[Path]) -> list[Lesson]:
+    """Every person's stated rules as lessons of confidence 1 (the newest item's rule per
+    key wins)."""
+    path = _stated_path(directory)
+    if path is None:
+        return []
+    out: dict[tuple[str, str], Lesson] = {}
+    for person, items in sorted(_stated_read(path).items()):
+        if not isinstance(items, dict):
+            continue
+        for item in sorted(items, key=lambda k: (len(k), k)):   # ids ascend: newest last
+            for rule in items[item] or ():
+                if not isinstance(rule, dict) or not rule.get("key"):
+                    continue
+                key = str(rule["key"])
+                out[(person, key)] = Lesson(
+                    lesson_id="st_" + digest("stated", person, key), scope="person",
+                    who=person, kind="style", key=key, value=str(rule.get("value") or ""),
+                    confidence=1.0, weight=1.0, total=1.0, seen=1, first_at="", last_at="",
+                    evidence=[{"at": "", "ref": f"memory:{item}"}],
+                    text=str(rule.get("text") or ""))
+    return list(out.values())
+
+
 class Lessons:
     """The lessons as the drafter, the alert list and the memory read them."""
 
@@ -814,6 +1003,19 @@ class Lessons:
         guard = Guard.from_env() if guard is None else guard
         if not guard.available:
             return cls(())
+        learned = cls._load_learned(directory, guard)
+        stated = [l for l in _stated_lessons(directory) if guard.clear(l.who)]
+        if not stated:
+            return learned
+        # what a person stated in their own words wins over what was learned for that key
+        lessons = [l for by in learned.by.values() for l in by.values()]
+        mine = {(l.who, l.key) for l in stated}
+        return cls([l for l in lessons if l.scope == "role" or l.kind != "style"
+                    or (l.who, l.key) not in mine] + stated,
+                   [s for rows in learned.examples.values() for s in rows])
+
+    @classmethod
+    def _load_learned(cls, directory: Path, guard: "Guard") -> "Lessons":
         path = Path(directory) / FILE
         try:
             st = os.stat(path)
@@ -873,6 +1075,25 @@ class Lessons:
                 best = got
         return best
 
+    def frame(self, person: str, roles: Iterable[str], key: str,
+              event: Optional[Mapping[str, Any]] = None) -> Optional[Lesson]:
+        """The greeting or sign-off (``key``) for a draft to ``event``'s sender: a rule the
+        person stated first, then what they write to that correspondent, then to that side
+        (customers, suppliers, colleagues), then their own in general, then their role's."""
+        own = self.by.get(("person", person), {})
+        ev = event or {}
+        sender, side = sender_key(ev.get("sender")), _slug(ev.get("side"))
+        for said in ((own.get(f"style:side:{side}:{key}") if side in AUDIENCES else None),
+                     own.get(f"style:{key}")):
+            if said is not None and said.lesson_id.startswith("st_"):
+                return said   # stated for this side first, then stated for everyone
+        for scoped in ((f"sender:{sender}:{key}" if sender else None),
+                       (f"side:{side}:{key}" if side in AUDIENCES else None)):
+            got = own.get(f"style:{scoped}") if scoped else None
+            if got is not None and got.confidence >= APPLY_AT:
+                return got
+        return self.get(person, roles, "style", key)
+
     def of(self, person: str) -> list[Lesson]:
         return sorted(self.by.get(("person", person), {}).values(),
                       key=lambda l: (l.kind, l.key))
@@ -901,7 +1122,7 @@ class Lessons:
             if not isinstance(draft, Mapping) or not isinstance(draft.get("body"), str):
                 continue
             body, lessons = self.restyle(draft["body"], person, roles,
-                                         chat=slot == "teams_draft")
+                                         chat=slot == "teams_draft", event=event)
             parts: list[str] = []
             if slot == "draft" and nb:
                 body, parts = fs.compose(body, nb, autopilot)
@@ -927,8 +1148,8 @@ class Lessons:
         nb = fs.neighbours(self.examples.get(person, ()), event, autopilot)
         return fs.prompt_block(nb, fs.rules(self.of(person)), text_of)
 
-    def restyle(self, body: str, person: str, roles: Sequence[str], *, chat: bool = False
-                ) -> tuple[str, list[Lesson]]:
+    def restyle(self, body: str, person: str, roles: Sequence[str], *, chat: bool = False,
+                event: Optional[Mapping[str, Any]] = None) -> tuple[str, list[Lesson]]:
         from . import copy_gate as gate
         if chat:
             # the lessons are learned from mail replies: a chat reply keeps its own form
@@ -936,7 +1157,7 @@ class Lessons:
         lines = body.split("\n")
         used: list[Lesson] = []
         idx = next((i for i, ln in enumerate(lines) if ln.strip()), None)
-        greet = self.get(person, roles, "style", "greeting")
+        greet = self.frame(person, roles, "greeting", event)
         if greet is not None and idx is not None and not chat:
             form, name = greeting_of(lines[idx])
             if form != "none" and form != greet.value:
@@ -955,7 +1176,7 @@ class Lessons:
         drop = [l for l in self.by.get(("person", person), {}).values()
                 if l.kind == "style" and l.key.startswith("drop:") and l.confidence >= APPLY_AT]
         if drop:
-            drops = {_template_from_text(l.text): l for l in drop}
+            drops = {_drop_key(_template_from_text(l.text)): l for l in drop}
             drops.pop(None, None)
 
             def content(rows: Sequence[str]) -> int:
@@ -969,8 +1190,9 @@ class Lessons:
                     trimmed.append(ln)   # a line with a figure or address is never touched
                     continue
                 sentences = _SENTENCE.findall(ln)
-                keep = [x for x in sentences if template(x) not in drops]
-                hit += [drops[template(x)] for x in sentences if template(x) in drops]
+                keep = [x for x in sentences if _drop_key(template(x)) not in drops]
+                hit += [drops[_drop_key(template(x))] for x in sentences
+                        if _drop_key(template(x)) in drops]
                 trimmed.append(" ".join(x.strip() for x in keep) if len(keep) < len(sentences)
                                else ln)
             # never a draft left with nothing to say: then nothing is dropped
@@ -980,7 +1202,7 @@ class Lessons:
                 for lesson in hit:
                     if lesson not in used:
                         used.append(lesson)
-        sign = self.get(person, roles, "style", "signoff")
+        sign = self.frame(person, roles, "signoff", event)
         tail = next((i for i in range(len(lines) - 1, -1, -1) if lines[i].strip()), None)
         has_close = tail is not None and bool(_CLOSE.match(lines[tail].strip()))
         adds = [l for l in self.by.get(("person", person), {}).values()
@@ -1031,6 +1253,40 @@ class Lessons:
         return [{"item": s.data.get("item"), "at": s.at, "match": round(share, 2)}
                 for share, _a, s in scored[:most]]
 
+    def repeats(self, person: str, *, at_least: int = REPEAT_AT, most: int = 3
+                ) -> list[dict[str, Any]]:
+        """The mail the person keeps sending in near the same words: replies whose shape
+        (generic opening and closing sentences, ``edit_features``) is the same ``at_least``
+        times, with two or more generic sentences, as a body to save as a template ({side,
+        count, last_at, body}); a fact sentence is a "..." line to fill. Most sent first.
+        Nothing kept of a reply's own words beyond those generic templates."""
+        groups: dict[tuple[str, tuple[str, ...]], list[Signal]] = defaultdict(list)
+        for sig in self.examples.get(person, ()):
+            shape = tuple(str(x) for x in (sig.data.get("shape") or ()))
+            generic = [x for x in shape if x != "#"]
+            if len(generic) < 2 or len(generic) * 2 < len(shape):
+                continue
+            side = _slug(sig.data.get("side"))
+            groups[(side if side in AUDIENCES else "", shape)].append(sig)
+        out = []
+        for (side, shape), sigs in groups.items():
+            if len(sigs) < at_least:
+                continue
+            forms = Counter(str(x.data.get("greeting") or "none") for x in sigs)
+            closes = Counter(str(x.data.get("signoff") or "none") for x in sigs)
+            greet = _greeting_line(forms.most_common(1)[0][0].replace("_name", ""), None)
+            close = SIGNOFF_TEXT.get(closes.most_common(1)[0][0])
+            lines = []
+            for x in shape:
+                line = "..." if x == "#" else re.sub(r"\bi\b", "I", x)
+                if not lines or line != "..." or lines[-1] != "...":
+                    lines.append(line[:1].upper() + line[1:])
+            body = "\n\n".join(p for p in (greet, "\n".join(lines), close) if p)
+            out.append({"side": side, "count": len(sigs), "last_at": max(x.at for x in sigs),
+                        "body": body, "first": next(x for x in lines if x != "...")})
+        out.sort(key=lambda r: (r["count"], r["last_at"]), reverse=True)
+        return out[:most]
+
     # -- items --
 
     def skip_reason(self, person: str, roles: Iterable[str], autopilot: str,
@@ -1072,9 +1328,15 @@ class Lessons:
         (``remember`` keywords): style, source, decision and detector are preferences, a
         corrected answer a fact; the subject keys supersession."""
         out = []
+        mine = {l.key: l for l in self.of(person)}
         for l in self.of(person):
-            if l.confidence < APPLY_AT or not l.text or l.key.startswith("sender:"):
-                continue
+            if l.confidence < APPLY_AT or not l.text or l.key.startswith("sender:") \
+                    or l.lesson_id.startswith("st_"):
+                continue   # a stated rule is already the person's own memory item
+            general = mine.get(l.key.rsplit(":", 1)[1]) if l.key.startswith("side:") else None
+            if general is not None and general.value == l.value \
+                    and general.confidence >= APPLY_AT:
+                continue   # the same greeting or sign-off for that side as for everyone
             out.append({"kind": "fact" if l.kind == "fact" else "preference",
                         "subject": f"learn.{l.kind}.{l.key}"[:300], "text": l.text,
                         "source": "learn", "source_ref": f"{l.lesson_id}@{l.last_at}",
@@ -1108,6 +1370,11 @@ def _sentence_from_text(text: str) -> Optional[str]:
         return None
     sentence = re.sub(r"\bi\b", "I", found.group(1).strip())
     return sentence[:1].upper() + sentence[1:]
+
+
+def _drop_key(generic: Optional[str]) -> Optional[str]:
+    """A sentence template as a dropped sentence is matched: its closing stop aside."""
+    return generic.rstrip(" .!?;:") or None if generic else None
 
 
 def _template_from_text(text: str) -> Optional[str]:
@@ -1153,6 +1420,24 @@ def _roles_of(state_dir: Optional[Path]) -> dict[str, list[str]]:
 
 _SYNCED: dict[str, tuple] = {}
 _SYNCED_LOCK = threading.Lock()
+
+
+def unlearn(directory: Optional[Path], person: str, subject: Any,
+            now: Optional[datetime] = None) -> bool:
+    """A learned item the person deleted from their memory (subject ``learn.<kind>.<key>``,
+    as ``Lessons.memory_items`` names it) forgotten in the ledger too: the lesson stops
+    shaping their drafts at once and is never learned again. False for any other subject."""
+    text = str(subject or "")
+    if directory is None or not text.startswith("learn."):
+        return False
+    kind, _, key = text[len("learn."):].partition(".")
+    if kind not in LESSON_KINDS or not key or not person:
+        return False
+    ledger = Ledger(directory)
+    try:
+        return ledger.forget(person, kind, key, now or datetime.now(timezone.utc))
+    finally:
+        ledger.conn.close()
 
 
 def sync_memory(memory: Any, reader: Any, state_dir: Optional[Path],

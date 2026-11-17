@@ -3,7 +3,7 @@
 // lists (messages by thread, activity by month, related by type). Display only: nothing
 // is recomputed that the server did not state; an unknown value is left out, never guessed.
 
-import { currencyCode, formatDate, formatMoney, plainWords, plural, readable, recordLabel, typeLabel } from "./format";
+import { currencyCode, decodeEscapes, formatDate, formatMoney, plainWords, plural, readable, recordLabel, typeLabel } from "./format";
 import { etaShown as etaHeadline } from "./eta";
 import { lateness, recordState, type Shown, type Status } from "./status";
 import type { Fact, LinkedItem, LinkGroup, LinkRef, ObjectPage, ObjectRef, PoTrail, Source, TimelineEvent } from "./types";
@@ -311,7 +311,7 @@ function customerHead(obj: ObjectPage, f: Map<string, RecordFact>): RecordHead {
     badges: blocked ? [{ status: "late", label: "Blocked" }] : [],
     stats: stats.slice(0, 4),
     keyFacts: [
-      { label: "Currency", value: currency ? `${currency}${curConflict ? " ⚠" : ""}` : "", status: curConflict ? "suspect" : undefined },
+      { label: "Currency", value: currency ?? "", status: curConflict ? "suspect" : undefined },
       { label: "Business line", value: titleCase(get(f, "business_line")) ?? "", source: srcOf(f, "business_line") },
       { label: "Payment terms", value: get(f, "payment_terms", "payment_terms_code") ?? "", source: srcOf(f, "payment_terms", "payment_terms_code") },
       { label: "Credit limit", value: limit === undefined ? "" : isZero(limit) ? "No credit limit set" : (moneyText(limit, currency) ?? limit), source: srcOf(f, "credit_limit") },
@@ -385,7 +385,10 @@ function joinWords(xs: string[]): string {
 const MONTHS = ["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"];
 
 /** A fact's date written any way ("Oct 28, 2026", "2026-10-28") reads like every other date ("28 Oct 2026"). */
-export function factValue(value: string): string {
+export function factValue(raw: string): string {
+  // BC's OData escapes ("Sales_x0020_Shipment") read as the text they stand for; the stored value is unchanged.
+  const decoded = decodeEscapes(raw);
+  const value = decoded === raw ? raw : decoded.trim();
   const v = value.trim();
   if (/^\d{4}-\d{2}-\d{2}$/.test(v)) return formatDate(v) || v;
   if (/^-?[\d,]+\.\d+\s[A-Z]{3}$/.test(v)) return moneyText(v) ?? value; // "25,113.600 USD" -> "$25,113.60 USD"

@@ -233,6 +233,47 @@ class HttpEgressScanTests(unittest.TestCase):
                       'OTHER = b"https://example.com/"\n'):
             self.assertIn("unlisted-url", rules(PLANNER_SENDER + extra, planner), extra)
 
+    def test_ops_mail_sender_is_its_one_sender_and_two_url_prefixes(self):
+        path = "operating/ops_mail_sender.py"
+        source = (Path(gate.ROOT) / path).read_text()
+        self.assertEqual(rules(source, path), set())
+        self.assertIn("non-get-request", rules(source, "operating/ops_notify.py"))
+        self.assertIn("non-get-request", rules(
+            source.replace("def post_ops_mail(", "def post_other("), path))
+        self.assertIn("outside-sender", rules(
+            source + "def g(u):\n    return urllib.request.urlopen(u)\n", path))
+        for extra in ('OTHER = "https://graph.microsoft.com/v1.0/me/messages"\n',
+                      'OTHER = f"https://{HOST}/"\n'):
+            self.assertIn("unlisted-url", rules(source + extra, path), extra)
+
+    def test_graph_subscription_sender_is_its_one_sender_and_two_url_prefixes(self):
+        path = "integrations/graph_subscription_sender.py"
+        source = (Path(gate.ROOT) / path).read_text()
+        self.assertEqual(rules(source, path), set())
+        self.assertIn("non-get-request", rules(source, "integrations/graph_subscriptions.py"))
+        self.assertIn("non-get-request", rules(
+            source.replace("def send_subscription(", "def send_other("), path))
+        for extra in ('OTHER = "https://graph.microsoft.com/v1.0/me/sendMail"\n',
+                      'OTHER = "https://example.com/"\n'):
+            self.assertIn("unlisted-url", rules(source + extra, path), extra)
+
+    def test_ops_mail_sender_refuses_any_other_url_before_a_request(self):
+        from operating import ops_mail_sender as m
+        tenant = "0b8f6a1e-1111-2222-3333-444455556666"
+        self.assertTrue(m.allowed(f"{m.TOKEN_PREFIX}{tenant}/oauth2/v2.0/token"))
+        self.assertTrue(m.allowed(f"{m.GRAPH_PREFIX}ops@example.test/sendMail"))
+        for url in (f"{m.TOKEN_PREFIX}{tenant}/oauth2/v2.0/authorize",
+                    f"{m.GRAPH_PREFIX}ops@example.test/messages",
+                    f"{m.GRAPH_PREFIX}ops@example.test/sendMail?x=1",
+                    f"{m.GRAPH_PREFIX}../me/sendMail",
+                    f"{m.GRAPH_PREFIX}x%2F..%2Fgroups%2Fg%2Fthreads%3F@a.bc/sendMail",
+                    f"{m.GRAPH_PREFIX}a+b@example.test/sendMail",
+                    "https://graph.microsoft.com/v1.0/me/sendMail",
+                    "https://example.com/" + tenant):
+            self.assertFalse(m.allowed(url), url)
+            with self.assertRaises(m.SenderRefused):
+                m.post_ops_mail(url, {}, b"x", 1)
+
     def test_scope_covers_scripts_and_devloop(self):
         self.assertIn("scripts", gate.SCANNED)
         self.assertIn("devloop", gate.SCANNED)

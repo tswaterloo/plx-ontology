@@ -689,10 +689,10 @@ class FullReadGrant:
 
 
 def _people_excluded(guard: Any, identities: Iterable[Any]) -> bool:
-    """``ontology_tools_evidence.people_excluded``'s rule (an object id always, an address
+    """``excluded_people.people_excluded``'s rule (an object id always, an address
     only by a bound guard; a missing, unusable or raising guard withholds)."""
     try:
-        from .ontology_tools_evidence import people_excluded
+        from .excluded_people import people_excluded
         return people_excluded(guard, identities)
     except Exception:  # noqa: BLE001 - an undecidable guard withholds
         return True

@@ -60,7 +60,20 @@ class ActionsMixin:
                           exclusion=ca.exclusion_for(env, getattr(self, "state_dir", None)),
                           today=self._today(), environ=env,
                           thread=self.action_thread or self._read_thread,
-                          chat_members=self.action_chat_members or self._read_chat_members)
+                          chat_members=self.action_chat_members or self._read_chat_members,
+                          attachment=lambda upload_id: self._action_attachment(reader,
+                                                                               upload_id))
+
+    def _action_attachment(self, reader: Reader, upload_id: str) -> Optional[dict[str, Any]]:
+        """A file a card attaches: this reader's own kept upload and its bytes (None: not
+        theirs, or the file is gone). Read again at preview and at confirm."""
+        uploads = getattr(self, "_uploads", None)
+        if not callable(uploads) or not isinstance(upload_id, str):
+            return None
+        desk = uploads()
+        row = desk.get(reader.key, upload_id)
+        data = desk.file(reader.key, row["file_id"]) if row else None
+        return {**row, "data": data} if row and data is not None else None
 
     def _graph(self) -> Any:
         """The GET-only Graph client (``integrations.graph_read.build_graph``), or None
@@ -137,6 +150,12 @@ class ActionsMixin:
             built = self.my_work_card_of(reader, card_id)  # type: ignore[attr-defined]
             if built is None:
                 raise UserFacing("not_found", "That item is no longer on your list.", 404)
+            return built
+        if card_id.startswith("fill:"):
+            # a filled form's reply, rebuilt now from this reader's own kept file
+            built = self.fill_reply_card(reader, card_id)  # type: ignore[attr-defined]
+            if built is None:
+                raise UserFacing("not_found", "That filled form is not one of yours.", 404)
             return built
         if card_id.startswith("pack:"):
             # a record's document pack, rebuilt now as this reader's own (never the request's)

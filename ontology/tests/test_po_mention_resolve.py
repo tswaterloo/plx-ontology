@@ -75,7 +75,7 @@ class FirmStep(unittest.TestCase):
         self.conn = sqlite3.connect(":memory:")
         self.conn.execute("CREATE TABLE link_rows (link_id, link_type, from_object, to_object, "
                           "tier, reason, evidence_handles, markings, recorded_at, "
-                          "superseded_at)")
+                          "superseded_at, why_not)")
         self.conn.execute("CREATE VIEW links AS SELECT * FROM link_rows")
         self.conn.execute("CREATE TABLE object_values (object_id, property, value, "
                           "superseded_at)")
@@ -94,7 +94,7 @@ class FirmStep(unittest.TestCase):
                    "mention_group": "g1"}]
         for n, to in enumerate(("PurchaseOrder:bc:1", "PurchaseOrder:portal:1")):
             self.conn.execute("INSERT INTO link_rows VALUES (?, ?, ?, ?, 'lead', ?, ?, '[]', "
-                              "'2026-10-01T00:00:00Z', NULL)",
+                              "'2026-10-01T00:00:00Z', NULL, '[]')",
                               (f"mention:{n}", "Email.mentions_purchase_order", "Email:m:1",
                                to, json.dumps(reason), json.dumps(["h-Email:m:1"])))
         self.orders = {"4820": [order("PurchaseOrder:bc:1", {"S:vendor"}),

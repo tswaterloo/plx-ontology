@@ -605,6 +605,11 @@ class SageLoadedOrderRootTests(unittest.TestCase):
         self.assertEqual((row["outcome"], row["abstained"], row["reasons"]),
                          ("pass", False, []))
         result = self.investigation(row)
+        # AUD-08 stores no blank or 0 AssemblyOrder final quantity; the reader re-reads the
+        # blank yield and reports it absent in source, as the oracle does (AUD08-GAPSTATE)
+        produced = {(g["state"], g["reason"]) for g in result["gaps"]
+                    if g.get("concerns") == "produced"}
+        self.assertEqual(produced, {("absent_in_source", "value_empty")}, result["gaps"])
         self.assertTrue(result["root"]["object_id"].startswith(
             "SalesOrder:portal.app_sales_order:"))
         twins = [g for g in result["gaps"] if g["reason"] == "root_twins_not_roots"]

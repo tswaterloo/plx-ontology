@@ -61,6 +61,7 @@ seeds links forward. Stdlib only.
 from __future__ import annotations
 
 from collections import Counter, defaultdict
+from itertools import islice
 from dataclasses import dataclass
 from hashlib import sha256
 import json
@@ -68,6 +69,7 @@ import re
 from typing import Any, Iterable, Iterator, Mapping, Sequence
 
 from ontology import mentions
+from ontology import step_reads as SR
 
 PREFIX = "sendparty:"
 _PREFIX_END = PREFIX[:-1] + chr(ord(PREFIX[-1]) + 1)
@@ -91,6 +93,7 @@ MEETING_LINK_TYPES = {
     "Meeting": {"Supplier": "Meeting.with_supplier", "Customer": "Meeting.with_customer"}}
 MEETING_PROPS = ("organizer", "attendees")
 BATCH = 5000
+WINDOW = 2000     # messages whose named records are read together
 _ADDRESS = re.compile(r"[A-Za-z0-9._%+'-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}")
 
 
@@ -344,37 +347,63 @@ def _component(conn: Any, start: str, roots: dict[str, str],
                                if o != member and o.split(":", 1)[0] == member.split(":", 1)[0])
 
 
+def named_parties_batch(conn: Any, messages: Sequence[str], parties: Parties
+                        ) -> dict[str, list[Holding]]:
+    """``named_parties`` of every message of ``messages``: the links of a batch of messages
+    in one statement, those of the records they name in a second (one per 500 objects,
+    never one per message). A message naming no party is absent."""
+    from ontology import step_reads as SR
+
+    found: dict[str, dict[str, str]] = {}   # message -> party -> the record naming it
+    named_records: set[str] = set()
+    targets = SR.rows_by_object(
+        conn, list(messages), "SELECT from_object, to_object FROM link_rows WHERE tier <> "
+        "'contradicted' AND superseded_at IS NULL AND NOT (link_id >= ? AND link_id < ?)",
+        [PREFIX, _PREFIX_END])
+    for message, rows in targets.items():
+        for row in rows:
+            if row["to_object"].split(":", 1)[0] in NAMED_TYPES:
+                named_records.add(row["to_object"])
+    parties_of = SR.rows_by_object(
+        conn, sorted(named_records), "SELECT from_object, to_object FROM link_rows WHERE tier "
+        f"IN ({','.join('?' * len(NAMED_PARTY_TIERS))}) AND superseded_at IS NULL",
+        list(NAMED_PARTY_TIERS))
+    for message, rows in targets.items():
+        mine: dict[str, str] = {}
+        for row in rows:
+            target = row["to_object"]
+            kind = target.split(":", 1)[0]
+            if kind in PARTY_TYPES:
+                mine.setdefault(target, target)
+            elif kind in NAMED_TYPES:
+                for party_row in parties_of.get(target, ()):
+                    if party_row["to_object"].split(":", 1)[0] in PARTY_TYPES:
+                        mine.setdefault(party_row["to_object"], target)
+        if mine:
+            found[message] = mine
+    versions = _versions(conn, {r for mine in found.values() for r in mine.values()})
+    out: dict[str, list[Holding]] = {}
+    for message in messages:
+        mine = found.get(message)
+        if not mine:
+            continue
+        holdings = []
+        for party, record in sorted(mine.items()):
+            version = versions.get(record)
+            if version is None:
+                continue
+            _component(conn, party, parties.roots, parties.twins)
+            holdings.append(Holding(party, party.split(":", 1)[0], NAMED, "", None,
+                                    version["l1_handle"], {"l1_handle": version["l1_handle"]},
+                                    version["markings"], version["recorded_at"]))
+        out[message] = holdings
+    return out
+
+
 def named_parties(conn: Any, message: str, parties: Parties) -> list[Holding]:
     """One ``named_record`` holding per party record the records ``message`` names
     belong to (module docstring), citing the named record (or the party it names)."""
-    found: dict[str, str] = {}   # party -> the record naming it
-    for (target,) in _q(conn, "SELECT to_object FROM link_rows WHERE from_object = ? AND "
-                              "tier <> 'contradicted' AND superseded_at IS NULL AND NOT "
-                              "(link_id >= ? AND link_id < ?)",
-                        [message, PREFIX, _PREFIX_END]):
-        kind = target.split(":", 1)[0]
-        if kind in PARTY_TYPES:
-            found.setdefault(target, target)
-        elif kind in NAMED_TYPES:
-            for (party,) in _q(conn, "SELECT to_object FROM link_rows WHERE from_object = ? "
-                                     f"AND tier IN ({','.join('?' * len(NAMED_PARTY_TIERS))}) "
-                                     "AND superseded_at IS NULL",
-                               [target, *NAMED_PARTY_TIERS]):
-                if party.split(":", 1)[0] in PARTY_TYPES:
-                    found.setdefault(party, target)
-    if not found:
-        return []
-    versions = _versions(conn, set(found.values()))
-    out = []
-    for party, record in sorted(found.items()):
-        version = versions.get(record)
-        if version is None:
-            continue
-        _component(conn, party, parties.roots, parties.twins)
-        out.append(Holding(party, party.split(":", 1)[0], NAMED, "", None,
-                           version["l1_handle"], {"l1_handle": version["l1_handle"]},
-                           version["markings"], version["recorded_at"]))
-    return out
+    return named_parties_batch(conn, [message], parties).get(message, [])
 
 
 def own_domains(projector: Any) -> list[str]:
@@ -533,11 +562,8 @@ def sender_parties_step(builder: Any, projector: Any) -> dict[str, Any]:
     def flush() -> None:
         if not pending:
             return
-        rejected = set()
-        for email in sorted({r["from_object"] for r in pending}):
-            rejected |= {(email, r[0], r[1]) for r in _q(
-                conn, "SELECT to_object, link_type FROM link_rows WHERE from_object = ? AND "
-                      "tier = 'contradicted'", [email])}
+        pairs = SR.rejected_pairs(conn, (r["from_object"] for r in pending))
+        rejected = {(email, to, kind) for email, found in pairs.items() for to, kind in found}
         kept = [r for r in pending
                 if (r["from_object"], r["to_object"], r["link_type"]) not in rejected]
         counts["rejected"] += len(pending) - len(kept)
@@ -547,24 +573,33 @@ def sender_parties_step(builder: Any, projector: Any) -> dict[str, Any]:
             tiers[r["tier"]] += 1
         pending.clear()
 
-    for message, outcome, tier, holdings in judge_messages(conn, parties, own):
-        named: list[Holding] = []
-        if tier is None and outcome in ("shared_by_parties", "no_party"):
-            named = named_parties(conn, message["object_id"], parties)
-            if named:
-                found = addresses(message["value"])
-                outcome, tier, holdings = parties.by_named(found[0], outcome, holdings, named)
-        counts[outcome] += 1
-        if tier is None:
-            continue
-        missing = {t for h in holdings for t in (h.party, *parties.twins.get(h.party, ()))
-                   if t not in versions}
-        if missing:
-            versions.update(_versions(conn, missing))
-        pending.extend(link_rows(message, tier, holdings, parties, versions, declared,
-                                 named=named))
-        if len(pending) >= BATCH:
-            flush()
+    judged = judge_messages(conn, parties, own)
+    while True:
+        window = list(islice(judged, WINDOW))
+        if not window:
+            break
+        # the records the window's unlinked senders name, read for the whole window at once
+        wanted = [m["object_id"] for m, outcome, tier, _h in window
+                  if tier is None and outcome in ("shared_by_parties", "no_party")]
+        names = named_parties_batch(conn, wanted, parties) if wanted else {}
+        for message, outcome, tier, holdings in window:
+            named: list[Holding] = []
+            if tier is None and outcome in ("shared_by_parties", "no_party"):
+                named = names.get(message["object_id"], [])
+                if named:
+                    found = addresses(message["value"])
+                    outcome, tier, holdings = parties.by_named(found[0], outcome, holdings, named)
+            counts[outcome] += 1
+            if tier is None:
+                continue
+            missing = {t for h in holdings for t in (h.party, *parties.twins.get(h.party, ()))
+                       if t not in versions}
+            if missing:
+                versions.update(_versions(conn, missing))
+            pending.extend(link_rows(message, tier, holdings, parties, versions, declared,
+                                     named=named))
+            if len(pending) >= BATCH:
+                flush()
     flush()
     pending.extend(meeting_rows(conn, parties, own, getattr(projector, "links", {}) or {},
                                 counts))

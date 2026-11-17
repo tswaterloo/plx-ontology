@@ -18,6 +18,10 @@ import unittest
 from unittest import mock
 
 from operating import autopilot as ap
+from operating import autopilot_events
+from operating import autopilot_handlers
+from operating import autopilot_queue
+from operating import autopilot_reading
 from operating.tests.test_proactive_engine import EXCLUDED_OID, OURS_OID, World
 from operating.tests.test_proactive_threads import (APPROVER, APPROVER_OID, BOSS, OURS,
                                                     OUTSIDE, mail, people)
@@ -55,12 +59,12 @@ class Fixture(unittest.TestCase):
         w.link("SalesOrder.ordered_by", order, self.customer)
         item = w.obj("Product", {"code": "SYN-1", "quantity_on_hand": (on_hand, "EA")})
         line = w.obj("SalesOrderLine", {"outstanding_quantity": need, "uom": "EA"})
-        w.link(ap.SO_LINE_OF, line, order)
-        w.link(ap.SO_LINE_ITEM, line, item)
+        w.link(autopilot_queue.SO_LINE_OF, line, order)
+        w.link(autopilot_queue.SO_LINE_ITEM, line, item)
         pol = w.obj("PurchaseOrderLine", {"ordered_quantity": ("100", "EA"),
                                           "received_quantity": "0",
                                           "bc_expected_receipt_date": "2026-10-25"})
-        w.link(ap.PO_LINE_ITEM, pol, item)
+        w.link(autopilot_queue.PO_LINE_ITEM, pol, item)
         return order
 
     def availability(self, order: str) -> dict:
@@ -69,8 +73,8 @@ class Fixture(unittest.TestCase):
         self.w.build(path)
         st = pe._Store(path, threads=1)
         self.addCleanup(st.close)
-        ctx = ap.Ctx(st, NOW.date(), time.monotonic() + 60, ())
-        return ap.availability(ctx, order)
+        ctx = autopilot_handlers.Ctx(st, NOW.date(), time.monotonic() + 60, ())
+        return autopilot_handlers.availability(ctx, order)
 
     def message(self, i: int, body: str, *, subject: str = "PO", box: str = OURS_OID,
                 to=(OURS,), cc=(), sender: str = OUTSIDE, customer: bool = True) -> str:
@@ -139,7 +143,7 @@ class Classify(unittest.TestCase):
                  {"payment_question"}),
                 ("Thanks, have a good weekend.", set())):
             with self.subTest(text=text):
-                self.assertEqual(set(ap.intents_of("", text)) - {"approval_request"}, want)
+                self.assertEqual(set(autopilot_queue.intents_of("", text)) - {"approval_request"}, want)
 
     def test_an_unknown_registry_entry_refuses_the_whole_registry(self):
         good = ap.load_registry()
@@ -171,8 +175,8 @@ class Engine(Fixture):
         self.assertEqual(work["draft"]["to"], [{"address": OUTSIDE}])
         self.assertTrue(item["citations"])
         self.assertEqual((first["sent"], first["writes"]), (0, 0))
-        card = ap.card_of(item)
-        self.assertEqual(card["id"], ap.CARD_PREFIX + item["item_id"])
+        card = autopilot_reading.card_of(item)
+        self.assertEqual(card["id"], autopilot_queue.CARD_PREFIX + item["item_id"])
 
     def test_a_reply_draft_keeps_the_others_on_the_message_never_the_owner(self):
         # people answer to all (DEV 10-13..27: same To and Cc 24 of 43 kept, 4 sender-only)
@@ -190,16 +194,100 @@ class Engine(Fixture):
         draft = item["body"]["prepared"]["draft"]
         self.assertEqual(draft["to"], [{"address": OUTSIDE}, {"address": other}])
         self.assertEqual(draft["cc"], [{"address": APPROVER.lower()}])
-        card = ap.card_of(item)
+        card = autopilot_reading.card_of(item)
         from operating import card_actions as ca
         got = ca.default_payload("reply_in_thread", card, None)
         self.assertEqual((got["to"], got["cc"]), ([OUTSIDE, other], [APPROVER.lower()]))
         # a draft for a message with no one else on it: the sender alone, no Cc line
-        self.assertEqual(ap.reply_all(OUTSIDE, [OURS], [], [OURS]), {"to": [], "cc": []})
+        self.assertEqual(autopilot_events.reply_all(OUTSIDE, [OURS], [], [OURS]), {"to": [], "cc": []})
         # a card without the extra lists (every other card kind): unchanged
         bare = {**card, "draft": {k: v for k, v in card["draft"].items()
                                   if k not in ("also_to", "cc")}}
         self.assertEqual(ca.default_payload("send_email", bare, None)["cc"], [])
+
+    def test_reply_recipients_are_decided_per_owner_on_the_one_resolver(self):
+        # the owner's lessons (``assist.resolve_reply``): a "never" is off and never offered,
+        # a "cc" moves to Cc; past REPLY_ALL_MAX the rest are asked; each address cited
+        from operating import assist
+        self.order("PO-4514", on_hand="50", need="10")
+        many = [f"b{n}@synth-customer.example" for n in range(14)]
+        msg = self.message(6, "Please find attached our PO PO-4514 for 10 cases.",
+                           subject="New PO PO-4514", to=(OURS, *many), cc=(APPROVER,))
+
+        class Lessons:
+            def __bool__(self):
+                return True
+
+            def skip_reason(self, *_a, **_k):
+                return None
+
+            def apply_draft(self, work, *_a, **_k):
+                return work
+
+            def recipients(self, owner):
+                assert owner == OURS_OID
+                return {many[0]: "never", many[1]: "cc", "x@y.example": "to"}
+
+        with mock.patch.object(ap, "_lessons", lambda _q: Lessons()):
+            self.cycle([msg])
+        (item,) = self.queue().items()
+        draft = item["body"]["prepared"]["draft"]
+        to = [t["address"] for t in draft["to"]]
+        cc = [t["address"] for t in draft["cc"]]
+        # the event holds a message's addresses sorted (``_addresses``): that order is kept
+        others = sorted(many[2:])
+        self.assertEqual(to, [OUTSIDE, *others[:assist.REPLY_ALL_MAX]])
+        self.assertEqual(cc, [many[1], APPROVER.lower()])
+        rec = draft["recipients"]
+        self.assertEqual([q["candidates"] for q in rec["ask"]], [others[assist.REPLY_ALL_MAX:]])
+        self.assertNotIn(many[0], json.dumps(item))
+        self.assertNotIn("x@y.example", to + cc)
+        self.assertEqual(rec["why"][many[1]], "learned_cc")
+        self.assertEqual(set(rec["source"]), set(to + cc))
+        for cite in rec["source"].values():
+            self.assertIn(cite, [*item["citations"], msg])
+        self.assertNotIn(OURS, to + cc)
+        # the card and its send payload carry exactly the decided lines
+        card = autopilot_reading.card_of(item)
+        self.assertEqual(([card["draft"]["to"]["address"], *card["draft"]["also_to"]],
+                          card["draft"]["cc"]), (to, cc))
+
+    def test_every_email_draft_fails_closed_on_the_one_resolver(self):
+        from operating.tests.test_proactive_threads import people as make_people
+        event = {"object_id": "Email:e1", "handles": ["h:mail-1"]}
+        work = {"summary": "s", "gaps": ["no_order_named"],
+                "draft": {"channel": "email", "to": [{"address": BOSS}],
+                          "subject": "s", "body": "Hi Boss,"},
+                "customer_notice": {"channel": "email", "to": [{"address": "noreply@x.example"}],
+                                    "source": "Customer:c1", "subject": "s", "body": "b"},
+                "customer_notices": [
+                    {"channel": "email", "to": [{"address": OUTSIDE}], "source": "Customer:c2",
+                     "cc": [{"address": BOSS}, {"address": OURS}], "body": "b"},
+                    {"channel": "email", "to": [], "body": "b"}],
+                "teams_draft": {"channel": "teams", "body": "t"}}
+        got = ap._recipients(work, event, OURS_OID, make_people(), {})
+        # an excluded person first on To: no draft at all (its greeting names them)
+        self.assertNotIn("draft", got)
+        self.assertNotIn("boss", json.dumps(got).lower())
+        # an automated address: asked, kept with no To so it cannot be sent
+        notice = got["customer_notice"]
+        self.assertEqual(notice["to"], [])
+        self.assertEqual(notice["recipients"]["ask"][0]["candidates"], ["noreply@x.example"])
+        self.assertIsNone(autopilot_reading.card_of({"body": {"prepared": {"draft": notice}},
+                                      "citations": ["h"], "item_id": "i"}))
+        (kept,) = got["customer_notices"]
+        self.assertEqual((kept["to"], "cc" in kept), ([{"address": OUTSIDE}], False))
+        self.assertEqual(kept["recipients"], {"why": {OUTSIDE: "sender"},
+                                              "source": {OUTSIDE: "Customer:c2"},
+                                              "withheld": 1})
+        self.assertEqual(got["teams_draft"], work["teams_draft"])
+        self.assertEqual(got["gaps"], ["no_order_named", "recipients_withheld",
+                                       "recipients_unresolved"])
+        # the exclusion unavailable: no email draft survives
+        got = ap._recipients(work, event, OURS_OID, make_people(unavailable=True), {})
+        self.assertFalse({"draft", "customer_notice"} & set(got))
+        self.assertEqual(got["customer_notices"], [])
+        self.assertIn("recipients_people_exclusion_unavailable", got["gaps"])
 
     def test_a_machine_report_prepares_nothing_a_burst_from_one_person_still_does(self):
         # triage's automated-mail test (``inbox_triage.automated_mail``) by form: a JSON
@@ -230,7 +318,7 @@ class Engine(Fixture):
         self.build()
         self.cycle([whole, part, unnamed])
         by = {i["body"]["prepared"]["po_numbers"][0]: i for i in self.queue().items()}
-        spec = ap.write_spec(by["88123"])
+        spec = autopilot_reading.write_spec(by["88123"])
         self.assertEqual(spec["operation"], "sales_order_create")
         self.assertEqual(spec["payload"]["customerNumber"], "C100")
         self.assertEqual(spec["payload"]["externalDocumentNumber"], "88123")
@@ -243,9 +331,9 @@ class Engine(Fixture):
                             ln["available"]["basis"] for ln in lines))
         self.assertIn("88123", by["88123"]["body"]["prepared"]["draft"]["body"])
         # one line names no item we hold: no intent, the line is shown unresolved
-        self.assertIsNone(ap.write_spec(by["88124"]))
+        self.assertIsNone(autopilot_reading.write_spec(by["88124"]))
         self.assertIn("lines_not_resolved", by["88124"]["body"]["prepared"]["gaps"])
-        self.assertIsNone(ap.write_spec(by["88126"]))
+        self.assertIsNone(autopilot_reading.write_spec(by["88126"]))
         self.assertIn("customer_not_stated_in_po", by["88126"]["body"]["prepared"]["gaps"])
 
     def test_a_po_from_a_domain_two_customers_share_is_no_customer(self):
@@ -258,7 +346,7 @@ class Engine(Fixture):
         self.cycle([msg])
         (item,) = self.queue().items()
         work = item["body"]["prepared"]
-        self.assertIsNone(ap.write_spec(item))
+        self.assertIsNone(autopilot_reading.write_spec(item))
         self.assertTrue(any(g.startswith("customer_not_resolved") for g in work["gaps"]))
 
     def test_cardinality_one_ten_sixty_no_row_lost_or_doubled(self):
@@ -301,11 +389,11 @@ class Engine(Fixture):
 
     def test_kill_switch_reads_and_prepares_nothing(self):
         msg = self.message(6, "Please send the COA.")
-        self.env[ap.KILL_ENV] = "1"
+        self.env[autopilot_queue.KILL_ENV] = "1"
         self.assertEqual(self.cycle([msg])["status"], "off")
         self.env.clear()
         (self.dir / "q").mkdir(exist_ok=True)
-        (self.dir / "q" / ap.KILL_FILE).write_text("")
+        (self.dir / "q" / autopilot_queue.KILL_FILE).write_text("")
         self.assertEqual(self.cycle([msg])["status"], "off")
         self.assertEqual(self.queue().conn.execute("SELECT COUNT(*) FROM events").fetchone()[0],
                          0)
@@ -425,32 +513,32 @@ class Readers(Fixture):
 
     def test_owner_sees_own_items_and_others_see_nothing(self):
         q = self.prepared()
-        own = ap.visible(q, reader=READER, may_read=everyone, held=["finance"],
+        own = autopilot_reading.visible(q, reader=READER, may_read=everyone, held=["finance"],
                          decide=opens_all)
         self.assertEqual(sorted(i["autopilot"] for i in own),
                          ["customer_request", "customer_request"])
-        self.assertEqual(ap.visible(q, reader=OTHER, may_read=everyone, held=["finance"],
+        self.assertEqual(autopilot_reading.visible(q, reader=OTHER, may_read=everyone, held=["finance"],
                                     decide=opens_all), [])
-        self.assertEqual(ap.visible(q, reader="synth-tenant:admin", may_read=everyone,
+        self.assertEqual(autopilot_reading.visible(q, reader="synth-tenant:admin", may_read=everyone,
                                     held=["finance"], decide=opens_all), [])
 
     def test_restricted_owner_and_granted_manager(self):
         q = self.prepared()
-        no_finance = ap.visible(q, reader=READER, may_read=everyone, held=[],
+        no_finance = autopilot_reading.visible(q, reader=READER, may_read=everyone, held=[],
                                 decide=opens_all)
         self.assertEqual([i["autopilot"] for i in no_finance], ["customer_request"])
-        self.assertEqual(ap.visible(q, reader=READER, may_read=lambda a: False,
+        self.assertEqual(autopilot_reading.visible(q, reader=READER, may_read=lambda a: False,
                                     held=["finance"], decide=opens_all), [])
-        refused = ap.visible(q, reader=READER, may_read=everyone, held=["finance"],
+        refused = autopilot_reading.visible(q, reader=READER, may_read=everyone, held=["finance"],
                              decide=lambda hs: {h: {"reason": "x"} for h in hs})
         self.assertEqual(refused, [])
         grants = {"teams": {OURS_OID: "OPS"}, "managers": {APPROVER_OID: ["OPS"]}}
-        managed = ap.visible(q, reader=OTHER, may_read=everyone, held=["finance"],
+        managed = autopilot_reading.visible(q, reader=OTHER, may_read=everyone, held=["finance"],
                              decide=opens_all, grants=grants)
         self.assertEqual(len(managed), 2)
         self.assertFalse(any(i["mine"] for i in managed))
         other_team = {"teams": {OURS_OID: "OPS"}, "managers": {APPROVER_OID: ["QA"]}}
-        self.assertEqual(ap.visible(q, reader=OTHER, may_read=everyone, held=["finance"],
+        self.assertEqual(autopilot_reading.visible(q, reader=OTHER, may_read=everyone, held=["finance"],
                                     decide=opens_all, grants=other_team), [])
 
     def test_every_citation_of_an_item_is_checked_fail_closed(self):
@@ -460,7 +548,7 @@ class Readers(Fixture):
         with q.conn:
             q.conn.execute("UPDATE items SET citations = ?", (json.dumps(many),))
         last = many[-1]
-        seen = lambda decide: ap.visible(q, reader=READER, may_read=everyone,  # noqa: E731
+        seen = lambda decide: autopilot_reading.visible(q, reader=READER, may_read=everyone,  # noqa: E731
                                          held=["finance"], decide=decide)
         self.assertEqual(len(seen(opens_all)), 2)
         # the 60th citation is refused: the item is not shown
@@ -480,7 +568,7 @@ class Readers(Fixture):
 
     def test_digest_nudges_items_past_due(self):
         q = self.prepared()
-        items = ap.visible(q, reader=READER, may_read=everyone, held=["finance"],
+        items = autopilot_reading.visible(q, reader=READER, may_read=everyone, held=["finance"],
                            decide=opens_all)
         day = ap.digest(items, NOW + timedelta(hours=5))
         self.assertEqual(day["open"], 2)
@@ -570,15 +658,15 @@ class Kinds(Fixture):
         w.link("Email.mentions_po", delay, po)
         # the PO's item is on the open customer order required 30 Oct: the slip hits it
         pol = w.obj("PurchaseOrderLine", {"ordered_quantity": "5"})
-        w.link(ap.PO_LINE_OF, pol, po)
+        w.link(autopilot_queue.PO_LINE_OF, pol, po)
         item = [r["to_object"] for r in w.rows["links"]
-                if r["link_type"] == ap.SO_LINE_ITEM][0]
-        w.link(ap.PO_LINE_ITEM, pol, item)
+                if r["link_type"] == autopilot_queue.SO_LINE_ITEM][0]
+        w.link(autopilot_queue.PO_LINE_ITEM, pol, item)
         pay = mail(w, SENT, sender="rep@synth-supplier.example", to=(OURS,),
                    body="Has invoice 9921 been paid? Our records show a balance.",
                    subject="Payment", mailbox=OURS_OID, conversation="conv-p", n=31_001)
         w.link("Email.sent_by_supplier", pay, supplier)
-        self.env[ap.ROLES_ENV] = str(self.dir / "roles.json")
+        self.env[autopilot_queue.ROLES_ENV] = str(self.dir / "roles.json")
         (self.dir / "roles.json").write_text(json.dumps({"roles": {"quality": [OURS_OID]}}))
         summary = self.cycle([task, bare, lot, meeting, delay, pay])
         # supplier delay and payment questions are off until payables data exists; a task
@@ -605,7 +693,7 @@ class SupplierFollowUp(Fixture):
         w.link("PurchaseOrder.ordered_from", po, sup)
         line = w.obj("PurchaseOrderLine", {"item_code": f"SYN-{i}", "ordered_quantity": "40",
                                            "uom": "CS"})
-        w.link(ap.PO_LINE_OF, line, po)
+        w.link(autopilot_queue.PO_LINE_OF, line, po)
         sent = mail(w, SENT - timedelta(days=4), sender=OURS,
                     to=(f"anna.reed{i}@synth-supplier.example",), body=f"PO P-{500 + i}",
                     subject=f"PO P-{500 + i}", mailbox=OURS_OID, conversation=f"po-{i}",
@@ -644,14 +732,14 @@ class SupplierFollowUp(Fixture):
                 self.assertIn(work["purchase_order"]["number"], body)
                 self.assertIn("x 40 CS", body)
                 self.assertEqual(items[0]["owner"], OURS_OID)    # who sent the PO
-                self.assertEqual(ap.visible(self.queue(), reader=OTHER, may_read=everyone,
+                self.assertEqual(autopilot_reading.visible(self.queue(), reader=OTHER, may_read=everyone,
                                             held=[], decide=opens_all), [])
                 self.assertEqual((first["sent"], first["writes"]), (0, 0))
 
 
 class OwnersDesk(Fixture):
     def test_the_owner_gets_answers_and_decision_cards_never_a_restated_ask(self):
-        self.env[ap.ROLES_ENV] = str(self.dir / "roles.json")
+        self.env[autopilot_queue.ROLES_ENV] = str(self.dir / "roles.json")
         (self.dir / "roles.json").write_text(json.dumps({"roles": {"owner": [OURS_OID]}}))
         shipped = self.order("PO-31")
         self.w.rows["object_values"].append({**[v for v in self.w.rows["object_values"]
@@ -696,8 +784,8 @@ class Availability(Fixture):
         for need in needs:
             line = self.w.obj("SalesOrderLine", {"outstanding_quantity": need[0],
                                                  "uom": need[1] if len(need) > 1 else "EA"})
-            self.w.link(ap.SO_LINE_OF, line, order)
-            self.w.link(ap.SO_LINE_ITEM, line, item)
+            self.w.link(autopilot_queue.SO_LINE_OF, line, order)
+            self.w.link(autopilot_queue.SO_LINE_ITEM, line, item)
 
     def bare_order(self, on_hand: tuple) -> tuple[str, str]:
         order = self.w.obj("SalesOrder", {"order_number": "SO-8001", "status": "Open"})
@@ -717,7 +805,7 @@ class Availability(Fixture):
         # a PO line covers the rest once, for both lines together
         pol = self.w.obj("PurchaseOrderLine", {"ordered_quantity": ("2", "EA"),
                                                "bc_expected_receipt_date": "2026-10-28"})
-        self.w.link(ap.PO_LINE_ITEM, pol, item)
+        self.w.link(autopilot_queue.PO_LINE_ITEM, pol, item)
         self.assertEqual(self.availability(order)["date"], "2026-10-28")
 
     def test_no_split_of_a_demand_creates_supply_at_any_cardinality(self):
@@ -739,14 +827,14 @@ class Availability(Fixture):
                     pol = self.w.obj("PurchaseOrderLine", {
                         "ordered_quantity": ("6", "EA"),
                         "bc_expected_receipt_date": "2026-10-28"})
-                    self.w.link(ap.PO_LINE_ITEM, pol, split_item)
+                    self.w.link(autopilot_queue.PO_LINE_ITEM, pol, split_item)
                     self.assertIsNone(self.availability(order)["date"])   # 56 < 60
                     pol2 = self.w.obj("PurchaseOrderLine", {
                         "ordered_quantity": ("4", "EA"),
                         "bc_expected_receipt_date": "2026-10-30"})
-                    self.w.link(ap.PO_LINE_ITEM, pol2, split_item)
+                    self.w.link(autopilot_queue.PO_LINE_ITEM, pol2, split_item)
                     got = self.availability(order)
-                    if n > ap.MAX_LINES:   # lines one check cannot read: no promise at all
+                    if n > autopilot_queue.MAX_LINES:   # lines one check cannot read: no promise at all
                         self.assertIsNone(got["date"])
                         self.assertIn("lines_not_read", got["unknown_reasons"])
                     else:
@@ -765,6 +853,54 @@ class Availability(Fixture):
         self.lines(order, item, ("10", "EA"))
         self.assertEqual(self.availability(order)["date"], NOW.date().isoformat())
 
+    def test_a_purchase_order_line_in_another_unit_supplies_nothing_comparable(self):
+        # AUTOMATION-004: 10 EA on hand, 15 EA needed; the open PO line is stated in KG,
+        # in no unit, or (control) in EA under another spelling
+        for po_qty, want in ((("100", "KG"), "unit_mismatch"), ("100", "unit_unknown"),
+                             (("100", "each"), None)):
+            with self.subTest(po=po_qty):
+                order, item = self.bare_order(("10", "EA"))
+                self.lines(order, item, ("15", "EA"))
+                pol = self.w.obj("PurchaseOrderLine", {
+                    "ordered_quantity": po_qty, "bc_expected_receipt_date": "2026-10-28"})
+                self.w.link(autopilot_queue.PO_LINE_ITEM, pol, item)
+                got = self.availability(order)
+                if want is None:
+                    self.assertEqual(got["date"], "2026-10-28")
+                else:
+                    self.assertIsNone(got["date"])
+                    self.assertEqual(set(got["unknown_reasons"]), {want})
+
+    def item_available(self, item: str, need: str, unit: str | None) -> dict:
+        from decimal import Decimal
+        from operating import autopilot_work as work
+        path = self.dir / "entry.sqlite"
+        self.w.build(path)
+        st = pe._Store(path, threads=1)
+        self.addCleanup(st.close)
+        ctx = autopilot_handlers.Ctx(st, NOW.date(), time.monotonic() + 60, ())
+        return work.item_available(ctx, [item], Decimal(need), unit)
+
+    def test_order_entry_never_compares_stock_or_supply_in_another_unit(self):
+        # AUTOMATION-004 on the order-entry path: the need, the stock and each PO line must
+        # be one stated unit, else no date (never converted)
+        for stock, unit in ((("50", "KG"), "EA"), (("50", None), "EA"), (("50", "EA"), None)):
+            with self.subTest(stock=stock, unit=unit):
+                _o, item = self.bare_order(stock if stock[1] else stock[0])
+                got = self.item_available(item, "10", unit)
+                self.assertIsNone(got["date"])
+                self.assertIn("never converted", got["basis"])
+        _o, item = self.bare_order(("50", "each"))
+        self.assertEqual(self.item_available(item, "10", "EA")["date"],
+                         NOW.date().isoformat())
+        _o, item = self.bare_order(("5", "EA"))
+        pol = self.w.obj("PurchaseOrderLine", {"ordered_quantity": ("100", "KG"),
+                                               "bc_expected_receipt_date": "2026-10-28"})
+        self.w.link(autopilot_queue.PO_LINE_ITEM, pol, item)
+        got = self.item_available(item, "10", "EA")
+        self.assertIsNone(got["date"])
+        self.assertIn("another unit", got["basis"])
+
     def test_a_cancelled_purchase_order_supplies_nothing_whatever_its_line_says(self):
         for line_date, head_date in (("2026-10-25", None), (None, "2026-10-25"),
                                      ("2026-10-25", "2026-10-26"), (None, None)):
@@ -775,19 +911,19 @@ class Availability(Fixture):
                     {"expected_date": head_date} if head_date else {})})
                 pol = self.w.obj("PurchaseOrderLine", {"ordered_quantity": ("100", "EA"), **(
                     {"bc_expected_receipt_date": line_date} if line_date else {})})
-                self.w.link(ap.PO_LINE_ITEM, pol, item)
-                self.w.link(ap.PO_LINE_OF, pol, po)
+                self.w.link(autopilot_queue.PO_LINE_ITEM, pol, item)
+                self.w.link(autopilot_queue.PO_LINE_OF, pol, po)
                 self.assertIsNone(self.availability(order)["date"])
 
     def test_an_order_with_more_lines_than_one_check_reads_is_never_promised(self):
         order, item = self.bare_order(("1000", "EA"))
-        self.lines(order, item, *[("1",)] * ap.MAX_LINES)
+        self.lines(order, item, *[("1",)] * autopilot_queue.MAX_LINES)
         other = self.w.obj("Product", {"code": "SYN-3", "quantity_on_hand": ("0", "EA")})
         self.lines(order, other, ("5",))                    # the 51st line: unfulfillable
         got = self.availability(order)
         self.assertIsNone(got["date"])
         self.assertEqual((got["lines_read"], got["lines_total"]),
-                         (ap.MAX_LINES, ap.MAX_LINES + 1))
+                         (autopilot_queue.MAX_LINES, autopilot_queue.MAX_LINES + 1))
         self.assertEqual(got["unknown_reasons"]["lines_not_read"], 1)
 
 
@@ -841,16 +977,16 @@ class PreparedClaims(Fixture):
                 self.assertEqual(ln["last_price"]["price"], "4.00")
                 if reused:
                     self.assertEqual(ln["unit_price"], "4.00")
-                    self.assertEqual(ap.write_spec(item)["payload"]["salesOrderLines"][0]
+                    self.assertEqual(autopilot_reading.write_spec(item)["payload"]["salesOrderLines"][0]
                                      ["unitPrice"], "4.00")
                 else:
                     self.assertIsNone(ln["unit_price"])
                     self.assertIn("price_unresolved", work["gaps"])
-                    self.assertIsNone(ap.write_spec(item))   # never a BC write with it
+                    self.assertIsNone(autopilot_reading.write_spec(item))   # never a BC write with it
 
     def approval(self, totals: dict[str, tuple[str, str]], prior: list[tuple[str, str]]):
         # the owner's desk prepares decision cards (``h_desk``)
-        self.env[ap.ROLES_ENV] = str(self.dir / "roles.json")
+        self.env[autopilot_queue.ROLES_ENV] = str(self.dir / "roles.json")
         (self.dir / "roles.json").write_text(json.dumps({"roles": {"owner": [OURS_OID]}}))
         sup = self.w.obj("Supplier", {"name": "Synth supplier"})
         for i, (amount, currency) in enumerate(prior):
@@ -951,7 +1087,7 @@ class OverlappingChunks(unittest.TestCase):
                          [(at, zlib.compress(part.encode())) for at, part in pieces])
         ctx = SimpleNamespace(st=SimpleNamespace(conn=conn))
         mail = work.body_text(ctx, {"object_id": "Email:1"})
-        teams = ap.teams_bodies(SimpleNamespace(conn=conn), ["h1"])["h1"]
+        teams = autopilot_events.teams_bodies(SimpleNamespace(conn=conn), ["h1"])["h1"]
         for read in (mail, teams):
             self.assertEqual(read, text)
             self.assertEqual(read.count(line), 1)

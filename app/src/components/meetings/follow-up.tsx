@@ -12,7 +12,7 @@ import { LoadProblem, StaleNote } from "@/components/ui/notice";
 import { getMeetingFollowUp, getMyActionItems } from "@/lib/api";
 import { ApiError, noticeKind, plainError } from "@/lib/errors";
 import { cn } from "@/lib/cn";
-import { formatDate } from "@/lib/format";
+import { formatDate, objectHref } from "@/lib/format";
 import type { ActionResult, CardActionOffer } from "@/lib/types";
 
 export interface Person { name?: string | null; address?: string | null }
@@ -53,7 +53,7 @@ function Records({ records }: { records?: Linked[] }) {
   return (
     <span className="flex flex-wrap gap-2 text-[12px]">
       {linked.map((r) => (
-        <Link key={r.object_id} href={`/object/${encodeURIComponent(r.type ?? "")}/${encodeURIComponent(r.object_id ?? "")}`} className="font-medium text-accent hover:underline" onClick={(e) => e.stopPropagation()}>
+        <Link key={r.object_id} href={objectHref(r.type || (r.object_id ?? "").split(":")[0], r.object_id ?? "")} className="font-medium text-accent hover:underline" onClick={(e) => e.stopPropagation()}>
           {r.label ?? r.value}
         </Link>
       ))}
@@ -75,7 +75,7 @@ export function PreparedWork({ work }: { work: Prepared }) {
   }
   if (work.kind === "document_pack" && work.object_id) {
     const type = work.object_id.split(":")[0];
-    return <Link className="text-[12px] font-medium hover:underline" href={`/pack/${encodeURIComponent(type)}/${encodeURIComponent(work.object_id)}`} data-testid="prepared-pack">Open the document pack and its drafted reply</Link>;
+    return <Link className="text-[12px] font-medium hover:underline" href={`${objectHref(type, work.object_id)}#documents`} data-testid="prepared-pack">Open the document pack and its drafted reply</Link>;
   }
   if (work.kind === "write_intent") {
     return (

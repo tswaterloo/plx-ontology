@@ -10,7 +10,9 @@ import { useShortcut } from "@/lib/platform";
 import { VERIFIED_EXAMPLES } from "@/lib/examples";
 import { recordLabel, safeHref, typeLabel } from "@/lib/format";
 import { currentPageQuery, scopedToPage } from "@/lib/page-context";
+import { listShownTo } from "@/lib/lists";
 import { stashPending } from "@/lib/pending";
+import { useAuth } from "./auth";
 import { arrange, type Arranged } from "./ask-box";
 import { PlaceIcon, SystemCode } from "./ui/glyphs";
 
@@ -29,14 +31,24 @@ const PLACES: { label: string; href: string; hint: string; words: string }[] = [
   { label: "Watching", href: "/watching", hint: "Every alert, rules and data health", words: "watching briefing alerts rules attention" },
   { label: "Meetings", href: "/meetings", hint: "Upcoming meetings, weekly review and follow-ups", words: "meetings calendar prep weekly review follow-ups action items" },
   { label: "Ask", href: "/ask", hint: "New question", words: "ask question chat" },
-  { label: "R&D projects", href: "/rd-projects", hint: "Sample and R&D projects, idle first", words: "rd r&d samples projects lab" },
-  { label: "UAT feedback", href: "/uat-feedback", hint: "MRP UAT items by status and priority, read only", words: "uat feedback mrp testing issues acceptance" },
+  { label: "R&D and sample projects", href: "/rd-projects", hint: "Sample and R&D projects, idle first", words: "rd r&d samples projects lab" },
   { label: "Activity", href: "/activity", hint: "What was sent, approved and logged", words: "activity actions log journal" },
+  { label: "Quality", href: "/qc", hint: "QC daily pack, hold-release queue and the audit pack", words: "qc quality daily pack hold release batches calibration sanitation audit" },
+  { label: "Data health", href: "/watching#data-health", hint: "Duplicate parties, missing fields, sync mismatches", words: "data health duplicates missing fields sync mismatch twins customer po" },
+  { label: "Records", href: "/records", hint: "Find a customer, order, supplier or product", words: "records customers orders suppliers products items find" },
+  { label: "Autopilot", href: "/autopilot", hint: "Workflows, what they prepared and their run log", words: "autopilot approvals workflows runs audit" },
+  { label: "Team", href: "/team", hint: "People, workload and approvals", words: "team people workload approvals grants" },
+  { label: "Work log", href: "/work-log", hint: "What you did, day by day", words: "work log history time saved" },
+  { label: "Memory", href: "/memory", hint: "What the Workbench remembers for you", words: "memory remember notes facts" },
+  { label: "Templates", href: "/templates", hint: "Reply and document templates", words: "templates drafts replies documents" },
 ];
 
 export default function CommandPalette({ open, onOpenChange }: { open: boolean; onOpenChange: (o: boolean) => void }) {
   const { shortcut } = useShortcut();
   const router = useRouter();
+  const { state } = useAuth();
+  // each list's entry only for its readers (lib/lists); the page itself stays reachable by URL
+  const reader = state.status === "signed-in" ? state.me : null;
   const [q, setQ] = useState("");
   const [records, setRecords] = useState<Arranged[]>([]);
   const [searching, setSearching] = useState(false);
@@ -75,7 +87,7 @@ export default function CommandPalette({ open, onOpenChange }: { open: boolean; 
   const items: { group: string; items: Item[] }[] = useMemo(() => {
     const text = q.trim();
     const low = text.toLowerCase();
-    const places = PLACES.filter((p) => !low || p.words.includes(low) || p.label.toLowerCase().includes(low)).map(
+    const places = PLACES.filter((p) => listShownTo(p.href, reader)).filter((p) => !low || p.words.includes(low) || p.label.toLowerCase().includes(low)).map(
       (p): Item => ({ kind: "go", id: `go-${p.href}`, label: p.label, href: p.href, hint: p.hint }),
     );
     if (!text)
@@ -89,7 +101,7 @@ export default function CommandPalette({ open, onOpenChange }: { open: boolean; 
     // Enter opens what was typed for: a record's exact number or name, a page's name ("late"), else the question
     const order = records[0]?.match === "exact" ? [recs, ask, go] : low.length >= 3 && places.some((p) => p.kind === "go" && p.label.toLowerCase().startsWith(low)) ? [go, ask, recs] : [ask, recs, go];
     return order.filter((g) => g.items.length > 0);
-  }, [q, records]);
+  }, [q, records, reader]);
   const flat = useMemo(() => items.flatMap((g) => g.items), [items]);
   useEffect(() => setActive((a) => Math.min(a, Math.max(0, flat.length - 1))), [flat.length]);
   useEffect(() => {

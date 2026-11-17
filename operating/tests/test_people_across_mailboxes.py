@@ -20,9 +20,8 @@ from integrations.graph_read import GraphMailReader
 from integrations.live_source_guard import BoundedBackoff
 from integrations.people_exclusion import PeopleExclusion
 from integrations.source_mirror import AUDIENCE_SCHEMA
-from integrations.tests.test_capture_mail import (BOX_A, BOX_B, CAPTURE, ENV, OUTSIDER,
-                                                   READER_A, SCOPE, UPN_A, UPN_B, Clock,
-                                                   FakeGraph, capture_audience,
+from integrations.tests.test_capture_mail import (BOX_A, BOX_B, CAPTURE, ENV, OUTSIDER, READER_A,
+                                                   SCOPE, UPN_A, Clock, FakeGraph, capture_audience,
                                                    reader_audience)
 from ontology import mentions
 from ontology import people_directory as pd
@@ -341,7 +340,7 @@ class CompositeAudienceTests(unittest.TestCase):
             pd.audience_key(["not-held", every[0]], every)
 
     def test_the_search_scope_grants_a_composite_only_as_the_policy_decides(self):
-        from operating.ontology_tools import ReadPolicy
+        from operating.ontology_tools_policy import ReadPolicy
         from operating.pg.permissions import scope_for
         every = self.ids(3)
         key = pd.audience_key(every[:2], every)

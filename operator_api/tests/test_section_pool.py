@@ -16,7 +16,6 @@ import threading
 import unittest
 from types import SimpleNamespace
 from unittest import mock
-from urllib.parse import quote
 
 from operator_api import backend as be
 from operator_api import models as m
@@ -215,6 +214,13 @@ class FixtureChildTest(unittest.TestCase):
     def tearDownClass(cls):
         cls.pool.stop()
         cls.main.stop()
+        # every slot's runtime ended before the next class builds its own: a slot thread
+        # still closing (a loaded host) kept seven runtimes alive beside the next seven
+        for slot in cls.pool.slots + cls.main.slots:
+            assert slot.gone.wait(300), "a slot never stopped"
+            if slot.process is not None:
+                slot.process.join(300)
+                assert not slot.process.is_alive(), "a slot child never ended"
         shutil.rmtree(cls.tmp, ignore_errors=True)
 
     def section(self, who, name):

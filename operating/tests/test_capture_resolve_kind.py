@@ -10,7 +10,7 @@ import tempfile
 import unittest
 
 from integrations.capture_store import (CaptureStore, CapturedRecord, SourceKind,
-                                        make_handle, register_source_kind)
+                                        register_source_kind)
 from integrations.live_source_guard import LiveSourceAudience
 from integrations.source_mirror import AudienceMap
 from ontology.core import Actor

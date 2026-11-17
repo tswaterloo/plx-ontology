@@ -40,6 +40,11 @@ What it decides, and what it never decides:
   whose values have no fixed format upstream (customer free text, a configurable BC
   number series, several writers) says so in ``no_fixed_format`` (why, upstream code)
   instead of an invented pattern, and its value pattern stays the stored-value bound.
+* ``firm_types`` / ``firm_shape``: what a mention of an anchor kind may be raised to
+  (``ontology/mention_firm.py``): its ``object_type`` and the record types its
+  ``firm_mention.types`` declares (a receipt lab id names a receipt line), and the whole-value
+  ``firm_mention.shape`` that makes a value without a letter a code (``26161-1``). Both say
+  why and upstream; a kind that declares neither keeps the letter rule.
 * ``system_pattern`` / ``valid`` serve the closed request grammar of the live
   sources (``integrations/live_source_grammar.py``) and other strict id checks.
 * Leads, never identity: ``same_number`` (a kind's declared ``same_number``
@@ -73,6 +78,9 @@ FORMAT = "plx-identifiers/v1"
 SCHEMA_PATH = Path(__file__).resolve().parent / "schema" / "identifiers.json"
 _FLAGS = {"i": re.IGNORECASE, "m": re.MULTILINE, "s": re.DOTALL}
 _MAX_VALUE = 200
+# A kind's own ``max_length`` (an opaque header value: the Message-ID) may reach the
+# RFC 5322 line limit, never more.
+_MAX_LINE = 998
 # Literal comparisons a kind's exact match may use (identity_rules.exact_compare).
 EXACT_COMPARES = ("trim", "trim_casefold", "normalized")
 # What a carrier's ``scope_within`` may qualify its scope value by (identity_rules).
@@ -152,6 +160,16 @@ class Mention:
     label_kind_conflict: bool = False
 
 
+def _compiles(pattern: Any) -> bool:
+    if not isinstance(pattern, str) or not pattern:
+        return False
+    try:
+        re.compile(pattern)
+    except re.error:
+        return False
+    return True
+
+
 def _value_pattern(spec: Mapping[str, Any], prefixes: str) -> str:
     """A kind's value grammar. An ``environment_prefixed`` kind also accepts its value
     behind any declared environment reference prefix (schema ``environment_prefixes``:
@@ -173,6 +191,11 @@ class _Compiled:
                     isinstance(spec.get("id_prefix"), str) and spec["id_prefix"].strip()):
                 raise IdentifierSchemaError(f"kind {name!r}: the prefixed_int normalizer "
                                             "needs id_prefix")
+            longest = spec.get("max_length")
+            if longest is not None and not (
+                    type(longest) is int and _MAX_VALUE <= longest <= _MAX_LINE):
+                raise IdentifierSchemaError(f"kind {name!r}: max_length must be an integer "
+                                            f"from {_MAX_VALUE} to {_MAX_LINE}")
             free = spec.get("no_fixed_format")
             if free is not None and not (
                     isinstance(free, Mapping)
@@ -188,6 +211,29 @@ class _Compiled:
                             for key in ("why", "upstream"))):
                 raise IdentifierSchemaError(f"kind {name!r}: reference_alias needs of (object "
                                             "types), why and upstream")
+            unread = spec.get("never_in_text")
+            if unread is not None and not (
+                    isinstance(unread, Mapping)
+                    and all(isinstance(unread.get(key), str) and unread[key].strip()
+                            for key in ("why", "upstream"))
+                    and not any(pattern.get("kind") == name
+                                for profile in (data.get("mention_profiles") or {}).values()
+                                for pattern in profile.get("patterns", ()))):
+                raise IdentifierSchemaError(f"kind {name!r}: never_in_text needs why and "
+                                            "upstream, and no mention profile reads the kind")
+            firm = spec.get("firm_mention")
+            if firm is not None and not (
+                    isinstance(firm, Mapping) and set(firm) <= {"types", "shape", "why",
+                                                                "upstream"}
+                    and ("types" in firm or "shape" in firm)
+                    and (isinstance(firm.get("types", []), list)
+                         and all(isinstance(t, str) and t for t in firm.get("types", [])))
+                    and (firm.get("shape") is None or _compiles(firm["shape"]))
+                    and all(isinstance(firm.get(key), str) and firm[key].strip()
+                            for key in ("why", "upstream"))):
+                raise IdentifierSchemaError(f"kind {name!r}: firm_mention needs types (object "
+                                            "types) or shape (a regular expression), why and "
+                                            "upstream, and nothing else")
             copies = spec.get("copies")
             if copies is not None and not (
                     isinstance(copies, Mapping)
@@ -280,6 +326,27 @@ def kind_spec(kind: str) -> Mapping[str, Any]:
         return _compiled().kinds[kind]
     except KeyError:
         raise KeyError(f"unknown identifier kind {kind!r}") from None
+
+
+def firm_types(kind: str) -> tuple[str, ...]:
+    """The record types a mention of an ``identity: anchor`` kind may be raised to: its
+    ``object_type``, then the schema's ``firm_mention.types`` (a receipt lab id names the
+    FileMaker receipt line it was given to, not only a Portal receipt)."""
+    spec = kind_spec(kind)
+    named = [spec["object_type"]] if spec.get("object_type") else []
+    return tuple(dict.fromkeys([*named, *((spec.get("firm_mention") or {}).get("types") or ())]))
+
+
+def firm_shape(kind: str) -> re.Pattern[str] | None:
+    """The schema's ``firm_mention.shape`` of ``kind``: a value with no letter is a code when
+    it matches this whole (a lab id ``26161-1``); None: a code needs a letter."""
+    shape = (kind_spec(kind).get("firm_mention") or {}).get("shape")
+    return None if shape is None else _shape(shape)
+
+
+@lru_cache(maxsize=64)
+def _shape(pattern: str) -> re.Pattern[str]:
+    return re.compile(pattern)
 
 
 def alias_kinds(kind: str) -> tuple[str, ...]:
@@ -733,7 +800,8 @@ def parse(kind: str, value: Any) -> Parsed | None:
     if not isinstance(value, str):
         return None
     text = _source_unprefixed(spec, value.strip())
-    if not text or len(text) > _MAX_VALUE or _compiled().values[kind].fullmatch(text) is None:
+    if not text or len(text) > spec.get("max_length", _MAX_VALUE) \
+            or _compiled().values[kind].fullmatch(text) is None:
         return None
     if normalizer == "petra_po":
         parts = _petra_po_parts(text)
@@ -790,7 +858,10 @@ def parse(kind: str, value: Any) -> Parsed | None:
 def _prefixed_int(kind: str, spec: Mapping[str, Any], value: Any) -> Parsed | None:
     """A non-negative integer record id held bare (a number or its integral text) or
     behind the kind's ``id_prefix`` (``fm-supp-7``, case-insensitive): both forms are one
-    key, the bare integer text, so a prefixed stored key compares with the bare id."""
+    key, the bare integer text, so a prefixed stored key compares with the bare id. A kind
+    with ``canonical_prefixed`` keys both as ``id_prefix`` + the integer instead: its
+    pattern takes only the prefixed text (a bare number elsewhere in the field names
+    another record), so the canonical form must be one the pattern reads again."""
     if isinstance(value, bool):
         return None
     if isinstance(value, (int, float)):
@@ -808,6 +879,8 @@ def _prefixed_int(kind: str, spec: Mapping[str, Any], value: Any) -> Parsed | No
         return None
     if number is None or number.startswith("-"):
         return None
+    if spec.get("canonical_prefixed"):
+        number = str(spec["id_prefix"]).lower() + number
     return Parsed(kind, (("value", number),), str(value))
 
 

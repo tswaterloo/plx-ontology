@@ -483,11 +483,6 @@ def _store_meta(store: Path, key: str) -> str | None:
     return row[0] if row and isinstance(row[0], str) else None
 
 
-def _delta_meta(state_dir: Path, key: str) -> str | None:
-    doc = _read_json(Path(state_dir) / CODE_DIR / "delta.json")
-    return doc.get(key) if isinstance(doc, dict) else None
-
-
 def _inbox_record(path: Path) -> dict[str, Any] | None:
     """The inbox's per-rule records (``proactive_engine._note_generation``): the code of
     each rule's last run over the data; the oldest is the inbox's."""

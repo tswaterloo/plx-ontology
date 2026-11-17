@@ -26,6 +26,7 @@ import datetime as dt
 import hashlib
 import json
 import os
+from operating.file_modes import keep_shared
 from pathlib import Path
 import sys
 import threading
@@ -89,6 +90,7 @@ def record(feature: str, *, seconds: float, ok: bool, prompt: str | None = None,
             except FileNotFoundError:
                 pass
             fd = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+            keep_shared(target, 0o600)
             with os.fdopen(fd, "a", encoding="utf-8") as out:
                 out.write(json.dumps(line, sort_keys=True) + "\n")
     except OSError:

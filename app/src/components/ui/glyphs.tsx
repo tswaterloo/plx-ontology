@@ -1,4 +1,4 @@
-import { Activity, BookOpen, Bot, BellRing, Calculator, Database, FileText, Gauge, ListChecks, Mail, Package, CalendarClock, Clock3, History, Inbox, MessageCircle, MessageSquareText, Users, type LucideIcon } from "lucide-react";
+import { Activity, BookMarked, BookOpen, Bot, BellRing, Briefcase, Calculator, ClipboardCheck, Database, FileText, FlaskConical, Gauge, ListChecks, Mail, Package, CalendarClock, Clock3, History, Inbox, MessageCircle, MessageSquareText, Users, type LucideIcon } from "lucide-react";
 import { cn } from "@/lib/cn";
 
 /** No date on record: the ring left open, dashed. */
@@ -38,6 +38,12 @@ export const PLACES: Record<string, { icon: LucideIcon; hue: string }> = {
   "/ops": { icon: Activity, hue: "text-[var(--place-activity)]" },
   "/trust": { icon: Gauge, hue: "text-[var(--place-activity)]" },
   "/feedback": { icon: MessageSquareText, hue: "text-[var(--place-feedback)]" },
+  "/memory": { icon: BookMarked, hue: "text-[var(--place-ask)]" },
+  "/records": { icon: Database, hue: "text-[var(--place-work)]" },
+  "/work": { icon: Briefcase, hue: "text-[var(--place-meetings)]" },
+  "/admin": { icon: Activity, hue: "text-[var(--place-activity)]" },
+  "/qc": { icon: ClipboardCheck, hue: "text-[var(--place-team)]" },
+  "/rd-projects": { icon: FlaskConical, hue: "text-[var(--place-meetings)]" },
 };
 
 export function PlaceIcon({ href, className }: { href: string; className?: string }) {
@@ -62,7 +68,8 @@ const SYSTEM_CODE: Record<string, [string, string, LucideIcon]> = {
   FileMaker: ["FM", "fm", Database],
 };
 
-export function SystemCode({ system, size = 18, className }: { system: string | null | undefined; size?: number; className?: string }) {
+/** ``bare``: the system's icon only, for a line that names the system in full beside it. */
+export function SystemCode({ system, size = 18, className, bare = false }: { system: string | null | undefined; size?: number; className?: string; bare?: boolean }) {
   const [label, key, Icon] = SYSTEM_CODE[system ?? ""] ?? [(system ?? "?").slice(0, 6), "file", FileText];
   return (
     <span
@@ -76,7 +83,7 @@ export function SystemCode({ system, size = 18, className }: { system: string | 
       aria-hidden
     >
       <Icon className="size-[13px] shrink-0" strokeWidth={1.75} />
-      {label}
+      {!bare && label}
     </span>
   );
 }

@@ -1,8 +1,9 @@
 "use client";
 
+import { SectionTabs } from "@/components/shell";
 import { Pending } from "@/components/ui/skeleton";
 import { EmptyState } from "@/components/ui/empty-state";
-import { AlertKindsSection } from "@/components/watching/alert-kinds";
+import { AlertKindsSection, DataHealthSection } from "@/components/watching/alert-kinds";
 import { AlertFeed, FiredKind, firedKinds } from "@/components/watching/fired";
 import Link from "next/link";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -15,11 +16,30 @@ import { ApiError, plainError } from "@/lib/errors";
 import { objectHref, typeLabel } from "@/lib/format";
 import type { AlertKinds, Briefing, Watchlist, WatchRuleDraft } from "@/lib/types";
 
+/** A work role (team snapshot key) and the alert-type role codes (alert_kinds.json) it reads. */
+const ROLE_ALERT_CODES: Record<string, string[]> = {
+  purchasing: ["PROC"],
+  customer_service: ["CS", "SALES", "ACCTMGMT"],
+  quality: ["QUALITY", "QA", "QC"],
+  production_planning: ["PROD", "WH"],
+  finance: ["FIN"],
+  receivables: ["FIN"],
+  payables: ["FIN"],
+  rnd: ["RND"],
+};
+const ROLE_WORDS: Record<string, string> = {
+  purchasing: "purchasing", customer_service: "customer service", quality: "quality", production_planning: "production planning",
+  finance: "finance", receivables: "finance", payables: "finance", rnd: "R&D",
+};
+
 const EXAMPLES = ["Tell me when any order over $50k slips", "Alert me if a supplier is late twice in a month", "Tell me when a duplicate supplier invoice over $10k is found"];
 
 function said(err: unknown): string {
   return err instanceof ApiError && err.detail && err.status < 500 ? err.detail : plainError(err);
 }
+
+/** Shown when the server could not read some of the reader's alerts (Watchlist.complete false). */
+const ALERTS_SHORT = "Some of your alerts couldn't be read just now, so this list may be missing some. Try again in a minute.";
 
 /** Watching: what fired first (per alert kind, its count, what is new and its records;
  * then your rules' and follows' alerts by day), with your rules, follows and the alert
@@ -50,7 +70,14 @@ export default function WatchingPage() {
     getBriefing(ctl.signal).then(setBriefing, () => undefined);
     return () => ctl.abort();
   }, [round]);
-  const fired = useMemo(() => firedKinds(reg, briefing), [reg, briefing]);
+  // ?for=<role>: the alerts for one role (a pinned "Supplier issues" is ?for=purchasing)
+  const [forRole, setForRole] = useState<string | null>(null);
+  useEffect(() => setForRole(new URLSearchParams(window.location.search).get("for")), []);
+  const codes = forRole ? ROLE_ALERT_CODES[forRole] : undefined;
+  const fired = useMemo(() => {
+    if (!reg || !codes) return firedKinds(reg, briefing);
+    return firedKinds({ ...reg, types: reg.types.filter((t) => (t.roles ?? []).some((r) => codes.includes(r))) }, briefing);
+  }, [reg, briefing, codes]);
   const ruleInput = useRef<HTMLInputElement>(null);
 
   const run = async (fn: () => Promise<unknown>) => {
@@ -78,6 +105,7 @@ export default function WatchingPage() {
   return (
     <div className="flex min-h-0 flex-1 flex-col bg-list">
       <Toolbar
+        pin="Watching"
         heading
         title={
           <>
@@ -100,6 +128,7 @@ export default function WatchingPage() {
           </>
         }
       />
+      <SectionTabs section="watching" />
       <div className="w-full overflow-y-auto px-6 py-5">
         {problem ? <LoadProblem message={plainError(problem)} onRetry={load} /> : null}
         {data && !data.configured && <EmptyState title="Watchlists are off on this server." />}
@@ -123,6 +152,14 @@ export default function WatchingPage() {
           <div className="min-w-0 space-y-8">
             <section aria-labelledby="fired-title">
               <h2 id="fired-title" className="text-[15px] font-semibold">What fired</h2>
+              {codes && forRole && (
+                <p className="mt-0.5 text-[12px] text-muted" data-testid="fired-for">
+                  The {ROLE_WORDS[forRole]} alerts only.{" "}
+                  <Link href="/watching" onClick={() => setForRole(null)} className="font-medium text-fg underline underline-offset-2 hover:no-underline">
+                    Show every alert
+                  </Link>
+                </p>
+              )}
               {kindsError ? (
                 <LoadProblem message={plainError(kindsError)} onRetry={retryKinds} />
               ) : !reg || !briefing ? (
@@ -133,10 +170,12 @@ export default function WatchingPage() {
                 <div className="divide-y divide-border">{fired.map((f) => <FiredKind key={f.kind} f={f} />)}</div>
               )}
             </section>
+            <DataHealthSection reg={reg} briefing={briefing} error={kindsError} retry={retryKinds} />
             {data?.configured !== false && (
               <section aria-labelledby="rule-alerts">
                 <h2 id="rule-alerts" className="mb-1 text-[15px] font-semibold">From your rules and follows</h2>
-                {!data ? problem ? <p className="text-[13px] text-muted">Not loaded: see the note above.</p> : <Pending label="Reading your alerts" /> : data.alerts.length === 0 ? <p className="text-[13px] text-muted">None yet. A rule or a follow shows its changes here.</p> : <AlertFeed alerts={data.alerts} />}
+                {data && data.complete === false && <LoadProblem message={ALERTS_SHORT} onRetry={load} className="mb-2" />}
+                {!data ? problem ? <p className="text-[13px] text-muted">Not loaded: see the note above.</p> : <Pending label="Reading your alerts" /> : data.alerts.length === 0 ? (data.complete === false ? null : <p className="text-[13px] text-muted">None yet. A rule or a follow shows its changes here.</p>) : <AlertFeed alerts={data.alerts} />}
               </section>
             )}
           </div>

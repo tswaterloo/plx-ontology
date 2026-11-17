@@ -69,11 +69,11 @@ from typing import Any, Callable, Iterable, Mapping, Optional, Sequence
 from ontology import store as ostore
 
 from . import drafts
-from .autopilot import chat_people, teams_sender
+from .autopilot_events import chat_people, teams_sender
 from .copy_gate import count, say_date
 from . import proactive_threads as pt
 from .proactive_business import _tick
-from .proactive_chasers import PUBLIC_MAIL, _FORWARD, _REPLY, _addr, _instant
+from .proactive_chasers import _FORWARD, _REPLY, _addr, _instant
 
 RULE = "inbox_triage"
 KIND = "reply_owed"
@@ -763,7 +763,7 @@ def triage(gaps: Iterable[Mapping[str, Any]], today: date) -> dict[str, Any]:
 # --------------------------------------------------------------------------- workload
 
 MIN_TEAM = 3       # fewer people than this: a team's reply total would name one of them
-TASK_KINDS = frozenset({"mc_task_overdue", "mc_task_stuck", "planner_task_overdue"})
+TASK_KINDS = frozenset({"mc_task_stuck", "planner_task_overdue"})
 NOT_ASSIGNED = "not_assigned"
 GRANTS_FILE = "workload-grants.json"
 _OID = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
@@ -927,6 +927,21 @@ OWNER_NOTE = ("Covers mail, Teams and tasks only. Floor and lab work, phone and 
               "seen, so these figures undercount that work and are not a measure of effort.")
 
 
+def _resolved_day(value: Any) -> Optional[str]:
+    """The US Eastern day an alert was resolved on (ISO), None when unreadable."""
+    from datetime import datetime as _dt
+    from zoneinfo import ZoneInfo
+    if not isinstance(value, str) or not value:
+        return None
+    try:
+        at = _dt.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if at.tzinfo is None:
+        return at.date().isoformat()
+    return at.astimezone(ZoneInfo("America/New_York")).date().isoformat()
+
+
 def closed_rows(inbox: Any, since: str) -> list[dict[str, Any]]:
     """The owners of the alerts resolved on or after ``since`` (an ISO date; the run's inbox,
     read only): no summary, no citation, no message id leaves here."""
@@ -937,15 +952,16 @@ def closed_rows(inbox: Any, since: str) -> list[dict[str, Any]]:
     conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
     try:
         rows = []
-        for kind, follow_up in conn.execute(
-                "SELECT kind, follow_up FROM gaps WHERE state = 'resolved' AND resolved_at >= ?",
-                (since,)):
+        for kind, follow_up, resolved_at in conn.execute(
+                "SELECT kind, follow_up, resolved_at FROM gaps "
+                "WHERE state = 'resolved' AND resolved_at >= ?", (since,)):
             try:
                 fu = json.loads(follow_up)
             except ValueError:
                 fu = {}
             owner = fu.get("owner") if isinstance(fu, Mapping) else None
-            rows.append({"kind": kind, "owner": owner.lower() if isinstance(owner, str) else None})
+            rows.append({"kind": kind, "owner": owner.lower() if isinstance(owner, str) else None,
+                         "resolved_on": _resolved_day(resolved_at)})
         return rows
     finally:
         conn.close()

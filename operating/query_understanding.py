@@ -220,10 +220,15 @@ class Candidate:
     score: float
     why: str
     key: str = field(default="", compare=False)   # same-identifier group (internal)
+    valid_from: str | None = field(default=None, compare=False)
+    valid_to: str | None = field(default=None, compare=False)
 
     def to_dict(self) -> dict[str, Any]:
-        return {"object_id": self.object_id, "type": self.type, "label": self.label,
-                "score": round(self.score, 3), "why": self.why}
+        out = {"object_id": self.object_id, "type": self.type, "label": self.label,
+               "score": round(self.score, 3), "why": self.why}
+        if self.valid_from or self.valid_to:
+            out["valid_from"], out["valid_to"] = self.valid_from, self.valid_to
+        return out
 
 
 @dataclass
@@ -286,7 +291,7 @@ class Understanding:
 
 # ------------------------------------------------------------------ permission scope
 #
-# The reader's scope is the (operating.pg.permissions.SearchScope): the audience
+# The reader's scope is the permissions module's (operating.pg.permissions.SearchScope): the audience
 # keys the ReadPolicy grants minus the units of excluded people (and, when the people
 # exclusion list does not load, minus every unit that can hold a person's own data), the
 # markings held, and the keys whose hidden rows may be counted (``countable``; none when
@@ -305,7 +310,7 @@ def _empty_scope() -> Any:
 # chat's topic, a file's name) is visible only when the lookup's item check
 # (``with_item_check``) admits its record; with no check it is never shown.
 def item_families() -> frozenset[str]:
-    from operating.ontology_tools import _ITEM_ACL_AUDIENCES
+    from operating.ontology_tools_policy import _ITEM_ACL_AUDIENCES
     return _ITEM_ACL_AUDIENCES
 
 
@@ -377,6 +382,11 @@ class EntityRow:
     matched: str = ""          # the identifier form or search term that found it
     sql_score: float = 0.0
     strict: float = 0.0        # strict word similarity of the search term (SQL)
+    # The dates (ISO, start inclusive, end exclusive) the record held this identifier
+    # and name, when the index knows them: a pack code reused for another product reads
+    # differently by era. None: undated (today's record, or no history held).
+    valid_from: str | None = None
+    valid_to: str | None = None
 
 
 class EntityIndex(Protocol):
@@ -560,7 +570,14 @@ class PgEntityIndex:
     def _item_checked(scope: Any, rows: list[tuple], *, visible_at: int | None = None,
                       object_at: int = 1, key_at: int = 6) -> list[tuple]:
         """``rows`` with each item-gated visible row its item check refuses (``admitted``)
-        dropped, or, given ``visible_at`` (the row's visible flag), turned hidden."""
+        dropped, or, given ``visible_at`` (the row's visible flag), turned hidden. A row of
+        a PLX-issued sales document the served store holds as a supplier document
+        (``operating.pg.own_issued``) is dropped for every reader: no supplier document
+        to resolve, list or count."""
+        from operating.pg.own_issued import hidden_ids
+        own = hidden_ids()
+        if own:
+            rows = [r for r in rows if r[object_at] not in own]
         shown = [r for r in rows if visible_at is None or r[visible_at]]
         ok = admitted(scope, [(r[object_at], r[key_at]) for r in shown])
         out = []
@@ -1385,6 +1402,9 @@ class _Resolver:
         self.unverifiable = bool(getattr(scope, "withheld", None))
         self.failed = False
         self._neighbors: dict[str, Mapping[str, str]] = {}
+        # [start, end] (ISO dates, both inclusive) the question or its document is about:
+        # a reused code resolves to the record of the era that covers it (``_by_era``)
+        self.as_of: tuple[str, str] | None = None
 
     def _guard(self, call: Callable[[], Any], empty: Any) -> Any:
         if self.index is None or self.failed:
@@ -1495,13 +1515,59 @@ def _decide(text: str, kind: str, span: tuple[int, int] | None, cands: list[Cand
         top = sorted(close[0], key=lambda c: (-c.score, c.object_id))[0]
         return EntityMention(text, kind, shown, top.object_id, False, span, None, hidden)
     choices = [sorted(g, key=lambda c: -c.score)[0] for g in close][:MAX_CANDIDATES]
-    named = [f"{_type_word(c.type)} {c.label}" for c in choices]
+    named = [f"{_type_word(c.type)} {c.label}{_era_text(c)}" for c in choices]
     if len(set(named)) < len(named):
         named = [f"{n} ({_source_hint(c.object_id)})" for n, c in zip(named, choices)]
     prompt = (f'"{text}" matches more than one record. Did you mean '
               + ", ".join(named[:-1]) + f" or {named[-1]}?")
     return EntityMention(text, kind, shown, None, True, span, prompt, hidden,
                          [c.object_id for c in choices])
+
+
+def _era_text(cand: Candidate) -> str:
+    """`` (2021-03 to 2024-03)`` for a candidate that held its code for a stretch."""
+    if not (cand.valid_from or cand.valid_to):
+        return ""
+    start = (cand.valid_from or "")[:7]
+    end = (cand.valid_to or "")[:7]
+    return f" ({start or 'before'} to {end})" if end else f" (since {start})"
+
+
+def _covers(cand: Candidate, window: tuple[str, str]) -> bool:
+    """Whether the candidate's era overlaps the window [start, end] (an undated side is
+    open)."""
+    return ((cand.valid_from or "") <= window[1]
+            and (cand.valid_to is None or window[0] < cand.valid_to))
+
+
+def _by_era(cands: list[Candidate], window: tuple[str, str] | None) -> list[Candidate]:
+    """A code reused over time names records that disagree on their name: for each code
+    (``key``) held by two or more differently named, dated records, a dated window picks
+    the one era that covers it (the others are dropped, the why says so); with no window,
+    or no single era covering it, the records stay separate candidates (distinct keys, so
+    they are never merged into one confident match) and the question is asked with
+    each one's dates. Copies of one record (the same name) stay one group, and a code none of whose
+    records is dated is left as it was (an undated record is the open-ended, current one)."""
+    by_key: dict[str, list[Candidate]] = {}
+    for c in cands:
+        by_key.setdefault(c.key, []).append(c)
+    out: list[Candidate] = []
+    for key, group in by_key.items():
+        names = {fold(c.label) for c in group}
+        dated = key and len(names) > 1 and any(c.valid_from or c.valid_to for c in group)
+        if not dated:
+            out += group
+            continue
+        covering = [c for c in group if window and _covers(c, window)]
+        if covering and len({fold(c.label) for c in covering}) == 1:
+            out += [dataclasses.replace(c, why=c.why + f"; its code was this record's in "
+                                        f"{window[0]}" + (f" to {window[1]}" if window[0] != window[1] else ""))
+                    for c in covering]
+            continue
+        # no single era: one candidate per name and era, never merged
+        out += [dataclasses.replace(c, key=f"{key}|{fold(c.label)}|{c.valid_from}|{c.valid_to}")
+                for c in group]
+    return out
 
 
 def _offer(mention: EntityMention, why: str) -> EntityMention:
@@ -1563,7 +1629,9 @@ def _resolve_identifiers(question: str, resolver: _Resolver) -> list[EntityMenti
                 score -= 0.05      # read as another kind than its shape says
             # two records carrying one identifier of one type are the same number
             cands.append(Candidate(row.object_id, row.type, row.name or matched, score, why,
-                                   key=f"{row.type}|{matched.upper()}"))
+                                   key=f"{row.type}|{matched.upper()}",
+                                   valid_from=row.valid_from, valid_to=row.valid_to))
+        cands = _by_era(cands, resolver.as_of)
         mention = _decide(lead.text, "identifier", lead.span, cands, resolver, (),
                           len(hidden), lead.exact)
         if mention.resolved and hidden:
@@ -2143,10 +2211,22 @@ def _finish(u: Understanding, resolver: _Resolver) -> Understanding:
     return u
 
 
+def _era_window(as_of: str | None, frame: dict[str, Any] | None) -> tuple[str, str] | None:
+    """[start, end] the question is dated to: ``as_of`` (a document's date, ISO) first, else
+    the question's own bounded time frame (a frame open on a side names no era)."""
+    if isinstance(as_of, str) and re.fullmatch(r"\d{4}-\d{2}-\d{2}", as_of[:10]):
+        return as_of[:10], as_of[:10]
+    if frame and frame.get("start") and frame.get("end"):
+        last = dt.date.fromisoformat(frame["end"]) - dt.timedelta(days=1)
+        return frame["start"], max(frame["start"], last.isoformat())
+    return None
+
+
 def _start(question: Any, history: Sequence[Any], actor: Any, policy: Any,
            index: EntityIndex | None, graph: GraphLinks | None, llm: Any,
            llm_budget: float, today: dt.date | None,
-           item_check: Callable[[Sequence[str]], Any] | None = None) -> _Run:
+           item_check: Callable[[Sequence[str]], Any] | None = None,
+           as_of: str | None = None) -> _Run:
     started = time.perf_counter()
     question = question if isinstance(question, str) else ""
     notes: list[str] = []
@@ -2176,6 +2256,8 @@ def _start(question: Any, history: Sequence[Any], actor: Any, policy: Any,
         notes.append("the excluded-people list did not load: personal mail, chats and files "
                      "are not searched and hidden matches are not counted")
     resolver = _Resolver(index, scope, graph, notes)
+    time_frame = parse_time_frame(question, today or dt.date.today())
+    resolver.as_of = _era_window(as_of, time_frame)
     # what the model may see of the conversation: earlier intents and the labels of
     # earlier entities this reader may still see (re-read through the same scope)
     history_labels = _history_labels(turns, resolver)
@@ -2213,7 +2295,6 @@ def _start(question: Any, history: Sequence[Any], actor: Any, policy: Any,
         previous = turns[-1].get("intent")
         if previous in INTENTS:
             intent, intent_source = previous, "conversation"
-    time_frame = parse_time_frame(question, today or dt.date.today())
     rewrites = template_rewrites(question, intent, mentions)
     fast_ms = (time.perf_counter() - started) * 1000
     u = Understanding(question, intent, mentions, time_frame, rewrites, notes, {"count": 0},
@@ -2303,7 +2384,8 @@ def understand(question: str, *, history: Sequence[Any] = (), actor: Any,
                llm: Callable[[str, Mapping[str, Any], float], Any] | None | bool = None,
                llm_timeout: float = DEFAULT_LLM_TIMEOUT,
                today: dt.date | None = None,
-               item_check: Callable[[Sequence[str]], Any] | None = None) -> Understanding:
+               item_check: Callable[[Sequence[str]], Any] | None = None,
+               as_of: str | None = None) -> Understanding:
     """Understand one question for ``actor`` (see the module docstring).
 
     ``policy`` is the reader's ReadPolicy (None: no candidates, fail closed); ``index``
@@ -2314,7 +2396,7 @@ def understand(question: str, *, history: Sequence[Any] = (), actor: Any,
     the reader's item permission on record ids (``with_item_check``); without one no
     record of an item-gated source (mail, files, chats, meetings) is a candidate."""
     run = _start(question, history, actor, policy, index, graph, llm, llm_timeout, today,
-                 item_check)
+                 item_check, as_of)
     return _await_llm(run, llm_timeout)
 
 
@@ -2323,13 +2405,14 @@ def understand_stream(question: str, *, history: Sequence[Any] = (), actor: Any,
                       graph: GraphLinks | None = None,
                       llm: Callable[[str, Mapping[str, Any], float], Any] | None | bool = None,
                       llm_wait: float = 12.0, today: dt.date | None = None,
-                      item_check: Callable[[Sequence[str]], Any] | None = None):
+                      item_check: Callable[[Sequence[str]], Any] | None = None,
+                      as_of: str | None = None):
     """The fast-path understanding at once (``llm.status`` ``pending`` when a model
     runs), then, when the model was asked, the refined one (at most ``llm_wait`` s):
     for an SSE ``understanding`` event that search can start on before the model
     answers (headless Claude Code takes 4-9 s, measured)."""
     run = _start(question, history, actor, policy, index, graph, llm, llm_wait, today,
-                 item_check)
+                 item_check, as_of)
     yield run.understanding
     if run.future is not None:
         yield _await_llm(run, llm_wait)

@@ -20,8 +20,7 @@ from types import SimpleNamespace
 import unittest
 
 from ontology import store_ddl
-from operating import margin_variance as mv
-from tests.test_customer_profit import CO, READER, TODAY, World
+from tests.test_customer_profit import CO, READER, World
 
 WINDOWS = {"from": "2026-08-15", "to": "2026-10-30", "baseline_from": "2026-06-01",
            "baseline_to": "2026-08-14"}

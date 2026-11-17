@@ -13,6 +13,7 @@ import contextlib
 from datetime import datetime, timezone
 import io
 import json
+import os
 from pathlib import Path
 import shutil
 import sqlite3
@@ -23,9 +24,11 @@ from unittest import mock
 import uuid
 
 from verify import live_verify
+from verify import live_verify_policy
 from integrations import capture_sharepoint as cs
 from integrations import graph_read
-from integrations.capture_mail import CaptureScope, MailCapture, MailCaptureStore
+from integrations.capture_mail import MailCapture, MailCaptureStore
+from integrations.capture_mail_scope import CaptureScope
 from integrations.capture_sharepoint import SharePointCapture, SharePointCaptureStore
 from integrations.capture_teams import TeamsCapture, open_store
 from integrations.graph_read import GraphMailReader, SharePointReader
@@ -247,6 +250,11 @@ def environ(root: Path, **extra) -> dict[str, str]:
     return {k: v for k, v in env.items() if v is not None}
 
 
+def cpu_seconds() -> float:
+    """User and system CPU seconds of this process (every thread) and its reaped children."""
+    return sum(os.times()[:4])
+
+
 def run(env, argv=()) -> tuple[int, dict]:
     printed = io.StringIO()
     with contextlib.redirect_stdout(printed):
@@ -346,9 +354,12 @@ class AccessControlProofTest(unittest.TestCase):
             users = [_user(f"cmextra{i}", str(uuid.UUID(int=(i + 1) << 64 | 0x4000_8000_0000_0000)),
                            f"x{i}@example-plx.com") for i in range(n)]
             write_users(self.root, users)
-            started = time.monotonic()
+            # the proof's own work (CPU of this process and any child it reaped): a busy
+            # host's scheduling adds wall time, never this, so the spec's deadline still
+            # fails a proof that does more work than it fits
+            started = cpu_seconds()
             code, document = run(environ(self.root))
-            elapsed = time.monotonic() - started
+            elapsed = cpu_seconds() - started
             with self.subTest(n=n):
                 readers = min(n, proof.MAX_READERS)
                 self.assertEqual((code, document["readers"]), (0, readers), document)
@@ -404,7 +415,7 @@ class AccessControlProofTest(unittest.TestCase):
                 self.assertEqual((code, document["ok"], document["blocked_reason"]),
                                  (0, False, reason))
                 self.assertIn(SPEC["blocked_causes"].get(reason, SPEC["blocked_cause"]),
-                              live_verify.CAUSES)
+                              live_verify_policy.CAUSES)
         # A host that names no state dir or config is the host's own misconfiguration, never
         # a gap in the source (the verifier's run on main 1e2f02bd read source_gap).
         for reason in ("state_dir_unset", "host_config_unset", "state_dir_absent",
@@ -813,24 +824,31 @@ class ExcludedAfterCaptureTest(unittest.TestCase):
         # (one directory listing) and decides D's address exactly.
         [d_to_a] = self.stored(("mail-capture/capture.db",
                                 "SELECT l1_handle FROM messages WHERE message_id = 'MSG-A3'"))
+        # A complete listing names every user, the reader A among them: MSG-A3 is
+        # addressed to A, and the participant rule decides every recipient. An address the
+        # listing does not hold may be a group's (no groups listing here), so it withholds
+        # ("A not listed").
+        box_a = {"id": tcm.BOX_A, "userPrincipalName": tcm.UPN_A, "mail": tcm.UPN_A,
+                 "proxyAddresses": [f"SMTP:{tcm.UPN_A}"]}
         users = [{"id": OID_D, "userPrincipalName": UPN_D, "mail": UPN_D,
                   "proxyAddresses": [f"SMTP:{UPN_D}"]},
-                 {"id": EXCL, "userPrincipalName": UPN_C, "mail": UPN_C}]
+                 {"id": EXCL, "userPrincipalName": UPN_C, "mail": UPN_C}, box_a]
 
         class Directory:
             calls = 0
 
-            def __init__(self, fail=False):
-                self.fail = fail
+            def __init__(self, fail=False, listed=None):
+                self.fail, self.listed = fail, listed
 
             def get_pages(self, url, **caps):
                 Directory.calls += 1
                 if self.fail:
                     raise OSError("listing failed")
-                return users, {"complete": True}
+                return (users if self.listed is None else self.listed), {"complete": True}
 
         cases = {"D excluded": ([EXCL, OID_D], Directory(), False),
                  "D not excluded": ([EXCL], Directory(), True),
+                 "A not listed": ([EXCL], Directory(listed=users[:2]), False),
                  "listing failed": ([EXCL], Directory(fail=True), False)}
         for name, (excluded, api, served_to_a) in cases.items():
             env = environ(self.root, PLX_EXCLUDED_PEOPLE_OIDS=",".join(excluded))

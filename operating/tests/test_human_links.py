@@ -119,7 +119,9 @@ class HumanLinkCaseTests(unittest.TestCase):
         from ontology import document_fields, store_ddl
         from ontology.resolve import ReviewedAliases
         from operating import ontology_tools as ot
+        from operating import ontology_tools_results
         from operating import ontology_tools_investigate as oi
+        from operating import ontology_tools_investigate_host
         from operating import ontology_tools_traverse as tt
         from operating.ontology_tools_review import ReviewTools
 
@@ -145,9 +147,9 @@ class HumanLinkCaseTests(unittest.TestCase):
                      "row": found["row"]} if found.get("ok") else None)
 
         table: dict = {}
-        ot.register(table, base)
+        ontology_tools_results.register(table, base)
         tt.register(table, tt.TraverseTools(base))
-        oi.register(table, oi.InvestigateTools(table, rows=rows, scope=oi.read_scope(base)))
+        oi.register(table, oi.InvestigateTools(table, rows=rows, scope=ontology_tools_investigate_host.read_scope(base)))
         table["plx.review"] = {"handler": lambda arguments, caller: ReviewTools(
             base, self.store, session=session).call("plx.review", arguments, caller)}
         return lambda name, arguments: table[name]["handler"](dict(arguments), actor)

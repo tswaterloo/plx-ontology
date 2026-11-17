@@ -15,6 +15,12 @@ import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
 DEPLOY = ROOT / "deploy"
+PG_ONLY_UNITS = (
+    "plx-api", "plx-api@", "plx-api-check@", "plx-ai-watcher", "plx-autopilot-fast", "plx-autopilot-fast-serve",
+    "plx-autopilot-follow", "plx-proactive", "plx-proactive-inc", "plx-proactive-nightly",
+    "plx-proactive-whole", "plx-delta", "plx-delta-compact", "plx-ontology-pg-follow",
+    "plx-search-follow", "plx-search-generation", "plx-rag-backfill", "plx-truth-check",
+)
 PERSONAL = re.compile(r"/home/[a-z_][a-z0-9_-]*|/Users/\w+|\btanush\b", re.IGNORECASE)
 
 
@@ -25,14 +31,37 @@ def tracked(folder: Path) -> list[Path]:
 
 
 class DeployFilesTest(unittest.TestCase):
-    def test_whole_pass_is_capped_at_8g_in_the_unit_and_the_jobq_class(self) -> None:
-        # AL-06: the 4-hourly whole refresh is back on under an 8G cap, the high mark below it
+    def test_whole_pass_is_capped_at_22g_in_the_unit_and_the_jobq_class(self) -> None:
+        # AL-06, resized 11-16: 6 workers under a 22G cap, the high mark below it
         unit = (ROOT / "deploy/systemd/plx-proactive-whole.service").read_text()
-        self.assertRegex(unit, r"(?m)^MemoryMax=8G$")
-        self.assertRegex(unit, r"(?m)^MemoryHigh=7G$")
+        self.assertRegex(unit, r"(?m)^MemoryMax=22G$")
+        self.assertRegex(unit, r"(?m)^MemoryHigh=20G$")
         self.assertTrue((ROOT / "deploy/systemd/plx-proactive-whole.timer").is_file())
         from operating.jobq import classes as jobq_classes
-        self.assertEqual(jobq_classes.load({})["proactive-whole"].mem_gb, 8)
+        self.assertEqual(jobq_classes.load({})["proactive-whole"].mem_gb, 22)
+
+    def test_scheduled_passes_end_inside_their_timeout_and_fit_the_host(self) -> None:
+        # 11-16: plx-proactive and -whole both failed Result=timeout at 4800 s with a 4200 s
+        # budget; the pass's budget plus at least an hour's margin must sit inside the
+        # unit's timeout, the pool must fit its cap, and a pass finding another running
+        # must skip (exit 0), never wait on the lock
+        for name in ("plx-proactive", "plx-proactive-whole", "plx-proactive-nightly"):
+            unit = (ROOT / f"deploy/systemd/{name}.service").read_text()
+            budget = float(re.search(r"--budget-seconds (\d+)", unit).group(1))
+            share = float(re.search(r"--refresh-seconds (\d+)", unit).group(1))
+            timeout = float(re.search(r"(?m)^TimeoutStartSec=(\d+)$", unit).group(1))
+            workers = int(re.search(r"(?m)^Environment=PLX_PROACTIVE_WORKERS=(\d+)$",
+                                    unit).group(1))
+            cap = float(re.search(r"(?m)^MemoryMax=(\d+)G$", unit).group(1))
+            high = float(re.search(r"(?m)^MemoryHigh=(\d+)G$", unit).group(1))
+            self.assertLess(share, budget, name)
+            self.assertGreaterEqual(timeout, budget + 3600, name)
+            self.assertLess(timeout, 4 * 3600, name)   # ends before the next 4-hourly run
+            self.assertGreaterEqual(workers, 4, name)
+            self.assertGreaterEqual(cap, workers * 2.5 + 6, name)   # 2.5 GB/worker + engine
+            self.assertLessEqual(cap, 24, name)   # the host: 61 GB, Postgres ~18 GB
+            self.assertLess(high, cap, name)
+            self.assertNotIn("--pass-wait-seconds", unit, name)   # default 0: skip at once
 
     def test_no_username_or_home_path_is_committed_under_deploy(self) -> None:
         found = [f"{p.relative_to(ROOT)}:{n}" for p in tracked(DEPLOY) if p.is_file()
@@ -58,6 +87,12 @@ class DeployFilesTest(unittest.TestCase):
                 text = path.read_text()
                 self.assertNotIn("@PLX_", text, path)
                 for wd in re.findall(r"^WorkingDirectory=(.*)$", text, re.M):
+                    if path.parent.name == "plx-api-check@.service.d":
+                        # the preflight checks the candidate release before the switch: its
+                        # own drop-in, read after the API's copied ones, names it
+                        if path.name == "zzzz-check.conf":
+                            self.assertEqual(wd, "/srv/rel/%i", path)
+                        continue
                     self.assertTrue(wd.startswith("/srv/rel/current"), (path, wd))
                 for unit_path in re.findall(r"(?:/data/OntologyProject|/data/scratch/wt/)", text):
                     self.fail(f"{path} runs from a checkout: {unit_path}")
@@ -80,7 +115,7 @@ class DeployFilesTest(unittest.TestCase):
                             "--env", str(env)], check=True, capture_output=True)
             out = Path(tmp, "out")
             proactive = (out / "plx-proactive.service").read_text()
-            self.assertIn("Environment=PLX_ONTOLOGY_PG=1", proactive)
+            self.assertIn("Environment=PLX_ONTOLOGY_PG=only", proactive)
             self.assertIn("--refresh calling", proactive)
             self.assertNotIn("--refresh always", proactive)
             for name in ("plx-proactive-inc.service", "plx-proactive-nightly.service"):
@@ -91,7 +126,7 @@ class DeployFilesTest(unittest.TestCase):
             self.assertTrue((out / "plx-proactive-nightly.timer").is_file())
             whole = (out / "plx-proactive-whole.service").read_text()
             self.assertIn("--refresh whole", whole)
-            self.assertIn("Environment=PLX_ONTOLOGY_PG=1", whole)
+            self.assertIn("Environment=PLX_ONTOLOGY_PG=only", whole)
             self.assertIn("User=someone", whole)
             self.assertIn("01,05,09,13,17,21:15:00",
                           (out / "plx-proactive-whole.timer").read_text())
@@ -115,9 +150,8 @@ class DeployFilesTest(unittest.TestCase):
             for flag, out in ((["--user"], "u"), ([], "s")):
                 subprocess.run(["python3", str(DEPLOY / "render.py"), "--out", f"{tmp}/{out}",
                                 "--env", str(env), *flag], check=True, capture_output=True)
-            wanted = {"u": ["plx-sheet-readings", "plx-system-activity", "plx-team-activity",
-                           "plx-work-graph"],
-                      "s": ["plx-proactive-whole", "plx-backup", "plx-restore-test",
+            wanted = {"s": ["plx-sheet-readings", "plx-system-activity", "plx-team-activity",
+                            "plx-work-graph", "plx-proactive-whole", "plx-backup", "plx-restore-test",
                             "plx-ops-health", "plx-labour"]}
             for out, names in wanted.items():
                 for name in names:
@@ -127,9 +161,35 @@ class DeployFilesTest(unittest.TestCase):
                     self.assertTrue(Path(tmp, out, f"{name}.timer").is_file(), name)
                     self.assertNotRegex(service, r"(?i)(SECRET|TOKEN|API_KEY|PASSWORD)=\S",
                                         name)
-            for name in wanted["u"]:
+            moved = ["plx-sheet-readings", "plx-system-activity", "plx-team-activity",
+                     "plx-work-graph"]
+            for name in moved:
+                service = Path(tmp, "s", f"{name}.service").read_text()
                 self.assertIn("EnvironmentFile=-/srv/someone/.config/plx/proactive.env",
-                              Path(tmp, "u", f"{name}.service").read_text(), name)
+                              service, name)
+                # 11-15: system units run as the Workbench user with its groups from
+                # /etc/group (the capture stores the API user shares); a user manager that
+                # predates the plx-state group ran them without it
+                self.assertRegex(service, r"(?m)^User=someone$", name)
+                self.assertRegex(service, r"(?m)^Group=someone$", name)
+                self.assertFalse(Path(tmp, "u", f"{name}.service").exists(), name)
+            # the work graph runs as the Workbench user with its groups (the capture stores
+            # the API user shares), on Postgres only (no projection file since DI-02)
+            graph = Path(tmp, "s", "plx-work-graph.service").read_text()
+            self.assertRegex(graph, r"(?m)^User=someone$")
+            self.assertIn("Environment=PLX_ONTOLOGY_PG=only", graph)
+            self.assertIn("--source postgres", graph)
+            # a system unit that reads the ontology store runs on Postgres only: without
+            # it the job finds no projection file and its first run wipes its own output
+            for name in ("plx-work-graph", "plx-sheet-readings"):
+                self.assertIn("Environment=PLX_ONTOLOGY_PG=only",
+                              Path(tmp, "s", f"{name}.service").read_text(), name)
+            # DI-02: every unit that reads the ontology runs on Postgres only, so a rebuilt
+            # host (without its zz-pg-only drop-ins) cannot wipe or fall back to a file
+            for name in PG_ONLY_UNITS:
+                text = (DEPLOY / "systemd" / f"{name}.service").read_text()
+                self.assertEqual(re.findall(r"(?m)^Environment=PLX_ONTOLOGY_PG=(.*)$", text),
+                                 ["only"], name)
             # CAP-L148: the labour-hours build is scheduled daily, reads the capture store
             # read-only and writes only the labour store
             labour = Path(tmp, "s", "plx-labour.service").read_text()
@@ -140,11 +200,21 @@ class DeployFilesTest(unittest.TestCase):
             self.assertRegex(labour, r"(?m)^ReadOnlyPaths=/data/plx-state$")
             self.assertRegex(labour, r"(?m)^ReadWritePaths=/data/plx-state/labour$")
             self.assertIn("MC_MCP_API_KEY", labour)   # the business credentials are dropped
+            # 11-16: the jobs that read the capture stores need the people exclusion from the
+            # proactive env file (without it they refuse: excluded_people_oids_absent)
+            for name in ("plx-labour", "plx-doc-style"):
+                self.assertIn("EnvironmentFile=-/srv/someone/.config/plx/proactive.env",
+                              Path(tmp, "s", f"{name}.service").read_text(), name)
             self.assertRegex(Path(tmp, "s", "plx-labour.timer").read_text(),
                              r"(?m)^OnCalendar=\*-\*-\* \d\d:\d\d:00 ")
             install = (DEPLOY / "ops" / "install_keep_fresh.sh").read_text()
-            self.assertRegex(install, r'(?m)^SYS_UNITS=".*\bplx-labour"')
-            activity = Path(tmp, "u", "plx-system-activity.service").read_text()
+            # plx-labour is one of the system units the installer enables (any position).
+            self.assertIn("plx-labour", install.split('\nSYS_UNITS="', 1)[1].split('"', 1)[0]
+                          .split())
+            self.assertTrue(set(moved) <= set(install.split('\nSYS_UNITS="', 1)[1]
+                                              .split('"', 1)[0].split()))
+            self.assertNotIn("USER_UNITS=", install.replace("MOVED_USER_UNITS=", ""))
+            activity = Path(tmp, "s", "plx-system-activity.service").read_text()
             self.assertIn("--weeks 13", activity)
 
     def test_only_units_that_read_a_business_system_keep_its_credentials(self) -> None:
@@ -157,9 +227,14 @@ class DeployFilesTest(unittest.TestCase):
             "plx-ai-watcher": "runs the live host, whose resolver reads the sources",
             "plx-truth-check": "re-reads source records against the served values",
             "plx-expiry": "reads the credential files to report their expiry dates",
+            "plx-mail-exclusion-purge": "re-reads captured mail through the GET-only Graph "
+                                        "client to find what the exclusion refuses",
         }
         dropped = {"AZURE_CLIENT_SECRET", "BC_CLIENT_SECRET", "MICROSOFT_GRAPH_CLIENT_SECRET",
                    "MC_MCP_API_KEY"}
+        keeps_one = {   # unit -> the one credential it calls a business system with
+            "plx-graph-subscriptions": "AZURE_CLIENT_SECRET",   # token + Graph /subscriptions
+        }
         checked = []
         for path in sorted([*(DEPLOY / "systemd").glob("*.service"),
                             *(DEPLOY / "user").glob("*.service")]):
@@ -171,7 +246,9 @@ class DeployFilesTest(unittest.TestCase):
                 continue
             unset = {name for line in re.findall(r"(?m)^UnsetEnvironment=(.*)$", text)
                      for name in line.split()}
-            self.assertEqual(dropped - unset, set(), path.stem)
+            kept = {keeps_one[path.stem]} if path.stem in keeps_one else set()
+            self.assertEqual(dropped - kept - unset, set(), path.stem)
+            self.assertEqual(kept & unset, set(), path.stem)
         self.assertGreaterEqual(len(checked), 10, checked)   # the rule saw the units
 
     def test_caddy_has_no_tcp_admin_and_listens_only_on_loopback_and_tailscale(self) -> None:
@@ -271,8 +348,12 @@ class ApiUserTest(unittest.TestCase):
             db = state / "feedback" / "feedback.sqlite"
             db.write_text("x")
             os.chmod(db, 0o660)
+            sysctl = Path(tmp, "sys", "fs")
+            sysctl.mkdir(parents=True)
+            (sysctl / "protected_regular").write_text("1\n")
             env = {**os.environ, "PLX_DEPLOY_ENV": "/nonexistent", "PLX_STATE": str(state),
-                   "PLX_API_USER": me, "PLX_STATE_GROUP": group, "PLX_USER": me}
+                   "PLX_API_USER": me, "PLX_STATE_GROUP": group, "PLX_USER": me,
+                   "PLX_SYSCTL_ROOT": str(Path(tmp, "sys"))}
             tool = str(DEPLOY / "release" / "api_user_setup.sh")
 
             def check() -> subprocess.CompletedProcess:
@@ -285,6 +366,25 @@ class ApiUserTest(unittest.TestCase):
             self.assertEqual(drift.returncode, 1)
             self.assertIn("feedback: 1 entries", drift.stdout)
             os.chmod(db, 0o660)
+            # grants-1115: at 2 (Ubuntu's default) a job's O_CREAT open of the -wal/-shm the
+            # API created in a sticky shared directory is refused: the job's store goes
+            # read-only ("attempt to write a readonly database")
+            (sysctl / "protected_regular").write_text("2\n")
+            strict = check()
+            self.assertEqual(strict.returncode, 1)
+            self.assertIn("fs.protected_regular=2", strict.stdout)
+            (sysctl / "protected_regular").write_text("1\n")
+            self.assertEqual(check().returncode, 0)
+            # the sessions store in the sticky root: only its owner, the API's user, can
+            # replace it (a dev API run as the host user leaves it unwritable for the API)
+            store = state / "app-sessions.json"
+            store.write_text("{}")
+            os.chmod(store, 0o660)
+            self.assertEqual(check().returncode, 0, check().stdout)
+            other = subprocess.run(["bash", tool, "--check"], text=True, capture_output=True,
+                                   env={**env, "PLX_API_USER": "root"})
+            self.assertIn(f"app-sessions.json: owned by {me}, not root", other.stdout)
+            store.unlink()
             os.chmod(state, 0o1770)             # no setgid: the API's files there get its group
             self.assertEqual(check().returncode, 1)
             os.chmod(state, 0o2770)             # no sticky bit
@@ -699,51 +799,210 @@ class ReleaseTest(unittest.TestCase):
 
 
 class ReleaseRestart(unittest.TestCase):
-    """plx-release restart: an API stopped while unused is no failed deploy, but one the new
-    release crashes (activating or failed after the restart) is, so the deploy rolls back."""
+    """plx-release restart (Fable 11-14 #2/#3): the API and the app are always started, the
+    API must answer /api/health and one authenticated read, and a release that does not
+    serve rolls back by itself with a host alarm; a switch runs the configuration preflight
+    first and a failed one switches nothing."""
 
-    def restart(self, before: str, after: str, health: str) -> subprocess.CompletedProcess:
-        with tempfile.TemporaryDirectory() as tmp:
-            stubs = Path(tmp, "bin"); stubs.mkdir()
-            state = Path(tmp, "api-state"); state.write_text(before)
-            scripts = {
-                "systemctl": (f'case "$1" in is-active) [ "$(cat {state})" = active ];;\n'
-                              f'  try-restart) if [ "$(cat {state})" = active ]; then echo {after} > {state}; fi;;\n'
-                              '  *) true;; esac'),
-                "sudo": 'exec "$@"',
-                "curl": f'printf {health}',
-                "sleep": "true",
-            }
-            for name, body in scripts.items():
-                f = Path(stubs, name); f.write_text("#!/bin/sh\n" + body + "\n"); f.chmod(0o755)
-            env = {k: v for k, v in os.environ.items() if not k.startswith("PLX_")}
-            env.update({"PATH": f"{stubs}:{env.get('PATH', '/usr/bin:/bin')}",
-                        "PLX_DEPLOY_ENV": "/nonexistent", "PLX_RELEASES": f"{tmp}/rel",
-                        "PLX_API_URL": "http://127.0.0.1:1", "PLX_RELEASE_OWNER": ""})
-            Path(tmp, "rel").mkdir()
-            got = subprocess.run([str(DEPLOY / "release" / "plx-release"), "restart"],
-                                 env=env, text=True, capture_output=True, timeout=120)
-            history = Path(tmp, "rel", "history.log")
-            self.history = history.read_text() if history.exists() else ""
-            return got
+    def run_release(self, *args: str, before: str = "active", health: str = "200",
+                    health_after_rollback: str | None = None, me: str = "200",
+                    check_loaded: bool = True, check_ok: bool = True,
+                    check_root: str | None = None, preflight: str | None = None,
+                    mint: str = "canary", release_mint: bool = False,
+                    release_owner: str = "", probe: str | None = None
+                    ) -> subprocess.CompletedProcess:
+        tmp = self.tmp = tempfile.mkdtemp()
+        self.addCleanup(lambda: subprocess.run(["rm", "-rf", tmp]))
+        rel = Path(tmp, "rel")
+        for rid in ("old", "new"):
+            Path(rel, rid).mkdir(parents=True)
+            Path(rel, rid, "RELEASE.json").write_text("{}")
+        os.symlink("new", rel / "current"); os.symlink("old", rel / "previous")
+        stubs = Path(tmp, "bin"); stubs.mkdir()
+        calls = Path(tmp, "calls"); calls.write_text("")
+        state = Path(tmp, "api-state"); state.write_text(before)
+        after = health_after_rollback or health
+        scripts = {
+            "systemctl": (f'echo "systemctl $*" >> {calls}\n'
+                          'case "$1" in\n'
+                          f'  is-active) [ "$(cat {state})" = active ];;\n'
+                          f'  restart) echo active > {state};;\n'
+                          # no warm switch here (ARCH-T6): the API restarts in place
+                          '  show) case "$*" in *LoadState*plx-api@*) echo not-found;; *LoadState*) '
+                          f'echo {"loaded" if check_loaded else "not-found"};;\n'
+                          # the check unit's fixed release root (its WorkingDirectory=<root>/%i)
+                          '    *WorkingDirectory*plx-api-check@*) u=${!#}; u=${u#plx-api-check@}; '
+                          f'echo {check_root or rel}/${{u%.service}};; *) echo simple;; esac;;\n'
+                          f'  start) case "$2" in plx-api-check@*) {"true" if check_ok else "false"};; esac;;\n'
+                          '  *) true;; esac'),
+            "sudo": 'shift_n=0; [ "$1" = -n ] && shift; exec "$@"',
+            "journalctl": "echo 'store unusable'",
+            # health answers from the release current points at (a rollback changes it)
+            "curl": (f'case "$*" in *api/health*) if [ "$(readlink {rel}/current)" = new ]; '
+                     f'then printf {health}; else printf {after}; fi;;\n'
+                     f'  *api/me*) printf {me};;\n'
+                     # the sign-in body (the ticket used) is recorded: which link was consumed
+                     f'  *auth/dev-login*) for a; do case "$a" in @*) echo "dev-login $(cat "${{a#@}}")" >> {calls};; esac; done;;\n'
+                     '  *) true;; esac'),
+            "sleep": "true",
+        }
+        for name, body in scripts.items():
+            f = Path(stubs, name); f.write_text("#!/bin/bash\n" + body + "\n"); f.chmod(0o755)
+        home = Path(tmp, "home"); (home / ".config/plx").mkdir(parents=True)
+        # the owner's own link, unused: no deploy may rewrite or consume it
+        self.owner_link = home / ".config/plx/workbench-access-link"
+        self.owner_link.write_text("https://x/#ticket=OWNER-UNUSED\n")
+        self.owner_before = (self.owner_link.read_bytes(), self.owner_link.stat().st_mtime_ns)
+        mint_path = Path(tmp, "plx-mint-link")
+        cfg = home / ".config/plx"
+        # current plx-mint-link: --canary writes the canary's own file, else the owner's
+        canary_mint = (f'#!/bin/sh\necho "mint $*" >> {calls}\n'
+                       f'if [ "$1" = "--canary" ]; then echo "https://x/#ticket=t0k3n" > {cfg}/ask-canary-access-link\n'
+                       f'else echo "https://x/#ticket=OWNER-NEW" > {cfg}/workbench-access-link; fi\n')
+        # the pre-canary copy: reads --canary as a TTL and refuses; otherwise mints the owner's
+        old_mint = (f'#!/bin/sh\necho "mint $*" >> {calls}\n'
+                    '[ -n "$1" ] && exit 2\n'
+                    f'echo "https://x/#ticket=OWNER-NEW" > {cfg}/workbench-access-link\n')
+        if mint != "none":
+            mint_path.write_text(canary_mint if mint == "canary" else old_mint)
+            mint_path.chmod(0o755)
+        if release_mint:   # the serving release ships the current copy
+            for rid in ("old", "new"):
+                src = Path(rel, rid, "deploy/ops/plx-mint-link")
+                src.parent.mkdir(parents=True); src.write_text(canary_mint); src.chmod(0o755)
+        env = {k: v for k, v in os.environ.items() if not k.startswith("PLX_")}
+        env.update({"PATH": f"{stubs}:{env.get('PATH', '/usr/bin:/bin')}", "HOME": str(home),
+                    "PLX_DEPLOY_ENV": "/nonexistent", "PLX_RELEASES": str(rel),
+                    "PLX_API_URL": "http://127.0.0.1:1", "PLX_RELEASE_OWNER": release_owner,
+                    "PLX_HOST_OPS": f"{tmp}/ops", "PLX_MINT_LINK": str(mint_path)})
+        if probe is not None:
+            env["PLX_RELEASE_AUTH_PROBE"] = probe
+        if preflight is not None:
+            env["PLX_RELEASE_PREFLIGHT"] = preflight
+        got = subprocess.run([str(DEPLOY / "release" / "plx-release"), *args],
+                             env=env, text=True, capture_output=True, timeout=120)
+        history = rel / "history.log"
+        self.history = history.read_text() if history.exists() else ""
+        self.calls = calls.read_text()
+        self.current = os.readlink(rel / "current")
+        status = Path(tmp, "ops", "status.json")
+        self.alarms = json.loads(status.read_text()).get("attention", []) if status.exists() else []
+        return got
 
-    def test_a_stopped_api_is_not_a_failed_deploy(self) -> None:
-        got = self.restart("inactive", "inactive", "000")
+    def test_a_stopped_api_and_app_are_started_and_must_serve(self) -> None:
+        got = self.run_release("restart", before="inactive")
         self.assertEqual(got.returncode, 0, got.stderr)
-        self.assertIn("api stopped", got.stdout)
+        self.assertIn("systemctl restart plx-api plx-app", self.calls)
+        self.assertIn("health=200 auth=ok", got.stdout)
         # the job-queue worker loads the new release too (it served a 6 h old one, 11-13)
         self.assertIn("plx-jobq-worker", self.history)
 
-    def test_an_api_the_release_crashes_fails_the_restart(self) -> None:
-        for after in ("activating", "failed"):
-            got = self.restart("active", after, "000")
-            self.assertNotEqual(got.returncode, 0, after)
-            self.assertIn("not healthy", got.stderr)
+    def test_a_release_that_does_not_serve_rolls_back_by_itself_and_alarms(self) -> None:
+        got = self.run_release("restart", health="000", health_after_rollback="200")
+        self.assertNotEqual(got.returncode, 0)
+        self.assertIn("rolled back to old", got.stderr)
+        self.assertEqual(self.current, "old")
+        self.assertTrue(any("release new was not serving" in a and "rolled back to old" in a
+                            for a in self.alarms), self.alarms)
+
+    def test_a_failed_authenticated_read_is_a_failed_release(self) -> None:
+        got = self.run_release("restart", me="401")
+        self.assertNotEqual(got.returncode, 0)
+        self.assertEqual(self.current, "old")
+        self.assertIn("auth=failed", got.stderr + got.stdout)
+        self.assertNotIn("t0k3n", got.stdout + got.stderr + self.history)
+
+    def assert_owner_link_untouched(self) -> None:
+        self.assertEqual((self.owner_link.read_bytes(), self.owner_link.stat().st_mtime_ns),
+                         self.owner_before)
+        self.assertNotIn("OWNER", "".join(l for l in self.calls.splitlines(True)
+                                          if l.startswith("dev-login")))
+
+    def test_the_deploy_sign_in_check_never_writes_or_consumes_the_owner_link(self) -> None:
+        """alarms-1115 re-check: the probe minted an owner link (120 min) into the owner's
+        file and signed in with it (single-use), so every deploy left the owner a dead link.
+        It signs in as the Ask canary's service session through its own link file."""
+        # restart is the step deploy and rollback serve through (deploy = migrate, switch, restart)
+        got = self.run_release("restart")
+        self.assertEqual(got.returncode, 0, got.stderr)
+        self.assertIn("health=200 auth=ok", got.stdout)
+        self.assertIn("mint --canary", self.calls)
+        self.assertNotRegex(self.calls, r"(?m)^mint\s*$")   # never the owner mode
+        self.assertIn("dev-login", self.calls)
+        self.assertIn("t0k3n", self.calls)
+        self.assert_owner_link_untouched()
+        # a failed read rolls back and re-checks: still never the owner's link
+        got = self.run_release("restart", me="401")
+        self.assertNotEqual(got.returncode, 0)
+        self.assert_owner_link_untouched()
+
+    def test_an_old_mint_link_is_refreshed_from_the_sealed_release_before_the_check(self) -> None:
+        import getpass
+        got = self.run_release("restart", mint="old", release_mint=True,
+                               release_owner=getpass.getuser())
+        self.assertEqual(got.returncode, 0, got.stderr)
+        self.assertIn("health=200 auth=ok", got.stdout)
+        self.assertIn("plx-mint-link refreshed from release new", self.history)
+        self.assertIn('"--canary"', Path(self.tmp, "plx-mint-link").read_text())
+        self.assertIn("mint --canary", self.calls)
+        self.assert_owner_link_untouched()
+
+    def test_an_old_mint_link_that_cannot_be_refreshed_is_never_used(self) -> None:
+        """No --canary and no sealed copy to refresh from (the release is not owned by the
+        release owner): the deploy is not rolled back for it and the owner link is never
+        minted; the check stays at /api/health (logged). Required: refused."""
+        got = self.run_release("restart", mint="old", release_mint=True)
+        self.assertEqual(got.returncode, 0, got.stderr)
+        self.assertEqual(self.current, "new")
+        self.assertIn("not refreshed", self.history)
+        self.assertIn("no --canary mode", self.history)
+        self.assertNotIn("mint", "".join(l for l in self.calls.splitlines(True)
+                                          if l.startswith("mint")))
+        self.assert_owner_link_untouched()
+        got = self.run_release("restart", mint="old", probe="required")
+        self.assertNotEqual(got.returncode, 0)
+        self.assertIn("no --canary mode", got.stderr)
+        self.assertNotIn("mint", "".join(l for l in self.calls.splitlines(True)
+                                          if l.startswith("mint")))
+        self.assert_owner_link_untouched()
+
+    def test_a_rollback_that_does_not_serve_either_alarms_and_stops(self) -> None:
+        got = self.run_release("restart", health="000")
+        self.assertNotEqual(got.returncode, 0)
+        self.assertEqual(self.current, "old")          # once, never back and forth
+        self.assertTrue(any("does not serve either" in a for a in self.alarms), self.alarms)
 
     def test_a_healthy_restart_passes(self) -> None:
-        got = self.restart("active", "active", "200")
+        got = self.run_release("restart")
         self.assertEqual(got.returncode, 0, got.stderr)
-        self.assertIn("api=200", got.stdout)
+        self.assertEqual(self.current, "new")
+        self.assertEqual(self.alarms, [])
+
+    def test_a_switch_runs_the_preflight_and_a_failed_one_switches_nothing(self) -> None:
+        got = self.run_release("switch", "old", check_ok=False)
+        self.assertNotEqual(got.returncode, 0)
+        self.assertIn("failed its configuration check", got.stderr)
+        self.assertEqual(self.current, "new")
+        self.assertIn("start plx-api-check@old.service", self.calls)
+        got = self.run_release("switch", "old")
+        self.assertEqual(got.returncode, 0, got.stderr)
+        self.assertEqual(self.current, "old")
+        got = self.run_release("switch", "old", check_loaded=False)
+        self.assertEqual(got.returncode, 0, got.stderr)
+        self.assertIn("skipped", got.stdout)
+
+    def test_a_check_unit_over_another_release_root_never_judges_this_release(self) -> None:
+        # main-red 11-15: the host's check unit runs /data/plx-releases/<id>; a release under a
+        # test or staging root is skipped (said), or refused when the preflight is required
+        got = self.run_release("switch", "old", check_root="/data/plx-releases")
+        self.assertEqual(got.returncode, 0, got.stderr)
+        self.assertIn("skipped", got.stdout)
+        self.assertEqual(self.current, "old")
+        self.assertNotIn("start plx-api-check@old.service", self.calls)
+        got = self.run_release("switch", "old", check_root="/data/plx-releases",
+                               preflight="required")
+        self.assertNotEqual(got.returncode, 0)
+        self.assertEqual(self.current, "new")
 
 
 if __name__ == "__main__":

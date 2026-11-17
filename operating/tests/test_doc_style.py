@@ -194,6 +194,12 @@ class LearnAndMakeTest(unittest.TestCase):
             ds.save(path, [self.template], "2026-04-07T00:00:00Z")
             self.assertEqual(ds.load(path)[0]["id"], self.template["id"])
             self.assertEqual(path.stat().st_mode & 0o777, 0o600)
+            # learn's save: the state directory's group reads it (the API's own user)
+            gid = Path(tmp).stat().st_gid
+            ds.save(path, [self.template], "2026-04-07T00:00:00Z", gid=gid)
+            self.assertEqual((path.stat().st_mode & 0o777, path.stat().st_gid), (0o640, gid))
+            ds.share(Path(tmp), 0o750, gid)
+            self.assertEqual(Path(tmp).stat().st_mode & 0o777, 0o750)
 
     def test_groups_split_by_structure_never_across_authors(self) -> None:
         mixed = members(SENT + [OTHER, OTHER])

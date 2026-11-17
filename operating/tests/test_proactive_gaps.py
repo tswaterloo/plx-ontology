@@ -13,7 +13,6 @@ import contextlib
 from collections import Counter
 from datetime import date
 import io
-import sqlite3
 import json
 from pathlib import Path
 import tempfile
@@ -26,8 +25,6 @@ from ontology.core import Actor
 from ontology.schema import load_schema
 from operating import answerers
 from operating import proactive_gaps as pg
-from operating.cases import CaseStore
-from operating.tests.test_cases import FakeResolver
 from operator_api.workspace import object_workspace as objects
 
 ROOT = Path(__file__).resolve().parents[2]

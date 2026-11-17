@@ -1,7 +1,6 @@
 """Every autopilot in the registry defaults to not live: no entry carries a live switch,
 and with no person's own switch the write gate reports dry_run (the master switch on)."""
 import json
-import tempfile
 import unittest
 from pathlib import Path
 

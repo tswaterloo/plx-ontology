@@ -19,9 +19,14 @@ call it has no answer for (answering NULL); after the statement the queue is ans
 Python and the statement runs again, until nothing is queued (``MAX_ROUNDS``). The final
 rows are those the real answers give.
 
-A long JSON list of strings (an owner's audience keys) is written once per session to a
-temp table and read from it by its digest (``_kept_lists``), so the planner does not weigh
-each member on every statement.
+The permission lists (``json_each(:aud)``, ``json_each(:marks)``, an id list) are bound
+natively (``_bound_lists``): a JSON list of plain strings (integers) as one
+``x = ANY(%s::text[])`` (``bigint[]``) parameter read in Python, the server never parsing
+JSON; a long one (an owner's thousands of audience keys) compiled once per session into
+an indexed, analyzed principal-key set (``pg_temp.sq_keys``, one row per key under the
+list's SHA-256) the statement reads as ``x IN (SELECT key ... WHERE digest = %s)``, so the
+planner neither weighs each member on every statement nor guesses the set's size. A list
+of any other shape keeps the SQL function, which reads it as ``json_each`` does.
 
 Rows are :class:`Row` (index and name access, ``keys()``, as ``sqlite3.Row``) with
 SQLite's value types: a boolean is 0/1, an integral numeric an int, bytea bytes. A
@@ -50,7 +55,7 @@ import select
 import sqlite3
 import threading
 import time
-from typing import Any, Callable, Iterator, Mapping, Sequence
+from typing import Any, Callable, Iterator, Mapping
 
 MAX_ROUNDS = 24
 # A streamed read (``PgCompatConnection.stream``) takes this many rows a round trip, on one
@@ -92,26 +97,49 @@ INT_COLUMNS = frozenset({"rowid", "ver", "src", "field_id", "chunk_id", "layout"
 LIST_SUFFIX = {False: "__list_text", True: "__list_int"}
 _PLACEHOLDER = re.compile(r"%%|%s|%\(([A-Za-z_][A-Za-z0-9_]*)\)s")
 # A parameter tested alone for NULL (``? IS NULL`` / ``:name IS NOT NULL``) has no type the
-# server can infer, so preparing the statement fails (IndeterminateDatatype) and is retried
-# bound client side: every connection logged the error and the whole statement once per
-# text, ~2,900 errors a day in the server log on root (GA-F17). Such a statement is bound
-# client side from the start.
+# server can infer, so preparing the statement failed (IndeterminateDatatype, logged with the
+# whole statement on every connection: ~2,900 errors a day, GA-F17, AUD-01) and it was bound
+# client side, planned anew on every call. Such a test where a condition starts (after a
+# parenthesis, a comma, AND/OR/NOT/WHEN/THEN/ELSE/WHERE/ON/SELECT/HAVING) is written typed
+# (``_typed_null_tests``): ``%s::text IS NULL`` (a positional parameter stands nowhere
+# else), ``%(name__null)s::text IS NULL`` (a name's copy, so its other places keep the type
+# their context gives). Any value cast to text is NULL exactly when it is NULL, so the
+# answer is the same and the statement is prepared on the server in one try. A test after
+# an operator (``a = ? IS NULL`` is ``(a = ?) IS NULL``) keeps its text and is bound client
+# side from the start (``_UNTYPED_NULL``).
 _UNTYPED_NULL = re.compile(r"(?<![\w.])(%s|%\([A-Za-z_][A-Za-z0-9_]*\)s)\s+IS\s+(NOT\s+)?NULL\b",
                            re.IGNORECASE)
+_NULL_TEST_AFTER = re.compile(r"\s+IS\s+(?:NOT\s+)?NULL\b", re.IGNORECASE)
+_CONDITION_WORD = re.compile(r"(?<![\w.])(?:AND|OR|NOT|WHEN|THEN|ELSE|WHERE|ON|SELECT|HAVING)\Z",
+                             re.IGNORECASE)
+NULL_SUFFIX = "__null"
+# ``x BETWEEN a AND ? IS NULL`` is ``(x BETWEEN a AND ?) IS NULL``: that AND is no condition
+# start, so the test keeps its text.
+_BETWEEN_OPEN = re.compile(r"\bBETWEEN\b(?:(?!\bAND\b)[^()])*\Z", re.IGNORECASE | re.DOTALL)
 _LISTED_AS = {"::text[]) AS u(value)": False, "::bigint[]) AS u(value)": True}
-# A text IN list this long (JSON characters) is kept on the connection and read from there
-# (``PgCompatConnection._kept_lists``): bound as constants, every statement was planned
-# over each member (plan_cache_mode is force_custom_plan), so an owner's 4,488 audience
-# keys (633 KB) cost 65-85 ms of planning per statement against 1-3 ms of execution, and
-# a cold record page ran thousands of such statements (11-11: 45-150 s).
+# A text IN list this long (JSON characters) is compiled into the session's principal-key
+# set and read from there (``PgCompatConnection._bound_lists``). Bound as constants, every
+# statement was planned over each member (plan_cache_mode is force_custom_plan), so an
+# owner's 4,488 audience keys (633 KB) cost 65-85 ms of planning per statement against 1-3
+# ms of execution, and a cold record page ran thousands of such statements (11-11: 45-150 s).
+# Kept as one array row (``unnest(members)``, 11-11 to 11-14) the planner guessed ten
+# members and walked the wrong index: on 1M objects and 9k keys (5433 test cluster, AUD-01)
+# one binding's probe took 8.6 ms and one type's count 774 ms, against 0.03 ms and 32 ms
+# read from an indexed, analyzed key set. A shorter list is one array parameter (planned
+# in under 0.5 ms; a key set is slower there).
 LONG_LIST_CHARS = 4096
-# How many kept lists a connection holds before it empties them all and starts again.
+# How many principal-key sets, and keys in all, a connection holds before it empties them
+# all (TRUNCATE: a temp table is never vacuumed, so rows deleted one by one stayed as dead
+# tuples; one long-lived API session grew to 878 MB and each new list cost 58-170 ms).
 MAX_KEPT_LISTS = 256
-_KEPT_ANY = re.compile(
-    r"(= ANY|<> ALL)\(ontology\.sq_json_array\((%s|%\(([A-Za-z_][A-Za-z0-9_]*)\)s)\)\)")
-# A long list compared with a link's end (``links.from_object`` / ``to_object``): bound as an
-# array, an index condition (``PgCompatConnection._link_end_lists``).
+MAX_KEPT_KEYS = 400_000
+_LIST_ANY = re.compile(
+    r"(= ANY|<> ALL)\(ontology\.(sq_json_array(?:_int)?)\("
+    r"(%s|%\(([A-Za-z_][A-Za-z0-9_]*)\)s)\)\)")
+# A long list compared with a link's end (``links.from_object`` / ``to_object``): one array
+# parameter, an index condition on each end, never the key set (``_bound_lists``).
 _LINK_END = re.compile(r"\b(?:[A-Za-z_][A-Za-z0-9_]*\.)?(?:from_object|to_object)\s*\Z")
+ARRAY_SUFFIX = "__arr"
 _FALLBACK = {False: "SELECT array(SELECT value FROM ontology.sq_json_each(%s))",
              True: "SELECT array(SELECT value FROM ontology.sq_json_each_int(%s))"}
 _RENAME = {"julianday": "ontology.sq_julianday", "json_extract": "ontology.sq_json_extract",
@@ -237,6 +265,50 @@ def _matches(tokens: list[tuple[str, str]], aliases: Mapping[str, str]
 
 
 @functools.lru_cache(maxsize=4096)
+def _null_tests(text: str) -> tuple[str, tuple[str, ...]]:
+    """``text`` with each parameter tested alone for NULL where a condition starts written
+    typed (``_UNTYPED_NULL``), and the names whose copy (``name__null``) it binds."""
+    out, last, names = [], 0, []
+    for m in _PLACEHOLDER.finditer(text):
+        if m.group(0) == "%%" or not _NULL_TEST_AFTER.match(text, m.end()):
+            continue
+        before = text[:m.start()].rstrip()
+        if before and before[-1] not in "(," and not _CONDITION_WORD.search(before[-10:]):
+            continue
+        if before[-3:].upper() == "AND" and _BETWEEN_OPEN.search(before[:-3]):
+            continue
+        out.append(text[last:m.start()])
+        if m.group(1) is None:
+            out.append("%s::text")
+        else:
+            out.append(f"%({m.group(1)}{NULL_SUFFIX})s::text")
+            names.append(m.group(1))
+        last = m.end()
+    if not out:
+        return text, ()
+    out.append(text[last:])
+    return "".join(out), tuple(dict.fromkeys(names))
+
+
+def _typed_null_tests(text: str, params: Any) -> tuple[str, Any]:
+    """``text`` and ``params`` with the NULL tests ``_null_tests`` types: a named one bound
+    to its own copy of the value. A name with no value keeps the statement as written (the
+    driver reports it missing, as before)."""
+    if " IS " not in text.upper():
+        return text, params
+    typed, names = _null_tests(text)
+    if typed == text:
+        return text, params
+    if names:
+        if not isinstance(params, Mapping) or any(n not in params for n in names):
+            return text, params
+        params = dict(params)
+        for name in names:
+            params[f"{name}{NULL_SUFFIX}"] = params[name]
+    return typed, params
+
+
+@functools.lru_cache(maxsize=4096)
 def match_parameters(sql: str) -> tuple[str | int, ...]:
     """The parameters of ``sql`` that are FTS5 queries (a ``MATCH`` operand): a name, or
     a ``?``'s position; their values are turned into ``tsquery`` text (``words.tsquery``)."""
@@ -253,7 +325,7 @@ def match_parameters(sql: str) -> tuple[str | int, ...]:
 @functools.lru_cache(maxsize=4096)
 def translate(sql: str, functions: tuple[str, ...] = (),
               gated_schemes: tuple[str, ...] = (), words: Any = (),
-              arrays: bool = False) -> str:
+              arrays: bool = False, recorded: tuple[str, ...] = ()) -> str:
     """SQLite SQL -> Postgres SQL for psycopg (``%s`` / ``%(name)s`` parameters).
     ``functions``: names registered in Python (``sq_call``); ``gated_schemes``: the
     schemes ``plx_l9_gated`` keeps; ``words``: the FTS5 tables whose word index is
@@ -261,7 +333,9 @@ def translate(sql: str, functions: tuple[str, ...] = (),
     ``chunk_text`` as ``chunk_words``,
     ``X MATCH :q`` as ``X.words @@ CAST(:q AS tsquery)``, the parameter
     turned into tsquery text by the connection: ``match_parameters``); without them a
-    word-index query raises ``Untranslatable``."""
+    word-index query raises ``Untranslatable``. ``recorded``: the functions (item gates)
+    called as ``ontology.sq_item_gate``, which answers from the recorded item audiences
+    (migration 0027, ``operating.pg.item_audiences``) where it may, else as ``sq_call``."""
     stripped = sql.strip().rstrip(";").strip()
     head = stripped[:20].upper()
     if head.startswith("PRAGMA"):
@@ -272,6 +346,7 @@ def translate(sql: str, functions: tuple[str, ...] = (),
         return "SELECT NULL WHERE false"
     tokens = _tokens(stripped)
     lowered = {f.lower() for f in functions}
+    fast = {f.lower() for f in recorded} & lowered
     aliases = _aliases(tokens)
     out: list[str] = []
     suffix: dict[int, str] = {}   # token index -> text appended after it
@@ -338,7 +413,8 @@ def translate(sql: str, functions: tuple[str, ...] = (),
             call = j < len(tokens) and tokens[j][1] == "("
             name = text.lower()
             if call and name in lowered:
-                out.append(f"ontology.sq_call('{name}', (")
+                caller = "sq_item_gate" if name in fast else "sq_call"
+                out.append(f"ontology.{caller}('{name}', (")
                 replace[_close(tokens, j)] = ")::text)"
                 skip_until = j
             elif call and name == "plx_l9_gated":
@@ -397,10 +473,10 @@ def translate(sql: str, functions: tuple[str, ...] = (),
                 spans = _args(tokens, j, close)
                 out.append("string_agg((")
                 inner = translate("".join(t for _, t in tokens[spans[0][0]:spans[0][1]]),
-                                  functions, gated_schemes, words, arrays)
+                                  functions, gated_schemes, words, arrays, recorded)
                 out.append(inner + ")::text, ")
                 out.append(translate("".join(t for _, t in tokens[spans[1][0]:spans[1][1]]),
-                                     functions, gated_schemes, words, arrays)
+                                     functions, gated_schemes, words, arrays, recorded)
                            if len(spans) > 1 else "','")
                 out.append(")")
                 skip_until = close
@@ -902,8 +978,21 @@ class PgCompatConnection:
     postgres = True
 
     def __init__(self, dsn: str, *, statement_timeout_ms: int = STATEMENT_TIMEOUT_MS,
-                 temp_limit: str | None = None) -> None:
+                 temp_limit: str | None = None, search_path: str = "ontology, public",
+                 link_guard: bool = False) -> None:
         self.dsn = dsn
+        # ``link_guard``: a reader's plain reads of ``links`` / ``link_rows`` skip the
+        # same-person links ``operating.pg.person_link_guard`` hides (never a writer's)
+        self.link_guard = bool(link_guard)
+        # the schemas a bare name reads (``ontology_seen`` first: ``links`` skips the
+        # marked mention repeats, ``operating.pg.mention_repeats``)
+        # (``ontology_bare``/``ontology_bare_seen``: plus the bare-token mention leads,
+        # ``operating.pg.bare_mentions``)
+        if search_path not in ("ontology, public", "ontology_seen, ontology, public",
+                               "ontology_bare, ontology, public",
+                               "ontology_bare_seen, ontology, public"):
+            raise ValueError("search_path_unknown")
+        self._search_path = search_path
         self._statement_timeout_ms = int(statement_timeout_ms)
         # ``temp_limit``: the most temporary file space one statement of this session may
         # write (``temp_file_limit``, e.g. "1GB"); past it the statement fails, never the
@@ -957,7 +1046,7 @@ class PgCompatConnection:
 
         statement_timeout_ms = self._statement_timeout_ms
         with conn.cursor() as cur:
-            cur.execute("SET search_path = ontology, public")
+            cur.execute(f"SET search_path = {self._search_path}")
             cur.execute("SET TimeZone = 'UTC'")
             cur.execute(f"SET statement_timeout = {int(statement_timeout_ms)}")
             for setting, value in (("client_connection_check_interval", CLIENT_CHECK),
@@ -985,11 +1074,26 @@ class PgCompatConnection:
                         "result boolean, PRIMARY KEY (fn, arg))")
             cur.execute("CREATE TEMP TABLE IF NOT EXISTS sq_pending (fn text, arg text, "
                         "PRIMARY KEY (fn, arg))")
-            # the long IN lists this session holds (``_kept_lists``): a new session holds none
-            cur.execute("CREATE TEMP TABLE IF NOT EXISTS sq_lists (digest text PRIMARY KEY, "
-                        "members text[] NOT NULL)")
-            cur.execute("DELETE FROM sq_lists")
+            # the principal-key sets this session holds (``_bound_lists``): a new session
+            # holds none
+            cur.execute("CREATE TEMP TABLE IF NOT EXISTS sq_keys (digest text NOT NULL, "
+                        "key text NOT NULL, PRIMARY KEY (digest, key))")
+            cur.execute("TRUNCATE sq_keys")
+            # the recorded item audiences (migration 0027): a gate carrying its reader's keys
+            # (``create_function``) is answered from them where a decision is recorded
+            cur.execute("SELECT to_regproc('ontology.sq_item_gate') IS NOT NULL")
+            self.item_audiences = bool(cur.fetchone()[0])
+            if self.item_audiences:
+                cur.execute("CREATE TEMP TABLE IF NOT EXISTS sq_gates (fn text PRIMARY KEY, "
+                            "keys text[] NOT NULL, rosters text[] NOT NULL)")
+                cur.execute("TRUNCATE sq_gates")
+            recorded = getattr(self, "_recorded", None) or {}
+            for name, keys in list(recorded.items()):
+                # a new session holds the gates registered before (their rosters re-read)
+                if not (self.item_audiences and self._register_recorded(cur, name, keys)):
+                    del recorded[name]
         self._kept: dict[str, str] = {}
+        self._kept_keys = 0   # rows in ``sq_keys``
 
     @contextmanager
     def deadline_bounded(self) -> Iterator[None]:
@@ -1178,12 +1282,14 @@ class PgCompatConnection:
     def _execute(self, sql: str, parameters: Any) -> Cursor:
         import psycopg
 
+        sql = self._guarded(sql)
         names = tuple(sorted(self._functions))
-        text = translate(sql, names, self._gated, self.words, self.arrays)
+        text = translate(sql, names, self._gated, self.words, self.arrays,
+                         self._recorded_names())
         params = self._params(parameters)
         if self.words and "MATCH" in sql.upper():
             params = self._word_queries(sql, params)
-        gated = "ontology.sq_call(" in text
+        gated = "ontology.sq_call(" in text or "ontology.sq_item_gate(" in text
         # a word query read from its GIN index first (``translate``): the planner's
         # estimates of the joins after it are far off (a page of a common document
         # word: 120 s in its order, 0.7 s in the written one)
@@ -1191,8 +1297,9 @@ class PgCompatConnection:
         try:
             if "AS u(value)" in text:
                 params = self._lists(text, params)
-            if "sq_json_array(" in text:
-                text, params = self._kept_lists(text, params)
+            if "ontology.sq_json_array" in text:
+                text, params = self._bound_lists(text, params)
+            text, params = _typed_null_tests(text, params)
             for _ in range(MAX_ROUNDS):
                 with self._cursor(text) as cur:
                     if fenced:   # joined from the word rows, in the written order
@@ -1214,6 +1321,21 @@ class PgCompatConnection:
             ) from exc
         plain = self.row_factory is None
         return Cursor(columns, rows, count, plain, convert=True)
+
+    def _guarded(self, sql: str) -> str:
+        """``sql`` as this connection reads it: on a guarded reader every statement
+        that starts (after comments) with SELECT, WITH or VALUES reads without the hidden
+        same-person links (``person_link_guard.guard``), else as written. Decided by the
+        leading keyword alone, never ``read_only`` (the retry rule, which turns down a
+        read holding CASE ... END, as every item-gated read does); ``guard`` touches only
+        a relation read after FROM, JOIN or a FROM-list comma."""
+        if not self.link_guard or not isinstance(sql, str):
+            return sql
+        head = re.match(r"[A-Za-z]+", _LEADING_COMMENTS.sub("", sql, count=1))
+        if head is None or head.group(0).upper() not in ("SELECT", "WITH", "VALUES"):
+            return sql
+        from operating.pg.person_link_guard import guard
+        return guard(sql)
 
     def _cursor(self, text: str) -> Any:
         """A server-side cursor (the statement prepared once, its plan reused) unless the
@@ -1253,13 +1375,18 @@ class PgCompatConnection:
             client.execute(text, params)
             return read(client)
 
-    def stream(self, sql: str, parameters: Any = (), *, batch: int = STREAM_BATCH) -> Any:
+    def stream(self, sql: str, parameters: Any = (), *, batch: int = STREAM_BATCH,
+               read_all: bool = False) -> Any:
         """A read whose rows are taken from a server-side cursor ``batch`` at a time as the
         caller goes (``StreamCursor``), on a connection of its own, so a scan that stops
         early reads no further and a long one holds one batch in memory, not the whole
         result. A statement that is not one plain read, that asks the item gate or a
         session's kept lists, or finds no stream connection free runs whole
-        (``execute``), with the same rows."""
+        (``execute``), with the same rows. ``read_all``: the caller reads every row, so
+        the cursor is planned for the whole result as a plain read is
+        (``cursor_tuple_fraction`` 1, not the first tenth: on served plx a nested loop of
+        13M index probes instead of one hash join) and its scans never start mid-table
+        beside another (``synchronize_seqscans`` off): rows in one order run to run."""
         import psycopg
 
         if not isinstance(batch, int) or isinstance(batch, bool) or batch < 1:
@@ -1268,9 +1395,11 @@ class PgCompatConnection:
             return self.execute(sql, parameters)
         with self._lock:
             names = tuple(sorted(self._functions))
-            text = translate(sql, names, self._gated, self.words, self.arrays)
-            if "ontology.sq_call(" in text or "sq_json_array(" in text \
-                    or text in self._client_only:
+            text = translate(self._guarded(sql), names, self._gated, self.words, self.arrays,
+                             self._recorded_names())
+            if "ontology.sq_call(" in text or "ontology.sq_item_gate(" in text \
+                    or "sq_json_array(" in text \
+                    or text in self._client_only or _null_tests(text)[0] in self._client_only:
                 return self.execute(sql, parameters)
             conn = self._stream_conn()
             if conn is None:
@@ -1284,8 +1413,12 @@ class PgCompatConnection:
                     params = self._word_queries(sql, params)
                 if "AS u(value)" in text:
                     params = self._lists(text, params)
+                text, params = _typed_null_tests(text, params)
                 if text.startswith("WITH sq_words_"):   # as ``_execute`` reads it
                     conn.execute("SET LOCAL join_collapse_limit = 1")
+                if read_all:
+                    conn.execute("SET LOCAL cursor_tuple_fraction = 1")
+                    conn.execute("SET LOCAL synchronize_seqscans = off")
                 cur = conn.cursor(name=f"sq_stream_{id(conn):x}", scrollable=False,
                                   withhold=False)
                 cur.itersize = batch
@@ -1330,7 +1463,7 @@ class PgCompatConnection:
         try:
             conn = psycopg.connect(self.dsn, autocommit=True)
             with conn.cursor() as cur:
-                cur.execute("SET search_path = ontology, public")
+                cur.execute(f"SET search_path = {self._search_path}")
                 cur.execute("SET TimeZone = 'UTC'")
                 cur.execute(f"SET statement_timeout = {int(self._statement_timeout_ms)}")
                 cur.execute("SET jit = off")
@@ -1380,6 +1513,13 @@ class PgCompatConnection:
             if name in ("plx_l9_time", "plx_l9_gated"):
                 return   # ported to SQL (ontology.sq_l9_time / sq_l9_gated)
             key = name.lower()
+            recorded = getattr(self, "_recorded", None)
+            if recorded is None:
+                recorded = self._recorded = {}
+            if key in recorded:
+                del recorded[key]
+                with self._pg.cursor() as cur:
+                    cur.execute("DELETE FROM sq_gates WHERE fn = %s", (key,))
             if func is None:
                 self._functions.pop(key, None)
                 with self._pg.cursor() as cur:
@@ -1388,6 +1528,30 @@ class PgCompatConnection:
             if narg != 1:
                 raise sqlite3.NotSupportedError("only one-argument functions are compiled")
             self._functions[key] = func
+            keys = _item_keys(func)
+            if keys and getattr(self, "item_audiences", False):
+                with self._pg.cursor() as cur:
+                    if self._register_recorded(cur, key, keys):
+                        recorded[key] = keys
+
+    def _recorded_names(self) -> tuple[str, ...]:
+        return tuple(sorted(getattr(self, "_recorded", None) or ()))
+
+    @staticmethod
+    def _register_recorded(cur: Any, name: str, keys: tuple[str, ...]) -> bool:
+        """Hold gate ``name``'s reader keys and the rosters recorded for them in the
+        session's ``sq_gates`` (``ontology.sq_item_gate``); False (and nothing held) when
+        no roster holds them: the gate is then called as ``sq_call``, as before."""
+        cur.execute("SELECT coalesce(array_agg(DISTINCT roster), '{}') FROM "
+                    "ontology.item_audience_rosters WHERE audience_key = ANY(%s::text[])",
+                    (list(keys),))
+        rosters = list(cur.fetchone()[0] or [])
+        if not rosters:
+            return False
+        cur.execute("INSERT INTO sq_gates (fn, keys, rosters) VALUES (%s, %s::text[], "
+                    "%s::text[]) ON CONFLICT (fn) DO UPDATE SET keys = excluded.keys, "
+                    "rosters = excluded.rosters", (name, list(keys), rosters))
+        return True
 
     def set_progress_handler(self, *_: Any) -> None:
         """No step callbacks on Postgres: ``statement_timeout`` bounds a statement."""
@@ -1488,16 +1652,24 @@ class PgCompatConnection:
                 out[key] = self._members_of(params[base], numeric)
         return out if named else tuple(out)
 
-    def _kept_lists(self, text: str, params: Any) -> tuple[str, Any]:
-        """``text`` and ``params`` with each long text IN list (``x = ANY(...)``, ``x <> ALL
-        (...)`` of a JSON list of at least ``LONG_LIST_CHARS`` characters) read from this
-        session's ``sq_lists`` row of its members, by the list's SHA-256, as ``x [NOT] IN
-        (SELECT unnest(members) ...)``: the same rows (``x = ANY(a)`` is ``x IN (SELECT
-        unnest(a))``, ``x <> ALL(a)`` its negation, NULLs included), planned without the
-        members as constants. A list is written to the session once (outside any
-        transaction, so it is committed at once and no rollback removes it; a new session
-        starts with none, ``_session``); inside a caller's transaction, or for a list not
-        of plain strings (``_members``), the statement keeps its text."""
+    def _bound_lists(self, text: str, params: Any) -> tuple[str, Any]:
+        """``text`` and ``params`` with each JSON IN list (``x = ANY(ontology.sq_json_array
+        (...))``, ``<> ALL``; ``_int`` of numbers) bound natively, the same rows (``x = ANY
+        (a)`` is ``x IN (SELECT unnest(a))``, ``<> ALL`` its negation, NULLs included):
+
+        - a long text list (at least ``LONG_LIST_CHARS``; not one compared with a link's
+          end) of plain strings: compiled into this session's principal-key set, one row a
+          key under the list's SHA-256 (``sq_keys``, primary key (digest, key), analyzed),
+          read as ``x [NOT] IN (SELECT key FROM pg_temp.sq_keys WHERE digest = %s)``. A set
+          is written once (outside any transaction, so it is committed at once and no
+          rollback removes it; a new session starts with none, ``_session``); inside a
+          caller's transaction, or holding a NULL member, the list is bound as an array;
+        - any other list of plain strings (integers): one ``%s::text[]`` (``bigint[]``)
+          parameter of its members, read in Python (``_members``);
+        - a list of any other shape keeps the function, which reads it as ``json_each``.
+
+        A named parameter keeps its own value (it may stand elsewhere as JSON text); its
+        array is bound as ``name__arr``, its set's digest as ``name__kept``."""
         import psycopg
 
         named = isinstance(params, Mapping)
@@ -1508,86 +1680,89 @@ class PgCompatConnection:
             if m.group(0) != "%%" and m.group(1) is None:
                 at += 1
                 positions[m.start()] = at
-        found = []   # (match, name, positional index, the list's JSON text)
-        ends = []    # the same, of a list compared with a link's end
-        for m in _KEPT_ANY.finditer(text):
-            name = m.group(3)
-            index = positions.get(m.start(2)) if name is None else None
+        found = []   # (match, name, positional index, the list's JSON text, numeric, long)
+        for m in _LIST_ANY.finditer(text):
+            name = m.group(4)
+            index = positions.get(m.start(3)) if name is None else None
             if name is None:
                 raw = values[index] if index is not None and index < len(values) else None
             else:
                 raw = values.get(name) if named else None
-            if isinstance(raw, str) and len(raw) >= LONG_LIST_CHARS:
-                if _LINK_END.search(text, 0, m.start()):
-                    ends.append((m, name, index, raw))
-                else:
-                    found.append((m, name, index, raw))
-        found = self._link_end_lists(ends, found, values)
+            numeric = m.group(2) == "sq_json_array_int"
+            long = (not numeric and isinstance(raw, str) and len(raw) >= LONG_LIST_CHARS
+                    and not _LINK_END.search(text, 0, m.start()))
+            found.append((m, name, index, raw, numeric, long))
         idle = self._conn.pgconn.transaction_status == psycopg.pq.TransactionStatus.IDLE
-        new = {raw for _, _, _, raw in found if raw is not None and raw not in self._kept}
-        if idle and new and len(self._kept) + len(new) > MAX_KEPT_LISTS:
-            # emptied before this statement keeps a list, never between two of its lists:
+        new = {raw for _, _, _, raw, _, long in found if long and raw not in self._kept}
+        fresh = {}
+        if idle and new:
+            for raw in new:
+                members = _members(raw, numeric=False)
+                if members is not None and None not in members:
+                    fresh[raw] = sorted(set(members))
+        adding = sum(len(members) for members in fresh.values())
+        if fresh and (len(self._kept) + len(fresh) > MAX_KEPT_LISTS
+                      or self._kept_keys + adding > MAX_KEPT_KEYS):
+            # emptied before this statement keeps a set, never between two of its lists:
             # one already bound to its digest would read as empty (``NOT IN`` of nothing
             # excludes nothing)
             with self._conn.cursor() as cur:
-                cur.execute("DELETE FROM sq_lists")
+                cur.execute("TRUNCATE sq_keys")
             self._kept.clear()
+            self._kept_keys = 0
+        self._keep(fresh)
         out, last = [], 0
-        for m, name, index, raw in found:
-            if raw is None:
-                # a link end's list, bound as an array of its members (``_link_end_lists``)
-                bound = "%s" if name is None else f"%({name}__ends)s"
+        for m, name, index, raw, numeric, long in found:
+            digest = self._kept.get(raw) if long else None
+            if digest is not None:
+                if name is None:
+                    values[index] = digest
+                    bound = "%s"
+                else:
+                    values[f"{name}__kept"] = digest
+                    bound = f"%({name}__kept)s"
                 out.append(text[last:m.start()])
-                out.append(f"{m.group(1)}({bound}::text[])")
+                out.append(f"{'IN' if m.group(1) == '= ANY' else 'NOT IN'} (SELECT kept.key "
+                           f"FROM pg_temp.sq_keys kept WHERE kept.digest = {bound})")
                 last = m.end()
                 continue
-            digest = self._kept.get(raw)
-            if digest is None:
-                if not idle:
-                    continue
-                members = _members(raw, numeric=False)
-                if members is None:
-                    continue
-                digest = hashlib.sha256(raw.encode("utf-8", "surrogatepass")).hexdigest()
-                with self._conn.cursor() as cur:
-                    cur.execute("INSERT INTO sq_lists (digest, members) VALUES (%s, %s) "
-                                "ON CONFLICT (digest) DO NOTHING", (digest, members))
-                self._kept[raw] = digest
+            members = _members(raw, numeric=numeric)
+            if members is None:
+                continue   # the function reads it (another JSON shape, unreadable text)
             if name is None:
-                values[index] = digest
+                values[index] = members
                 bound = "%s"
             else:
-                values[f"{name}__kept"] = digest
-                bound = f"%({name}__kept)s"
+                values[f"{name}{ARRAY_SUFFIX}"] = members
+                bound = f"%({name}{ARRAY_SUFFIX})s"
             out.append(text[last:m.start()])
-            out.append(f"{'IN' if m.group(1) == '= ANY' else 'NOT IN'} (SELECT unnest("
-                       f"kept.members) FROM pg_temp.sq_lists kept WHERE kept.digest = {bound})")
+            out.append(f"{m.group(1)}({bound}::{'bigint' if numeric else 'text'}[])")
             last = m.end()
         if not out:
             return text, params
         out.append(text[last:])
         return "".join(out), (values if named else tuple(values))
 
-    @staticmethod
-    def _link_end_lists(ends: list, found: list, values: Any) -> list:
-        """``found`` with each long list compared with a link's end (``ends``) bound as a
-        text array of its members (``raw`` None in its entry: written ``x = ANY(%s::text[])``,
-        ``<> ALL``), in the statement's order. Kept on the session, a list is a set the
-        statement joins (a hashed subplan), never an index condition: ``from IN list OR to
-        IN list`` then filtered every link of the asked types (69 s over 79M links for 360
-        records); as an array it reads both ends' indexes (0.0 s). A list of record ids is
-        small beside an audience (its planning cost is not the kept lists' reason). A list
-        that is not plain strings keeps its text."""
-        for m, name, index, raw in ends:
-            members = _members(raw, numeric=False)
-            if members is None:
-                continue
-            if name is None:
-                values[index] = members
-            else:
-                values[f"{name}__ends"] = members
-            found.append((m, name, index, None))
-        return sorted(found, key=lambda entry: entry[0].start())
+    def _keep(self, lists: Mapping[str, list[str]]) -> None:
+        """Write each of ``lists`` (JSON text -> its distinct members) to this session as its
+        principal-key set under the text's SHA-256: its distinct members in one COPY for
+        all, then the sets' statistics once, so the planner knows each one's size (a
+        statement of 400 binding probes keeps its sets in three statements, not 1,200)."""
+        if not lists:
+            return
+        digests = {raw: hashlib.sha256(raw.encode("utf-8", "surrogatepass")).hexdigest()
+                   for raw in lists}
+        with self._conn.cursor() as cur:
+            with cur.copy("COPY sq_keys (digest, key) FROM STDIN") as copy:
+                for raw, members in lists.items():
+                    for key in members:
+                        copy.write_row((digests[raw], key))
+            # committed (autocommit) and whole (one COPY): recorded before the statistics,
+            # so an ANALYZE cancelled (timeout, interrupt) never leaves rows this session
+            # would copy again (a primary key error on every later read of the list)
+            self._kept.update(digests)
+            self._kept_keys += sum(len(members) for members in lists.values())
+            cur.execute("ANALYZE pg_temp.sq_keys")
 
     def _members_of(self, raw: Any, numeric: bool) -> list[Any]:
         members = _members(raw, numeric=numeric)
@@ -1615,6 +1790,17 @@ class PgCompatConnection:
                 for row in answers:
                     copy.write_row(row)
         return len(pending)
+
+
+def _item_keys(func: Any) -> tuple[str, ...]:
+    """The reader keys an item gate carries (``item_keys``: ``operating.pg.item_audiences``
+    reader keys), only when a non-empty tuple of non-empty texts; else none."""
+    keys = getattr(func, "item_keys", None)
+    if not isinstance(keys, tuple) or not keys:
+        return ()
+    if not all(isinstance(k, str) and k for k in keys):
+        return ()
+    return keys
 
 
 __all__ = ["MAX_ROUNDS", "PgCompatConnection", "Row", "Untranslatable", "match_parameters",

@@ -395,6 +395,9 @@ def _record(cur: Any, ends: set[str], newest: int, now: float) -> str:
     cur.execute("INSERT INTO ontology.load_state (name, value) VALUES ('delta_layers', %s) "
                 "ON CONFLICT (name) DO UPDATE SET value = ontology.load_state.value || "
                 "excluded.value, updated_at = now()", (json.dumps([name]),))
+    # the change feed (migration 0026): the ends whose links changed, in this transaction
+    from operating.pg import change_feed
+    change_feed.record_ids(cur, f"delta:{name}", "whole_steps", digest, owned, "l")
     return name
 
 
@@ -415,6 +418,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--full", action="store_true", help="the whole store now")
     args = parser.parse_args(argv)
     report = recompute(args.dsn or config.dsn(), full=True if args.full else None)
+    from operating.pg import link_marks
+    link_marks.after_apply(args.dsn or config.dsn(), "steps")
     print(json.dumps(report, sort_keys=True, default=str), flush=True)
     return 0
 

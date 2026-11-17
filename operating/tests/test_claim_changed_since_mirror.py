@@ -20,6 +20,7 @@ from ontology.core import Actor
 from operating import agent_loop, case_verification
 from operating import ontology_tools as ot
 from operating import ontology_tools_investigate as oi
+from operating import ontology_tools_investigate_plans
 from operating.cases import _digest
 from operating.mcp_server import MCPServer
 from operating.ontology_host import CaseHostTools
@@ -79,7 +80,7 @@ class MirrorChangedSinceTests(CaseToolsTestCase):
                     "completeness": {"complete": True, "truncated": False, "returned": 1},
                     "meta": {"schema_digest": "a" * 64, "as_known_at": AFTER,
                              "freshness": []}}
-        doc = {"$schema": "_plan.schema.json", "format": oi.PLAN_FORMAT, "id": "ao_lot",
+        doc = {"$schema": "_plan.schema.json", "format": ontology_tools_investigate_plans.PLAN_FORMAT, "id": "ao_lot",
                "families": ["F9"], "title": "t", "description": "d",
                "root": {"object_types": ["AssemblyOrder"]}, "step_budget": 4,
                "steps": [{"id": "read", "tool": "plx.object", "from": "root",

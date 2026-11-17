@@ -247,6 +247,12 @@ class McpHttpHost:
             return _json(404, {"error": {"code": "session_not_found"}})
         held.server.rebind(session)
         response = held.server.handle(message)
+        if isinstance(response, dict) and isinstance(response.get("result"), dict) \
+                and "content" in response["result"]:
+            # a tool result leaving for an employee's client holds no card number or
+            # credential (``operating.card_text``), as on the stdio host
+            from operating.card_text import mask_served_in
+            response = {**response, "result": mask_served_in(response["result"])}
         outbound, held.server.outbound[:] = list(held.server.outbound), []
         if not outbound:
             return _json(200, response) if response is not None else (202, {}, b"")

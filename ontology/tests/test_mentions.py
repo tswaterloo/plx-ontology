@@ -21,7 +21,8 @@ import time
 import unittest
 
 from integrations import graph_read
-from integrations.capture_mail import CaptureScope, MailCapture, MailCaptureStore
+from integrations.capture_mail import MailCapture, MailCaptureStore
+from integrations.capture_mail_scope import CaptureScope
 from integrations.graph_read import GraphMailReader
 from integrations.live_source_guard import BoundedBackoff
 from integrations.tests.test_capture_mail import (BOX_A, CAPTURE, ENV, OUTSIDER, READER_A,
@@ -812,3 +813,154 @@ class ReferenceCandidateTests(unittest.TestCase):
         self.assertEqual([r["object_id"] for r in alone], ["inv"])
         self.assertTrue(mm.is_reference(alone[0]))
         self.assertEqual(mm.MENTION_FEATURES["via_reference"]["role"], "veto")
+
+
+class ListFileTests(unittest.TestCase):
+    """CC-NY-3 (audit 11-14): a document naming ``LIST_FILE_MIN`` or more records of one
+    type (a tracker, a statement) is no record's own document: each of its mention leads
+    says ``list_file`` with how many its text names, and the corroboration never raises
+    one. The count is the text's, never how many resolved. Evidence: isolated-fixture
+    (made-up text; the store reads patched to answer every number)."""
+
+    FILE = "graph-mail://box/attachments/a1@v1"
+
+    def links(self, texts, resolves=None, by_field=False):
+        from unittest import mock
+        from ontology import mentions as mm
+        doc = mm.Document(self.FILE, "email", tuple(
+            mm.TextField(*item) if len(item) == 3 else
+            mm.TextField(item[0], "row.content_text", item[1]) for item in texts))
+        version = {"object_id": "Attachment:a:1", "object_type": "Attachment", "digest": "d",
+                   "lineage": "graph_mail", "markings": "[]",
+                   "recorded_at": "2026-10-01T00:00:00Z", "superseded_at": None,
+                   "removals": "[]"}
+
+        def candidates(_conn, mention, _source, _aliases, _spans):
+            if resolves is not None and mention["normalized"] not in resolves:
+                return []
+            row = {"object_id": "PurchaseOrder:po:" + mention["normalized"],
+                   "object_type": mention["object_type"], "l1_handle": "api://po/" +
+                   mention["normalized"], "field_path": "row.po_number", "digest": "d",
+                   "lineage": "portal_api", "identifier_kind": mention["identifier_kind"],
+                   "normalized": mention["normalized"], "property": "po_number",
+                   "role": "primary", "markings": "[]",
+                   "recorded_at": "2026-09-01T00:00:00Z", "superseded_at": None}
+            return [(row, ("2026-10-01T00:00:00Z", None), 0)]
+        declared = {("Attachment", "PurchaseOrder"): "Attachment.mentions_purchase_order",
+                    ("Attachment", "SalesOrder"): "Attachment.mentions_sales_order"}
+        with mock.patch.object(mm, "_store_version", lambda c, h: version), \
+                mock.patch.object(mm, "_cited_version", lambda c, h: version), \
+                mock.patch.object(mm, "mention_candidates", candidates):
+            out = mm._document_links(None, declared, doc, mm.document_mentions(doc), None,
+                                     mm.extractor_version())
+        def field(r):
+            return json.loads(r["reason"])[0]["citations"][0]["field_path"]
+        return {(r["link_type"], r["to_object"].rsplit(":", 1)[1])
+                + ((field(r),) if by_field else ()):
+                [f for f in json.loads(r["why_not"]) if f["feature"] == "list_file"]
+                for r in out["rows"]}
+
+    def test_five_numbers_of_one_type_make_every_link_a_list_file_lead(self):
+        pos = " ".join(f"PO10030{n}" for n in range(5))
+        found = self.links([(self.FILE, f"Open PO tracking {pos} PO100300 OR1000114376")])
+        po = {k: v for k, v in found.items() if k[0].endswith("purchase_order")}
+        self.assertEqual(len(po), 5)
+        for features in po.values():
+            self.assertEqual(features, [{"feature": "list_file", "agrees": False,
+                                         "records": 5}])
+        # the one sales order it names is no list of sales orders
+        self.assertEqual(found[("Attachment.mentions_sales_order", "OR1000114376")], [])
+
+    def test_four_numbers_or_one_number_repeated_is_no_list(self):
+        four = self.links([(self.FILE, " ".join(f"PO10030{n}" for n in range(4)))])
+        self.assertEqual(len(four), 4)
+        self.assertTrue(all(v == [] for v in four.values()))
+        again = self.links([(self.FILE, "PO100301 " * 9)])
+        self.assertEqual(list(again.values()), [[]])
+
+    def test_the_count_is_the_texts_not_how_many_resolved(self):
+        # six numbers, one resolves: that link says six, so no reader learns whether a
+        # record it may not see holds any of the other five
+        text = " ".join(f"PO10030{n}" for n in range(6))
+        found = self.links([(self.FILE, text)], resolves={"PO100302"})
+        self.assertEqual(list(found), [("Attachment.mentions_purchase_order", "PO100302")])
+        self.assertEqual(found[("Attachment.mentions_purchase_order", "PO100302")][0]["records"], 6)
+
+    def test_pages_of_one_file_count_together_another_file_apart(self):
+        from ontology import mentions as mm
+        pages = [(mm.page_citation(self.FILE, 1), "PO100300 PO100301 PO100302"),
+                 (mm.page_citation(self.FILE, 2), "PO100303 PO100304")]
+        found = self.links(pages)
+        self.assertTrue(all(v and v[0]["records"] == 5 for v in found.values()))
+        split = self.links([(self.FILE, "PO100300 PO100301 PO100302"),
+                            ("graph-mail://box/attachments/a2@v1", "PO100303 PO100304")])
+        self.assertTrue(all(v == [] for v in split.values()))
+
+    def test_the_in_place_scope_finds_exactly_the_documents_that_change(self):
+        # the apply's scan of the extraction cache (operating.pg.mention_scope list-scope)
+        # marks a cached document hit exactly when the step writes list_file links for it
+        import sqlite3
+        import zlib
+        from ontology import mentions as mm
+        from operating.pg import mention_scope as ms
+        texts = {"list": " ".join(f"PO10030{n}" for n in range(5)),
+                 "four": " ".join(f"PO10030{n}" for n in range(4)),
+                 "repeat": "PO100301 " * 9}
+        with tempfile.TemporaryDirectory() as tmp:
+            cache, keys, out = (str(Path(tmp) / n) for n in ("c.sqlite", "k.sqlite", "o.sqlite"))
+            db = sqlite3.connect(cache)
+            db.execute("CREATE TABLE extracted (key TEXT, value BLOB, xcode TEXT)")
+            db.execute("CREATE TABLE groups (key TEXT, value BLOB)")
+            expected = {}
+            for name, text in texts.items():
+                cite = f"graph-mail://box/attachments/{name}@v1"
+                doc = mm.Document(cite, "email", (mm.TextField(cite, "row.content_text", text),))
+                found = mm.document_mentions(doc)
+                db.execute("INSERT INTO extracted VALUES (?, ?, 'x')", (name, zlib.compress(
+                    json.dumps({"document": {"citation": cite}, "mentions": found}).encode())))
+                # what the step writes for this text: list_file links or none
+                expected[cite] = int(any(self.links([(self.FILE, text)]).values()))
+            db.commit()
+            db.close()
+            k = sqlite3.connect(keys)
+            k.execute("CREATE TABLE hit_keys (kind TEXT, normalized TEXT)")
+            k.commit()
+            k.close()
+            ms._scan_part(cache, "x", keys, 0, 100, out, listed=True)
+            got = dict(sqlite3.connect(out).execute("SELECT citation, hit FROM docs"))
+            self.assertEqual(got, expected)
+            self.assertEqual(sorted(c for c, hit in got.items() if hit),
+                             ["graph-mail://box/attachments/list@v1"])
+            ms._scan_part(cache, "x", keys, 0, 100, out + "2")
+            self.assertEqual(set(dict(sqlite3.connect(out + "2").execute(
+                "SELECT citation, hit FROM docs")).values()), {0})
+
+    def test_a_reply_whose_quoted_history_names_five_orders_is_no_list(self):
+        quoted = " ".join(f"PO10030{n}" for n in range(1, 6))
+        body = f"Please ship PO100300 today.\n\n-----Original Message-----\nFrom: x\n{quoted}\n"
+        found = self.links([(self.FILE, "row.subject", "Re: PO100300"),
+                            (self.FILE, "row.body_text", body)], by_field=True)
+        self.assertEqual(len([k for k in found if k[1] != "PO100300"]), 5)   # still linked
+        self.assertTrue(all(v == [] for v in found.values()), found)
+
+    def test_a_po_named_pdf_listing_five_keeps_its_name_link_plain(self):
+        listed = " ".join(f"PO10030{n}" for n in range(5))
+        found = self.links([(self.FILE, "row.name", "PO #PO100300.PDF"),
+                            (self.FILE, "row.content_text", listed)], by_field=True)
+        self.assertEqual(found[("Attachment.mentions_purchase_order", "PO100300", "row.name")],
+                         [])
+        self.assertEqual(found[("Attachment.mentions_purchase_order", "PO100300",
+                                "row.content_text")][0]["records"], 5)
+
+    def test_numbers_split_across_fields_are_no_list(self):
+        found = self.links([(self.FILE, "row.body_text", "PO100300 PO100301 PO100302"),
+                            (self.FILE, "row.content_text", "PO100303 PO100304")])
+        self.assertTrue(all(v == [] for v in found.values()))
+
+    def test_the_corroboration_never_raises_a_list_file_lead(self):
+        from ontology import mentions as mm
+        row = {"why_not": json.dumps([{"feature": "list_file", "agrees": False,
+                                       "records": 57}]),
+               "reason": "[]", "evidence_handles": "[]"}
+        self.assertIsNone(mm._agreeing(None, row, {}, lambda d: set()))
+        self.assertEqual(mm.MENTION_FEATURES["list_file"]["role"], "veto")

@@ -18,6 +18,7 @@ import zlib
 from operating import briefing
 from operating import proactive_chasers as pc
 from operating import proactive_engine as pe
+from operating import proactive_engine_config
 from operating.tests.test_proactive_engine import (AS_OF, EXCLUDED_OID, OURS_OID, Engine,
                                                    World, handle, people)
 
@@ -365,7 +366,7 @@ class ChaseAndHolds(Engine):
                 self.assertIn(kind, briefing.EVENT_TYPES)
                 self.assertIn(kind, briefing.NEXT_ACTIONS)
                 self.assertIn(kind, briefing.TODAY_WORDS)
-        self.assertIn(pc.CHASE, pe.REQUIRES_GRANT)
+        self.assertIn(pc.CHASE, proactive_engine_config.REQUIRES_GRANT)
         self.assertTrue(set(RULES) <= set(pe.DETECTORS) <= set(pe.DETECTOR_SECONDS)
                         | set(pe.DETECTORS))
 

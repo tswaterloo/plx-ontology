@@ -18,7 +18,6 @@ import unittest
 from unittest import mock
 
 from evals import live_ops as lo
-from evals import live_ops_ceo as ceo
 from evals import live_ops_keys as lk
 from evals import live_ops_open as op
 from evals import live_ops_wide as wide

@@ -34,9 +34,14 @@ from ontology.types import Actor
 from operating import action_catalog as ac
 from operating import landed_cost as lc
 from operating import ontology_tools as ot
+from operating import ontology_tools_policy
+from operating import ontology_tools_results
 from operating import ontology_tools_investigate as oi
+from operating import ontology_tools_investigate_follow_ups
+from operating import ontology_tools_investigate_host
+from operating import ontology_tools_investigate_pages
 from operating import ontology_tools_traverse as tt
-from operating.case_tools_host import LABEL_RESERVE_BYTES
+from operating.case_tools_host_rules import LABEL_RESERVE_BYTES
 
 ROOT = Path(__file__).resolve().parents[1]
 GOLDEN = json.loads((ROOT / "operating/tests/fixtures/portal_landed_quote_golden.json")
@@ -219,12 +224,12 @@ class ProjectedTests(unittest.TestCase):
         base = ot.OntologyTools(reader, policy, schema=ot.default_schema(),
                                 grammar=ot.default_grammar())
         table: dict = {}
-        ot.register(table, base)
+        ontology_tools_results.register(table, base)
         tt.register(table, tt.TraverseTools(base))
         oi.register(table, oi.InvestigateTools(
             table, rows=oi.citation_rows(FixtureWorld.runtime,
                                          held_markings=policy.held_markings),
-            scope=oi.read_scope(base)))
+            scope=ontology_tools_investigate_host.read_scope(base)))
         return table
 
     def investigate(self, number: str, table=None, family="landed_cost") -> dict:
@@ -252,7 +257,7 @@ class ProjectedTests(unittest.TestCase):
         base = ot.OntologyTools(reader, policy, schema=ot.default_schema(),
                                 grammar=ot.default_grammar())
         small: dict = {}
-        ot.register(small, base)
+        ontology_tools_results.register(small, base)
         tt.register(small, tt.TraverseTools(base))
         from operating import ontology_tools_process as op
         op.register(small, op.ProcessTools(base))
@@ -264,7 +269,7 @@ class ProjectedTests(unittest.TestCase):
         def answered(bound):
             base.limits = dict(base.limits, max_result_bytes=bound)
             client = small["plx.process"]["handler"](dict(ask), self.actor)
-            with ot.plan_read():
+            with ontology_tools_policy.plan_read():
                 plan = small["plx.process"]["handler"](dict(ask), self.actor)
             return client, plan
         client, plan = answered(size - 1)
@@ -452,8 +457,19 @@ class ProjectedTests(unittest.TestCase):
                 self.assertGreater(len(pages), 2)
             seen: list = []
             totals = []
+            # AUD-11: the chain and values no answer page has room for follow on detail
+            # pages after the answer's last page (no entries: returned 0), never cut away
+            answered = len([page for page in pages if page["answer"]])
             for index, page in enumerate(pages, start=1):
                 self.assertEqual(page["answer_page"]["page"], index)
+                if index > answered:
+                    self.assertEqual((page["answer"], page["answer_page"]["returned"],
+                                      page["gaps"]), ([], 0, []))
+                    self.assertEqual(page["completeness"]["next_cursor"] is None,
+                                     index == len(pages))
+                    self.assertEqual(page["completeness"]["reason"],
+                                     "result_cap" if count == 50 else "answer_paged")
+                    continue
                 self.assertEqual(page["answer_page"]["pages"], len(pages))
                 self.assertEqual(page["answer_page"]["returned"], len(page["answer"]))
                 done = page["completeness"]
@@ -468,9 +484,10 @@ class ProjectedTests(unittest.TestCase):
                 names = {e["name"]: e for e in page["answer"]}
                 lines = [e for e in page["answer"] if e["name"].startswith("landed_cost_line_")]
                 if not lines:
-                    # Only the last page may carry no line: what is left of the purchase
-                    # order's own entries once the shared gaps fill the pages before it.
-                    self.assertEqual(index, len(pages), number)
+                    # Only the last answer page may carry no line: what is left of the
+                    # purchase order's own entries once the shared gaps fill the pages
+                    # before it.
+                    self.assertEqual(index, answered, number)
                     self.assertFalse([e for e in page["answer"]
                                       if e.get("object_type") == "PurchaseOrderLine"])
                 for line in lines:
@@ -738,7 +755,7 @@ class CannedHostTests(unittest.TestCase):
         tools = oi.InvestigateTools(self.table(), rows=self.rows, scope=self.scope,
                                     engines={**oi.default_engines(),
                                              "landed_cost": dict(engine, run=run)},
-                                    follow_ups=oi.follow_up_recorder(path, session))
+                                    follow_ups=ontology_tools_investigate_follow_ups.follow_up_recorder(path, session))
         result = tools.call("plx.investigate", {"family": "landed_cost", "root": self.PO,
                                                 "as_known_at": AT,
                                                 "follow_ups": {"case_id": case_id}}, actor)
@@ -769,7 +786,8 @@ class CannedHostTests(unittest.TestCase):
 
     def test_a_unit_too_large_for_any_page_is_split_and_no_entry_is_lost(self):
         """1 and 10 FM-copied lines beside an engine naming 0, 1, 2, ... padding gaps of
-        700-character subjects (never trimmed; they repeat on every page) until even one
+        700-character subjects, each of its own reason (never trimmed nor merged; they repeat
+        on every page) until even one
         entry beside them is over the result limit: before that, every padding is answered
         in pages that keep within the limit less a capture host's label reserve, each line
         and each of its inputs on exactly one page (a line too large for a page with its
@@ -795,7 +813,8 @@ class CannedHostTests(unittest.TestCase):
                 def run(*args, _padding=padding, **kwargs):
                     out = engine["run"](*args, **kwargs)
                     return dict(out, gaps=list(out["gaps"]) + [{
-                        "state": "unknown", "reason": "padding", "subject": f"pad {i} " + "x" * 690,
+                        "state": "unknown", "reason": f"padding_{i}",
+                        "subject": f"pad {i} " + "x" * 690,
                         "searched": {"sources": ["X.y"]}, "who_can_answer": ["PROC"]}
                         for i in range(_padding)])
                 tools = oi.InvestigateTools(
@@ -819,8 +838,15 @@ class CannedHostTests(unittest.TestCase):
                 # past the result limit the answer is never refused: the gaps no page
                 # has room for are summarised in one gaps_truncated gap
                 self.assertNotIn("error", result, (count, padding))
-                if any(g["reason"] == oi.GAPS_CUT for g in pages[0]["gaps"]):
+                if any(g["reason"] == ontology_tools_investigate_pages.GAPS_CUT for g in pages[0]["gaps"]):
                     break
+                # AUD-11: detail pages (the chain and values no answer page had room for)
+                # follow the answer's pages and hold no entry
+                answered = [page for page in pages if page["answer"]]
+                self.assertEqual(pages[:len(answered)], answered)
+                for page in pages[len(answered):]:
+                    self.assertEqual(page["answer_page"]["returned"], 0)
+                pages = answered
                 where: dict = {}
                 for index, page in enumerate(pages):
                     names = [e["name"] for e in page["answer"]]
@@ -1206,9 +1232,9 @@ class ForwarderQuoteTests(unittest.TestCase):
         actor = actor or self.READER
         base = self.base(actor, grants)
         table: dict = {}
-        ot.register(table, base)
+        ontology_tools_results.register(table, base)
         tt.register(table, tt.TraverseTools(base))
-        oi.register(table, oi.InvestigateTools(table, rows=self.rows, scope=oi.read_scope(base)))
+        oi.register(table, oi.InvestigateTools(table, rows=self.rows, scope=ontology_tools_investigate_host.read_scope(base)))
         arguments = {"family": "landed_cost", "root": {"identifier": number}, "as_known_at": AT}
         merged: dict = {}
         for _ in range(10):  # every page, following next_cursor; one answer, every gap
@@ -1509,15 +1535,15 @@ class ForwarderQuoteTests(unittest.TestCase):
         ActionPath; nothing is sent."""
         result = self.investigate("PO100961")
         done, path, case_id, session = self.follow_ups(result)
-        follow_ups = [d for d in done if d["action"] == oi.FOLLOW_UP_ACTION]
-        drafts = [d for d in done if d["action"] == oi.DRAFT_ACTION]
+        follow_ups = [d for d in done if d["action"] == ontology_tools_investigate_follow_ups.FOLLOW_UP_ACTION]
+        drafts = [d for d in done if d["action"] == ontology_tools_investigate_follow_ups.DRAFT_ACTION]
         self.assertTrue(NOTES & _gap_reasons(result))  # informational gaps are in the answer
         asking = [i for i, g in enumerate(result["gaps"]) if g["reason"] not in NOTES]
         self.assertEqual([i for d in follow_ups for i in d["gaps"]], asking)
         self.assertEqual({(d["outcome"], d["read_back"]) for d in done},
                          {("recorded", "verified")})
         catalog = ac.ActionCatalog.builtin()
-        for action in (oi.FOLLOW_UP_ACTION, oi.DRAFT_ACTION):  # no approval, no owner, no send
+        for action in (ontology_tools_investigate_follow_ups.FOLLOW_UP_ACTION, ontology_tools_investigate_follow_ups.DRAFT_ACTION):  # no approval, no owner, no send
             spec = catalog.get(action)
             self.assertEqual((spec["kind"], spec["approval"]["required"],
                               spec["executor"]["kind"]),
@@ -1590,7 +1616,7 @@ class ForwarderQuoteTests(unittest.TestCase):
         statements = [f["statement"] for bucket in view["findings"].values() for f in bucket]
         for result, recorded in ((first, done), (second, more)):
             root = result["root"]["object_id"]
-            ups = [d for d in recorded if d["action"] == oi.FOLLOW_UP_ACTION]
+            ups = [d for d in recorded if d["action"] == ontology_tools_investigate_follow_ups.FOLLOW_UP_ACTION]
             asking = [g for g in result["gaps"] if g["reason"] not in NOTES]
             self.assertEqual(len(ups), len(asking))
             self.assertEqual(len([g for g in view["gaps"] if f" of {root}: " in g["missing"]]),
@@ -1617,7 +1643,7 @@ class ForwarderQuoteTests(unittest.TestCase):
                  "as_known_at": AT, **extra}, actor)
             _ok(self, result)
             return result
-        recorder = oi.follow_up_recorder(path, session)
+        recorder = ontology_tools_investigate_follow_ups.follow_up_recorder(path, session)
         result = ask(self.READER, recorder, follow_ups={"case_id": case_id})
         self.assertNotIn("error", result)
         recorded = {g["id"]: g for g in path.cases.get(self.READER, case_id)["gaps"]}

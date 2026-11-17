@@ -48,40 +48,197 @@ class CompatTests(unittest.TestCase):
         conn.executemany("INSERT INTO object_versions VALUES (?,?,?,?,?,?,?)", VERSIONS)
         return conn
 
-    def test_a_parameter_tested_alone_for_null_never_makes_the_server_log_an_error(self):
-        """GA-F17: ``? IS NULL`` cannot be typed by Postgres; preparing it failed, was
-        logged with the whole statement on every connection, then bound client side. Now
-        it is bound client side at once, with the same rows, and a typed statement is
-        still prepared."""
+    def watch_server(self, pg):
+        """(prepared statement texts, server errors) of ``pg``'s statements from now on:
+        every statement ``_run`` sends, and each error the server answered it with."""
         import psycopg
-        from operating.pg.sqlite_compat import PgCompatConnection
-        prepared = []
+        from unittest import mock
+        prepared, errors = [], []
         real = psycopg.Cursor.execute
 
         def watch(cur, query, params=None, **kwargs):
+            try:
+                out = real(cur, query, params, **kwargs)
+            except psycopg.Error as exc:
+                errors.append((type(exc).__name__, str(query)))
+                raise
             if kwargs.get("prepare"):
                 prepared.append(str(query))
-            return real(cur, query, params, **kwargs)
+            return out
+        patcher = mock.patch.object(psycopg.Cursor, "execute", watch)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        return prepared, errors
+
+    def test_a_parameter_tested_alone_for_null_is_prepared_typed_with_no_server_error(self):
+        """GA-F17, AUD-01: ``? IS NULL`` cannot be typed by Postgres; preparing it failed and
+        was logged with the whole statement on every connection (~2,900 a day), then bound
+        client side and planned anew on every call. Now the test is written typed
+        (``%s::text IS NULL``; a name's copy, so the name's other places keep their own
+        type): the statement is prepared on the server in one try, no error, the same rows
+        as SQLite for a NULL and a value, a name compared with a number included."""
+        from operating.pg.sqlite_compat import PgCompatConnection
         sql = ("SELECT v.object_id FROM object_versions v WHERE (:id IS NULL OR "
-               "v.object_id = :id) AND (? IS NOT NULL OR 1 = 1) ORDER BY v.object_id")
-        from unittest import mock
-        for value in (None, "A:b:1"):
-            pg = PgCompatConnection(self.dsn)
-            self.addCleanup(pg.close)
-            with mock.patch.object(psycopg.Cursor, "execute", watch):
-                got = [r[0] for r in pg.execute(sql.replace("?", ":other"),
-                                                {"id": value, "other": None}).fetchall()]
-                typed = [r[0] for r in pg.execute(
-                    "SELECT object_id FROM object_versions WHERE object_id = ?",
-                    ("A:b:2",)).fetchall()]
-            lite = self.sqlite()
-            want = [r[0] for r in lite.execute(sql.replace("?", ":other"),
-                                               {"id": value, "other": None})]
-            self.assertEqual(got, want)
-            self.assertEqual(typed, ["A:b:2"])
-            self.assertFalse([q for q in prepared if "IS NULL" in q or "IS NOT NULL" in q])
-            self.assertTrue(prepared, "a typed statement is still prepared on the server")
-            prepared.clear()
+               "v.object_id = :id) AND (:other IS NOT NULL OR 1 = 1) AND (? IS NULL OR "
+               "v.l1_handle = ?) AND (:ver IS NULL OR v.ver = :ver) ORDER BY v.object_id")
+        lite = self.sqlite()
+        lite.execute("ALTER TABLE object_versions ADD COLUMN ver")
+        lite.execute("UPDATE object_versions SET ver = rowid")
+        for value, handle, ver in ((None, None, None), ("A:b:1", None, None),
+                                   (None, "api://t/3@x", None), (None, None, 2),
+                                   ("A:b:2", "graph-mail://box/2@x", 2)):
+            with self.subTest(value=value, handle=handle, ver=ver):
+                pg = PgCompatConnection(self.dsn)
+                self.addCleanup(pg.close)
+                prepared, errors = self.watch_server(pg)
+                for text in (sql.replace("? IS NULL", ":h IS NULL").replace("= ?", "= :h"),
+                             sql.replace(":id", "?").replace(":other", "?")
+                             .replace(":ver", "?")):
+                    named = ":h" in text
+                    params = ({"id": value, "other": None, "h": handle, "ver": ver} if named
+                              else (value, value, None, handle, handle, ver, ver))
+                    got = [r[0] for r in pg.execute(text, params).fetchall()]
+                    want = [r[0] for r in lite.execute(text, params)]
+                    self.assertEqual(got, want, text)
+                self.assertEqual(errors, [])
+                self.assertEqual(len([q for q in prepared if "IS NULL" in q]), 2, prepared)
+                self.assertFalse(pg._client_only)
+                patched = prepared.copy()
+                prepared.clear()
+                # a stream reads the typed statement from a server-side cursor too
+                text = sql.replace("? IS NULL", ":h IS NULL").replace("= ?", "= :h")
+                params = {"id": value, "other": None, "h": handle, "ver": ver}
+                self.assertEqual([r[0] for r in pg.stream(text, params).fetchall()],
+                                 [r[0] for r in lite.execute(text, params)])
+                self.assertEqual(errors, [])
+                self.assertTrue(patched)
+
+    def test_a_null_test_after_an_operator_keeps_its_text_and_binds_client_side(self):
+        """``a = ? IS NULL`` is ``(a = ?) IS NULL``: typing the parameter would change the
+        comparison, so the text is kept and bound client side from the start (no server
+        error either way); a ``%`` in a string is never read as a parameter."""
+        from operating.pg.sqlite_compat import PgCompatConnection, _null_tests
+        self.assertEqual(_null_tests("SELECT 1 WHERE a = %s IS NULL"),
+                         ("SELECT 1 WHERE a = %s IS NULL", ()))
+        self.assertEqual(_null_tests("SELECT '%%s IS NULL' WHERE x IS NULL"),
+                         ("SELECT '%%s IS NULL' WHERE x IS NULL", ()))
+        self.assertEqual(_null_tests("SELECT 1 WHERE BRAND(%s IS NULL) AND (%(a)s IS NOT "
+                                     "NULL OR b = %(a)s) AND NOT %s IS NULL"),
+                         ("SELECT 1 WHERE BRAND(%s::text IS NULL) AND (%(a__null)s::text IS "
+                          "NOT NULL OR b = %(a)s) AND NOT %s::text IS NULL", ("a",)))
+        between = "SELECT 1 WHERE x BETWEEN %s AND %s IS NULL AND (%s IS NULL)"
+        self.assertEqual(_null_tests(between),
+                         ("SELECT 1 WHERE x BETWEEN %s AND %s IS NULL AND (%s::text IS NULL)",
+                          ()))
+        pg = PgCompatConnection(self.dsn)
+        self.addCleanup(pg.close)
+        _prepared, errors = self.watch_server(pg)
+        sql = ("SELECT object_id FROM object_versions WHERE ver BETWEEN 1 AND ? IS NULL "
+               "ORDER BY object_id")
+        for args in ((2,), (None,)):
+            self.assertEqual([r[0] for r in pg.execute(sql, args)],
+                             [r[0] for r in self.sqlite().execute(
+                                 sql.replace("ver BETWEEN", "rowid BETWEEN"), args)])
+        sql = ("SELECT object_id FROM object_versions WHERE NOT (object_id = ? IS NULL) "
+               "ORDER BY object_id")
+        for args in (("A:b:1",), (None,)):
+            self.assertEqual([r[0] for r in pg.execute(sql, args)],
+                             [r[0] for r in self.sqlite().execute(sql, args)])
+        self.assertEqual(errors, [])
+
+    def test_the_hot_permission_readers_prepare_in_one_try(self):
+        """The statements that logged 'could not determine data type of parameter' most on
+        11-12/13 (an Ask's events of a root, an identifier's objects of one binding, a
+        record's values of one handle, a field's chunks of one path): each prepared on the
+        server at its first run, no error and no client-side fallback, as SQLite reads
+        them, for the filter given and left out (NULL), a denied item and an empty
+        audience included."""
+        import psycopg
+        from operating.pg.sqlite_compat import PgCompatConnection
+        objects = [("A:1", "Order", "b1", "1", "aud:1"), ("A:2", "Order", "b2", "2", "aud:1"),
+                   ("A:3", "Email", "b1", "3", "aud:9")]
+        identifiers = [("po", "p100", o, h) for o, h in
+                       (("A:1", "api://t/1@x"), ("A:2", "api://t/2@x"), ("A:3", "graph-mail://box/3@x"))]
+        events = [("E1", "shipped", "2026-01-02", "api://t/1@x", "[]"),
+                  ("E2", "billed", "2026-01-05", "graph-mail://box/2@x", "[]"),
+                  ("E3", "shipped", "2026-01-09", "api://t/3@x", '["restricted"]')]
+        links = [("E1", "A:1"), ("E2", "A:1"), ("E3", "A:1"), ("E2", "A:3")]
+        with psycopg.connect(self.dsn, autocommit=True) as raw:
+            raw.execute("TRUNCATE ontology.objects, ontology.identifiers, ontology.events, "
+                        "ontology.event_objects")
+            for o in objects:
+                raw.execute("INSERT INTO ontology.objects VALUES (%s,%s,%s,%s,%s,'2026',NULL)", o)
+            for kind, norm, o, h in identifiers:
+                raw.execute("INSERT INTO ontology.identifiers VALUES (%s,%s,%s,'r',%s,'p',%s,"
+                            "'f','l','[]','2026-01-01',NULL)", (kind, norm, norm, o, h))
+            for e in events:
+                raw.execute("INSERT INTO ontology.events VALUES (%s,%s,'t',%s,NULL,NULL,%s,'f',"
+                            "'d','l',%s,'2026-01-01',NULL)", e)
+            for e, o in links:
+                raw.execute("INSERT INTO ontology.event_objects VALUES (%s,%s,'q')", (e, o))
+        lite = sqlite3.connect(":memory:")
+        lite.execute("CREATE TABLE objects (object_id, object_type, binding_id, native_key, "
+                     "audience_key)")
+        lite.execute("CREATE TABLE identifiers (identifier_kind, normalized, object_id, "
+                     "l1_handle, markings, superseded_at)")
+        lite.execute("CREATE TABLE events (event_id, event_type, time, window_start, "
+                     "window_end, l1_handle, markings, superseded_at)")
+        lite.execute("CREATE TABLE event_objects (event_id, object_id)")
+        lite.executemany("INSERT INTO objects VALUES (?,?,?,?,?)", objects)
+        lite.executemany("INSERT INTO identifiers VALUES (?,?,?,?,'[]',NULL)", identifiers)
+        lite.executemany("INSERT INTO events VALUES (?,?,?,NULL,NULL,?,?,NULL)", events)
+        lite.executemany("INSERT INTO event_objects VALUES (?,?)", links)
+
+        def gate(handle):   # the reader may not open mailbox item 2
+            return 0 if handle.endswith("/2@x") else 1
+        events_sql = (
+            "SELECT e.event_id FROM events e WHERE e.event_id IN (SELECT eo.event_id FROM "
+            "event_objects eo WHERE eo.object_id IN (SELECT value FROM json_each(:roots))) "
+            "AND (:types IS NULL OR e.event_type IN (SELECT value FROM json_each(:types))) "
+            "AND (:since_day IS NULL OR NOT (substr(e.time, 1, 10) < :since_day)) "
+            "AND e.superseded_at IS NULL AND e.markings IN (SELECT value FROM "
+            "json_each(:marks)) AND (e.l1_handle NOT LIKE 'graph-mail://%' OR "
+            "plx_gate_h(e.l1_handle)) AND NOT EXISTS (SELECT 1 FROM event_objects eo2 JOIN "
+            "objects o ON o.object_id = eo2.object_id WHERE eo2.event_id = e.event_id AND "
+            "o.audience_key NOT IN (SELECT value FROM json_each(:aud))) "
+            "ORDER BY e.event_id LIMIT :cap")
+        ident_sql = (
+            "SELECT DISTINCT i.object_id FROM identifiers i JOIN objects o ON o.object_id = "
+            "i.object_id WHERE i.normalized = ? AND i.identifier_kind = ? AND (? IS NULL OR "
+            "o.binding_id = ?) AND o.audience_key IN (SELECT value FROM json_each(?)) "
+            "AND i.markings IN (SELECT value FROM json_each(?)) ORDER BY i.object_id LIMIT ?")
+        handle_sql = (
+            "SELECT DISTINCT object_id FROM identifiers WHERE object_id IN (SELECT value FROM "
+            "json_each(?)) AND (? IS NULL OR l1_handle = ?) ORDER BY object_id")
+        cases = []
+        for aud in (["aud:1", "aud:9"], ["aud:1"], []):
+            for marks in (["[]"], ["[]", '["restricted"]']):
+                for types in (None, ["shipped"]):
+                    for since in (None, "2026-01-04"):
+                        cases.append((events_sql, {
+                            "roots": json.dumps(["A:1", "A:3"]), "marks": json.dumps(marks),
+                            "aud": json.dumps(aud), "cap": 50, "since_day": since,
+                            "types": None if types is None else json.dumps(types)}))
+                for binding in (None, "b1", "b2"):
+                    cases.append((ident_sql, ("p100", "po", binding, binding, json.dumps(aud),
+                                              json.dumps(marks), 10)))
+        for handle in (None, "api://t/2@x", "nope"):
+            cases.append((handle_sql, (json.dumps(["A:1", "A:2"]), handle, handle)))
+        lite.create_function("plx_gate_h", 1, gate)
+        pg = PgCompatConnection(self.dsn)
+        self.addCleanup(pg.close)
+        pg.create_function("plx_gate_h", 1, gate)
+        prepared, errors = self.watch_server(pg)
+        seen = set()
+        for sql, params in cases:
+            with self.subTest(sql=sql[:40], params=params):
+                self.assertEqual([r[0] for r in pg.execute(sql, params)],
+                                 [r[0] for r in lite.execute(sql, params)])
+                seen.add(sql)
+        self.assertEqual(errors, [])
+        self.assertFalse(pg._client_only)
+        # each statement prepared (a NULL list keeps the function's text: a second text)
+        self.assertGreaterEqual(len({q for q in prepared if "IS NULL" in q}), len(seen))
 
     def test_scope_time_and_item_gate_read_the_same_rows_on_both_stores(self):
         from operating.pg.sqlite_compat import PgCompatConnection
@@ -129,7 +286,7 @@ class CompatTests(unittest.TestCase):
         # plx.find's text read (StoreReader.object_chunks) seeks each version's fields on
         # the citation key; its range end is made in Python (no char(): Postgres has none).
         import psycopg
-        from operating.ontology_tools import _CITATION_RANGE, _citation_pairs
+        from operating.ontology_tools_policy import _CITATION_RANGE, _citation_pairs
         from operating.pg.sqlite_compat import PgCompatConnection
         fields = [(1, "A:b:1", "graph-mail://box/1@x", "graph-mail://box/1@x"),
                   (2, "A:b:1", "graph-mail://box/1@x", "graph-mail://box/1@x#page=2"),
@@ -340,12 +497,260 @@ class CompatTests(unittest.TestCase):
                 pg.execute(by_row if bad == "[1.5]" else by_text,
                            {"rows": bad, "ids": bad})
 
+    def test_permission_lists_bound_natively_allow_and_deny_exactly_as_before(self):
+        """AUD-01 equivalence: every rewritten predicate form (``IN`` / ``NOT IN`` over a
+        text column, ``IN`` / ``NOT IN`` over a numbered column, named and positional, a
+        short list as one array parameter, a long one as the session's principal-key set)
+        returns exactly the rows of the SQL function it replaces and of SQLite, for an
+        allowed key, a denied one, an excluded person's mailbox (its key is in no reader's
+        list, so its object is never readable and always counted unreadable), an empty
+        audience, a NULL list, a NULL member and lists the function alone reads."""
+        import psycopg
+        from operating.pg.sqlite_compat import LONG_LIST_CHARS, PgCompatConnection, translate
+        excluded = "mail:00000000-0000-0000-0000-00000000dead"
+        objects = [("A:1", "aud:mine"), ("A:2", "aud:other"), ("A:3", excluded),
+                   ("A:4", "aud:mine"), ("A:5", "aud:shared")]
+        with psycopg.connect(self.dsn, autocommit=True) as raw:
+            raw.execute("TRUNCATE ontology.objects")
+            for n, (oid, key) in enumerate(objects, 1):
+                raw.execute("INSERT INTO ontology.objects (object_id, object_type, binding_id, "
+                            "native_key, audience_key, first_recorded_at, row_no) VALUES "
+                            "(%s, 'T', 'b', %s, %s, '2026', %s)", (oid, oid, key, n))
+        lite = sqlite3.connect(":memory:")
+        lite.execute("CREATE TABLE objects (object_id, audience_key)")
+        lite.executemany("INSERT INTO objects VALUES (?, ?)", objects)
+        filler = [f"aud:filler:{n:05d}" for n in range(400)]
+        audiences = {
+            "allow": ["aud:mine"], "deny": ["aud:nobody"], "two": ["aud:mine", "aud:shared"],
+            "empty": [], "null member": ["aud:mine", None], "long allow": ["aud:mine", *filler],
+            "long deny": filler, "long two": ["aud:shared", "aud:other", *filler],
+            "long null": ["aud:mine", None, *filler]}
+        texts = {name: json.dumps(keys) for name, keys in audiences.items()}
+        texts.update({"null list": None, "not a list": '{"k": "aud:mine"}',
+                      "a number": '["aud:mine", 7]', "nested": '[["aud:mine"]]'})
+        self.assertGreaterEqual(len(texts["long deny"]), LONG_LIST_CHARS)
+        forms = {
+            "in named": "SELECT object_id FROM objects WHERE audience_key IN (SELECT value "
+                        "FROM json_each(:aud)) ORDER BY object_id",
+            "not in named": "SELECT object_id FROM objects WHERE audience_key NOT IN (SELECT "
+                            "value FROM json_each(:aud)) ORDER BY object_id",
+            "in positional": "SELECT object_id FROM objects WHERE object_id <> ? AND "
+                             "audience_key IN (SELECT value FROM json_each(?)) ORDER BY 1",
+            "both named": "SELECT object_id FROM objects o WHERE o.audience_key IN (SELECT "
+                          "value FROM json_each(:aud)) OR o.audience_key NOT IN (SELECT value "
+                          "FROM json_each(:deny)) ORDER BY o.object_id"}
+        rows = {"rows in": "SELECT object_id FROM objects WHERE rowid IN (SELECT value FROM "
+                           "json_each(:rows)) ORDER BY object_id",
+                "rows not in": "SELECT object_id FROM objects WHERE rowid NOT IN (SELECT value "
+                               "FROM json_each(:rows)) ORDER BY object_id"}
+        pg = PgCompatConnection(self.dsn)
+        self.addCleanup(pg.close)
+        sent = []
+        run = pg._run
+
+        def kept_run(cur, text, params):
+            sent.append(text)
+            return run(cur, text, params)
+        pg._run = kept_run
+        old = psycopg.connect(self.dsn, autocommit=True, cursor_factory=psycopg.ClientCursor)
+        self.addCleanup(old.close)
+        old.execute("SET search_path = ontology, public")
+
+        def three(sql, params):
+            """(new Postgres, the function's Postgres, SQLite) rows of ``sql``."""
+            got = [r[0] for r in pg.execute(sql, params)]
+            before = [r[0] for r in old.execute(translate(sql, arrays=True), params)]
+            want = [r[0] for r in lite.execute(sql, params)]
+            return got, before, want
+        for name, aud in texts.items():
+            for form, sql in forms.items():
+                with self.subTest(form=form, audience=name):
+                    params = ({"aud": aud, "deny": texts["long two"]} if ":aud" in sql
+                              else ("A:4", aud))
+                    sent.clear()
+                    got, before, want = three(sql, params)
+                    self.assertEqual(got, before)
+                    self.assertEqual(got, want)
+                    if "in named" == form and aud is not None:
+                        # an excluded person's object is read only through its own key
+                        self.assertNotIn("A:3", got)
+                    if form == "not in named" and aud is not None and "null" not in name \
+                            and name in audiences:
+                        self.assertIn("A:3", got)   # counted unreadable, never shown
+                    native = name in audiences
+                    self.assertEqual("ontology.sq_json_array" not in sent[-1], native,
+                                     sent[-1])
+                    if name.startswith("long") and name != "long null":
+                        self.assertIn("pg_temp.sq_keys", sent[-1])
+        for listed in ("[1, 4]", "[]", "[3, 3]", '["3"]', "[9223372036854775807]", None,
+                       "[1, null]"):
+            for form, sql in rows.items():
+                with self.subTest(form=form, rows=listed):
+                    got, before, want = three(sql, {"rows": listed})
+                    self.assertEqual(got, before)
+                    self.assertEqual(got, want)
+
+    def test_a_principal_key_set_is_indexed_and_its_size_known_to_the_planner(self):
+        """A long audience list is read from its key set by the set's index, and the
+        planner knows how many keys it holds (the set is analyzed when written): kept as
+        one array row it guessed ten and walked the wrong index (one type's count over 1M
+        objects: 774 ms against 32 ms, AUD-01)."""
+        from operating.pg.sqlite_compat import PgCompatConnection
+        pg = PgCompatConnection(self.dsn)
+        self.addCleanup(pg.close)
+        sent = []
+        run = pg._run
+
+        def kept_run(cur, text, params):
+            sent.append((text, params))
+            return run(cur, text, params)
+        pg._run = kept_run
+        keys = [f"aud:{n:05d}" for n in range(900)]
+        pg.execute("SELECT count(*) FROM objects WHERE audience_key IN (SELECT value FROM "
+                   "json_each(:aud))", {"aud": json.dumps(keys + keys[:5])}).fetchone()
+        text, params = sent[-1]
+        self.assertIn("pg_temp.sq_keys", text)
+        plan = pg._conn.execute("EXPLAIN (FORMAT JSON) " + text, params).fetchone()[0][0]
+
+        def nodes(node):
+            yield node
+            for child in node.get("Plans", ()):
+                yield from nodes(child)
+        on_keys = [n for n in nodes(plan["Plan"]) if n.get("Relation Name") == "sq_keys"]
+        self.assertTrue(on_keys, plan)
+        self.assertTrue(all(800 <= n["Plan Rows"] <= 1000 for n in on_keys), on_keys)
+        self.assertEqual(pg.execute("SELECT count(*) FROM sq_keys").fetchone()[0], 900)
+
+    def test_repeated_distinct_lists_keep_the_key_sets_bounded(self):
+        """A long-lived session that sees list after list (a new reader, a changed
+        audience) never grows its key sets past the bounds: past them the sets are emptied
+        whole (TRUNCATE: a temp table is never vacuumed, so deleted rows stayed on disk, 878
+        MB in one API session), and every statement still reads as SQLite."""
+        import psycopg
+        from unittest import mock
+        from operating.pg import sqlite_compat
+        from operating.pg.sqlite_compat import PgCompatConnection
+        with psycopg.connect(self.dsn, autocommit=True) as raw:
+            raw.execute("TRUNCATE ontology.objects")
+            raw.execute("INSERT INTO ontology.objects (object_id, object_type, binding_id, "
+                        "native_key, audience_key, first_recorded_at, row_no) VALUES "
+                        "('A:1', 'T', 'b', '1', 'aud:1', '2026', 1)")
+        pg = PgCompatConnection(self.dsn)
+        self.addCleanup(pg.close)
+        sql = ("SELECT count(*) FROM objects WHERE audience_key IN (SELECT value FROM "
+               "json_each(?)) AND audience_key NOT IN (SELECT value FROM json_each(?))")
+        sizes = []
+        with mock.patch.object(sqlite_compat, "MAX_KEPT_LISTS", 6), \
+                mock.patch.object(sqlite_compat, "MAX_KEPT_KEYS", 2000):
+            for n in range(80):
+                keys = [f"aud:{n}:{k:04d}" for k in range(400)]
+                allow = json.dumps((["aud:1"] if n % 2 else []) + keys)
+                deny = json.dumps([f"aud:x{n}:{k:04d}" for k in range(400)])
+                self.assertEqual(pg.execute(sql, (allow, deny)).fetchone()[0], n % 2)
+                rows = pg.execute("SELECT count(*) FROM sq_keys").fetchone()[0]
+                self.assertLessEqual(rows, 2000)
+                self.assertLessEqual(len(pg._kept), 6)
+                sizes.append(pg.execute("SELECT pg_total_relation_size('pg_temp.sq_keys')")
+                             .fetchone()[0])
+        self.assertLessEqual(max(sizes[40:]), 2 * max(sizes[:10]), sizes)
+
+    def test_a_key_set_whose_statistics_were_cancelled_is_still_read(self):
+        """An ANALYZE cancelled after its set was copied (statement timeout, interrupt)
+        fails that one statement; the set stays recorded, so every later read of the list
+        uses it with the right rows, never copying it again (a primary key error on every
+        read for the rest of the session)."""
+        import psycopg
+        from unittest import mock
+        from operating.pg.sqlite_compat import PgCompatConnection
+        with psycopg.connect(self.dsn, autocommit=True) as raw:
+            raw.execute("TRUNCATE ontology.objects")
+            raw.execute("INSERT INTO ontology.objects (object_id, object_type, binding_id, "
+                        "native_key, audience_key, first_recorded_at, row_no) VALUES "
+                        "('A:1', 'T', 'b', '1', 'aud:1', '2026', 1), "
+                        "('A:2', 'T', 'b', '2', 'aud:2', '2026', 2)")
+        pg = PgCompatConnection(self.dsn)
+        self.addCleanup(pg.close)
+        keys = json.dumps(["aud:1", *(f"aud:filler:{k:04d}" for k in range(400))])
+        sql = ("SELECT object_id FROM objects WHERE audience_key IN (SELECT value FROM "
+               "json_each(:aud)) ORDER BY object_id")
+        real = psycopg.Cursor.execute
+        cancelled = []
+
+        def cancel_analyze(cur, query, params=None, **kwargs):
+            if str(query).startswith("ANALYZE") and not cancelled:
+                cancelled.append(query)
+                raise psycopg.errors.QueryCanceled("canceling statement due to user request")
+            return real(cur, query, params, **kwargs)
+        with mock.patch.object(psycopg.Cursor, "execute", cancel_analyze):
+            with self.assertRaises(sqlite3.OperationalError):
+                pg.execute(sql, {"aud": keys})
+        self.assertTrue(cancelled)
+        for _ in range(2):
+            self.assertEqual([r[0] for r in pg.execute(sql, {"aud": keys})], ["A:1"])
+        self.assertEqual(pg.execute("SELECT count(*) FROM sq_keys").fetchone()[0], 401)
+
+    def test_many_long_lists_in_one_statement_are_kept_together(self):
+        """N = 1, 10, 60 distinct long audience lists in one statement (the binding probes
+        of ``_bindings_readable`` carry one per type): every probe answers as SQLite, none
+        lost or doubled, and the sets are written in one COPY and analyzed once per
+        statement, never once per list."""
+        import psycopg
+        from operating.pg.sqlite_compat import PgCompatConnection
+        with psycopg.connect(self.dsn, autocommit=True) as raw:
+            raw.execute("TRUNCATE ontology.objects")
+            for n in range(60):
+                raw.execute("INSERT INTO ontology.objects (object_id, object_type, binding_id, "
+                            "native_key, audience_key, first_recorded_at, row_no) VALUES "
+                            "(%s, 'T', 'b', %s, %s, '2026', %s)",
+                            (f"A:{n}", str(n), f"aud:{n}", n + 1))
+        lite = sqlite3.connect(":memory:")
+        lite.execute("CREATE TABLE objects (object_id, audience_key)")
+        lite.executemany("INSERT INTO objects VALUES (?, ?)",
+                         [(f"A:{n}", f"aud:{n}") for n in range(60)])
+        pg = PgCompatConnection(self.dsn)
+        self.addCleanup(pg.close)
+        sent = []
+        real = psycopg.Cursor.execute
+
+        def watch(cur, query, params=None, **kwargs):
+            sent.append(str(query))
+            return real(cur, query, params, **kwargs)
+        copy = psycopg.Cursor.copy
+
+        def watch_copy(cur, statement, *args, **kwargs):
+            sent.append(str(statement))
+            return copy(cur, statement, *args, **kwargs)
+        from unittest import mock
+        for count in (1, 10, 60):
+            with self.subTest(count=count):
+                params, probes = {}, []
+                for at in range(count):
+                    # an even probe holds its own object's key, an odd one only filler
+                    keys = [f"aud:filler:{count}:{at}:{k:04d}" for k in range(300)]
+                    params[f"aud{at}"] = json.dumps(([f"aud:{at}"] if at % 2 == 0 else [])
+                                                    + keys)
+                    probes.append(f"SELECT {at} AS at WHERE EXISTS (SELECT 1 FROM objects "
+                                  f"WHERE audience_key IN (SELECT value FROM "
+                                  f"json_each(:aud{at})))")
+                sql = " UNION ALL ".join(probes) + " ORDER BY at"
+                sent.clear()
+                with mock.patch.object(psycopg.Cursor, "execute", watch), \
+                        mock.patch.object(psycopg.Cursor, "copy", watch_copy):
+                    got = [r[0] for r in pg.execute(sql, params)]
+                self.assertEqual(got, [r[0] for r in lite.execute(sql, params)])
+                self.assertEqual(got, list(range(0, count, 2)))
+                self.assertEqual(sum(q.startswith("ANALYZE") for q in sent), 1)
+                self.assertEqual(sum(q.startswith("COPY") for q in sent), 1)
+                self.assertEqual(pg.execute("SELECT count(DISTINCT digest) FROM sq_keys")
+                                 .fetchone()[0], {1: 1, 10: 11, 60: 71}[count])
+
     def test_a_long_in_list_kept_on_the_session_reads_the_same_rows(self):
-        """An owner's audience list (thousands of keys) is read from the session's kept
-        list by its digest, never planned member by member: ``IN`` and ``NOT IN``, named
-        and positional, NULL members, as SQLite reads them; after the session is lost the
-        new one keeps it again; inside a caller's transaction, or for a list that is not
-        plain strings, the statement reads it as before."""
+        """An owner's audience list (thousands of keys) is read from the session's
+        principal-key set by its digest, never planned member by member: ``IN`` and ``NOT
+        IN``, named and positional, as SQLite reads them; a list with a NULL member is
+        bound as an array (a key set holds no NULL); after the session is lost the new one
+        keeps it again; inside a caller's transaction a list not kept yet is bound as an
+        array; a list that is not plain strings is the SQL function's."""
         from operating.pg.sqlite_compat import LONG_LIST_CHARS, PgCompatConnection
         from operating.tests.test_pg_reconnect import kill
         pg = PgCompatConnection(self.dsn)
@@ -369,38 +774,41 @@ class CompatTests(unittest.TestCase):
                              [r[0] for r in lite.execute(sql, params)], (sql, params))
 
         def kept():
-            return pg.execute("SELECT count(*) FROM sq_lists").fetchone()[0]
+            return pg.execute("SELECT count(DISTINCT digest) FROM sq_keys").fetchone()[0]
         for name, ids in lists.items():
             with self.subTest(name=name):
                 same(named, {"ids": ids})
                 same(negated, {"ids": ids})
                 same(both, ("2026", ids, lists["none"]))
                 same(both, ("2026", lists["some"], json.dumps(["A:b:3", *filler])))
-        self.assertEqual(kept(), 4)   # each list written once, read by every statement
+        # each list written once, read by every statement; the one with a NULL never
+        self.assertEqual(kept(), 3)
         for _ in range(3):
             same(named, {"ids": lists["some"]})
-        self.assertEqual(kept(), 4)
+        self.assertEqual(kept(), 3)
+        self.assertEqual(pg.execute("SELECT count(*) FROM sq_keys").fetchone()[0],
+                         2 + 400 + 400 + 1 + 400)
         # the session lost: the new one holds no list and keeps each again on first read
         kill(pg.execute("SELECT pg_backend_pid()").fetchone()[0])
         same(named, {"ids": lists["some"]})
         same(negated, {"ids": lists["null"]})
-        self.assertEqual(kept(), 2)
+        self.assertEqual(kept(), 1)
         # inside a caller's transaction a list not yet kept is read as written
         fresh = json.dumps(["A:b:2", *filler[:-1]])
         pg.execute("BEGIN")
         same(named, {"ids": fresh})
         same(negated, {"ids": fresh})
         pg.execute("ROLLBACK")
-        self.assertEqual(kept(), 2)
+        self.assertEqual(kept(), 1)
         same(named, {"ids": fresh})   # outside it: kept, and it stays after a rollback
         pg.execute("BEGIN")
         pg.execute("ROLLBACK")
         same(named, {"ids": fresh})
-        self.assertEqual(kept(), 3)
+        self.assertEqual(kept(), 2)
         # a list of other JSON values is the SQL function's to read
         mixed = json.dumps(["A:b:1", 7, *filler])
         same(named, {"ids": mixed})
-        self.assertEqual(kept(), 3)
+        self.assertEqual(kept(), 2)
         # the kept lists full: they are emptied before a statement keeps its own, never
         # between two lists of one statement (an exclusion list read as empty excludes
         # nothing)
@@ -451,7 +859,7 @@ class CompatTests(unittest.TestCase):
         self.assertEqual(len(rows), 299 + 300)
         text, params = ran[-1]
         self.assertIn("::text[]", text)   # the list bound as an array, never joined
-        self.assertNotIn("sq_lists", text)
+        self.assertNotIn("sq_keys", text)
         plan = "\n".join(r[0] for r in pg._conn.execute("EXPLAIN " + text, params))
         self.assertIn("ends_from", plan)
         self.assertIn("ends_to", plan)

@@ -191,6 +191,8 @@ from ontology.types import Actor, ValidationError
 from operating import po_status
 from operating.explanations import explain
 
+from ..errors import RecordNotFound
+
 MAX_HANDLE = 4096
 MAX_QUERY = 200
 MAX_HOP_QUERIES = 12
@@ -203,6 +205,17 @@ MAX_EVENTS = 200
 MAX_GAPS = 300
 MAX_ORIGINALS = 200
 MAX_DOCUMENTS = 20
+# The further plx.documents pages a record's count of unlisted documents reads (its
+# page size is the tool's maximum); a count cut there is said to be a lower bound.
+MAX_DOCUMENT_COUNT_PAGES = 20
+DOCUMENT_COUNT_PAGE = 50
+# The business systems whose records a record page may count when the reader is refused
+# them (an ALLOWLIST, fail closed): Portal, BC, FileMaker, Shopify, Freightcom, Amazon.
+# Every other source (mail, Teams, SharePoint, originals, calendar events, meeting
+# transcripts, Planner and Mission Control tasks, anything new) can be a person's, which
+# the people exclusion decides per unit and per item, so a refusal of it is never counted.
+COUNTABLE_SCHEMES = ("api://", "bc://", "graph-bc://", "fm://", "shopify://",
+                     "freightcom://", "amazon-sp://")
 MAX_QUESTION = 1000
 # plan_answer (with family): the family's plan result, stated whole by code, is the answer
 # (no planner call); without it the planner starts from that result.
@@ -308,6 +321,13 @@ MAX_FOLLOW_UP_TITLE = 500
 MAX_FOLLOW_UP_CITATIONS = 3
 MAX_ANSWERERS = 10
 L1_SCHEMES = ("api://", "bc://", "graph-mail://", "sharepoint://", "original://")
+# What the source page opens besides those: the host's captured records (Teams channel and
+# chat messages, SharePoint list items, Mission Control tasks; the MCP host's
+# ``CAPTURED_RECORD_SCHEMES``). Each is decided by its capture unit and then read through
+# the host's ``plx.read``, whose per-item gates (the chat's membership or a full-read grant,
+# the people exclusion, the participant rule) refuse it like a missing one.
+CAPTURED_SOURCE_SCHEMES = ("mc://", "teams-channel://", "teams-chat://", "sharepoint-list://")
+SOURCE_SCHEMES = L1_SCHEMES + CAPTURED_SOURCE_SCHEMES
 # Without a case host (a bare tool table): only Portal rows open; the other families are
 # withheld for want of a host grant.
 GRANTED_SCHEMES = ("api://",)
@@ -548,7 +568,7 @@ def grantable_sources() -> tuple[tuple[str, str], ...]:
     the tools' audience map (``operating.ontology_tools._AUDIENCE_SOURCE``) that are
     capture sources. The one list the withheld sources ('what was searched', the
     console banner), the store status trim (``_store_for``) and the documents note read."""
-    from operating.ontology_tools import _AUDIENCE_SOURCE
+    from operating.ontology_tools_policy import _AUDIENCE_SOURCE
 
     granted = set(_AUDIENCE_SOURCE.values())
     return tuple((source, label) for source, label in SOURCE_LABELS.items()
@@ -572,6 +592,31 @@ def _store_for(store: dict[str, Any], withheld: set[str]) -> dict[str, Any]:
 
 def _withheld(reason: str) -> dict[str, str]:
     return {"state": "withheld", "reason": reason}
+
+
+def _withheld_as(handle: str, marker: Mapping[str, Any] | None) -> str | None:
+    """How a linked document this reader cannot open is counted on its record page:
+    ``not_available`` (the reader may see it, but no reader of its source is set up here),
+    ``not_permitted`` (the reader's grants do not cover it), or None: left out entirely
+    and never counted, the way the people exclusion leaves its documents out everywhere.
+    Only a business record (``COUNTABLE_SCHEMES``) is counted when refused: any other
+    source's refusal can be the exclusion's (an ungranted unit can be an excluded person's;
+    the item check holds its participant test), nor is any refusal this does not know
+    counted (fail closed). A permitted one (no marker) counts when it is a business record
+    or its item check admitted the reader (``_ITEM_ACL_SCHEMES``)."""
+    if marker is None:
+        # permitted: a business record, or an item-gated one whose item check (the people
+        # exclusion's participant test included) admitted the reader
+        return "not_available" if handle.startswith(COUNTABLE_SCHEMES + _ITEM_ACL_SCHEMES) \
+            else None
+    if not handle.startswith(COUNTABLE_SCHEMES):
+        return None
+    reason = marker.get("reason")
+    if reason == NO_HOST_GRANT:
+        return "not_available"
+    if reason == NOT_GRANTED:
+        return "not_permitted"
+    return None
 
 
 class ApiOnlyAccess:
@@ -828,13 +873,14 @@ class ObjectWorkspace:
     def briefing_seen(self, *, inbox: Any = None) -> str:
         """Mark this reader's briefing seen now: its next "since your last visit"."""
         from operating import proactive_engine as pe
+        from operating import proactive_engine_inbox
 
         with self._request():
             self._base()
             path = getattr(self.store_status, "store_path", None)
             if path is None:
                 raise FileNotFoundError("store_not_configured")
-            return pe.record_visit(pe.inbox_path(path) if inbox is None else inbox,
+            return proactive_engine_inbox.record_visit(pe.inbox_path(path) if inbox is None else inbox,
                                    pe.reader_key(self.actor))
 
     def watcher_item_state(self, item_id: str, state: str, *, until: str | None = None,
@@ -1102,7 +1148,7 @@ class ObjectWorkspace:
         not read and the pages say so with a typed ``partial`` (``answer_pages_unread``,
         ``answer_entries_cut``), which the recorder is given: a gap no read entry matches is
         not recorded (``not_recorded``), never cited by the root in their place."""
-        from operating.ontology_tools_investigate import MAX_ANSWER
+        from operating.ontology_tools_investigate_plans import MAX_ANSWER
 
         def refused(result: Mapping[str, Any]) -> None:
             if result.get("error"):
@@ -1153,7 +1199,7 @@ class ObjectWorkspace:
         card = self._call("plx.object", {"object_id": object_id})
         error = card.get("error") or {}
         if error.get("code") in ("object_not_found", "not_found"):
-            raise KeyError("object_not_found")   # invisible and nonexistent read the same
+            raise RecordNotFound()   # invisible and nonexistent read the same
         if error:
             raise ValueError("object_id_invalid")
         # The planner starts from what the reader sees: the card, and the question
@@ -1461,7 +1507,7 @@ class ObjectWorkspace:
         if error:
             if error.get("code") in ("object_not_found", "not_found"):
                 # Invisible and nonexistent read the same (no oracle).
-                raise KeyError("object_not_found")
+                raise RecordNotFound()
             if error.get("code") == "invalid_input":
                 raise ValueError("object_id_invalid")
             return {**base, "object_id": object_id, "card": card, "status": "error"}
@@ -1593,15 +1639,57 @@ class ObjectWorkspace:
                                              "limit": MAX_DOCUMENTS})
         if result.get("error"):
             return {"status": "error", "error": result["error"]}
+        counts = {"not_permitted": 0, "not_available": 0, "complete": True}
+        self._mark_documents(result, counts)
+        # The record page counts every linked document it does not list, not only this
+        # first page: the further pages are read for their markers alone (bounded), and
+        # only when one of them could count (``_may_count``).
+        cursor = (result.get("completeness") or {}).get("next_cursor")
+        if not self._may_count(result):
+            cursor = None
+        for _ in range(MAX_DOCUMENT_COUNT_PAGES):
+            if not isinstance(cursor, str) or not cursor:
+                break
+            more = self._call(DOCUMENTS_TOOL, {"object_id": object_id,
+                                               "limit": DOCUMENT_COUNT_PAGE,
+                                               "cursor": cursor})
+            if more.get("error"):
+                break
+            self._mark_documents(more, counts)
+            cursor = (more.get("completeness") or {}).get("next_cursor")
+        counts["complete"] = not (isinstance(cursor, str) and cursor)
+        return {"status": "read", "result": result, "withheld": counts}
+
+    def _may_count(self, result: Mapping[str, Any]) -> bool:
+        """Whether a further page of ``plx.documents`` could hold a document the record
+        page counts: the first page holds a business record (``COUNTABLE_SCHEMES``), or an
+        item-gated source has no reader here (a permitted one then counts as not available
+        yet). Otherwise none can: the tool's families are people sources (mail, SharePoint,
+        originals, Teams; ``ontology_tools_evidence.DOCUMENT_FAMILIES``), never counted when
+        refused, so the paging would be pure cost."""
+        if self.access.read is None or self.sources is None:
+            return True
+        return any(isinstance(d, Mapping) and isinstance(d.get("citation"), str)
+                   and d["citation"].startswith(COUNTABLE_SCHEMES)
+                   for d in result.get("documents") or ())
+
+    def _mark_documents(self, result: dict[str, Any], counts: dict[str, Any]) -> None:
+        """Each document of one ``plx.documents`` page marked ``openable`` for this reader
+        (else its ``not_openable_reason``, and ``withheld_as`` when it is counted), the
+        counted ones added to ``counts``."""
         documents = [d for d in result.get("documents") or []
-                     if isinstance(d.get("citation"), str)]
+                     if isinstance(d, dict) and isinstance(d.get("citation"), str)]
         decided = self.access.decide([d["citation"] for d in documents])
         for document in documents:
             marker = decided.get(document["citation"])
             document["openable"] = marker is None and self._can_open(document["citation"])
             if marker is not None:
                 document["not_openable_reason"] = marker["reason"]
-        return {"status": "read", "result": result}
+            if not document["openable"]:
+                kind = _withheld_as(document["citation"], marker)
+                if kind is not None:
+                    document["withheld_as"] = kind
+                    counts[kind] += 1
 
     def _openable(self, answers: dict[str, Any]) -> dict[str, Any]:
         """Each verdict fact's citation marked ``openable`` by the same decision as every
@@ -1742,13 +1830,13 @@ class ObjectWorkspace:
         through the host's ``plx.read`` (its gates, as-of-capture labels and refusals).
         """
         if (not isinstance(handle, str) or not handle or len(handle) > MAX_HANDLE
-                or not handle.startswith(L1_SCHEMES)):
+                or not handle.startswith(SOURCE_SCHEMES)):
             raise ValueError("l1_citation_handle_required")
         marker = self.access.decide([handle]).get(handle)
         if marker is not None:
             if marker["reason"] == NO_HOST_GRANT:
                 raise ValueError("citation_scheme_not_granted: " + NO_HOST_GRANT)
-            raise KeyError("citation_unresolvable_for_actor")
+            raise RecordNotFound("citation_unresolvable_for_actor")
         if not self._can_open(handle):
             raise LookupError("source_reader_not_configured")
         self._base()  # a store from another mirror never opens citations either
@@ -1762,7 +1850,7 @@ class ObjectWorkspace:
         else:
             view = self.access.read(handle, text_offset=text_offset)
             if view.get("status") not in ("resolved", "changed_since"):
-                raise KeyError("citation_unresolvable_for_actor")
+                raise RecordNotFound("citation_unresolvable_for_actor")
             view = {**view, "kind": "source_read"}
         return {**view, "handle": handle}
 
@@ -1777,10 +1865,10 @@ class ObjectWorkspace:
         existence oracle for a withheld source. A record ``plx.object`` does not show
         the reader is left out without a trace; at most ``MAX_CITED_RECORDS``."""
         if (not isinstance(handle, str) or not handle or len(handle) > MAX_HANDLE
-                or not handle.startswith(L1_SCHEMES)):
+                or not handle.startswith(SOURCE_SCHEMES)):
             raise ValueError("l1_citation_handle_required")
         if self.access.decide([handle]).get(handle) is not None:
-            raise KeyError("citation_unresolvable_for_actor")
+            raise RecordNotFound("citation_unresolvable_for_actor")
         self._base()  # a store from another mirror names no records either
         holders = getattr(self.access, "records_of", None)
         if not callable(holders):
@@ -1965,8 +2053,8 @@ class FollowUps:
         from operating.action_catalog import ActionRefused
         from operating.action_path import ActionPathError
         from operating.cases import PROPOSAL_STATUS
-        from operating.ontology_tools_investigate import record_draft
-        from operating.proactive_engine import MAX_DRAFT_CITATIONS
+        from operating.ontology_tools_investigate_follow_ups import record_draft
+        from operating.proactive_engine_config import MAX_DRAFT_CITATIONS
 
         missing = self._text(proposal.get("missing"), "missing", MAX_FOLLOW_UP_TITLE)
         why = self._text(proposal.get("why"), "why")
@@ -2118,7 +2206,7 @@ class FollowUps:
         them to the reader now: every citation re-resolved for them, an item citing one they
         cannot resolve withheld (no text, no handle), a changed one labelled."""
         from operating.cases import CaseNotFound
-        from operating.ontology_tools_investigate import DRAFT_ACTION, FOLLOW_UP_ACTION
+        from operating.ontology_tools_investigate_follow_ups import DRAFT_ACTION, FOLLOW_UP_ACTION
         if not isinstance(case_id, str) or not case_id or len(case_id) > 200:
             raise ValueError("case_id_invalid")
         try:
@@ -2453,7 +2541,7 @@ class HostAccess:
             yield self
             return
         self._local.state = None
-        from operating.ontology_tools import run_memo
+        from operating.ontology_tools_policy import run_memo
         try:
             # one reader under one grant: a reader decision one tool call of the answer
             # made (an item's ACL re-check, the scope's grants) is every other call's
@@ -2655,7 +2743,7 @@ def host_access(runtime: Any, store_path: Any, actor: Actor, *, markings: Iterab
     tool lists reviews and refuses to record. ``host_options`` go
     to the host as they are (its live re-read bounds and clock)."""
     from operating.case_tools_host import CaptureCaseHostTools
-    from operating.ontology_tools import ReadPolicy
+    from operating.ontology_tools_policy import ReadPolicy
 
     held = tuple(markings)
 
@@ -2785,7 +2873,7 @@ def _default_schema():
 
 @functools.lru_cache(maxsize=1)
 def _shared_graphs() -> Mapping[str, Mapping[str, Any]]:
-    from operating.ontology_tools_process import load_graphs
+    from operating.ontology_tools_process_graphs import load_graphs
     return load_graphs()
 
 
@@ -2989,7 +3077,7 @@ def investigation_verdict(family: str, investigated: Mapping[str, Any]) -> dict[
     """The one-line answer of one plan run (``_investigate``), its cited facts and the
     follow-up the person may propose when it is not established or is late."""
     from operating.explanations import words
-    from operating.proactive_engine import DRAFT_LABEL, DRAFT_STATUS
+    from operating.proactive_engine_config import DRAFT_LABEL, DRAFT_STATUS
 
     result = investigated.get("investigation") or {}
     subject = _subject(result.get("root") or {"object_id": investigated.get("root")})
@@ -3183,7 +3271,7 @@ def _plan_index() -> list[tuple[dict[str, str], frozenset[str]]]:
     global _PLANS
     if _PLANS is None:
         from operating.ontology_tools import default_schema
-        from operating.ontology_tools_investigate import PLAN_DIR, plan_root_types
+        from operating.ontology_tools_investigate_plans import PLAN_DIR, plan_root_types
         schema = default_schema()
         index = []
         for path in sorted(Path(PLAN_DIR).glob("*.json")):

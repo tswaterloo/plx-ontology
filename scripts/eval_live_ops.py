@@ -49,6 +49,7 @@ import shutil
 import sqlite3
 import sys
 import tempfile
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
@@ -1381,8 +1382,10 @@ def sealed(row: Mapping[str, Any]) -> bool:
 
 
 class RoutedAgent:
-    """The app's routing for one question (``operator_api.backend``'s Ask), decided by the
-    app's own ``ask_shortcut``: a margin question takes the app's profit route
+    """The app's routing for one question (``operator_api.backend``'s Ask), decided as the
+    app decides it: the front door's reading (``front_door``, read by the app's own
+    ``read_shortcut``; none given, as an app without one: no ready answer), so a question
+    it reads as a margin question takes the app's profit route
     (``WorkspaceBackend.profit_job`` over the reader's own session: the answer Vince reads,
     its facts' cited records as the answer's values); then the deterministic fast answer
     (``operating.fast_answer``); the wrapped ``agent`` only when neither serves or both
@@ -1393,9 +1396,9 @@ class RoutedAgent:
     Home shows it); the app never sends it on, so neither does the scoreboard."""
 
     def __init__(self, agent: Any, question: str, *, session: Callable[[Any], Any] | None = None,
-                 fast: Any = None) -> None:
+                 fast: Any = None, front_door: Any = None) -> None:
         self.agent, self.question = agent, question
-        self._session, self._fast = session, fast
+        self._session, self._fast, self._front_door = session, fast, front_door
         self._fast_ran = False
 
     @property
@@ -1475,9 +1478,16 @@ class RoutedAgent:
         return session(host)
 
     def _shortcut(self) -> str | None:
+        if self._front_door is None:
+            return None
         from operator_api import backend as be
         from operator_api import models as m
-        return be.ask_shortcut(m.AskRequest(question=self.question))
+        try:
+            reading = self._front_door.read(self.question, [])
+        except Exception:  # noqa: BLE001 - as the app: the question routes as typed
+            return None
+        return None if reading is None else be.read_shortcut(
+            m.AskRequest(question=self.question), reading)
 
     def _profit(self, host: Any, declined: list[str]) -> Any:
         """The app's profit route for the question, as the reader: None when it names no
@@ -1669,12 +1679,33 @@ def profit_text(payload: Any, events: Sequence[Mapping[str, Any]]) -> str:
     return app_text(payload, values)
 
 
+class BoundedDoor:
+    """``door`` read by at most its session limit (``size``) of the scoreboard's workers
+    at once. The app's front door makes a question beyond its warm sessions wait
+    ``front_door.QUEUE_SECONDS``, then routes it as typed; the scoreboard's ``--workers``
+    reading one door at once would push its own questions past that wait and score routes
+    the app's Ask would not take. Here a worker waits its turn for a session instead, so
+    every question is routed by its reading, as in the app; the workers' agent runs stay
+    parallel (only the reading is bounded)."""
+
+    def __init__(self, door: Any) -> None:
+        self.door = door
+        self.size = max(1, int(getattr(door, "size", 1) or 1))
+        self._turn = threading.BoundedSemaphore(self.size)
+
+    def read(self, question: str, earlier: Sequence[str] = ()) -> Any:
+        with self._turn:
+            return self.door.read(question, earlier)
+
+
 def run_items(pairs: Sequence[tuple[Mapping, Mapping]], agent: Any,
               make_host: Callable[[], Any], *, out_dev: Path, out_held: Path | None,
               evidence_label: str, workers: int, budget_seconds: float,
               agent_only: bool = False, fast: Any = None,
-              session: Callable[[Any], Any] | None = None) -> None:
+              session: Callable[[Any], Any] | None = None, front_door: Any = None) -> None:
     deadline = time.monotonic() + budget_seconds
+    if front_door is not None and not isinstance(front_door, BoundedDoor):
+        front_door = BoundedDoor(front_door)
 
     def one(pair: tuple[Mapping, Mapping]) -> None:
         item = pair[0]
@@ -1683,7 +1714,8 @@ def run_items(pairs: Sequence[tuple[Mapping, Mapping]], agent: Any,
         out = out_dev if item["split"] == "dev" else out_held
         try:
             routed = agent if agent_only else RoutedAgent(
-                agent, item["question"]["text"], session=session, fast=fast)
+                agent, item["question"]["text"], session=session, fast=fast,
+                front_door=front_door)
             runner.run_items([item], routed, lambda _item: make_host(), out=out,
                              evidence_label=evidence_label)
         except runner.RunnerError as error:
@@ -1698,6 +1730,7 @@ def main(argv: Sequence[str] | None = None, *, agent: Any = None,
          make_host: Callable[[], Any] | None = None,
          environ: Mapping[str, str] | None = None, world: keys.World | None = None,
          fast: Any = None, session: Callable[[Any], Any] | None = None,
+         front_door: Any = None,
          spawn: Callable[[list[str], str], str] | None = None) -> int:
     """``agent``, ``make_host``, ``world``, ``fast``, ``session``, ``spawn`` (tests): an
     injected agent, host, world, fast-answer module, session opener and blind generator."""
@@ -1767,12 +1800,12 @@ def main(argv: Sequence[str] | None = None, *, agent: Any = None,
     environ = os.environ if environ is None else environ
     with contextlib.ExitStack() as cleanup:
         return _main(args, environ, cleanup, agent=agent, make_host=make_host, world=world,
-                     fast=fast, session=session, spawn=spawn)
+                     fast=fast, session=session, front_door=front_door, spawn=spawn)
 
 
 def _main(args: argparse.Namespace, environ: Mapping[str, str],
           cleanup: contextlib.ExitStack, *, agent: Any, make_host: Any, world: Any,
-          fast: Any, session: Any, spawn: Any = None) -> int:
+          fast: Any, session: Any, front_door: Any = None, spawn: Any = None) -> int:
     from scripts import eval_case_cards as cards_run
     from scripts import eval_owner_host as owner_host
     from scripts import eval_real_agent as real
@@ -1841,9 +1874,19 @@ def _main(args: argparse.Namespace, environ: Mapping[str, str],
                     binary=args.claude_bin, model=args.model, timeout=args.timeout,
                     max_turns=args.max_turns, budget_seconds=args.session_budget or None,
                     max_steps=args.max_steps or None, lookup_model=args.lookup_model)
+                if front_door is None and not args.agent_only:
+                    # the app's own front door (``backend`` serve: started beside the agent)
+                    from operating.front_door import FrontDoor
+                    if FrontDoor.enabled():
+                        front_door = FrontDoor(binary=args.claude_bin)
+                        # closed when the run ends (its sessions are the run's own)
+                        cleanup.callback(front_door.close)
+                        front_door.warm()   # as the app's serve: warm before any question
+                        front_door.ready(120.0)
             run_items(pairs, agent, make_host, out_dev=out_dev, out_held=out_held,
                       evidence_label=evidence_label, workers=args.workers,
-                      budget_seconds=args.budget_seconds, agent_only=args.agent_only, fast=fast, session=session)
+                      budget_seconds=args.budget_seconds, agent_only=args.agent_only, fast=fast,
+                      session=session, front_door=front_door)
         if args.command == "rescore" and args.rekey_state:
             fresh_world, _gens = load_world(args.rekey_state, now=run_moment(pairs))
             pairs = rekey(pairs, fresh_world,

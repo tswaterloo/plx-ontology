@@ -59,7 +59,6 @@ from __future__ import annotations
 
 from collections import Counter, defaultdict
 from datetime import date, datetime, timedelta, timezone
-from decimal import Decimal
 import re
 from typing import Any, Mapping, Sequence
 

@@ -80,6 +80,8 @@ function Figure({ f }: { f: BriefFigure }) {
 const EMPTY: Record<string, string> = {
   empty: "Nothing here you may read.",
   finance_marked: "Finance-marked: shown only to readers who hold finance.",
+  quality_marked: "Quality-marked: shown only to readers who hold quality control.",
+  not_available: "Not captured yet.",
   unread: "Could not be read; this section may still have items.",
   blocked: "Not shown: the people exclusion is not loaded; this section may still have items.",
 };

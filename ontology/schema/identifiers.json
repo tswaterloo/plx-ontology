@@ -762,6 +762,14 @@
    "exact_compare": "trim",
    "auto_merge": false,
    "alias_kinds": [],
+   "firm_mention": {
+    "types": [
+     "ReceiptLine"
+    ],
+    "shape": "\\d{5}-\\d{1,4}",
+    "why": "A lab id is given to each received line (FileMaker receipt raw material idlabid; the Portal MRP receipt's receipt_number on its own path), so a mention names one receipt line as much as one Portal receipt: on served data only FileMaker lines hold it (9,515 lines; 9,485 of 9,500 values name one line). The raw YYDDD-N form holds no letter; the text grammar reads it only behind a receipt / lab id label, so a value written whole in that shape is a code. Judged 2026-11-13 on served leads: 20 of 20 named the line (its product code, supplier lot or PO item written beside it in 19); 358 of 400 sampled mentions had the line's product code, supplier lot or PO item within 300 characters, 29 of 400 shuffled.",
+    "upstream": "plx-customer-portal@b46934a:portal/src/lib/mrp/receipt-lab-id.ts (YYDDD-N and RP+7); ontology/schema/domains/purchasing.json ReceiptLine.lab_id (portal.fm_receipt_raw_material idlabid)"
+   },
    "forms": [
     {
      "form": "raw",
@@ -1822,6 +1830,86 @@
     }
    ]
   },
+  "fm_bulk_product_id": {
+   "object_type": "FmRecord",
+   "description": "A FileMaker bulk product id as the Portal's silver-to-gold ETL stores it in app_product.externalId: fm-bulk-{id} (etlProducts), normalised to fm-bulk-{integer} (canonical_prefixed), as the FM public.bulk_product id normalises too. Only the prefixed form: app_product.externalId also holds bare numbers of other origins, which name no FM bulk product; another prefix, a non-integer or a negative id is none.",
+   "value_pattern": "fm-bulk-\\d{1,12}",
+   "flags": "i",
+   "normalizer": "prefixed_int",
+   "id_prefix": "fm-bulk-",
+   "canonical_prefixed": true,
+   "identity": "anchor",
+   "exact_compare": "trim",
+   "auto_merge": false,
+   "alias_kinds": [
+    "fm_external_id"
+   ],
+   "forms": [
+    {
+     "form": "prefixed",
+     "example": "fm-bulk-1342",
+     "upstream": "plx-customer-portal@b46934a:portal/scripts/etl-silver-to-gold.ts:etlProducts (externalId fm-raw|fm-pack|fm-bulk|fm-fp-{FM id})"
+    }
+   ],
+   "carriers": [
+    {
+     "system": "portal",
+     "relation": "public.app_product",
+     "field": "external_id",
+     "role": "alias",
+     "served": true,
+     "upstream": "plx-customer-portal@b46934a:portal/scripts/etl-silver-to-gold.ts:etlProducts (externalId fm-bulk-{FM id}); not unique on app_product"
+    },
+    {
+     "system": "fm",
+     "relation": "public.bulk_product",
+     "field": "id",
+     "role": "primary",
+     "served": true,
+     "upstream": "plx-customer-portal@8e3a951:services/workbench-api/manifest/allowlist.json (public.bulk_product served with its id column)"
+    }
+   ]
+  },
+  "fm_finished_product_id": {
+   "object_type": "FmRecord",
+   "description": "A FileMaker finished product id as the Portal's silver-to-gold ETL stores it in app_product.externalId: fm-fp-{id} (etlProducts), normalised to fm-fp-{integer} (canonical_prefixed), as the FM public.finished_product id normalises too. Only the prefixed form: app_product.externalId also holds bare numbers of other origins, which name no FM finished product; another prefix, a non-integer or a negative id is none.",
+   "value_pattern": "fm-fp-\\d{1,12}",
+   "flags": "i",
+   "normalizer": "prefixed_int",
+   "id_prefix": "fm-fp-",
+   "canonical_prefixed": true,
+   "identity": "anchor",
+   "exact_compare": "trim",
+   "auto_merge": false,
+   "alias_kinds": [
+    "fm_external_id"
+   ],
+   "forms": [
+    {
+     "form": "prefixed",
+     "example": "fm-fp-1342",
+     "upstream": "plx-customer-portal@b46934a:portal/scripts/etl-silver-to-gold.ts:etlProducts (externalId fm-raw|fm-pack|fm-bulk|fm-fp-{FM id})"
+    }
+   ],
+   "carriers": [
+    {
+     "system": "portal",
+     "relation": "public.app_product",
+     "field": "external_id",
+     "role": "alias",
+     "served": true,
+     "upstream": "plx-customer-portal@b46934a:portal/scripts/etl-silver-to-gold.ts:etlProducts (externalId fm-fp-{FM id}); not unique on app_product"
+    },
+    {
+     "system": "fm",
+     "relation": "public.finished_product",
+     "field": "id",
+     "role": "primary",
+     "served": true,
+     "upstream": "plx-customer-portal@8e3a951:services/workbench-api/manifest/allowlist.json (public.finished_product served with its id column)"
+    }
+   ]
+  },
   "sage_ord_uniq": {
    "object_type": "SalesOrder",
    "description": "Sage OE ORDUNIQ: the key of a Sage-imported gold sales order.",
@@ -1942,8 +2030,9 @@
   },
   "internet_message_id": {
    "object_type": "Email",
-   "description": "The RFC 5322 Message-ID the sending server writes once per message (Graph internetMessageId). Every mailbox the message was delivered to holds its own copy (its own Graph id, change key and mailbox permission) with the same Message-ID, so equal values name copies of one message, never two messages and never one record: no copy is merged into another. Normalised without the angle brackets that delimit it; compared case-sensitively.",
-   "value_pattern": "<[A-Za-z0-9!#$%&'*+/=?^_`{|}~.-]{1,180}@[A-Za-z0-9!#$%&'*+/=?^_`{|}~.\\[\\]:-]{1,180}>|[A-Za-z0-9!#$%&'*+/=?^_`{|}~.-]{1,180}@[A-Za-z0-9!#$%&'*+/=?^_`{|}~.\\[\\]:-]{1,180}",
+   "description": "The RFC 5322 Message-ID the sending server writes once per message (Graph internetMessageId). Every mailbox the message was delivered to holds its own copy (its own Graph id, change key and mailbox permission) with the same Message-ID, so equal values name copies of one message, never two messages and never one record: no copy is merged into another. Normalised without the angle brackets that delimit it; compared case-sensitively. Read as the opaque header text it is: any visible ASCII but the delimiting angle brackets, up to the RFC 5322 line limit (998), since real senders write ids the msg-id grammar does not allow (a second @, a colon, ; , | ^ [ { $ in the left part, ids of 300+ characters, no @ at all: 9% of PLX mail, 2026-11-12 sample of 65,387); a copy still needs its header and body fields equal (copy_content), so a looser form never groups two messages.",
+   "value_pattern": "<[!-;=?-~]{1,996}>|[!-;=?-~]{1,998}",
+   "max_length": 998,
    "flags": "",
    "normalizer": "message_id",
    "identity": "anchor",
@@ -2079,10 +2168,78 @@
      "served": true,
      "upstream": "ontology/schema/generated/meta/portal_catalog.json"
     }
+   ]
+  },
+  "sage_ar_document": {
+   "object_type": "RelSageArOpenDocument",
+   "description": "A Sage 300 AR document number (IDINVC of sage.ar_open_document): the number of a posted customer invoice, credit or debit note, receipt or prepayment. Unique only together with its party (the same number recurs across customers), so a bare number offers every document holding it, none chosen. No mention pattern: bare document numbers overlap other numbers in text; a question or a lookup names it.",
+   "value_pattern": "[A-Za-z0-9][A-Za-z0-9_./#-]{0,21}",
+   "flags": "",
+   "normalizer": "upper_trim",
+   "identity": "lead",
+   "exact_compare": "trim",
+   "auto_merge": false,
+   "alias_kinds": [],
+   "forms": [
+    {
+     "form": "sage_document",
+     "example": "IN0012345",
+     "upstream": "ontology/schema/generated/meta/portal_catalog.json (sage.ar_open_document.idinvc)"
+    }
+   ],
+   "carriers": [
+    {
+     "system": "portal",
+     "relation": "sage.ar_open_document",
+     "field": "idinvc",
+     "role": "primary",
+     "served": true,
+     "upstream": "ontology/schema/overrides/business.json (identifiers)"
+    }
    ],
    "no_fixed_format": {
-    "why": "Sage GL account numbers follow the company's account structure (segments and separators), not one fixed format.",
-    "upstream": "ontology/schema/generated/meta/portal_catalog.json (sage.gl_account, sage.gl_asv segments)"
+    "why": "Sage AR document numbers follow each company's document number setup (prefix and length), or the vendor's own number on an AP document.",
+    "upstream": "no upstream writer found in plx-customer-portal@82549dd paths searched: portal/src, portal/prisma, portal/scripts, scripts (idinvc); Sage 300 writes the number and the Portal reporting API serves sage.ar_open_document as read"
+   },
+   "never_in_text": {
+    "why": "A bare Sage document number (digits or a short prefix) overlaps order, PO and invoice numbers of other systems in mail text; it is looked up when a question or a record names it, never extracted from text.",
+    "upstream": "devloop/DECISIONS/open-intel-9-sage-document-numbers.md (option 1)"
+   }
+  },
+  "sage_ap_document": {
+   "object_type": "RelSageApOpenDocument",
+   "description": "A Sage 300 AP document number (IDINVC of sage.ap_open_document): the number of a posted vendor invoice, credit or debit note or payment (the vendor's document number on an invoice). Unique only together with its party (the same number recurs across vendors), so a bare number offers every document holding it, none chosen. No mention pattern: bare document numbers overlap other numbers in text; a question or a lookup names it.",
+   "value_pattern": "[A-Za-z0-9][A-Za-z0-9_./#-]{0,21}",
+   "flags": "",
+   "normalizer": "upper_trim",
+   "identity": "lead",
+   "exact_compare": "trim",
+   "auto_merge": false,
+   "alias_kinds": [],
+   "forms": [
+    {
+     "form": "sage_document",
+     "example": "INV-7781",
+     "upstream": "ontology/schema/generated/meta/portal_catalog.json (sage.ap_open_document.idinvc)"
+    }
+   ],
+   "carriers": [
+    {
+     "system": "portal",
+     "relation": "sage.ap_open_document",
+     "field": "idinvc",
+     "role": "primary",
+     "served": true,
+     "upstream": "ontology/schema/overrides/business.json (identifiers)"
+    }
+   ],
+   "no_fixed_format": {
+    "why": "Sage AP document numbers follow each company's document number setup (prefix and length), or the vendor's own number on an AP document.",
+    "upstream": "no upstream writer found in plx-customer-portal@82549dd paths searched: portal/src, portal/prisma, portal/scripts, scripts (idinvc); Sage 300 writes the number and the Portal reporting API serves sage.ap_open_document as read"
+   },
+   "never_in_text": {
+    "why": "A bare Sage document number (digits or a short prefix) overlaps order, PO and invoice numbers of other systems in mail text; it is looked up when a question or a record names it, never extracted from text.",
+    "upstream": "devloop/DECISIONS/open-intel-9-sage-document-numbers.md (option 1)"
    }
   }
  },
@@ -2442,7 +2599,7 @@
    ]
   },
   "petra_po_attached": {
-   "description": "Petra PO numbers written with their prefix (po-number-series.ts / create-fm-purchase-order.ts shapes).",
+   "description": "Petra PO numbers written with their prefix (po-number-series.ts / create-fm-purchase-order.ts shapes), at least 3 digits as written ('PO#0004', FileMaker's own form, stays): a bare 'PO1', 'PO75' or the 'PO-26' of 'PO-26-041' is a product name, a chemical, a project code or another firm's PO far more often than a Petra PO (live 2026-11-12: 45,321 such tokens in 16,867 documents made 58,086 mention links to 2016 FileMaker POs; 50 of 50 sampled were not that PO); a short number is read only with its context ('Petra PO 12').",
    "used_by": [
     "ontology/mentions.py:extract",
     "ontology/identifiers.py:find_identifiers"
@@ -2450,7 +2607,7 @@
    "patterns": [
     {
      "kind": "petra_po",
-     "pattern": "(?<![A-Za-z0-9#-])((?:UAT-)?D?PO(?:#|-)?\\d{1,9}(?:-FM\\d{1,9})?|PO-(?=[A-Za-z0-9]{0,7}\\d)[A-Za-z0-9]{3,8})(?![A-Za-z0-9])",
+     "pattern": "(?<![A-Za-z0-9#-])((?:UAT-)?D?PO(?:#|-)?\\d{3,9}(?:-FM\\d{1,9})?|PO-(?=[A-Za-z0-9]{0,7}\\d)[A-Za-z0-9]{3,8})(?![A-Za-z0-9])",
      "flags": "i",
      "group": 1
     }

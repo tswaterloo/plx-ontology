@@ -48,7 +48,7 @@ export function FirstWeek({ me }: { me: Me | null }) {
           and tick off your first-week checklist.
         </li>
         <li>
-          If something is wrong or missing, say so on <Link href="/feedback" className="underline">Feedback</Link>. We read every note.
+          If something is wrong or missing, tell the team on <Link href="/feedback" className="underline">Feedback</Link>.
         </li>
       </ul>
       <button type="button" onClick={close} className="mt-2 text-[12px] font-medium text-muted hover:text-fg cursor-pointer" data-testid="first-week-close">

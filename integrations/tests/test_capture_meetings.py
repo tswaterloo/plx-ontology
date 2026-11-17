@@ -634,8 +634,8 @@ class MeetingsCaptureTest(unittest.TestCase):
         # a transcript no cleared occurrence holds is withheld whole
         listed.append({"id": "TrOrphan", "createdDateTime": (NOW - timedelta(days=20))
                        .isoformat()})
-        report = cm.MeetingsCapture(self.store, api, audience(), CAPTURE, transcripts_granted=True,
-                                    clock=lambda: later + timedelta(days=2)).run(
+        cm.MeetingsCapture(self.store, api, audience(), CAPTURE, transcripts_granted=True,
+                           clock=lambda: later + timedelta(days=2)).run(
             scope(window_days_back=30))
         self.assertNotIn("TrOrphan", {p[2] for p in self.rows(cm.TRANSCRIPT_KIND)})
 

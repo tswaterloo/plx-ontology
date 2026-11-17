@@ -135,7 +135,22 @@ def restore(path: str | Path, *, threads: int = 0) -> dict[str, Any]:
             return {"restored": "not_parked"}
         raise ParkError(f"unit_layer_missing:{p}")
     if p.exists():
-        raise ParkError(f"unit_layer_both_held_and_parked:{p}")
+        # a restore stopped after its rename (or a park after its record, before the
+        # layer's removal): the layer beside its parked copy is that very layer when its
+        # size and record are the parked ones, so the cleanup is finished; any other
+        # layer beside a parked one is refused, both kept (CODEX CORE-005)
+        try:
+            same = p.is_file() and p.stat().st_size == held["size"] \
+                and _layer_record(p) == held["record"]
+        except ParkError:
+            same = False
+        if not same:
+            raise ParkError(f"unit_layer_both_held_and_parked:{p}")
+        _fsync(p)
+        meta.unlink()
+        zst.unlink(missing_ok=True)
+        _fsync(p.parent)
+        return {"restored": str(p), "size": held["size"], "finished": "cleanup"}
     started = time.monotonic()
     out = p.with_name(p.name + ".restore")
     out.unlink(missing_ok=True)
@@ -149,6 +164,7 @@ def restore(path: str | Path, *, threads: int = 0) -> dict[str, Any]:
         raise ParkError("restored_record_differs")
     _fsync(out)
     out.replace(p)
+    _fsync(p.parent)   # the rename is durable before the parked copy goes
     meta.unlink()
     zst.unlink()
     return {"restored": str(p), "size": held["size"],

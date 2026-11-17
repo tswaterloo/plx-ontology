@@ -17,9 +17,11 @@ an address). Resumable: a mailbox already done in ``FILE`` is not read again. Cr
 and the exclusion list come from the environment, as the capture's.
 
 ``python3 -m operating.mail_exclusion_purge purge --state-dir D --matches FILE
-[--dsn DSN] [--store PATH ...] [--apply]``: removes those messages, every other mailbox's
-copy of them (the same internet message id) and everything derived from them, while
-holding the host's cycle lock (no capture beside it):
+[--dsn DSN] [--store PATH ...] [--apply] [--wait-gap SECONDS]``: removes those messages,
+every other mailbox's copy of them (the same internet message id) and everything derived
+from them, while holding the host's cycle lock (no capture beside it; ``--wait-gap``:
+beside the continuous ingest, which holds that lock, it asks for a gap,
+``integrations.cycle_gap``, and waits that long for it instead of refusing):
 
 1. Postgres (``--dsn``, default ``PLX_PG_DSN``): every ontology object with a version
    citing a removed message or attachment (and the attachments and container members it
@@ -75,7 +77,7 @@ from pathlib import Path
 import sqlite3
 import sys
 import threading
-from typing import Any, Callable, Iterable, Mapping, Sequence
+from typing import Any, Callable, Iterable, Mapping, Optional, Sequence
 
 from ontology import parent_watch
 
@@ -227,12 +229,11 @@ def _walk_one(blobs: str, digest: str, name: str, hint: str | None) -> tuple[str
     directory alone (``use_case_parts.is_container``'s own test), never read whole."""
     from zipfile import BadZipFile, ZipFile
     from integrations import carried_mail
+    from integrations import blob_pack
     from integrations.captured_text import DROPPED_SUFFIX, blob_path, read_blob
-    raw = blob_path(blobs, digest)
     head = None
     try:
-        with open(raw, "rb") as handle:
-            head = handle.read(4096)
+        head = blob_pack.head(blobs, digest, 4096)   # as they are, or their .zst
     except OSError:
         pass
     if head is not None:
@@ -240,7 +241,7 @@ def _walk_one(blobs: str, digest: str, name: str, hint: str | None) -> tuple[str
             return digest, carried_mail.encode(None)
         if head.startswith((b"PK\x03\x04", b"PK\x05\x06")):
             try:
-                with ZipFile(raw) as archive:
+                with blob_pack.open_blob(blobs, digest) as raw, ZipFile(raw) as archive:
                     if any(i.filename == "[Content_Types].xml" for i in archive.infolist()):
                         return digest, carried_mail.encode(None)
             except (BadZipFile, OSError, ValueError, EOFError):
@@ -450,28 +451,67 @@ def _load_handles(cur: Any, handles: Sequence[str]) -> None:
     cur.execute("ANALYZE purge_handles")
 
 
-def purge_pg(dsn: str, handles: Sequence[str], *, apply: bool) -> dict[str, Any]:
+def purge_pg(dsn: str, handles: Sequence[str], *, apply: bool,
+             statement_timeout_ms: Optional[int] = None,
+             journal_mark: Optional[Sequence[str]] = None) -> dict[str, Any]:
     """Postgres: the objects citing ``handles`` (and what they carry), their rows, the
-    events cited on those records and their search rows. Dry run: counts only."""
+    events cited on those records and their search rows. Dry run: counts only.
+    ``statement_timeout_ms``: a bound on each statement (the hourly leak scan's dry run;
+    not a read-only session: the dry run builds its temp tables, which a read-only
+    transaction refuses, and rolls back). ``journal_mark`` (with ``apply``): the digests
+    of the journalled handles whose rows are gone, recorded in the same transaction
+    (``purge_journalled``)."""
     import psycopg
 
     from operating.pg.ontology_delta import _DELETE
 
     report: dict[str, Any] = {}
-    with psycopg.connect(dsn, application_name="plx-mail-exclusion-purge") as pg, \
+    bound = ({"options": f"-c statement_timeout={int(statement_timeout_ms)}"}
+             if statement_timeout_ms else {})
+    with psycopg.connect(dsn, application_name="plx-mail-exclusion-purge", **bound) as pg, \
             pg.cursor() as cur:
+        # the purge's record names (load_state, change feed): one per purge, even two in
+        # one second (a cycle's journal purge beside the daily one)
+        stamp = dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
         if apply:   # not beside a delta layer being applied
             cur.execute("SELECT pg_advisory_xact_lock(hashtext('ontology_delta'))")
         _load_handles(cur, handles)
         cur.execute("SELECT count(*) FROM owned")
         report["objects"] = cur.fetchone()[0]
+        if apply:
+            # the change feed (migration 0026): the types whose records go (and of the
+            # records linked to them), never an id of a record the exclusion covers
+            from operating.pg import change_feed
+            if change_feed.present(cur):
+                cur.execute(
+                    "SELECT DISTINCT split_part(object_id, ':', 1) || ':' FROM owned UNION "
+                    "SELECT split_part(l.to_object, ':', 1) || ':' FROM ontology.link_rows l "
+                    "WHERE l.from_object IN (SELECT object_id FROM owned) UNION "
+                    "SELECT split_part(l.from_object, ':', 1) || ':' FROM ontology.link_rows l "
+                    "WHERE l.to_object IN (SELECT object_id FROM owned)")
+                types = [r[0] for r in cur.fetchall()]
+                if types:
+                    change_feed.record_scope(cur, f"purge:mail-exclusion:{stamp}",
+                                             change_feed.generation(cur), types, "purge")
         chunk_where = ("object_id IN (SELECT object_id FROM owned) OR split_part("
                        "source_handle, '#', 1) IN (SELECT h FROM purge_handles) OR "
                        "source_handle IN (SELECT h FROM purge_handles)")
         events = ("event_id IN (SELECT event_id FROM ontology.events WHERE l1_handle IN "
                   "(SELECT h FROM purge_handles))")
+        # CC-C-04's undo images (operating.pg.mention_collapse): every key with a row
+        # touching a removed record goes whole, so no undo can put those rows back
+        undo_where = (
+            "(mark, coalesce(keeper, link_id)) IN (SELECT mark, coalesce(keeper, link_id) "
+            "FROM ontology.mention_collapse_undo WHERE coalesce(from_object, image ->> "
+            "'from_object') IN (SELECT object_id FROM owned) OR coalesce(to_object, image ->> "
+            "'to_object') IN (SELECT object_id FROM owned))")
         steps = [("ontology", "event_objects", events), ("ontology", "events", events),
                  *(("ontology", t, w) for t, w in _DELETE),
+                 # CC-C-04's marker of mention repeats (migration 0029): no id of a
+                 # record the exclusion covers stays in it
+                 ("ontology", "mention_repeats", "from_object IN (SELECT object_id FROM "
+                  "owned) OR to_object IN (SELECT object_id FROM owned)"),
+                 ("ontology", "mention_collapse_undo", undo_where),
                  ("search", "chunks", chunk_where),
                  ("search", "entities", "object_id IN (SELECT object_id FROM owned)")]
         for schema, table, where in steps:
@@ -485,13 +525,66 @@ def purge_pg(dsn: str, handles: Sequence[str], *, apply: bool) -> dict[str, Any]
                 cur.execute(f"SELECT count(*) FROM {key} WHERE {where}")
             n = cur.rowcount if apply else cur.fetchone()[0]
             report[key] = report.get(key, 0) + n
+        if apply and journal_mark is not None:
+            cur.execute("INSERT INTO ontology.load_state (name, value) VALUES (%s, %s) "
+                        "ON CONFLICT (name) DO UPDATE SET value = excluded.value, "
+                        "updated_at = now()",
+                        (JOURNAL_MARK, json.dumps({"purged": sorted(set(journal_mark))})))
         if apply:
             cur.execute("INSERT INTO ontology.load_state (name, value) VALUES (%s, %s)",
-                        (f"purge:mail-exclusion:{_now()}",
+                        (f"purge:mail-exclusion:{stamp}",
                          json.dumps({"objects": report["objects"],
                                      "handles": len(handles)})))
         else:
             pg.rollback()
+    return report
+
+
+# ``ontology.load_state``: the digests of the journalled handles whose Postgres rows a
+# delta cycle removed (``purge_journalled``), so each cycle purges only what is new
+JOURNAL_MARK = "mail-exclusion:journal-purged"
+
+
+def _handle_digest(handle: str) -> str:
+    import hashlib
+    return hashlib.sha256(handle.encode("utf-8")).hexdigest()[:32]
+
+
+def purge_journalled(state: Path, dsn: str) -> dict[str, Any]:
+    """Every delta cycle (``ontology.delta`` and ``operating.pg.ontology_delta.follow``,
+    after their applies): the Postgres rows citing a handle the capture journalled
+    (``purged_handles``: a capture run decided its message is withheld and deleted it),
+    removed at once, not at the daily purge (until then they were served: 11-16, 8
+    objects for nine hours). Only the handles not removed by an earlier cycle, or that a
+    version in Postgres cites again (a layer projected before the capture purge), are
+    purged; the journal stays for the daily purge, which also clears the SQLite stores
+    and forgets it. Raises when the journal or Postgres cannot be read (the caller fails
+    the cycle loudly; the hourly leak scan alarms meanwhile)."""
+    if not (state / "mail-capture" / "capture.db").is_file():
+        return {"journal": 0, "capture": "absent"}
+    from integrations.capture_mail import MailCaptureStore
+    import psycopg
+
+    store = MailCaptureStore.open_read_only(state, timeout=60)
+    try:
+        handles = sorted({h for h in store.purged_handles() if isinstance(h, str) and h})
+    finally:
+        store.close()
+    if not handles:
+        return {"journal": 0}
+    with psycopg.connect(dsn, application_name="plx-mail-exclusion-journal") as pg, \
+            pg.cursor() as cur:
+        cur.execute("SELECT value FROM ontology.load_state WHERE name = %s", (JOURNAL_MARK,))
+        row = cur.fetchone()
+        done = set((row[0] or {}).get("purged") or ()) if row else set()
+        cur.execute("SELECT DISTINCT l1_handle FROM ontology.object_versions WHERE "
+                    "l1_handle = ANY(%s)", (handles,))
+        cited = {r[0] for r in cur.fetchall()}
+    pending = [h for h in handles if h in cited or _handle_digest(h) not in done]
+    report: dict[str, Any] = {"journal": len(handles), "pending": len(pending)}
+    if pending:
+        report["postgres"] = purge_pg(dsn, pending, apply=True,
+                                      journal_mark=[_handle_digest(h) for h in handles])
     return report
 
 
@@ -679,6 +772,8 @@ def main(argv: Sequence[str] | None = None, *, environ: Mapping[str, str] | None
     p.add_argument("--store", action="append", default=None)
     p.add_argument("--carried", default=None)
     p.add_argument("--apply", action="store_true")
+    # beside the continuous ingest (it holds the cycle lock): wait this long for its gap
+    p.add_argument("--wait-gap", type=float, default=0, metavar="SECONDS")
     c = sub.add_parser("carried")
     c.add_argument("--state-dir", required=True)
     c.add_argument("--out", default=None)
@@ -777,7 +872,8 @@ def _purge_cli(args: argparse.Namespace, state_dir: Path, env: Mapping[str, str]
             store.close()
         print(json.dumps({"ok": True, **report}, sort_keys=True))
         return 0
-    return _locked(str(state_dir), work)
+    return _locked(str(state_dir), work, wait_seconds=args.wait_gap,
+                   purpose="mail_exclusion_purge")
 
 
 if __name__ == "__main__":

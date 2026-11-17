@@ -279,7 +279,7 @@ class LaneBEmbedder:
     def __init__(self, embedder: Any) -> None:
         self._embedder = embedder
         self.model = embedder.name
-        # the ``encode`` writes passages (an e5 model's ``passage: `` prefix); an e5
+        # The ``encode`` method writes passages (an e5 model's ``passage: `` prefix); an e5
         # query needs ``query: `` alone, so it is embedded by the same local model here.
         self._query = (LocalEmbedder(self.model)
                        if "e5" in self.model.lower()

@@ -81,5 +81,41 @@ class ChildStderrTests(unittest.TestCase):
         self.assertEqual((row["consecutive_failures"], row["failing_reason"]),
                          (2, "source_unavailable"))
 
+class SharedStateModeTests(unittest.TestCase):
+    """11-16 ops-fix: the ingest unit runs with UMask=0077, so the run ledger and the
+    children's stderr files were made 0600 in host/ and the API user (group plx-state)
+    could not read them: the host's capture-perm-hold repaired them 10-16 times per
+    half hour. In a setgid (shared) directory they are group read/write; elsewhere they
+    stay private; others never get a bit."""
+
+    def written(self, setgid: bool) -> tuple[int, int]:
+        old = os.umask(0o077)
+        try:
+            with tempfile.TemporaryDirectory() as tmp:
+                state = Path(tmp)
+                host = state / "host"
+                (host / "logs").mkdir(parents=True)
+                if setgid:
+                    os.chmod(host, 0o2770)
+                    os.chmod(host / "logs", 0o2770)
+                runs = forever.SourceRuns(state)
+                runs.record("mail", {"status": "complete"})
+                forever.keep_stderr(state, "mail", b"x")
+                return (stat.S_IMODE((host / "source-runs.json").stat().st_mode),
+                        stat.S_IMODE((host / "logs" / "mail.stderr").stat().st_mode))
+        finally:
+            os.umask(old)
+
+    def test_shared_directory_gives_the_group_read_write_and_no_other_bit(self):
+        runs, log = self.written(True)
+        self.assertEqual(runs, 0o660)
+        self.assertEqual(log, 0o660)
+
+    def test_a_private_directory_keeps_files_private(self):
+        runs, log = self.written(False)
+        self.assertEqual(runs, 0o600)
+        self.assertEqual(log, 0o600)
+
+
 if __name__ == "__main__":
     unittest.main()

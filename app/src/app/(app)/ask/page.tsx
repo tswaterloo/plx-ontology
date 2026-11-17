@@ -8,15 +8,16 @@ import { AnswerCard } from "@/components/answer-card";
 import { AskBox } from "@/components/ask-box";
 import { loadHome, loadLate } from "@/components/shell";
 import { lateFigure, StatusGlyph, SystemCode } from "@/components/ui/glyphs";
+import { ErrorNotice } from "@/components/ui/notice";
 import { Toolbar, ToolbarButton } from "@/components/ui/toolbar";
 import { cn } from "@/lib/cn";
 import { VERIFIED_EXAMPLES } from "@/lib/examples";
-import { ago, formatDateTime, recordLabel, SYSTEM_LABEL } from "@/lib/format";
+import { ago, formatDate, formatDateTime, formatMoney, recordLabel, SYSTEM_LABEL } from "@/lib/format";
 import { takePending } from "@/lib/pending";
 import { useSaved } from "@/lib/saved";
 import { askUrlKey, useThread } from "@/lib/thread";
 import { getWorkThread } from "@/lib/api";
-import type { Answer, Freshness, LatePo } from "@/lib/types";
+import type { Answer, Freshness, LatePo, RecentQuestion } from "@/lib/types";
 
 /** The conversation column and the answer's rail share this frame, and the composer lines up with the column. */
 const FRAME = "mx-auto w-full max-w-[1048px] px-4 sm:px-8";
@@ -32,8 +33,8 @@ const CAPTURE_WORDS: Record<string, string> = { failed: "last read failed", neve
 function Reads({ freshness, failed = false }: { freshness: Freshness | null; failed?: boolean }) {
   const rows = freshness?.sources ?? [];
   return (
-    <section aria-label="What Ask reads" data-testid="ask-reads">
-      <SectionTitle>What it reads now</SectionTitle>
+    <section aria-label="Sources Ask reads" data-testid="ask-reads">
+      <SectionTitle>Sources, last read</SectionTitle>
       {failed ? (
         <p className="text-[13px] text-muted">Couldn&apos;t read how current each system is just now; answers still say when their data is from.</p>
       ) : freshness === null ? (
@@ -47,8 +48,11 @@ function Reads({ freshness, failed = false }: { freshness: Freshness | null; fai
             const word = (r.capture && CAPTURE_WORDS[r.capture]) || (r.as_of ? ago(r.as_of) : "time not recorded");
             return (
               <li key={r.system} className="flex items-center gap-2.5 py-1.5 text-[13px]" title={r.as_of ? formatDateTime(r.as_of) : undefined}>
-                <SystemCode system={r.system} size={16} />
-                <span className="min-w-0 flex-1 truncate">{SYSTEM_LABEL[r.system as keyof typeof SYSTEM_LABEL] ?? r.system}</span>
+                <SystemCode system={r.system} size={16} bare />
+                <span className="min-w-0 flex-1 truncate">
+                  {SYSTEM_LABEL[r.system as keyof typeof SYSTEM_LABEL] ?? r.system}
+                  {r.searchable_to && <span className="text-[12px] text-faint"> · to {formatDate(r.searchable_to, { short: true })}</span>}
+                </span>
                 {off && <StatusGlyph status="risk" size={12} />}
                 <span className={cn("shrink-0 text-[12px] tabular-nums", off ? "text-[color:var(--late)]" : "text-muted")}>{word}</span>
               </li>
@@ -71,17 +75,30 @@ function StartingPoints({ onAsk }: { onAsk: (q: string, objectId?: string) => vo
   // a failed read is said as one, never shown as "no late POs" or "nothing read"
   const [lateFailed, setLateFailed] = useState(false);
   const [readsFailed, setReadsFailed] = useState(false);
+  const [recent, setRecent] = useState<RecentQuestion[]>([]);
+  const [lateCount, setLateCount] = useState<number | null>(null);
   const saved = useSaved().filter((s) => s.kind === "question");
 
   useEffect(() => {
     let live = true;
     loadLate()
-      .then((all) => live && setLate([...all].sort((a, b) => (b.days_late ?? 0) - (a.days_late ?? 0)).slice(0, 6)))
+      .then((all) => {
+        if (!live) return;
+        setLateCount(all.length);
+        setLate([...all].sort((a, b) => (b.days_late ?? 0) - (a.days_late ?? 0)).slice(0, 6));
+      })
       .catch(() => live && setLateFailed(true));
     loadHome()
       .then((h) => {
         if (!live) return;
         if (h.examples?.length) setExamples(h.examples.slice(0, 6));
+        // the reader's own last questions, newest first, each once
+        setRecent(
+          [...(h.recent_questions ?? [])]
+            .sort((a, b) => b.asked_at.localeCompare(a.asked_at))
+            .filter((r, i, all) => all.findIndex((x) => x.question.trim().toLowerCase() === r.question.trim().toLowerCase()) === i)
+            .slice(0, 5),
+        );
         setFreshness(h.freshness ?? { sources: [] });
       })
       .catch(() => live && setReadsFailed(true));
@@ -119,9 +136,14 @@ function StartingPoints({ onAsk }: { onAsk: (q: string, objectId?: string) => vo
               return (
                 <li key={p.object_id}>
                   <button type="button" onClick={() => onAsk(q, p.object_id)} className={row} title={q}>
-                    <span className="min-w-0 flex-1 truncate">
-                      <span className="font-medium">{po}</span>
-                      {p.supplier && <span className="text-muted"> {p.supplier}</span>}
+                    <span className="min-w-0 flex-1">
+                      <span className="block truncate">
+                        <span className="font-medium">{po}</span>
+                        {p.supplier && <span className="text-muted"> {p.supplier}</span>}
+                      </span>
+                      <span className="block truncate text-[12px] leading-4 text-muted tabular-nums" data-testid="ask-late-line">
+                        {[p.due_date ? `needed ${formatDate(p.due_date, { short: true })}` : "no due date", p.amount && !p.amount_suspect ? formatMoney(p.amount.amount, p.amount.currency) : null].filter(Boolean).join(" · ")}
+                      </span>
                     </span>
                     {p.days_late != null && (
                       <span className={cn("flex shrink-0 items-center gap-1.5 text-[12px] font-medium num", lateFigure(p.days_late))}>
@@ -135,12 +157,34 @@ function StartingPoints({ onAsk }: { onAsk: (q: string, objectId?: string) => vo
           </ul>
         )}
         <Link href="/late" className="-mx-2 mt-1 inline-flex h-7 items-center gap-1 rounded-md px-2 text-[12px] font-medium text-muted hover:bg-hover hover:text-fg">
-          All late orders
+          {lateCount !== null && lateCount > (late?.length ?? 0) ? `All ${lateCount} late orders` : "All late orders"}
           <ArrowUpRight className="size-3.5" aria-hidden />
         </Link>
       </section>
 
       <div className="min-w-0 space-y-8">
+        {recent.length > 0 && (
+          <section data-testid="ask-recent">
+            <SectionTitle>Asked lately</SectionTitle>
+            <ul className="-mx-2" aria-label="Your recent questions">
+              {recent.map((r) => (
+                <li key={`${r.asked_at}-${r.question}`}>
+                  {r.conversation_id ? (
+                    <Link href={`/ask?c=${encodeURIComponent(r.conversation_id)}`} className={row} title={`Asked ${formatDateTime(r.asked_at)}: open the answer`}>
+                      <span className="min-w-0 flex-1 truncate">{r.question}</span>
+                      <span className="shrink-0 text-[12px] text-muted tabular-nums">{ago(r.asked_at)}</span>
+                    </Link>
+                  ) : (
+                    <button type="button" onClick={() => onAsk(r.question)} className={row} title={`Asked ${formatDateTime(r.asked_at)}: ask again`}>
+                      <span className="min-w-0 flex-1 truncate">{r.question}</span>
+                      <span className="shrink-0 text-[12px] text-muted tabular-nums">{ago(r.asked_at)}</span>
+                    </button>
+                  )}
+                </li>
+              ))}
+            </ul>
+          </section>
+        )}
         <section>
           <SectionTitle>Try asking</SectionTitle>
           <ul className="-mx-2" aria-label="Example questions">
@@ -213,15 +257,30 @@ function Ask() {
   // carries their history and conversation id like any other.
   const resumeId = params.get("c");
   const resumed = useRef<string | null>(null);
+  // a conversation that could not be opened says so, with a way to try again (never a blank page)
+  const [resumeFailed, setResumeFailed] = useState(false);
+  const [resumeTry, setResumeTry] = useState(0);
   useEffect(() => {
-    if (!resumeId || q || resumed.current === resumeId) return;
-    resumed.current = resumeId;
+    const key = `${resumeId}#${resumeTry}`;
+    if (!resumeId || q || resumed.current === key) return;
+    resumed.current = key;
+    setResumeFailed(false);
     const c = new AbortController();
+    let settled = false;
     getWorkThread(`ask:${resumeId}`, c.signal)
+      .finally(() => {
+        settled = true;
+      })
       .then((t) => seed((t.resume.turns ?? []).map((x) => ({ question: x.question, answer: (x.answer ?? null) as unknown as Answer | null, withheld: x.withheld }))))
-      .catch(() => undefined);
-    return () => c.abort();
-  }, [resumeId, q, seed]);
+      .catch(() => {
+        if (!c.signal.aborted) setResumeFailed(true);
+      });
+    return () => {
+      c.abort();
+      // an aborted read (strict mode, a new address) is read again on the next run
+      if (!settled && resumed.current === key) resumed.current = null;
+    };
+  }, [resumeId, resumeTry, q, seed]);
 
   // A new question scrolls to its own top: the answer then grows below it, never under the reader's eyes.
   useEffect(() => {
@@ -269,6 +328,9 @@ function Ask() {
         {empty ? (
           <div className={cn(FRAME, "flex min-h-full max-w-[920px] flex-col justify-center pt-6 pb-[max(48px,8vh)]")}>
             <h1 className="sr-only">Ask</h1>
+            {resumeFailed && resumeId && !q && (
+              <ErrorNotice className="mb-6" message="This conversation couldn't be opened just now." onRetry={() => setResumeTry((n) => n + 1)} />
+            )}
             {composer}
             <div className="mt-10">
               <StartingPoints onAsk={(question, objectId) => run(question, objectId)} />
@@ -305,8 +367,7 @@ function Ask() {
         )}
       </div>
       {!empty && (
-        <div className="relative shrink-0 bg-bg pt-1 pb-[max(0.75rem,env(safe-area-inset-bottom))] sm:pb-4" data-testid="composer-dock">
-          <div className="pointer-events-none absolute inset-x-0 -top-6 h-6 bg-gradient-to-t from-bg to-transparent" aria-hidden />
+        <div className="relative shrink-0 border-t border-border bg-bg pt-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] sm:pb-4" data-testid="composer-dock">
           <div className={FRAME}>
             <div className={COLUMN}>{composer}</div>
           </div>

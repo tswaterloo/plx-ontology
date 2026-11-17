@@ -1,0 +1,1265 @@
+{
+ "$schema": "../_format.schema.json",
+ "format": "plx-ontology-domain/v1",
+ "domain": "sharepoint_lists",
+ "origin": "curated",
+ "description": "SharePoint list items (CT-D-08): an item stating a receipt's document date is an ExpenseReceipt and an item stating an invoice date (and no document date) is a VendorInvoiceEntry, each with its columns typed; every other item stays the generated SharePointListItem (its fields blob). Every list item's text values are mention documents of its own type (ontology/schema.py SHAREPOINT_LIST_MENTION_LINK_RULES). One rule over the item's own columns, never a list named in code.",
+ "upstream_pins": {},
+ "object_types": [
+  {
+   "id": "ExpenseReceipt",
+   "description": "A SharePoint list item that records an expense receipt: it states the receipt's document date, and with it the vendor, the amount and its currency, the category, the status and, on some lists, who paid (the expense lists captured today). Typed from the list item's own columns as written, cited to the item; the whole record is finance and personal data (personal expenses, transfers to named people), visible only to readers of the list who hold both markings. Its words reach search through the record text of the item (operating/chunking). Lists of vendor invoices (InvoiceId, InvoiceDate) state no DocDate and are VendorInvoiceEntry. Its text values keep their mention links (ExpenseReceipt.mentions_<type>).",
+   "anchor": true,
+   "availability": {
+    "state": "served"
+   },
+   "bindings": [
+    {
+     "id": "sharepoint.expense_receipts",
+     "source": "sharepoint",
+     "relation": "listItems",
+     "key": [
+      "parentReference.siteId",
+      "sharepointIds.listId",
+      "id"
+     ],
+     "where": [
+      {
+       "path": "fields.DocDate",
+       "op": "present"
+      }
+     ],
+     "lineage": {
+      "default": "sharepoint"
+     },
+     "marking_rules": [
+      {
+       "when": [
+        {
+         "path": "fields.DocDate",
+         "op": "present"
+        }
+       ],
+       "markings": [
+        "finance",
+        "pii"
+       ],
+       "why": "an expense list item is one person's spending (categories such as personal, e-transfers to named people): finance and personal data on the whole record, not only the amount"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "workbench_code",
+       "path": "integrations/capture_sharepoint_lists.py",
+       "note": "The capture whose rows this binding reads (listItems with expand=fields)."
+      }
+     ],
+     "note": "One object per captured list item that states a receipt's document date (fields.DocDate present: the expense lists). rest_to_generated: every other item is a VendorInvoiceEntry (it states InvoiceDate) or stays the generated SharePointListItem (its binding takes fields.DocDate absent), so one record is one object.",
+     "rest_to_generated": true
+    }
+   ],
+   "properties": [
+    {
+     "name": "title",
+     "value_type": "text",
+     "description": "The item's title as written.",
+     "sources": [
+      {
+       "binding": "sharepoint.expense_receipts",
+       "path": "fields.Title",
+       "parser": "trim"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "workbench_code",
+       "path": "integrations/capture_sharepoint_lists.py",
+       "note": "The capture whose rows this binding reads (listItems with expand=fields)."
+      }
+     ]
+    },
+    {
+     "name": "vendor",
+     "value_type": "text",
+     "description": "Who was paid, as written.",
+     "sources": [
+      {
+       "binding": "sharepoint.expense_receipts",
+       "path": "fields.Vendor",
+       "parser": "trim"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "workbench_code",
+       "path": "integrations/capture_sharepoint_lists.py",
+       "note": "The capture whose rows this binding reads (listItems with expand=fields)."
+      }
+     ]
+    },
+    {
+     "name": "currency",
+     "value_type": "text",
+     "description": "The currency the item states (ISO code as written).",
+     "sources": [
+      {
+       "binding": "sharepoint.expense_receipts",
+       "path": "fields.Currency",
+       "parser": "trim"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "workbench_code",
+       "path": "integrations/capture_sharepoint_lists.py",
+       "note": "The capture whose rows this binding reads (listItems with expand=fields)."
+      }
+     ]
+    },
+    {
+     "name": "amount",
+     "value_type": "money",
+     "description": "The amount the item states, as Decimal text, in its stated currency; blank on items that carry only a receipt.",
+     "sources": [
+      {
+       "binding": "sharepoint.expense_receipts",
+       "path": "fields.Amount",
+       "parser": "decimal_text",
+       "tax_basis": "unknown"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "workbench_code",
+       "path": "integrations/capture_sharepoint_lists.py",
+       "note": "The capture whose rows this binding reads (listItems with expand=fields)."
+      }
+     ],
+     "currency_from": "fields.Currency",
+     "money_measure": "amount",
+     "markings": [
+      "finance"
+     ]
+    },
+    {
+     "name": "doc_date",
+     "value_type": "timestamp",
+     "description": "The receipt's document date as SharePoint serves a date column (the list's local midnight as a UTC instant); readers take its business day (operating/time_window.business_day).",
+     "sources": [
+      {
+       "binding": "sharepoint.expense_receipts",
+       "path": "fields.DocDate",
+       "parser": "iso_timestamp"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "workbench_code",
+       "path": "integrations/capture_sharepoint_lists.py",
+       "note": "The capture whose rows this binding reads (listItems with expand=fields)."
+      }
+     ]
+    },
+    {
+     "name": "category",
+     "value_type": "text",
+     "description": "The expense category as written.",
+     "sources": [
+      {
+       "binding": "sharepoint.expense_receipts",
+       "path": "fields.Category",
+       "parser": "trim"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "workbench_code",
+       "path": "integrations/capture_sharepoint_lists.py",
+       "note": "The capture whose rows this binding reads (listItems with expand=fields)."
+      }
+     ]
+    },
+    {
+     "name": "status",
+     "value_type": "text",
+     "description": "The item's review status as written (e.g. Review, Submit).",
+     "sources": [
+      {
+       "binding": "sharepoint.expense_receipts",
+       "path": "fields.Status",
+       "parser": "trim"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "workbench_code",
+       "path": "integrations/capture_sharepoint_lists.py",
+       "note": "The capture whose rows this binding reads (listItems with expand=fields)."
+      }
+     ]
+    },
+    {
+     "name": "tax_year",
+     "value_type": "text",
+     "description": "The tax year the item is filed under, as written.",
+     "sources": [
+      {
+       "binding": "sharepoint.expense_receipts",
+       "path": "fields.Year",
+       "parser": "trim"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "workbench_code",
+       "path": "integrations/capture_sharepoint_lists.py",
+       "note": "The capture whose rows this binding reads (listItems with expand=fields)."
+      }
+     ]
+    },
+    {
+     "name": "tax_pack",
+     "value_type": "text",
+     "description": "The tax pack the item belongs to, as written.",
+     "sources": [
+      {
+       "binding": "sharepoint.expense_receipts",
+       "path": "fields.TaxPack",
+       "parser": "trim"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "workbench_code",
+       "path": "integrations/capture_sharepoint_lists.py",
+       "note": "The capture whose rows this binding reads (listItems with expand=fields)."
+      }
+     ]
+    },
+    {
+     "name": "paid_by",
+     "value_type": "text",
+     "description": "Who paid, as written (personal data).",
+     "sources": [
+      {
+       "binding": "sharepoint.expense_receipts",
+       "path": "fields.PaidBy",
+       "parser": "trim"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "workbench_code",
+       "path": "integrations/capture_sharepoint_lists.py",
+       "note": "The capture whose rows this binding reads (listItems with expand=fields)."
+      }
+     ],
+     "markings": [
+      "pii"
+     ]
+    },
+    {
+     "name": "list_id",
+     "value_type": "text",
+     "description": "The list the item belongs to.",
+     "sources": [
+      {
+       "binding": "sharepoint.expense_receipts",
+       "path": "sharepointIds.listId",
+       "parser": "trim"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "workbench_code",
+       "path": "integrations/capture_sharepoint_lists.py",
+       "note": "The capture whose rows this binding reads (listItems with expand=fields)."
+      }
+     ]
+    },
+    {
+     "name": "web_url",
+     "value_type": "text",
+     "description": "The item's SharePoint address.",
+     "sources": [
+      {
+       "binding": "sharepoint.expense_receipts",
+       "path": "webUrl",
+       "parser": "trim"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "workbench_code",
+       "path": "integrations/capture_sharepoint_lists.py",
+       "note": "The capture whose rows this binding reads (listItems with expand=fields)."
+      }
+     ]
+    },
+    {
+     "name": "created_date_time",
+     "value_type": "timestamp",
+     "description": "When the item was created.",
+     "sources": [
+      {
+       "binding": "sharepoint.expense_receipts",
+       "path": "createdDateTime",
+       "parser": "iso_timestamp"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "workbench_code",
+       "path": "integrations/capture_sharepoint_lists.py",
+       "note": "The capture whose rows this binding reads (listItems with expand=fields)."
+      }
+     ]
+    },
+    {
+     "name": "last_modified_date_time",
+     "value_type": "timestamp",
+     "description": "When the item was last changed.",
+     "sources": [
+      {
+       "binding": "sharepoint.expense_receipts",
+       "path": "lastModifiedDateTime",
+       "parser": "iso_timestamp"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "workbench_code",
+       "path": "integrations/capture_sharepoint_lists.py",
+       "note": "The capture whose rows this binding reads (listItems with expand=fields)."
+      }
+     ]
+    },
+    {
+     "name": "created_by",
+     "value_type": "json",
+     "description": "Who created the list item (Graph identitySet, as captured): day coverage counts the edit for that person.",
+     "sources": [
+      {
+       "binding": "sharepoint.expense_receipts",
+       "path": "createdBy",
+       "parser": "as_is"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "workbench_code",
+       "path": "integrations/capture_sharepoint_lists.py",
+       "note": "The capture keeps listItem.createdBy on each row."
+      }
+     ]
+    },
+    {
+     "name": "last_modified_by",
+     "value_type": "json",
+     "description": "Who last changed the list item (Graph identitySet, as captured): day coverage counts the edit for that person.",
+     "sources": [
+      {
+       "binding": "sharepoint.expense_receipts",
+       "path": "lastModifiedBy",
+       "parser": "as_is"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "workbench_code",
+       "path": "integrations/capture_sharepoint_lists.py",
+       "note": "The capture keeps listItem.lastModifiedBy on each row."
+      }
+     ]
+    }
+   ],
+   "evidence": [
+    {
+     "kind": "workbench_code",
+     "path": "integrations/capture_sharepoint_lists.py",
+     "note": "The capture whose rows this binding reads (listItems with expand=fields)."
+    }
+   ]
+  },
+  {
+   "id": "VendorInvoiceEntry",
+   "description": "A SharePoint list item that records a vendor invoice: it states the invoice date (InvoiceDate), and with it the vendor, the invoice number, the amount in its stated currency, its Canadian-dollar amount with the rate and rate source used, the month it is filed under and a link to the invoice file (the vendor-invoice lists captured since 11-13); the commissions-owing list adds its pre-tax, HST, interest and total-owing amounts. Typed from the item's own columns as written, cited to the item; the whole record is finance data, visible only to readers of the list who hold the marking, and the address it was mailed from is personal data. An item that states a receipt's document date (DocDate) is an ExpenseReceipt instead, never both. Its text values keep their mention links (VendorInvoiceEntry.mentions_<type>), and its invoice number is a vendor invoice number another record's mention can reach.",
+   "anchor": true,
+   "availability": {
+    "state": "served"
+   },
+   "bindings": [
+    {
+     "id": "sharepoint.vendor_invoices",
+     "source": "sharepoint",
+     "relation": "listItems",
+     "key": [
+      "parentReference.siteId",
+      "sharepointIds.listId",
+      "id"
+     ],
+     "where": [
+      {
+       "path": "fields.InvoiceDate",
+       "op": "present"
+      },
+      {
+       "path": "fields.DocDate",
+       "op": "absent"
+      }
+     ],
+     "lineage": {
+      "default": "sharepoint"
+     },
+     "marking_rules": [
+      {
+       "when": [
+        {
+         "path": "fields.InvoiceDate",
+         "op": "present"
+        }
+       ],
+       "markings": [
+        "finance"
+       ],
+       "why": "a vendor invoice list item is the company's spending with a vendor (amounts, rates, invoice files): finance data on the whole record, not only the amounts"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "workbench_code",
+       "path": "integrations/capture_sharepoint_lists.py",
+       "note": "The capture whose rows this binding reads (listItems with expand=fields)."
+      }
+     ],
+     "note": "One object per captured list item that states an invoice date and no receipt document date (fields.InvoiceDate present, fields.DocDate absent: the vendor-invoice lists). rest_to_generated: an item stating neither stays the generated SharePointListItem (its binding takes fields.DocDate and fields.InvoiceDate absent), so one record is one object.",
+     "rest_to_generated": true
+    }
+   ],
+   "properties": [
+    {
+     "name": "title",
+     "value_type": "text",
+     "description": "The item's title as written.",
+     "sources": [
+      {
+       "binding": "sharepoint.vendor_invoices",
+       "path": "fields.Title",
+       "parser": "trim"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "workbench_code",
+       "path": "integrations/capture_sharepoint_lists.py",
+       "note": "The capture whose rows this binding reads (listItems with expand=fields)."
+      }
+     ]
+    },
+    {
+     "name": "invoice_id",
+     "value_type": "text",
+     "description": "The vendor's invoice number as the list records it (InvoiceId). Kept as text for now: an invoice-number identifier kind (the reverse mention from mail and files) needs in-place migration support for a new identifier kind; follow-up.",
+     "sources": [
+      {
+       "binding": "sharepoint.vendor_invoices",
+       "path": "fields.InvoiceId",
+       "parser": "trim"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "workbench_code",
+       "path": "integrations/capture_sharepoint_lists.py",
+       "note": "The capture whose rows this binding reads (listItems with expand=fields)."
+      }
+     ]
+    },
+    {
+     "name": "invoice_number",
+     "value_type": "text",
+     "description": "The invoice number as the commissions-owing list records it (InvoiceNumber). Kept as text for now: an invoice-number identifier kind (the reverse mention from mail and files) needs in-place migration support for a new identifier kind; follow-up.",
+     "sources": [
+      {
+       "binding": "sharepoint.vendor_invoices",
+       "path": "fields.InvoiceNumber",
+       "parser": "trim"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "workbench_code",
+       "path": "integrations/capture_sharepoint_lists.py",
+       "note": "The capture whose rows this binding reads (listItems with expand=fields)."
+      }
+     ]
+    },
+    {
+     "name": "invoice_date",
+     "value_type": "timestamp",
+     "description": "The invoice date as SharePoint serves a date column (the list's local midnight as a UTC instant); readers take its business day (operating/time_window.business_day).",
+     "sources": [
+      {
+       "binding": "sharepoint.vendor_invoices",
+       "path": "fields.InvoiceDate",
+       "parser": "iso_timestamp"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "workbench_code",
+       "path": "integrations/capture_sharepoint_lists.py",
+       "note": "The capture whose rows this binding reads (listItems with expand=fields)."
+      }
+     ]
+    },
+    {
+     "name": "due_date",
+     "value_type": "timestamp",
+     "description": "When the invoice is due, as SharePoint serves a date column (a UTC instant); readers take its business day.",
+     "sources": [
+      {
+       "binding": "sharepoint.vendor_invoices",
+       "path": "fields.DueDate",
+       "parser": "iso_timestamp"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "workbench_code",
+       "path": "integrations/capture_sharepoint_lists.py",
+       "note": "The capture whose rows this binding reads (listItems with expand=fields)."
+      }
+     ]
+    },
+    {
+     "name": "vendor",
+     "value_type": "text",
+     "description": "Who issued the invoice, as written.",
+     "sources": [
+      {
+       "binding": "sharepoint.vendor_invoices",
+       "path": "fields.Vendor",
+       "parser": "trim"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "workbench_code",
+       "path": "integrations/capture_sharepoint_lists.py",
+       "note": "The capture whose rows this binding reads (listItems with expand=fields)."
+      }
+     ]
+    },
+    {
+     "name": "category",
+     "value_type": "text",
+     "description": "The spend category as written (e.g. an API or tool subscription).",
+     "sources": [
+      {
+       "binding": "sharepoint.vendor_invoices",
+       "path": "fields.Category",
+       "parser": "trim"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "workbench_code",
+       "path": "integrations/capture_sharepoint_lists.py",
+       "note": "The capture whose rows this binding reads (listItems with expand=fields)."
+      }
+     ]
+    },
+    {
+     "name": "description",
+     "value_type": "text",
+     "description": "The item's description as written.",
+     "sources": [
+      {
+       "binding": "sharepoint.vendor_invoices",
+       "path": "fields.Description",
+       "parser": "trim"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "workbench_code",
+       "path": "integrations/capture_sharepoint_lists.py",
+       "note": "The capture whose rows this binding reads (listItems with expand=fields)."
+      }
+     ]
+    },
+    {
+     "name": "notes",
+     "value_type": "text",
+     "description": "The item's notes as written.",
+     "sources": [
+      {
+       "binding": "sharepoint.vendor_invoices",
+       "path": "fields.Notes",
+       "parser": "trim"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "workbench_code",
+       "path": "integrations/capture_sharepoint_lists.py",
+       "note": "The capture whose rows this binding reads (listItems with expand=fields)."
+      }
+     ]
+    },
+    {
+     "name": "currency",
+     "value_type": "text",
+     "description": "The currency the item states (ISO code as written: its Currency column, or Currency0 where the list's own Currency name was taken).",
+     "sources": [
+      {
+       "binding": "sharepoint.vendor_invoices",
+       "path": "fields.Currency",
+       "parser": "trim",
+       "when": [
+        {
+         "path": "fields.Currency",
+         "op": "present"
+        }
+       ]
+      },
+      {
+       "binding": "sharepoint.vendor_invoices",
+       "path": "fields.Currency0",
+       "parser": "trim",
+       "when": [
+        {
+         "path": "fields.Currency",
+         "op": "absent"
+        }
+       ]
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "workbench_code",
+       "path": "integrations/capture_sharepoint_lists.py",
+       "note": "The capture whose rows this binding reads (listItems with expand=fields)."
+      }
+     ],
+     "authority": {
+      "precedence": [
+       {
+        "lineage": [
+         "sharepoint"
+        ],
+        "binding": "sharepoint.vendor_invoices",
+        "evidence": [
+         {
+          "kind": "workbench_code",
+          "path": "integrations/capture_sharepoint_lists.py",
+          "note": "The capture whose rows this binding reads (listItems with expand=fields)."
+         }
+        ]
+       }
+      ],
+      "note": "One binding; its sources are exclusive by their when tests (Currency, else Currency0, else neither), so at most one holds on an item."
+     }
+    },
+    {
+     "name": "amount",
+     "value_type": "money",
+     "description": "The invoice amount the item states, as Decimal text, in the currency the item states (its Currency column, or Currency0 where the list's own Currency name was taken); an item stating no currency keeps its amount with the currency unknown, never assumed. Blank on items that carry only a file.",
+     "sources": [
+      {
+       "binding": "sharepoint.vendor_invoices",
+       "path": "fields.Amount",
+       "parser": "decimal_text",
+       "tax_basis": "unknown",
+       "currency_from": "fields.Currency",
+       "when": [
+        {
+         "path": "fields.Currency",
+         "op": "present"
+        }
+       ]
+      },
+      {
+       "binding": "sharepoint.vendor_invoices",
+       "path": "fields.Amount",
+       "parser": "decimal_text",
+       "tax_basis": "unknown",
+       "currency_from": "fields.Currency0",
+       "when": [
+        {
+         "path": "fields.Currency",
+         "op": "absent"
+        },
+        {
+         "path": "fields.Currency0",
+         "op": "present"
+        }
+       ]
+      },
+      {
+       "binding": "sharepoint.vendor_invoices",
+       "path": "fields.Amount",
+       "parser": "decimal_text",
+       "tax_basis": "unknown",
+       "currency_unknown": {
+        "reason": "The item states neither Currency nor Currency0; no currency is assumed.",
+        "evidence": [
+         {
+          "kind": "workbench_code",
+          "path": "integrations/capture_sharepoint_lists.py",
+          "note": "The capture whose rows this binding reads (listItems with expand=fields)."
+         }
+        ]
+       },
+       "when": [
+        {
+         "path": "fields.Currency",
+         "op": "absent"
+        },
+        {
+         "path": "fields.Currency0",
+         "op": "absent"
+        }
+       ]
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "workbench_code",
+       "path": "integrations/capture_sharepoint_lists.py",
+       "note": "The capture whose rows this binding reads (listItems with expand=fields)."
+      }
+     ],
+     "money_measure": "amount",
+     "markings": [
+      "finance"
+     ],
+     "authority": {
+      "precedence": [
+       {
+        "lineage": [
+         "sharepoint"
+        ],
+        "binding": "sharepoint.vendor_invoices",
+        "evidence": [
+         {
+          "kind": "workbench_code",
+          "path": "integrations/capture_sharepoint_lists.py",
+          "note": "The capture whose rows this binding reads (listItems with expand=fields)."
+         }
+        ]
+       }
+      ],
+      "note": "One binding; its sources are exclusive by their when tests (Currency, else Currency0, else neither), so at most one holds on an item."
+     }
+    },
+    {
+     "name": "amount_cad",
+     "value_type": "money",
+     "description": "The amount converted to Canadian dollars as the list records it (AmountCAD), as Decimal text in CAD; the rate and its source are fx_rate and fx_source.",
+     "sources": [
+      {
+       "binding": "sharepoint.vendor_invoices",
+       "path": "fields.AmountCAD",
+       "parser": "decimal_text",
+       "tax_basis": "unknown",
+       "currency": "CAD"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "workbench_code",
+       "path": "integrations/capture_sharepoint_lists.py",
+       "note": "The capture whose rows this binding reads (listItems with expand=fields)."
+      }
+     ],
+     "money_measure": "amount",
+     "markings": [
+      "finance"
+     ]
+    },
+    {
+     "name": "fx_rate",
+     "value_type": "decimal",
+     "description": "The exchange rate the list applied to reach amount_cad (CAD per unit of the stated currency; 1.0 for a CAD item), as written.",
+     "sources": [
+      {
+       "binding": "sharepoint.vendor_invoices",
+       "path": "fields.FXRate",
+       "parser": "decimal_text"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "workbench_code",
+       "path": "integrations/capture_sharepoint_lists.py",
+       "note": "The capture whose rows this binding reads (listItems with expand=fields)."
+      }
+     ],
+     "markings": [
+      "finance"
+     ]
+    },
+    {
+     "name": "fx_source",
+     "value_type": "text",
+     "description": "Where the rate came from, as written (e.g. a Bank of Canada noon rate and its day, or CAD identity).",
+     "sources": [
+      {
+       "binding": "sharepoint.vendor_invoices",
+       "path": "fields.FXSource",
+       "parser": "trim"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "workbench_code",
+       "path": "integrations/capture_sharepoint_lists.py",
+       "note": "The capture whose rows this binding reads (listItems with expand=fields)."
+      }
+     ]
+    },
+    {
+     "name": "month",
+     "value_type": "text",
+     "description": "The month the list files the invoice under, as written (YYYY-MM).",
+     "sources": [
+      {
+       "binding": "sharepoint.vendor_invoices",
+       "path": "fields.Month",
+       "parser": "trim"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "workbench_code",
+       "path": "integrations/capture_sharepoint_lists.py",
+       "note": "The capture whose rows this binding reads (listItems with expand=fields)."
+      }
+     ]
+    },
+    {
+     "name": "pre_tax_amount",
+     "value_type": "money",
+     "description": "The amount before HST the commissions-owing list states, as Decimal text; the list states no currency.",
+     "sources": [
+      {
+       "binding": "sharepoint.vendor_invoices",
+       "path": "fields.PreTaxAmount",
+       "parser": "decimal_text",
+       "tax_basis": "excl_tax",
+       "currency_unknown": {
+        "reason": "The list states no currency column (the commissions-owing list: InvoiceNumber, TotalOwing, HSTAmount); no currency is assumed, so its amounts are never summed or compared with another currency's.",
+        "evidence": [
+         {
+          "kind": "workbench_code",
+          "path": "integrations/capture_sharepoint_lists.py",
+          "note": "The capture whose rows this binding reads (listItems with expand=fields)."
+         }
+        ]
+       }
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "workbench_code",
+       "path": "integrations/capture_sharepoint_lists.py",
+       "note": "The capture whose rows this binding reads (listItems with expand=fields)."
+      }
+     ],
+     "money_measure": "amount",
+     "markings": [
+      "finance"
+     ]
+    },
+    {
+     "name": "hst_amount",
+     "value_type": "money",
+     "description": "The HST the commissions-owing list states, as Decimal text (the tax itself); the list states no currency.",
+     "sources": [
+      {
+       "binding": "sharepoint.vendor_invoices",
+       "path": "fields.HSTAmount",
+       "parser": "decimal_text",
+       "tax_basis": "tax_only",
+       "currency_unknown": {
+        "reason": "The list states no currency column (the commissions-owing list: InvoiceNumber, TotalOwing, HSTAmount); no currency is assumed, so its amounts are never summed or compared with another currency's.",
+        "evidence": [
+         {
+          "kind": "workbench_code",
+          "path": "integrations/capture_sharepoint_lists.py",
+          "note": "The capture whose rows this binding reads (listItems with expand=fields)."
+         }
+        ]
+       }
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "workbench_code",
+       "path": "integrations/capture_sharepoint_lists.py",
+       "note": "The capture whose rows this binding reads (listItems with expand=fields)."
+      }
+     ],
+     "money_measure": "amount",
+     "markings": [
+      "finance"
+     ]
+    },
+    {
+     "name": "total_with_hst",
+     "value_type": "money",
+     "description": "The amount with HST the commissions-owing list states, as Decimal text; the list states no currency.",
+     "sources": [
+      {
+       "binding": "sharepoint.vendor_invoices",
+       "path": "fields.TotalWithHST",
+       "parser": "decimal_text",
+       "tax_basis": "incl_tax",
+       "currency_unknown": {
+        "reason": "The list states no currency column (the commissions-owing list: InvoiceNumber, TotalOwing, HSTAmount); no currency is assumed, so its amounts are never summed or compared with another currency's.",
+        "evidence": [
+         {
+          "kind": "workbench_code",
+          "path": "integrations/capture_sharepoint_lists.py",
+          "note": "The capture whose rows this binding reads (listItems with expand=fields)."
+         }
+        ]
+       }
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "workbench_code",
+       "path": "integrations/capture_sharepoint_lists.py",
+       "note": "The capture whose rows this binding reads (listItems with expand=fields)."
+      }
+     ],
+     "money_measure": "amount",
+     "markings": [
+      "finance"
+     ]
+    },
+    {
+     "name": "interest_accrued",
+     "value_type": "money",
+     "description": "The interest accrued on the amount owing as the list states it, as Decimal text; the list states no currency.",
+     "sources": [
+      {
+       "binding": "sharepoint.vendor_invoices",
+       "path": "fields.InterestAccrued",
+       "parser": "decimal_text",
+       "tax_basis": "unknown",
+       "currency_unknown": {
+        "reason": "The list states no currency column (the commissions-owing list: InvoiceNumber, TotalOwing, HSTAmount); no currency is assumed, so its amounts are never summed or compared with another currency's.",
+        "evidence": [
+         {
+          "kind": "workbench_code",
+          "path": "integrations/capture_sharepoint_lists.py",
+          "note": "The capture whose rows this binding reads (listItems with expand=fields)."
+         }
+        ]
+       }
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "workbench_code",
+       "path": "integrations/capture_sharepoint_lists.py",
+       "note": "The capture whose rows this binding reads (listItems with expand=fields)."
+      }
+     ],
+     "money_measure": "amount",
+     "markings": [
+      "finance"
+     ]
+    },
+    {
+     "name": "total_owing",
+     "value_type": "money",
+     "description": "The total owing (amount and accrued interest) as the list states it, as Decimal text; the list states no currency.",
+     "sources": [
+      {
+       "binding": "sharepoint.vendor_invoices",
+       "path": "fields.TotalOwing",
+       "parser": "decimal_text",
+       "tax_basis": "unknown",
+       "currency_unknown": {
+        "reason": "The list states no currency column (the commissions-owing list: InvoiceNumber, TotalOwing, HSTAmount); no currency is assumed, so its amounts are never summed or compared with another currency's.",
+        "evidence": [
+         {
+          "kind": "workbench_code",
+          "path": "integrations/capture_sharepoint_lists.py",
+          "note": "The capture whose rows this binding reads (listItems with expand=fields)."
+         }
+        ]
+       }
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "workbench_code",
+       "path": "integrations/capture_sharepoint_lists.py",
+       "note": "The capture whose rows this binding reads (listItems with expand=fields)."
+      }
+     ],
+     "money_measure": "amount",
+     "markings": [
+      "finance"
+     ]
+    },
+    {
+     "name": "status",
+     "value_type": "text",
+     "description": "The item's review status as written (e.g. Pending Review).",
+     "sources": [
+      {
+       "binding": "sharepoint.vendor_invoices",
+       "path": "fields.Status0",
+       "parser": "trim"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "workbench_code",
+       "path": "integrations/capture_sharepoint_lists.py",
+       "note": "The capture whose rows this binding reads (listItems with expand=fields)."
+      }
+     ]
+    },
+    {
+     "name": "erp_status",
+     "value_type": "text",
+     "description": "The status the list records for the invoice in the ERP, as written (e.g. Paid).",
+     "sources": [
+      {
+       "binding": "sharepoint.vendor_invoices",
+       "path": "fields.PetraERPStatus",
+       "parser": "trim"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "workbench_code",
+       "path": "integrations/capture_sharepoint_lists.py",
+       "note": "The capture whose rows this binding reads (listItems with expand=fields)."
+      }
+     ]
+    },
+    {
+     "name": "email_from",
+     "value_type": "text",
+     "description": "The address the invoice was mailed from, as the list records it (personal data where it names a person).",
+     "sources": [
+      {
+       "binding": "sharepoint.vendor_invoices",
+       "path": "fields.EmailFrom",
+       "parser": "trim"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "workbench_code",
+       "path": "integrations/capture_sharepoint_lists.py",
+       "note": "The capture whose rows this binding reads (listItems with expand=fields)."
+      }
+     ],
+     "markings": [
+      "pii"
+     ]
+    },
+    {
+     "name": "document_reference",
+     "value_type": "text",
+     "description": "The document the item was taken from, as written.",
+     "sources": [
+      {
+       "binding": "sharepoint.vendor_invoices",
+       "path": "fields.DocumentReference",
+       "parser": "trim"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "workbench_code",
+       "path": "integrations/capture_sharepoint_lists.py",
+       "note": "The capture whose rows this binding reads (listItems with expand=fields)."
+      }
+     ]
+    },
+    {
+     "name": "file_link",
+     "value_type": "text",
+     "description": "The address of the invoice file the item links to (its FileLink column's Url).",
+     "sources": [
+      {
+       "binding": "sharepoint.vendor_invoices",
+       "path": "fields.FileLink.Url",
+       "parser": "trim"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "workbench_code",
+       "path": "integrations/capture_sharepoint_lists.py",
+       "note": "The capture whose rows this binding reads (listItems with expand=fields)."
+      }
+     ]
+    },
+    {
+     "name": "file_link_label",
+     "value_type": "text",
+     "description": "The label of the item's file link, as written (its FileLink column's Description).",
+     "sources": [
+      {
+       "binding": "sharepoint.vendor_invoices",
+       "path": "fields.FileLink.Description",
+       "parser": "trim"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "workbench_code",
+       "path": "integrations/capture_sharepoint_lists.py",
+       "note": "The capture whose rows this binding reads (listItems with expand=fields)."
+      }
+     ]
+    },
+    {
+     "name": "list_id",
+     "value_type": "text",
+     "description": "The list the item belongs to.",
+     "sources": [
+      {
+       "binding": "sharepoint.vendor_invoices",
+       "path": "sharepointIds.listId",
+       "parser": "trim"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "workbench_code",
+       "path": "integrations/capture_sharepoint_lists.py",
+       "note": "The capture whose rows this binding reads (listItems with expand=fields)."
+      }
+     ]
+    },
+    {
+     "name": "web_url",
+     "value_type": "text",
+     "description": "The item's SharePoint address.",
+     "sources": [
+      {
+       "binding": "sharepoint.vendor_invoices",
+       "path": "webUrl",
+       "parser": "trim"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "workbench_code",
+       "path": "integrations/capture_sharepoint_lists.py",
+       "note": "The capture whose rows this binding reads (listItems with expand=fields)."
+      }
+     ]
+    },
+    {
+     "name": "created_date_time",
+     "value_type": "timestamp",
+     "description": "When the item was created.",
+     "sources": [
+      {
+       "binding": "sharepoint.vendor_invoices",
+       "path": "createdDateTime",
+       "parser": "iso_timestamp"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "workbench_code",
+       "path": "integrations/capture_sharepoint_lists.py",
+       "note": "The capture whose rows this binding reads (listItems with expand=fields)."
+      }
+     ]
+    },
+    {
+     "name": "last_modified_date_time",
+     "value_type": "timestamp",
+     "description": "When the item was last changed.",
+     "sources": [
+      {
+       "binding": "sharepoint.vendor_invoices",
+       "path": "lastModifiedDateTime",
+       "parser": "iso_timestamp"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "workbench_code",
+       "path": "integrations/capture_sharepoint_lists.py",
+       "note": "The capture whose rows this binding reads (listItems with expand=fields)."
+      }
+     ]
+    },
+    {
+     "name": "created_by",
+     "value_type": "json",
+     "description": "Who created the list item (Graph identitySet, as captured): day coverage counts the edit for that person.",
+     "sources": [
+      {
+       "binding": "sharepoint.vendor_invoices",
+       "path": "createdBy",
+       "parser": "as_is"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "workbench_code",
+       "path": "integrations/capture_sharepoint_lists.py",
+       "note": "The capture keeps listItem.createdBy on each row."
+      }
+     ]
+    },
+    {
+     "name": "last_modified_by",
+     "value_type": "json",
+     "description": "Who last changed the list item (Graph identitySet, as captured): day coverage counts the edit for that person.",
+     "sources": [
+      {
+       "binding": "sharepoint.vendor_invoices",
+       "path": "lastModifiedBy",
+       "parser": "as_is"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "workbench_code",
+       "path": "integrations/capture_sharepoint_lists.py",
+       "note": "The capture keeps listItem.lastModifiedBy on each row."
+      }
+     ]
+    }
+   ],
+   "evidence": [
+    {
+     "kind": "workbench_code",
+     "path": "integrations/capture_sharepoint_lists.py",
+     "note": "The capture whose rows this binding reads (listItems with expand=fields)."
+    }
+   ]
+  }
+ ],
+ "evidence_catalog": {
+  "wb.mentions": {
+   "kind": "workbench_code",
+   "path": "ontology/mentions.py",
+   "note": "Identifier mentions extracted by the one identifier grammar and resolved through the identifier index; stored as lead links (store_mention_links)."
+  },
+  "ctx.mentions": {
+   "kind": "context_pack",
+   "ref": "devloop/CONTEXT/07-ONTOLOGY-DESIGN.md#C.2",
+   "note": "Document mentions any object: mention resolution (lead/corroborated)."
+  }
+ }
+}

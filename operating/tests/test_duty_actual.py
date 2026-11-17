@@ -245,6 +245,31 @@ class RateTest(unittest.TestCase):
             "C": (None, "RATE_NOT_PLAUSIBLE_CHARGE_MAY_COVER_MORE_THAN_THIS_PO"),
             "D": (None, "GOODS_VALUE_NOT_RECORDED"), "E": (None, "CHARGE_CURRENCY_NOT_HOME")})
 
+    def test_charges_in_two_currencies_are_never_one_figure_labelled_home(self):
+        """CC-NY-6: a CAD and a USD charge on one PO are two sums, each in its own
+        currency; one USD-only charge is a USD figure, never called CAD."""
+        goods = {"A": {"value": "1000", "currency": "CAD"},
+                 "B": {"value": "1000", "currency": "CAD"}}
+        got = da.po_effective_rates([self.charge("A", "30"), self.charge("A", "12.5", "usd"),
+                                     self.charge("A", "0.5"), self.charge("B", "7", "USD")],
+                                    goods)
+        self.assertEqual((got["A"]["duty_paid"], got["A"]["currency"], got["A"]["rate"],
+                          got["A"]["gap"]), (None, None, None, "CHARGE_CURRENCY_NOT_HOME"))
+        self.assertEqual(got["A"]["duty_paid_by_currency"], {"CAD": "30.5", "USD": "12.5"})
+        self.assertEqual(got["A"]["charges"], 3)
+        self.assertEqual((got["B"]["duty_paid"], got["B"]["currency"], got["B"]["gap"]),
+                         (D("7"), "USD", "CHARGE_CURRENCY_NOT_HOME"))
+        self.assertNotIn("duty_paid_by_currency", got["B"])
+        # a charge read only in part keeps its gap, and still never one mixed figure
+        part = dict(self.charge("A", "4", "USD"), problems=["AMOUNT_PARTIAL"])
+        mixed = da.po_effective_rates([self.charge("A", "30"), part], goods)["A"]
+        self.assertEqual((mixed["duty_paid"], mixed["gap"]),
+                         (None, "CHARGE_INCOMPLETE_AMOUNT_PARTIAL"))
+        # one home currency throughout: the sum, labelled home, and the rate
+        home = da.po_effective_rates([self.charge("A", "30"), self.charge("A", "35")], goods)
+        self.assertEqual((home["A"]["duty_paid"], home["A"]["currency"], home["A"]["rate"]),
+                         (D("65"), "CAD", D("0.065")))
+
     def test_rate_above_forty_percent_is_flagged_and_not_used(self):
         goods = {"A": {"value": "100", "currency": "CAD"}}
         for amount, usable in (("40", True), ("41", False)):

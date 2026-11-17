@@ -61,7 +61,8 @@
       {
        "binding": "gen.public.app_quote",
        "path": "accepted_at",
-       "parser": "iso_timestamp"
+       "parser": "iso_timestamp",
+       "naive_zone": "UTC"
       }
      ]
     },
@@ -72,7 +73,8 @@
       {
        "binding": "gen.public.app_quote",
        "path": "created_at",
-       "parser": "iso_timestamp"
+       "parser": "iso_timestamp",
+       "naive_zone": "UTC"
       }
      ]
     },
@@ -138,7 +140,8 @@
       {
        "binding": "gen.public.app_quote",
        "path": "issue_date",
-       "parser": "iso_timestamp"
+       "parser": "iso_timestamp",
+       "naive_zone": "UTC"
       }
      ]
     },
@@ -182,7 +185,8 @@
       {
        "binding": "gen.public.app_quote",
        "path": "rejected_at",
-       "parser": "iso_timestamp"
+       "parser": "iso_timestamp",
+       "naive_zone": "UTC"
       }
      ]
     },
@@ -318,7 +322,8 @@
       {
        "binding": "gen.public.app_quote",
        "path": "updated_at",
-       "parser": "iso_timestamp"
+       "parser": "iso_timestamp",
+       "naive_zone": "UTC"
       }
      ]
     },
@@ -329,7 +334,8 @@
       {
        "binding": "gen.public.app_quote",
        "path": "valid_until",
-       "parser": "iso_timestamp"
+       "parser": "iso_timestamp",
+       "naive_zone": "UTC"
       }
      ]
     }
@@ -439,7 +445,8 @@
       {
        "binding": "gen.public.app_quote_line",
        "path": "created_at",
-       "parser": "iso_timestamp"
+       "parser": "iso_timestamp",
+       "naive_zone": "UTC"
       }
      ]
     },
@@ -665,7 +672,8 @@
       {
        "binding": "gen.public.app_quote_line",
        "path": "updated_at",
-       "parser": "iso_timestamp"
+       "parser": "iso_timestamp",
+       "naive_zone": "UTC"
       }
      ]
     }
@@ -775,7 +783,8 @@
       {
        "binding": "gen.public.app_sales_order",
        "path": "created_at",
-       "parser": "iso_timestamp"
+       "parser": "iso_timestamp",
+       "naive_zone": "UTC"
       }
      ]
     },
@@ -882,7 +891,8 @@
       {
        "binding": "gen.public.app_sales_order",
        "path": "order_date",
-       "parser": "iso_timestamp"
+       "parser": "iso_timestamp",
+       "naive_zone": "UTC"
       }
      ]
     },
@@ -904,7 +914,8 @@
       {
        "binding": "gen.public.app_sales_order",
        "path": "ownership_location_confirmed_at",
-       "parser": "iso_timestamp"
+       "parser": "iso_timestamp",
+       "naive_zone": "UTC"
       }
      ]
     },
@@ -948,7 +959,8 @@
       {
        "binding": "gen.public.app_sales_order",
        "path": "required_date",
-       "parser": "iso_timestamp"
+       "parser": "iso_timestamp",
+       "naive_zone": "UTC"
       }
      ]
     },
@@ -1023,7 +1035,8 @@
       {
        "binding": "gen.public.app_sales_order",
        "path": "updated_at",
-       "parser": "iso_timestamp"
+       "parser": "iso_timestamp",
+       "naive_zone": "UTC"
       }
      ]
     },
@@ -1133,7 +1146,8 @@
       {
        "binding": "gen.public.app_sales_order_line",
        "path": "created_at",
-       "parser": "iso_timestamp"
+       "parser": "iso_timestamp",
+       "naive_zone": "UTC"
       }
      ]
     },
@@ -1264,7 +1278,8 @@
       {
        "binding": "gen.public.app_sales_order_line",
        "path": "updated_at",
-       "parser": "iso_timestamp"
+       "parser": "iso_timestamp",
+       "naive_zone": "UTC"
       }
      ]
     },
@@ -1385,7 +1400,8 @@
       {
        "binding": "gen.public.app_ship_release",
        "path": "cancelled_at",
-       "parser": "iso_timestamp"
+       "parser": "iso_timestamp",
+       "naive_zone": "UTC"
       }
      ]
     },
@@ -1407,7 +1423,8 @@
       {
        "binding": "gen.public.app_ship_release",
        "path": "created_at",
-       "parser": "iso_timestamp"
+       "parser": "iso_timestamp",
+       "naive_zone": "UTC"
       }
      ]
     },
@@ -1451,7 +1468,8 @@
       {
        "binding": "gen.public.app_ship_release",
        "path": "fulfilled_at",
-       "parser": "iso_timestamp"
+       "parser": "iso_timestamp",
+       "naive_zone": "UTC"
       }
      ]
     },
@@ -1506,7 +1524,8 @@
       {
        "binding": "gen.public.app_ship_release",
        "path": "released_at",
-       "parser": "iso_timestamp"
+       "parser": "iso_timestamp",
+       "naive_zone": "UTC"
       }
      ]
     },
@@ -1528,7 +1547,8 @@
       {
        "binding": "gen.public.app_ship_release",
        "path": "requested_ship_date",
-       "parser": "iso_timestamp"
+       "parser": "iso_timestamp",
+       "naive_zone": "UTC"
       }
      ]
     },
@@ -1567,7 +1587,8 @@
       {
        "binding": "gen.public.app_ship_release",
        "path": "updated_at",
-       "parser": "iso_timestamp"
+       "parser": "iso_timestamp",
+       "naive_zone": "UTC"
       }
      ]
     }
@@ -1699,7 +1720,8 @@
       {
        "binding": "gen.public.app_shipment",
        "path": "created_at",
-       "parser": "iso_timestamp"
+       "parser": "iso_timestamp",
+       "naive_zone": "UTC"
       }
      ]
     },
@@ -1743,7 +1765,8 @@
       {
        "binding": "gen.public.app_shipment",
        "path": "delivery_date",
-       "parser": "iso_timestamp"
+       "parser": "iso_timestamp",
+       "naive_zone": "UTC"
       }
      ]
     },
@@ -1812,7 +1835,8 @@
       {
        "binding": "gen.public.app_shipment",
        "path": "ship_date",
-       "parser": "iso_timestamp"
+       "parser": "iso_timestamp",
+       "naive_zone": "UTC"
       }
      ]
     },
@@ -1911,7 +1935,8 @@
       {
        "binding": "gen.public.app_shipment",
        "path": "updated_at",
-       "parser": "iso_timestamp"
+       "parser": "iso_timestamp",
+       "naive_zone": "UTC"
       }
      ]
     },
@@ -2021,7 +2046,8 @@
       {
        "binding": "gen.public.app_shipment_line",
        "path": "created_at",
-       "parser": "iso_timestamp"
+       "parser": "iso_timestamp",
+       "naive_zone": "UTC"
       }
      ]
     },
@@ -2153,7 +2179,8 @@
       {
        "binding": "gen.public.app_shipment_line",
        "path": "updated_at",
-       "parser": "iso_timestamp"
+       "parser": "iso_timestamp",
+       "naive_zone": "UTC"
       }
      ]
     }
@@ -2276,7 +2303,8 @@
       {
        "binding": "gen.public.order_entry",
        "path": "audittimestampmodified",
-       "parser": "iso_timestamp"
+       "parser": "iso_timestamp",
+       "wall_clock_zone": "America/New_York"
       }
      ]
     },
@@ -2511,7 +2539,8 @@
       {
        "binding": "gen.public.order_entry_item",
        "path": "audittimestampmodified",
-       "parser": "iso_timestamp"
+       "parser": "iso_timestamp",
+       "wall_clock_zone": "America/New_York"
       }
      ]
     },
@@ -14683,7 +14712,8 @@
       {
        "binding": "gen.silver.order_entries",
        "path": "updated_at",
-       "parser": "iso_timestamp"
+       "parser": "iso_timestamp",
+       "wall_clock_zone": "America/New_York"
       }
      ]
     }
@@ -14833,7 +14863,8 @@
       {
        "binding": "gen.silver.order_entry_items",
        "path": "updated_at",
-       "parser": "iso_timestamp"
+       "parser": "iso_timestamp",
+       "wall_clock_zone": "America/New_York"
       }
      ]
     }

@@ -46,15 +46,21 @@ import gc
 from datetime import date
 import json
 from pathlib import Path
+import sys
 import time
 from typing import Any, Callable, Mapping, Sequence
 
 DEFAULT_SECONDS = 5400
 # the rules ``--refresh calling`` runs whole when the served data and code are current: the
 # tool-call rules (but the vendor-terms check, run incrementally below) and the customer PO
-# scan of the Portal mirror
+# scan of the Portal mirror; and the mail rules the incremental pass cannot fold (no
+# declared inputs: ``declared_inputs``), which feed Replies, R&D and the label pages: they
+# ran on every pass only while every pass read as behind (the Postgres data version,
+# ``proactive_engine.served_behind``); otherwise they would wait for the next day
 CALLING_PASS = frozenset({"orders_at_risk", "card_rules", "negative_margin",
-                          "margin_erosion", "order_without_customer_po"})
+                          "margin_erosion", "order_without_customer_po",
+                          "inbox_triage", "label_changes", "label_revisions", "rd_projects",
+                          "vendor_no_reply"})
 DEFAULT_BOUND = 400
 # the rules ``--refresh whole`` runs (``plx-proactive-whole.timer``, every 4 hours): the
 # store-only rules the incremental pass leaves to a full pass (they read every record of
@@ -68,7 +74,7 @@ WHOLE_PASS = frozenset({"stock_out_risk", "overdue_receivable", "unit_cost_jump"
                         "customer_payment_behaviour", "early_pay_discounts",
                         "duplicate_payables", "returns_and_credits",
                         "price_consistency",
-                        "mc_task_overdue", "mc_task_stuck",
+                        "mc_task_stuck",
                         "mc_approval_pending", "portal_approval_pending", "planner_task_overdue",
                         "aged_balance_worsening", "production_late",
                         "assembly_damage_spike", "teams_unanswered_ask",
@@ -83,13 +89,100 @@ WHOLE_PASS = frozenset({"stock_out_risk", "overdue_receivable", "unit_cost_jump"
                         "gl_posting_errors", "recurring_task_missed",
                         "cash_application", "statement_reconciliation"})
 REFRESH_MODES = ("new", "always", "never", "calling", "whole")
+# The change feed (migration 0026, ``operating.pg.change_feed``): what the vendor stage's
+# readings rest on is each recently named order's record and the mail of its threads
+# (``proactive_events._MailIndex.state``), so when the feed past this pass's cursor holds
+# no row of these types (nor a migration's scope), the business day is the one the last
+# stage judged, that stage left nothing unread, and no full run went first in this pass,
+# every reading still stands and the stage is not run (``vendor_stage: unchanged``).
+# Otherwise, and whenever there is no feed, the stage runs as before.
+FEED_CONSUMER = "vendor_watch"
+FEED_TYPES = ("Email", "PurchaseOrder")
+STAGE_SUFFIX = ".vendor-stage.json"
+
+
+def _stage_path(inbox: Path) -> Path:
+    return inbox.with_name(inbox.name + STAGE_SUFFIX)
+
+
+def _feed(store: Path) -> Any:
+    """The feed's rows of ``FEED_TYPES`` past this pass's cursor when the engine reads
+    Postgres; None otherwise (no feed, not readable)."""
+    from operating.pg import change_feed, ontology_reader
+    try:
+        if not ontology_reader.serves(store):
+            return None
+    except Exception:  # noqa: BLE001 - not known to read Postgres: no feed
+        return None
+    return change_feed.read(ontology_reader.dsn(), FEED_CONSUMER, types=FEED_TYPES,
+                            limit=1)
+
+
+def stage_unchanged(feed: Any, inbox: Path, day: date, *, refreshed: bool) -> bool:
+    """Whether the vendor stage's last readings stand as they are (see ``FEED_TYPES``)."""
+    if feed is None or not feed.ready or feed.changes or feed.overflow or refreshed:
+        return False
+    try:
+        last = json.loads(_stage_path(inbox).read_text())
+    except (OSError, ValueError):
+        return False
+    return isinstance(last, dict) and last.get("day") == day.isoformat() \
+        and last.get("complete") is True
+
+
+def _note_stage(inbox: Path, day: date, found: Mapping[str, Any]) -> None:
+    """What the stage judged (its day, whether it read every order it should), beside the
+    inbox it folded into (none: nothing is kept)."""
+    if not inbox.is_file():
+        return
+    state = {"day": day.isoformat(),
+             "complete": (found.get("detectors") or {}).get("vendor_terms_unapplied")
+             == "complete"}
+    tmp = _stage_path(inbox).with_suffix(".tmp")
+    try:
+        tmp.write_text(json.dumps(state))
+        tmp.replace(_stage_path(inbox))
+    except OSError:   # unwritten: the next pass runs the stage
+        pass
+
+
+SKIPPED_PASS_RUNNING = "scheduled_pass_running"
+
+
+def scheduled_lock_path(state_dir: Path) -> Path:
+    """The scheduled passes' own lock (``<inbox>.pass.lock`` beside the inbox's fold lock):
+    held by one ``run_pass`` for its whole length, so two scheduled passes (the 4-hourly
+    whole pass, the calling pass, the nightly) never run at once. The incremental pass does
+    not take it: it still folds between a scheduled pass's groups under the fold lock."""
+    from . import proactive_engine as pe
+    from .host import projection_path
+
+    inbox = pe.inbox_path(projection_path(state_dir))
+    return inbox.with_name(inbox.name + ".pass")
 
 
 def run_pass(state_dir: Path, config: Any, *, seconds: float, bound: int,
-             as_of: date | None = None, environ: Mapping[str, str] | None = None,
-             refresh_new: bool = True, monotonic: Callable[[], float] = time.monotonic,
-             refresh: str | None = None, refresh_seconds: float | None = None
-             ) -> dict[str, Any]:
+             pass_wait: float = 0.0, **options: Any) -> dict[str, Any]:
+    """``_run_pass`` under the scheduled passes' lock (``scheduled_lock_path``). A pass that
+    finds another scheduled pass running waits ``pass_wait`` seconds at most (default
+    none), then ends at once as ``skipped`` (``scheduled_pass_running``): it never sits on
+    the lock until its unit's timeout kills it, and the running pass's checkpoint is
+    resumed by the next pass of each kind (``proactive_engine.refresh_pass``)."""
+    from . import proactive_engine as pe
+
+    if pass_wait < 0:
+        raise ValueError("pass_wait_negative")
+    with pe.pass_lock(scheduled_lock_path(state_dir), wait=float(pass_wait)) as held:
+        if not held:
+            return {"skipped": SKIPPED_PASS_RUNNING, "full_refresh": None}
+        return _run_pass(state_dir, config, seconds=seconds, bound=bound, **options)
+
+
+def _run_pass(state_dir: Path, config: Any, *, seconds: float, bound: int,
+              as_of: date | None = None, environ: Mapping[str, str] | None = None,
+              refresh_new: bool = True, monotonic: Callable[[], float] = time.monotonic,
+              refresh: str | None = None, refresh_seconds: float | None = None
+              ) -> dict[str, Any]:
     """One vendor-mail pass over the served projection of ``state_dir``; counts only.
     ``refresh``: ``new`` (the default; ``refresh_new=False``: ``never``) runs the full
     engine first (``proactive_engine.refresh``) when the served generation is not the one
@@ -105,6 +198,7 @@ def run_pass(state_dir: Path, config: Any, *, seconds: float, bound: int,
     from . import case_workspace_live as live
     from . import po_status
     from . import proactive_engine as pe
+    from . import proactive_engine_config
     from . import proactive_pool
     from .host import engine_readers, projection_path
 
@@ -140,15 +234,20 @@ def run_pass(state_dir: Path, config: Any, *, seconds: float, bound: int,
             only = (sorted(CALLING_PASS) if mode == "calling" and not behind
                     else sorted(WHOLE_PASS) if mode == "whole" and not behind else None)
             try:
-                ran = pe.refresh(runtime, actor, audience, store, day, captures=state_dir,
-                                 scan_coverage="portal" in config.sources,
-                                 budget=pe.Budget(share, reserve=pe.AMOUNTS_RESERVE_SECONDS),
-                                 vendor_bound=0, pool=pool, only=only)
+                # group by group, each folded with the pass's checkpoint: a pass cut short
+                # (its share spent, the unit's timeout, the host) is resumed by the next
+                # (``proactive_engine.refresh_pass``), never begun again from the first rule
+                ran = pe.refresh_pass(runtime, actor, audience, store, day, kind=mode,
+                                      seconds=share, only=only,
+                                      reserve=pe.AMOUNTS_RESERVE_SECONDS,
+                                      captures=state_dir,
+                                      scan_coverage="portal" in config.sources,
+                                      vendor_bound=0, pool=pool)
             except Exception as error:  # noqa: BLE001 - the vendor checks still run
                 full = {"state": "failed", "error": type(error).__name__}
             else:
                 full = {"state": "ran", **{key: ran.get(key) for key in (
-                    "detectors", "detector_reasons", "gaps_found", "seconds")}}
+                    "detectors", "detector_reasons", "gaps_found", "seconds", "pass")}}
                 del ran   # the whole-store result is counted, never kept through the vendor stage
             finally:
                 # The whole engine read every record through this runtime (its mirror's
@@ -162,11 +261,25 @@ def run_pass(state_dir: Path, config: Any, *, seconds: float, bound: int,
         left = seconds - (monotonic() - started)
         session = live._Session(runtime, actor, audience, store, captures=state_dir,
                                 marking_grants=pe.engine_marking_grants(actor))
+        inbox = pe.inbox_path(store)
+        feed = _feed(store)
         try:
-            found = pe.run(store, pe.inbox_path(store), day, call=session,
-                           budget=pe.Budget(max(left, 1.0),
-                                            reserve=pe.AMOUNTS_RESERVE_SECONDS),
-                           only=pe.INCREMENTAL, vendor_bound=bound, pool=pool)
+            # a full run in this pass, or a generation the inbox's last full run did not
+            # read, always runs the stage
+            if stage_unchanged(feed, inbox, day, refreshed=full is not None) \
+                    and not pe.served_behind(store):
+                found = {"vendor_stage": "unchanged"}
+            else:
+                found = pe.run(store, inbox, day, call=session,
+                               budget=pe.Budget(max(left, 1.0),
+                                                reserve=pe.AMOUNTS_RESERVE_SECONDS),
+                               only=proactive_engine_config.INCREMENTAL, vendor_bound=bound, pool=pool)
+                _note_stage(inbox, day, found)
+            if feed is not None:
+                from operating.pg import change_feed, ontology_reader
+                found = {**found, "feed": {**feed.summary(), "committed":
+                                           change_feed.commit_to(ontology_reader.dsn(),
+                                                                 feed.skipped())}}
             # recorded meetings follow themselves up here, as the same reader (a no-op
             # without a captured transcript or an export: operating.meeting_followup.cycle)
             try:
@@ -182,7 +295,8 @@ def run_pass(state_dir: Path, config: Any, *, seconds: float, bound: int,
             pool.close()
         runtime.close()
     return {**{key: found.get(key) for key in ("detectors", "detector_reasons", "reused",
-                                               "gaps_by_kind", "not_evaluated", "meetings")},
+                                               "gaps_by_kind", "not_evaluated", "meetings",
+                                               "vendor_stage", "feed")},
             "full_refresh": full}
 
 
@@ -203,15 +317,28 @@ def main(argv: Sequence[str] | None = None) -> int:
                              "default), on every pass (always) or never")
     parser.add_argument("--refresh-seconds", type=float, default=None,
                         help="the full engine run's budget (default half the pass)")
+    parser.add_argument("--pass-wait-seconds", type=float, default=0.0,
+                        help="how long to wait for another scheduled pass to end before "
+                             "skipping this one (default 0: skip at once, exit 0)")
     args = parser.parse_args(argv)
-    if args.budget_seconds <= 0 or args.bound < 0 or (
+    if args.budget_seconds <= 0 or args.bound < 0 or args.pass_wait_seconds < 0 or (
             args.refresh_seconds is not None and args.refresh_seconds <= 0):
         parser.error("budget and bound must be positive")
+    try:   # a broken window lock never stops the job
+        from ontology import window_lock
+        held = window_lock.skip_report("proactive", state_dir=args.state_dir)
+    except Exception as exc:  # noqa: BLE001 - logged, the job runs
+        print(f"window check failed, running anyway: {exc}", file=sys.stderr)
+        held = None
+    if held:
+        print(json.dumps(held, indent=1, sort_keys=True))
+        return 0
     config = HostConfig.from_file(args.config)
     print(json.dumps(run_pass(args.state_dir, config, seconds=args.budget_seconds,
                               bound=args.bound, as_of=args.as_of,
                               refresh_new=not args.no_refresh_new, refresh=args.refresh,
-                              refresh_seconds=args.refresh_seconds),
+                              refresh_seconds=args.refresh_seconds,
+                              pass_wait=args.pass_wait_seconds),
                      indent=1, sort_keys=True))
     return 0
 

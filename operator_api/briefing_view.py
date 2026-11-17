@@ -283,7 +283,8 @@ def briefing_model(found: Mapping[str, Any], top: list[m.BriefingItem], *, diges
                                                          "words")})
                 for c in found.get("checks") or ()],
         types=[m.BriefingEventType(**{k: t.get(k) for k in (
-            "event_type", "label", "status", "words", "found_live", "first_found")})
+            "event_type", "label", "status", "words", "found_live", "first_found",
+            "checked", "judged", "judged_share")})
                for t in found.get("types") or ()],
         today=str(found.get("today") or bf.today_line(found)),
         carried=int(found.get("carried") or 0),
@@ -302,7 +303,7 @@ def carried_words(carried: Any) -> Optional[str]:
     """A carried briefing item's words (``proactive_engine.CARRIED_WORDS``); None when
     the item is current."""
     from operating import briefing as bf
-    from operating.proactive_engine import CARRIED_WORDS
+    from operating.proactive_engine_inbox import CARRIED_WORDS
 
     if not isinstance(carried, Mapping) or carried.get("reason") not in CARRIED_WORDS:
         return None

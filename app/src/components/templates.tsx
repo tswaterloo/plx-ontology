@@ -52,10 +52,13 @@ export function sharesOf(text: string): string[] {
 
 /** A filled template: the text to copy, then each placeholder and its source or why to check it. */
 export function TemplateFilledView({ filled }: { filled: TemplateFilled }) {
-  const [copied, setCopied] = useState(false);
+  const [copied, setCopied] = useState<"no" | "yes" | "failed">("no");
   const fields = filled.fields ?? [];
   const copy = () => {
-    void navigator.clipboard?.writeText(filled.text).then(() => setCopied(true));
+    // the clipboard can be refused (no permission, a page not in focus): say so, never fail silently
+    const write = navigator.clipboard?.writeText(filled.text);
+    if (!write) return setCopied("failed");
+    write.then(() => setCopied("yes"), () => setCopied("failed"));
   };
   return (
     <section className="space-y-2 border-l-2 border-accent pl-3" data-testid="template-filled">
@@ -114,9 +117,11 @@ export function TemplateFilledView({ filled }: { filled: TemplateFilled }) {
       ))}
       <div className="flex items-center gap-2">
         <Button size="sm" variant="secondary" onClick={copy} data-testid="template-copy">
-          {copied ? "Copied" : "Copy text"}
+          {copied === "yes" ? "Copied" : "Copy text"}
         </Button>
-        <span className="text-[12px] text-muted">Read it through and replace every check mark in brackets before you use it.</span>
+        <span className="text-[12px] text-muted" role={copied === "failed" ? "status" : undefined}>
+          {copied === "failed" ? "Couldn't copy here. Select the text above and copy it yourself." : "Read it through and replace every check mark in brackets before you use it."}
+        </span>
       </div>
     </section>
   );
@@ -261,7 +266,8 @@ export function SaveAsTemplate({ text, record, docType, sourceRef }: { text: str
 }
 
 /** "Use template" where a document of a type is started: the templates offered for it (saved,
- * shared, then the layout learned from what you sent), and one filled from the record. */
+ * shared, then the layout learned from what you sent, then mail you keep sending in near the
+ * same words, to save), and one filled from the record. */
 export function UseTemplate({ docTypes, record }: { docTypes: TemplateDocType[]; record?: string | null }) {
   const [offers, setOffers] = useState<TemplateSuggestion[] | null>(null);
   const [filled, setFilled] = useState<TemplateFilled | null>(null);
@@ -292,6 +298,11 @@ export function UseTemplate({ docTypes, record }: { docTypes: TemplateDocType[];
             <Button key={`t${s.template.id}`} size="sm" variant="outline" className="h-7 px-2 text-[12px] font-normal" title={s.detail} onClick={() => use(s.template as Template)} data-testid="template-offer">
               {s.label}
             </Button>
+          ) : s.kind === "repeated" && s.body ? (
+            <span key={`r${i}`} className="inline-flex items-center gap-1" data-testid="template-repeated" title={s.body}>
+              {s.label} (&ldquo;{s.detail}&rdquo;):
+              <SaveAsTemplate text={s.body} docType={s.doc_type} />
+            </span>
           ) : s.ask ? (
             <span key={`l${i}`} data-testid="template-learned" title={s.detail}>
               {s.label} ({s.detail}): type &ldquo;{s.ask.trim()}&rdquo; and the record in the Ask box

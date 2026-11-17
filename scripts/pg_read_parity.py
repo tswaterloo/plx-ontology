@@ -35,6 +35,7 @@ import statistics
 import sys
 import time
 from typing import Any, Sequence
+from ontology import parent_watch
 
 VOLATILE = {"meta", "cursor", "next_cursor", "set", "set_handle", "handle", "timings",
             "elapsed_ms", "served_at", "as_of", "freshness", "warm"}
@@ -258,7 +259,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             Path(args.out).write_text(text, encoding="utf-8")
         return text
 
-    with futures.ProcessPoolExecutor(max_workers=args.workers) as pool:
+    with futures.ProcessPoolExecutor(max_workers=args.workers, **parent_watch.pool_init()) as pool:
         jobs = {pool.submit(_worker, (args.config, args.state_dir, chunk, set(args.tools),
                                       args.restricted, args.pg_mode)): len(chunk) for chunk in chunks}
         for job in futures.as_completed(jobs):

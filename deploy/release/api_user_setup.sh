@@ -27,13 +27,29 @@
 # Residual: at the file-permission level the API's user could write those SQLite files and
 # create new files in R directories (e.g. a -wal next to a store no writer has open); it
 # cannot remove or rename the jobs' files (sticky). It opens the capture stores mode=ro.
+#
+# The host's fs.protected_regular must be at most 1 (grants-1115, 11-15). At 2 (Ubuntu's
+# /usr/lib/sysctl.d/99-protect-links.conf) the kernel refuses an O_CREAT open of a file in a
+# group-writable sticky directory when the file belongs to neither the opener nor the
+# directory's owner. SQLite opens -wal and -shm with O_CREAT, so once the API was the first to
+# open a store (its -wal/-shm are the API user's), every job writing that store gets EACCES,
+# falls back to read-only and fails with "attempt to write a readonly database": the detector
+# run's gap inbox and the Teams, BC, MC, meetings and SharePoint list captures on 11-15. At 1
+# the rule holds only for world-writable sticky directories (/tmp), the kernel's and systemd's
+# own default. Nothing is lost here: the API's user may already write these SQLite files.
+SYSCTL_CONF=/etc/sysctl.d/99-zz-plx-state-protected-regular.conf
+protected_regular() { cat "${PLX_SYSCTL_ROOT:-/proc/sys}/fs/protected_regular" 2>/dev/null || echo 0; }
 set -euo pipefail
 . "$(dirname "$(readlink -f "$0")")/../lib.sh"
 API_USER=${PLX_API_USER:-plx-workbench}
 GROUP=${PLX_STATE_GROUP:-plx-state}
 S=$PLX_STATE
 W_DIRS=(case-runtime feedback host work-log autopilot-write view-as actions app-data case-workspace-live)
-W_FILES=(console-journal.sqlite console-ticket-audit.jsonl session-replay.sqlite reviews.sqlite)
+W_FILES=(console-journal.sqlite console-ticket-audit.jsonl session-replay.sqlite reviews.sqlite app-sessions.json
+         app-sessions-health.json)
+# files the API replaces (os.replace) or create-opens in the sticky root: only their owner can,
+# so they must be the API user's (a dev API run as the host user leaves them its own)
+API_OWNED=(app-sessions.json .app-sessions.json.lock app-sessions-health.json)
 R_DIRS=(bc-capture mail-capture sharepoint-capture sharepoint-list-capture teams-capture
         meetings-capture mc-capture projection ai-watcher autopilot)
 # the top-level SQLite files of an R directory (databases and their -wal/-shm/-journal)
@@ -64,6 +80,11 @@ if [ "$mode" = check ]; then
     [ "$(stat -c %G "$S/$f")" = "$GROUP" ] && [ -n "$(find "$S/$f" -perm -g+rw)" ] \
       || { echo "$S/$f: not group $GROUP read/write"; bad=1; }
   done
+  for f in "${API_OWNED[@]}"; do
+    [ -e "$S/$f" ] || continue
+    [ "$(stat -c %U "$S/$f")" = "$API_USER" ] \
+      || { echo "$S/$f: owned by $(stat -c %U "$S/$f"), not $API_USER (the API cannot replace it)"; bad=1; }
+  done
   for d in "${R_DIRS[@]}"; do
     [ -d "$S/$d" ] || continue
     { [ "$(stat -c %G "$S/$d")" = "$GROUP" ] && [ -g "$S/$d" ] && [ -k "$S/$d" ] \
@@ -72,6 +93,9 @@ if [ "$mode" = check ]; then
     n=$(r_files "$S/$d" \( ! -group "$GROUP" -o ! -perm -g+rw \) -print | wc -l)
     [ "$n" = 0 ] || { echo "$S/$d: $n SQLite files not group $GROUP read/write"; bad=1; }
   done
+  pr=$(protected_regular)
+  [ "$pr" -le 1 ] 2>/dev/null \
+    || { echo "fs.protected_regular=$pr: a job cannot reopen a -wal/-shm the API created (want <= 1)"; bad=1; }
   [ "$bad" = 0 ] && echo "api user setup holds"
   exit $bad
 fi
@@ -99,6 +123,9 @@ for f in "${W_FILES[@]}"; do
     run chmod g+rw "$g"
   done
 done
+for f in "${API_OWNED[@]}"; do
+  if [ -f "$S/$f" ] && [ ! -L "$S/$f" ]; then run chown "$API_USER" "$S/$f"; fi
+done
 for d in "${R_DIRS[@]}"; do
   [ -d "$S/$d" ] || continue
   run chgrp "$GROUP" "$S/$d"
@@ -108,4 +135,13 @@ for d in "${R_DIRS[@]}"; do
     run chmod g+rw "$f"
   done < <(r_files "$S/$d")
 done
+if [ "$(protected_regular)" -gt 1 ] || [ ! -e "$SYSCTL_CONF" ]; then
+  if [ "$mode" = apply ]; then
+    printf '%s\n' "# api_user_setup.sh: a job reopens the -wal/-shm the API created in a group-writable" \
+      "# sticky state directory (see that file's header)" "fs.protected_regular = 1" > "$SYSCTL_CONF"
+    sysctl -q -w fs.protected_regular=1
+  else
+    echo "would: write $SYSCTL_CONF (fs.protected_regular = 1); sysctl -w fs.protected_regular=1"
+  fi
+fi
 echo "$([ "$mode" = apply ] && echo applied || echo "dry run: nothing changed"); check: $0 --check"

@@ -8,7 +8,6 @@ from __future__ import annotations
 
 from datetime import date, timedelta
 import os
-import re
 from pathlib import Path
 from typing import Any, Iterable, Mapping, Optional
 from urllib.parse import quote
@@ -98,8 +97,15 @@ def _held(view: Any) -> frozenset[str] | None:
 WEEKLY_FILE = "weekly-reviews.sqlite"
 
 
-def _alerts(view: Any, *, resolved: bool = False) -> Mapping[str, Any]:
+def _alerts(view: Any, *, resolved: bool = False,
+            only: Optional[Iterable[str]] = None) -> Mapping[str, Any]:
+    """The reader's alerts of the briefing's kinds; ``only``: of those, just these (a page
+    that shows a few kinds never reads and decides the rest)."""
     from operating import briefing as bf
+    if only is not None:
+        wanted = set(only)
+        kinds = [k for k in bf.EVENT_KINDS if k in wanted] or ["\x00none"]
+        return view.gap_inbox(kinds=kinds, limit=bf.MAX_READ)
     if not resolved:
         return view.gap_inbox(kinds=list(bf.EVENT_KINDS), limit=bf.MAX_READ)
     try:
@@ -297,7 +303,7 @@ def qc_pack_of(view: Any, kind: str) -> Optional[dict[str, Any]]:
         return None
     decide = _decide(view)
     if kind == "daily":
-        alerts = _alerts(view)
+        alerts = _alerts(view, only=br.QC_ALERT_KINDS)
         with view._request():
             return br.qc_daily_pack(view._call, held, alerts, decide=decide)
     with view._request():
@@ -442,87 +448,6 @@ def replies_of(view: Any, today: Optional[date] = None) -> Optional[dict[str, An
     return it.triage(found.get("gaps") or (), today or date.today())
 
 
-UAT_PRIORITY_RANK = {"critical": 0, "blocker": 0, "urgent": 0, "high": 1, "major": 1,
-                     "medium": 2, "normal": 2, "moderate": 2, "low": 3, "minor": 3}
-UAT_PAGE = 200        # the aggregate's rows cap a page (``business_documents.MAX_ROWS``)
-UAT_MAX_PAGES = 25    # 5,000 items; past it the list says it is cut
-UAT_STATUSES = ("open", "fixed", "answered", "unknown")
-
-
-def uat_level(word: Any) -> str:
-    """A priority word's level: the lists word a level and then what it means
-    ("Critical — Blocks work, no workaround" is Critical)."""
-    return re.split(r"\s+[-\u2013\u2014]+\s+", str(word or "").strip(), maxsplit=1)[0]
-
-
-def _uat_rank(word: Any) -> int:
-    w = uat_level(word).lower()
-    return UAT_PRIORITY_RANK.get(w, 4 if w else 5)
-
-
-def uat_feedback_of(view: Any, status: Optional[str], today: date) -> dict[str, Any]:
-    """The UAT list items as this reader reads them: ``plx.aggregate`` mode
-    ``business_documents`` view ``uat_feedback`` through the reader's own view (its gate
-    decides each item; withheld ones are only counted). The aggregate shows 200 rows a page:
-    pages are followed by ``offset`` until it says complete, so no item stays out of reach;
-    ``cut`` only when the page limit is hit."""
-    pages = []
-    for page in range(UAT_MAX_PAGES):
-        with view._request():
-            out = view._call("plx.aggregate", {"mode": "business_documents",
-                                               "view": "uat_feedback",
-                                               "offset": page * UAT_PAGE})
-        if not isinstance(out, Mapping) or out.get("error") or \
-                not isinstance(out.get("rows"), list):
-            return {"served": False}
-        if out.get("withheld"):   # e.g. the people exclusion could not be loaded: no reading
-            return {"served": False}
-        pages.append(dict(out))
-        if out.get("complete", True) or not out["rows"]:
-            break
-    first = pages[0]
-    complete = pages[-1].get("complete", True)
-    totals = {k: int(v) for k, v in ((first.get("totals") or {}).items())
-              if isinstance(v, int)}
-    withheld = sum(int(v) for v in (first.get("withheld_counts") or {}).values()
-                   if isinstance(v, int))
-    rows: dict[str, Any] = {}
-    for src in pages:
-        for r in src["rows"]:
-            if isinstance(r, Mapping) and r.get("record"):
-                rows.setdefault(str(r["record"]), r)
-    shown = [r for r in rows.values() if not status or r.get("status") == status]
-    prios: dict[str, int] = {}
-    for r in rows.values():
-        if r.get("status") != "open":
-            continue
-        word = uat_level(r.get("priority")) or "No priority"
-        prios[word] = prios.get(word, 0) + 1
-
-    def age(r: Mapping[str, Any]) -> Optional[int]:
-        if r.get("status") != "open" or str(r.get("modified")) == "0001-01-01":
-            return None
-        try:
-            return max(0, (today - date.fromisoformat(str(r.get("modified")))).days)
-        except ValueError:
-            return None
-
-    def key(r: Mapping[str, Any]) -> Any:
-        mod = str(r.get("modified") or "")
-        return (0 if r.get("status") == "open" else 1, _uat_rank(r.get("priority")),
-                "".join(chr(0x10FFFF - ord(c)) for c in mod))   # newest first
-    items = [{**{k: r.get(k) for k in ("record", "list", "title", "status", "status_word",
-                                       "resolution_word", "priority")},
-              "modified": None if str(r.get("modified")) == "0001-01-01" else r.get("modified"),
-              "age_days": age(r)} for r in sorted(shown, key=key)]
-    want_total = totals.get(status, 0) if status else sum(totals.values())
-    return {"served": True, "totals": totals, "withheld": withheld, "items": items,
-            "open_priorities": [{"word": w, "count": n} for w, n in sorted(
-                prios.items(), key=lambda kv: (_uat_rank(kv[0]), kv[0]))],
-            "lists": sorted({str(r.get("list")) for r in rows.values() if r.get("list")}),
-            "matched": want_total, "cut": not complete or len(items) < want_total}
-
-
 RD_CARD = "rd:"
 
 
@@ -552,8 +477,19 @@ def rd_board_of(view: Any, me: Iterable[str], today: Optional[date] = None
     found = view.gap_inbox(kinds=list(rd.KINDS), limit=bf_max())
     if not isinstance(found, Mapping) or found.get("status") != "read":
         return None
-    return rd.board(found.get("gaps") or (), today or date.today(), decide=_decide(view),
-                    me=me)
+    board = rd.board(found.get("gaps") or (), today or date.today(), decide=_decide(view),
+                     me=me)
+    # each project's customer by name, read as this reader (``plx.object``'s display): a
+    # record the reader cannot read gets no name (the app shows its handle), never a guess
+    from .backend import cards_words
+    customers = [p["customer"] for p in board.get("projects") or ()
+                 if isinstance(p, Mapping) and isinstance(p.get("customer"), str)]
+    with view._request():
+        names = cards_words(view, customers) if customers else {}
+    for p in board.get("projects") or ():
+        if isinstance(p, dict) and isinstance(p.get("customer"), str):
+            p["customer_name"] = (names.get(p["customer"]) or ("",))[0] or None
+    return board
 
 
 def label_changes_of(view: Any, object_id: str) -> Optional[dict[str, Any]]:
@@ -739,19 +675,14 @@ class BriefsMixin:
         raw["projects"] = projects
         return m.RdBoard(**{k: v for k, v in raw.items() if k not in ("schema",)})
 
-    def uat_feedback(self, reader: Reader, status: Optional[str] = None) -> m.UatFeedback:
-        if status is not None and status not in UAT_STATUSES:
-            raise UserFacing("invalid_request", "status is open, fixed, answered or unknown.",
-                             422)
-        today = date.today()
-        raw = self._brief_run(reader, lambda view: uat_feedback_of(view, status, today))
-        if raw is None or not raw.get("served"):
-            return m.UatFeedback(as_of=today.isoformat(), served=False, status=status)
-        totals = raw["totals"]
-        return m.UatFeedback(as_of=today.isoformat(), status=status, totals=totals,
-                             total=sum(totals.values()), **{
-                                 k: raw[k] for k in ("withheld", "items", "open_priorities",
-                                                     "lists", "matched", "cut")})
+    def answer_bank(self, reader: Reader, question: Optional[str] = None) -> m.DocList:
+        """Past questionnaire answers any customer may get, read as this reader."""
+        from .record_documents import answer_bank
+        today = self.today() if getattr(self, "today", None) else date.today()
+        got = self._brief_run(reader, lambda view: answer_bank(view, question, today))
+        return got if isinstance(got, m.DocList) else m.DocList(
+            view="answer_bank", title="Answers any customer may get", complete=False,
+            error="The list could not be read.")
 
     def rd_card_of(self, reader: Reader, card_id: str) -> Optional[dict[str, Any]]:
         """The status-update card ``card_id`` rebuilt from this reader's own board."""
@@ -806,12 +737,15 @@ class BriefsMixin:
         raw = it.workload(rows, reader=owner_ids(principals),
                           grants=grants.load() if grants else {"teams": {}, "managers": {}},
                           owner_kinds=OWNER_KINDS, excluded=excluded)
+        # a name for each person already shown (the reader's own, a granted team's people)
+        names = (snap or {}).get("people") or {}
+        for row in raw.get("people") or ():
+            row["name"] = str((names.get(row["person"]) or {}).get("name") or "") or None
         return m.Workload(**{k: v for k, v in raw.items() if k != "schema"})
 
-    def assign_workload_grants(self, reader: Reader, body: m.WorkloadGrants) -> m.WorkloadGrants:
-        """Only the owner-open reader (``ReadPolicy.unrestricted``) assigns teams and grants."""
-        from operating import inbox_triage as it
-
+    def _grants_owner(self, reader: Reader) -> Any:
+        """The grants file for the owner-open reader (``ReadPolicy.unrestricted``) only:
+        403 for everyone else, 404 with no data directory."""
         def owner(view: Any) -> bool:
             try:
                 with view._request():
@@ -824,10 +758,61 @@ class BriefsMixin:
         grants = self._workload_grants()
         if grants is None:
             raise UserFacing("not_found", "No data directory is configured.", 404)
+        return grants
+
+    def _grants_gone(self, reader: Reader) -> Any:
+        """Who the grant sheet never shows: the owner, the hidden list and the people
+        exclusion. The exclusion unavailable: 503, before anything is read or written."""
+        people = br.env_people()
+        if people is None or getattr(people, "unavailable", None):
+            raise UserFacing("people_exclusion_unavailable", "The list of people the Workbench "
+                             "leaves out isn't loaded, so the grants can't be read or changed. "
+                             "Nothing was changed.", 503)
+        _everyone, _me, gone, _known = self._team_scope(reader)  # type: ignore[attr-defined]
+        return gone
+
+    def workload_grant_sheet(self, reader: Reader) -> m.WorkloadGrantSheet:
+        """The owner's grant editor: each person of the team snapshot the exclusion clears,
+        with their team and the teams they see per person. Entries for people the sheet
+        never shows are counted, not listed; an assignment keeps them as they are."""
+        from .team_view import snapshot
+        grants = self._grants_owner(reader)
+        current = grants.load()
+        gone = self._grants_gone(reader)
+        teams, managers = current["teams"], current["managers"]
+        people = {oid: str((row or {}).get("name") or "") for oid, row in (
+            (snapshot(self._team_file()) or {}).get("people") or {}).items()}  # type: ignore[attr-defined]
+        listed = {o for o in set(people) | set(teams) | set(managers) if not gone(o)}
+        rows = [m.WorkloadGrantPerson(oid=o, name=people.get(o) or None, team=teams.get(o),
+                                      sees=managers.get(o, []), in_snapshot=o in people)
+                for o in sorted(listed, key=lambda o: ((people.get(o) or "~").lower(), o))]
+        held = sum(1 for o in set(teams) | set(managers) if gone(o))
+        codes = sorted(set(teams.values()) | {t for v in managers.values() for t in v})
+        return m.WorkloadGrantSheet(people=rows, teams=codes, held_back=held)
+
+    def assign_workload_grants(self, reader: Reader, body: m.WorkloadGrants) -> m.WorkloadGrants:
+        """Only the owner-open reader assigns teams and grants. The body is the whole
+        assignment, except that entries for people the sheet never shows (the owner, the
+        hidden list, the people exclusion) are kept as they are: the editor cannot see them,
+        so it can neither change nor drop them."""
+        from operating import inbox_triage as it
+        grants = self._grants_owner(reader)
         try:
-            return m.WorkloadGrants(**grants.assign(body.model_dump()))
+            wanted = it.validate(body.model_dump())
         except it.GrantsInvalid as bad:
             raise UserFacing("invalid_request", str(bad), 422)
+        gone = self._grants_gone(reader)
+        current = grants.load()
+        for part in ("teams", "managers"):
+            wanted[part] = {o: v for o, v in wanted[part].items() if not gone(o)}
+            wanted[part].update({o: v for o, v in current[part].items() if gone(o)})
+        try:
+            kept = grants.assign(wanted)
+        except it.GrantsInvalid as bad:
+            raise UserFacing("invalid_request", str(bad), 422)
+        return m.WorkloadGrants(teams={o: t for o, t in kept["teams"].items() if not gone(o)},
+                                managers={o: v for o, v in kept["managers"].items()
+                                          if not gone(o)})
 
     def _brief_run(self, reader: Reader, job: Any) -> Any:
         return self.reads.run(reader, job, timeout=BRIEF_TIMEOUT_SECONDS)  # type: ignore

@@ -139,13 +139,13 @@ from typing import Any, Callable, Mapping, Sequence
 
 from . import answer_gate, mcp_server, plan_answer, tool_results
 from .agent_environment import agent_environment
-from .answer_gate import (ANSWER_BACKING, CONTRACTS, MAX_CITATIONS_PER_CLAIM,
-                          MAX_CLAIM_CHARS, MAX_CLAIMS, DOCUMENT_READ_RULE, REPAIR_ANSWER, RESOLVED_STATUSES,
-                          STATED_GAP,
-                          evidence_handles)
-from .claim_checks import OTHER_ROLES, QUANTITY_ROLES, returned_evidence
+from .answer_gate import (ANSWER_BACKING, CONTRACTS, DOCUMENT_READ_RULE, REPAIR_ANSWER, RESOLVED_STATUSES,
+                          STATED_GAP, evidence_handles)
+from .claim_checks_grammar import OTHER_ROLES, QUANTITY_ROLES
+from .claim_checks_values import returned_evidence
 from .time_window import reference_days
-from .mcp_server import AGENDA_TOOLS, GENERIC_TOOLS, MCPServer
+from .mcp_server import MCPServer
+from .mcp_server_catalog import AGENDA_TOOLS, GENERIC_TOOLS
 
 # The read-only generic tools a loop may call (each still listed by the server).
 LOOP_TOOLS = GENERIC_TOOLS | AGENDA_TOOLS
@@ -859,7 +859,8 @@ class ClaudeCodePlanner:
     def __call__(self, request: Mapping[str, Any]) -> tuple[Any, int | None]:
         import os
 
-        prompt = PLANNER_RULES + "\n\n" + json.dumps(request, ensure_ascii=False)
+        from operating.card_text import mask_served   # no card or secret to the model
+        prompt = mask_served(PLANNER_RULES + "\n\n" + json.dumps(request, ensure_ascii=False))
         # The prompt goes on stdin: one argument is capped (Linux: 128 KiB, E2BIG) and the
         # transcript grows past it.
         argv = [self.binary, "-p", "--output-format", "json", "--setting-sources",

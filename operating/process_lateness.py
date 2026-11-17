@@ -60,11 +60,12 @@ from typing import TYPE_CHECKING, Any, Mapping, Sequence
 
 from operating import po_status as ps
 from operating.injection_guard import is_unit
-from operating.ontology_tools import _gap
+from operating.ontology_tools_identity import _gap
 from operating.ontology_tools_traverse import WITHHELD
 
 if TYPE_CHECKING:  # pragma: no cover
-    from operating.ontology_tools_process import ProcessTools, _Ctx
+    from operating.ontology_tools_process import ProcessTools
+    from operating.ontology_tools_process_answer import _Ctx
 
 LATE, ON_TIME, NOT_DUE, UNDETERMINED = "late", "on_time", "not_due", "undetermined"
 NOT_APPLICABLE = "not_applicable"
@@ -233,7 +234,7 @@ def by_line(src: ps.ContextSource, lines: Sequence[Mapping[str, Any]],
     per-line verdict, None when no promised arrival date matches a line; the arrival
     dates of the blocks no line matched, cited: kept at document level as unmatched)."""
     from operating import line_promises as lp
-    from operating.ontology_tools import _citation, _markings
+    from operating.ontology_tools_policy import _citation, _markings
 
     reads = src.line_promise_blocks(records) if lines else []
     if not reads:
@@ -387,11 +388,12 @@ def lateness(tools: "ProcessTools", ctx: "_Ctx", graph: Mapping[str, Any], oid: 
              stage: Mapping[str, Any], conflicts: Sequence[Mapping[str, Any]]
              ) -> dict[str, Any]:
     from operating import ontology_tools_process as op
+    from operating import ontology_tools_process_answer
 
     spec = stage["due"]
     late_spec = spec["lateness"]
     subject = f"{stage['id']} lateness"
-    today = op._business_date(ctx.at)
+    today = ontology_tools_process_answer._business_date(ctx.at)
     entry: dict[str, Any] = {"stage": stage["id"], "root": oid, "state": UNDETERMINED,
                              "late": None}
     reasons: set[str] = set()

@@ -1,4 +1,4 @@
-import type { LatePo } from "@/lib/types";
+import type { LatePo, ObjectRef, ProactiveSuggestion, SourceSystem } from "@/lib/types";
 
 /** Days-late bands of the late list's filter. */
 export const DAY_BANDS = [
@@ -21,10 +21,27 @@ export const VALUE_BANDS = [
 export type DayBand = (typeof DAY_BANDS)[number]["id"];
 export type ValueBand = (typeof VALUE_BANDS)[number]["id"];
 export type SortKey = "days" | "value" | "supplier" | "due" | "po";
+/** What blocks a late order, by its supplier date state (the buyer's filter). */
+export const STATE_BANDS = [
+  { id: "all", label: "Any state" },
+  { id: "no_date", label: "No supplier date", test: (p: LatePo) => p.confirmation === "none_found" },
+  { id: "check", label: "Date to check", test: (p: LatePo) => p.confirmation === "found_unverified" || p.confirmation === "needs_check" },
+  { id: "confirmed", label: "Supplier confirmed", test: (p: LatePo) => p.confirmation === "confirmed" },
+  { id: "unknown", label: "State not on the list", test: (p: LatePo) => !p.confirmation },
+] as const;
+export type StateBand = (typeof STATE_BANDS)[number]["id"];
+
 export interface LateFilter {
   supplier: string | null; // null: every supplier; "": orders with no supplier shown
   days: DayBand;
   value: ValueBand;
+  state?: StateBand;
+}
+
+export function inStateBand(p: LatePo, band: StateBand | undefined): boolean {
+  if (!band || band === "all") return true;
+  const b = STATE_BANDS.find((x) => x.id === band);
+  return !!b && "test" in b && b.test(p); // an unknown band shows nothing
 }
 
 /** An order's total as a number for banding and sorting, or null: none shown, or suspect (never treated as fact). */
@@ -49,7 +66,7 @@ export function inDayBand(p: LatePo, band: DayBand): boolean {
 }
 
 export function matches(p: LatePo, f: LateFilter): boolean {
-  return (f.supplier === null || (p.supplier ?? "") === f.supplier) && inDayBand(p, f.days) && inValueBand(p, f.value);
+  return (f.supplier === null || (p.supplier ?? "") === f.supplier) && inDayBand(p, f.days) && inValueBand(p, f.value) && inStateBand(p, f.state);
 }
 
 /** Every supplier on the list with its count of late orders, most first ("" for none shown). */
@@ -122,4 +139,65 @@ export async function readAllLate<P extends LatePage>(
   const last = pages[pages.length - 1];
   const staleSince = pages.map((p) => p.stale_since).filter((t): t is string => !!t).sort()[0] ?? null;
   return { items, total: last.total, asOf: last.as_of ?? null, staleSince };
+}
+
+export const DEC = /^-?\d+(\.\d+)?$/;
+
+/** a + b for two decimal strings, exactly (no float on the way: money stays to the cent). */
+export function addDecimal(a: string, b: string): string {
+  const scale = Math.max((a.split(".")[1] ?? "").length, (b.split(".")[1] ?? "").length);
+  const big = (s: string) => {
+    const neg = s.startsWith("-");
+    const [i, f = ""] = (neg ? s.slice(1) : s).split(".");
+    const n = BigInt(i + f.padEnd(scale, "0"));
+    return neg ? -n : n;
+  };
+  const sum = big(a) + big(b);
+  const neg = sum < BigInt(0);
+  const digits = (neg ? -sum : sum).toString().padStart(scale + 1, "0");
+  const out = scale ? `${digits.slice(0, -scale)}.${digits.slice(-scale)}` : digits;
+  return neg ? `-${out}` : out;
+}
+
+/** Each currency's exact total of the late POs that carry a trusted value, largest first; amounts in different currencies are never added together. */
+export function lateTotals(items: LatePo[]): { currency: string; amount: string; count: number }[] {
+  const m = new Map<string, { amount: string; count: number }>();
+  for (const p of items) {
+    if (!p.amount || p.amount_suspect) continue;
+    const a = String(p.amount.amount).trim();
+    if (!DEC.test(a)) continue;
+    const cur = m.get(p.amount.currency);
+    m.set(p.amount.currency, { amount: cur ? addDecimal(cur.amount, a) : a, count: (cur?.count ?? 0) + 1 });
+  }
+  return [...m.entries()].map(([currency, v]) => ({ currency, ...v })).sort((x, y) => Number(y.amount) - Number(x.amount));
+}
+
+/** What a buyer reads to chase one late order, from its drafted follow-up: the date the
+ * supplier gave (or why there is none), the last word on record and where, whom to ask,
+ * the customer or production orders it holds up and the next step. Null fields: not on
+ * record (said in words by the row, never guessed). */
+export interface Chase {
+  promised: string | null; // "4 Nov" style is the caller's; this is the ISO date or day
+  promiseWords: string | null; // when there is no settled date: what the record says instead
+  lastWord: { at: string; system: SourceSystem } | null;
+  ask: string | null;
+  holds: ObjectRef[];
+  next: string | null;
+}
+
+const ETA_WORDS: Record<string, string | null> = { no: "supplier gave no date", possibly: "possible date, unconfirmed", conflicting: "dates on record disagree", hidden: "date in a record you can't open", unknown: null, yes: null };
+
+export function chaseOf(s: ProactiveSuggestion | null | undefined): Chase {
+  const eta = s?.eta ?? null;
+  const promised = eta && (eta.answer === "yes" || eta.answer === "possibly") && eta.when ? eta.when : null;
+  const at = eta?.source?.as_of ?? null;
+  const to = s?.draft?.to;
+  return {
+    promised,
+    promiseWords: eta ? (eta.answer === "possibly" && promised ? ETA_WORDS.possibly : promised ? null : (ETA_WORDS[eta.answer] ?? null)) : null,
+    lastWord: at && eta?.source ? { at, system: eta.source.system } : null,
+    ask: to?.name || to?.address || s?.action?.contact || null,
+    holds: s?.impact?.orders ?? [],
+    next: s?.action?.text ?? null,
+  };
 }

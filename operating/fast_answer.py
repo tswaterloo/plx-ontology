@@ -3,8 +3,8 @@ reads and the same answer gate, with no model loop.
 
 The agent path (``operator_api.agent_ask``) answers any question in about a minute: a
 model chooses tool calls, submits claims to the answer gate and writes the reply. For a
-question of a known shape about one record ("where's TASK-123 at", "how much R-0162 do we
-have on hand", "open AR for <customer>") the calls are always the same, so code makes
+question of a known shape about one record ("where's TASK-123 at", "open orders for
+<customer>", "which account is <customer>") the calls are always the same, so code makes
 them. What is fixed here is only *which* reads answer an intent; what may be said is
 decided exactly as for the agent:
 
@@ -542,7 +542,7 @@ _AHEAD = re.compile(r"\bnext (?:week|month|quarter|year)\b|\btomorrow\b|\bforeca
                     r"\bproject(?:ed|ion)\b|\bin \d+ (?:days?|weeks?|months?)\b")
 # The systems each recipe reads, where it reads one only (a recipe absent reads the
 # system the question names itself, or any).
-_RECIPE_SYSTEMS = {"on_hand": ("bc",), "task_status": ()}
+_RECIPE_SYSTEMS = {"task_status": ()}
 
 
 def _unserved_scope(intent: Any, folded: str, system: Optional[str], named: Optional[str],
@@ -1351,28 +1351,6 @@ def task_status(reads: Reads, ask: Ask, draft: Draft) -> None:
                         "mention": task})
 
 
-def on_hand(reads: Reads, ask: Ask, draft: Draft) -> None:
-    found = by_identifier(reads, ask.mention, ("Product",), "bc.")
-    if isinstance(found, Choices):
-        raise _Choice(found)
-    row = reads.row(_handle_of(found))
-    handle = row["citation"]
-    if _norm_id(row.get("row.number")) != _norm_id(ask.mention) \
-            or row.get("row.type") != "Inventory":
-        raise Unanswerable("not_an_inventory_item")
-    draft.value("item", row.get("row.number"), handle, "row.number")
-    stock = draft.value("on_hand", _amount(_decimal(row.get("row.inventory"))), handle,
-                        "row.inventory")
-    unit = row.get("row.baseUnitOfMeasureCode")
-    said = f"Business Central shows {stock} of {row['row.number']} on hand"
-    if isinstance(unit, str) and unit.strip():
-        draft.value("base_unit", unit, handle, "row.baseUnitOfMeasureCode")
-        said += f" (base unit {unit})"
-    draft.sentences.append(said + ".")
-    draft.roots.append({"object_id": found["object"]["object_id"], "object_type": "Product",
-                        "mention": str(row["row.number"])})
-
-
 def lot_expiry(reads: Reads, ask: Ask, draft: Draft) -> None:
     token = re.sub(r"(?i)^lot\s*", "", ask.mention)
     found = by_identifier(reads, token, ("Lot",))
@@ -1563,10 +1541,10 @@ def _po_orders(reads: Reads, ask: Ask, found: Mapping[str, Any], prefer: Sequenc
     if len(groups) > 1:
         from .why_trail import by_named_party
         try:
-            hits, party = by_named_party(reads.call, getattr(reads, "question", ""), [
+            hits, _ = by_named_party(reads.call, getattr(reads, "question", ""), [
                 [p["object"]["object_id"] for p in g] for g in groups], mismatch=False)
         except Exception:  # noqa: BLE001 - unread: every order stays listed
-            hits, party = list(range(len(groups))), None
+            hits = list(range(len(groups)))
         groups = [groups[i] for i in hits]
     return [g[0] for g in groups]
 
@@ -2182,78 +2160,6 @@ def _customer_handle(card: Mapping[str, Any]) -> str:
     return _handle_of({"object": card})
 
 
-def _company_said(handle: str) -> str:
-    """The Business Central company a cited record is in (``bc://<environment>/<company>/``),
-    by the pinned company books (``integrations/bc_company_books.json``); "" when the
-    handle names no pinned company."""
-    found = re.match(r"bc://([^/]+)/([^/]+)/", str(handle))
-    if not found:
-        return ""
-    book = _company_books().get(found.group(1).lower(), {}).get(found.group(2).lower())
-    return f"{book} company" if book else ""
-
-
-@functools.lru_cache(maxsize=1)
-def _company_books() -> dict[str, dict[str, str]]:
-    from integrations.bc_read import load_company_books
-    try:
-        return load_company_books()
-    except (OSError, ValueError):
-        return {}   # no pinned books: the cards are told apart by number alone
-
-
-def _balances_said(draft: Draft, system: str, named: str,
-                   parts: Sequence[tuple[str, Decimal, str, str]]) -> None:
-    """One customer's balance due per card (number, balance, the balance as said, where the
-    card is): one card says it plainly; several cards of the name say each card's own
-    balance in its own clause, those owing first, each card told apart by its number and,
-    when the cards are in several companies, its company. A list headed by one label
-    ("the balance due of each: C1: 0; C2: 0; C3: 115960.5") reads as the first card's 0."""
-    if len(parts) == 1:
-        number, _amount_, said, _where = parts[0]
-        draft.sentences.append(f"{named}'s open AR (balance due in {system}, customer "
-                               f"{number}) is {said}." if system == "Business Central" else
-                               f"{named}'s balance due in {system} (customer {number}) is "
-                               f"{said}.")
-        return
-    places = {where for *_rest, where in parts}
-    ordered = sorted(parts, key=lambda p: p[1] == 0)   # stable: those owing first
-    draft.sentences.append(
-        f"{system} has more than one customer card named {named}; "
-        + "; ".join(f"customer {number}"
-                    + (f" ({where})" if len(places) > 1 and where else "")
-                    + f" has a balance due of {said}"
-                    for number, _amount_, said, where in ordered) + ".")
-
-
-def open_ar(reads: Reads, ask: Ask, draft: Draft) -> None:
-    if ask.system == "sage":
-        return _sage_balance(reads, ask, draft)
-    if ask.system not in ("bc", None):
-        raise Unanswerable("system_not_read")
-    cards = _same_named(reads, ask.mention, "bc.customers")
-    named = _said(draft, "customer", {"object": cards[0]}, ask.mention)
-    parts = []
-    for at, card in enumerate(cards, 1):
-        row = reads.row(_customer_handle(card))
-        handle = row["citation"]
-        suffix = "" if len(cards) == 1 else f"_{at}"
-        number = draft.value(f"customer_number{suffix}", row.get("row.number"), handle,
-                             "row.number")
-        amount = _decimal(row.get("row.balanceDue"))
-        balance = draft.value(f"open_ar{suffix}", _amount(amount), handle, "row.balanceDue")
-        currency = row.get("row.currencyCode")
-        money = ""
-        if isinstance(currency, str) and re.fullmatch(r"[A-Z]{3}", currency.strip()):
-            money = " " + draft.value(f"currency{suffix}", currency.strip(), handle,
-                                      "row.currencyCode")
-        # cards of one name and number may be in two companies: each said with its own
-        parts.append((number, amount, balance + money, _company_said(handle)))
-        draft.roots.append({"object_id": card["object_id"], "object_type": "Customer",
-                            "mention": ask.mention})
-    _balances_said(draft, "Business Central", named, parts)
-
-
 MAX_ORDERS_READ = 12      # open orders one answer reads and cites one by one
 
 
@@ -2779,68 +2685,6 @@ _DAY = re.compile(r"^\d{4}-\d{2}-\d{2}")
 def _cut(result: Mapping[str, Any]) -> bool:
     """A listing cut short or with records withheld from this reader."""
     return bool((result.get("completeness") or {}).get("truncated")) or _withheld(result)
-
-
-def _sage_balance(reads: Reads, ask: Ask, draft: Draft) -> None:
-    """A customer's balance due in Sage (``ar_customer``: home-currency balance, which must
-    equal the customer-currency one), per Sage customer card of the asked name."""
-    cards = _same_named(reads, ask.mention, "portal.sage_ar_customer")
-    named = _said(draft, "customer", {"object": cards[0]}, ask.mention)
-    parts = []
-    for at, card in enumerate(cards, 1):
-        row = reads.row(_customer_handle(card), need=(
-            "row.idcust", "row.amtbaldueh", "row.amtbalduet", "row.codecurn"))
-        handle = row["citation"]
-        home, own = row.get("row.amtbaldueh"), row.get("row.amtbalduet")
-        if _decimal(home) != _decimal(own):
-            raise Unanswerable("sage_balances_differ")   # two balances: no one figure
-        suffix = "" if len(cards) == 1 else f"_{at}"
-        number = draft.value(f"customer_number{suffix}", row.get("row.idcust"), handle,
-                             "row.idcust")
-        balance = draft.value(f"sage_balance{suffix}", _amount(_decimal(home)), handle,
-                              "row.amtbaldueh")
-        currency = row.get("row.codecurn")
-        if isinstance(currency, str) and re.fullmatch(r"[A-Z]{3}", currency.strip()):
-            balance += " " + draft.value(f"currency{suffix}", currency.strip(), handle,
-                                         "row.codecurn")
-        parts.append((number, _decimal(home), balance, ""))
-        draft.roots.append({"object_id": card["object_id"], "object_type": "Customer",
-                            "mention": ask.mention})
-    _balances_said(draft, "Sage", named, parts)
-
-
-def order_shipped(reads: Reads, ask: Ask, draft: Draft) -> None:
-    """When a sales order shipped: the ship date of each shipment that ships it
-    (``Shipment.ships``), each read on its card; an order with no shipment read, a
-    shipment with no single date or a cut or withheld list is the agent's."""
-    found = reads.find(ask.mention)
-    picked = by_identifier(reads, ask.mention, ("SalesOrder",), found=found)
-    if isinstance(picked, Choices):
-        raise _Choice(picked)
-    root = picked["object"]["object_id"]
-    order = _said(draft, "order_number", picked, ask.mention)
-    around = reads.call("plx.around", {"from": root, "limit": 50, "path": [
-        {"link_type": "Shipment.ships", "direction": "reverse"}]})
-    ships = [o for o in around.get("objects") or () if o.get("object_type") == "Shipment"]
-    if _cut(around) or not ships or len(ships) != len(around.get("objects") or ()) \
-            or len(ships) > MAX_ORDERS_READ:
-        raise Unanswerable("shipments_not_read")
-    days: dict[str, tuple[str, str]] = {}
-    for ship in ships:
-        card = reads.call("plx.object", {"object_id": ship["object_id"],
-                                         "properties": ["ship_date"]})
-        dated = [v for v in _object_values(card, "ship_date")
-                 if isinstance(v[0], str) and _DAY.match(v[0])]
-        if not dated or len({v[0][:10] for v in dated}) != 1 or card.get("conflicts"):
-            raise Unanswerable("ship_date_not_one")
-        days.setdefault(dated[0][0][:10], (dated[0][1], dated[0][2]))
-    said = [draft.value("ship_date" if len(days) == 1 else f"ship_date_{'abcdefghijkl'[at]}",
-                        day, handle, field_path)
-            for at, (day, (handle, field_path)) in enumerate(sorted(days.items()))]
-    draft.sentences.append(f"Order {order} shipped on {said[0]}." if len(said) == 1 else
-                           f"Order {order} shipped in parts, on " + ", ".join(said[:-1])
-                           + f" and {said[-1]}.")
-    draft.roots.append({"object_id": root, "object_type": "SalesOrder", "mention": ask.mention})
 
 
 def po_people(reads: Reads, ask: Ask, draft: Draft) -> None:
@@ -4428,12 +4272,15 @@ def customer_account(reads: Reads, ask: Ask, draft: Draft) -> None:
     draft.sentences.extend(said)
 
 
+# The intents in ``INTENTS`` with no recipe here (``ROUTED_TO_AGENT``) are still recognised,
+# so a question naming one keeps its meaning (the overrides, the agent's first reads), but
+# the fast path never answers it: the agent does.
 _RECIPES: dict[str, Callable[[Reads, Ask, Draft], None]] = {  # (+ fast_chain.RECIPES below)
-    "task_status": task_status, "on_hand": on_hand, "lot_expiry": lot_expiry,
-    "batch_status": batch_status, "po_status": po_status, "order_margin": order_margin,
-    "open_ar": open_ar, "open_sos": open_sos, "receipt_vs_po": receipt_vs_po,
+    "task_status": task_status, "lot_expiry": lot_expiry,
+    "batch_status": batch_status, "order_margin": order_margin,
+    "open_sos": open_sos, "receipt_vs_po": receipt_vs_po,
     "vendor_open_pos": vendor_open_pos, "price_trend": price_trend, "last_price": last_price,
-    "changes": changes, "order_shipped": order_shipped, "po_people": po_people,
+    "changes": changes, "po_people": po_people,
     "customer_last_mail": customer_last_mail,
     "teams_po": teams_po, "lot_file": lot_file, "batch_hold_count": batch_hold_count,
     "late_po_count": late_po_count, "lots_expiring": lots_expiring,
@@ -4678,6 +4525,14 @@ def serves(question: str) -> bool:
     return ask is not None and ask.intent in _RECIPES and not asks_more(question, ask)
 
 
+def routed(question: str) -> bool:
+    """Whether ``question`` is understood as one whose answer is the agent's
+    (``ROUTED_TO_AGENT``): a question of a known shape the fast path no longer answers,
+    still worth asking as worded (its fact named) rather than as a record's status."""
+    ask = understand(question)
+    return ask is not None and ask.intent in ROUTED_TO_AGENT
+
+
 class _Choice(Exception):
     def __init__(self, choices: Choices) -> None:
         super().__init__("choices")
@@ -4717,11 +4572,14 @@ def answer(question: str, reads: Reads, why: Optional[list[str]] = None
     ``why``: given, the code of a declined answer is appended to it (never a value)."""
     why = why if why is not None else []
     ask = understand(question)
-    if ask is None or ask.intent not in _RECIPES:
+    if ask is None:
         why.append("not_understood")
         return None
     if asks_more(question, ask):
         why.append("asks_more")
+        return None
+    if ask.intent not in _RECIPES:   # (``ROUTED_TO_AGENT``: never a recipe here)
+        why.append("routed_to_agent" if ask.intent in ROUTED_TO_AGENT else "not_understood")
         return None
     reads.deadline = time.monotonic() + BUDGET_SECONDS
     try:
@@ -4788,37 +4646,6 @@ def _choices(ask: Ask, choices: Choices, reads: Reads, started: float) -> FastRu
                    seconds=time.monotonic() - started)
 
 
-class FastAgent:
-    """The fast path on the agent contract (``agent_session.Agent``) for the scoreboard's
-    runner: ``run(prompt, host)`` answers ``question`` in ``host``'s in-process session
-    (``host.agent_session()``, as the app's Ask reads) and returns the run the runner
-    records; a question it does not answer is an empty run (no answer)."""
-
-    gates_final_reply = True
-
-    def __init__(self, question: str) -> None:
-        self.question = question
-        self.last: Optional[FastRun] = None
-        self.why: list[str] = []
-
-    def run(self, prompt: str, host: Any) -> Any:
-        from .agent_session import AgentRun
-        _session_host, server = host.agent_session()
-        try:
-            reads = Reads.of_server(server)
-            ran = answer(self.question, reads, self.why)
-        finally:
-            server.close()
-        self.last = ran
-        if ran is None or not ran.agent_text:
-            return AgentRun(events=list(reads.events), final_text="",
-                            usage={"subtype": "fast_path_declined"},
-                            agent={"fast_path": "declined"})
-        return AgentRun(events=list(ran.events), final_text=ran.agent_text,
-                        usage={"subtype": "fast_path", "duration_ms": int(ran.seconds * 1000)},
-                        agent={"fast_path": ran.intent})
-
-
 # The chained recipes (a record followed to the next), registered once both modules load.
 from . import fast_chain as _chain  # noqa: E402 - it reads this module's helpers
 
@@ -4826,3 +4653,12 @@ _RECIPES.update(_chain.RECIPES)
 from . import fast_record as _record  # noqa: E402 - it reads this module's helpers
 
 _RECIPES.update(_record.RECIPES)
+
+# The intents the fast path no longer answers (CAP-L180 router eval, 2026-11-15, 58
+# held-out cards: with the phrase rules off the agent matched or beat them on these four
+# families, 7/8 vs 5/8 on hand with 3 wrong answers to none). ``po_status`` stays as
+# ``fast_chain``'s first read of a purchase order's follow-up, never an answer of its own.
+ROUTED_TO_AGENT = frozenset({"on_hand", "open_ar", "order_shipped", "po_status"})
+if ROUTED_TO_AGENT & _RECIPES.keys():   # a recipe table re-registering one: refuse to load
+    raise ImportError("fast_answer: a recipe answers an intent routed to the agent: "
+                      + ", ".join(sorted(ROUTED_TO_AGENT & _RECIPES.keys())))

@@ -536,6 +536,18 @@ class QueryTool:
                                       "detail": "no record was reached on the path"}]
             result["meta"] = meta
             return result
+        if isinstance(current, str) and not current.startswith("set:"):
+            # one record reached (or started from): plx.aggregate and the listing take a
+            # set handle only (live 11-05: one code's record passed as the set, an
+            # internal "$.set: does not match ^set:" error). The answer still names the
+            # record itself; the set measured holds it alone, short when the walk's gaps
+            # say a record may be missing (``_mark_short``).
+            measured = self._set_of([current], actor, always=True)
+            if measured != current and self.backend.set_incomplete is not None and any(
+                    isinstance(g, Mapping) and g.get("reason") not in LOSSLESS_GAPS
+                    for g in gaps):
+                self.backend.set_incomplete(actor, measured)
+            current = measured
         if arguments.get("rows") is not None:
             listed = self._rows(current, arguments, gaps, actor)
             if listed is not None:
@@ -1356,19 +1368,37 @@ class QueryTool:
             if self.backend.codes is None:
                 raise _Refused(_error("invalid_input", "codes need the host's identifier "
                                       "index"))
-            found, missing = self.backend.codes(actor, list(start["codes"]),
-                                                start.get("object_type"))
+            asked = list(dict.fromkeys(start["codes"]))
+            found, missing = self.backend.codes(actor, asked, start.get("object_type"))
+            found = list(dict.fromkeys(found))
             if missing:
+                # every code no readable record holds is named, never dropped
                 gaps.append({"state": "unknown", "reason": "codes_not_found",
                              "subject": ", ".join(missing)[:700],
-                             "detail": f"{len(missing)} code(s) name no record this reader "
-                                       "may read"})
+                             "detail": f"{len(missing)} of {len(asked)} code(s) name no "
+                                       "record this reader may read"
+                                       + (f" as a {start['object_type']}"
+                                          if start.get("object_type") else "")})
             if not found:
-                raise _Refused(_error("object_not_found", "no record holds these codes",
+                raise _Refused(_error("object_not_found",
+                                      ("no record this reader may read holds these codes: "
+                                       + ", ".join(missing))[:600],
                                       "plx.find one of them"))
+            cut = len(found) > MAX_CODE_RECORDS
+            if cut:
+                gaps.append({"state": "unknown", "reason": "start_cut",
+                             "subject": "from.codes",
+                             "detail": f"the codes name {len(found)} records; the walk starts "
+                                       f"from the first {MAX_CODE_RECORDS} only, so what it "
+                                       "reaches is partial: ask fewer codes per call"})
+                found = found[:MAX_CODE_RECORDS]
             # one set walked as a whole (a list's records are many; name object_type so
-            # one system's copies are read, never a record and its twin both)
-            return self._set_of(found, actor), None, None
+            # one system's copies are read, never a record and its twin both): a set
+            # handle even for one record, as every measure and listing takes a set
+            handle = self._set_of(found, actor, always=True)
+            if cut and handle and self.backend.set_incomplete is not None:
+                self.backend.set_incomplete(actor, handle)
+            return handle, None, None
         if "set" in start:
             return start["set"], None, None
         if "object_id" in start or "object_ids" in start:
@@ -1393,10 +1423,12 @@ class QueryTool:
         ids = [r["object"]["object_id"] for r in best["records"] if r.get("status") == "match"]
         return None, ids, best.get("mention")
 
-    def _set_of(self, ids: Sequence[str], actor: Any) -> str | None:
+    def _set_of(self, ids: Sequence[str], actor: Any, *, always: bool = False) -> str | None:
+        """A set handle of ``ids``; one record is its own id unless ``always`` (a start
+        whose walk ends in a measure or listing, which take a set handle only)."""
         if not ids:
             return None
-        if len(ids) == 1:
+        if len(ids) == 1 and not (always and self.backend.new_set is not None):
             return ids[0]
         if self.backend.new_set is None:
             raise _Refused(_error("invalid_input", "several start records need the host's "
@@ -1597,7 +1629,7 @@ def _capped(gaps: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
     gap but an age-only one, ``claim_checks.AGE_ONLY_GAPS``) ahead of the age-only ones,
     each group in its own order: the cut drops age-only gaps first, so a gap that makes a
     count inexact is never cut behind others."""
-    from operating.claim_checks import _age_only
+    from operating.claim_checks_counts import _age_only
     kept = [dict(g) for g in gaps if not _age_only(g)] + [dict(g) for g in gaps
                                                          if _age_only(g)]
     return kept[:MAX_QUERY_GAPS]
@@ -1651,7 +1683,8 @@ def register(table: dict[str, dict[str, Any]], base: Any) -> QueryTool:
             readable = set(base._visible_versions(scope, ids))
         held = {forms[r["normalized"]] for r in rows if r["object_id"] in readable
                 and r["normalized"] in forms}
-        return ([i for i in ids if i in readable][:MAX_CODE_RECORDS],
+        # every readable record: the start says how many it cut (``_start``)
+        return ([i for i in ids if i in readable],
                 [c for c in wanted if c not in held])
 
     def rows(arguments: Mapping[str, Any], actor: Any) -> Mapping[str, Any]:

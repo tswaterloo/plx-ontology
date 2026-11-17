@@ -226,7 +226,8 @@ model User {
                                   "relation": "app_order", "domain": "orders", "columns": ["id"],
                                   "key": ["id"], "since": None, "unavailable": None}]}
         prisma = skel.prisma_facts(self.PRISMA, ["app_order"], "abc1234")
-        overrides = dataclasses.replace(skel.OVERRIDES, money={}, names=names or {})
+        overrides = dataclasses.replace(skel.OVERRIDES, money={}, names=names or {},
+                                    relation_markings={})
         empty = {"contracts": []}
         return skel.generate(catalog, prisma, empty, empty, {}, overrides,
                              registry=registry or self.registry(routes))
@@ -352,6 +353,15 @@ class SyntheticReadersTests(unittest.TestCase):
         (generated_root / "domains").mkdir()
         shutil.copy(SCHEMA_DIR / "domains" / "teams_conversations.json",
                     generated_root / "domains")
+        # A generated payroll marking rule follows a raw link to the GL account (via_link),
+        # and those links sit in the raw-links domain files with the links to curated types:
+        # keep only the links between generated raw types.
+        for raw_links in (SCHEMA_DIR / "domains").glob("raw_links_*.json"):
+            document = json.loads(raw_links.read_text())
+            document["link_types"] = [
+                link for link in document["link_types"]
+                if link["from"].startswith("Rel") and link["to"].startswith("Rel")]
+            (generated_root / "domains" / raw_links.name).write_text(json.dumps(document))
         cls.stores = {}
         for generated, schema in ((False, load_schema()),
                                   (True, load_schema(generated_root, check_format=False))):

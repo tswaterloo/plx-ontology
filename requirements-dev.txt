@@ -1,0 +1,8 @@
+# Test and check tools: fixtures that write Office files, and the type checker
+# (tools/typecheck.py, reported by tools/main_ci.py --typecheck).
+-r requirements.txt
+httpx2==2.16.0            # fastapi/starlette.testclient (the TestClient API tests)
+python-docx==1.2.0
+python-pptx==1.0.2
+mypy==2.4.1
+httpx==0.28.1              # fastapi.testclient (starlette's TestClient needs httpx2 or httpx)

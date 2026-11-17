@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { headline, keyOwner, staleLine, yourMorning } from "./home";
+import { headline, keyOwner, morningNotice, staleLine, yourMorning } from "./home";
 import type { Briefing, BriefingItem, HomeResponse } from "./types";
 
 const home = (late_total: number | null, status: "read" | "unavailable" = "read") =>
@@ -46,7 +46,7 @@ describe("staleLine", () => {
   });
 });
 
-describe("Your morning", () => {
+describe("Today list", () => {
   const mine = { ...it_(null), yours: true, why_yours: ["Mentioned in your mail"] } as unknown as BriefingItem;
   const b = brief([mine, it_(null)], { yours: 1, today: "2 new late POs." });
   it("opens Home from 5 AM local with the reader's own items, ranked first by the server", () => {
@@ -60,6 +60,29 @@ describe("Your morning", () => {
     expect(yourMorning(brief([it_(null)], { yours: 0, today: "2 new late POs." }), new Date(2026, 10, 7, 8))?.line).toBe("2 new late POs.");
     expect(yourMorning(brief([], { status: "unavailable" } as Partial<Briefing>), new Date(2026, 10, 7, 8))).toBeNull();
     expect(yourMorning(null, new Date(2026, 10, 7, 8))).toBeNull();
+  });
+});
+
+describe("morningNotice (the desktop app's once-a-morning notice)", () => {
+  const mine = { ...it_(null), yours: true, subject_label: "PO 4411", label: "Late" } as unknown as BriefingItem;
+  const b = brief([mine], { yours: 1 });
+  const store = () => {
+    const m = new Map<string, string>();
+    return { getItem: (k: string) => m.get(k) ?? null, setItem: (k: string, v: string) => void m.set(k, v) };
+  };
+  it("tells the reader's own morning once a day from 8 AM, opening Today", () => {
+    const s = store();
+    expect(morningNotice(b, s, new Date(2026, 10, 16, 7, 59))).toBeNull();
+    const n = morningNotice(b, s, new Date(2026, 10, 16, 8, 1));
+    expect(n).toEqual({ id: "morning:2026-11-16", title: "Your morning", body: "1 item about your own orders, tasks and contacts. First: PO 4411 · Late", href: "/" });
+    expect(morningNotice(b, s, new Date(2026, 10, 16, 9))).toBeNull();
+    expect(morningNotice(b, s, new Date(2026, 10, 17, 8, 5))?.id).toBe("morning:2026-11-17");
+  });
+  it("says nothing when nothing is theirs, the briefing is unread, or storage fails", () => {
+    expect(morningNotice(brief([it_(null)], { yours: 0, today: "x" }), store(), new Date(2026, 10, 16, 9))).toBeNull();
+    expect(morningNotice(null, store(), new Date(2026, 10, 16, 9))).toBeNull();
+    const broken = { getItem: () => { throw new Error("off"); }, setItem: () => undefined };
+    expect(morningNotice(b, broken, new Date(2026, 10, 16, 9))).toBeNull();
   });
 });
 

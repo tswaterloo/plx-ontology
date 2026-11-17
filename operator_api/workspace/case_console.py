@@ -498,7 +498,7 @@ def main(argv: Sequence[str] | None = None, *, fixtures: Any = None,
                              "purchase order; isolated-fixture / injected-transport, not "
                              "real data)")
     args = parser.parse_args(argv)
-    from operating.mcp_server import freshness_bounds as parse_freshness_bounds
+    from operating.mcp_server_host import freshness_bounds as parse_freshness_bounds
     try:
         # The same bounds the MCP host applies; an unknown family or a bad value exits.
         freshness = parse_freshness_bounds(args.freshness_bound)

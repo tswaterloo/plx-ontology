@@ -27,6 +27,7 @@ except ImportError:  # pragma: no cover
 
 from operating.search import SearchReader, search
 from operating.search import retrievers as rt
+from operating.search import core
 from operating.search.config import WeightsError, load_weights, parse_weights
 from operating.search.core import _title_words, title_share
 from operating.search.fusion import rrf
@@ -379,6 +380,63 @@ class HybridSearchTests(unittest.TestCase):
 
     # ------------------------------------------------------------- permissions
 
+    def test_bit_index_dense_list_matches_the_halfvec_one_inside_the_scope(self):
+        # PLX_SEARCH_BQ=1: Hamming candidates re-ranked by exact cosine. On a fixture this
+        # small every visible row is a candidate, so the list is the halfvec list exactly,
+        # and a row of another unit never enters it.
+        import psycopg
+        scope = {"allowed": [PURCHASING], "held": [], "kinds": None}
+        vectors = EMB.embed(["soap order maple suds"])
+        with psycopg.connect(self.db.dsn, autocommit=True) as conn:
+            lists = {}
+            for flag in ("0", "1"):
+                with mock.patch.dict(os.environ, {"PLX_SEARCH_BQ": flag}):
+                    lists[flag] = rt.dense(conn, scope, vectors, EMB.model, 10)
+            visible = {r[0] for r in conn.execute(
+                "SELECT chunk_id FROM search.chunks WHERE audience_key = %s", (PURCHASING,))}
+        self.assertTrue(lists["1"])
+        self.assertEqual([c for c, _ in lists["1"]], [c for c, _ in lists["0"]])
+        for (_, a), (_, b) in zip(lists["1"], lists["0"]):
+            self.assertAlmostEqual(a, b, places=6)
+        self.assertLessEqual({c for c, _ in lists["1"]}, visible)
+
+    def test_dense_list_keeps_its_own_timeout_and_walk_limits_with_the_bit_index_or_not(self):
+        # The merge of row 2 (own statement timeout, iterative scan, max_scan_tuples) with
+        # PLX_SEARCH_BQ: both settings hold on both paths, and the list is unchanged.
+        import psycopg
+        scope = {"allowed": [PURCHASING], "held": [], "kinds": None}
+        vectors = EMB.embed(["soap order maple suds"])
+
+        class Recording:
+            def __init__(self, conn):
+                self.conn, self.sql = conn, []
+
+            def execute(self, query, *args, **kw):
+                self.sql.append(str(query))
+                return self.conn.execute(query, *args, **kw)
+
+            def transaction(self):
+                return self.conn.transaction()
+
+        with psycopg.connect(self.db.dsn, autocommit=True) as conn:
+            for flag in ("0", "1"):
+                with self.subTest(bq=flag), mock.patch.dict(os.environ, {"PLX_SEARCH_BQ": flag}):
+                    rec = Recording(conn)
+                    got = rt.dense(rec, scope, vectors, EMB.model, 10,
+                                   timeout_ms=core.DENSE_TIMEOUT_MS)
+                    self.assertEqual(got, rt.dense(conn, scope, vectors, EMB.model, 10))
+                    self.assertTrue(got)
+                    sets = [q for q in rec.sql if q.startswith("SET LOCAL")]
+                    self.assertIn(f"SET LOCAL statement_timeout = {core.DENSE_TIMEOUT_MS}", sets)
+                    self.assertIn("SET LOCAL hnsw.iterative_scan = relaxed_order", sets)
+                    self.assertIn(f"SET LOCAL hnsw.max_scan_tuples = {rt.MAX_SCAN_TUPLES}", sets)
+                    knn = [q for q in rec.sql if "embedding <=>" in q]
+                    self.assertTrue(knn)
+                    self.assertEqual(flag == "1", any("LIMIT %(cand)s" in q for q in knn))
+            # SET LOCAL: the connection's own timeout is back after the list
+            self.assertNotEqual(conn.execute("SHOW statement_timeout").fetchone()[0],
+                                f"{core.DENSE_TIMEOUT_MS}ms")
+
     def test_reader_without_a_key_gets_zero_hits_and_hidden_names_no_count(self):
         result = self.run_search("maple suds", reader([]), owners={BC: "Purchasing team"})
         self.assertEqual(result.hits, [])
@@ -482,6 +540,62 @@ class HybridSearchTests(unittest.TestCase):
                     self.assertEqual([c for c, _ in got], ["zepT#0"])
         self.assertEqual([c for c, _ in plain], ["zepT#0"])
 
+    def test_a_code_in_any_spelling_finds_every_spelling_and_nothing_hidden(self):
+        """Row 6 (11-15): PO-106001, PO 106001, PO106001 and 106001 are indexed under
+        different lexemes and a record links petra_po:PO106001; a question in any one
+        spelling finds all of them, never a row of a unit the reader lacks, never a
+        neighbouring number, and a year is not read as a PO."""
+        from operating.search.reader import as_query
+        unit, hidden = "sharepoint:site-ops", "mail:0e0e0e0e-0000-4000-8000-0000000000c7"
+
+        def row(cid, body, key=unit, **extra):
+            return {"chunk_id": cid, "source_handle": f"sharepoint://ops/{cid}",
+                    "kind": "document", "header": "Source: SharePoint", "audience_key": key,
+                    "authority": 2, "body": body, **extra}
+        targets = {"dash#0", "space#0", "joined#0", "bare#0"}
+        rows = [row("dash#0", "Confirmation for PO-106001 attached."),
+                row("space#0", "Your PO 106001 ships Friday."),
+                row("joined#0", "Invoice raised against PO106001 today."),
+                row("bare#0", "Order 106001 is on hold at the dock."),
+                row("rec#0", "Status open, supplier Acme.", object_id="PurchaseOrder:bc:x1",
+                    linked_ids=["petra_po:PO106001"]),
+                row("near#0", "Confirmation for PO-106002 attached."),
+                row("year#0", "Order placed.", linked_ids=["petra_po:PO2024"]),
+                row("short#0", "Ledger line.", linked_ids=["bc_document_no:2024",
+                                                           "item_code:5394", "gl_account:2024"]),
+                row("hid#0", "PO-106001 margin and PO 106001 cost.", key=hidden,
+                    linked_ids=["petra_po:PO106001"])]
+        db = FixtureDb().__enter__()
+        self.addCleanup(db.__exit__, None, None, None)
+        db.add(rows)
+        scope = {"allowed": [unit], "held": [], "kinds": None}
+        with psycopg.connect(db.dsn, autocommit=True) as conn:
+            for asked in ("PO-106001", "PO 106001", "PO106001", "106001", "P.O. 106001",
+                          "po#106001", "where is purchase order PO 106001?"):
+                with self.subTest(asked=asked):
+                    query = as_query(asked)
+                    ranked = [c for c, _ in rt.bm25(conn, scope, [asked], 10)]
+                    self.assertEqual(set(ranked[:4]), targets, ranked)
+                    exact = [c for c, _ in rt.exact(conn, scope, [], query.code_tokens(), 10)]
+                    self.assertEqual(exact, ["rec#0"])
+                    self.assertNotIn("hid#0", ranked)
+                    self.assertNotIn("near#0", exact)
+            # a year or a short number is not a PO; odd input reads as nothing, no error
+            for asked in ("orders in 2024", "2024", "for 5394", "5394", "PO-", "#", "",
+                          "\u0661\u0660\u0666\u0660\u0660\u0661", "x" * 300 + "1", "PO 1" * 200):
+                with self.subTest(asked=asked[:20]):
+                    exact = rt.exact(conn, scope, [], as_query(asked).code_tokens(), 10)
+                    self.assertNotIn("year#0", [c for c, _ in exact])
+                    # a bare number under five digits never reaches linked_ids unprefixed
+                    self.assertNotIn("short#0", [c for c, _ in exact])
+                    rt.bm25(conn, scope, [asked], 10)
+        # the whole search over this test's own rows (``run_search`` reads the class's)
+        result = search("PO 106001", reader([unit]), dsn=db.dsn, now=NOW, embedder=None,
+                        reranker=None, owners={})
+        found = {h["chunk_id"] for h in result.hits}
+        self.assertTrue(targets | {"rec#0"} <= found, found)
+        self.assertNotIn("hid#0", found)
+
     def test_permission_filter_is_inside_every_retrievers_sql(self):
         """Rows the reader may not read (finance mailbox; a purchasing_prices marking
         the reader lacks) never reach Python from any retriever."""
@@ -570,7 +684,7 @@ class HybridSearchTests(unittest.TestCase):
             result = search("quokka soap cartons", none, dsn=db.dsn, now=NOW, embedder=EMB,
                             reranker=None, owners={})
             self.assertFalse([h for h in result.hits if h["handle"].startswith(meetings)])
-        from operating.ontology_tools import _ITEM_ACL_SCHEMES
+        from operating.ontology_tools_policy import _ITEM_ACL_SCHEMES
         from operating.search.reader import ITEM_ACL_SCHEMES
         self.assertIs(ITEM_ACL_SCHEMES, _ITEM_ACL_SCHEMES)
 
@@ -834,6 +948,14 @@ class HybridSearchTests(unittest.TestCase):
         self.assertLess(result.hits[1]["signals"]["prior"], 0)
         self.assertEqual(result.hits[0]["signals"]["prior"], 0)
 
+    def test_failed_lists_name_each_list_that_did_not_rank(self):
+        from operating.search.core import failed_lists
+        self.assertEqual(failed_lists(["dense_failed:QueryCanceled", "fuzzy_failed:X",
+                                       "dense_unavailable:EmbedTimeout", "hidden_failed:Y",
+                                       "rerank_off", "reranker_timeout", "no_granted_unit"]),
+                         ["dense", "fuzzy"])
+        self.assertEqual(failed_lists([]), [])
+
     def test_every_query_is_logged_with_signal_values(self):
         result = self.run_search("maple suds soap", reader([PURCHASING, BC]), log=True)
         self.assertIsNotNone(result.query_log_id)
@@ -1022,7 +1144,7 @@ class HybridSearchTests(unittest.TestCase):
                               embedder=EMB, reranker=None)
         handles = {row["source_handle"] for row in item.info.values()}
         self.assertIn("bc://prod/company-a/purchaseOrders/9001", handles)
-        # One document by its (unversioned) handle, one by a record it
+        # Retrieval eval targets: one document by its (unversioned) handle, one by a record it
         # names; recall over min(targets, 10), each target counted once.
         wanted = [{"key": "sha256:a", "handles": ["bc://prod/company-a/purchaseOrders/9001"]},
                   {"key": "record:zz404", "text": "zz404"}]
@@ -1051,6 +1173,69 @@ class HybridSearchTests(unittest.TestCase):
         for c in ("a", "b"):
             self.assertTrue(any(i.startswith(c) for i in halves["tune"]))
             self.assertTrue(any(i.startswith(c) for i in halves["held_out"]))
+
+
+@unittest.skipUnless(HAVE_PG, "Postgres not available")
+class StaleClusterTests(unittest.TestCase):
+    """A stored cluster that holds a distinct text (stale after a rewrite, or a MinHash
+    false match: 11-15 measure, 7% of clusters) never hides that document in search."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.env = mock.patch.dict(os.environ, {"PLX_EXCLUDED_PEOPLE_OIDS": EXCLUDED})
+        cls.env.start()
+        cls.db = FixtureDb().__enter__()
+        rows = chunks()
+        first = next(r for r in rows if r["chunk_id"] == "m1#0")
+        cls.distinct = dict(first, chunk_id="m9#0", source_handle="graph-mail://purchasing/msg-9",
+                            object_id="EmailMessage:graph:msg-9",
+                            title="Re: PO 9002 liquid soap shipment delayed",
+                            body=first["body"].replace("two weeks", "three weeks for PO 9002")
+                            .replace("6 Nov", "20 Nov"))
+        cls.db.add(rows + [cls.distinct])
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.db.__exit__(None, None, None)
+        cls.env.stop()
+
+    def test_a_distinct_text_in_a_stored_cluster_is_shown_as_itself(self):
+        result = search("castile soap pallets slipped weeks", reader([PURCHASING, BC, QUALITY,
+                                                                      TEAMS]),
+                        dsn=self.db.dsn, now=NOW, embedder=EMB, reranker=None, owners={})
+        handles = [h["handle"] for h in result.hits]
+        self.assertIn(self.distinct["source_handle"], handles)
+        dup = [h for h in result.hits if h["dup_group"] == "dup-a"]
+        self.assertEqual(len(dup), 2)      # the true copies once, the distinct mail apart
+        for hit in dup:
+            self.assertNotIn(self.distinct["source_handle"], hit["also_in"]["handles"])
+        copies = next(h for h in dup if h["handle"] != self.distinct["source_handle"])
+        self.assertEqual(copies["also_in"]["count"], 1)
+        self.assertEqual(len(handles), len(set(handles)))
+
+    def test_a_denied_distinct_text_in_a_shown_cluster_is_told_as_hidden(self):
+        """The hidden flag is keyed by the text, not the stored cluster: a distinct
+        record the reader may not open is told about even when a member of its cluster
+        is shown; a denied true copy whose readable copy stands in is not."""
+        full = [PURCHASING, BC, QUALITY, TEAMS, FINANCE]
+
+        def run(gate):
+            return search("castile soap pallets slipped weeks",
+                          reader(full, held=["purchasing_prices"], gate=gate),
+                          dsn=self.db.dsn, now=NOW, embedder=EMB, reranker=None, owners={})
+        everything = run(lambda handle: True)
+        self.assertEqual(everything.hidden, {"any": False, "shared_units": [],
+                                             "private": False})
+        distinct = self.distinct["source_handle"]
+        denied = run(lambda handle: handle != distinct)
+        self.assertNotIn(distinct, [h["handle"] for h in denied.hits])
+        self.assertTrue(any(h["dup_group"] == "dup-a" for h in denied.hits))
+        self.assertEqual(denied.hidden, {"any": True, "shared_units": [], "private": True})
+        copy = "graph-mail://purchasing/msg-1"
+        stood_in = run(lambda handle: handle != copy)
+        self.assertNotIn(copy, [h["handle"] for h in stood_in.hits])
+        self.assertEqual(stood_in.hidden, {"any": False, "shared_units": [],
+                                           "private": False})
 
 
 @unittest.skipUnless(HAVE_PG, "Postgres not available")
@@ -1154,7 +1339,7 @@ class ToolPathTests(unittest.TestCase):
         """The evidence fixture's tools, its policy also granting OPS the mailbox unit
         the search rows of mbx-a carry (FULL reads every mail unit by ``mail:*``);
         ``stored``: with M1's captured body in the store's text index."""
-        from operating.ontology_tools import ReadPolicy
+        from operating.ontology_tools_policy import ReadPolicy
         tools = self.fx.tools(extend=self._stored_text if stored else None)
         audiences = dict(self.fx.POLICY.audiences)
         audiences[MBX_A] = frozenset({"ops", "full"})
@@ -1313,6 +1498,43 @@ class ToolPathTests(unittest.TestCase):
                           tools.base.call("plx.find", {"query": "packing list"}, fx.OPS))
         for out in (docs, found):
             self.assertIn("search_fallback", [g["reason"] for g in out["gaps"]])
+
+    def test_a_list_that_fails_is_stated_logged_and_not_reused(self):
+        # 2026-11-15: the dense list ran past its statement timeout on 143 of 187 gold-card
+        # queries; each answer ranked by words alone, said nothing, and logged nothing.
+        import psycopg.errors
+        fx = self.fx
+        tools = self.tools()
+        calls = []
+
+        def cancelled(*args, **kwargs):
+            calls.append(1)
+            raise psycopg.errors.QueryCanceled("canceling statement due to statement timeout")
+        with mock.patch("operating.search.retrievers.dense", cancelled):
+            first = fx.ok(self, "plx.documents", tools.call(
+                "plx.documents", {"query": "pallets late tomorrow",
+                                  "sources": ["graph_mail"]}, fx.FULL))
+            fx.ok(self, "plx.documents", tools.call(
+                "plx.documents", {"query": "pallets late tomorrow",
+                                  "sources": ["graph_mail"]}, fx.FULL))
+        partial = [g for g in first["gaps"] if g["reason"] == "search_partial"]
+        self.assertEqual(len(partial), 1)
+        self.assertIn("dense", partial[0]["detail"])
+        self.assertNotIn("search_fallback", [g["reason"] for g in first["gaps"]])
+        self.assertTrue(first["documents"])            # the word lists still ranked
+        self.assertEqual(len(calls), 2)                # a partial ranking is never reused
+        with psycopg.connect(self.db.dsn) as conn:
+            logged = conn.execute(
+                "SELECT question, results FROM search.query_log ORDER BY id DESC LIMIT 1"
+            ).fetchone()
+        self.assertEqual(logged[0], "pallets late tomorrow")
+        self.assertEqual(logged[1]["failed"], ["dense"])
+        self.assertIn("dense_failed:QueryCanceled", logged[1]["notes"])
+        # every list ranked: no gap
+        again = fx.ok(self, "plx.documents", tools.call(
+            "plx.documents", {"query": "pallets late tomorrow", "sources": ["graph_mail"]},
+            fx.FULL))
+        self.assertNotIn("search_partial", [g["reason"] for g in again["gaps"]])
 
     def test_graph_expansion_follows_the_readers_visible_links(self):
         from operating.search import plug

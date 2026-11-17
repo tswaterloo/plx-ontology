@@ -313,15 +313,22 @@ class PropertyReferenceFailsClosed(unittest.TestCase):
                     document_fields.profiles.cache_clear()
 
 
-def coa_pdf(lot, po="PO100236"):
+def coa_pdf(lot, po="PO100236", product="Glycerin USP", supplier="Ningbo Chemical Co",
+            code=None):
     from reportlab.pdfgen import canvas
     import io
 
     buffer = io.BytesIO()
     page = canvas.Canvas(buffer)
-    for y, line in zip(range(780, 0, -18), [
-            "CERTIFICATE OF ANALYSIS", "Supplier: Ningbo Chemical Co", f"Customer PO: {po}",
-            "Product: Glycerin USP", f"Lot No: {lot}", "Expiry date: 2028-08-31"]):
+    lines = ["CERTIFICATE OF ANALYSIS", f"Supplier: {supplier}", f"Customer PO: {po}",
+             f"Product: {product}", f"Lot No: {lot}", "Expiry date: 2028-08-31"]
+    if code:
+        lines.insert(4, f"Product Code: {code}")
+    if product is None:
+        lines = [line for line in lines if not line.startswith("Product:")]
+    if supplier is None:
+        lines = [line for line in lines if not line.startswith("Supplier:")]
+    for y, line in zip(range(780, 0, -18), lines):
         page.drawString(60, y, line)
     page.showPage()
     page.save()
@@ -366,9 +373,12 @@ class CertificateToReceiptTrace(unittest.TestCase):
             "public.app_purchase_order": [{"id": "po-1", "po_number": "PO100236",
                                            "status": "SUBMITTED"}],
             RM: [raw(11, "SUP-LOT-A1")],
-            "public.receipt": [{"id": 5, "idsupp": 40}],
+            # FM receipt.idsupp is blank as served: the supplier is the one of the PO line
+            # the receipt names (Receipt.supplied_by via idgenpoitem)
+            "public.receipt": [{"id": 5, "idsupp": None, "idgenpoitem": 7}],
             "public.supplier": [{"id": 40, "namesupp": "Ningbo"}],
-            "public.generated_purchase_order_item": [{"id": 7, "idpogen": 900}],
+            "public.generated_purchase_order_item": [{"id": 7, "idpogen": 900,
+                                                      "idsupplier": 40}],
             "public.generated_purchase_order": [{"id": 900, "ponumber": "PO100237"}]}
         cls.compiled = schema.load_schema()
         cls.path = Path(cls.case.tmp.name) / "ontology.sqlite"
@@ -458,8 +468,12 @@ class CertificateToReceiptTrace(unittest.TestCase):
         # The RP-shaped lot matches the line rl-2 and its receipt r-2 by their lab id (an
         # alias kind): the filter drops both. The other two certificates' supplier lots
         # also find the Lot holding that number (another holder of the lot_number kind):
-        # the field names ReceiptLine.supplier_lot_number, so each drops that one Lot.
-        self.assertEqual(counts["dropped_count"], 4, counts)
+        # the field names ReceiptLine.supplier_lot_number, so the Lot is no receipt-line
+        # candidate; it is settled by lot AND product (CertificateOfAnalysis.for_lot,
+        # counted lot_candidates) and here none names the Glycerin USP's product by code or
+        # name, so neither links.
+        self.assertEqual(counts["dropped_count"], 2, counts)
+        self.assertEqual((counts["lot_candidates"], counts["lot_links"]), (2, 0), counts)
         self.assertEqual(counts["links"], self.conn.execute(
             "SELECT COUNT(*) FROM links WHERE link_type LIKE 'CertificateOfAnalysis.%'"
         ).fetchone()[0])
@@ -498,6 +512,156 @@ class CertificateToReceiptTrace(unittest.TestCase):
                     for link in self.compiled.link_types.values()), spec["name"])
 
 
+@unittest.skipUnless(importlib.util.find_spec("pypdf") and importlib.util.find_spec("reportlab"),
+                     "certificates are read from PDFs: needs pypdf and reportlab")
+class CertificateToLot(unittest.TestCase):
+    """``CertificateOfAnalysis.for_lot``: a certificate's lot AND product name a Lot. Lot
+    numbers repeat across suppliers and products, so the same lot number received as another
+    product (or from another supplier) is no match, and a product text naming two
+    products links nothing."""
+
+    @classmethod
+    def setUpClass(cls):
+        os.environ.pop("PLX_WORKBENCH_API_KEY", None)
+        cls.case = tsp.CaptureCase("run")
+        cls.case.setUp()
+        cls.items = {
+            "01MATCH": coa_pdf("GL240917"),                        # Glycerin USP: rl-1
+            "01CODED": coa_pdf("GL240917", product="Sorbitol", code="SOR-70/01",
+                               supplier="Otherland Foods"),            # rl-2
+            "01OTHER": coa_pdf("GL240917", product="Mystery Gum"),           # no product
+            "01NOPRD": coa_pdf("GL240917", product=None),                    # names none
+            "01SUPPL": coa_pdf("GL240917", supplier="Otherland Foods"),      # not its supplier
+            "01TWOPR": coa_pdf("LOT-Y", supplier=None),            # name of p-1 and p-3
+            "01LONE": coa_pdf("LOT-Z"),                            # lot of no Lot
+            "01SUPNO": coa_pdf("SUP-9", product="X-77", supplier=None),    # supplier item no.
+            "01SHORT": coa_pdf("16", supplier=None),                       # short lot, p-1
+            "01SHRTX": coa_pdf("16", product="Mystery Gum", supplier=None),  # short lot, no
+            "01SINGL": coa_pdf("SINGLE-77", product="Mystery Gum", supplier=None),
+        }
+        for item, content in cls.items.items():
+            cls.case.drive.file(item, f"{item}.pdf", "01AOS", content)
+        assert cls.case.capture().run(tsp.scope())["complete"]
+        line = lambda i, lot, product, receipt: {
+            "id": i, "receipt_id": receipt, "product_id": product, "quantity": "4",
+            "uom": "kg", "lab_id": f"26161-{i[-1]}", "supplier_lot_number": lot}
+        rows = {
+            GOLD: [line("rl-1", "GL240917", "p-1", "r-1"), line("rl-2", "GL240917", "p-2", "r-2"),
+                   line("rl-5", "LOT-Y", "p-1", "r-1"), line("rl-6", "LOT-Y", "p-3", "r-2"),
+                   line("rl-8", "16", "p-1", "r-1"), line("rl-9", "16", "p-1", "r-1"),
+                   line("rl-4", "SINGLE-77", "p-2", "r-2")],
+            PK: [{"id": 31, "idreceipt": 5, "idpogenitem": 7, "idlab": "RP0000009",
+                  "sumqty": "5", "lotnoqc": "SUP-9", "idpack": 70, "idpacksupp": 60}],
+            "public.packaging": [{"id": 70}],
+            "public.packaging_supplier": [{"id": 60, "itemnumber": "X-77"}],
+            "public.app_receipt": [
+                {"id": "r-1", "receipt_number": "26161-1", "supplier_id": "s-1"},
+                {"id": "r-2", "receipt_number": "26161-2", "supplier_id": "s-2"}],
+            "public.app_supplier": [{"id": "s-1", "code": "NINGBO", "name": "Ningbo Chemical Co"},
+                                    {"id": "s-2", "code": "OTHER", "name": "Otherland Foods"}],
+            "public.app_product": [{"id": "p-1", "code": "GLY-USP", "name": "Glycerin USP"},
+                                   {"id": "p-2", "code": "SOR-70", "name": "Sorbitol 70%"},
+                                   {"id": "p-3", "code": "GLY-FCC", "name": "Glycerin USP"}],
+        }
+        cls.compiled = schema.load_schema()
+        cls.path = Path(cls.case.tmp.name) / "ontology.sqlite"
+        with SharePointCaptures(cls.case.state) as files:
+            cls.report = build_store(
+                cls.path, cls.compiled, {"portal_api": Source(rows), "sharepoint": files},
+                normalizer=identifiers.normalize,
+                clock=lambda: datetime(2026, 10, 4, tzinfo=timezone.utc),
+                post_project={"document_fields": document_fields.store_document_links})
+        cls.conn = sqlite3.connect(cls.path)
+        cls.conn.row_factory = sqlite3.Row
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.conn.close()
+        cls.case.tearDown()
+
+    def lots(self, item):
+        (oid,) = [r[0] for r in self.conn.execute(
+            "SELECT object_id FROM objects WHERE object_type = 'CertificateOfAnalysis' AND "
+            "object_id LIKE ?", (f"%{item}%",))]
+        return sorted((r["to_object"], r["tier"]) for r in self.conn.execute(
+            "SELECT to_object, tier FROM links WHERE from_object = ? AND link_type = "
+            "'CertificateOfAnalysis.for_lot'", (oid,)))
+
+    def lot(self, line):
+        if line == "pk-31":
+            return 'Lot:portal.fm_receipt_packaging.lotnoqc:{"id":31}'
+        return f'Lot:portal.app_receipt_line.supplier_lot:{{"id":"{line}"}}'
+
+    def test_lot_and_product_name_one_lot_and_the_same_lot_of_another_product_is_none(self):
+        self.assertEqual(self.lots("01MATCH"), [(self.lot("rl-1"), "lead")])
+        # The same lot number, received as another product on another supplier's line,
+        # is a Lot of its own: the coded certificate (revision suffix /01) links that one.
+        self.assertEqual(self.lots("01CODED"), [(self.lot("rl-2"), "lead")])
+
+    def test_a_lot_number_alone_links_nothing(self):
+        for item in ("01OTHER", "01NOPRD", "01LONE"):
+            self.assertEqual(self.lots(item), [], item)
+
+    def test_a_supplier_the_certificate_names_must_be_the_lots(self):
+        self.assertEqual(self.lots("01SUPPL"), [])
+
+    def test_a_product_text_naming_two_products_is_ambiguous_and_unlinked(self):
+        self.assertEqual(self.lots("01TWOPR"), [])
+        counts = self.report["post_project"]["document_fields"]["counts"]
+        self.assertEqual(counts["lot_ambiguous"], 2, counts)
+
+    def test_the_suppliers_own_item_number_names_the_product(self):
+        self.assertEqual(self.lots("01SUPNO"), [(self.lot("pk-31"), "lead")])
+
+    def test_no_lot_link_is_corroborated_by_its_own_receipt_line(self):
+        """A Lot is built from its receipt line's lot, so that line agreeing is the same
+        evidence twice: every for_lot link is a lead, whatever for_receipt_line holds."""
+        tiers = {r[0] for r in self.conn.execute(
+            "SELECT tier FROM links WHERE link_type = 'CertificateOfAnalysis.for_lot'")}
+        self.assertEqual(tiers, {"lead"})
+        self.assertEqual(self.conn.execute(
+            "SELECT COUNT(*) FROM links WHERE link_type = 'CertificateOfAnalysis.for_lot' AND "
+            "reason LIKE '%receipt_line_received_lot%'").fetchone()[0], 0)
+
+    def lines(self, item):
+        (oid,) = [r[0] for r in self.conn.execute(
+            "SELECT object_id FROM objects WHERE object_type = 'CertificateOfAnalysis' AND "
+            "object_id LIKE ?", (f"%{item}%",))]
+        return sorted(r[0].split('"id":')[1].strip('"}') for r in self.conn.execute(
+            "SELECT to_object FROM links WHERE from_object = ? AND link_type = "
+            "'CertificateOfAnalysis.for_receipt_line'", (oid,)))
+
+    def test_a_lot_of_two_products_links_only_the_lines_of_the_certificates_product(self):
+        # GL240917 is on rl-1 (Glycerin) and rl-2 (Sorbitol): lot text alone linked both
+        self.assertEqual(self.lines("01MATCH"), ["rl-1"])
+        self.assertEqual(self.lines("01CODED"), ["rl-2"])
+        self.assertEqual(self.lines("01OTHER"), [])      # names neither product
+        self.assertEqual(self.lines("01NOPRD"), [])      # names no product
+        self.assertEqual(self.lines("01SUPPL"), ["rl-1"])   # supplier is for_lot's rule only
+        # two products of one name: both lines of that name stay
+        self.assertEqual(self.lines("01TWOPR"), ["rl-5", "rl-6"])
+
+    def test_a_short_lot_links_only_lines_whose_product_the_certificate_names(self):
+        self.assertEqual(self.lines("01SHORT"), ["rl-8", "rl-9"])
+        self.assertEqual(self.lines("01SHRTX"), [])
+
+    def test_a_single_product_lot_stays_as_it_was(self):
+        self.assertEqual(self.lines("01SINGL"), ["rl-4"])
+
+    def test_a_lot_link_is_cited_and_never_a_release(self):
+        row = self.conn.execute(
+            "SELECT * FROM links WHERE link_type = 'CertificateOfAnalysis.for_lot' AND "
+            "to_object = ?", (self.lot("rl-1"),)).fetchone()
+        reason = {f["feature"]: f for f in json.loads(row["reason"])}
+        self.assertEqual(reason["product_match"]["via"], "product_name")
+        self.assertIn("external_assertion", row["why_not"])
+        self.assertEqual(row["binding_kind"], "mention")
+        counts = self.report["post_project"]["document_fields"]["counts"]
+        self.assertEqual(counts["lot_links"], self.conn.execute(
+            "SELECT COUNT(*) FROM links WHERE link_type = 'CertificateOfAnalysis.for_lot'"
+        ).fetchone()[0])
+
+
 LOT_TRACE_SPEC = Path(__file__).resolve().parents[2] / "devloop" / "live-checks" / \
     "ontology.lot_trace.json"
 
@@ -523,13 +687,14 @@ class LotTraceLiveCheckTests(unittest.TestCase):
         import contextlib
         import io
         from integrations import capture_sharepoint as cs
+        from integrations import capture_sharepoint_scope
         from scripts import eval_document_fields_live as live
         drive = tsp.seeded_drive()
         for n, lot in enumerate(lots):
             drive.file(f"01COA{n}", f"coa {n}.pdf", "01AOS", coa_pdf(lot))
         with tempfile.TemporaryDirectory() as tmp:
             scope, audience = Path(tmp) / "scope.json", Path(tmp) / "audience.json"
-            scope.write_text(json.dumps({"schema": cs.SCOPE_SCHEMA, "targets": [
+            scope.write_text(json.dumps({"schema": capture_sharepoint_scope.SCOPE_SCHEMA, "targets": [
                 {"id": "quality", "drive_id": tsp.DRIVE, "folders": [tsp.QUALITY_FOLDER]}]}))
             audience.write_text(json.dumps({
                 "schema": "plx-live-source-audience/v1", "tenant": "plx",
@@ -558,9 +723,12 @@ class LotTraceLiveCheckTests(unittest.TestCase):
             "public.app_purchase_order": [{"id": "po-1", "po_number": "PO100236",
                                            "status": "SUBMITTED"}],
             "public.receipt_raw_material": [raw(11, "SUP-LOT-A1")],
-            "public.receipt": [{"id": 5, "idsupp": 40}],
+            # FM receipt.idsupp is blank as served: the supplier is the one of the PO line
+            # the receipt names (Receipt.supplied_by via idgenpoitem)
+            "public.receipt": [{"id": 5, "idsupp": None, "idgenpoitem": 7}],
             "public.supplier": [{"id": 40, "namesupp": "Ningbo"}],
-            "public.generated_purchase_order_item": [{"id": 7, "idpogen": 900}],
+            "public.generated_purchase_order_item": [{"id": 7, "idpogen": 900,
+                                                      "idsupplier": 40}],
             "public.generated_purchase_order": [{"id": 900, "ponumber": "PO100237"}]}
 
     def test_the_spec_passes_on_certificates_tracing_to_their_receipt(self):
@@ -630,13 +798,13 @@ class LotTraceLiveCheckTests(unittest.TestCase):
         """The live funnel's shape: ``n`` FM raw-material lines (lots FM-0001..) on one FM
         PO chain, gold receipt tables empty; the line's ``idreceipt``, the receipt's
         ``idsupp`` and the PO's ``idsupplier`` as given (None: the column is null; the line
-        names no supplier item)."""
+        names no supplier item); the receipt names no PO line (``idgenpoitem`` null)."""
         rows = {relation: [] for relation in self.rows(1)}
         rows.update({
             "public.receipt_raw_material": [{**raw(i, f"FM-{i:04d}"), "idreceipt": idreceipt,
                                              "idrawsupp": None}
                                             for i in range(1, n + 1)],
-            "public.receipt": [{"id": 5, "idsupp": idsupp}],
+            "public.receipt": [{"id": 5, "idsupp": idsupp, "idgenpoitem": None}],
             "public.supplier": [{"id": 40, "namesupp": "Ningbo"}],
             "public.generated_purchase_order_item": [{"id": 7, "idpogen": 900}],
             "public.generated_purchase_order": [{"id": 900, "ponumber": "PO100237",
@@ -658,9 +826,10 @@ class LotTraceLiveCheckTests(unittest.TestCase):
         spec = json.loads(LOT_TRACE_SPEC.read_text("utf-8"))
         supplied = "for_receipt_line>line_of>supplied_by"
         via_po = "for_receipt_line>receives_line>line_of>ordered_from"
-        # FM lines with no idreceipt, receipts with no idsupp, a PO with no vendor: the
+        # FM lines with no idreceipt, receipts naming no PO line, a PO with no vendor: the
         # certificate links its line and reaches the PO, no Supplier, no Product; the
-        # minima are not lowered, so the run fails, each shortfall typed by its cause.
+        # minima are not lowered, so the run fails, each shortfall typed by its cause (the
+        # line's PO line names no served receipt: a target not held, never an empty column).
         report, code, text = self.run_trace(["fm-0001"], self.fm_rows(1))
         self.assertEqual((report["ok"], code, report["certificates_linked"], report["hops"]),
                          (False, 1, 1, {"supplier": 0, "purchase_order": 1, "product": 0}),
@@ -670,15 +839,15 @@ class LotTraceLiveCheckTests(unittest.TestCase):
         self.assertEqual({hop: {c: n for c, n in causes.items() if n}
                           for hop, causes in report["hop_shortfall"].items()},
                          {"supplier": {"source_column_empty": 1}, "purchase_order": {},
-                          "product": {"unknown": 1}})
+                          "product": {"source_column_empty": 1}})
         at = report["hop_shortfall_at"]
         self.assertEqual(at["supplier"][supplied],
-                         {"ReceiptLine.line_of source_column_empty": 1})
+                         {"ReceiptLine.line_of target_not_held": 1})
         self.assertEqual(at["supplier"][via_po],
                          {"PurchaseOrder.ordered_from source_column_empty": 1})
         self.assertEqual(at["product"], {"for_receipt_line>for_item": {
-            "ReceiptLine.for_item unknown": 1}})
-        # The line names its receipt, the receipt no supplier: stopped one step later.
+            "ReceiptLine.for_item source_column_empty": 1}})
+        # The line names its receipt, the receipt no PO line: stopped one step later.
         report, code, text = self.run_trace(["fm-0001"], self.fm_rows(1, idreceipt=5))
         self.assertEqual(report["hop_shortfall_at"]["supplier"][supplied],
                          {"Receipt.supplied_by source_column_empty": 1}, text[:3000])
@@ -711,7 +880,9 @@ class LotTraceLiveCheckTests(unittest.TestCase):
                                  (n, n, n, n), text[:2000])
                 self.assertEqual(report["hop_shortfall"]["supplier"]["source_column_empty"],
                                  n)
-                self.assertEqual(report["hop_shortfall"]["product"]["unknown"], n)
+                # the line names no supplier item (idrawsupp), the via binding's own key
+                self.assertEqual(report["hop_shortfall"]["product"]["source_column_empty"],
+                                 n)
                 self.assert_shortfall_sums(report)
 
 
@@ -748,12 +919,19 @@ class ShortfallCauseFailsClosed(unittest.TestCase):
         return {"objects": [], "gaps": [{"subject": self.SUBJECT, **extra}]}
 
     def test_an_unrecognised_gap_or_row_is_unknown(self):
-        empty = {0: {"status": "resolved", "fields": {"row.idreceipt": None}}}
+        # an FM line's receipt is its idreceipt, else (idreceipt blank) the one receipt
+        # naming its PO line (idpogenitem): empty only when both are
+        empty = {0: {"status": "resolved", "fields": {"row.idreceipt": None,
+                                                      "row.idpogenitem": None}}}
         self.assertEqual(self.cause(self.gap(reason="no_match", state="unknown"), empty),
                          "source_column_empty")
         self.assertEqual(self.cause(self.gap(reason="no_match", state="absent"), {0: {
-            "status": "resolved", "fields": {"row.idreceipt": {"untrusted_text": " "}}}}),
+            "status": "resolved", "fields": {"row.idreceipt": {"untrusted_text": " "},
+                                             "row.idpogenitem": None}}}),
                          "source_column_empty")
+        self.assertEqual(self.cause(self.gap(reason="no_match", state="unknown"), {0: {
+            "status": "resolved", "fields": {"row.idreceipt": None, "row.idpogenitem": 7}}}),
+                         "target_not_held")
         self.assertEqual(self.cause(self.gap(reason="no_match", state="unknown"), {0: {
             "status": "resolved", "fields": {"row.idreceipt": 5}}}), "target_not_held")
         no_match = self.gap(reason="no_match", state="unknown")
@@ -769,6 +947,18 @@ class ShortfallCauseFailsClosed(unittest.TestCase):
                 "a withheld row": self.cause(no_match, {}),
                 "a missing column": self.cause(no_match, {0: {
                     "status": "resolved", "fields": {"row.id": 11}}}),
+                "the fallback binding's column not served": self.cause(no_match, {0: {
+                    "status": "resolved", "fields": {"row.idreceipt": None}}}),
+                "a row test it cannot read": self.cause(no_match, empty, bindings=[{
+                    "from_binding": "portal.fm_receipt_raw_material",
+                    "pairs": [{"from": "idreceipt", "to": "id"}],
+                    "where": [{"path": "idreceipt", "op": "eq", "value": "1"}]}]),
+                "a via binding whose own key is stated": self.cause(no_match, {0: {
+                    "status": "resolved", "fields": {"row.idgenpoitem": 7}}}, bindings=[{
+                    "from_binding": "portal.fm_receipt_raw_material",
+                    "via": {"binding": "x", "from_pairs": [{"from": "idgenpoitem",
+                                                            "to": "id"}],
+                            "to_pairs": [{"from": "idsupplier", "to": "id"}]}}]),
                 "a row paged without end": self.cause(no_match, {
                     i: {"status": "resolved", "fields": {"row.idreceipt": None},
                         "columns": {"next_offset": i + 1}} for i in range(40)}),

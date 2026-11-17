@@ -16,7 +16,7 @@ import tempfile
 import unittest
 
 from integrations import capture_sharepoint as cs
-from integrations.capture_sharepoint import CaptureScope
+from integrations.capture_sharepoint_scope import CaptureScope
 from integrations.tests import test_capture_sharepoint as fake
 from integrations.tests.test_capture_sharepoint import DRIVE, QUALITY_FOLDER, CaptureCase
 from tests import test_case_originals as originals

@@ -37,7 +37,14 @@ Every finding carries the citations it rests on. The rules are general (by claim
 system), never written for one record. The check is read-only everywhere: it opens every
 store with ``mode=ro``, sets Postgres read-only, and writes only its own report directory
 (``<state>/truth-check``: ``report.json``, ``report.md`` and ``status.json``, which the
-Workbench's status line reads; ``operator_api.backend.truth_flag``).
+Workbench's status line reads; ``operator_api.backend.truth_flag``) and, with the change
+feed (migration 0026, ``operating.pg.change_feed``), its own cursor row there.
+
+**Data through** (``feed_since``): with ``--pg-dsn`` and the feed, the check reads the
+feed's rows past its cursor: the report says which applied cycle the data it checked is
+current to (``data_through``) and marks each claim whose record an applied cycle changed
+since the last check (``changed_since_last_check``; counts in ``status.json``), and the
+cursor moves once the report is written. Without the feed: ``data_through`` is null.
 
 Run: ``python3 -m operating.truth_check run --state-dir /data/plx-state [--pg-dsn ...]
 [--late-json late.json] [--exclude-handle REGEX]``. Exit 0: no claim contradicted; 3: at
@@ -937,7 +944,7 @@ def inbox_claims(inbox: Path) -> list[dict[str, Any]]:
 def detector_health(inbox: Path, now: datetime) -> list[dict[str, Any]]:
     """H1-H3: each detector's latest run, its last complete run, and what it left unjudged."""
     try:
-        from operating.proactive_engine import DETECTORS as names  # the live list
+        from operating.proactive_engine_config import DETECTORS as names  # the live list
     except Exception:  # noqa: BLE001 - the copy above when the engine cannot be imported
         names = DETECTORS
     conn = _ro(inbox)
@@ -1191,6 +1198,8 @@ def status_of(out: Mapping[str, Any]) -> dict[str, Any]:
             "late_list_shown": late.get("shown"), "late_list_contradicted": late.get("contradicted"),
             "contradicted": sum(r["contradicted"] for r in out["results"]),
             "claims": len(out["results"]),
+            # claims a rule could judge (supported or contradicted): the checked share
+            "checked": sum(r.get("verdict") != "not_checked" for r in out["results"]),
             "missed": dict(sum((Counter({p["rule"]: p["count"]}) for p in out.get(
                 "probes", [])), Counter())),
             "detectors_incomplete": [d["detector"] for d in out["detectors"] if d["flags"]],
@@ -1198,7 +1207,10 @@ def status_of(out: Mapping[str, Any]) -> dict[str, Any]:
             "money_profile_problems": list((out.get("money_profile") or {}).get("problems")
                                            or ()),
             "money_tripwire_columns": ((out.get("money_profile") or {}).get("tripwire")
-                                       or {}).get("columns")}
+                                       or {}).get("columns"),
+            "data_through_applied_at": (out.get("data_through") or {}).get("applied_at"),
+            "claims_changed_since_last": (out.get("data_through") or {}).get(
+                "claims_changed")}
 
 
 def _money_profile(state_dir: Path) -> dict[str, Any]:
@@ -1222,6 +1234,42 @@ def _derived_code(state_dir: Path) -> dict[str, Any] | None:
         return {"code": None, "error": type(error).__name__}
 
 
+FEED_CONSUMER = "truth_check"
+
+
+def feed_since(pg_dsn: str | None) -> tuple[Any, dict[str, Any] | None]:
+    """(the change feed's rows past this check's cursor, what the data is current to);
+    (None, None) without a DSN or the feed."""
+    if not pg_dsn:
+        return None, None
+    from operating.pg import change_feed
+    batch = change_feed.read(pg_dsn, FEED_CONSUMER)
+    if batch is None:
+        return None, None
+    try:
+        with change_feed.connect(pg_dsn) as conn:
+            newest = change_feed.newest_cycle(conn, batch.end)
+    except Exception:  # noqa: BLE001 - the cycle unread: the position still says it
+        newest = None
+    return batch, {"position": batch.end, "state": batch.state,
+                   "changed_records": len(batch.ids()) if batch.ready else None,
+                   **(newest or {})}
+
+
+def mark_changed(results: Sequence[dict[str, Any]], batch: Any) -> int | None:
+    """Mark the claims whose record changed since the last check; how many (None: not
+    known, the check's first read of the feed or rows missed)."""
+    if batch is None or not batch.ready:
+        return None
+    changed = batch.ids()
+    n = 0
+    for r in results:
+        r["changed_since_last_check"] = r.get("object_id") in changed \
+            or r.get("order") in changed
+        n += r["changed_since_last_check"]
+    return n
+
+
 def run(state_dir: Path, *, out_dir: Path | None = None, pg_dsn: str | None = None,
         exclude: str | None = None, late_json: Path | None = None,
         now: datetime | None = None) -> dict[str, Any]:
@@ -1235,6 +1283,8 @@ def run(state_dir: Path, *, out_dir: Path | None = None, pg_dsn: str | None = No
     src = Sources(portal=mirror_rows(state_dir / MIRROR, RELATIONS),
                   bc=bc_records(state_dir / BC_CAPTURE, BC_SETS), as_of=as_of,
                   search=pg_search(pg_dsn, guard, exclude) if guard is not None else None)
+    # read before the claims: a cycle applied while the check runs is the next one's
+    batch, through = feed_since(pg_dsn)
     claims = inbox_claims(state_dir / INBOX)
     late = None
     if late_json is not None:
@@ -1246,6 +1296,9 @@ def run(state_dir: Path, *, out_dir: Path | None = None, pg_dsn: str | None = No
            "detectors": detector_health(state_dir / INBOX, now),
            "money_profile": _money_profile(state_dir),
            "derived_code": _derived_code(state_dir)}
+    out["data_through"] = through
+    if through is not None:
+        through["claims_changed"] = mark_changed(out["results"], batch)
     target = out_dir or state_dir / OUT_DIR
     target.mkdir(parents=True, exist_ok=True)
     for name, body in (("report.json", json.dumps(out, indent=1, default=str)),
@@ -1254,6 +1307,9 @@ def run(state_dir: Path, *, out_dir: Path | None = None, pg_dsn: str | None = No
         tmp = target / f".{name}.tmp"
         tmp.write_text(body)
         os.replace(tmp, target / name)
+    if batch is not None:   # the report holds it: the cursor moves past it
+        from operating.pg import change_feed
+        change_feed.commit_to(pg_dsn, batch)
     return out
 
 

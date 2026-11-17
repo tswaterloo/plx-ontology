@@ -1,0 +1,10 @@
+[Unit]
+Description=PLX document templates re-learned daily
+
+[Timer]
+OnCalendar=*-*-* 04:50:00 America/New_York
+Persistent=true
+AccuracySec=10min
+
+[Install]
+WantedBy=timers.target

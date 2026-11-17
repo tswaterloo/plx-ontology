@@ -16,7 +16,6 @@ import unittest
 
 from operating import briefing
 from operating import demand_forecast as df
-from operating import proactive_engine as pe
 from operating import proactive_stock as ops
 from operating.tests.test_proactive_business import NO_FINANCE, item, money, purchase
 from operating.tests.test_proactive_engine import ALL_MARKINGS, AS_OF, Engine, World

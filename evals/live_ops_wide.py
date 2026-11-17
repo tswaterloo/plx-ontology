@@ -38,7 +38,7 @@ citing that record: a paraphrase of the right email with no citation is never co
 from __future__ import annotations
 
 from collections import defaultdict
-from datetime import date, datetime, timedelta, timezone
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 import hashlib
 import re
@@ -768,16 +768,6 @@ def po_due_provenance(world: lk.World) -> list[lk.Candidate]:
             [*base.reads, "the governing date's record: its system"],
             base.rule + "; the system that date is read from"))
     return out
-
-
-def _open_bc_orders(world: lk.World) -> dict[str, list[Mapping[str, Any]]]:
-    by_vendor: dict[str, list[Mapping[str, Any]]] = defaultdict(list)
-    for record in world.bc_set("purchaseOrders"):
-        fields = record["fields"]
-        if fields.get("status") == "Open" and str(fields.get("fullyReceived")).lower() == "false":
-            by_vendor[str(fields.get("vendorName") or "").strip()].append(record)
-    by_vendor.pop("", None)
-    return by_vendor
 
 
 def _members(world: lk.World, numbers: Iterable[str]) -> list[list[str]]:

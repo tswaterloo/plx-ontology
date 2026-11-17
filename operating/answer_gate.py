@@ -80,12 +80,19 @@ from typing import Any, Callable, Collection, Iterable, Iterator, Mapping, Seque
 from ontology.json_contract import validate
 from ontology.units import ISO_4217, UOM_ALIASES
 from . import claim_checks
-from .claim_checks import (LEAD_MARK, ORIGINAL_TEXT_FIELDS, PAGE_TEXT,
-                           SCHEMA as CLAIM_CHECKS_SCHEMA, check_items, dig, field_label,
-                           parse_value_claims)
+from . import claim_checks_cells
+from . import claim_checks_grammar
+from . import claim_checks_parse
+from . import claim_checks_text
+from . import claim_checks_wording
+from .claim_checks import check_items
+from .claim_checks_grammar import ORIGINAL_TEXT_FIELDS, PAGE_TEXT, SCHEMA as CLAIM_CHECKS_SCHEMA
+from .claim_checks_parse import dig, parse_value_claims
+from .claim_checks_wording import LEAD_MARK, field_label
 from .document_conflicts import CONFLICT_REASON
-from .ontology_tools import load_contracts
-from .ontology_tools_investigate import citation_rows, default_unit_contracts, gate_rows
+from .ontology_tools_policy import load_contracts
+from .ontology_tools_investigate import citation_rows
+from .ontology_tools_investigate_host import default_unit_contracts, gate_rows
 
 CONTRACTS = load_contracts()
 HANDLE = re.compile(CONTRACTS["$defs"]["handle"]["pattern"])
@@ -553,7 +560,7 @@ def _partly_read(claims: Sequence[Mapping[str, Any]],
     fields: list[str] = []
     for claim in claims:
         for value_claim in [read for given in claim.get("value_claims") or ()
-                            for read in [given, *claim_checks.expression_inputs(given)]]:
+                            for read in [given, *claim_checks_parse.expression_inputs(given)]]:
             handle, field = value_claim.get("citation"), value_claim.get("field")
             if isinstance(handle, str) and isinstance(field, str) \
                     and field not in fields and unread(handle, field) \
@@ -595,12 +602,12 @@ def _in_full(server: Any, rows: Callable[[str], Any], returned: Mapping[str, Any
         if not isinstance(text, str):
             return False
         own = value_claim.get("quote")
-        quoted = claim_checks._normalised(own) if isinstance(own, str) else None
-        everywhere = len(claim_checks._spans(quoted, claim_checks._normalised(text))) \
+        quoted = claim_checks_text._normalised(own) if isinstance(own, str) else None
+        everywhere = len(claim_checks_text._spans(quoted, claim_checks_text._normalised(text))) \
             if quoted else 0
         for start, end in _verified_ranges(text, parts):
             passage = _whole_tokens(text, start, end)
-            inside = len(claim_checks._spans(quoted, claim_checks._normalised(passage))) \
+            inside = len(claim_checks_text._spans(quoted, claim_checks_text._normalised(passage))) \
                 if quoted and passage is not None else 0
             if passage is None or quoted and not inside:
                 continue
@@ -680,7 +687,7 @@ def read_value(given: Any, seen: set[str], rows: Callable[[str], Any] | None) ->
     if not isinstance(handle, str) or handle not in seen or not isinstance(field, str):
         return given
     quote = given.get("quote")
-    if field == PAGE_TEXT or claim_checks.text_field(field):
+    if field == PAGE_TEXT or claim_checks_text.text_field(field):
         return {**given, "value": quote.strip()} if isinstance(quote, str) \
             and quote.strip() else given
     try:
@@ -689,7 +696,7 @@ def read_value(given: Any, seen: set[str], rows: Callable[[str], Any] | None) ->
         return given
     found, cell = dig(resolved, field) if isinstance(resolved, Mapping) else (False, None)
     current = resolved.get("current_citation") if isinstance(resolved, Mapping) else None
-    if not found and claim_checks._changed(resolved) and isinstance(current, str) \
+    if not found and claim_checks_cells._changed(resolved) and isinstance(current, str) \
             and current != handle:
         # A revision the source moved past keeps no cells for this reader: the value is
         # read on the current revision, and the check (which never passes a moved
@@ -699,11 +706,11 @@ def read_value(given: Any, seen: set[str], rows: Callable[[str], Any] | None) ->
         except Exception:  # noqa: BLE001 - unreadable: refused as before
             return given
         found, cell = dig(view, field) if isinstance(view, Mapping) \
-            and not claim_checks._changed(view) else (False, None)
+            and not claim_checks_cells._changed(view) else (False, None)
     if not found or cell is None or isinstance(cell, bool):
         return given
     if isinstance(quote, str) and quote.strip() \
-            and claim_checks.structured_text(cell) is not None:
+            and claim_checks_text.structured_text(cell) is not None:
         # a structured cell is quoted as text is (``claim_checks.structured_text``)
         return {**given, "value": quote.strip()}
     if isinstance(cell, int):
@@ -714,7 +721,7 @@ def read_value(given: Any, seen: set[str], rows: Callable[[str], Any] | None) ->
     text = json.dumps(cell, sort_keys=True, separators=(",", ":"), ensure_ascii=False) \
         if isinstance(cell, (dict, list)) else str(cell).strip() \
         if isinstance(cell, str) else ""
-    if text and len(text) <= claim_checks.MAX_VALUE_CHARS:
+    if text and len(text) <= claim_checks_grammar.MAX_VALUE_CHARS:
         return {**given, "value": text}
     return given
 
@@ -885,7 +892,7 @@ def _legacy(claim: Mapping[str, Any], seen: set[str], kept: list[dict],
 # act on (PS-04: ``invalid_value_claim_value:0`` named no fix for a 300-character value).
 VALUE_CLAIM_FIXES = {
     "value_claim_value_too_long": (
-        f"the value is longer than {claim_checks.MAX_VALUE_CHARS} characters: claim the "
+        f"the value is longer than {claim_checks_grammar.MAX_VALUE_CHARS} characters: claim the "
         "shortest passage that states the fact as the value (its own words copied as "
         "written), give a longer passage that holds it as its quote, or split it into "
         "claims of their own"),
@@ -907,13 +914,16 @@ VALUE_CLAIM_FIXES = {
         "an expression input's value is the figure as written in its cited text: digits, "
         "with an optional thousands comma and fraction, and % for a printed percent"),
     "invalid_value_claim_op": (
-        "op is count, count_distinct, sum, avg, min, max, difference, ratio, days or "
-        "expression over 1 to 100 distinct inputs in \"of\" (difference, ratio and days "
-        "exactly two, x0 then x1; days one with \"day\"), each {\"citation\", \"field\", "
-        "\"unit\"?} (a count's a citation alone, a days input's no unit)"),
+        "op is count, count_distinct, sum, avg, min, max, difference, ratio, days, "
+        "add_days or expression over 1 to 100 distinct inputs in \"of\" (difference, "
+        "ratio, days and add_days exactly two, x0 then x1; days and add_days one with "
+        "\"day\"), each {\"citation\", \"field\", \"unit\"?} (a count's a citation "
+        "alone, a days or add_days input's no unit; add_days: a date then a days field, "
+        "its value the ISO day)"),
     "invalid_value_claim_day": (
-        "\"day\" goes only with \"op\": \"days\" over one cited date: an ISO day "
-        "(YYYY-MM-DD) the question writes in full, or today"),
+        "\"day\" goes only with \"op\": \"days\" over one cited date or \"op\": "
+        "\"add_days\" over one cited days field: an ISO day (YYYY-MM-DD) the question "
+        "writes in full, or today"),
     "invalid_value_claim_expression": (
         "an expression claim is {\"value\", \"op\": \"expression\", \"expression\": "
         "\"x0 - x1\", \"of\": [{\"citation\", \"field\", \"value\", \"quote\"}, ...]}"),
@@ -961,7 +971,7 @@ def _page_field_problem(value_claims: Sequence[Mapping[str, Any]]) -> str | None
     (``row.content_text``) is not what that page holds: the claim is refused so its
     repair cites the page's ``text``, the field every re-read of the page checks."""
     for claim in [read for given in value_claims
-                  for read in [given, *claim_checks.expression_inputs(given)]]:
+                  for read in [given, *claim_checks_parse.expression_inputs(given)]]:
         citation = claim.get("citation")
         if isinstance(citation, str) and PAGE_CITATION.search(citation) \
                 and claim.get("field") != PAGE_TEXT:
@@ -1110,7 +1120,7 @@ def _as_written(value_claim: Mapping[str, Any], rows: Callable[[str], Any]
         resolved = rows(handle)
         text = None if not isinstance(resolved, Mapping) else resolved.get("text") \
             if given.get("field") == PAGE_TEXT else dig(resolved, str(given.get("field")))[1]
-        span = claim_checks.verbatim_quote(quote, text) if isinstance(text, str) else None
+        span = claim_checks_text.verbatim_quote(quote, text) if isinstance(text, str) else None
         return {**given, "quote": span} if span else dict(given)
     out = written(value_claim)
     if isinstance(value_claim.get("of"), list) and value_claim.get("op") == "expression":
@@ -1156,7 +1166,7 @@ def check_text(text: Any, claims: list[dict], server: Any,
     prose = text[:MAX_TEXT_CHARS] if isinstance(text, str) else ""
     given = asker_given(question)
     if given:
-        prose = given_blanked(claim_checks.HANDLE.sub(
+        prose = given_blanked(claim_checks_grammar.HANDLE.sub(
             lambda match: " " * len(match.group(0)), prose), given)
     rows = _reader(server)
     report = check_items([{"id": claim["id"], "texts": [],
@@ -1174,12 +1184,12 @@ def check_text(text: Any, claims: list[dict], server: Any,
     # text writes (``change_backed``) is no uncovered number here either.
     passed = {to for claim in claims for value_claim in claim["value_claims"]
               if (to := claim_checks.to_decimal(plain(value_claim.get("value")))) is not None}
-    stated = [number for written, number in claim_checks.prose_numbers(prose)
-              if not claim_checks._percent_written(written)
+    stated = [number for written, number in claim_checks_text.prose_numbers(prose)
+              if not claim_checks_text._percent_written(written)
               and (number in passed or abs(number) in passed)]
     shown = [entry for entry in shown if not (
-        isinstance(entry["value"], str) and claim_checks._percent_written(entry["value"])
-        and (found := claim_checks.prose_numbers(entry["value"]))
+        isinstance(entry["value"], str) and claim_checks_text._percent_written(entry["value"])
+        and (found := claim_checks_text.prose_numbers(entry["value"]))
         and change_backed(found[0][0], found[0][1], stated, prose))]
     # A number only a passed claim's passage states as the text does (``passage_backed``,
     # the reply screen's rule) is covered: every place the text writes it.
@@ -1188,14 +1198,14 @@ def check_text(text: Any, claims: list[dict], server: Any,
         rest = prose
         for start, end in reversed(spans):
             rest = rest[:start] + " " * (end - start) + rest[end:]
-        left = {written for written, _ in claim_checks.prose_numbers(rest)}
+        left = {written for written, _ in claim_checks_text.prose_numbers(rest)}
         inside = {written for start, end in spans
-                  for written, _ in claim_checks.prose_numbers(prose[start:end])}
+                  for written, _ in claim_checks_text.prose_numbers(prose[start:end])}
         shown = [entry for entry in shown if not (
             entry["code"] == "claim_unstructured" and entry["value"] in inside
             and entry["value"] not in left)]
-    uncovered = [entry for entry in shown if entry["code"] != claim_checks.PROSE_UNCHECKED]
-    unchecked = [entry for entry in shown if entry["code"] == claim_checks.PROSE_UNCHECKED]
+    uncovered = [entry for entry in shown if entry["code"] != claim_checks_wording.PROSE_UNCHECKED]
+    unchecked = [entry for entry in shown if entry["code"] == claim_checks_wording.PROSE_UNCHECKED]
     said = [line for line, needed in (
         (TEXT_INSTRUCTION, any(e["code"] not in ("claim_value_unstated",
                                                   "claim_currency_mismatch")
@@ -1249,7 +1259,7 @@ def name_token(token: str) -> str | None:
     head = re.fullmatch(r"([A-Za-z]{3})[ -]?[\d.,]+", token)
     if head and head.group(1).upper() in ISO_4217:
         return None   # USD1,200: an amount
-    if claim_checks.written_dates(token) or claim_checks._moment(token):
+    if claim_checks_text.written_dates(token) or claim_checks_cells._moment(token):
         return None
     return token
 
@@ -1317,6 +1327,94 @@ def returned_names(events: Sequence[Any], *, skip_tools: Iterable[str] = ()) -> 
     return frozenset(names)
 
 
+# The one line a reply gets when it writes an amount a tool returned with no currency
+# beside it (business rule 2026-11-16): appended, never written into the reply's sentences.
+CURRENCY_FOOTNOTE = "Amounts shown without a currency: the source does not state one."
+_AMOUNT_KEYS = ("value", "total", "partial_subtotal", "lowest", "highest", "amount")
+# Words that may follow an amount in a sentence ("owes 1,500 in total"); any other word
+# right after a figure makes it a count, a quantity or a label's number, never an amount.
+_AMOUNT_FOLLOWERS = frozenset({
+    "and", "or", "in", "for", "past", "due", "owing", "owed", "outstanding", "overdue",
+    "total", "from", "to", "of", "on", "at", "as", "with", "which", "that", "is", "was",
+    "across", "over", "since", "by", "while", "but", "so", "versus", "vs", "net", "gross"})
+_LABELLED_AFTER = re.compile(r"[ \u00a0]*(?:\(?(?P<code>[A-Z]{3})\)?(?![A-Za-z])|"
+                             r"\$?[ \u00a0]*\(currency not stated\))")
+
+
+def returned_amounts(events: Sequence[Any], *, skip_tools: Iterable[str] = ()
+                     ) -> frozenset[Decimal]:
+    """Every amount a tool result of ``events`` returned: a figure under a value or total
+    key of an object that states a ``currency`` or ``currency_basis`` (with a currency or
+    without one) or is typed ``money``. Bounded as ``returned_names``; reads nothing."""
+    skipped = set(skip_tools)
+    found: set[Decimal] = set()
+    budget = MAX_NAME_SCAN_CHARS
+
+    def walk(node: Any) -> None:
+        nonlocal budget
+        if budget <= 0 or len(found) >= MAX_RETURNED_NAMES:
+            return
+        if isinstance(node, Mapping):
+            budget -= len(node)
+            if "currency" in node or "currency_basis" in node \
+                    or node.get("value_type") == "money":
+                for key in _AMOUNT_KEYS:
+                    number = claim_checks_parse.to_decimal(node.get(key)) \
+                        if isinstance(node.get(key), (str, int)) \
+                        and not isinstance(node.get(key), bool) else None
+                    if number is not None:
+                        found.add(number)
+            for key, item in node.items():
+                if key not in _NOT_RETURNED_KEYS:
+                    walk(item)
+        elif isinstance(node, (list, tuple)):
+            budget -= len(node)
+            for item in node:
+                walk(item)
+
+    for event in events:
+        if not isinstance(event, Mapping) or event.get("type") != "tool_call" \
+                or event.get("name") in skipped or event.get("is_error"):
+            continue
+        result = event.get("result")
+        if isinstance(result, str):
+            try:
+                result = json.loads(result)
+            except ValueError:
+                continue
+        walk(result)
+    return frozenset(found)
+
+
+def currency_footnote(text: Any, amounts: Collection[Decimal]) -> Any:
+    """``text`` with ``CURRENCY_FOOTNOTE`` appended as its last line when it writes one of
+    the ``amounts`` a tool returned (``returned_amounts``) with no currency beside it (an
+    ISO code before or after it, or "$ (currency not stated)" after it); else ``text``
+    unchanged. It only verifies: no sentence of the reply is edited, and a reply that
+    carries the line already is left as it is. A figure followed by a word that is no
+    amount's (``1500 units``, ``3 open POs``), or one the figure reader takes for a label's
+    number, a bound or a negation, is no amount here."""
+    if not isinstance(text, str) or not text.strip() or not amounts \
+            or CURRENCY_FOOTNOTE in text:
+        return text
+    prose = claim_checks_text._normalised(text)
+    for figure in claim_checks_text._text_figures(prose):
+        if figure.percent or not figure.supports or figure.value not in amounts:
+            continue
+        if figure.currency not in (None, "$"):
+            continue
+        if figure.word is not None and figure.word.isalpha() \
+                and figure.word.casefold() not in _AMOUNT_FOLLOWERS \
+                and figure.word.upper() not in ISO_4217:
+            continue
+        after = _LABELLED_AFTER.match(prose, figure.end)
+        if after is not None and (after.group("code") is None
+                                  or after.group("code") in ISO_4217):
+            continue
+        return text.rstrip() + "\n\n" + CURRENCY_FOOTNOTE
+    return text
+
+
 def _names_blanked(prose: str, names: Collection[str], refused: Sequence[Any]) -> str:
     """``prose`` with each name token (``_name_tokens``) the run returned (``names``)
     blanked to spaces of its length, unless a refused claim (``refused``) said it: a
@@ -1373,12 +1471,12 @@ def unbacked(text: Any, values: Sequence[Any], *, question: Any = "",
              if isinstance(value, (str, int, float)) and not isinstance(value, bool)]
     numbers = {claim_checks.to_decimal(value) for value in shown} - {None}
     covered = [value for value in shown if claim_checks.to_decimal(value) is None and value]
-    days = {moment[0] for value in covered if (moment := claim_checks._moment(value))}
+    days = {moment[0] for value in covered if (moment := claim_checks_cells._moment(value))}
     # A day a passed text value writes inside it ("Signed Sep 16, 2026 07:53 AM") backs
     # the same day written in prose ("on Sep 16, 2026"), as the gate's text check reads
     # it: the reply never drops a sentence that check passed for its date alone.
     days |= {moment[0] for value in covered
-             for _written, moment, _iso in claim_checks.written_dates(value) if moment}
+             for _written, moment, _iso in claim_checks_text.written_dates(value) if moment}
     held = " ".join(covered).lower()
     words = {match.group(0).lower() for said in refused if isinstance(said, str)
              for match in STATEMENT_WORD.finditer(said)}
@@ -1398,11 +1496,11 @@ def unbacked(text: Any, values: Sequence[Any], *, question: Any = "",
         # backed only by a claim in a percent unit, at percent scale (``100%`` by 100
         # percent; never by a unit-less 1 or 100), or as the change between two passed
         # numbers the same text writes (``change_backed``).
-        if claim_checks._percent_written(written):
+        if claim_checks_text._percent_written(written):
             return abs(number) * 100 in percent_values or change_backed(
                 written, number, stated, text)
         return number in numbers or abs(number) in numbers or \
-            claim_checks.rounded_from(number, numbers)
+            claim_checks_parse.rounded_from(number, numbers)
 
     # The question's own identifiers are given by the asker (``asker_given``): a reply
     # repeating them states nothing a citation must back.
@@ -1412,29 +1510,29 @@ def unbacked(text: Any, values: Sequence[Any], *, question: Any = "",
     for value in sorted({value for value in covered if value}, key=len, reverse=True):
         prose = prose.replace(value, " " * len(value))
     if given:   # a handle keeps its characters: only prose outside one is blanked
-        prose = given_blanked(claim_checks.HANDLE.sub(
+        prose = given_blanked(claim_checks_grammar.HANDLE.sub(
             lambda match: " " * len(match.group(0)), prose), given)
     if names:   # a handle is never a statement (blanked below too), never a name's text
-        prose = _names_blanked(claim_checks.HANDLE.sub(
+        prose = _names_blanked(claim_checks_grammar.HANDLE.sub(
             lambda match: " " * len(match.group(0)), prose), names, refused)
     scan = prose
     for value in sorted({value for value in covered if value}, key=len, reverse=True):
         scan = scan.replace(value, " ")
-    scan = claim_checks.HANDLE.sub(lambda match: " " * len(match.group(0)), scan)
+    scan = claim_checks_grammar.HANDLE.sub(lambda match: " " * len(match.group(0)), scan)
     for start, end in reversed(passage_backed(scan, passages)):
         scan = scan[:start] + " " * (end - start) + scan[end:]
-    found = claim_checks.labels(scan)
+    found = claim_checks_text.labels(scan)
     for match in found:
         label = match.group(0)
         if not re.search(r"(?<![A-Za-z0-9_])" + re.escape(label.lower())
                          + r"(?![A-Za-z0-9_])", asked) and not all(
-                number in numbers for number in claim_checks.label_numbers(label)):
+                number in numbers for number in claim_checks_text.label_numbers(label)):
             add(label)
     for match in reversed(found):   # each label judged whole above, never its digits
         scan = scan[:match.start()] + " " * len(match.group(0)) + scan[match.end():]
-    written_numbers = claim_checks.prose_numbers(scan)
+    written_numbers = claim_checks_text.prose_numbers(scan)
     stated += [number for written, number in written_numbers
-               if not claim_checks._percent_written(written)
+               if not claim_checks_text._percent_written(written)
                and (number in numbers or abs(number) in numbers)]
     backed_tokens = set()
     for written, number in written_numbers:
@@ -1455,13 +1553,13 @@ def unbacked(text: Any, values: Sequence[Any], *, question: Any = "",
                 add(token)
         elif _qualified(scan, start, end):
             add(token)
-    rest = claim_checks.HANDLE.sub(" ", prose)
+    rest = claim_checks_grammar.HANDLE.sub(" ", prose)
     for value in sorted(set(covered), key=len, reverse=True):
         rest = rest.replace(value, " ")
-    for written, moment, _iso in claim_checks.written_dates(rest):
+    for written, moment, _iso in claim_checks_text.written_dates(rest):
         if moment is None or moment[0] not in days:
             add(written)
-    for match in claim_checks.IDENTIFIER.finditer(rest):
+    for match in claim_checks_grammar.IDENTIFIER.finditer(rest):
         if match.group(0).lower() not in held and match.group(0).lower() not in asked:
             add(match.group(0))
     for match in STATEMENT_WORD.finditer(rest):
@@ -1480,14 +1578,14 @@ def _qualified(text: str, start: int, end: int) -> bool:
     stop = text.find("\n", end)
     stop = len(text) if stop < 0 else stop
     return bool(
-        claim_checks._NEGATOR.search(text, reach, start)
-        or claim_checks._EXCLUDED_BEFORE.search(text, reach, start)
-        or claim_checks._BOUND_BEFORE.search(text, reach, start)
-        or claim_checks._AT_LEAST_BEFORE.search(text, reach, start)
-        or claim_checks._NEGATED_AFTER.match(text, end, stop)
-        or claim_checks._ANSWERED_NO.match(text, end, stop)
-        or claim_checks._BOUND_AFTER.match(text, end, stop)
-        or claim_checks._AT_LEAST_AFTER.match(text, end, stop))
+        claim_checks_grammar._NEGATOR.search(text, reach, start)
+        or claim_checks_grammar._EXCLUDED_BEFORE.search(text, reach, start)
+        or claim_checks_grammar._BOUND_BEFORE.search(text, reach, start)
+        or claim_checks_grammar._AT_LEAST_BEFORE.search(text, reach, start)
+        or claim_checks_grammar._NEGATED_AFTER.match(text, end, stop)
+        or claim_checks_grammar._ANSWERED_NO.match(text, end, stop)
+        or claim_checks_grammar._BOUND_AFTER.match(text, end, stop)
+        or claim_checks_grammar._AT_LEAST_AFTER.match(text, end, stop))
 
 
 def _at_least(text: str, start: int, end: int) -> bool:
@@ -1497,8 +1595,8 @@ def _at_least(text: str, start: int, end: int) -> bool:
     reach = max(line, start - 48)
     stop = text.find("\n", end)
     stop = len(text) if stop < 0 else stop
-    return bool(claim_checks._AT_LEAST_BEFORE.search(text, reach, start)
-                or claim_checks._AT_LEAST_AFTER.match(text, end, stop))
+    return bool(claim_checks_grammar._AT_LEAST_BEFORE.search(text, reach, start)
+                or claim_checks_grammar._AT_LEAST_AFTER.match(text, end, stop))
 
 
 def lower_bounds(claims: Sequence[Any]) -> frozenset[Decimal]:
@@ -1595,7 +1693,7 @@ def _claim_words(claims: Sequence[Any]) -> frozenset[str]:
                 texts += [plain(value_claim.get(key)) for key in ("field", "role", "value")]
         for text in texts:
             if isinstance(text, (str, int)) and not isinstance(text, bool):
-                words.update(claim_checks._name_words(str(text)))
+                words.update(claim_checks_wording._name_words(str(text)))
     return frozenset(words)
 
 
@@ -1696,7 +1794,7 @@ _CONTEXT_WORD = re.compile(r"[A-Za-z][A-Za-z0-9]*")
 _COMPOUND_TOKEN = re.compile(r"\d[A-Za-z]|[A-Za-z#_]\d|\d[-/:]\d")
 CONTEXT_WORDS = 3          # words each side of a token that say what it is
 PROSE_CONTEXT_WORDS = 6    # words before a reply's token that may name it
-MAX_PASSAGE_CHARS = claim_checks.MAX_VALUE_CHARS
+MAX_PASSAGE_CHARS = claim_checks_grammar.MAX_VALUE_CHARS
 MAX_BOUND_CLAIMS = 12      # passages one reply binds (``bind_read_figures``)
 MAX_BIND_TEXTS = 40        # served texts the binder searches
 MAX_BIND_CHECKS = 24       # candidate passages the binder checks
@@ -1727,15 +1825,15 @@ def _context(text: str, start: int, end: int, before_words: int = CONTEXT_WORDS
     line_end = len(text) if line_end < 0 else line_end
     before = _CONTEXT_WORD.findall(text[line_start:start])[-before_words:]
     after = _CONTEXT_WORD.findall(text[end:line_end])[:CONTEXT_WORDS]
-    return {claim_checks._stem(word) for word in before + after
+    return {claim_checks_text._stem(word) for word in before + after
             if len(word) >= 3 and word.isalpha()
-            and word.lower() not in claim_checks._PROSE_GRAMMAR}
+            and word.lower() not in claim_checks_wording._PROSE_GRAMMAR}
 
 
 def _figure_in(text: str, start: int, end: int) -> Any:
     """The figure ``claim_checks`` reads inside ``text[start:end]`` (its ``_Figure``:
     value, whether it supports a claim, the word and currency printed with it), or None."""
-    for figure in claim_checks._text_figures(text):
+    for figure in claim_checks_text._text_figures(text):
         if start <= figure.start and figure.end <= end:
             return figure
     return None
@@ -1751,13 +1849,13 @@ def _marks_agree(said: Any, read: Any) -> bool:
     if said.currency is not None:
         if read is None or read.currency is None or not (
                 said.currency == read.currency
-                or claim_checks.same_currency(said.currency, read.currency)):
+                or claim_checks_text.same_currency(said.currency, read.currency)):
             return False
     unit = said.word if said.word is not None and (
-        said.word.startswith("/") or said.word in claim_checks._PAGE_UNITS) else None
+        said.word.startswith("/") or said.word in claim_checks_grammar._PAGE_UNITS) else None
     if unit is not None:
         printed = None if read is None or read.word is None else read.word
-        if printed is None or claim_checks._page_unit(printed) != claim_checks._page_unit(unit):
+        if printed is None or claim_checks_grammar._page_unit(printed) != claim_checks_grammar._page_unit(unit):
             return False
     return True
 
@@ -1799,8 +1897,8 @@ def _passage_states(prose: str, start: int, end: int, passage: str) -> bool:
         # A negator or bound before it in the passage must be restated before it in the
         # reply ("go up to $5.26" of "will go up to $5.26"): the same statement.
         if any(pattern.search(passage, reach, at) and not pattern.search(prose, near, start)
-               for pattern in (claim_checks._NEGATOR, claim_checks._BOUND_BEFORE,
-                               claim_checks._AT_LEAST_BEFORE, claim_checks._RANGE_BEFORE)):
+               for pattern in (claim_checks_grammar._NEGATOR, claim_checks_grammar._BOUND_BEFORE,
+                               claim_checks_grammar._AT_LEAST_BEFORE, claim_checks_grammar._RANGE_BEFORE)):
             continue
         if not _marks_agree(figure, read):
             continue
@@ -1906,11 +2004,11 @@ def bind_read_figures(text: Any, claims: Sequence[Mapping[str, Any]], server: An
         open_tokens = unbacked(prose, backing(passed), question=question, refused=said,
                                percents=in_percent(passed), passages=passages_of(passed))
         open_numbers = {number for token in open_tokens
-                        for _written, number in claim_checks.prose_numbers(token)}
+                        for _written, number in claim_checks_text.prose_numbers(token)}
         if not open_numbers:
             continue
         for start, end in _prose_tokens(prose):
-            numbers = {number for _w, number in claim_checks.prose_numbers(prose[start:end])}
+            numbers = {number for _w, number in claim_checks_text.prose_numbers(prose[start:end])}
             if not numbers & open_numbers or any(
                     _passage_states(prose, start, end, passage)
                     for passage in passages_of(list(claims) + bound)):
@@ -2020,7 +2118,7 @@ def in_percent(claims: Sequence[Any]) -> list[Any]:
         for value_claim in claim.get("value_claims") or ():
             unit = plain(value_claim.get("unit")) if isinstance(value_claim, Mapping) else None
             value = plain(value_claim.get("value")) if isinstance(value_claim, Mapping) else None
-            if isinstance(unit, str) and claim_checks._page_unit(unit) == "percent" and \
+            if isinstance(unit, str) and claim_checks_grammar._page_unit(unit) == "percent" and \
                     isinstance(value, (str, int)) and not isinstance(value, bool):
                 out.append(value)
     return out
@@ -2218,7 +2316,7 @@ def _subject_words(text: str, value: str = "") -> set[str]:
     def stems(said: str) -> set[str]:
         words = set()
         for word in re.findall(r"[A-Za-z][A-Za-z0-9]{2,}", said.lower()):
-            if word in claim_checks._PROSE_GRAMMAR or word in {"not", "never", "none"}:
+            if word in claim_checks_wording._PROSE_GRAMMAR or word in {"not", "never", "none"}:
                 continue
             words.add(re.sub(r"(?:ies|es|ed|ing|s)$", "", word) or word)
         return words
@@ -2277,7 +2375,7 @@ def _checked_marks(claims: Sequence[Any]) -> dict[Any, dict[str, set[str]]]:
             unit, currency = plain(value_claim.get("unit")), plain(value_claim.get("currency"))
             if isinstance(unit, str) and unit.strip():
                 if verified:
-                    marks["units"].add(claim_checks._page_unit(unit))
+                    marks["units"].add(claim_checks_grammar._page_unit(unit))
                 else:
                     marks["dropped"].add(" ".join(unit.casefold().split()))
             if isinstance(currency, str) and currency.strip():
@@ -2292,11 +2390,11 @@ def _unchecked_units_dropped(sentence: str, marks: Mapping[Any, Mapping[str, set
     claim whose unit the page never printed is "68,160". The unit spelling a claim of
     that value stated and the gate left unverified goes too, whatever the word (``120
     ctns`` of a claim in ctns, for that value only). No unit is ever added."""
-    known = {(start, end) for _, start, end, _ in claim_checks.unit_words(sentence)}
-    for value, start, end, word in reversed(claim_checks.figure_words(sentence)):
+    known = {(start, end) for _, start, end, _ in claim_checks_text.unit_words(sentence)}
+    for value, start, end, word in reversed(claim_checks_text.figure_words(sentence)):
         if value not in marks:
             continue
-        unit = claim_checks._page_unit(word)
+        unit = claim_checks_grammar._page_unit(word)
         if (start, end) in known and unit not in marks[value]["units"] or \
                 word in marks[value]["dropped"] and unit not in marks[value]["units"]:
             sentence = sentence[:start] + sentence[end:]
@@ -2311,13 +2409,13 @@ def _currencies_as_checked(sentence: str, marks: Mapping[Any, Mapping[str, set[s
     beside a value checked in USD; ``claim_checks.same_currency``): a sentence with one
     states what no claim checked."""
     other: list[str] = []
-    for value, start, end, written in reversed(claim_checks.currency_words(sentence)):
+    for value, start, end, written in reversed(claim_checks_text.currency_words(sentence)):
         if value not in marks:
             continue
         checked = marks[value]["currencies"]
         if not checked:
             sentence = sentence[:start] + sentence[end:]
-        elif not any(claim_checks.same_currency(written, code) for code in checked):
+        elif not any(claim_checks_text.same_currency(written, code) for code in checked):
             other.insert(0, sentence[start:end].strip())
     return sentence, other
 
@@ -2347,10 +2445,10 @@ def _states_value(text: str, value: Any, *, percent: bool = False) -> bool:
     unit, ``percent``, also as a printed percent: ``100%`` of 100 percent)."""
     number = claim_checks.to_decimal(value)
     if number is not None:
-        return any(found == number or claim_checks.rounded_from(found, [number])
-                   or percent and claim_checks._percent_written(written)
+        return any(found == number or claim_checks_parse.rounded_from(found, [number])
+                   or percent and claim_checks_text._percent_written(written)
                    and found * 100 == number
-                   for written, found in claim_checks.prose_numbers(text))
+                   for written, found in claim_checks_text.prose_numbers(text))
     return " ".join(str(value).split()).lower() in " ".join(text.split()).lower()
 
 
@@ -2535,7 +2633,7 @@ def _expression_key(expression: Any, inputs: Sequence[tuple[Any, Any, Any, Any]]
         text = str(figure).strip() if isinstance(figure, (str, int)) \
             and not isinstance(figure, bool) else ""
         percent = text.endswith("%") or isinstance(unit, str) \
-            and claim_checks._page_unit(unit) == "percent"
+            and claim_checks_grammar._page_unit(unit) == "percent"
         number = claim_checks.to_decimal(text.rstrip("%"))
         if number is None:
             return None
@@ -2715,7 +2813,7 @@ def _recorded(value_claim: Mapping[str, Any], rows: Callable[[str], Any]) -> str
     short scalar and written otherwise than the claimed value; else None."""
     field = value_claim.get("field")
     if "citation" not in value_claim or field == PAGE_TEXT or field in ORIGINAL_TEXT_FIELDS \
-            or claim_checks.text_field(field):
+            or claim_checks_text.text_field(field):
         return None
     resolved = rows(value_claim["citation"])
     found, cell = dig(resolved, field) if isinstance(resolved, Mapping) else (False, None)

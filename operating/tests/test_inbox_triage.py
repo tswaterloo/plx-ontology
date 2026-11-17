@@ -385,7 +385,7 @@ class Workload(unittest.TestCase):
                 + [{"kind": it.KIND, "owner": self.OTHER, "teams": []}] * 2
                 + [{"kind": it.KIND, "owner": self.THIRD, "teams": []}]
                 + [{"kind": it.KIND, "owner": EXCLUDED_OID, "teams": []}]
-                + [{"kind": "mc_task_overdue", "owner": None, "teams": ["OPS"]}]
+                + [{"kind": "mc_task_stuck", "owner": None, "teams": ["OPS"]}]
                 + [{"kind": "late_po", "owner": None, "teams": ["PROC", "OPS"]}])
 
     def team(self, members, reader=OURS_OID, managers=None):
@@ -463,7 +463,9 @@ class Labels(Engine):
                     body="Hi, can you please update the case label to add the lot code?",
                     subject=f"Label change {i}", n=40_000 + i)
         if not hasattr(w, "_item"):
-            w._item = w.obj("Product", {"code": "SYN-1"})
+            # named: a request is stale only when it names its item by a stated name
+            # (alerts-fix-1113, label_changes._subject_names)
+            w._item = w.obj("Product", {"code": "SYN-1", "name": "Synthetic case label"})
         w.link("Email.mentions_product", made, w._item)
         return made
 

@@ -17,7 +17,7 @@ try:
     from fastapi.testclient import TestClient
     from integrations.people_exclusion import PeopleExclusion  # noqa: F401
     from ontology.types import Actor
-    from operating.ontology_tools import ReadPolicy
+    from operating.ontology_tools_policy import ReadPolicy
     from operating.pg import migrate
     from operator_api import backend as be
     from operator_api.app import create_app
@@ -243,16 +243,31 @@ class SuggestOverPostgres(unittest.TestCase):
         from pathlib import Path
         from psycopg import conninfo, errors
         from operating.search import core
+        from operating.pg.scratch_db import superuser_dsn
         sql = (Path(__file__).resolve().parents[2] / "deploy" / "pg" / "plx_api_role.sql")
-        with psycopg.connect(self.dsn, autocommit=True) as conn:
+        # the role file is run by a superuser, as in production; the run's own login is
+        # plx_test (ARCH T7), which may not create or alter roles
+        admin = superuser_dsn(self.dsn)
+        with psycopg.connect(admin, autocommit=True) as conn:
             conn.execute(sql.read_text())
             conn.execute(sql.read_text())                       # idempotent
             self.assertEqual(conn.execute("SELECT rolsuper OR rolcreatedb OR rolcreaterole "
                                           "FROM pg_roles WHERE rolname = 'plx_api'"
                                           ).fetchone()[0], False)
-        role_dsn = conninfo.make_conninfo(self.dsn, options="-c role=plx_api")
+            # every session of the role bounded by default (a login applies them)
+            (settings,) = conn.execute(
+                "SELECT s.setconfig FROM pg_db_role_setting s JOIN pg_roles r ON "
+                "r.oid = s.setrole WHERE r.rolname = 'plx_api' AND s.setdatabase = 0"
+            ).fetchone()
+            for wanted in ("statement_timeout=300s", "lock_timeout=30s",
+                           "idle_in_transaction_session_timeout=15min"):
+                self.assertIn(wanted, settings)
+        role_dsn = conninfo.make_conninfo(admin, options="-c role=plx_api")
         owner_view = self.names(self.client(BUYER, FINANCE))[0]
         as_role = Backend(lambda s: None, data_label="t", pg_dsn=role_dsn)
+        # its sessions log in as the superuser, which the class teardown's DROP ... FORCE
+        # (as plx_test) may not end: close them with the test
+        self.addCleanup(lambda: as_role._pool is not None and as_role._pool.close())
         swap = mock.patch.object(self, "backend", as_role)
         swap.start()
         self.addCleanup(swap.stop)
@@ -262,7 +277,7 @@ class SuggestOverPostgres(unittest.TestCase):
             self.assertEqual(conn.execute("SELECT current_user").fetchone()[0], "plx_api")
             query = SimpleNamespace(question="zed?", intent="lookup", entities=(),
                                     rewrites=())
-            result = SimpleNamespace(hits=[], hidden={}, notes=[], timings={})
+            result = SimpleNamespace(hits=[], hidden={}, notes=[], timings={}, failed=[])
             self.assertIsNotNone(core._log(conn, "reader", query, result))
             core.prune_query_log(conn, days=1)
             conn.execute("INSERT INTO search.feedback (at, actor, question, answer_id, rating,"

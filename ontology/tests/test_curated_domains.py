@@ -93,6 +93,7 @@ class Catalog:
         self.bindings: dict[str, dict] = {}
         self.binding_type: dict[str, str] = {}
         self.links: dict[str, dict] = {}
+        self.generated_links: dict[str, dict] = {}
         self.duplicates: list[str] = []
         for name, data in domains.items():
             for obj in data.get("object_types", []):
@@ -124,13 +125,22 @@ def generated_link_ends(domains: dict[str, dict]) -> dict[str, dict]:
     declared = {obj["id"] for data in domains.values() for obj in data.get("object_types", [])}
     ends = {link[end] for data in domains.values() for link in data.get("link_types", [])
             for end in ("from", "to")} - declared
-    out = {}
-    for name, data in schema.load_documents():
-        if name.startswith("domains/") or not isinstance(data, dict):
-            continue
-        if ends & {obj.get("id") for obj in data.get("object_types", [])}:
-            out[name] = data
-    return out
+    generated = [(name, data) for name, data in schema.load_documents()
+                 if not name.startswith("domains/") and isinstance(data, dict)]
+    out: dict[str, dict] = {}
+    # Closed: an included generated file's own links name types of further generated files
+    # (the Portal order types' created_by_user links reach the people-access user type).
+    while True:
+        grew = False
+        for name, data in generated:
+            if name not in out and ends & {obj.get("id") for obj in data.get("object_types", [])}:
+                out[name] = data
+                grew = True
+                ends |= {link[end] for link in data.get("link_types", [])
+                         for end in ("from", "to")}
+                ends -= declared
+        if not grew:
+            return out
 
 
 GENERATED_ENDS = generated_link_ends(DOMAINS_DATA)
@@ -140,14 +150,12 @@ for _data in GENERATED_ENDS.values():
         CATALOG.types.setdefault(_obj["id"], _obj)
         for _binding in _obj["bindings"]:
             CATALOG.binding_type.setdefault(_binding["id"], _obj["id"])
+    for _link in _data.get("link_types", []):   # a unit's via_link may be a generated link
+        CATALOG.generated_links.setdefault(_link["id"], _link)
 
 
 def lane_types() -> dict[str, dict]:
     return {tid: obj for tid, obj in CATALOG.types.items() if CATALOG.type_domain[tid] in L5B}
-
-
-def lane_links() -> dict[str, dict]:
-    return {lid: link for lid, link in CATALOG.links.items() if link["from"] in lane_types()}
 
 
 class DomainFilesValidate(unittest.TestCase):
@@ -195,7 +203,6 @@ class DomainFilesValidate(unittest.TestCase):
         for name in L5B:
             data = DOMAINS_DATA[name]
             walk(data, data.get("upstream_pins", {}), name)
-
 
     def test_a_prisma_enum_property_holds_the_pinned_prisma_values(self):
         """A curated enum evidenced by a Portal Prisma enum holds exactly the values of that
@@ -279,7 +286,7 @@ class PropertiesAndAuthority(unittest.TestCase):
                         ref = holder.get(key)
                         if not isinstance(ref, dict):
                             continue
-                        link = CATALOG.links.get(ref["via_link"])
+                        link = CATALOG.links.get(ref["via_link"]) or CATALOG.generated_links.get(ref["via_link"])
                         with self.subTest(type=type_id, prop=prop["name"], via=ref["via_link"]):
                             self.assertIsNotNone(link)
                             self.assertEqual(link["from"], type_id)

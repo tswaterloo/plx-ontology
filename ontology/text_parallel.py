@@ -48,6 +48,7 @@ import pickle
 import time
 from typing import Any, Callable, Iterable, Iterator
 
+from ontology import parent_watch
 from ontology import text_index as T
 from ontology.finish_documents import absorb_kept, portable_load
 
@@ -159,7 +160,7 @@ class TextReader:
                     self._pool = futures.ProcessPoolExecutor(
                         max_workers=self.count,
                         mp_context=multiprocessing.get_context("spawn"),
-                        initializer=_init, initargs=(payload,))
+                        **parent_watch.pool_init(_init, (payload,)))
             except Exception as exc:  # noqa: BLE001 - every group read by the step
                 self.reason = f"workers_failed:{type(exc).__name__}"
                 self._broken = True

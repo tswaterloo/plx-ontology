@@ -51,10 +51,11 @@ _NAME = {"object_type", "note", "anchor", "markings"}
 # business.json: what a raw relation is to the business (``_business``)
 BUSINESS_DECISIONS = ("type", "extends", "links", "skip")
 _BUSINESS = {"decision", "label", "about", "display", "text", "extends", "links_to", "joins",
-             "reason"}
+             "reason", "identifiers"}
 _BUSINESS_NEEDS = {"type": {"about"}, "extends": {"about", "extends"},
                    "links": {"about", "links_to"}, "skip": {"reason"}}
-_JOIN = {"name", "to_binding", "pairs", "tier", "why", "unique_target"}
+_JOIN = {"name", "to_binding", "pairs", "tier", "why", "unique_target", "where",
+         "reverse_name"}
 _JOIN_COMPARES = ("integer_id", "text_id", "identifier")
 _SKIP_REASON = re.compile(r"^(system|log): \S")
 # How a source adapter chose a relation's key (facts ``key_source``; the Portal reporting
@@ -263,7 +264,7 @@ def _business(sources: Any) -> dict[str, dict[str, dict[str, Any]]]:
                       "a skipped relation is a system or log table: reason starts "
                       "'system: ' or 'log: '")
                 _need(not set(spec) & {"about", "display", "text", "joins", "extends",
-                                       "links_to"}, at,
+                                       "links_to", "identifiers"}, at,
                       "a skipped relation declares a label and its reason only")
             else:
                 _text(spec["about"], at, "about")
@@ -281,15 +282,38 @@ def _business(sources: Any) -> dict[str, dict[str, dict[str, Any]]]:
                     _columns(spec["display"], at, "display", 3)
                 if "text" in spec:
                     _columns(spec["text"], at, "text", 40)
+                if "identifiers" in spec:   # column -> its kind, or {kind, identifies}
+                    ids = spec["identifiers"]
+                    _need(isinstance(ids, dict) and ids, at,
+                          "identifiers maps columns to identifier kinds")
+                    _columns(sorted(ids), at, "identifiers", 8)
+                    from ontology import identifiers as grammar
+                    for column, decl in ids.items():
+                        kind = decl.get("kind") if isinstance(decl, dict) else decl
+                        _need(kind in grammar.kinds(), at,
+                              f"identifiers.{column}: undeclared kind {kind!r}")
+                        _need(not isinstance(decl, dict) or (
+                            set(decl) <= {"kind", "identifies"}
+                            and decl.get("identifies", "reference") == "reference"), at,
+                              f"identifiers.{column}: kind and identifies (reference) only")
             names = set()
             for n, join in enumerate(spec.get("joins", ())):
                 jat = f"{at}.joins[{n}]"
-                _keys(join, _JOIN, _JOIN - {"unique_target"}, jat)
+                _keys(join, _JOIN, _JOIN - {"unique_target", "where", "reverse_name"}, jat)
                 _need(isinstance(join["name"], str) and _SNAKE.match(join["name"]) is not None
                       and join["name"] not in names, jat, "name must be a new snake_case name")
                 names.add(join["name"])
                 _text(join["to_binding"], jat, "to_binding")
                 _text(join["why"], jat, "why")
+                if "reverse_name" in join:
+                    _need(isinstance(join["reverse_name"], str)
+                          and _SNAKE.match(join["reverse_name"]) is not None, jat,
+                          "reverse_name must be a snake_case name")
+                if "where" in join:   # the rows the join holds for only (a binding's where)
+                    _need(isinstance(join["where"], list) and bool(join["where"]), jat,
+                          "where must be a non-empty list of predicates")
+                    for predicate in join["where"]:
+                        _keys(predicate, {"path", "op", "value"}, {"path", "op", "value"}, jat)
                 _need(join["tier"] in store_ddl.TIERS, jat, f"tier not in {store_ddl.TIERS}")
                 _need(join["tier"] != "lead" or join.get("unique_target") is True, jat,
                       "a lead join links one candidate only (unique_target)")

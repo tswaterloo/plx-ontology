@@ -2566,7 +2566,7 @@ def _value_claims(raw: Any, cited: Sequence[Mapping[str, str]],
     claims are checked against the cited rows on read, never trusted."""
     if raw is None:
         return []
-    from .claim_checks import parse_value_claims  # claim_checks imports this module
+    from .claim_checks_parse import parse_value_claims  # claim_checks imports this module
     return parse_value_claims(raw, [cite["handle"] for cite in cited],
                               [calc["id"] for calc in state["calculations"]])
 

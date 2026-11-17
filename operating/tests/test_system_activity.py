@@ -230,5 +230,29 @@ class Extractors(unittest.TestCase):
         self.assertEqual((by["sharepoint"]["actions"], by["sharepoint"]["unresolved"]), (5, 3))
 
 
+
+class SnapshotFileMode(unittest.TestCase):
+    def test_the_snapshots_are_readable_by_the_group_only(self) -> None:
+        # 11-15: the API runs as its own user in the state directory's group (plx-state);
+        # both snapshots were written 0600, so /api/team and the per-system days could not
+        # be read by it. Now owner and group read them; others nothing.
+        import contextlib
+        import io
+        import os
+        import tempfile
+        from pathlib import Path
+        from unittest import mock
+        from operating import system_activity, team_activity
+        with tempfile.TemporaryDirectory() as tmp, \
+                mock.patch.dict(os.environ, {}, clear=False), \
+                contextlib.redirect_stdout(io.StringIO()):
+            os.environ.pop("PLX_EXCLUDED_PEOPLE_OIDS", None)
+            sa, ta = Path(tmp, "o", "sa.json"), Path(tmp, "o", "ta.json")
+            system_activity.main(["--state-dir", tmp, "--out", str(sa)])
+            team_activity.main(["--state-dir", tmp, "--out", str(ta),
+                                "--system-activity", str(sa)])
+            self.assertEqual(sa.stat().st_mode & 0o777, 0o640)
+            self.assertEqual(ta.stat().st_mode & 0o777, 0o640)
+
 if __name__ == "__main__":
     unittest.main()

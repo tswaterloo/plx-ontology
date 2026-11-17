@@ -1,0 +1,11 @@
+# Runs the Graph subscription renewer every 10 minutes (not enabled by the build; see the service).
+[Unit]
+Description=PLX Workbench Graph subscription renewer timer
+
+[Timer]
+OnBootSec=5min
+OnUnitActiveSec=10min
+AccuracySec=30s
+
+[Install]
+WantedBy=timers.target

@@ -18,7 +18,9 @@ import unittest
 from ontology.json_contract import validate
 from ontology.types import Actor
 from operating import ontology_tools as ot
+from operating import ontology_tools_results
 from operating import ontology_tools_investigate as oi
+from operating import ontology_tools_investigate_host
 from operating import ontology_tools_traverse as tt
 from operating import price_history as ph
 from tests import test_ontology_tools_process as base
@@ -87,7 +89,7 @@ def investigate(store, rows, actor, root=ITEM):
     view = ot.OntologyTools(ot.StoreReader(store.conn), POLICY, schema=base.REAL_SCHEMA,
                             contracts=CONTRACTS, clock=lambda: base.NOW)
     table: dict = {}
-    ot.register(table, view)
+    ontology_tools_results.register(table, view)
     tt.register(table, tt.TraverseTools(view))
 
     def resolve(handle, reader):
@@ -95,7 +97,7 @@ def investigate(store, rows, actor, root=ITEM):
             return None
         return rows.get(handle)
     oi.register(table, oi.InvestigateTools(
-        table, rows=resolve, scope=oi.read_scope(view), clock=lambda: base.NOW,
+        table, rows=resolve, scope=ontology_tools_investigate_host.read_scope(view), clock=lambda: base.NOW,
         held_markings=lambda reader: {m for m, who in POLICY.markings.items()
                                       if reader.principals & who}))
     question, answer, out = {"family": "F30", "root": root}, [], None

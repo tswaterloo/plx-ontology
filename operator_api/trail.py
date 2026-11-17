@@ -448,7 +448,6 @@ def materials_trail(mapper: Mapper, view: Any, starts: Sequence[tuple[str, ...]]
     seen_po: set[str] = set()
     trails = [t for t in trails if t.subject.object_id not in seen_po
               and not seen_po.add(t.subject.object_id)]
-    late, checked_n = len(late_pos), len(checked)
     if not rows and not gaps:
         return None
     shown = rows[:et.MAX_ROWS]

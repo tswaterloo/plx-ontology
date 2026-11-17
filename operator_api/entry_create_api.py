@@ -13,17 +13,28 @@ through ``source`` as this reader, else refused ``not_open``), the files attache
 line, else the text after the line's colon. Every record a filled value comes from is
 opened as the reader (``object_page``); a value from a record the reader cannot open
 becomes a check ("from a record you cannot open"), never shown. Names and addresses of
-excluded people are cleaned from everything shown (the people guard)."""
+excluded people are cleaned from everything shown (the people guard).
+
+An order or PO the reader may prepare that is held by its checks (the party, or a line's
+item, quantity or price) comes back as ``instruction.entry``: the reader settles each check
+(``entry_confirm``, ``operating.entry_confirm``), and once none is left it goes to the write
+desk exactly as a fully cited one. Only the person who prepared it sees or confirms it, a
+view-as session never; confirming writes nothing to BC. A value from a record the reader
+cannot open (or one the people guard withholds) is never theirs to settle: the entry is
+not held for them, and a held one they can no longer see refuses every confirmation
+(``not_visible``, 409), so nobody overrides what they cannot see."""
 
 from __future__ import annotations
 
+import contextlib
 import json
 import re
 import secrets
 import time
-from typing import Any, Mapping, Optional
+from typing import Any, Iterator, Mapping, Optional
 from urllib.parse import quote
 
+from operating import entry_confirm as ecf
 from operating.entry_assist import create_kind
 
 from . import models as m
@@ -78,18 +89,53 @@ def _records_of(field: Mapping[str, Any]) -> list[str]:
     return out
 
 
+def _preparer(reader: Reader) -> Optional[str]:
+    """The reader's own object id, the key their held entries are kept under (None: a
+    session naming nobody, or a view-as one: nothing is held or confirmed for it)."""
+    session = getattr(reader, "session", None)
+    if getattr(session, "view_as", False) or getattr(session, "warm_ahead", False):
+        return None
+    oid = str(getattr(session, "subject_oid", "") or "").strip().lower()
+    return oid or None
+
+
+UNSEEN = ("A value of this entry comes from a record you cannot open, so it is not yours "
+          "to settle: someone who can open that record prepares it.")
+EXPIRED = f"This entry was held more than {ecf.HOLD_DAYS} days ago: ask for it again."
+
+
+@contextlib.contextmanager
+def _locked(holds: ecf.EntryHolds) -> Iterator[None]:
+    """``holds.lock`` for one request; a store still locked after ``ecf.LOCK_WAIT``
+    seconds answers 503 "try again" rather than waiting on."""
+    try:
+        holds.lock.__enter__()
+    except ecf.Busy as busy:
+        raise UserFacing(busy.code, busy.message, busy.status) from None
+    try:
+        yield
+    finally:
+        holds.lock.__exit__(None, None, None)
+
+
+def _hold_label(kind: str) -> str:
+    return f"New BC {'sales' if kind == 'order' else 'purchase'} order, held until " \
+        "each check is settled"
+
+
 class EntryCreateMixin:
     """Mixed into the backends after ``InstructMixin`` (its people guard and sources)."""
 
     def _entry_ctx(self) -> Any:
         from pathlib import Path
         from operating import autopilot as ap
+        from operating import autopilot_handlers
         path = getattr(self, "store_path", None)
         if not path or not Path(path).is_file():
             raise _refuse("store_unavailable")
         st = ap._store(str(path))
         from operating.time_window import business_today
-        return st, ap.Ctx(st, business_today(), time.monotonic() + 60, ())
+        return st, autopilot_handlers.Ctx(st, business_today(), time.monotonic() + 60, ())
 
     def create_answer(self, reader: Reader, request: m.AskRequest, text: str,
                       context: Mapping[str, Any], conversation: str, kind: str,
@@ -139,7 +185,261 @@ class EntryCreateMixin:
         write = self._entry_write(reader, proposal, kind) if proposal is not None else None
         if write is not None and payload.instruction is not None:
             payload.instruction.writes.append(write)
+            preparer = _preparer(reader)
+            if write.status == "refused" and preparer and kind in ecf.PARTY:
+                # held by its checks: the reader settles them (``entry_confirm``)
+                fields, left, unseen = self._entry_fields(reader, got, kind, guard, clean)
+                if unseen:
+                    # a value the reader may not see is never theirs to settle or override
+                    write.problems.append(UNSEEN)
+                elif left and len(got.get("lines") or ()) <= ecf.MAX_LINES:
+                    try:
+                        entry_id = self._holds().hold(preparer, kind, got)
+                    except ecf.Busy as busy:
+                        write.problems.append(busy.message)
+                        return payload
+                    payload.instruction.entry = m.EntryHold(
+                        entry_id=entry_id, kind=kind, label=_hold_label(kind),
+                        fields=fields, open=left)
         return payload
+
+    # ------------------------------------------------------------- held entries
+
+    entry_holds: Any = None     # tests: an ``ecf.EntryHolds``
+
+    def _holds(self) -> ecf.EntryHolds:
+        if self.entry_holds is None:
+            self.entry_holds = ecf.EntryHolds.for_state_dir(getattr(self, "state_dir", None))
+        return self.entry_holds
+
+    def _may_prepare(self, reader: Reader, kind: str) -> bool:
+        """Whether the reader holds the BC write grant this entry is prepared under."""
+        from operating import write_intents as wi
+        person = self._person(reader)  # type: ignore[attr-defined]
+        return bool(self._write_ctx().granted().holds(  # type: ignore[attr-defined]
+            person.ids(), "bc", wi.OPERATIONS[BC_OPERATION[kind]]["entity_set"]))
+
+    def _own_hold(self, reader: Reader, entry_id: str) -> tuple[str, dict[str, Any], Any]:
+        """The reader's own held entry, with the people guard: a view-as session, someone
+        else's entry or an unknown one is refused (never told apart), and so is a reader
+        who no longer holds the grant."""
+        session = getattr(reader, "session", None)
+        if getattr(session, "view_as", False) or getattr(session, "warm_ahead", False):
+            raise UserFacing("forbidden", "Viewing as someone is read only: nothing is "
+                             "confirmed as them.", 403)
+        preparer = _preparer(reader)
+        try:
+            hold = self._holds().get(preparer, entry_id) if preparer else None
+        except ecf.Busy as busy:
+            raise UserFacing(busy.code, busy.message, busy.status) from None
+        if hold is None:
+            raise UserFacing("not_found", "No such entry of yours.", 404)
+        if not self._may_prepare(reader, hold["kind"]):
+            raise UserFacing("forbidden", "You no longer hold the write grant this entry "
+                             "is prepared under.", 403)
+        if hold.get("pruned"):
+            # only its preparer gets here (anyone else had the 404 above)
+            if hold["intent_id"]:
+                raise UserFacing("entry_prepared", "This entry is already on the write "
+                                 "desk; nothing on it changes here.", 409)
+            raise UserFacing("entry_expired", EXPIRED, 409)
+        guard = self._instruct_guard()  # type: ignore[attr-defined]
+        if guard is None:
+            raise _refuse("people_exclusion_unavailable")
+        return preparer, hold, guard
+
+    def entry_view(self, reader: Reader, entry_id: str) -> m.EntryHold:
+        """A held entry as its preparer sees it now (module doc)."""
+        from .feedback import clean
+        _who, hold, guard = self._own_hold(reader, entry_id)
+        return self._hold_view(reader, hold, guard, clean, None)
+
+    def entry_confirm(self, reader: Reader, entry_id: str,
+                      body: m.EntryConfirm) -> m.EntryHold:
+        """The reader enters or confirms one value of their held entry (module doc); with
+        none left, the entry goes to the write desk as theirs (``_entry_write``). Nothing
+        is written to BC, approved or sent here."""
+        from .feedback import clean
+        from operating import entry_assist as ea
+        holds = self._holds()
+        with _locked(holds):
+            preparer, hold, guard = self._own_hold(reader, entry_id)
+            kind = hold["kind"]
+            if hold["intent_id"]:
+                raise UserFacing("entry_prepared", "This entry is already on the write "
+                                 "desk; nothing on it changes here.", 409)
+            if hold["expired"]:
+                raise UserFacing("entry_expired", EXPIRED, 409)
+            try:
+                name, line = ecf.parse_key(kind, hold["prefill"], body.key)
+                fields, _left, unseen = self._entry_fields(reader, hold["prefill"], kind,
+                                                           guard, clean)
+                if unseen:
+                    raise ecf.Refused("not_visible", UNSEEN, 409)
+                now = next((f for f in fields if f.key == body.key), None)
+                if now is None or now.status == "cited":
+                    raise ecf.Refused("cited", "That value is cited from the records; it "
+                                      "is not changed here.", 409)
+                field = self._confirmed_value(reader, name, body)
+            except ecf.Refused as no:
+                raise UserFacing(no.code, no.message, no.status) from None
+            holds.confirm(preparer, entry_id, body.key, field)
+            hold = holds.get(preparer, entry_id) or hold
+            fields, left, unseen = self._entry_fields(reader, hold["prefill"], kind, guard,
+                                                      clean)
+            write = None
+            if not left and not unseen:
+                st, ctx = self._entry_ctx()
+                try:
+                    proposal = ea.bc_header(ctx, hold["prefill"], kind)
+                finally:
+                    st.close()
+                write = self._entry_write(reader, proposal, kind)
+                if write is not None and write.status == "prepared" and write.intent_id:
+                    holds.prepared(preparer, entry_id, write.intent_id)
+            return m.EntryHold(entry_id=entry_id, kind=kind, label=_hold_label(kind),
+                               fields=fields, open=left, write=write)
+
+    def _confirmed_value(self, reader: Reader, name: str,
+                         body: m.EntryConfirm) -> dict[str, Any]:
+        """The person's value for field ``name``, checked (else ``ecf.Refused``): a
+        record of the field's type they open, with its number; a quantity above zero; a
+        price of zero or more with its currency."""
+        person = self._person(reader)  # type: ignore[attr-defined]
+        by = {"name": reader.display_name or "", "email": person.email or "",
+              "oid": str(reader.session.subject_oid or "")}
+        from datetime import datetime, timezone
+        at = datetime.now(timezone.utc)
+        if name == "quantity":
+            return ecf.confirmed(ecf.number(body.value, positive=True), by=by, at=at)
+        if name == "unit_price":
+            return ecf.confirmed(ecf.number(body.value, positive=False), by=by, at=at,
+                                 currency=ecf.currency(body.currency))
+        oid = str(body.record or "").strip()
+        otype = ecf.RECORD_TYPE[name]
+        if not oid.startswith(otype + ":"):
+            raise ecf.Refused("bad_record", f"Pick a {otype.lower()} record.", 422)
+        try:
+            self.object_page(reader, otype, oid, quick=True)  # type: ignore[attr-defined]
+        except Exception:  # noqa: BLE001 - not the reader's: never used, never told apart
+            raise ecf.Refused("not_found", "That is not a record you can open.",
+                              404) from None
+        if name == "supplier":
+            return ecf.confirmed(oid, by=by, at=at, records=[oid], value_is_record=True)
+        from operating import autopilot as ap
+        st, ctx = self._entry_ctx()
+        try:
+            row = ctx.read([oid], ("erp_code", "code", "name")).get(oid) or {}
+        finally:
+            st.close()
+        code = (ap._v(row, "erp_code") or ap._v(row, "code")) if name == "customer" \
+            else ap._v(row, "code")
+        if not code:
+            raise ecf.Refused("bad_record", f"That {otype.lower()} record has no number, so "
+                              "BC cannot take it.", 422)
+        return ecf.confirmed(code, by=by, at=at, records=[oid])
+
+    def _entry_fields(self, reader: Reader, prefill: Mapping[str, Any], kind: str,
+                      guard: Any, clean: Any) -> tuple[list[m.EntryField], int, list[str]]:
+        """Each value the BC entry needs as the reader may see it, how many are still
+        checks, and the keys of those the reader may not see: a cited or confirmed value
+        from a record the reader cannot open, or one the people guard withholds, is a
+        check that is not shown and that this reader can never settle (``UNSEEN``: the
+        entry is not theirs to prepare, never overridden by a value of theirs);
+        suggestions only from records they open."""
+        unseen: list[str] = []
+        opened: dict[str, Optional[str]] = {}
+
+        def label_of(oid: str) -> Optional[str]:
+            if oid not in opened:
+                try:
+                    page = self.object_page(  # type: ignore[attr-defined]
+                        reader, oid.split(":", 1)[0], oid, quick=True)
+                    opened[oid] = clean(page.label, guard, 200) or oid.split(":", 1)[0]
+                except Exception:  # noqa: BLE001 - not the reader's: never shown
+                    opened[oid] = None
+            return opened[oid]
+
+        out: list[m.EntryField] = []
+        for key, name, line in ecf.held_keys(prefill, kind):
+            field = ecf.field_at(prefill, key) or {}
+            label = LABELS.get(name, name) + (f" (line {line})" if line else "")
+            status = field.get("status")
+            src = field.get("source") or {}
+            if status in ("cited", "confirmed"):
+                recs = _records_of(field)
+                if any(label_of(r) is None for r in recs):
+                    out.append(m.EntryField(key=key, field=name, line=line, label=label,
+                                            status="check",
+                                            reason="from a record you cannot open"))
+                    unseen.append(key)
+                    continue
+                value = field.get("value")
+                shown = label_of(value) if isinstance(value, str) and value in opened \
+                    and src.get("value_is_record") else value
+                if name == "customer" and recs and status == "confirmed":
+                    shown = f"{value} {label_of(recs[0]) or ''}".strip()
+                said = clean(str(shown), guard, 200) if shown is not None else None
+                if not said:
+                    out.append(m.EntryField(key=key, field=name, line=line, label=label,
+                                            status="check", reason="withheld"))
+                    unseen.append(key)
+                    continue
+                out.append(m.EntryField(
+                    key=key, field=name, line=line, label=label, status=status, value=said,
+                    currency=str(src["currency"])[:3] if src.get("currency") else None,
+                    confirmed_by=(clean(str(src.get("confirmed_by") or ""), guard, 120)
+                                  or None) if status == "confirmed" else None,
+                    confirmed_at=(str(src.get("confirmed_at") or "") or None)
+                    if status == "confirmed" else None))
+                continue
+            options: list[m.EntryOption] = []
+            for s in field.get("suggestions") or ():
+                recs = [str(r) for r in (s.get("records") or ()) if r] + \
+                    ([str(s["record"])] if s.get("record") else []) + \
+                    ([str(s["value"])] if s.get("value_is_record") else [])
+                if not recs or any(label_of(r) is None for r in recs):
+                    continue
+                record = None
+                if name in ecf.RECORD_TYPE:
+                    record = next((r for r in recs if r.startswith(
+                        ecf.RECORD_TYPE[name] + ":")), None)
+                    if record is None:
+                        continue        # nothing the person could pick
+                value = label_of(str(s["value"])) if s.get("value_is_record") else s["value"]
+                said = clean(str(value), guard, 160)
+                basis = clean(str(s.get("basis") or ""), guard, 160) or "suggested"
+                if not said:
+                    continue
+                options.append(m.EntryOption(
+                    value=said, record=record, basis=basis,
+                    currency=str(s["currency"])[:3] if s.get("currency") else None,
+                    unit=clean(str(s["unit"]), guard, 20) if s.get("unit") else None,
+                    date=str(s["date"])[:10] if s.get("date") else None))
+            out.append(m.EntryField(
+                key=key, field=name, line=line, label=label, status="check",
+                reason=clean(str(field.get("reason") or ""), guard, 200) or
+                "not in the records", options=options[:6]))
+        return out, sum(1 for f in out if f.status == "check"), unseen
+
+    def _hold_view(self, reader: Reader, hold: Mapping[str, Any], guard: Any, clean: Any,
+                   write: Optional[m.InstructWrite]) -> m.EntryHold:
+        fields, left, _unseen = self._entry_fields(reader, hold["prefill"], hold["kind"],
+                                                   guard, clean)
+        if write is None and hold.get("intent_id"):
+            label = f"BC Sandbox: new {'sales' if hold['kind'] == 'order' else 'purchase'} " \
+                "order header"
+            try:
+                preview = self.write_preview(  # type: ignore[attr-defined]
+                    reader, hold["intent_id"])
+                write = m.InstructWrite(intent_id=hold["intent_id"], label=label,
+                                        status="prepared", changes=preview.changes,
+                                        problems=preview.problems)
+            except UserFacing as no:
+                write = m.InstructWrite(label=label, status="refused", problems=[no.message])
+        return m.EntryHold(entry_id=hold["entry_id"], kind=hold["kind"],
+                           label=_hold_label(hold["kind"]), fields=fields, open=left,
+                           write=write)
 
     def _entry_write(self, reader: Reader, proposal: Mapping[str, Any],
                      kind: str) -> Optional[m.InstructWrite]:
@@ -287,8 +587,12 @@ class EntryCreateMixin:
                         continue
                     value = label_of(str(s["value"])) if s.get("value_is_record") \
                         else s["value"]
-                    hint += "; " + (clean(f"suggested {value} ({s['basis']})", guard,
-                                          160) or "")
+                    # a money hint says its currency and the unit it is per, and when
+                    per = (f" {s['currency']}" if s.get("currency") else "") + \
+                        (f" per {s['unit']}" if s.get("unit") and s.get("currency") else "")
+                    when = f", {s['date']}" if s.get("date") else ""
+                    hint += "; " + (clean(f"suggested {value}{per} ({s['basis']}{when})",
+                                          guard, 160) or "")
                 checks.append(f"{label}: {why}{hint}")
 
         for name, field in (got.get("header") or {}).items():

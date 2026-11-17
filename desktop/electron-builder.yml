@@ -1,0 +1,47 @@
+# Installers for the Workbench desktop app. Everything here builds UNSIGNED:
+#   Windows: needs Azure Trusted Signing or a code-signing certificate (waits on Vince).
+#   macOS:   needs an Apple Developer account for signing and notarization (waits on Vince).
+# Unsigned Windows installers show SmartScreen's "unknown publisher" warning; unsigned macOS
+# builds need right-click > Open the first time, and macOS cannot auto-update without signing.
+# See desktop/README.md for the exact steps once the certificates exist.
+appId: ca.plx.workbench
+productName: PLX Workbench
+copyright: PLX
+directories:
+  output: dist
+  buildResources: build
+files:
+  - src/**
+  - package.json
+asar: true
+icon: build/icon.png
+# Updates are served from our own server (a folder of the installers and latest*.yml), never a public feed.
+# The URL is set per release with -c.publish.url=https://<host>/desktop/ (electron-builder), and read at run time
+# from app-update.yml inside the build; leave unset for a build that never updates itself.
+publish:
+  provider: generic
+  url: https://workbench.invalid/desktop/
+linux:
+  target: [AppImage, tar.gz]
+  category: Office
+  synopsis: PLX Workbench
+  syncDesktopName: true
+win:
+  target: [nsis, zip]
+  # signing: set CSC_LINK / CSC_KEY_PASSWORD, or azureSignOptions (Trusted Signing); left out until Vince provides one
+  # icon and version info are still written into the .exe; only the signing step is skipped
+  signExecutable: false
+nsis:
+  oneClick: false
+  perMachine: false
+  allowToChangeInstallationDirectory: true
+mac:
+  # Intel and Apple Silicon, one installer each
+  target:
+    - target: dmg
+      arch: [x64, arm64]
+    - target: zip
+      arch: [x64, arm64]
+  category: public.app-category.business
+  identity: null   # unsigned; set to the Developer ID identity once the account exists
+  hardenedRuntime: false

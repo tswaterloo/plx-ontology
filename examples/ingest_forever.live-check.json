@@ -25,6 +25,11 @@
   "scope": "mail_capture_scope.live-check.json",
   "budget_seconds": 600
  },
+ "mail_backlog": {
+  "budget_seconds": 300,
+  "image_ocr_seconds": 120,
+  "min_interval_seconds": 60
+ },
  "sharepoint": {
   "scope": "sharepoint_capture_scope.live-check.json",
   "budget_seconds": 600,

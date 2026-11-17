@@ -18,7 +18,9 @@ from integrations.tests import test_bc_capture as tb
 from ontology import store_ddl
 from ontology.tests.test_project_bc import FULL, READER, BcWorld
 from operating import ontology_tools as ot
+from operating import ontology_tools_results
 from operating import ontology_tools_investigate as oi
+from operating import ontology_tools_investigate_host
 from operating import ontology_tools_traverse as tt
 from scripts import flagship_margin as fm
 from tests.test_investigate_order_margin import fake_bc, resolver
@@ -49,11 +51,11 @@ class MarginOverInvestigate(unittest.TestCase):
         world.tools(ot.ReadPolicy(tenant="plx", audiences={"bc:*": {READER}, "api:*": {READER}},
                                   markings={m: {READER} for m in markings}))
         table: dict = {}
-        ot.register(table, world.base)
+        ontology_tools_results.register(table, world.base)
         tt.register(table, world.traverse)
         oi.register(table, oi.InvestigateTools(table, rows=resolver(world),
-                                               scope=oi.read_scope(world.base),
-                                               captured=oi.capture_claims(world.base)))
+                                               scope=ontology_tools_investigate_host.read_scope(world.base),
+                                               captured=ontology_tools_investigate_host.capture_claims(world.base)))
         return Workspace(table)
 
     def test_a_full_reader_sees_a_cited_margin_and_the_sample_is_never_a_pass(self):

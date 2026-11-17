@@ -22,8 +22,8 @@ import unittest
 from unittest import mock
 from unittest.mock import patch
 
-from integrations.source_mirror import (PERSISTED_FALLBACK_META, POINTER_TABLE, MirrorError,
-                                       SourceMirror, make_citation)
+from integrations.source_mirror import SourceMirror, make_citation
+from integrations.source_mirror_values import PERSISTED_FALLBACK_META, POINTER_TABLE, MirrorError
 from integrations.tests.test_source_mirror import ALL, BASE, KEY, OPS
 from integrations.tests.test_source_mirror_sync import ScriptedFake, SyncTestCase
 from integrations.workbench_read_api import WorkbenchReadApiClient

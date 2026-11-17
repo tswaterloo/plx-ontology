@@ -24,8 +24,9 @@ from urllib.parse import parse_qs, urlsplit
 
 from unittest import mock
 from integrations import source_mirror
-from integrations.source_mirror import (AudienceMap, MirrorError, SourceMirror,
-    citation_generation, main, make_citation, parse_citation, parse_decimal)
+from integrations.source_mirror import (AudienceMap, SourceMirror, citation_generation, main,
+                                        make_citation, parse_citation)
+from integrations.source_mirror_values import MirrorError, parse_decimal
 from integrations.http import SourceHttpError
 from integrations.workbench_read_api import WorkbenchReadApiClient
 from ontology.core import Actor
@@ -1398,7 +1399,7 @@ class PoReferenceStrengthTests(MirrorTestCase):
                          [(False, "order_number")])
 
     def test_portal_trim_text_renders_like_javascript_string(self):
-        from integrations.source_mirror import portal_trim_text
+        from integrations.source_mirror_values import portal_trim_text
         for value, text in ((70123.0, "70123"), (7, "7"), (-0.0, "0"), (False, "false"),
                             (" \ufeffS1 \n", "S1"), ({"a": 1}, "[object Object]"),
                             ([None, 2], ",2"), (1.5, "1.5")):
@@ -2702,7 +2703,8 @@ class ScanFreshnessTests(unittest.TestCase):
     refresh failure), and its consumers label a stale or failed-refresh read."""
 
     def test_a_stale_scan_says_so_and_its_consumers_label_it(self):
-        from integrations.source_mirror import scan_label, scan_relation
+        from integrations.source_mirror import scan_relation
+        from integrations.source_mirror_query import scan_label
         from operating.issued_sends import link_issued_sends
 
         class StaleMirror:

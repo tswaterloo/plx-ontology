@@ -1,8 +1,9 @@
 "use client";
 
+import { SectionTabs } from "@/components/shell";
 import { ArrowDownWideNarrow, ArrowUpNarrowWide, ChartNoAxesColumn, ChevronDown, X } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { LateOverview } from "@/components/late/overview";
+import { LateOverview, nextStep } from "@/components/late/overview";
 import { TodayDetail, type QueueRow } from "@/components/today-detail";
 import { DoneRing, lateEdge, lateFigure, OpenRing, StatusGlyph } from "@/components/ui/glyphs";
 import { LoadProblem, StaleNote } from "@/components/ui/notice";
@@ -12,8 +13,8 @@ import { getActionStates, getLateList, getSuggestions } from "@/lib/api";
 import { cn } from "@/lib/cn";
 import { noticeKind, plainError } from "@/lib/errors";
 import { listShown } from "@/lib/eta";
-import { formatDate, formatMoney, objectHref, plural, recordLabel, safeHref } from "@/lib/format";
-import { DAY_BANDS, inDayBand, matches, readAllLate, sortLate, supplierCounts, VALUE_BANDS, type DayBand, type LateFilter, type SortKey, type ValueBand } from "@/lib/late";
+import { formatDate, formatMoney, objectHref, plural, recordLabel, safeHref, SYSTEM_LABEL } from "@/lib/format";
+import { chaseOf, DAY_BANDS, DEC, inDayBand, inStateBand, lateTotals, matches, readAllLate, sortLate, STATE_BANDS, supplierCounts, VALUE_BANDS, type Chase, type DayBand, type LateFilter, type SortKey, type StateBand, type ValueBand } from "@/lib/late";
 import { useListKeys } from "@/lib/list-keys";
 import type { ActionResult, LatePo, ProactiveSuggestion } from "@/lib/types";
 
@@ -106,8 +107,27 @@ function Value({ po }: { po: LatePo }) {
   );
 }
 
-function Row({ po, on, onPick }: { po: LatePo; on: boolean; onPick: (() => void) | null }) {
+/** The chase line's words for the supplier date: the date given, why there is none, or the list's state. */
+function promiseText(po: LatePo, c: Chase): string | null {
+  if (c.promised) return `${c.promiseWords ? "maybe " : "promised "}${formatDate(c.promised, { short: true })}`;
+  if (c.promiseWords) return c.promiseWords;
+  if (po.confirmation === "none_found") return "no supplier date";
+  if (po.confirmation === "found_unverified") return "date unverified";
+  if (po.confirmation === "needs_check") return "confirmation to check";
+  return null;
+}
+
+function Row({ po, on, onPick, chase }: { po: LatePo; on: boolean; onPick: (() => void) | null; chase: Chase }) {
   const eta = listShown(po);
+  const promise = promiseText(po, chase);
+  const facts = [
+    promise,
+    chase.lastWord ? `last word ${formatDate(chase.lastWord.at, { short: true })}, ${SYSTEM_LABEL[chase.lastWord.system] ?? chase.lastWord.system}` : null,
+    chase.ask ? `ask ${chase.ask}` : null,
+    chase.holds.length ? `holds ${recordLabel(chase.holds[0].type, chase.holds[0].label)}${chase.holds.length > 1 ? ` +${chase.holds.length - 1}` : ""}` : null,
+    typeof po.open_lines === "number" && po.open_lines > 0 ? plural(po.open_lines, "open line") : null,
+  ].filter(Boolean);
+  const next = chase.next ?? nextStep(po);
   const needed = po.due_date ? `Needed ${formatDate(po.due_date, { short: true })}` : "No due date";
   return (
     <li>
@@ -151,9 +171,51 @@ function Row({ po, on, onPick }: { po: LatePo; on: boolean; onPick: (() => void)
               </span>
             )}
           </span>
+          {facts.length > 0 && (
+            <span className="mt-0.5 block truncate text-[12px] leading-4 text-muted tabular-nums" data-testid="late-chase">
+              {facts.join(" · ")}
+            </span>
+          )}
+          {next && (
+            <span className="mt-0.5 block truncate text-[12px] leading-4 text-fg/80" data-testid="late-next" title={next}>
+              {next}
+            </span>
+          )}
         </span>
       </a>
     </li>
+  );
+}
+
+/** The list at a glance: suppliers, value per currency (exact, never across currencies), what blocks how many. */
+function LateGlance({ items }: { items: LatePo[] }) {
+  const money = lateTotals(items);
+  const suppliers = new Set(items.map((p) => p.supplier ?? "")).size;
+  const noDate = items.filter((p) => p.confirmation === "none_found").length;
+  const toCheck = items.filter((p) => p.confirmation === "found_unverified" || p.confirmation === "needs_check").length;
+  const noValue = items.filter((p) => !p.amount || p.amount_suspect || !DEC.test(String(p.amount.amount).trim())).length;
+  return (
+    <p className="flex flex-wrap gap-x-4 gap-y-0.5 border-b border-border px-5 py-2 text-[12px] leading-4 text-muted" data-testid="late-glance">
+      <span>
+        <span className="num font-semibold text-fg">{suppliers}</span> {suppliers === 1 ? "supplier" : "suppliers"}
+      </span>
+      {money.map((m) => (
+        <span key={m.currency} title={`${plural(m.count, "PO")} in ${m.currency}`}>
+          <span className="num font-semibold text-fg">{formatMoney(m.amount, m.currency)}</span> in {plural(m.count, "PO")}
+        </span>
+      ))}
+      {noValue > 0 && <span>{noValue} without a trusted value</span>}
+      {noDate > 0 && (
+        <span>
+          <span className="num font-semibold text-late">{noDate}</span> no supplier date
+        </span>
+      )}
+      {toCheck > 0 && (
+        <span>
+          <span className="num font-semibold text-fg">{toCheck}</span> date to check
+        </span>
+      )}
+    </p>
   );
 }
 
@@ -170,7 +232,7 @@ export default function LatePage() {
   const [staleSince, setStaleSince] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
-  const [filter, setFilter] = useState<LateFilter>({ supplier: null, days: "all", value: "all" });
+  const [filter, setFilter] = useState<LateFilter>({ supplier: null, days: "all", value: "all", state: "all" });
   const [sort, setSort] = useState<{ key: SortKey; desc: boolean }>({ key: "days", desc: false });
   const [picked, setPicked] = useState<string | null>(null);
   const [suggestions, setSuggestions] = useState<ProactiveSuggestion[]>([]);
@@ -203,10 +265,15 @@ export default function LatePage() {
     if (q.get("sel")) setPicked(q.get("sel"));
   }, []);
   // the drafted follow-ups and their states, for the PO opened beside the list
+  // each row's chase facts (promised date, last word, whom to ask, what it holds) on every width
+  useEffect(() => {
+    const c = new AbortController();
+    getSuggestions(c.signal).then((s) => setSuggestions(s.status === "read" ? (s.items ?? []) : []), () => undefined);
+    return () => c.abort();
+  }, []);
   useEffect(() => {
     if (!desktop) return;
     const c = new AbortController();
-    getSuggestions(c.signal).then((s) => setSuggestions(s.status === "read" ? (s.items ?? []) : []), () => undefined);
     getActionStates(c.signal).then((r) => setStates(r.cards ?? {}), () => undefined);
     return () => c.abort();
   }, [desktop]);
@@ -214,7 +281,7 @@ export default function LatePage() {
   const suppliers = useMemo(() => supplierCounts(items), [items]);
   const shown = useMemo(() => sortLate(items.filter((p) => matches(p, filter)), sort.key, sort.desc), [items, filter, sort]);
   const dayCount = (band: DayBand) => items.filter((p) => matches(p, { ...filter, days: "all" }) && inDayBand(p, band)).length;
-  const filtered = filter.supplier !== null || filter.days !== "all" || filter.value !== "all";
+  const filtered = filter.supplier !== null || filter.days !== "all" || filter.value !== "all" || (!!filter.state && filter.state !== "all");
   const bySubject = useMemo(() => new Map(suggestions.map((s) => [s.subject.object_id, s])), [suggestions]);
   const selected = picked ? (items.find((p) => p.object_id === picked) ?? null) : null;
   // grouped under each supplier when sorted by supplier
@@ -284,8 +351,8 @@ export default function LatePage() {
 
   const count = total !== null && (
     <span className="tabular-nums" data-testid="late-all-count">
-      {filtered ? `${shown.length} of ${items.length} match` : plural(items.length, "PO")}
-      {total > items.length ? ` · ${total - items.length} more not loaded` : ""}
+      {filtered ? `${shown.length} of ${items.length} match` : total > items.length ? `${items.length} of ${total} POs loaded` : plural(items.length, "PO")}
+      {filtered && total > items.length ? ` · ${total} late in all` : ""}
       {asOf ? ` · BC as of ${formatDate(asOf, { short: true })}` : ""}
     </span>
   );
@@ -331,6 +398,13 @@ export default function LatePage() {
             </option>
           ))}
         </Pick>
+        <Pick label="Supplier date" value={filter.state ?? "all"} onChange={(v) => setFilter((f) => ({ ...f, state: v as StateBand }))} className="w-[9rem] shrink-0">
+          {STATE_BANDS.map((b) => (
+            <option key={b.id} value={b.id}>
+              {b.label} ({b.id === "all" ? items.length : items.filter((p) => inStateBand(p, b.id)).length})
+            </option>
+          ))}
+        </Pick>
         <span className="flex shrink-0 items-center">
           <Pick label="Sort by" value={sort.key} onChange={(v) => setSort({ key: v as SortKey, desc: false })} className="w-[7.25rem]">
             {SORTS.map((s) => (
@@ -369,8 +443,10 @@ export default function LatePage() {
           ) : undefined
         }
       />
+      <SectionTabs section="watching" />
       {!desktop && ready && items.length > 0 && <div className="@container border-b border-border px-5 pt-4 pb-5">{overview("figures")}</div>}
       {controls}
+      {ready && items.length > 0 && <LateGlance items={filtered ? shown : items} />}
       <StaleNote since={staleSince} className="px-5 py-1.5" />
       <div ref={listRef} className="min-h-0 flex-1 pb-6 lg:overflow-y-auto" data-testid="late-all">
         <div ref={desktop ? undefined : phoneRef}>
@@ -410,7 +486,7 @@ export default function LatePage() {
                       )}
                       <ul className="px-2">
                         {g.rows.map((po) => (
-                          <Row key={po.object_id} po={po} on={desktop && po.object_id === picked} onPick={desktop ? () => pick(po.object_id) : null} />
+                          <Row key={po.object_id} po={po} chase={chaseOf(bySubject.get(po.object_id))} on={desktop && po.object_id === picked} onPick={desktop ? () => pick(po.object_id) : null} />
                         ))}
                       </ul>
                     </div>

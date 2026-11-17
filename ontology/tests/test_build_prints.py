@@ -23,7 +23,7 @@ from unittest import mock
 
 from ontology import build_prints as bp
 from ontology import project_incremental as inc
-from ontology.generator.fixture import SyntheticCaptures, sources
+from ontology.generator.fixture import sources
 from ontology.project import MailCaptures
 from ontology.tests.test_project_parallel import Drifting
 

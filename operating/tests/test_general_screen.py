@@ -103,3 +103,34 @@ class Removed(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class BesideRecords(unittest.TestCase):
+    """The general part under a records answer (``mixed``, ``fallback``) never says what
+    the records had or lacked: the model never saw them (11-16: "no margin figures were
+    available" under an answer that gave them)."""
+
+    SAID = ("No margin figures were available, so start with the invoices. Since the cost "
+            "data wasn't provided, compare price with cost. Without cost figures I can't "
+            "say. If the cost isn't booked, the margin is overstated. A typical gross "
+            "margin is 15-25%.")
+
+    def test_the_mode_decides_and_conditional_advice_stays(self):
+        from operating import general_answer
+        q = "Is Northwind profitable?"
+        for mode, absent in (("fallback", True), ("mixed", True), ("general", False)):
+            got = general_answer.answer(q, mode=mode, call=lambda text, images=(): self.SAID)
+            self.assertIsNotNone(got, mode)
+            for claim in ("No margin figures were available", "wasn't provided",
+                          "Without cost figures"):
+                (self.assertNotIn if absent else self.assertIn)(claim, got.text, mode)
+            self.assertIn("If the cost isn't booked, the margin is overstated.", got.text)
+            self.assertIn("typical gross margin is 15-25%", got.text)
+        prompt = general_answer.prompt(q, mode="fallback")
+        self.assertIn("never say what they contain or lack", prompt)
+
+    def test_a_reply_that_is_only_a_denial_gives_no_general_part(self):
+        from operating import general_answer
+        got = general_answer.answer("Is Northwind profitable?", mode="fallback",
+                                    call=lambda text, images=(): "No cost data was found.")
+        self.assertIsNone(got)

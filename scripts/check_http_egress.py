@@ -44,6 +44,23 @@ ALLOWED lists (path, qualified enclosing function) pairs verified by reading the
       one POST to https://api.openai.com/v1/embeddings (API_URL;
       any other url raises before the request), redirects refused. It reaches no
       business system; its caller runs it only with PLX_EMBED_ALLOW_REMOTE=1.
+  operating/ops_mail_sender.py post_ops_mail  the ops mail (11-14:
+      alarms must reach a person with nobody watching): POSTs only to
+      https://login.microsoftonline.com/<tenant uuid>/oauth2/v2.0/token (client
+      credentials) and https://graph.microsoft.com/v1.0/users/<mailbox>/sendMail (any other
+      url raises before the request), redirects refused. Its caller (operating/ops_notify.py)
+      sends alarm lines only, from one configured ops mailbox to configured recipients, and
+      only when /etc/plx/ops-notify.json enables it.
+  integrations/graph_subscription_sender.py send_subscription  the Graph change-notification
+      renewer (11-15): token POST and
+      GET/POST/PATCH on https://graph.microsoft.com/v1.0/subscriptions[/<id>] only (no DELETE)
+      (any other url or method raises before the request), redirects refused. Subscription
+      objects only; DELETE is refused by the sender itself.
+  operating/canary_sender.py canary_request  the live Ask canary (11-15:
+      the live Ask must be checked by its outcome): GET http://127.0.0.1:8780/api/me and
+      POST .../api/auth/dev-login and .../api/ask on this host's own Workbench API (any
+      other method or route raises before the request), redirects refused. It reaches no
+      business system; an Ask confirms and sends nothing.
 SENDER_URLS pins a sender-only file to its URLs and its one sending function: no other
 URL string and no other network call (outside-sender, unlisted-url).
 ALLOWED_IMPORTS: ``http.client.IncompleteRead`` (an exception class) in the guard.
@@ -91,9 +108,18 @@ ALLOWED = {
     ("integrations/live_source_guard.py", "urllib_sender"),
     ("operating/messages_planner.py", "post_messages"),
     ("operating/embed_sender.py", "post_embeddings"),
+    ("operating/ops_mail_sender.py", "post_ops_mail"),
+    ("integrations/graph_subscription_sender.py", "send_subscription"),
+    ("operating/canary_sender.py", "canary_request"),
 }
 SENDER_URLS = {"operating/messages_planner.py": {"https://api.anthropic.com/v1/messages"},
-               "operating/embed_sender.py": {"https://api.openai.com/v1/embeddings"}}
+               "operating/embed_sender.py": {"https://api.openai.com/v1/embeddings"},
+               "operating/ops_mail_sender.py": {"https://login.microsoftonline.com/",
+                                                "https://graph.microsoft.com/v1.0/users/"},
+               "integrations/graph_subscription_sender.py": {
+                   "https://login.microsoftonline.com/",
+                   "https://graph.microsoft.com/v1.0/subscriptions"},
+               "operating/canary_sender.py": {"http://127.0.0.1:8780/api/"}}
 # Exception classes only (no connection can be opened through them).
 ALLOWED_IMPORTS = {("integrations/live_source_guard.py", "http.client.IncompleteRead")}
 URLLIB_FILES = {
@@ -101,7 +127,10 @@ URLLIB_FILES = {
     "integrations/live_source_guard.py",
     "operating/messages_planner.py",
     "operating/embed_sender.py",
+    "operating/ops_mail_sender.py",
+    "integrations/graph_subscription_sender.py",
     "operating/ops_health.py",
+    "operating/canary_sender.py",
 }
 BANNED_MODULES = {
     "http.client", "httplib", "requests", "httpx", "aiohttp", "urllib3", "socket",

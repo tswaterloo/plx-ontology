@@ -12,7 +12,6 @@ from __future__ import annotations
 import contextlib
 import io
 import json
-from pathlib import Path
 import shutil
 from unittest import mock
 

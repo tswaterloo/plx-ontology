@@ -22,6 +22,7 @@ API_VERSION = "1.0.0"
 
 System = Literal["BC", "Portal", "Sage", "FileMaker", "Email", "Teams", "File", "MC"]
 AuthMode = Literal["entra", "dev", "mock"]
+SignIn = Literal["microsoft", "access_link", "demo"]
 Intent = Literal["status", "why", "who", "how_much", "compare", "find_document", "policy",
                  "timeline", "other"]
 Outcome = Literal["answered", "partial", "not_found", "abstained", "refused"]
@@ -87,6 +88,9 @@ class AuthConfig(_Model):
     dev_login: bool = Field(description="POST /api/auth/dev-login is served (dev/mock only).")
     sign_in_available: bool
     message: Optional[str] = Field(None, description="Why sign-in is unavailable, in words.")
+    sign_in: SignIn = Field("demo", json_schema_extra=_optional,
+                            description="How people sign in here: microsoft, access_link (a "
+                                        "console session ticket over live state) or demo.")
 
 
 class Me(_Model):
@@ -98,6 +102,10 @@ class Me(_Model):
                                    "configured_employee, fixture).")
     tenant: str
     dev_mode: bool
+    sign_in: SignIn = Field("demo", json_schema_extra=_optional,
+                            description="How this reader signed in: microsoft, access_link "
+                                        "(console session ticket) or demo (mock, fixture or a "
+                                        "configured test identity).")
     data_label: str = Field(description="Evidence label of the data served, e.g. "
                                         "'source-mirror captures' or 'FIXTURE'.")
     expires_at: Optional[int] = None
@@ -112,6 +120,10 @@ class Me(_Model):
     owner: bool = Field(False, json_schema_extra=_optional,
                         description="The owner-open reader: may read everyone's work log "
                                     "and time saved.")
+    roles: list[str] = Field(default_factory=list, json_schema_extra=_optional,
+                             description="The reader's own work roles from the team snapshot "
+                                         "(purchasing, customer_service, quality, rnd, ...): "
+                                         "the app's per-role defaults. Empty when unknown.")
     ops_reader: bool = Field(False, json_schema_extra=_optional,
                              description="The owner or a named Team reader "
                                          "(PLX_TEAM_VIEW_READERS): sees the reliability "
@@ -1281,6 +1293,141 @@ class PersonKnows(_Model):
                                               "decided, so the counts may be low.")
 
 
+DocListView = Literal["supplier_issues", "forecasts", "forecast_accuracy", "price_sheets",
+                      "answer_bank"]
+
+
+class DocFigure(_Model):
+    """One figure of a document row, as the sheet or the records state it: ``value`` an
+    exact decimal string (never a float), ``unit`` its unit or currency when stated."""
+    label: str
+    value: str
+    unit: Optional[str] = Field(None, json_schema_extra=_optional)
+
+
+class DocRow(_Model):
+    """One row of a document list (``operating.business_documents``), read as this reader:
+    shown only when the reader may read every record it cites and holds its markings."""
+    title: str
+    detail: Optional[str] = Field(None, json_schema_extra=_optional, description=(
+        "Source text (a questionnaire answer, an issue's own words): shown as written."))
+    dated: Optional[str] = Field(None, json_schema_extra=_optional,
+                                 description="The document's or message's day (ISO).")
+    status: Optional[str] = Field(None, json_schema_extra=_optional, description=(
+        "The row's state in words the list filters on (an issue's kind, a price sheet's "
+        "match or mismatch, a forecast's over or under, an answer's scope)."))
+    tone: Optional[Literal["bad", "warn", "good"]] = Field(None, json_schema_extra=_optional)
+    source: Optional[ObjectRef] = Field(None, json_schema_extra=_optional, description=(
+        "The document, mail, task or message the row was read from."))
+    records: list[ObjectRef] = Field(default_factory=list, description=(
+        "The customers, suppliers, items and lots the row names that the reader may open."))
+    figures: list[DocFigure] = Field(default_factory=list)
+
+
+class DocList(_Model):
+    """One document list on a record's page: the rows of one ``business_documents`` view
+    narrowed to the record, with what was left out counted (never shown)."""
+    view: DocListView
+    title: str
+    rows: list[DocRow] = Field(default_factory=list)
+    withheld: int = Field(0, description="Rows left out because they cite a record the "
+                                         "reader may not read or need a marking they lack.")
+    needs: Optional[str] = Field(None, json_schema_extra=_optional, description=(
+        "The access the whole list needs and the reader lacks (e.g. 'finance'): nothing "
+        "of the list was read."))
+    complete: bool = Field(True, description="False: the read was cut or could not decide "
+                                             "everything, so rows may be missing.")
+    error: Optional[str] = Field(None, json_schema_extra=_optional,
+                                 description="Why the list could not be read at all.")
+    stale_since: Optional[str] = _stale_since()
+    reading: bool = _reading()
+
+
+class RecordDocuments(_Model):
+    """The documents section of a record's page: what customers and suppliers sent in
+    sheets, mail and tasks that names this record (quality issues, forecasts and their
+    accuracy, price sheets against what was billed, past questionnaire answers)."""
+    lists: list[DocList] = Field(default_factory=list)
+
+
+class FormulaPrice(_Model):
+    """A raw material's last PO price (``business_documents`` view ``item_po_prices``)."""
+    price: str = Field(description="Exact decimal text, per ``uom``.")
+    currency: Optional[str] = Field(None, json_schema_extra=_optional)
+    uom: Optional[str] = Field(None, json_schema_extra=_optional)
+    dated: Optional[str] = Field(None, json_schema_extra=_optional)
+    po: Optional[ObjectRef] = Field(None, json_schema_extra=_optional)
+
+
+class MaterialCost(_Model):
+    """A sheet's raw-material cost per kg of the product: each line's share times its raw
+    material's last PO price per kg, summed (exact Decimal, one currency). Never filled in:
+    a line with no price, another currency or a unit not convertible to kg is named in
+    ``missing`` and the cost is ``complete`` false."""
+    per_kg: Optional[str] = Field(None, json_schema_extra=_optional)
+    currency: Optional[str] = Field(None, json_schema_extra=_optional)
+    priced_share: str = Field(description="The share of the formula (percent) priced.")
+    missing: list[str] = Field(default_factory=list)
+    complete: bool = False
+
+
+class FormulaComponent(_Model):
+    """One line of a formula sheet as the sheet states it (``operating.composition_lines``):
+    never filled in, never a price. ``item`` is the one raw-material record the part code
+    names (null: the code names no record, or several)."""
+    no: Optional[str] = Field(None, json_schema_extra=_optional)
+    part: str
+    description: str = ""
+    share_percent: Optional[str] = Field(None, json_schema_extra=_optional, description=(
+        "The share the sheet states, as written (exact decimal text, percent)."))
+    quantity: Optional[str] = Field(None, json_schema_extra=_optional)
+    unit: Optional[str] = Field(None, json_schema_extra=_optional)
+    check: Optional[str] = Field(None, json_schema_extra=_optional, description=(
+        "The sheet's share x size check for this line, when it fails or cannot be made."))
+    item: Optional[ObjectRef] = Field(None, json_schema_extra=_optional)
+    supplier_items: int = Field(0, description="Supplier items of the raw material this "
+                                               "reader may read (their prices stay on them).")
+    last_price: Optional[FormulaPrice] = Field(
+        None, json_schema_extra=_optional,
+        description="What the raw material's newest priced purchase order line paid, when "
+                    "this reader may read it.")
+
+
+class FormulaSheet(_Model):
+    """A formula sheet of the product: the document it is read from, the formula number it
+    states and its lines in sheet order."""
+    document: ObjectRef
+    formula_code: Optional[str] = Field(None, json_schema_extra=_optional)
+    dated: Optional[str] = Field(None, json_schema_extra=_optional)
+    basis: Literal["code", "name"] = Field(description=(
+        "code: the sheet states one of the product's codes; name: it states no code and "
+        "its product name is this product's."))
+    status: Literal["complete", "partial"] = Field(description=(
+        "partial: some lines could not be read (``missing_lines``); never filled in."))
+    share_total: Optional[str] = Field(None, json_schema_extra=_optional)
+    missing_lines: int = 0
+    components: list[FormulaComponent] = Field(default_factory=list)
+    material_cost: Optional[MaterialCost] = Field(
+        None, json_schema_extra=_optional,
+        description="Omitted when no line's raw material has a price this reader may read.")
+
+
+class ProductFormula(_Model):
+    """What a product is made of, read from its formula sheets as this reader may read
+    them (``plx.aggregate`` mode ``business_documents`` view ``formula_lines``: the people
+    exclusion first). The Portal's own formula lines are not served, so sheets are the
+    only source and say so (``portal_lines_served`` false)."""
+    sheets: list[FormulaSheet] = Field(default_factory=list)
+    unresolved_parts: int = Field(0, description="Lines whose part code names no record.")
+    withheld: int = Field(0, description="Sheets, lines or supplier items this reader may "
+                                         "not read (counted, never shown).")
+    other_products: int = Field(0, description="Sheets found by name that state another "
+                                               "product's code (never this product's).")
+    portal_lines_served: bool = False
+    complete: bool = Field(False, description="False: some sheets or lines were not read "
+                                              "(budget, row cap or unreadable lines).")
+
+
 class ObjectPage(_Model):
     object_id: str
     type: str
@@ -1292,7 +1439,18 @@ class ObjectPage(_Model):
     status: ObjectStatus
     facts: list[Fact] = Field(default_factory=list)
     timeline: list[TimelineEvent] = Field(default_factory=list)
-    linked: list[LinkedItem] = Field(default_factory=list)
+    linked: list[LinkedItem] = Field(default_factory=list, description="Messages and "
+                                     "documents linked to the record that this reader may "
+                                     "open; each with its title and source.")
+    linked_withheld: int = Field(0, description="Linked documents this reader is not "
+                                 "permitted to open: counted only, never titled or cited. "
+                                 "Documents the people exclusion withholds are never "
+                                 "counted.")
+    linked_unavailable: int = Field(0, description="Linked documents this reader may see "
+                                    "whose source has no reader set up here yet: counted "
+                                    "only, never titled or cited.")
+    linked_counted_all: bool = Field(True, description="False when the counts stopped at "
+                                     "their page bound: each is then a lower bound.")
     people: Optional[list[Person]] = Field(None, description="Omitted when no people plan "
                                                              "answered for this record.")
     landed_cost: Optional[LandedCost] = None
@@ -1321,6 +1479,14 @@ class ObjectPage(_Model):
     knows: Optional[PersonKnows] = Field(
         None, json_schema_extra=_optional,
         description="A person's: what they correspond about most (the knows section).")
+    documents: Optional[RecordDocuments] = Field(
+        None, json_schema_extra=_optional,
+        description="A customer's, supplier's or item's document lists (the documents "
+                    "section).")
+    formula: Optional[ProductFormula] = Field(
+        None, json_schema_extra=_optional,
+        description="A product's: what its formula sheets say it is made of (the formula "
+                    "section).")
     complete: bool = Field(
         True, description="False on a quick first read (?quick=1): the record, its "
                           "timeline and links without the checks (lateness, landed cost, "
@@ -1341,7 +1507,7 @@ class ObjectPage(_Model):
     reading: bool = _reading()
 
 
-PAGE_SECTIONS = ("late", "people", "landed_cost", "trail", "margin", "knows")
+PAGE_SECTIONS = ("late", "people", "landed_cost", "trail", "margin", "knows", "documents", "formula")
 
 
 class ExploreNode(_Model):
@@ -1496,7 +1662,7 @@ class ObjectSection(_Model):
     ``landed_cost``, ``trail`` (how we know, with the page's ``not_found`` said against
     it), ``margin`` (a BC customer's or sales order's margin and why). The full page (no ``quick``) is the quick read with every section merged."""
     object_id: str
-    section: Literal["late", "people", "landed_cost", "trail", "margin", "knows"]
+    section: Literal["late", "people", "landed_cost", "trail", "margin", "knows", "documents", "formula"]
     applies: bool = Field(True, description="False: this kind of record has no such "
                                             "section (nothing to show, nothing withheld).")
     status: Optional[ObjectStatus] = Field(
@@ -1511,6 +1677,15 @@ class ObjectSection(_Model):
         None, json_schema_extra=_optional,
         description="knows: on a person's page, the customers, suppliers and items they "
                     "correspond about most and the threads waiting on them.")
+    documents: Optional[RecordDocuments] = Field(
+        None, json_schema_extra=_optional,
+        description="documents: on a customer's, supplier's or item's page, its lists "
+                    "from what customers and suppliers sent (issues, forecasts, forecast "
+                    "accuracy, price sheets, questionnaire answers).")
+    formula: Optional[ProductFormula] = Field(
+        None, json_schema_extra=_optional,
+        description="formula: on a product's page, its formula sheets' lines, each part "
+                    "linked to the raw material it names.")
     profitability: Optional[Profitability] = Field(
         None, json_schema_extra=_optional,
         description="margin: a BC customer's margin and why, or a BC sales order's (its "
@@ -1705,7 +1880,7 @@ EventType = Literal["po_late", "po_due", "eta_slipped", "vendor_no_reply",
                     "duplicate_supplier_invoice", "duplicate_supplier_payment",
                     "customer_credits_rising",
                     "price_below_typical", "price_below_cost", "customer_price_drop",
-                    "mc_task_overdue", "mc_task_stuck", "mc_approval_pending", "portal_approval_pending",
+                    "mc_task_stuck", "mc_approval_pending", "portal_approval_pending",
                     "planner_task_overdue", "aged_receivable_worsening",
                     "aged_payable_worsening", "production_late",
                     "assembly_damage_spike", "teams_unanswered_ask",
@@ -1949,6 +2124,13 @@ class BriefingEventType(_Model):
     words: str
     found_live: Optional[bool] = Field(None, description="Null where that is withheld.")
     first_found: Optional[str] = None
+    checked: Optional[int] = Field(None, ge=0, description=(
+        "Records its checks had to judge in their last run; null when not counted or "
+        "when your access does not show every record the run read."))
+    judged: Optional[int] = Field(None, ge=0, description="Of those, the records judged.")
+    judged_share: Optional[float] = Field(None, ge=0, le=1, description=(
+        "judged / checked, rounded down (never 1 while one is left unjudged); null when "
+        "not counted."))
 
 
 class BriefingItems(_Model):
@@ -2073,6 +2255,12 @@ class Watchlist(_Model):
     rules: list[WatchRule]
     alerts: list[WatchAlert]
     unread: int
+    complete: bool = Field(True, description="False when some alerts could not be read "
+                           "just now (``not_read`` says which): the list may be short, "
+                           "never read as \"no alerts\".")
+    not_read: list[Literal["alerts_not_read", "inbox_not_read"]] = Field(
+        default_factory=list, description="What could not be read: the stored alerts' "
+        "records, or the inbox your signal rules read.")
 
 
 class WatchRuleCompileRequest(_Model):
@@ -2187,6 +2375,16 @@ class CardActionOffer(_Model):
     outbound: bool
 
 
+class ActionAttachment(_Model):
+    """A file a message carries: named by its upload (the reader's own kept file); the
+    name, type, size and SHA-256 are read from the file itself, never from an edit."""
+    upload_id: str = Field(min_length=1, max_length=80)
+    name: Optional[str] = Field(None, max_length=255)
+    content_type: Optional[str] = Field(None, max_length=200)
+    size: Optional[int] = None
+    sha256: Optional[str] = Field(None, max_length=64)
+
+
 class ActionPayload(_Model):
     """An action's fields. Outbound: to, cc, subject (a new email only), body, and the
     cited message a reply or forward answers (``in_reply_to``, not editable) or the Teams
@@ -2206,6 +2404,10 @@ class ActionPayload(_Model):
     note: Optional[str] = Field(None, max_length=2000)
     assignee: Optional[str] = Field(None, max_length=320, description="Assign to: a "
                                     "colleague's address (kept in the Workbench only).")
+    attachments: Optional[list[ActionAttachment]] = Field(
+        None, max_length=5, json_schema_extra=_optional, description="The files the "
+        "message carries (a filled form's reply): only the card's own; an edit may take "
+        "one off, never add one.")
 
 
 class ActionRequest(_Model):
@@ -2520,6 +2722,8 @@ class WorkloadTeam(_Model):
 
 class WorkloadPerson(_Model):
     person: str
+    name: Optional[str] = Field(None, description="From the team snapshot; null when the "
+                                "snapshot does not name them.")
     team: str
     self: bool
     awaiting_reply: int
@@ -2545,6 +2749,25 @@ class WorkloadGrants(_Model):
     managers: dict[str, list[str]] = Field(default_factory=dict)
 
 
+class WorkloadGrantPerson(_Model):
+    oid: str = Field(description="Their Entra object id (the owner's sheet only).")
+    name: Optional[str] = Field(None, description="From the team snapshot; null when they "
+                                "are in the grants but not in the snapshot.")
+    team: Optional[str] = None
+    sees: list[str] = Field(default_factory=list, description="The teams whose people they "
+                            "see one by one on Workload.")
+    in_snapshot: bool = True
+
+
+class WorkloadGrantSheet(_Model):
+    """The owner's workload grant editor: the people the exclusion clears, each with their
+    team and the teams they see per person. ``held_back`` counts grant entries for people the
+    sheet never shows (the owner, the hidden list, the excluded); saving keeps them."""
+    people: list[WorkloadGrantPerson] = Field(default_factory=list)
+    teams: list[str] = Field(default_factory=list)
+    held_back: int = 0
+
+
 class RdLine(_Model):
     id: str
     state: Literal["waiting_on_us", "waiting_on_customer", "update_received", "closed"]
@@ -2556,11 +2779,13 @@ class RdLine(_Model):
 
 class RdProject(_Model):
     id: str
-    customer: Optional[str] = Field(None, description="The customer's record handle (open it "
-                                    "to read the name); null when the threads' mail is linked "
-                                    "to no single customer.")
-    party: Optional[str] = Field(None, description="Then the one outside domain of the "
-                                 "threads (a customer or a supplier: not known which).")
+    customer: str = Field(description="The customer's record handle (open it to read the "
+                          "name): the threads' one settled customer link, else the one customer "
+                          "record stating the sender. A thread of a supplier, or of a company "
+                          "no record names, is no project.")
+    customer_name: Optional[str] = Field(None, description="The customer's name as this "
+                                         "reader reads its record; none when it is not "
+                                         "readable (the app shows the handle).")
     kind: Literal["stability_test", "formulation_change", "sample_request", "coa"]
     status: Literal["waiting_on_us", "waiting_on_customer", "update_received", "closed"]
     last_on: Optional[str] = None
@@ -2596,46 +2821,6 @@ class RdBoard(_Model):
     reading: bool = _reading()
 
 
-class UatItem(_Model):
-    """One UAT feedback item (a SharePoint list item) as the list words it."""
-    record: str
-    list: str
-    title: str = ""
-    status: str
-    status_word: Optional[str] = None
-    resolution_word: Optional[str] = None
-    priority: Optional[str] = None
-    modified: Optional[str] = None
-    age_days: Optional[int] = Field(None, description="Days since the last change; open items only.")
-
-
-class UatPriorityCount(_Model):
-    word: str
-    count: int
-
-
-class UatFeedback(_Model):
-    """The MRP UAT feedback lists read as you may read them: totals per class, open items per
-    priority word, and the items (open first, then priority, then newest change). Items you
-    may not open are counted (``withheld``), never listed. Read only."""
-    as_of: str
-    served: bool = Field(True, description="False when the reading could not be made here.")
-    status: Optional[str] = None
-    totals: dict[str, int] = Field(default_factory=dict)
-    total: int = 0
-    open_priorities: list[UatPriorityCount] = Field(default_factory=list)
-    lists: list[str] = Field(default_factory=list)
-    items: list[UatItem] = Field(default_factory=list)
-    matched: int = 0
-    cut: bool = False
-    withheld: int = 0
-    sent: Literal[0] = 0
-    writes: Literal[0] = 0
-    stale_since: Optional[str] = _stale_since()
-    read_at: Optional[str] = _read_at()
-    reading: bool = _reading()
-
-
 class TeamPerson(_Model):
     """One person's row of the Team view. ``key`` is an opaque handle for the drill-down
     (never an object id, a name or an address)."""
@@ -2661,6 +2846,27 @@ class TeamPerson(_Model):
                              "the last 28 days, oldest first.")
     hours: list[int] = Field(default_factory=list, description="Messages sent per hour of the "
                              "day (US Eastern), last 28 days.")
+    weeks: list["TeamTrackerWeek"] = Field(default_factory=list, description="The weekly "
+                                           "tracker: the last four Monday weeks, the current "
+                                           "one last.")
+
+
+class TeamTrackerWeek(_Model):
+    """One week of a person's tracker (internal; the owner never appears)."""
+    week: str = Field(description="The week's Monday (ISO date, US Eastern).")
+    to: str = Field(description="Its last day counted (the snapshot's day for the current week).")
+    partial: bool = Field(False, description="The week is not over yet.")
+    done: int = Field(0, description="Everything they sent or did: mail sent, Teams messages, "
+                      "meetings and each system's recorded actions.")
+    received: int = Field(0, description="Mail they received.")
+    closed: int = Field(0, description="Their alerts closed that week.")
+    reply_minutes: Optional[int] = Field(None, description="Median minutes to reply that week.")
+    replies: int = 0
+    saved_minutes: Optional[int] = Field(None, description="Minutes the Workbench saved them "
+                                         "(the work log's estimate); null when not counted.")
+
+
+TeamPerson.model_rebuild()
 
 
 class SystemCoverage(_Model):
@@ -3198,6 +3404,32 @@ class AutopilotDecision(_Model):
                        "while the send did not).")
 
 
+class AutopilotMemoryUse(_Model):
+    """One memory entry an autopilot draft read (``operator_api.autopilot_context``)."""
+    id: int
+    kind: Optional[str] = Field(None, description="Set only for the person whose memory it "
+                                "is, while they still keep it.")
+    text: Optional[str] = Field(None, description="As it stands now in your memory; empty "
+                                "for anyone else, or once you deleted or changed it.")
+
+
+class AutopilotTemplateUse(_Model):
+    """The template an autopilot draft used (its closing block)."""
+    id: int
+    name: Optional[str] = Field(None, description="Set only when you may use the template.")
+    doc_type: Optional[str] = None
+
+
+class AutopilotDraftUse(_Model):
+    """What the draft was written with: ``memory`` (shown as "used for this draft") holds
+    only the entries that changed the draft; ``related`` the entries read for it that
+    changed nothing ("related, not applied")."""
+    memory: list[AutopilotMemoryUse] = Field(default_factory=list)
+    related: list[AutopilotMemoryUse] = Field(default_factory=list, description="Memory read "
+                                              "for this draft that did not change it.")
+    template: Optional[AutopilotTemplateUse] = None
+
+
 class AutopilotItem(_Model):
     """A prepared item with its evidence, its drafted action and your decision."""
     item_id: str
@@ -3218,6 +3450,8 @@ class AutopilotItem(_Model):
     today: bool = Field(description="Prepared or due today (Toronto day), or past due.")
     state: AutopilotItemState
     decision: Optional[AutopilotDecision] = None
+    used_for_draft: Optional[AutopilotDraftUse] = Field(None, description="The memory "
+                                                        "entries that changed the draft, those read but not applied, and the template.")
     live: Optional[bool] = Field(None, description="An accept performs this item live now (the "
                        "owner opened its kind to approved writes, or its workflow passed "
                        "its gate and is switched live): it is accepted alone, after a "
@@ -3299,6 +3533,26 @@ class AutopilotNoticeAck(_Model):
     workflow: str = Field(min_length=1, max_length=200)
 
 
+class AutopilotOutcomeCounts(_Model):
+    """What became of prepared items (``operating.autopilot_outcomes``): each item in one
+    class, so the five counts sum to ``items``; shares (percent, one decimal, as text) are
+    over ``decided`` (every class but waiting), null with none decided."""
+    items: int
+    decided: int
+    accepted: int
+    edited: int
+    rejected: int
+    ignored: int
+    waiting: int
+    shares: dict[str, Optional[str]] = Field(default_factory=dict)
+
+
+class AutopilotOutcomes(AutopilotOutcomeCounts):
+    """Counts only, over the prepared items (open and settled) this reader may see."""
+    ignored_reasons: dict[str, int] = Field(default_factory=dict)
+    by_autopilot: dict[str, AutopilotOutcomeCounts] = Field(default_factory=dict)
+
+
 class AutopilotArea(_Model):
     """The autopilot area: today's prepared items you may see, per workflow its scores and
     state, the switches (``owner``: you may change them), and your own opt-ins."""
@@ -3319,6 +3573,10 @@ class AutopilotArea(_Model):
     roles: list[str] = Field(default_factory=list)
     items: list[AutopilotItem] = Field(default_factory=list)
     workflows: list[AutopilotWorkflowRow] = Field(default_factory=list)
+    outcomes: Optional[AutopilotOutcomes] = Field(
+        None, json_schema_extra=_optional, description="Accepted / edited / rejected / "
+        "ignored / waiting per prepared item this reader may see (counts only); absent when "
+        "nothing was prepared.")
     notes: list[str] = Field(default_factory=list)
     known_workflows: list[str] = Field(default_factory=list, description=(
         "every workflow the autopilot knows (``operating.workflows``), scored or not: the "
@@ -3702,6 +3960,9 @@ class MemoryItem(_Model):
     records: list[str] = Field(default_factory=list)
     importance: float
     confidence: float
+    due: Optional[str] = Field(None, description="A commitment's due day (YYYY-MM-DD, US "
+                               "Eastern) as its words say it, read against when it was said; "
+                               "None when they name no day.")
 
 
 class MemoryItems(_Model):
@@ -3710,8 +3971,43 @@ class MemoryItems(_Model):
                                         "read now (the people exclusion is not loaded).")
 
 
+class MemoryPerson(_Model):
+    address: str
+    name: str = Field(description="Read from the address's own parts.")
+    inside: bool = Field(description="An address of the company's own domains.")
+    sent: int = Field(description="Messages you sent them in the last 90 days.")
+    received: int = Field(description="Messages they sent you in the last 90 days.")
+    last_at: str
+    last_subject: str = Field(description="Empty when it carries pay or finance.")
+
+
+class MemoryThread(_Model):
+    subject: str
+    others: list[str] = Field(description="Who else is on it (up to six addresses).")
+    messages: int
+    last_at: str
+    turn: Literal["yours", "theirs"] = Field(
+        description="yours: the last message came to you; theirs: you wrote last.")
+
+
+class MemoryPeople(_Model):
+    """The people you work with and your conversations going, from your own mailbox."""
+    available: bool = Field(description="False when your mail or the people exclusion "
+                                        "cannot be read now (nothing is guessed).")
+    reading: bool = Field(False, description="True while your mail is still being read: "
+                                             "ask again in a few seconds.")
+    people: list[MemoryPerson] = []
+    threads: list[MemoryThread] = []
+
+
 class MemoryForgotten(_Model):
     forgotten: bool
+
+
+class MemorySave(_Model):
+    """Something to remember in your own words, or a correction of one of your items."""
+    kind: Literal["instruction", "preference", "commitment", "fact"]
+    text: str = Field(min_length=1, max_length=1000)
 
 
 TemplateDocType = Literal["quote", "order_confirmation", "supplier_email", "customer_email",
@@ -3750,6 +4046,26 @@ class Template(_Model):
     updated_at: str
     last_used_at: Optional[str] = None
     source_ref: Optional[str] = Field(None, description="What it was saved from (yours only).")
+
+
+class LearnedTemplate(_Model):
+    """A kind of document learned from the reader's own sent documents."""
+    kind: str
+    label: str
+    documents: int = Field(description="How many of your documents it was learned from.")
+    last_sent: Optional[str] = Field(None, json_schema_extra=_optional,
+                                     description="The latest of them (ISO date).")
+    ask: str = Field(description="The words that ask for one; the record it is for goes "
+                                 "after them.")
+
+
+class LearnedTemplates(_Model):
+    """Templates learned from your documents (re-learned daily). ``none``: nothing learned
+    for you yet; ``unavailable``: the people exclusion could not be read, so none is
+    listed."""
+    status: Literal["read", "none", "unavailable"]
+    learned_at: Optional[str] = Field(None, json_schema_extra=_optional)
+    templates: list[LearnedTemplate] = Field(default_factory=list)
 
 
 class TemplateList(_Model):
@@ -3835,13 +4151,15 @@ class TemplateFilled(_Model):
 class TemplateSuggestion(_Model):
     """A template offered for the document you are starting: one you saved or that is
     shared with you (``template``), or the layout learned from the documents of this kind
-    you sent (``learned``: ``ask`` is the one-box line that makes it)."""
-    kind: Literal["saved", "learned"]
+    you sent (``learned``: ``ask`` is the one-box line that makes it), or mail you keep
+    sending in near the same words (``repeated``: ``body`` to save as a template)."""
+    kind: Literal["saved", "learned", "repeated"]
     doc_type: TemplateDocType
     label: str
     detail: str = ""
     template: Optional[Template] = None
     ask: Optional[str] = None
+    body: Optional[str] = None
 
 
 class TemplateSuggestions(_Model):
@@ -3851,14 +4169,14 @@ class TemplateSuggestions(_Model):
 
 class TrustFreshness(_Model):
     """One source system: the newest capture taken from it, the newest capture the served
-    data holds, and the lag between them."""
+    data holds, and the age of the newest capture."""
     system: System
     captured_at: Optional[str] = Field(None, description="The newest capture taken (the "
                                        "capture ledger).")
     served_at: Optional[str] = Field(None, description="The newest capture applied to the "
                                      "data the app serves.")
-    lag_seconds: Optional[int] = Field(None, description="captured_at - served_at; absent "
-                                       "when either is unknown.")
+    lag_seconds: Optional[int] = Field(None, description="The age of captured_at now; "
+                                       "absent when no capture time is known.")
     stale: bool = False
     capture: Optional[str] = None
 
@@ -4079,6 +4397,58 @@ class InstructWrite(_Model):
     status: Literal["prepared", "refused"]
 
 
+class EntryOption(_Model):
+    """A suggested value for a held field, from a record the reader opens: picking it
+    fills the confirm form; it is never used until the person confirms it."""
+    value: str
+    record: Optional[str] = Field(None, description="The record to send back as "
+                                  "``EntryConfirm.record`` (customer, supplier, item).")
+    currency: Optional[str] = None
+    unit: Optional[str] = None
+    basis: str
+    date: Optional[str] = None
+
+
+class EntryField(_Model):
+    """One value the BC entry needs: cited (from the records or the document), a check
+    the person settles, or confirmed by the person (who and when)."""
+    key: str = Field(description="``customer``, ``supplier`` or ``line:<n>:item|quantity|"
+                     "unit_price``: what ``EntryConfirm.key`` names.")
+    field: Literal["customer", "supplier", "item", "quantity", "unit_price"]
+    line: Optional[int] = None
+    label: str
+    status: Literal["cited", "check", "confirmed"]
+    value: Optional[str] = None
+    currency: Optional[str] = None
+    reason: Optional[str] = None
+    confirmed_by: Optional[str] = None
+    confirmed_at: Optional[str] = None
+    options: list[EntryOption] = Field(default_factory=list)
+
+
+class EntryHold(_Model):
+    """An order or PO held until every check is settled (``/api/entries/{entry_id}``):
+    only the person preparing it sees and confirms it. Confirming writes nothing to BC:
+    once ``open`` is 0 the entry goes to the write desk (``write``), where a colleague
+    who holds the write grant approves it."""
+    entry_id: str
+    kind: Literal["order", "purchase_order"]
+    label: str
+    fields: list[EntryField]
+    open: int = Field(description="Checks still to settle.")
+    write: Optional[InstructWrite] = Field(None, json_schema_extra=_optional)
+
+
+class EntryConfirm(_Model):
+    """One value the person enters or confirms: a record (``record``) for the customer,
+    supplier or item; a number (``value``) for a quantity; a number and ``currency`` for
+    a price."""
+    key: str = Field(max_length=40)
+    value: Optional[str] = Field(None, max_length=40)
+    record: Optional[str] = Field(None, max_length=400)
+    currency: Optional[str] = Field(None, max_length=8)
+
+
 class InstructDocument(_Model):
     """A document made as a file, and its upload to SharePoint as a draft you approve
     (``/api/instruct/uploads/{upload_id}``)."""
@@ -4118,13 +4488,18 @@ class FillField(_Model):
 
 
 class FillReply(_Model):
-    """The filled copy as a reply to the email the form came in: prepared, never sent from
-    here (``missing`` says what a send with a file needs)."""
+    """The filled copy as a reply to the email the form came in, carrying the file: never
+    sent from here. ``card_id`` opens it in the action dialog (``/api/actions/preview``),
+    where the reader previews the exact message and file and confirms the send themselves;
+    ``not_available`` (with ``missing``) when no such reply can be prepared."""
     to: list[str]
     subject: str
     attachment: str
-    status: Literal["not_available"]
+    status: Literal["ready", "not_available"]
     missing: list[str]
+    card_id: Optional[str] = Field(None, max_length=200, json_schema_extra=_optional)
+    actions: list[CardActionOffer] = Field(default_factory=list, json_schema_extra=_optional,
+                                           description="The sends that carry the file.")
 
 
 class InstructFill(_Model):
@@ -4176,6 +4551,9 @@ class InstructPart(_Model):
     meetings: list[InstructMeeting] = Field(default_factory=list, description="Meetings you "
                                             "attended that may hold context.")
     writes: list[InstructWrite] = Field(default_factory=list)
+    entry: Optional[EntryHold] = Field(None, json_schema_extra=_optional,
+                                       description="An order or PO held until you settle "
+                                       "its checks.")
     documents: list[InstructDocument] = Field(default_factory=list)
     fills: list[InstructFill] = Field(default_factory=list, description="Forms filled from "
                                       "the records, each as a new file to review.")

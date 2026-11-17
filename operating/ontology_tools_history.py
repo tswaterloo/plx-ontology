@@ -38,7 +38,7 @@ import base64
 import datetime as dt
 import hashlib
 import json
-from typing import Any, Mapping, Sequence
+from typing import Any, Mapping
 
 from ontology.mentions import corroboration_objects, reader_view
 
@@ -77,7 +77,7 @@ def _bind(object_id: str) -> str:
 def _read_cursor(text: str, object_id: str, parse) -> _Position:
     """The position ``text`` names; ToolError(invalid_input) for anything else (a cursor
     of another record, a forged or truncated one): never read as the first page."""
-    from .ontology_tools import ToolError
+    from .ontology_tools_identity import ToolError
     try:
         if not text.startswith("h1."):
             raise ValueError
@@ -96,8 +96,10 @@ def _read_cursor(text: str, object_id: str, parse) -> _Position:
 
 def object_history(tools: Any, arguments: Mapping[str, Any], actor: Any) -> dict[str, Any]:
     """The ``plx.object`` history answer (module docstring)."""
-    from .ontology_tools import (ToolError, _completeness, _envelope_bytes, _format_time,
-                                 _gap, _markings, _parse_time, _source_of, _value_out)
+    from .ontology_tools import _value_out
+    from .ontology_tools_identity import ToolError, _gap, _source_of
+    from .ontology_tools_policy import _envelope_bytes, _format_time, _markings, _parse_time
+    from .ontology_tools_results import _completeness
     from .ontology_tools_changes import STAMPS
 
     at = tools._as_known_at(arguments)

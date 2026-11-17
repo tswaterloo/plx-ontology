@@ -32,6 +32,7 @@ import sqlite3
 import sys
 import time
 from typing import Any, Mapping, Sequence
+from ontology import parent_watch
 
 
 CACHE_KIB = 65536   # each count's SQLite page cache and in-memory sort run (64 MiB)
@@ -137,7 +138,8 @@ def preflight(the_plan: Mapping[str, Any], schema: Any, state: Path, *,
     count = build_workers(workers)   # PLX_BUILD_WORKERS, else the CPUs less two
     jobs: dict[str, dict[str, Any]] = {}
     with futures.ProcessPoolExecutor(max_workers=count,
-                                     mp_context=multiprocessing.get_context("spawn")) as pool:
+                                     mp_context=multiprocessing.get_context("spawn"),
+                                     **parent_watch.pool_init()) as pool:
         running = {pool.submit(join_size, mirror, tuple(s["a"]), tuple(s["b"])): s
                    for s in sized}
         for future in futures.as_completed(running):

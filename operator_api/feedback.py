@@ -59,7 +59,9 @@ from pathlib import Path
 from typing import Any, Callable, Mapping, Optional, Sequence
 from operating import declared_schema as _schemas
 from operating.declared_schema import feedback as _FEEDBACK
-from operating.file_modes import keep_private
+from operating.file_modes import keep_private, keep_shared
+
+from .errors import RecordNotFound
 
 KINDS = ("answer", "alert", "page", "record", "list", "ui", "general")
 STATUSES = ("new", "accepted", "fixed", "wont_fix")
@@ -361,7 +363,7 @@ class FeedbackStore:
                 "UPDATE feedback SET status = ?, status_by = ?, status_at = ? WHERE id = ?",
                 (status, by, _iso(_now()), fid)).rowcount
         if not done:
-            raise KeyError("feedback_not_found")
+            raise RecordNotFound("feedback_not_found")
         entry = self.get(fid)
         if entry["kind"] == "alert":
             self.write_signals()
@@ -380,7 +382,7 @@ class FeedbackStore:
         with self._lock:
             row = self._conn.execute("SELECT * FROM feedback WHERE id = ?", (fid,)).fetchone()
         if row is None:
-            raise KeyError("feedback_not_found")
+            raise RecordNotFound("feedback_not_found")
         return self._entry(row)
 
     def list(self, *, reader: Optional[str], kind: Optional[str] = None,
@@ -513,6 +515,7 @@ def _write_json(path: Path, body: Any) -> Path:
     """``body`` as ``path``, 0600, replaced in one step."""
     tmp = path.with_name(f".{path.name}.{secrets.token_hex(4)}.tmp")
     fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    keep_shared(tmp, 0o600)
     with os.fdopen(fd, "w", encoding="utf-8") as handle:
         handle.write(json.dumps(body, ensure_ascii=False, indent=2, sort_keys=True) + "\n")
     os.replace(tmp, path)

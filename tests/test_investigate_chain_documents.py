@@ -32,6 +32,7 @@ from collections import Counter
 from datetime import datetime, timedelta, timezone
 import io
 import json
+import os
 from pathlib import Path
 import sqlite3
 import tempfile
@@ -90,7 +91,8 @@ class Router:
     403 Authorization_RequestDenied (an app without User.Read.All)."""
 
     def __init__(self, documents=DOCUMENTS, bc_down: str | None = None,
-                 mailbox: str = INBOX, directory_refused: bool = False) -> None:
+                 mailbox: str = INBOX, directory_refused: bool = False,
+                 cc: str | None = None) -> None:
         self.bc = tb.FakeBc({name: 1 if name == "purchaseOrders" else 0
                              for name in CAPTURE_ENTITY_SETS}, companies=tb.CO)
         if bc_down:
@@ -114,6 +116,9 @@ class Router:
         self.mail.put(holder, "m1", "ck1", subject="PI and packing list",
                       body="Attached.", received=received,
                       attachments=[_attachment(*each) for each in documents] or None)
+        if cc is not None:   # the message copied to another of our people as well
+            self.mail.messages[holder]["m1"]["ccRecipients"] = [
+                {"emailAddress": {"address": cc}}]
 
     def __call__(self, method, url, headers, body, timeout, max_bytes):
         if "businesscentral" in (urlsplit(url).hostname or ""):
@@ -144,7 +149,11 @@ def run_spec(temp: str, *, fetch=None, mail_budget=None, **router) -> tuple[int,
             else arg.replace("{tmp}", temp) for arg in SPEC["command"][3:]]
     router = Router(**router)
     out = io.StringIO()
-    with contextlib.redirect_stdout(out):
+    # The mail capture's freshness reads the people exclusion from the process environment
+    # (``MailCaptures._exclusion``): without a list the people relation is partial and the
+    # whole mail source reads as unfinished (fail closed). A made-up id, nobody's.
+    with contextlib.redirect_stdout(out), mock.patch.dict(os.environ, {
+            "PLX_EXCLUDED_PEOPLE_OIDS": "0e0e0e0e-0000-4000-8000-00000000e0e1"}):
         code = live_ws.main(argv, environ={
             **ENV, "PLX_WORKBENCH_API_URL": BASE, "PLX_WORKBENCH_API_KEY": KEY},
             graph_sender=router, host_options={
@@ -162,9 +171,10 @@ class PoDocumentChainTest(unittest.TestCase):
         self.addCleanup(temp.cleanup)
         self.temp = temp.name
 
-    def session(self, actor: Actor, *, mailbox: bool = True):
+    def session(self, actor: Actor, *, mailbox: bool = True, excluded: str | None = None):
         """A case session over the projection the spec run built, as ``actor``; without
-        ``mailbox`` the live audience withdraws the inbox grant (BC stays granted)."""
+        ``mailbox`` the live audience withdraws the inbox grant (BC stays granted);
+        ``excluded``: the object id the people exclusion lists now (since the capture)."""
         from integrations.live_source_guard import LiveSourceAudience
         from operating.case_runtime import build_live_readers
         from operating.ingestion import load_live_audience
@@ -175,8 +185,9 @@ class PoDocumentChainTest(unittest.TestCase):
             default_classification="confidential")
         live = build_live_readers(audience, ENV, graph_sender=router, bc_sender=router)
         state = Path(self.temp) / "state"
+        environ = ENV if excluded is None else {**ENV, "PLX_EXCLUDED_PEOPLE_OIDS": excluded}
         runtime = live_ws.offline_runtime(state, MIRROR_AUDIENCE, "plx", live=live,
-                                          environ=ENV)
+                                          environ=environ)
         self.addCleanup(runtime.close)
         # The projection the spec's cases were opened on: the host's served generation.
         projection = live_ws.run_projection(state, actor.tenant)
@@ -374,7 +385,8 @@ class PoDocumentChainTest(unittest.TestCase):
     def test_the_chain_answer_cites_the_po_documents_at_their_tiers_and_labels_the_leads(self):
         code, _document, _text = run_spec(self.temp)
         self.assertEqual(code, 0)
-        result = self.session(PURCHASING)("plx.investigate", {"family": "chain", "root": PO})
+        ask = self.session(PURCHASING)
+        result = ask("plx.investigate", {"family": "chain", "root": PO})
         self.assertNotIn("error", result, result)
         counted = {e["name"]: e for e in result["answer"] if e["kind"] == "count"}
         for name, binding in (("supplier_confirmation_count",
@@ -388,8 +400,21 @@ class PoDocumentChainTest(unittest.TestCase):
             self.assertTrue(entry.get("lead_basis"), entry)
         self.assertNotIn("lead_basis", counted["purchase_order_count"])
         # Each document is cited by its own edge to the PO (and to the PO's FM twin), at
-        # the tier the projection stored for that link, never raised by the walk.
-        edges = [e for e in result["chain"]["edges"] if e["link_type"] in DOCUMENT_LINKS]
+        # the tier the projection stored for that link, never raised by the walk. The chain
+        # a first page has no room for is listed whole on the detail pages its next_cursor
+        # reaches (AUD-11), so the edges are read over every page.
+        chain_edges, page = list(result["chain"]["edges"]), result
+        for _ in range(20):
+            cursor = (page.get("completeness") or {}).get("next_cursor")
+            if not cursor:
+                break
+            page = ask("plx.investigate", {
+                "family": "chain", "root": PO, "cursor": cursor})
+            self.assertNotIn("error", page, page)
+            chain_edges += page["chain"]["edges"]
+        else:
+            self.fail("the chain answer's pages never ended")
+        edges = [e for e in chain_edges if e["link_type"] in DOCUMENT_LINKS]
         self.assertEqual({(e["link_type"], e["to"]) for e in edges},
                          {(link, end) for link in DOCUMENT_LINKS for end in (
                              PO, 'PurchaseOrder:portal.fm_generated_purchase_order:{"id":3301}')})
@@ -423,6 +448,30 @@ class PoDocumentChainTest(unittest.TestCase):
         for value in ("SupplierConfirmation:", "PackingSlip:", "FreightBill:", "PI-60001",
                       "PL-5512", "BL-7781"):
             self.assertNotIn(value, text)
+
+    def test_a_document_mailed_with_a_person_excluded_since_leaves_the_chain(self):
+        """PRIV-1114-1: the PO's documents came on a message copied to a colleague (the
+        second purchasing mailbox's owner). Once that colleague is excluded, the chain plan
+        (its document steps, ``chain_documents``) and the primitives it calls show no
+        document, edge or count of that message; before, the same reader sees them.
+        Fails on the old mail gate (it decided the mailbox and the sender only)."""
+        colleague = MAILBOXES[1]
+        box = "12345678-aaaa-bbbb-cccc-%012x" % 1
+        code, _document, _text = run_spec(self.temp, cc=colleague)
+        self.assertEqual(code, 0)
+        shown = self.session(PURCHASING)("plx.investigate", {"family": "chain", "root": PO})
+        counted = {e["name"]: e["value"] for e in shown["answer"] if e["kind"] == "count"}
+        self.assertEqual(counted.get("supplier_confirmation_count"), 1, counted)
+        session = self.session(PURCHASING, excluded=box)
+        hidden = session("plx.investigate", {"family": "chain", "root": PO})
+        self.assertEqual(hidden["root"]["object_id"], PO)
+        documents = session("plx.documents", {"object_id": PO})
+        for answer in (hidden, documents):
+            text = json.dumps(answer)
+            for value in ("SupplierConfirmation:", "PackingSlip:", "FreightBill:", "PI-60001",
+                          "PL-5512", "BL-7781", "PI and packing list", colleague):
+                at = text.find(value)
+                self.assertEqual(at, -1, (value, text[max(0, at - 700):at + 200]))
 
 
 class DerivedDocumentLinksTest(unittest.TestCase):

@@ -234,12 +234,19 @@ class LivePartTests(unittest.TestCase):
         with mock.patch.dict(os.environ, {"PLX_EXCLUDED_PEOPLE_OIDS": "oid-x",
                                           "PLX_ONTOLOGY_PG": "only",
                                           "PLX_PG_FACTS_DIR": "/facts",
+                                          "PGUSER": "plx_api", "PGHOST": "/run/pg",
+                                          "PGPASSWORD": "pw", "PGPASSFILE": "/pw",
                                           "MICROSOFT_GRAPH_CLIENT_SECRET": "s3cret"}):
             for server in (host.mcp_server(), host.harness_server()):
                 self.assertEqual(server["env"]["PLX_EXCLUDED_PEOPLE_OIDS"], "oid-x")
                 self.assertEqual((server["env"]["PLX_ONTOLOGY_PG"],
                                   server["env"]["PLX_PG_FACTS_DIR"]), ("only", "/facts"))
-                self.assertNotIn("MICROSOFT_GRAPH_CLIENT_SECRET", server["env"])
+                # the API's Postgres role reaches the host (ASK-FIX 11-15: without it the
+                # host connected as its OS user, refused, and every Ask read failed)
+                self.assertEqual((server["env"]["PGUSER"], server["env"]["PGHOST"]),
+                                 ("plx_api", "/run/pg"))
+                for secret in ("MICROSOFT_GRAPH_CLIENT_SECRET", "PGPASSWORD", "PGPASSFILE"):
+                    self.assertNotIn(secret, server["env"])
         with mock.patch.dict(os.environ, {}, clear=True):
             from operating.agent_session import STORE_ENV
             self.assertFalse(set(era.EXCLUSION_ENV + STORE_ENV)

@@ -53,6 +53,7 @@ from decimal import Decimal, InvalidOperation
 import difflib
 import hashlib
 import io
+import os
 import json
 from pathlib import Path
 import re
@@ -61,6 +62,7 @@ from xml.etree import ElementTree as ET
 from xml.sax.saxutils import escape
 import zipfile
 
+from integrations import document_understanding as du
 from operating import doc_fill as df
 
 SCHEMA = "plx-doc-style/v2"   # v2: fixed text spans two parties (v1 files refused)
@@ -513,21 +515,22 @@ def _put_number(xml: bytes, ref: str, value: str) -> bytes:
 
 
 def _read_pdf(data: bytes) -> Reading:
-    try:
-        from pypdf import PdfReader
-        from pypdf.errors import PdfReadError
-    except ImportError:
-        raise StyleRefused("pdf_unavailable") from None
+    # opened and read as every reading opens a PDF (document_understanding.open_pdf,
+    # pdf_page_text), never a reader of its own
+    pdf, failure = du.open_pdf(data)
+    if failure in ("pdf_parser_unavailable", "parser_panicked"):
+        raise StyleRefused("pdf_unavailable")
+    if failure == "encrypted":
+        raise StyleRefused("encrypted")
+    if pdf is None:
+        raise StyleRefused("unreadable")
+    from pypdf.errors import PdfReadError
     reading = Reading("pdf", [])
     try:
-        pdf = PdfReader(io.BytesIO(data))
         if pdf.is_encrypted:
             raise StyleRefused("encrypted")
         for p, page in enumerate(pdf.pages[:20]):
-            try:
-                text = page.extract_text(extraction_mode="layout") or ""
-            except (TypeError, ValueError):
-                text = page.extract_text() or ""
+            text = du.pdf_page_text(page, layout=True)
             for n, line in enumerate(text.splitlines()):
                 cells = [c for c in re.split(r"\s{3,}", line.strip()) if c]
                 for c, cell in enumerate(cells):
@@ -945,12 +948,26 @@ def kind_of(name: str, kinds: Sequence[tuple[str, re.Pattern[str]]]) -> Optional
 
 # ---- store -------------------------------------------------------------------------------
 
-def save(path: Path, templates: Sequence[Mapping[str, Any]], learned_at: str) -> None:
+def share(path: Path, mode: int, gid: int | None) -> None:
+    """``mode`` on ``path`` and, when ``gid`` is given, that group (the state directory's:
+    the API's own user reads the templates through it). A group this process cannot give
+    leaves the file's own group (the API then reads nothing, as before)."""
+    os.chmod(path, mode)
+    if gid is not None and path.stat().st_gid != gid:
+        try:
+            os.chown(path, -1, gid)
+        except OSError:
+            pass
+
+
+def save(path: Path, templates: Sequence[Mapping[str, Any]], learned_at: str,
+         gid: int | None = None) -> None:
+    """``templates.json``: 0640 in group ``gid`` when given (else 0600)."""
     path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
     tmp = path.with_name(f".{path.name}.tmp")
     tmp.write_text(json.dumps({"schema": SCHEMA, "learned_at": learned_at,
                                "templates": list(templates)}), encoding="utf-8")
-    tmp.chmod(0o600)
+    share(tmp, 0o600 if gid is None else 0o640, gid)
     tmp.replace(path)
 
 

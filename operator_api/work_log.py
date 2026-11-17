@@ -237,6 +237,8 @@ class WorkLog:
             raise ValueError("work_log_verb_unknown")
         if not valid_thread(thread):
             raise ValueError("work_log_thread_invalid")
+        if getattr(getattr(reader, "session", None), "canary", False):
+            return None   # the Ask canary's service session is nobody's work
         guard = self.guard()
         if _actor_excluded(guard, reader):
             return None
@@ -491,7 +493,7 @@ class WorkLog:
         mailbox = str(waiting.get("mailbox") or "").lower()
         if not path or not mailbox or not Path(path).exists():
             return None, None
-        from operating.autopilot import _digest
+        from operating.autopilot_records import _digest
         threads = [_digest("thread", t) for t in waiting.get("threads") or ()
                    if t and not _is_handle(t)]
         parties = [_digest("party", a.lower()) for a in waiting.get("to") or () if a]
@@ -909,6 +911,9 @@ class Notes:
                               once=f"prepared:{reader.key}:{item['item_id']}")
         except Exception as error:  # noqa: BLE001 - the log never fails the view
             log.error("work log: prepared items not written: %s", type(error).__name__)
+            return
+        for item in items:
+            self._remember("prepared", reader, item)
 
     def autopilot_decided(self, reader: Any, item: Any) -> None:
         data = _dump(item)

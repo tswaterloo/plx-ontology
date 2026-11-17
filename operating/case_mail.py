@@ -865,7 +865,8 @@ def read_relations(runtime: Any, actor: Actor, *, max_staleness: float | None
     is built from (GET-only, bounded pages; ``integrations.source_mirror.scan_relation``):
     per part, its status, rows read, completeness and reasons, value-free, and the
     Portal's failure (``upstream``) when the Portal failed the read."""
-    from integrations.source_mirror import scan_label, scan_relation
+    from integrations.source_mirror import scan_relation
+    from integrations.source_mirror_query import scan_label
 
     out: dict[str, dict[str, Any]] = {}
     for part, relation in SURVEY_RELATIONS:
@@ -994,9 +995,10 @@ def main(argv: Sequence[str] | None = None, *, environ: Mapping[str, str] | None
     from integrations.workbench_read_api import WorkbenchReadApiClient
     from .build_steps import ReviewStoreUnreadable
     from .case_runtime import CaseRuntime, build_live_readers
-    from .case_workspace_live import project_state
+    from .case_workspace_live_projection import project_state
     from .host import projection_path
-    from integrations.capture_mail import CaptureError, CaptureScope, capture_into
+    from integrations.capture_mail import capture_into
+    from integrations.capture_mail_scope import CaptureError, CaptureScope
     from .ingestion import IngestError, load_live_audience
 
     def fail(code: str, status: int = 2) -> int:

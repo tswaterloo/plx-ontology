@@ -121,9 +121,10 @@ function QueueSection({ queue }: { queue?: OpsQueue | null }) {
 const STATE_WORD: Record<OpsCheck["state"], string> = { breach: "Problem", ok: "OK", unknown: "Unknown" };
 
 // The reliability page (operating/ops_alarms.py, every 5 minutes): what is broken now and
-// what to do about it, what recovered, and every check of the last pass by area. Alarms
-// show only here and in the red line on every page; nothing is paged. The owner and the
-// Team readers read it; anyone else gets the route's 403.
+// what to do about it, what is paused on purpose, what recovered, and every check of the
+// last pass by area. Alarms show here and in the red line on every page, and are mailed
+// when ops mail is on (operating/ops_notify.py). The owner and the Team readers read it;
+// anyone else gets the route's 403.
 export default function OpsPage() {
   const { data: alarms, error, retry } = useRead<OpsAlarms>("ops", (signal) => getOpsAlarms(signal));
   const checks = alarms?.checks ?? [];
@@ -169,6 +170,27 @@ export default function OpsPage() {
                   <dd className="text-[20px] font-semibold tabular-nums">{alarms.recovered.length}</dd>
                 </div>
               </dl>
+              {alarms.open.length > 0 && (
+                <p className="mt-3 flex flex-wrap gap-x-5 gap-y-1 text-[12px] text-muted" data-testid="ops-by-area">
+                  <span className="font-medium text-fg">Open by area</span>
+                  {AREAS.map((a) => [a, alarms.open.filter((i) => areaOf(i.key) === a).length] as const)
+                    .filter(([, n]) => n > 0)
+                    .sort((x, y) => y[1] - x[1])
+                    .map(([a, n]) => (
+                      <span key={a} className="whitespace-nowrap">
+                        {a} <span className="num font-semibold text-late">{n}</span>
+                      </span>
+                    ))}
+                  {(() => {
+                    const oldest = [...alarms.open].sort((x, y) => Date.parse(x.opened_at) - Date.parse(y.opened_at))[0];
+                    return oldest ? (
+                      <span className="min-w-0 truncate" title={oldest.line}>
+                        Oldest open {span(oldest.opened_at)}: <span className="text-fg">{oldest.line}</span>
+                      </span>
+                    ) : null;
+                  })()}
+                </p>
+              )}
               <p className="mt-2 text-[12px] text-muted">
                 Shown to the owner and the Team readers, here and in the red line at the top of every page. Nothing is paged or mailed.
               </p>
@@ -204,6 +226,33 @@ export default function OpsPage() {
                 </table>
               )}
             </section>
+
+            {(alarms.paused?.length ?? 0) > 0 && (
+              <section>
+                <h2 className="text-[13px] font-semibold">Paused on purpose</h2>
+                <p className="mt-0.5 text-[12px] text-muted">Not mailed until the pause ends; then open again if still broken.</p>
+                <table className="mt-1 w-full text-left text-[13px]" data-testid="ops-paused">
+                  <tbody className="divide-y divide-border">
+                    {alarms.paused!.map((i) => (
+                      <tr key={i.key} className="align-top">
+                        <td className="py-1.5 pr-3">{i.line}</td>
+                        <td className="py-1.5 pr-3 whitespace-nowrap text-[12px] text-muted">until {eastern(i.paused?.until)}</td>
+                        <td className="py-1.5 text-[12px] text-muted max-sm:hidden">{i.paused?.why || "no reason given"}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </section>
+            )}
+
+            {alarms.notify && (
+              <p className="text-[12px] text-muted" data-testid="ops-mail">
+                {alarms.notify.sending
+                  ? `Problems are mailed to ${alarms.notify.recipients ?? 0} ${alarms.notify.recipients === 1 ? "person" : "people"}; a daily mail at 8 AM ET says the checks run.`
+                  : `Problems are not mailed (${alarms.notify.why_not || "off"}): they show only here.`}
+                {(alarms.notify.pending ?? 0) > 0 && ` ${alarms.notify.pending} mail(s) not sent yet, retried every pass.`}
+              </p>
+            )}
 
             {alarms.recovered.length > 0 && (
               <section>

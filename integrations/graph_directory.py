@@ -343,7 +343,7 @@ def _transient(reason: str) -> bool:
 def _write_oids(state_dir: str | Path, moment: str,
                 resolved: Mapping[str, Mapping[str, str]]) -> str:
     """Replace the state directory's file atomically: ``written`` or ``write_failed``."""
-    from .capture_mail import CaptureError, assert_outside_git
+    from .capture_mail_scope import CaptureError, assert_outside_git
     temp = None
     try:
         folder = assert_outside_git(state_dir) / APPROVER_OIDS_DIR

@@ -25,7 +25,9 @@ from unittest import mock
 from urllib.parse import parse_qs, unquote, urlsplit
 
 from integrations import capture_mail, graph_read
-from integrations.capture_mail import CaptureScope, MailCapture
+from integrations import capture_mail_extract
+from integrations.capture_mail import MailCapture
+from integrations.capture_mail_scope import CaptureScope
 from integrations.graph_read import GraphMailReader
 from integrations.live_source_guard import BoundedBackoff
 from integrations.tests.test_capture_mail import (BOX_A, BOX_B, CAPTURE, ENV, SYNTHETIC,
@@ -819,7 +821,7 @@ class LanesAndPriorityTests(ThroughputCase):
             extractors.close()
         names = {e.split(b"=", 1)[0].decode() for e in environ if e}
         self.assertEqual(inline[0], "extracted")
-        self.assertLessEqual(names, set(capture_mail.EXTRACTION_ENV))   # nothing else
+        self.assertLessEqual(names, set(capture_mail_extract.EXTRACTION_ENV))   # nothing else
         self.assertFalse([v for v in secrets.values()
                           if v.encode() in b"\0".join(environ)])
         # A capture with extraction processes stores the same text as an inline one.
@@ -864,7 +866,7 @@ class LanesAndPriorityTests(ThroughputCase):
                     thread.join(60)
             statuses = sorted(r[0] for r in results.values())
             # One reading met the hung process: its own gap; every other one was read.
-            self.assertEqual(statuses, ["extracted"] * 3 + [capture_mail.EXTRACTION_TIMED_OUT])
+            self.assertEqual(statuses, ["extracted"] * 3 + [capture_mail_extract.EXTRACTION_TIMED_OUT])
             self.assertIsNotNone(hung.poll())                  # the hung process was ended
             self.assertEqual(len(started), 3)                  # and replaced
             self.assertEqual(extractors.read(b"after", attachment, defer_ocr=True,
@@ -882,8 +884,8 @@ class LanesAndPriorityTests(ThroughputCase):
                 "import sys, struct; sys.stdout.buffer.write(struct.pack('>Q', 1 << 62));"
                 " sys.stdout.flush(); import time; time.sleep(120)")
         for code, status, content in (
-                (deaf[0], capture_mail.EXTRACTION_TIMED_OUT, b"x" * (8 << 20)),
-                (deaf[1], capture_mail.EXTRACTION_CRASHED, b"small")):
+                (deaf[0], capture_mail_extract.EXTRACTION_TIMED_OUT, b"x" * (8 << 20)),
+                (deaf[1], capture_mail_extract.EXTRACTION_CRASHED, b"small")):
             with self.subTest(status=status):
                 def start(_extractors, code=code):
                     return subprocess.Popen([sys.executable, "-c", code],
@@ -909,7 +911,7 @@ class LanesAndPriorityTests(ThroughputCase):
 
         def parsed(*_args, **_kwargs):
             raise AssertionError("parsed in the capture process")
-        gap = (capture_mail.EXTRACTION_TIMED_OUT, None, None)
+        gap = (capture_mail_extract.EXTRACTION_TIMED_OUT, None, None)
         with mock.patch.object(MailCapture, "_extract", lambda *a, **k: gap), \
                 mock.patch.object(MailCapture, "_read_again", lambda *a: gap), \
                 mock.patch.object(capture_mail, "readings_of", parsed), \
@@ -920,7 +922,7 @@ class LanesAndPriorityTests(ThroughputCase):
             self.assertTrue(run["mailboxes"][0]["folders"][0]["complete"], run)
             row = self.store.db.execute("SELECT l1_handle, content_sha256, text_status "
                                         "FROM attachments").fetchone()
-            self.assertEqual(row["text_status"], capture_mail.EXTRACTION_TIMED_OUT)
+            self.assertEqual(row["text_status"], capture_mail_extract.EXTRACTION_TIMED_OUT)
             self.assertEqual(self.store.blob(row["content_sha256"]), big)   # kept
             # Read again (a round's re-read, then later runs) until EXTRACTION_RETRIES more
             # readings were left unfinished too; then a named gap for good, still kept.
@@ -931,7 +933,7 @@ class LanesAndPriorityTests(ThroughputCase):
             "event='text_reextracted'", (row["l1_handle"],)).fetchone()[0]
         self.assertEqual(retries, capture_mail.EXTRACTION_RETRIES)
         self.assertEqual(self.store.db.execute("SELECT text_status FROM attachments")
-                         .fetchone()[0], capture_mail.EXTRACTION_TIMED_OUT)
+                         .fetchone()[0], capture_mail_extract.EXTRACTION_TIMED_OUT)
         self.assertEqual(self.store.blob(row["content_sha256"]), big)
         self.assertEqual(self.store.text_unread(None, None, 10), [])
         self.assertEqual(self.store.settle_original(row["content_sha256"]), "kept_pending")

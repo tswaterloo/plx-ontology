@@ -264,7 +264,7 @@ class ViewAsSession(unittest.TestCase):
 
     def test_resolves_as_the_sign_in_does_and_writes_nothing(self):
         from scripts import eval_owner_host as tool
-        from operator_api.backend import view_as_for
+        from operator_api.backend_run import view_as_for
         oid = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"
         claims = {"uid": "cmreader0001", "email": "reader@example.com",
                   "entraTenantId": TID.upper(), "entraObjectId": oid}

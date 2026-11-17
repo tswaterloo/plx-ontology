@@ -703,87 +703,6 @@ class SyntheticGenerationTests(unittest.TestCase):
                                      ("cold", again.units))
                     self.assertEqual(again.content_digest, cold["content_digest"])
 
-    def test_a_base_of_the_earlier_keys_is_adopted_only_from_the_code_that_built_it(self):
-        """A generation keyed before per-unit keys (one context of whole code files and
-        the schema digest) with the commit that built it named: adopted when that
-        commit's tree gives back its stored context, rows code and schema, so the next
-        build is incremental and equals a cold one. A tree whose code differs, or a
-        commit git does not know, or another identifier grammar leaves the build cold."""
-        from ontology import build_adopt, build_keys
-
-        def legacy_base(root):
-            """A generation as the earlier code left it (``units.json`` of its keys)."""
-            seen = {}
-            real = inc._pin
-
-            def pin(sources, the_plan, held=None):
-                out = real(sources, the_plan, held)
-                seen["prints"] = out[1]
-                return out
-            sources = self.sources()
-            with mock.patch.object(inc, "_pin", pin):
-                built = inc.build_generation(root, self.schema, sources, clock=lambda: T2)
-            path = built.store.parent / "units.json"
-            units = json.loads(path.read_text())
-            shards = {b: {k: v for k, v in e.items() if k != "spec"}
-                      for b, e in units["shards"].items()}
-            context = build_adopt.legacy_context(
-                tree=build_keys._ROOT, schema_digest=self.schema.digest, cut=None,
-                normalizer=inc._default_normalizer(), sources=sources, fmt=inc.FORMAT)
-            the_plan = inc.with_shards(inc.plan(self.schema),
-                                       {b: e["shards"] for b, e in shards.items()})
-            for name in ("scheme", "shape", "readers", "shard_code"):
-                units.pop(name)
-            units.update(context=context, shards=shards, keys=build_adopt.legacy_keys(
-                context, the_plan.units, seen["prints"], shards))
-            path.write_text(json.dumps(units))
-
-        def build(root, sha, tree=None):
-            with mock.patch.dict("os.environ", {build_adopt.ENV: sha}):
-                if tree is None:
-                    return inc.build_generation(root, self.schema,
-                                                self.sources("public.app_product"),
-                                                clock=lambda: T2, space=incremental_path)
-                with mock.patch.object(build_adopt, "materialize",
-                                       lambda sha, into: tree):
-                    return inc.build_generation(root, self.schema,
-                                                self.sources("public.app_product"),
-                                                clock=lambda: T2, space=incremental_path)
-
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            cold = build_store(root / "cold.sqlite", self.schema,
-                               self.sources("public.app_product"), clock=lambda: T2)
-            legacy_base(root / "adopted")
-            adopted = build(root / "adopted", "the-commit", build_keys._ROOT)
-            self.assertEqual(adopted.mode, "incremental", adopted.need.get("adopted"))
-            self.assertEqual(adopted.need["adopted"]["code_sha"], "the-commit")
-            self.assertGreater(adopted.need["adopted"]["kept"], 0)
-            self.assertLess(adopted.units_rebuilt, adopted.units)
-            self.assertEqual(tables(adopted.store), tables(root / "cold.sqlite"))
-            self.assertEqual(adopted.content_digest, cold["content_digest"])
-
-            trees = {}
-            for name, edited in (("other", "store.py"), ("grammar", "schema/identifiers.json")):
-                trees[name] = root / f"{name}-tree"
-                for package in ("ontology", "integrations"):
-                    shutil.copytree(build_keys._ROOT / package, trees[name] / package,
-                                    ignore=shutil.ignore_patterns("__pycache__"))
-                with open(trees[name] / "ontology" / edited, "a", encoding="utf-8") as handle:
-                    handle.write("\n")
-            for name, sha, tree, why in (
-                    ("other code", "another-commit", trees["other"], "context_differs"),
-                    # identifiers.json is in no earlier key: compared on its own
-                    ("other identifier grammar", "another-commit", trees["grammar"],
-                     "normalizer_differs"),
-                    ("unknown commit", "0" * 40, None, "git_rev-parse_failed")):
-                with self.subTest(name):
-                    legacy_base(root / name)
-                    built = build(root / name, sha, tree)
-                    self.assertEqual((built.mode, built.units_rebuilt), ("cold", built.units))
-                    self.assertEqual(built.need["adopted"]["refused"], why)
-                    self.assertEqual(built.content_digest, cold["content_digest"])
-
     def test_prints_read_again_rebuild_nothing_and_rows_code_rebuilds_all(self):
         """Fingerprints the last build held under other fingerprint code are read again,
         and a unit whose captures and reader are the same is not rebuilt (code outside
@@ -817,16 +736,22 @@ class SyntheticGenerationTests(unittest.TestCase):
             self.assertEqual(bumped.content_digest, again.content_digest)
 
     def test_a_sharded_binding_rebuilds_only_the_shards_of_changed_or_removed_records(self):
-        """A large isolated binding (Sage AP lines: no link, hop or event reads one of its
-        records) is cut into shards by object id; a changed record re-projects its shards
-        only, a removed one leaves none of its rows, and each generation equals a cold
-        build (rows, report, digest)."""
-        binding = next(b["id"] for t in self.schema.object_types.values()
-                       for b in t.get("bindings", []) if b["relation"] == "sage.ap_pjd")
-        self.assertIn(binding, inc.plan(self.schema).isolated)
+        """A large isolated binding (a Sage relation no link, hop or event reads one of
+        its records) is cut into shards by object id; a changed record re-projects its
+        shards only, a removed one leaves none of its rows, and each generation equals a
+        cold build (rows, report, digest). Sage AP lines (``sage.ap_pjd``) were this
+        binding until their GL account, header and vendor links and the payroll marking
+        rules read them: they are not isolated, and so never sharded."""
+        the_plan = inc.plan(self.schema)
+        pjd = next(b["id"] for t in self.schema.object_types.values()
+                   for b in t.get("bindings", []) if b["relation"] == "sage.ap_pjd")
+        self.assertNotIn(pjd, the_plan.isolated)
+        binding = min(bid for bid in the_plan.isolated if bid.startswith("gen.sage.")
+                      and the_plan.bindings[bid][1]["source"] == "portal_api")
+        relation = the_plan.bindings[binding][1]["relation"]
 
         def without(sources, index=None):   # the source no longer holds one record
-            inner, relation = sources["portal_api"], "sage.ap_pjd"
+            inner = sources["portal_api"]
 
             class Dropped:
                 source = inner.source
@@ -852,8 +777,8 @@ class SyntheticGenerationTests(unittest.TestCase):
             shards = sorted(u for u in keys(first) if u.startswith(f"b:{binding}#"))
             self.assertGreater(len(shards), 2)
             for name, built_sources in (
-                    ("changed", without(self.sources("sage.ap_pjd"))),
-                    ("removed", without(self.sources("sage.ap_pjd"), 5))):
+                    ("changed", without(self.sources(relation))),
+                    ("removed", without(self.sources(relation), 5))):
                 with self.subTest(name):
                     before = inc.current_generation(root / "state")
                     built = inc.build_generation(root / "state", self.schema, built_sources,

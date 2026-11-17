@@ -17,6 +17,7 @@ import unittest
 from operating import briefing
 from operating import proactive_commitments as pcm
 from operating import proactive_engine as pe
+from operating import proactive_engine_config
 from operating.tests.test_proactive_chasers import (CUSTOMER_MAIL, TextWorld, chat_people,
                                                     customer, order)
 from operating.tests.test_proactive_engine import (AS_OF, EXCLUDED_OID, OURS_OID, T0, Engine,
@@ -612,7 +613,7 @@ class Commitments(Engine):
                 self.assertIn(kind, briefing.NEXT_ACTIONS)
                 self.assertIn(kind, briefing.TODAY_WORDS)
                 self.assertEqual(briefing.HIDDEN_POLICY[kind], "none")
-        self.assertTrue(set(RULES) <= set(pe.REQUIRES_GRANT) & set(pe.DETECTOR_SECONDS))
+        self.assertTrue(set(RULES) <= set(proactive_engine_config.REQUIRES_GRANT) & set(pe.DETECTOR_SECONDS))
 
     # ------------------------------------------------------------ cardinality
 

@@ -13,8 +13,12 @@ with the reason). A value is never invented to fill a gap.
   check. Ship-to: never filled (no projected ship-to of an order): check. Lines: the
   document's item lines (``document_lines.read_lines``), each item number one the records
   know exactly (``resolve_items``/``line_item``), its quantity and unit as the document
-  states them; the price the PO states, else the customer's last price for that item in
-  the same unit and currency (``last_prices``: its document cited), else check.
+  states them; the price the PO states, else check (the customer's last price for that
+  item in the same unit and currency, ``last_prices``, is only suggested on it).
+* ``purchase_order``: the PO a buyer would raise. The supplier as the person names it;
+  the items; every price, unit and quantity a check: no record states the new PO's price
+  (``_price_hint``: the supplier's last price is suggested only when the money model knows
+  its currency and the unit it is per, and that day's lines agree).
 
 ``bc_header``: a cited order or PO as a new BC sales or purchase order for the write desk
 (header and lines from cited fields only; an AP invoice never: a financial document).
@@ -29,6 +33,10 @@ import re
 from typing import Any, Mapping, Sequence
 
 from . import autopilot as ap
+from . import autopilot_events
+from . import autopilot_handlers
+from . import autopilot_reading
+from . import autopilot_records
 from . import autopilot_work as aw
 from . import document_lines as dl
 
@@ -89,6 +97,12 @@ def cited(value: Any, source: Mapping[str, Any]) -> dict[str, Any]:
     return {"value": value, "status": "cited", "source": dict(source)}
 
 
+# a field the BC entry may take: cited from the records or the documents, or entered or
+# confirmed by the person preparing it (``operating.entry_confirm``; its source says who
+# and when)
+SETTLED = ("cited", "confirmed")
+
+
 def check(reason: str, candidates: Sequence[Any] = ()) -> dict[str, Any]:
     out: dict[str, Any] = {"value": None, "status": "check", "reason": reason}
     if candidates:
@@ -102,7 +116,7 @@ def _documents(ctx: Any, email: str | None, text: str | None) -> list[dict[str, 
     if text is not None:
         return [{"name": "pasted text", "form": "text", "text": text[:MAX_TEXT],
                  "handle": None}]
-    preview = ap._v(ap._read(ctx.st, [email], ("body_preview",)).get(email) or {},
+    preview = autopilot_records._v(autopilot_records._read(ctx.st, [email], ("body_preview",)).get(email) or {},
                     "body_preview")
     event = {"object_id": email, "text": preview}
     files = aw.attachments(ctx, event)
@@ -110,6 +124,55 @@ def _documents(ctx: Any, email: str | None, text: str | None) -> list[dict[str, 
     return [{"name": f["name"], "form": f["form"], "text": f["text"], "handle": f["handle"]}
             for f in files] + [{"name": "mail body", "form": "text", "text": body,
                                 "handle": None}]
+
+
+CUSTOMER_EMAILS = ("email", "email_2", "email_3", "bc_email")
+
+
+def _own_domains(ctx: Any) -> frozenset[str] | None:
+    """The tenant's own mail domains: the run's (``ctx.domains``), else the mail capture
+    scope's ``internal_domains``; None when neither can be read (the caller fails closed)."""
+    got = {str(d).strip().lower() for d in (getattr(ctx, "domains", None) or ()) if d}
+    if got:
+        return frozenset(got)
+    from integrations import capture_mail
+    try:
+        scope = capture_mail.CaptureScope.from_file(capture_mail.DEFAULT_SCOPE)
+    except Exception:  # noqa: BLE001 - unreadable scope: unknown, never "none of ours"
+        return None
+    return frozenset(d.lower() for d in scope.internal_domains) or None
+
+
+def _drop_own_company(ctx: Any, by_basis: dict[str, dict[str, list[str]]],
+                      sender: str | None) -> tuple[dict[str, dict[str, list[str]]], bool]:
+    """``by_basis`` without the tenant's own account: a customer number any of whose
+    records lists an address at one of our own mail domains is the house account (every
+    PO a customer sends names us, the vendor, so our name is in it; held-out 11-06..11-13:
+    3 of 4 wrong cited customers). Decided by the buyer the PO names, not by who sent it:
+    a customer PO one of our staff forwards still names us as its vendor, so the house
+    account is dropped whenever the PO names another customer too; only a PO that names
+    no customer but ours, sent by one of us (an internal order), keeps it. The flag: the
+    own domains are unknown, so a stated customer is never cited."""
+    domains = _own_domains(ctx)
+    if domains is None:
+        return by_basis, True
+    own = sorted(domains)
+    house: set[str] = set()
+    for numbers in by_basis.values():
+        for number, records in numbers.items():
+            rows = ctx.read(records, CUSTOMER_EMAILS)
+            if any(autopilot_records._internal(a, own) for r in rows.values()
+                   for k in CUSTOMER_EMAILS for a in autopilot_records._addresses(ap._v(r, k))):
+                house.add(number)
+    named_other = any(n not in house for numbers in by_basis.values() for n in numbers)
+    if not named_other and any(autopilot_records._internal(a, own) for a in autopilot_records._addresses(sender)):
+        return by_basis, False
+    out: dict[str, dict[str, list[str]]] = {}
+    for basis, numbers in by_basis.items():
+        kept = {n: r for n, r in numbers.items() if n not in house}
+        if kept:
+            out[basis] = kept
+    return out, False
 
 
 def customer_of(ctx: Any, text: str, email: str | None, sender: str | None
@@ -128,6 +191,12 @@ def customer_of(ctx: Any, text: str, email: str | None, sender: str | None
     if email is not None or sender:
         from_sender = aw.resolve_customer(ctx, {"object_id": email or "",
                                                 "sender": sender or ""}, text[:20000])
+    by_basis, unknown_own = _drop_own_company(ctx, by_basis, sender)
+    if unknown_own and any(by_basis.values()):
+        out = check("our own mail domains are unreadable, so the customer the PO names "
+                    "cannot be told from our own company", sorted(
+                        {n for nums in by_basis.values() for n in nums})[:6])
+        return _suggest(out, from_sender)
     pick = None
     for basis, said in (("account", "the customer number the PO states"),
                         ("name", "the customer's name in the PO")):
@@ -143,6 +212,16 @@ def customer_of(ctx: Any, text: str, email: str | None, sender: str | None
                     "(the sender's record is not proof of the buyer)")
         return _suggest(out, from_sender)
     basis, said, number, records = pick
+    if basis == "name":
+        # a name in the text is no account (re-measure 08-03..09-19: 11 of 11 customers
+        # cited by name were wrong: a private customer's name that is also a contact's in
+        # a forwarded thread, a generic company name in a digest, a parent company's name
+        # on a branch's order): suggested, never cited
+        out = check("the PO names the customer only by name, not by its customer number "
+                    "(a name can be a contact's, a parent company's or another branch's)",
+                    [number])
+        out["suggestions"] = [{"value": number, "basis": said, "records": records[:4]}]
+        return _suggest(out, from_sender)
     other = from_sender.get("number")
     if other and other.upper() != number.upper() and number.upper() not in {
             str(c).upper() for c in from_sender.get("candidates") or ()}:
@@ -154,19 +233,133 @@ def customer_of(ctx: Any, text: str, email: str | None, sender: str | None
     row = rows.get(records[0]) or {}
     ctx.cite(row, "erp_code", "name")
     out = cited(number, {"basis": said + (" and the sender's record" if other else ""),
-                         "name": ap._v(row, "name"), "records": records[:4]})
+                         "name": autopilot_records._v(row, "name"), "records": records[:4]})
     # one customer number across twins: its currency is the one its records state (two
     # different ones: none, so no last price is reused)
-    currencies = {ap._v(r, "currency") for r in rows.values()} - {""}
-    out["resolved"] = {"number": number, "records": records, "name": ap._v(row, "name"),
+    currencies = {autopilot_records._v(r, "currency") for r in rows.values()} - {""}
+    out["resolved"] = {"number": number, "records": records, "name": autopilot_records._v(row, "name"),
                        "currency": next(iter(currencies)) if len(currencies) == 1 else None}
     return out
 
 
+# A line read from a spreadsheet row as cell references ("D31=0 | E31=4 | F31=MC3055 ...")
+SHEET_ROW = re.compile(r"(?:^|\|)\s*[A-Z]{1,3}[0-9]{1,7}=")
+ITEM_STATE = ("blocked", "is_active", "deleted_at")
+
+
+def _item_doubt(ctx: Any, records: Sequence[str]) -> str | None:
+    """Why a matched item is not certain to be the ordered one, or None: any of its
+    records or their ``same_record_as`` twins blocked, inactive or deleted (re-measure
+    08-03..09-19: a customer's old code named a blocked, inactive item and staff keyed its
+    replacement)."""
+    records = list(records)
+    twins = [o for o in ctx.linked_many(records, ("Product.same_record_as",))
+             if o.startswith("Product:")] if records else []
+    rows = ctx.read(sorted(set(records) | set(twins)), ITEM_STATE)
+    if any(ap._v(r, "blocked").lower() in ("true", "1", "yes", "all")
+           or ap._v(r, "is_active").lower() in ("false", "0", "no")
+           or ap._v(r, "deleted_at") for r in rows.values()):
+        return ("the item number names a blocked or inactive item: confirm the item (an old "
+                "code may stand for its replacement)")
+    return None
+
+
+# Where a reply thread's earlier message starts: an Outlook/Gmail header block ("From: ..."
+# then "Sent:"/"Date:" within a few lines), "-----Original Message-----", "On ... wrote:",
+# a forwarded-message rule
+THREAD_CUT = re.compile(
+    r"^[ \t>*]*(?:From|De)\s*:\*?[ \t]+\S.*\n(?:.*\n){0,4}?[ \t>*]*(?:Sent|Date|Envoy\S*)\s*:"
+    r"|^[ \t>]*-{2,}[ \t]*(?:Original Message|Forwarded message)[ \t]*-{2,}"
+    r"|^[ \t>]*On\b.{4,200}\bwrote:[ \t]*$", re.I | re.M)
+
+
+def _messages(text: str) -> list[tuple[int, str]]:
+    """A mail body's messages, newest first (a reply quotes the thread below it), each
+    with the number of body lines before it (so a line cite stays the body's)."""
+    text = text or ""
+    cuts = [m.start() for m in THREAD_CUT.finditer(text) if m.start() > 0]
+    bounds = [0, *cuts, len(text)]
+    return [(text.count("\n", 0, a), text[a:b]) for a, b in zip(bounds, bounds[1:])
+            if text[a:b].strip()]
+
+
+# A line or subject saying an item is not to be supplied as named: back-ordered, out of
+# stock, discontinued, replaced (tuning 02-02..05-03: "FNA300/BR900 b/o" in the subject;
+# staff keyed the order without them)
+UNSUPPLIED = re.compile(
+    r"(?<![\w/])b/o(?![\w/])|\bback[\s-]?order|\bout\s+of\s+stock\b|\bdiscontinu|"
+    r"\bno\s+longer\s+(?:available|made|carried|stocked)|\bunavailable\b|"
+    r"\bnot\s+(?:available|in\s+stock)\b|\bsubstitut|\breplac(?:e|ed|es|ing|ement)\b",
+    re.I)
+
+
+def _unsupplied_codes(texts: Sequence[str]) -> set[str]:
+    """Item numbers (normalised) on any line that says they are not supplied as named."""
+    out: set[str] = set()
+    for text in texts:
+        for line in (text or "").splitlines():
+            if UNSUPPLIED.search(line):
+                out.update(_norm(t) for t in re.findall(r"[A-Za-z0-9][A-Za-z0-9-]{2,}", line)
+                           if re.search(r"\d", t))
+    return out
+
+
+def _norm(x: Any) -> str:
+    return "".join(ch for ch in str(x or "").upper() if ch.isalnum())
+
+
+ITEM_FACTS = ("name", "description", "uom", "bc_base_uom")
+# words of a line that say nothing about which product it is
+NOT_PRODUCT = frozenset((
+    "case cases each pack packs pail pails gallon gallons litre litres liter liters "
+    "bottle bottles carton cartons unit units pkgs pcs please order item items quantity "
+    "with from need send ship thanks thank also more total price want would like could "
+    "place following product products the and for of").split())
+
+
+def _line_doubt(ctx: Any, records: Sequence[str], code: str, text: str,
+                unit: str | None) -> tuple[str | None, bool]:
+    """Why the line's item number may not be the item meant (``None`` when nothing in the
+    records says so), and whether its quantity is in a unit the item is not sold in.
+    A customer's own code, or a pack of the item sold as another item, shows as: the
+    line's words name another product than the item's names (tuning 02-02..05-03: a
+    customer's "JT360 Hair And Body Shampoo" was a spa soap's number; staff keyed the hair
+    and body combo), or the line orders a unit no record of the item is sold in
+    ("MC3017 Razors (4 Boxes)", an item sold by the case; staff keyed another razor)."""
+    from ontology.units import unit_token
+    records = list(records)
+    twins = [o for o in ctx.linked_many(records, ("Product.same_record_as",))
+             if o.startswith("Product:")] if records else []
+    rows = ctx.read(sorted(set(records) | set(twins)), ITEM_FACTS)
+    sold_in = {unit_token(ap._v(r, k)) for r in rows.values() for k in ("uom", "bc_base_uom")}
+    sold_in.discard(None)
+    want = unit_token(unit) if unit else None
+    if want and sold_in and want not in sold_in:
+        return ("the line orders a unit the item is not sold in (sold by "
+                f"{', '.join(sorted(sold_in))}): the ordered pack may be another item", True)
+    names = " ".join(ap._v(r, k) for r in rows.values() for k in ("name", "description"))
+    blob = re.sub(r"[^a-z]", "", names.lower())
+    code_words = {w.lower() for w in re.findall(r"[A-Za-z]+", code)}
+    words = {w for w in re.findall(r"[a-z]{4,}", (text or "").lower())
+             if w not in NOT_PRODUCT and w not in code_words}
+    if not blob or not words:
+        return None, False
+    line_blob = re.sub(r"[^a-z]", "", (text or "").lower())
+    stems = {w[:-1] if w.endswith("s") and len(w) > 4 else w for w in words}
+    if any(w in blob for w in stems) or any(
+            n in line_blob for n in re.findall(r"[a-z]{4,}", names.lower())
+            if n not in NOT_PRODUCT):
+        return None, False
+    return ("the line's description names another product than the item's: the number "
+            "may be the customer's own code for another item"), False
+
+
 def _suggest(field: dict[str, Any], from_sender: Mapping[str, Any]) -> dict[str, Any]:
     """The sender's customer record as a suggestion on a check (never filled)."""
-    if from_sender.get("number"):
-        field["suggestions"] = [{"value": from_sender["number"],
+    if from_sender.get("number") and from_sender["number"] not in {
+            s.get("value") for s in field.get("suggestions") or ()}:
+        field["suggestions"] = [*(field.get("suggestions") or ()),
+                                {"value": from_sender["number"],
                                  "basis": "the sender's customer record "
                                           f"({from_sender.get('basis')})",
                                  "records": (from_sender.get("records") or [])[:4]}]
@@ -182,9 +375,9 @@ def order_entry(ctx: Any, *, email: str | None = None, text: str | None = None,
     docs = _documents(ctx, email, text)
     head: dict[str, Any] = {}
     if email is not None:
-        row = ap._read(ctx.st, [email], ("sender", "subject")).get(email) or {}
-        sender = ap._v(row, "sender") or sender
-        subject = ap._v(row, "subject")
+        row = autopilot_records._read(ctx.st, [email], ("sender", "subject")).get(email) or {}
+        sender = autopilot_records._v(row, "sender") or sender
+        subject = autopilot_records._v(row, "subject")
     else:
         subject = ""
     # PO number: the documents' labelled numbers, the subject's too
@@ -209,13 +402,24 @@ def order_entry(ctx: Any, *, email: str | None = None, text: str | None = None,
     customer = head["customer"].get("resolved") or {"number": None}
     head["customer"].pop("resolved", None)
     head["ship_to"] = check("the records hold no ship-to for an order; take it from the PO")
-    # lines: the first document that has item lines
-    lines, read_from = [], None
+    # lines: the first document that has item lines; a mail body is read one message at
+    # a time, newest first, and never across messages (tuning 02-02..05-03: a reply
+    # thread's lines were read from three different quoted messages); lines of an earlier
+    # message are suggestions only (the thread may have changed the order since)
+    lines, read_from, earlier = [], None, False
     for d in docs:
-        got = dl.read_lines(d["text"] or "", d["form"])
-        if got:
-            lines, read_from = got, d
+        parts = _messages(d["text"] or "") if d["name"] == "mail body" else \
+            [(0, d["text"] or "")]
+        for n, (before, part) in enumerate(parts):
+            got = dl.read_lines(part, d["form"])
+            if got:
+                lines, read_from, earlier = [{**ln, "cite": f"L{int(ln['cite'][1:]) + before}"}
+                                             if before and re.fullmatch(r"L\d+", ln["cite"])
+                                             else ln for ln in got], d, n > 0
+                break
+        if lines:
             break
+    unsupplied = _unsupplied_codes([subject or "", *(d["text"] or "" for d in docs)])
     found_items = aw.resolve_items(ctx, [t for ln in lines for t in ln["tokens"]])
     prices = aw.last_prices(ctx, customer["records"]) if customer.get("number") else {}
     from ontology.units import currency_code, unit_token
@@ -225,13 +429,38 @@ def order_entry(ctx: Any, *, email: str | None = None, text: str | None = None,
     for ln in lines:
         src = {"document": read_from["name"], "cite": ln["cite"], "handle": read_from["handle"]}
         hit = aw.line_item(found_items, ln["tokens"])
-        item = cited(hit[0], {**src, "records": hit[1][:4]}) if hit else \
+        doubt = _item_doubt(ctx, hit[1]) if hit else None
+        other_unit = False
+        if doubt is None and hit and SHEET_ROW.search(ln.get("text") or ""):
+            doubt = ("the line is a spreadsheet row, and which of its columns is the ordered "
+                     "quantity is not known (an order form lists items not ordered)")
+        if doubt is None and hit and _norm(hit[0]) in unsupplied:
+            doubt = ("the mail says this item is back-ordered, out of stock, discontinued "
+                     "or replaced: confirm what is to be entered")
+        if doubt is None and hit:
+            doubt, other_unit = _line_doubt(ctx, hit[1], hit[0], ln.get("text") or "",
+                                            ln.get("unit"))
+        if doubt is None and hit and earlier:
+            doubt = ("the line is read from an earlier message of the thread, not the newest "
+                     "one: the order may have changed since")
+        item = {**check(doubt, [hit[0]]), "suggestions": [
+                    {"value": hit[0], "basis": "the item number on the line",
+                     "records": hit[1][:4]}]} if hit and doubt else \
+            cited(hit[0], {**src, "records": hit[1][:4]}) if hit else \
             check("no item number, or several, on the line match an item record")
-        qty = ap._decimal(ln.get("quantity"))
-        quantity = cited(str(qty), src) if qty is not None and qty > 0 else \
-            check("no quantity read on the line")
+        qty = autopilot_records._decimal(ln.get("quantity"))
+        quantity = check("no quantity read on the line") if qty is None or qty <= 0 else \
+            {**check("the quantity is in a unit the item is not sold in: convert it"
+                     if other_unit else "the line is read from an earlier message of the "
+                     "thread: confirm the quantity"),
+             "suggestions": [{"value": str(qty), **src}]} if other_unit or earlier else \
+            cited(str(qty), src)
         unit = cited(ln["unit"], src) if ln.get("unit") else check("the line states no unit")
-        if ln.get("unit_price"):
+        if ln.get("unit_price") and earlier:
+            price = {**check("the price is read from an earlier message of the thread: "
+                             "confirm it"),
+                     "suggestions": [{"value": ln["unit_price"], **src}]}
+        elif ln.get("unit_price"):
             price = cited(ln["unit_price"], {**src, "basis": "the PO's price"})
         elif hit and prices.get(hit[0]):
             last = prices[hit[0]]
@@ -239,10 +468,17 @@ def order_entry(ctx: Any, *, email: str | None = None, text: str | None = None,
                         currency_code(last.get("currency") or "")[0] == want_currency and
                         unit_token(last.get("uom") or "") is not None and
                         unit_token(last.get("uom") or "") == unit_token(ln["unit"]))
-            price = cited(last["price"], {"basis": last["basis"], "document": last["document"],
-                                          "date": last["date"], "record": last["object_id"]}) \
-                if same else check("the customer's last price is in another unit or "
-                                   "currency, or the line states no unit")
+            # an earlier price is no proof of this order's price (held-out 11-06..11-13: a
+            # last price shown as cited was the keyed one 13 times of 29): a suggestion only
+            price = check("the PO states no price: confirm it (the customer's last price is "
+                          "only a suggestion)" if same else
+                          "the PO states no price, and the customer's last price is in "
+                          "another unit or currency, or the line states no unit")
+            if same:
+                price["suggestions"] = [{"value": last["price"], "basis": last["basis"],
+                                         "unit": ln["unit"], "currency": want_currency,
+                                         "document": last["document"], "date": last["date"],
+                                         "record": last["object_id"]}]
         else:
             price = check("no price on the PO and no earlier price for this customer and item")
         out_lines.append({"text": ln["text"], "item": item, "quantity": quantity,
@@ -268,13 +504,13 @@ MAX_PO_LINES = 400      # PO lines read per item or supplier
 
 
 def _po_number(row: Mapping[str, Any]) -> str:
-    return next((ap._v(row, k) for k in ("po_number", "fm_po_number", "sage_po_number")
-                 if ap._v(row, k)), "")
+    return next((autopilot_records._v(row, k) for k in ("po_number", "fm_po_number", "sage_po_number")
+                 if autopilot_records._v(row, k)), "")
 
 
 def _line_price(row: Mapping[str, Any]) -> str | None:
     for k in ("unit_price",):
-        d = ap._decimal(ap._v(row, k))
+        d = autopilot_records._decimal(autopilot_records._v(row, k))
         if d is not None and d > 0:
             return str(d)
     return None
@@ -292,15 +528,21 @@ def _po_lines_of(ctx: Any, lines: Sequence[str]) -> list[dict[str, Any]]:
     out = []
     for ln in lines:
         po = po_of.get(ln)
-        day = ap._v(heads.get(po) or {}, "order_date")[:10]
+        day = autopilot_records._v(heads.get(po) or {}, "order_date")[:10]
         if not po or not day or day > ctx.as_of.isoformat():
             continue
+        cell = (rows.get(ln) or {}).get("unit_price")
+        cell = cell if isinstance(cell, Mapping) else {}   # a bare value: no money reading
         out.append({"line": ln, "po": po, "day": day, "number": _po_number(heads.get(po) or {}),
-                    "currency": ap._v(heads.get(po) or {}, "currency") or None,
                     "item": item_of.get(ln), "supplier": sup_of.get(po),
-                    "quantity": ap._v(rows.get(ln) or {}, "ordered_quantity"),
-                    "unit": ap._v(rows.get(ln) or {}, "uom") or None,
-                    "price": _line_price(rows.get(ln) or {})})
+                    "quantity": autopilot_records._v(rows.get(ln) or {}, "ordered_quantity"),
+                    "unit": autopilot_records._v(rows.get(ln) or {}, "uom") or None,
+                    "price": _line_price(rows.get(ln) or {}),
+                    # the money model's own reading of the price: the unit it is per (None
+                    # when the writer's lineage stores a line total or another unit's cost
+                    # there, ERP-M-033) and its currency code (None when unreadable)
+                    "price_per": cell.get("unit") or None,
+                    "price_currency": cell.get("currency") or None})
     return sorted(out, key=lambda x: (x["day"], x["po"]))
 
 
@@ -313,20 +555,86 @@ def _open_demand(ctx: Any, item: str) -> tuple[Decimal, list[str]] | None:
     more than ``MAX_DEMAND_LINES`` do (a sum too wide to cite line by line)."""
     lines = [a for _t, a, _b in ctx.touching([item], ("SalesOrderLine.for_item",))][:MAX_PO_LINES]
     rows = ctx.read(lines, ("outstanding_quantity",))
-    got = [(ap._decimal(ap._v(r, "outstanding_quantity")), o) for o, r in rows.items()]
+    got = [(autopilot_records._decimal(autopilot_records._v(r, "outstanding_quantity")), o) for o, r in rows.items()]
     got = [(q, o) for q, o in got if q is not None and q > 0]
     if not got or len(got) > MAX_DEMAND_LINES:
         return None
     return sum((q for q, _o in got), Decimal(0)), [o for _q, o in got]
 
 
+# The stored link tiers that join two supplier records firmly: a stored key or exact
+# identifier (verified), a person's review (reviewed), a code and name that agree
+# (corroborated). A text join or a lead never makes another vendor's POs this one's.
+TWIN_TIERS = ("verified", "reviewed", "corroborated")
+
+
+def _supplier_identity(ctx: Any, suppliers: Sequence[str]) -> dict[str, frozenset[str]]:
+    """supplier record -> the records that are the same supplier (``same_record_as`` at an
+    identifier-confirmed tier, ``TWIN_TIERS``, followed up to three hops, one read per hop
+    for all of them: the Portal, FileMaker and BC records of one vendor), itself included.
+    One vendor keyed under its BC record on one PO and its Portal record on the next is one
+    supplier (held-out 11-06..11-13: 35 of 42 'other supplier' suggestions were the PO's
+    own supplier under a twin record); a lead or text-join twin is not followed, so one bad
+    link cannot pull another vendor's POs into the history."""
+    parent: dict[str, str] = {}
+
+    def root(x: str) -> str:
+        while parent.setdefault(x, x) != x:
+            parent[x] = parent[parent[x]]
+            x = parent[x]
+        return x
+
+    seen = {x for x in suppliers if x}
+    edge = set(seen)
+    for _hop in range(3):
+        if not edge:
+            break
+        nxt = set()
+        for _t, a, b in ctx.touching(sorted(edge), ("Supplier.same_record_as",),
+                                     tiers=TWIN_TIERS):
+            if a.startswith("Supplier:") and b.startswith("Supplier:"):
+                parent[root(a)] = root(b)
+                nxt |= {a, b} - seen
+        seen |= nxt
+        edge = nxt
+    groups: dict[str, set[str]] = {}
+    for x in seen:
+        groups.setdefault(root(x), set()).add(x)
+    return {x: frozenset(groups[root(x)]) for x in seen}
+
+
+def _price_hint(mine: Sequence[Mapping[str, Any]]) -> tuple[dict[str, Any] | None, str]:
+    """(the supplier's last price as a suggestion, or None; why the price is a check).
+    Only lines the money model reads with a currency and the unit the price is per count,
+    and only when that last day's lines agree on price, unit and currency: an earlier price
+    is never the new PO's price (held-out 11-06..11-13: 16 of 29 cited last prices were
+    not the keyed price: a line total stored as the price, a cost per another unit, or the
+    supplier's price had changed)."""
+    known = [h for h in mine if h["price"] and h["price_per"] and h["price_currency"]]
+    if not known:
+        return None, ("no earlier price from this supplier" if not any(h["price"] for h in mine)
+                      else "the supplier's earlier prices do not state the unit they are per "
+                           "or their currency")
+    day = known[-1]["day"]
+    same_day = [h for h in known if h["day"] == day]
+    if len({(Decimal(h["price"]), str(h["price_per"]).lower(), h["price_currency"])
+            for h in same_day}) > 1:
+        return None, "the supplier's last prices for this item disagree"
+    last = same_day[-1]
+    return ({"value": last["price"], "unit": last["price_per"],
+             "currency": last["price_currency"], "basis": "last price from this supplier",
+             "record": last["po"], "document": last["number"], "date": last["day"]},
+            "a new PO's price is not in the records: confirm it with the supplier")
+
+
 def purchase_order(ctx: Any, *, supplier: str | None = None,
                    items: Sequence[str] = ()) -> dict[str, Any]:
     """The PO the person would raise (module doc): the supplier as the person names it
     (else a check, the items' last supplier only suggested), the items (named, else the
-    supplier's latest POs' items), each with its last price from that supplier (cited) and
-    a quantity that stays a check: the stock on hand is not in the records, so the open
-    demand and the last quantity are shown as suggestions only, never filled."""
+    supplier's latest POs' items, its twin records included), each with a price, unit and
+    quantity that stay checks: no record states the new PO's price (``_price_hint``) or the
+    stock on hand, so the last price, the open demand and the last quantity are shown as
+    suggestions only, never filled."""
     found = aw.resolve_items(ctx, items)
     named = {code: recs for code, recs in found.items()}
     head: dict[str, Any] = {}
@@ -336,20 +644,25 @@ def purchase_order(ctx: Any, *, supplier: str | None = None,
         history = _po_lines_of(ctx, [a for _t, a, _b in ctx.touching(
             recs, ("PurchaseOrderLine.for_item",))])
     if supplier:
-        sup_pos = [a for _t, a, _b in ctx.touching([supplier], ("PurchaseOrder.ordered_from",))
-                   if a.startswith("PurchaseOrder:")]
+        twins = sorted(_supplier_identity(ctx, [supplier]).get(supplier) or {supplier})
+        sup_pos = sorted({a for _t, a, _b in ctx.touching(twins, ("PurchaseOrder.ordered_from",))
+                          if a.startswith("PurchaseOrder:")})
         heads = ctx.read(sup_pos, ("order_date",))
-        recent = sorted((p for p in sup_pos if ap._v(heads.get(p) or {}, "order_date")[:10]
-                         and ap._v(heads[p], "order_date")[:10] <= ctx.as_of.isoformat()),
-                        key=lambda p: ap._v(heads[p], "order_date"))
+        recent = sorted((p for p in sup_pos if autopilot_records._v(heads.get(p) or {}, "order_date")[:10]
+                         and autopilot_records._v(heads[p], "order_date")[:10] <= ctx.as_of.isoformat()),
+                        key=lambda p: autopilot_records._v(heads[p], "order_date"))
         history += _po_lines_of(ctx, [a for _t, a, _b in ctx.touching(
             recent[-RECENT_POS * 4:], ("PurchaseOrderLine.line_of",))])
+        # one history, each line once, oldest first: "last" is the latest of both reads
+        history = sorted({h["line"]: h for h in history}.values(),
+                         key=lambda x: (x["day"], x["po"]))
         head["supplier"] = cited(supplier, {"basis": "named by the person",
                                             "value_is_record": True})
     else:
         # never cited from history: the items' last supplier is a suggestion to confirm
         # (DEV 10-27..11-03: the inferred supplier was the PO's own 0 times of 2)
-        sups = {h["supplier"] for h in history if h["supplier"]}
+        ident = _supplier_identity(ctx, [h["supplier"] for h in history])
+        sups = {ident[h["supplier"]] for h in history if h["supplier"]}
         last = next((h for h in reversed(history) if h["supplier"]), None)
         head["supplier"] = check("name the supplier: the records do not say who to buy from"
                                  if history else "no earlier PO for the items")
@@ -359,7 +672,8 @@ def purchase_order(ctx: Any, *, supplier: str | None = None,
                 ("" if len(sups) == 1 else f" (of {len(sups)} suppliers)"),
                 "record": last["po"], "document": last["number"], "value_is_record": True}]
     vendor = head["supplier"]["value"]
-    own = [h for h in history if vendor and h["supplier"] == vendor]
+    same = _supplier_identity(ctx, [vendor]).get(vendor, frozenset()) if vendor else frozenset()
+    own = [h for h in history if h["supplier"] in same]
     if named:
         wanted = [(code, recs) for code, recs in named.items()]
     else:
@@ -367,7 +681,7 @@ def purchase_order(ctx: Any, *, supplier: str | None = None,
                                                               if x["po"] == p))[-RECENT_POS:]
         codes = ctx.read(sorted({h["item"] for h in own if h["po"] in pos and h["item"]}),
                          ("code",))
-        wanted = [(ap._v(r, "code") or o, [o]) for o, r in sorted(codes.items())]
+        wanted = [(autopilot_records._v(r, "code") or o, [o]) for o, r in sorted(codes.items())]
     lines = []
     for code, recs in wanted:
         mine = [h for h in own if h["item"] in recs]
@@ -375,13 +689,10 @@ def purchase_order(ctx: Any, *, supplier: str | None = None,
         item = cited(code, {"records": list(recs)[:4]} if named else
                      {"basis": "on the supplier's latest POs", "record": last["po"]
                       if last else None})
-        price = cited(last["price"], {"basis": "last price from this supplier",
-                                      "record": last["po"], "document": last["number"],
-                                      "date": last["day"], "currency": last["currency"],
-                                      "unit": last["unit"]}) \
-            if last and last["price"] and last["currency"] and last["unit"] else \
-            check("no earlier price from this supplier" if not (last and last["price"]) else
-                  "the last price states no currency or unit")
+        hint, why = _price_hint(mine)
+        price = check(why)
+        if hint:
+            price["suggestions"] = [hint]
         demand = _open_demand(ctx, recs[0]) if recs else None
         quantity = check("stock on hand is not in the records: confirm the quantity")
         quantity["suggestions"] = [s for s in (
@@ -390,9 +701,13 @@ def purchase_order(ctx: Any, *, supplier: str | None = None,
             {"value": last["quantity"], "unit": last["unit"], "basis": "last ordered",
              "record": last["po"], "document": last["number"]}
             if last and last["quantity"] else None) if s]
-        lines.append({"item": item, "quantity": quantity, "unit_price": price,
-                      "unit": cited(last["unit"], {"record": last["po"]})
-                      if last and last["unit"] else check("no unit on an earlier PO line")})
+        # the unit the new PO buys in is the buyer's: the last line's unit only suggested
+        unit = check("confirm the purchase unit" if hint else "no earlier PO line states a "
+                     "unit its price is per")
+        if hint:
+            unit["suggestions"] = [{"value": hint["unit"], "basis": "unit of the last price",
+                                    "record": hint["record"], "document": hint["document"]}]
+        lines.append({"item": item, "quantity": quantity, "unit_price": price, "unit": unit})
     for name in items:
         if name.upper() not in found and name.upper().replace(" ", "") not in found:
             lines.append({"item": check(f"{name}: no item record has this number")})
@@ -462,13 +777,13 @@ def supplier_invoice(ctx: Any, *, email: str | None = None, text: str | None = N
         raise ValueError("one of email or text")
     docs = _documents(ctx, email, text)
     if email is not None:
-        sender = ap._v(ap._read(ctx.st, [email], ("sender",)).get(email) or {}, "sender") \
+        sender = autopilot_records._v(autopilot_records._read(ctx.st, [email], ("sender",)).get(email) or {}, "sender") \
             or sender
     body = "\n".join(d["text"] or "" for d in docs)[:MAX_TEXT]
     head: dict[str, Any] = {}
     address = (sender or "").lower()
-    exact = ap._party_addresses(ctx.st).get(address) or set() if address else set()
-    sups = sorted(o for side, o in (exact or (ap._parties(ctx.st, address) if address
+    exact = autopilot_events._party_addresses(ctx.st).get(address) or set() if address else set()
+    sups = sorted(o for side, o in (exact or (autopilot_events._parties(ctx.st, address) if address
                                               else set())) if side == "supplier")
     basis = "the supplier record stating the sender's address" if exact else \
         "the supplier record stating the sender's mail domain"
@@ -488,7 +803,7 @@ def supplier_invoice(ctx: Any, *, email: str | None = None, text: str | None = N
                                       "no labelled invoice date that reads one way", dates)
     totals = []
     for m in _TOTAL_LABEL.finditer(body[:40000]):
-        v = str(ap._decimal(m.group("v").replace(",", "")))
+        v = str(autopilot_records._decimal(m.group("v").replace(",", "")))
         if v not in [t[0] for t in totals]:
             totals.append((v, (m.group("cur") or "").upper() or None))
     if len({t[0] for t in totals}) == 1 and len({t[1] for t in totals}) == 1:
@@ -519,7 +834,7 @@ def supplier_invoice(ctx: Any, *, email: str | None = None, text: str | None = N
         if got:
             for ln in got:
                 src = {"document": d["name"], "cite": ln["cite"]}
-                qty = ap._decimal(ln.get("quantity"))
+                qty = autopilot_records._decimal(ln.get("quantity"))
                 lines.append({
                     "text": ln["text"],
                     "quantity": cited(str(qty), src) if qty is not None and qty > 0
@@ -551,38 +866,67 @@ FINANCIAL = ("An AP invoice is a financial document: the Workbench never raises 
              "one, so it stays a pre-fill you key yourself.")
 
 
-def _bc_lines(ctx: Any, rows: Sequence[Mapping[str, Any]], kind: str
+def _party_currency(ctx: Any, records: Sequence[str]) -> str | None:
+    """The one currency the party's records state (its BC twin included), else None
+    (none stated, or its records disagree)."""
+    from ontology.units import currency_code
+    rows = ctx.read(sorted(set(records)), ("currency",))
+    codes = {currency_code(ap._v(r, "currency"))[0] for r in rows.values()
+             if ap._v(r, "currency")}
+    return next(iter(codes)) if len(codes) == 1 and None not in codes else None
+
+
+def _bc_lines(ctx: Any, rows: Sequence[Mapping[str, Any]], kind: str,
+              party_currency: str | None = None
               ) -> tuple[list[dict[str, Any]], list[str]]:
-    """The order's lines for BC from the pre-fill's cited lines: every line's item and
-    quantity cited (else the whole entry waits: which lines are not), the item as its own
-    BC item record's number (the cited item record or its ``same_record_as`` BC twin,
-    exactly one), the price only when cited, the document's line text as description."""
+    """The order's lines for BC from the pre-fill's settled lines: every line's item,
+    quantity and price cited or confirmed by the person (``SETTLED``; else the whole entry
+    waits: which lines are not; a line sent without a price takes BC's item default, a
+    price nobody stated), a confirmed price in the party's own currency
+    (``party_currency``: unknown holds it too), the item as its own BC item record's
+    number (the item record or its ``same_record_as`` BC twin, exactly one), the
+    document's line text as description."""
     price_field = "unitPrice" if kind == "order" else "directUnitCost"
     out, why = [], []
     if not rows:
         return [], ["The pre-fill has no lines, and BC takes no order without one."]
     for n, ln in enumerate(rows, 1):
         item, qty = ln.get("item") or {}, ln.get("quantity") or {}
-        if item.get("status") != "cited" or qty.get("status") != "cited":
+        if item.get("status") not in SETTLED or qty.get("status") not in SETTLED:
             why.append(f"Line {n}: its item or quantity is a check: settle it first.")
             continue
+        price = ln.get("unit_price") or {}
+        value = autopilot_records._decimal(price.get("value")) if price.get("status") in SETTLED else None
+        if value is None or not value.is_finite() or value < 0:
+            why.append(f"Line {n}: its price is a check: enter or confirm it first "
+                       "(BC would otherwise use the item's default price).")
+            continue
+        if price.get("status") == "confirmed":
+            said = str((price.get("source") or {}).get("currency") or "")
+            if party_currency is None:
+                why.append(f"Line {n}: its price was confirmed in {said or 'no currency'}, "
+                           "but the records state no single currency for the party: "
+                           "check it in BC.")
+                continue
+            if said != party_currency:
+                why.append(f"Line {n}: its price was confirmed in {said or 'no currency'}, "
+                           f"but the party is billed in {party_currency}.")
+                continue
         recs = [str(r) for r in ((item.get("source") or {}).get("records") or ())
                 if str(r).startswith("Product:")]
         twins = set(recs) | {o for o in ctx.linked_many(recs, ("Product.same_record_as",))
                              if o.startswith("Product:")} if recs else set()
         bc = sorted(o for o in twins if o.startswith("Product:bc.items:"))
-        codes = {ap._v(r, "code") for r in ctx.read(bc, ("code",)).values()} - {""}
+        codes = {autopilot_records._v(r, "code") for r in ctx.read(bc, ("code",)).values()} - {""}
         if len(codes) != 1:
             why.append(f"Line {n}: no single BC item record is the cited item.")
             continue
         line: dict[str, Any] = {"lineType": "Item", "lineObjectNumber": next(iter(codes)),
                                 "quantity": str(qty["value"]), "records": [*recs, *bc]}
-        price = ln.get("unit_price") or {}
-        if price.get("status") == "cited":
-            line[price_field] = str(price["value"])
-            src = price.get("source") or {}
-            line["records"] += [str(r) for r in (src.get("records") or ()) if r] + \
-                ([str(src["record"])] if src.get("record") else [])
+        line[price_field] = format(value, "f")
+        src = price.get("source") or {}
+        line["records"] += [str(r) for r in (src.get("records") or ()) if r] + \
+            ([str(src["record"])] if src.get("record") else [])
         if ln.get("text"):
             line["description"] = str(ln["text"]).strip()[:100]
         out.append(line)
@@ -607,10 +951,10 @@ def bc_header(ctx: Any, prefill: Mapping[str, Any], kind: str) -> dict[str, Any]
     otype, twin_link, binding, entity_set, operation, number_field, field = BC_PARTY[kind]
     head = prefill.get("header") or {}
     party = head.get(field) or {}
-    if party.get("status") != "cited":
+    if party.get("status") not in SETTLED:
         return {"refused": [f"The {field} is a check, not a cited value: settle it first."]}
     src = party.get("source") or {}
-    if field == "supplier":
+    if field == "supplier" and party.get("status") == "cited":
         records = [str(party["value"])]
     else:
         records = [str(r) for r in (src.get("records") or ()) if r]
@@ -636,10 +980,11 @@ def bc_header(ctx: Any, prefill: Mapping[str, Any], kind: str) -> dict[str, Any]
     except ValueError:
         return {"refused": [f"The BC {entity_set[:-1]} record has no BC handle."]}
     twin = ctx.read([bc[0]], ("erp_code", "code")).get(bc[0]) or {}
-    number = ap._v(twin, "erp_code") or ap._v(twin, "code")
+    number = autopilot_records._v(twin, "erp_code") or autopilot_records._v(twin, "code")
     if got_set != entity_set or not number:
         return {"refused": [f"The BC {entity_set[:-1]} record has no number."]}
-    lines, why = _bc_lines(ctx, prefill.get("lines") or (), kind)
+    lines, why = _bc_lines(ctx, prefill.get("lines") or (), kind,
+                           _party_currency(ctx, [*records, bc[0]]))
     if why:
         return {"refused": why}
     line_records = [r for ln in lines for r in ln.pop("records")]
@@ -652,13 +997,21 @@ def bc_header(ctx: Any, prefill: Mapping[str, Any], kind: str) -> dict[str, Any]
         s = (f.get("source") or {}) if f.get("status") == "cited" else {}
         if s.get("handle"):
             citations.append(str(s["handle"]))
+    # who entered or confirmed which value: the approver sees it was a person, not a record
+    confirmed = [f for f in [party, *(f for ln in prefill.get("lines") or ()
+                                      for k, f in ln.items() if k != "text")]
+                 if isinstance(f, Mapping) and f.get("status") == "confirmed"]
+    by = sorted({str((f.get("source") or {}).get("confirmed_by") or "the person")
+                 for f in confirmed})
     said = (f"New {'sales' if kind == 'order' else 'purchase'} order header for "
             f"{number}" + (f", customer PO {payload['externalDocumentNumber']}"
                            if "externalDocumentNumber" in payload else "") +
             f", {len(lines)} line{'s' if len(lines) != 1 else ''}, from the pre-fill's "
-            f"cited fields only ({src.get('basis') or 'named'}); each line's quantity is "
-            f"in the unit the document states (its text is the line description): check "
-            f"the unit of measure.")
+            f"cited fields ({src.get('basis') or 'named'})" +
+            (f" and {len(confirmed)} value{'s' if len(confirmed) != 1 else ''} entered or "
+             f"confirmed by {', '.join(by)}" if confirmed else " only") +
+            "; each line's quantity is in the unit the document states (its text is the "
+            "line description): check the unit of measure.")
     return {"operation": operation, "entity_set": entity_set, "payload": payload,
             "party": {"object_id": bc[0], "bc_id": bc_id.lower(), "number": number},
             "records": sorted(set(records) | {bc[0]} | set(line_records)),
@@ -699,12 +1052,12 @@ def accuracy(prefill: Mapping[str, Any], truth: Mapping[str, Any]) -> dict[str, 
         match = [t for t in keyed if norm(t[0]) == norm(item["value"])] \
             if item["status"] == "cited" else []
         score("item", item, bool(match))
-        qty = ap._decimal(ln["quantity"]["value"])
-        score("quantity", ln["quantity"], any(ap._decimal(t[1]) == qty for t in match)
+        qty = autopilot_records._decimal(ln["quantity"]["value"])
+        score("quantity", ln["quantity"], any(autopilot_records._decimal(t[1]) == qty for t in match)
               if match else None)
-        price = ap._decimal(ln["unit_price"]["value"])
+        price = autopilot_records._decimal(ln["unit_price"]["value"])
         score("unit_price", ln["unit_price"], any(
-            (p := ap._decimal(t[2])) is not None and price is not None and
+            (p := autopilot_records._decimal(t[2])) is not None and price is not None and
             p.quantize(Decimal("0.01")) == price.quantize(Decimal("0.01")) for t in match)
             if match else None)
     out["lines_keyed"] = len(keyed)
@@ -725,7 +1078,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     p = argparse.ArgumentParser(prog="python3 -m operating.entry_assist")
     p.add_argument("what", choices=("order",))
     p.add_argument("--store", required=True)
-    p.add_argument("--source", choices=ap.STORE_SOURCES, default=None)
+    p.add_argument("--source", choices=autopilot_reading.STORE_SOURCES, default=None)
     p.add_argument("--email", default=None)
     p.add_argument("--text-file", default=None)
     p.add_argument("--sender", default=None)
@@ -735,7 +1088,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     st = ap._store(a.store, a.source)
     try:
         from datetime import date
-        ctx = ap.Ctx(st, date.today(), time.monotonic() + 120, ())
+        ctx = autopilot_handlers.Ctx(st, date.today(), time.monotonic() + 120, ())
         text = Path(a.text_file).read_text(encoding="utf-8", errors="replace") \
             if a.text_file else None
         got = order_entry(ctx, email=a.email, text=text, sender=a.sender)

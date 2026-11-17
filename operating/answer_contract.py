@@ -4,12 +4,13 @@ session's answer with these exactly as the scorer does (``evals.score`` uses the
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import date
 from decimal import (ROUND_HALF_EVEN, ROUND_HALF_UP, Context, Decimal, InvalidOperation,
                      localcontext)
 import json
 import re
-from typing import Any, Mapping, Sequence
+from typing import Any, Hashable, Mapping, Sequence
 
 
 ANSWER_FORMAT = "plx-eval-answer/v1"
@@ -40,6 +41,8 @@ MAX_CITATIONS = 8
 # both reach one verdict on every value. ``avg``/``min``/``max`` take 1 to
 # ``MAX_CALCULATION_INPUTS`` inputs; ``difference`` (``x0 - x1``) and ``ratio``
 # (``x0 / x1``) exactly two, in order.
+# Each input carries its ``Dimension`` (money, currency, unit); an op over inputs of
+# more than one is refused (``MixedDimensions``), never computed.
 STATISTIC_OPS = ("avg", "min", "max")
 PAIR_OPS = ("difference", "ratio")
 NUMERIC_OPS = ("sum", *STATISTIC_OPS, *PAIR_OPS)
@@ -52,8 +55,13 @@ ROUNDED_OPS = ("avg", "ratio")
 # ``day`` the calculation names to its one cited date (x0 - day), a day the question
 # writes in full or today, never one of the answer's own.
 DAYS_OP = "days"
+# ``add_days``: the calendar day a cited whole number of days after a cited date (x0 +
+# x1), or after a ``day`` the calculation names (day + x0: a day the question writes in
+# full or today); its value is that ISO day (``operating.claim_checks._check_add_days``).
+ADD_DAYS_OP = "add_days"
+DAY_OPS = (DAYS_OP, ADD_DAYS_OP)
 CALCULATION_OPS = ("sum", "count", "count_distinct", "equal", "expression", *STATISTIC_OPS,
-                   *PAIR_OPS, DAYS_OP)
+                   *PAIR_OPS, *DAY_OPS)
 
 
 MAX_CALCULATION_INPUTS = 100  # the oracle's chain cap (evals/oracle/families.py MAX_CHAIN)
@@ -68,17 +76,82 @@ def _places(number: Decimal) -> int:
     return max(0, -exponent) if isinstance(exponent, int) else 0
 
 
-def computed_value(op: str, numbers: Sequence[Decimal], percent: bool = False) -> Decimal:
+@dataclass(frozen=True)
+class Dimension:
+    """What one input of a ``NUMERIC_OPS`` op measures, as its caller read it for that
+    cell: ``money`` (a tool returned the cell as money, or the schema types its column
+    money), its ``currency`` (an ISO 4217 code; None when no currency is known), its
+    ``unit`` (any hashable key the caller folds one way for every input, e.g. ``kg``;
+    None, empty or ``1`` for a pure number). A pure number is ``Dimension()``."""
+    money: bool = False
+    currency: str | None = None
+    unit: Hashable = None
+
+    def key(self) -> tuple[bool, str | None, Hashable]:
+        unit = None if self.unit in (None, "", "1", (), frozenset()) else self.unit
+        currency = self.currency.strip().upper() if isinstance(self.currency, str) \
+            and self.currency.strip() else None
+        return self.money or currency is not None, currency, unit
+
+
+class MixedDimensions(ValueError):
+    """An op whose inputs measure more than one thing (two currencies, two units, money
+    beside a plain number) or money in no known currency: ``code`` is
+    ``mixed_currency``, ``missing_currency``, ``money_with_non_money`` or ``mixed_unit``,
+    ``reason`` the words a reader is shown."""
+
+    def __init__(self, code: str, reason: str) -> None:
+        super().__init__(f"{code}: {reason}")
+        self.code, self.reason = code, reason
+
+
+def dimension_problem(op: str, dimensions: Sequence[Dimension]) -> MixedDimensions | None:
+    """Why the inputs of a ``NUMERIC_OPS`` op cannot combine (None: they share one
+    dimension). Every op takes one dimension: a sum or an average of 10 USD and 10 CAD
+    is no amount, a min or max compares nothing, a difference subtracts nothing and a
+    ratio's currency or unit cancels only when it is the same one. Money whose currency
+    is not known never combines (it is refused, never taken to be the other inputs')."""
+    keys = [dimension.key() for dimension in dimensions]
+    if any(money for money, _currency, _unit in keys) and \
+            not all(money for money, _currency, _unit in keys):
+        return MixedDimensions("money_with_non_money",
+                               f"the {op} combines money with a value that is not money")
+    if any(money and currency is None for money, currency, _unit in keys):
+        return MixedDimensions("missing_currency",
+                               f"the {op} reads money whose currency is not known")
+    currencies = sorted({currency for _money, currency, _unit in keys if currency})
+    if len(currencies) > 1:
+        return MixedDimensions("mixed_currency", f"the {op} combines money in "
+                               + " and ".join(currencies))
+    units = {unit for _money, _currency, unit in keys}
+    if len(units) > 1:
+        shown = sorted(str(unit) if unit is not None else "no unit" for unit in units)
+        return MixedDimensions("mixed_unit", f"the {op} combines values in "
+                               + " and ".join(shown))
+    return None
+
+
+def computed_value(op: str, numbers: Sequence[Decimal], percent: bool = False, *,
+                   dimensions: Sequence[Dimension]) -> Decimal:
     """The exact value of a ``NUMERIC_OPS`` op over its inputs' numbers (Decimal, in input
     order; at 50 significant digits where a quotient does not terminate): ``sum``,
     ``avg`` (sum / count), ``min``/``max`` (one input's value), ``difference`` (x0 - x1),
-    ``ratio`` (x0 / x1; times 100 when stated as a ``percent``). Raises
-    ``ZeroDenominator`` for a ratio over zero and ``ValueError`` for anything else it
-    cannot compute (no inputs, a pair op without two, an unknown op)."""
+    ``ratio`` (x0 / x1; times 100 when stated as a ``percent``). ``dimensions`` holds
+    each input's ``Dimension`` in the same order (the caller's read of that cell, never
+    left out): inputs of more than one raise ``MixedDimensions`` (``dimension_problem``).
+    Raises ``ZeroDenominator`` for a ratio over zero and ``ValueError`` for anything else
+    it cannot compute (no inputs, a pair op without two, a dimension per input missing,
+    an unknown op)."""
     numbers = list(numbers)
+    dimensions = list(dimensions)
     if op not in NUMERIC_OPS or not numbers or (op in PAIR_OPS and len(numbers) != 2) \
-            or any(not isinstance(n, Decimal) or not n.is_finite() for n in numbers):
+            or any(not isinstance(n, Decimal) or not n.is_finite() for n in numbers) \
+            or len(dimensions) != len(numbers) \
+            or any(not isinstance(d, Dimension) for d in dimensions):
         raise ValueError(f"not_computable:{op}")
+    problem = dimension_problem(op, dimensions)
+    if problem is not None:
+        raise problem
     with localcontext(Context(prec=50, rounding=ROUND_HALF_EVEN)):
         if op == "sum":
             return sum(numbers, Decimal(0))
@@ -95,10 +168,11 @@ def computed_value(op: str, numbers: Sequence[Decimal], percent: bool = False) -
         return numbers[0] / numbers[1] * (100 if percent else 1)
 
 
-def computed_claim(op: str, claimed: Any, numbers: Sequence[Decimal], percent: bool = False
-                   ) -> tuple[bool, Decimal]:
+def computed_claim(op: str, claimed: Any, numbers: Sequence[Decimal], percent: bool = False,
+                   *, dimensions: Sequence[Dimension]) -> tuple[bool, Decimal]:
     """(holds, the value as recomputed) of a claimed value (a Decimal, None for no number)
-    of a ``NUMERIC_OPS`` op, from the inputs' re-read numbers (``computed_value``; its errors propagate).
+    of a ``NUMERIC_OPS`` op, from the inputs' re-read numbers and their ``dimensions``
+    (``computed_value``; its errors propagate, ``MixedDimensions`` included).
 
     ``sum``, ``min``, ``max`` and ``difference`` hold only exactly. ``avg`` and ``ratio``
     hold exactly, or rounded: the recomputed value rounded half-up (away from zero) to the
@@ -109,7 +183,7 @@ def computed_claim(op: str, claimed: Any, numbers: Sequence[Decimal], percent: b
     percent at least 0 (33). The recomputed value returned is the claimed one when it
     holds, else the exact value rounded half-up to the claim's decimals or the floor,
     whichever is finer (what the claim should have written)."""
-    exact = computed_value(op, numbers, percent)
+    exact = computed_value(op, numbers, percent, dimensions=dimensions)
     number = claimed if isinstance(claimed, Decimal) and claimed.is_finite() else None
     if op not in ROUNDED_OPS:
         return number is not None and number == exact, exact
@@ -220,7 +294,7 @@ def calculation_problem(calc: Any, citations: Any = None) -> str | None:
     """Why an answer value's ``calculation`` is malformed (None: well formed). A value
     states its inputs in the calculation, never also in ``citations``."""
     expression = isinstance(calc, Mapping) and calc.get("op") == "expression"
-    from_day = isinstance(calc, Mapping) and calc.get("op") == DAYS_OP and "day" in calc
+    from_day = isinstance(calc, Mapping) and calc.get("op") in DAY_OPS and "day" in calc
     if not isinstance(calc, Mapping) or set(calc) - {"op", "inputs"} - (
             {"expression"} if expression else set()) - ({"day"} if from_day else set()) \
             or calc.get("op") not in CALCULATION_OPS:
@@ -236,7 +310,7 @@ def calculation_problem(calc: Any, citations: Any = None) -> str | None:
     if not isinstance(inputs, list) or not (
             2 if calc["op"] == "equal" else 1) <= len(inputs) <= MAX_CALCULATION_INPUTS \
             or (calc["op"] in PAIR_OPS and len(inputs) != 2) \
-            or (calc["op"] == DAYS_OP and len(inputs) != (1 if from_day else 2)):
+            or (calc["op"] in DAY_OPS and len(inputs) != (1 if from_day else 2)):
         return "inputs"
     for entry in inputs:
         if expression and not (isinstance(entry, Mapping) and isinstance(entry.get("value"),

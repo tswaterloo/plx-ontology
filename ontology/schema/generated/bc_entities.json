@@ -2805,6 +2805,224 @@
    ]
   },
   {
+   "id": "RelBcSalesShipmentLines",
+   "description": "BC API v2.0 entity set salesShipmentLines (entity type salesShipmentLine), one record per company and id; generated from the pinned $metadata.",
+   "availability": {
+    "state": "served"
+   },
+   "bindings": [
+    {
+     "id": "gen.bc.sales_shipment_lines",
+     "source": "bc",
+     "relation": "salesShipmentLines",
+     "key": [
+      "id"
+     ],
+     "lineage": {
+      "from_capture": "bc_company"
+     },
+     "evidence": [
+      {
+       "kind": "workbench_code",
+       "path": "ontology/schema/generated/meta/bc_metadata.json",
+       "note": "EntitySet salesShipmentLines (company scope, entity type salesShipmentLine) (pinned $metadata, evidence_mode live-capture, sha256 09a82605df00)"
+      },
+      {
+       "kind": "workbench_code",
+       "path": "ontology/schema/generated/meta/bc_metadata.json",
+       "note": "salesShipmentLine Key id (pinned $metadata, evidence_mode live-capture, sha256 09a82605df00)"
+      }
+     ],
+     "note": "Lineage bc_<book> of the capture company; record key <company>/<id> (integrations/bc_read.py BcCapture)."
+    }
+   ],
+   "properties": [
+    {
+     "name": "id",
+     "value_type": "text",
+     "sources": [
+      {
+       "binding": "gen.bc.sales_shipment_lines",
+       "path": "id",
+       "parser": "as_is"
+      }
+     ]
+    },
+    {
+     "name": "document_id",
+     "value_type": "text",
+     "sources": [
+      {
+       "binding": "gen.bc.sales_shipment_lines",
+       "path": "documentId",
+       "parser": "as_is"
+      }
+     ]
+    },
+    {
+     "name": "document_no",
+     "value_type": "text",
+     "sources": [
+      {
+       "binding": "gen.bc.sales_shipment_lines",
+       "path": "documentNo",
+       "parser": "as_is"
+      }
+     ]
+    },
+    {
+     "name": "sequence",
+     "value_type": "integer",
+     "sources": [
+      {
+       "binding": "gen.bc.sales_shipment_lines",
+       "path": "sequence",
+       "parser": "integer_text"
+      }
+     ]
+    },
+    {
+     "name": "line_type",
+     "value_type": "text",
+     "description": "BC enum salesLineType: _x0020_, G_x002F_L_x0020_Account, Item, Resource, Fixed_x0020_Asset, Charge_x0020__x0028_Item_x0029_, Allocation_x0020_Account, Service_x0020_Object",
+     "sources": [
+      {
+       "binding": "gen.bc.sales_shipment_lines",
+       "path": "lineType",
+       "parser": "as_is"
+      }
+     ]
+    },
+    {
+     "name": "line_object_number",
+     "value_type": "text",
+     "sources": [
+      {
+       "binding": "gen.bc.sales_shipment_lines",
+       "path": "lineObjectNumber",
+       "parser": "as_is"
+      }
+     ]
+    },
+    {
+     "name": "description",
+     "value_type": "text",
+     "sources": [
+      {
+       "binding": "gen.bc.sales_shipment_lines",
+       "path": "description",
+       "parser": "as_is"
+      }
+     ]
+    },
+    {
+     "name": "description2",
+     "value_type": "text",
+     "sources": [
+      {
+       "binding": "gen.bc.sales_shipment_lines",
+       "path": "description2",
+       "parser": "as_is"
+      }
+     ]
+    },
+    {
+     "name": "unit_of_measure_code",
+     "value_type": "text",
+     "sources": [
+      {
+       "binding": "gen.bc.sales_shipment_lines",
+       "path": "unitOfMeasureCode",
+       "parser": "as_is"
+      }
+     ]
+    },
+    {
+     "name": "unit_price",
+     "value_type": "decimal",
+     "sources": [
+      {
+       "binding": "gen.bc.sales_shipment_lines",
+       "path": "unitPrice",
+       "parser": "decimal_text"
+      }
+     ],
+     "markings": [
+      "finance"
+     ]
+    },
+    {
+     "name": "quantity",
+     "value_type": "decimal",
+     "sources": [
+      {
+       "binding": "gen.bc.sales_shipment_lines",
+       "path": "quantity",
+       "parser": "decimal_text"
+      }
+     ]
+    },
+    {
+     "name": "discount_percent",
+     "value_type": "decimal",
+     "sources": [
+      {
+       "binding": "gen.bc.sales_shipment_lines",
+       "path": "discountPercent",
+       "parser": "decimal_text"
+      }
+     ]
+    },
+    {
+     "name": "tax_percent",
+     "value_type": "decimal",
+     "sources": [
+      {
+       "binding": "gen.bc.sales_shipment_lines",
+       "path": "taxPercent",
+       "parser": "decimal_text"
+      }
+     ]
+    },
+    {
+     "name": "shipment_date",
+     "value_type": "date",
+     "sources": [
+      {
+       "binding": "gen.bc.sales_shipment_lines",
+       "path": "shipmentDate",
+       "parser": "iso_date"
+      }
+     ]
+    }
+   ],
+   "identity_keys": [
+    {
+     "name": "source_key",
+     "properties": [
+      "id"
+     ],
+     "tier": "verified",
+     "unique": true,
+     "scope": "within_binding",
+     "evidence": [
+      {
+       "kind": "workbench_code",
+       "path": "ontology/schema/generated/meta/bc_metadata.json",
+       "note": "salesShipmentLine Key id (pinned $metadata, evidence_mode live-capture, sha256 09a82605df00)"
+      }
+     ]
+    }
+   ],
+   "evidence": [
+    {
+     "kind": "workbench_code",
+     "path": "ontology/schema/generated/meta/bc_metadata.json",
+     "note": "EntitySet salesShipmentLines (company scope, entity type salesShipmentLine) (pinned $metadata, evidence_mode live-capture, sha256 09a82605df00)"
+    }
+   ]
+  },
+  {
    "id": "RelBcUnitsOfMeasure",
    "description": "BC API v2.0 entity set unitsOfMeasure (entity type unitOfMeasure), one record per company and id; generated from the pinned $metadata.",
    "availability": {
@@ -3749,6 +3967,38 @@
        "kind": "workbench_code",
        "path": "ontology/schema/generated/meta/bc_metadata.json",
        "note": "salesQuote -> dimensionValue: NavigationProperty dimensionValue ReferentialConstraint (pinned $metadata, evidence_mode live-capture, sha256 09a82605df00)"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "RelBcSalesShipmentLines.sales_shipment",
+   "from": "RelBcSalesShipmentLines",
+   "to": "Shipment",
+   "name": "sales_shipment",
+   "reverse_name": "sales_shipment_lines",
+   "cardinality": "N:1",
+   "description": "salesShipmentLines.documentId = salesShipments.id (contained salesShipment.salesShipmentLines, the line names its header by documentId); compared within one BC company.",
+   "bindings": [
+    {
+     "kind": "fk",
+     "tier_ceiling": "verified",
+     "from_binding": "gen.bc.sales_shipment_lines",
+     "to_binding": "bc.sales_shipments",
+     "pairs": [
+      {
+       "from": "documentId",
+       "to": "id",
+       "compare": "identifier",
+       "identifier_kind": "bc_system_id"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "workbench_code",
+       "path": "ontology/schema/generated/meta/bc_metadata.json",
+       "note": "salesShipmentLine -> salesShipment: contained salesShipment.salesShipmentLines, the line names its header by documentId (pinned $metadata, evidence_mode live-capture, sha256 09a82605df00)"
       }
      ]
     }

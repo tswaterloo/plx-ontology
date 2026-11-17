@@ -165,8 +165,12 @@ class LayerDocumentWorkersTests(unittest.TestCase):
         """No module the derivation code covers imports the workers' entry point, so
         running the layer through it keeps every field a build kept before."""
         from ontology.project import derivation_modules
-        self.assertIn("ontology.schema_migrate", derivation_modules())
-        self.assertNotIn("ontology.unit_layer_workers", derivation_modules())
+        # the closure is the derivation roots' (ontology.project among them), not the
+        # build's whole import graph (schema_migrate left it with the 45-module scope)
+        modules = derivation_modules()
+        self.assertIn("ontology.project", modules)
+        self.assertNotIn("ontology.schema_migrate", modules)
+        self.assertNotIn("ontology.unit_layer_workers", modules)
 
 if __name__ == "__main__":
     unittest.main()

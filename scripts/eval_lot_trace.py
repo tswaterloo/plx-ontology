@@ -25,10 +25,11 @@ Measured through the served host (``plx.around``), as ``--principal`` reads it:
   (``SHORTFALL_CAUSES``) of the path that went deepest, so each hop's causes sum to
   ``certificates_linked - hops[hop]``; ``hop_shortfall_at``: per hop and path, the link type
   each such certificate stopped at and why (``ReceiptLine.line_of source_column_empty``: the
-  FM line's ``idreceipt`` is null as served; ``ReceiptLine.for_item no_binding``: an FM
-  line binds no product). A cause is read from the served gap and, for a ``no_match``, from
-  the record's key columns of the link as ``plx.read`` serves the reader the row; what
-  cannot be read is ``unknown``, never a cause;
+  FM line's ``idreceipt`` and ``idpogenitem`` are null as served; ``ReceiptLine.for_item
+  source_column_empty``: an FM line names no supplier item, ``idrawsupp``). A cause is
+  read from the served gap and, for a ``no_match``, from the record's key columns of each
+  binding of the link that applies to the row, as ``plx.read`` serves the reader the row;
+  what cannot be read is ``unknown``, never a cause;
 * ``samples``: up to 3 linked certificates (in a hashed order, never by id) as the lines'
   sources (``gold`` / ``fm``) and one boolean per hop;
 * ``leaks``: what ``--withheld-principal`` (the Portal relations granted, no SharePoint
@@ -161,17 +162,35 @@ class _Walk:
         return self._key_columns(start, link_type)
 
     def _key_columns(self, start: str, link_type: str) -> str:
-        """``source_column_empty`` when every key column of the link's binding on
-        ``start``'s record is null or blank as the reader is served the row, else
-        ``target_not_held``; ``unknown`` when that cannot be read."""
+        """``source_column_empty`` when, on ``start``'s record as the reader is served the
+        row, every binding of the link from its source that applies to the row (a declared
+        ``absent``/``present`` row test holds) has every key column null or blank;
+        ``target_not_held`` when an applicable direct binding states its key; ``unknown``
+        when that cannot be read (a column not served, another row test, a ``via``
+        binding whose own key the record states: the record between is not read)."""
         binding = start.split(":", 2)[1]
         declared = [b for b in self.schema.link_types[link_type].get("bindings", ())
                     if b.get("from_binding") == binding]
-        if len(declared) != 1 or "via" in declared[0]:
+        if not declared:
             return "unknown"
-        columns = [pair.get("from") for pair in declared[0].get("pairs") or ()]
-        if not columns or not all(isinstance(c, str) and c for c in columns):
-            return "unknown"
+        plans: list[tuple[list[str], list[Any], bool]] = []
+        for decl in declared:
+            via = decl.get("via")
+            if via is not None:
+                if not isinstance(via, Mapping):
+                    return "unknown"
+                pairs = via.get("from_pairs")
+            else:
+                pairs = decl.get("pairs")
+            columns = [pair.get("from") if isinstance(pair, Mapping) else None
+                       for pair in pairs or ()]
+            if not columns or not all(isinstance(c, str) and c for c in columns):
+                return "unknown"
+            where = list(decl.get("where") or ())
+            if not all(isinstance(w, Mapping) and w.get("op") in ("absent", "present")
+                       and isinstance(w.get("path"), str) and w["path"] for w in where):
+                return "unknown"
+            plans.append((columns, where, via is not None))
         handles = [r[0] for r in self.conn.execute(
             "SELECT l1_handle FROM object_versions WHERE object_id = ? AND superseded_at IS "
             "NULL", (start,))]
@@ -192,11 +211,27 @@ class _Walk:
                 break
         else:
             return "unknown"
-        keys = [f"row.{column}" for column in columns]
-        if not all(key in fields for key in keys):
+        causes: set[str] = set()
+        for columns, where, via in plans:
+            tested = [f"row.{w['path']}" for w in where]
+            if not all(key in fields for key in tested):
+                return "unknown"
+            if not all(_blank(fields[f"row.{w['path']}"]) == (w["op"] == "absent")
+                       for w in where):
+                continue   # the row test excludes this row: the binding does not apply
+            keys = [f"row.{column}" for column in columns]
+            if not all(key in fields for key in keys):
+                return "unknown"
+            if all(_blank(fields[k]) for k in keys):
+                causes.add("source_column_empty")
+            else:
+                causes.add("unknown" if via else "target_not_held")
+        if not causes:
             return "unknown"
-        return "source_column_empty" if all(_blank(fields[k]) for k in keys) \
-            else "target_not_held"
+        for cause in SHORTFALL_CAUSES:   # least conclusive first
+            if cause in causes:
+                return cause
+        return "unknown"
 
     def path(self, start: str, path: tuple[str, ...]
              ) -> tuple[bool, int, list[tuple[str, str]]]:

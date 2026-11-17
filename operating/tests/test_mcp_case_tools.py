@@ -20,7 +20,8 @@ import unittest
 from unittest import mock
 
 from integrations.document_understanding import ExtractedDocument
-from integrations.source_mirror import AUDIENCE_SCHEMA, MirrorError
+from integrations.source_mirror import AUDIENCE_SCHEMA
+from integrations.source_mirror_values import MirrorError
 from integrations.tests.test_source_mirror import BASE, KEY, Clock, FakeWorkbench
 from integrations.workbench_read_api import WorkbenchReadApiClient
 from ontology.core import Actor, ValidationError
@@ -34,10 +35,11 @@ from operating.tests.test_session_identity import OID_A
 from operating.cases import CitationUnresolvable
 from operating import action_path as ap
 from operating.session_identity import CHANNEL_MCP, fixture_session
-from operating.claim_checks import returned_evidence
-from operating.mcp_server import (CASE_ONLY_INSTRUCTIONS, CASE_RUNTIME_TOOLS,
-                                  DEFAULT_ORIGINAL_TEXT_CHARS, HOST_READS, MAX_RESULT_BYTES,
-                                  TOOLS, MCPServer)
+from operating.claim_checks_values import returned_evidence
+from operating.mcp_server import MCPServer
+from operating.mcp_server_catalog import (CASE_ONLY_INSTRUCTIONS, CASE_RUNTIME_TOOLS, HOST_READS,
+                                          TOOLS)
+from operating.mcp_server_evidence import DEFAULT_ORIGINAL_TEXT_CHARS, MAX_RESULT_BYTES
 from operating.tests.test_action_path import (EMPLOYEE, EMPLOYEE_OID, OPERATOR, ROSTER,
                                               STEPHEN, VINCE, VINCE_OID)
 

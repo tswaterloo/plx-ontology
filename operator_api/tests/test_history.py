@@ -3,10 +3,10 @@ cursor and the record as recorded on a date; what the reader may not see is said
 words with no number, and a record they cannot read is not found."""
 from __future__ import annotations
 
-import json
 import unittest
 
 from operator_api import history
+from operator_api.errors import RecordNotFound, RecordReadFailed
 
 OID = "SalesOrder:portal.app_sales_order:so-1"
 HANDLE = "api://public.app_sales_order/so-1@2"
@@ -68,9 +68,13 @@ class HistoryTabTests(unittest.TestCase):
             "completeness": {}}), OID, None, open_url=url)
         self.assertTrue(out.partial)
         self.assertNotRegex(out.message, r"\d")
-        with self.assertRaises(KeyError):
+        with self.assertRaises(RecordNotFound):
             history.history(View({"error": {"code": "object_not_found"}}), OID, None,
                             open_url=url)
+        # serve-1115d V-19: a failed read (or a card with no history) is a 500, not "not found"
+        for card in ({"error": {"code": "store_unavailable"}}, {"object": {}}):
+            with self.assertRaises(RecordReadFailed):
+                history.history(View(card), OID, None, open_url=url)
         with self.assertRaises(ValueError):   # a cursor not of this record
             history.history(View({"error": {"code": "invalid_input"}}), OID, "h1.x",
                             open_url=url)
@@ -92,8 +96,11 @@ class HistoryTabTests(unittest.TestCase):
         for bad in ("yesterday", "2099-13-40", "2099-01-03T10:00"):
             with self.subTest(bad), self.assertRaises(ValueError):
                 history.as_of(view, OID, bad)
-        with self.assertRaises(KeyError):
-            history.as_of(View({"error": {"code": "object_not_found"}}), OID, "2099-01-03")
+        for code in ("object_not_found", "not_known_at"):   # not recorded then: the same
+            with self.assertRaises(RecordNotFound):
+                history.as_of(View({"error": {"code": code}}), OID, "2099-01-03")
+        with self.assertRaises(RecordReadFailed):
+            history.as_of(View({"error": {"code": "contract_violation"}}), OID, "2099-01-03")
 
 
 if __name__ == "__main__":

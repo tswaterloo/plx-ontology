@@ -25,10 +25,14 @@ from unittest import mock
 from ontology.json_contract import validate
 from operating import impact_chain as ic
 from operating import ontology_tools as ot
+from operating import ontology_tools_results
 from operating import ontology_tools_investigate as oi
+from operating import ontology_tools_investigate_host
 from operating import ontology_tools_process as op
 from operating import ontology_tools_traverse as tt
 from operating import proactive_engine as pe
+from operating import proactive_engine_cards
+from operating import proactive_engine_drafts
 from ontology.tests.test_po_lateness import (bc_po, block, confirm, fm_twin, line, lined,
                                              portal_po)
 from tests import test_ontology_tools_process as tp
@@ -215,12 +219,12 @@ def table_of(store, rows=True, policy=None):
     table: dict = {}
     base = ot.OntologyTools(ot.StoreReader(store.conn), policy or tp.POLICY, schema=tp.SCHEMA,
                             contracts=CONTRACTS, clock=lambda: tp.NOW)
-    ot.register(table, base)
+    ontology_tools_results.register(table, base)
     tt.register(table, tt.TraverseTools(base))
     op.register(table, op.ProcessTools(base, tp.GRAPHS))
     oi.register(table, oi.InvestigateTools(table, schema=tp.SCHEMA,
                                            rows=rows_of(store, policy) if rows else None,
-                                           scope=oi.read_scope(base)))
+                                           scope=ontology_tools_investigate_host.read_scope(base)))
     return table
 
 
@@ -676,7 +680,7 @@ class ScanAndProactiveTests(unittest.TestCase):
         for n in (1, 10, 60):
             with self.subTest(n=n):
                 s = tp.Store()
-                ids = chain_fixture(s, orders=n, margin={}, posted="verified", key=f"cm{n}")
+                chain_fixture(s, orders=n, margin={}, posted="verified", key=f"cm{n}")
                 path = store_file(s, self.dir.name)
                 st = pe._Store(path)
                 try:
@@ -693,6 +697,34 @@ class ScanAndProactiveTests(unittest.TestCase):
                 self.assertEqual(found["chains_broken"], 0)
                 self.assertEqual(found["margin_at_stake"], {"CAD": str(Decimal("535.00") * n)})
                 self.assertLess(elapsed, 20)
+
+    def test_a_header_total_that_is_what_is_still_to_ship_never_counts_at_risk(self):
+        """CC-NY-1: plx.object says an order's header total is the value still to ship
+        (Sage, partly shipped) and derives its value from the lines: the at-risk value is
+        the derived one, never the header's; without the derived value, none."""
+        s = tp.Store()
+        chain_fixture(s, orders=1)
+        path = store_file(s, self.dir.name)
+        st = pe._Store(path)
+
+        def outstanding(answer, derived):
+            answer = dict(answer)
+            answer["gaps"] = [*(answer.get("gaps") or ()),
+                              {"reason": ic.OUTSTANDING_TOTAL, "detail": "still to ship"}]
+            if derived:
+                answer["derived"] = [{"property": "order_value", "value": "3000.00",
+                                      "currency": "CAD", "derived_from": "order_lines"}]
+            return answer
+        try:
+            call = self.caller(s, STAFF)
+            found = {derived: ic.scan(st, call, value=lambda oid: outstanding(
+                call("plx.object", {"object_id": oid}), derived)) for derived in (True, False)}
+        finally:
+            st.close()
+        self.assertEqual((found[True]["orders_with_value"], found[True]["value_at_risk"]),
+                         (1, {"CAD": "3000.00"}))
+        self.assertEqual((found[False]["orders_with_value"], found[False]["value_at_risk"]),
+                         (0, {}))
 
     def test_scan_counts_broken_chains_and_a_reader_without_finance_gets_no_value(self):
         s = tp.Store()
@@ -825,6 +857,103 @@ class ScanAndProactiveTests(unittest.TestCase):
         self.assertEqual(died["detector_reasons"]["orders_at_risk"], ["worker_failed"])
         self.assertEqual(died["coverage"]["orders_at_risk"]["not_evaluated"],
                          {"worker_failed": 1})
+
+    def test_a_verdict_is_reused_only_while_nothing_it_reads_moved(self):
+        """AL-04: orders_at_risk's ~1200 s a run was one ``po_delivery_window`` verdict per
+        PO on every run. A decided verdict is kept with its fingerprint; the next run asks
+        only a PO whose records, day or reader grants moved, with the same findings, and a
+        pass cut at its window keeps what it read so the next run completes it."""
+        from operating import proactive_pool as pp
+
+        class Pool:   # in-process; records the POs asked; the first ``reach`` are read
+            def __init__(self, call, reach=None):
+                self.call, self.reach, self.asked = call, reach, []
+
+            def map(self, task, items, left=None):
+                items = list(items)
+                if task is pp.tool_call:
+                    self.asked += [a["from"] for tool, a in items if tool == "plx.process"]
+                return [task(self.call, item) if self.reach is None or n < self.reach
+                        else pp.NOT_READ for n, item in enumerate(items)]
+
+        s = tp.Store()
+        chain_fixture(s, orders=1, required="2099-01-20")
+        chain_fixture(s, orders=1, required="2099-01-28", key="b2")
+        path = store_file(s, self.dir.name)
+        inbox = pe.inbox_path(path)
+        case = self
+
+        class Caller:   # the engine's reader, with the grants its policy decides
+            def __init__(self, actor=STAFF, policy=tp.POLICY):
+                self.actor, self.inner = actor, case.caller(s, actor, policy=policy)
+                self.host = type("Host", (), {"stored_policy": lambda _s, _a: policy})()
+
+            def __call__(self, tool, args):
+                return self.inner(tool, args)
+
+        def run(day=date(2099, 2, 1), caller=None, reach=None):
+            caller = caller or Caller()
+            pool = Pool(caller, reach)
+            return pe.run(path, inbox, day, call=caller, pool=pool), pool.asked
+
+        first, asked = run()
+        self.assertEqual(len(asked), 2)
+        self.assertEqual(first["detectors"]["orders_at_risk"], "complete")
+        again, asked_again = run()
+        self.assertEqual(asked_again, [])   # nothing moved: no verdict asked again
+        self.assertEqual(again["detectors"]["orders_at_risk"], "complete")
+        self.assertEqual(again["top_finding"], first["top_finding"])
+        self.assertEqual(again["coverage"]["orders_at_risk"],
+                         first["coverage"]["orders_at_risk"])
+        # another day, another reader, or this reader with a grant changed: every PO again
+        self.assertEqual(len(run(day=date(2099, 2, 2))[1]), 2)
+        self.assertEqual(len(run(caller=Caller(OPS, NO_MONEY))[1]), 2)
+        held = sorted(m for m, who in tp.POLICY.markings.items() if "staff" in who)
+        narrower = tp.ot.ReadPolicy("plx", dict(tp.POLICY.audiences), {
+            **tp.POLICY.markings, held[-1]: tp.POLICY.markings[held[-1]] - {"staff"}})
+        self.assertEqual(len(run(caller=Caller(STAFF, narrower))[1]), 2)
+        # the inbox holds one reading per PO: the last reader's (the engine runs as one)
+        self.assertEqual(len(run()[1]), 2)
+        self.assertEqual(run()[1], [])
+        # a record a verdict reads moves (a line of the first PO): that PO alone again
+        one = asked[0]
+        with closing(sqlite3.connect(path)) as conn:
+            line = conn.execute(
+                "SELECT from_object FROM links WHERE link_type = ? AND to_object = ?",
+                ("PurchaseOrderLine.line_of", one)).fetchone()
+            self.assertIsNotNone(line)
+            conn.execute("UPDATE object_values SET value = '90' WHERE object_id = ? "
+                         "AND field_path = 'row.ordered_quantity'", (line[0],))
+            conn.commit()
+            moved = conn.execute("SELECT value FROM object_values WHERE object_id = ? AND "
+                                 "field_path = 'row.ordered_quantity'", (line[0],)).fetchone()
+        self.assertEqual(moved[0], "90")   # a view: the trigger moves its cell
+        self.assertEqual(run()[1], [one])
+        # a pass cut at its window keeps the verdict it read; the next run completes it
+        inbox.unlink()
+        cut, cut_asked = run(reach=1)
+        self.assertEqual(cut["detectors"]["orders_at_risk"], "truncated")
+        rest, rest_asked = run()
+        self.assertEqual(len(rest_asked), 1)
+        self.assertNotIn(rest_asked[0], cut_asked[:1])
+        self.assertEqual(rest["detectors"]["orders_at_risk"], "complete")
+        self.assertEqual(rest["top_finding"]["orders_at_risk"],
+                         first["top_finding"]["orders_at_risk"])
+
+    def test_an_undecided_or_partial_verdict_is_never_kept(self):
+        for answer in ({"error": {"code": "x"}, "lateness": [{"root": "P", "state": "late"}]},
+                       {"lateness": [{"root": "P", "state": "undetermined"}]},
+                       {"lateness": [{"root": "Q", "state": "late"}]},
+                       {"lateness": [{"root": "P", "state": "late"}], "truncated": True},
+                       {"lateness": [{"root": "P", "state": "late"}], "complete": False},
+                       {"lateness": [{"root": "P", "state": "late", "n": Decimal("1")}]},
+                       {"lateness": [{"root": "P", "state": "late", "on": date(2099, 1, 1)}]},
+                       None, "late"):
+            with self.subTest(answer=answer):
+                self.assertIsNone(proactive_engine_cards._verdict_keeps("P", answer))
+        self.assertEqual(proactive_engine_cards._verdict_keeps("P", {"lateness": [
+            {"root": "P", "state": "on_time"}], "steps": []}),
+            {"lateness": [{"root": "P", "state": "on_time"}]})
 
     def test_the_late_pos_are_walked_first_and_each_gap_names_its_chain_ends(self):
         """Live repro (gen 7): the impact walk asked verdicts of POs in id order up to its
@@ -967,10 +1096,10 @@ class ScanAndProactiveTests(unittest.TestCase):
                 s = tp.Store()
                 first = chain_fixture(s, key=f"c{n}-0", planned="2099-03-01", promise=None,
                                       required="2099-02-20", description="Item number 000")
-                ids = [first] + [chain_fixture(s, key=f"c{n}-{i}", po=first["po"],
-                                               required=staggered("2099-02-20", -i),
-                                               description=f"Item number {i:03d}")
-                                 for i in range(1, n)]
+                for i in range(1, n):
+                    chain_fixture(s, key=f"c{n}-{i}", po=first["po"],
+                                  required=staggered("2099-02-20", -i),
+                                  description=f"Item number {i:03d}")
                 # every line promised after its order's need (each order its own day), by
                 # i + 1 days
                 lined(s, first["po"], f"per{n}", [
@@ -1010,8 +1139,8 @@ class ScanAndProactiveTests(unittest.TestCase):
         st = pe._Store(path)
         try:
             held = {r[0] for r in st.conn.execute("SELECT DISTINCT audience_key FROM objects")}
-            lacking = next(k for k in pe._lateness_audiences(st) if k in held
-                           and k.startswith(pe._DECIDING_AUDIENCES))
+            lacking = next(k for k in proactive_engine_drafts._lateness_audiences(st) if k in held
+                           and k.startswith(proactive_engine_drafts._DECIDING_AUDIENCES))
         finally:
             st.close()
         blind = pe.run(path, inbox, date(2099, 2, 1), call=self.caller(s, STAFF),

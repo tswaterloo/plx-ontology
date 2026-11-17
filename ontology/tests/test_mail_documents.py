@@ -49,6 +49,17 @@ LINK = "Email.mentions_purchase_order"
 RESTATED = "2026-10-05T10:00:00.000000Z"
 
 
+def identified_from_text(spec) -> bool:
+    """Whether an object type carries an identifier text can name: a kind neither a copy
+    identity (``copies``) nor a number text overlaps (``never_in_text``, IN-10's Sage AR/AP
+    document numbers), the rule ``ontology/schema.py`` generates mention link types by."""
+    kinds = identifiers.schema()["kinds"]
+    return any(p["value_type"] == "identifier"
+               and not ((kinds.get(p.get("identifier_kind")) or {}).get("copies")
+                        or (kinds.get(p.get("identifier_kind")) or {}).get("never_in_text"))
+               for p in spec["properties"])
+
+
 def po(relation, key, row):
     native = json.dumps(key, separators=(",", ":"))
     return CapturedRecord("portal_api", relation, native, row,
@@ -738,7 +749,7 @@ class MailDocumentsTests(unittest.TestCase):
             if spec["availability"]["state"] == "not_served" or tid in (
                     "Email", "Attachment", "SharePointFile", "ContainerMember"):
                 continue
-            if any(p["value_type"] == "identifier" for p in spec["properties"]):
+            if identified_from_text(spec):
                 self.assertIn(("Email", tid), declared, tid)
 
 
@@ -1052,7 +1063,7 @@ class ProbeWithMailTests(unittest.TestCase):
         from integrations.workbench_read_api import WorkbenchReadApiClient
         from scripts.ontology_projection_probe import projection_probe
 
-        from integrations.capture_mail import CaptureScope
+        from integrations.capture_mail_scope import CaptureScope
         from integrations.live_source_guard import LiveSourceAudience
         from integrations.tests.test_capture_mail import UPN_B
         from operating.case_mail_scope import MailScope

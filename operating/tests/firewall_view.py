@@ -16,7 +16,7 @@ import json
 from typing import Any
 
 from operating import injection_guard as guard
-from operating.mcp_server import SELF_ENVELOPING_TOOLS
+from operating.mcp_server_catalog import SELF_ENVELOPING_TOOLS
 
 
 def as_text(value: Any) -> Any:

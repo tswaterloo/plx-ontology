@@ -228,6 +228,7 @@ export default function FeedbackPage() {
   return (
     <div className="flex min-h-0 flex-1 flex-col bg-list">
       <Toolbar
+        pin="Feedback"
         heading
         title={
           <>

@@ -13,6 +13,16 @@ from pathlib import Path
 import stat
 
 
+def keep_shared(path: str | os.PathLike[str], mode: int) -> None:
+    """``keep_private`` that never raises: for a file just made in the shared-write set (its
+    ``os.open(..., 0o600)`` ignores the umask's group bits, so without this the shared group
+    cannot read it and the host's perm check re-runs the setup every minute)."""
+    try:
+        keep_private(path, mode)
+    except OSError:
+        pass
+
+
 def keep_private(path: str | os.PathLike[str], mode: int) -> None:
     """Give ``path`` the private ``mode`` (0o700 for a directory, 0o600 for a file).
 

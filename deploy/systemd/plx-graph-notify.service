@@ -1,0 +1,39 @@
+# PLX Workbench Graph change-notification receiver (AUD-05; integrations.graph_notifications):
+# reads Graph's change notifications for mail and Teams from an Azure Event Hub and wakes
+# the continuous ingest's mail / Teams delta capture early. It reads no mail or message
+# itself and holds no Graph credential; it only receives from the hub (listen-only key) and
+# keeps its offsets in the ingest state directory. Not enabled by the build.
+#
+# Switch-on (after Vince's Azure setup, OPEN-1111 row V-33):
+#   1. PLX_GRAPH_NOTIFY_EVENTHUB_KEY / _HUB / _CLIENT_STATE_SECRET / _SUBSCRIPTIONS in plx.env;
+#      `pip install azure-eventhub` into /data/venv;
+#   2. `"graph_notifications": true` in the continuous host config's ingest section,
+#      then restart plx-ingest;
+#   3. systemctl enable --now plx-graph-notify;
+#   4. renewal of the subscriptions themselves: plx-graph-subscriptions.timer (see its service).
+# Unconfigured it prints {"status": "not_configured"} and exits 0 (no restart, no file).
+[Unit]
+Description=PLX Workbench Graph change-notification receiver (Event Hubs)
+After=network-online.target plx-ingest.service
+Wants=network-online.target
+StartLimitIntervalSec=600
+StartLimitBurst=5
+
+[Service]
+Type=simple
+User=@PLX_USER@
+Group=@PLX_GROUP@
+WorkingDirectory=@PLX_CURRENT@
+EnvironmentFile=/etc/plx/ingest.env
+EnvironmentFile=@PLX_HOME@/.config/plx/plx.env
+# it needs no business credential: only its own listen-only Event Hubs key
+UnsetEnvironment=AZURE_CLIENT_SECRET BC_CLIENT_SECRET MICROSOFT_GRAPH_CLIENT_SECRET MC_MCP_API_KEY
+Environment=PATH=/data/venv/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart=/data/venv/bin/python3 -m integrations.graph_notifications serve --state ${PLX_INGEST_STATE}
+Restart=on-failure
+RestartSec=60
+Nice=5
+MemoryMax=512M
+
+[Install]
+WantedBy=multi-user.target

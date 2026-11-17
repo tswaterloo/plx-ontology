@@ -582,6 +582,36 @@
  ],
  "link_types": [
   {
+   "id": "Notice.read_from",
+   "from": "Notice",
+   "to": "Email",
+   "name": "read_from",
+   "reverse_name": "notices",
+   "cardinality": "N:1",
+   "description": "The message a notice was read from (the notice's message id is the Graph message id the mail capture keys the message by, as Attachment.attached_to; a key that ever named two messages makes the link an ambiguous lead, never a guess). Without it a notice reached its shipment, order or invoice only through its references and never its own message (CT-D-12: 38,839 notices had no outgoing link).",
+   "bindings": [
+    {
+     "kind": "fk",
+     "tier_ceiling": "verified",
+     "from_binding": "graph_mail.notices",
+     "to_binding": "graph_mail.messages",
+     "pairs": [
+      {
+       "from": "message_id",
+       "to": "id",
+       "compare": "text_id"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "workbench_code",
+       "path": "ontology/project.py"
+      }
+     ]
+    }
+   ]
+  },
+  {
    "id": "NoticeReference.of_notice",
    "from": "NoticeReference",
    "to": "Notice",

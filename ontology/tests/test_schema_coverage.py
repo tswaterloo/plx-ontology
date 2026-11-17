@@ -41,7 +41,7 @@ from scripts import source_registry
 from ontology.core import Actor
 from ontology.project import CapturedRecord, build_store
 from operating import ontology_tools as ot
-from operating.ontology_tools_traverse import TraverseTools, with_leads
+from operating.ontology_tools_traverse import TraverseTools
 
 T = "2026-10-01T00:00:00+00:00"
 KEYS = {"sage.ic_item_uom": "_sage_pk", "sage.ic_item": "itemno"}
@@ -193,6 +193,211 @@ class GlAccountFormsProject(unittest.TestCase):
                          {(acct(self.C), "verified")})
         self.assertEqual({g[2:] for g in got if g[0] == '{"_sage_pk":"j1"}'},
                          {(acct(self.B), "verified")})
+
+
+class Aud08QuantitiesAndLotsProject(unittest.TestCase):
+    """AUD-08 (made-up AOs, shaped as FM and the Portal send them): an AO's ordered quantity
+    is FM qtytotal or a Portal-native MO's quantity only when positive: a 0 or blank is a gap
+    (source_condition_unmet), never a stored 0. A final quantity or lot number of 0 is no
+    value. A receipt line whose supplier lot is a placeholder (N/A, NA, NONE, -, with a
+    space before or after, as the lot normaliser reads it) mints no Lot."""
+
+    ROWS = {
+        "public.assembly_order": [
+            {"id": 801, "nameamo_c": "AO-26101A", "qtytotal": None, "sizepieces": "120",
+             "qtymanufold": "118", "finalqty": "0", "lotno": "0", "units": "EA"},
+            {"id": 802, "nameamo_c": "AO-26102A", "qtytotal": "800.0", "sizepieces": "120",
+             "qtymanufold": "790", "finalqty": "795", "lotno": "L-26102", "units": "EA"},
+            {"id": 803, "nameamo_c": "AO-26103A", "qtytotal": "0", "sizepieces": "0",
+             "qtymanufold": "90", "finalqty": None, "units": "EA"},
+            {"id": 804, "nameamo_c": "AO-26104A", "qtytotal": None, "sizepieces": None,
+             "qtymanufold": None, "units": "EA"}],
+        "public.app_manufacturing_order": [
+            {"id": "mo-1", "mo_code": "MO-AUD81", "quantity": "0", "size_pieces": "48",
+             "yield_actual": "0", "uom": "EA"},
+            {"id": "mo-2", "mo_code": "MO-AUD82", "quantity": "12", "size_pieces": "48",
+             "uom": "EA"},
+            {"id": "mo-3", "mo_code": "MO-FM-9", "quantity": "77", "size_pieces": "60",
+             "uom": "EA", "custom_fields": {"fmId": "9"}}],
+        "public.app_receipt_line": [{"id": "rl-1", "supplier_lot_number": "N/A"},
+                                    {"id": "rl-2", "supplier_lot_number": "L-77"},
+                                    {"id": "rl-3", "supplier_lot_number": " n/a "},
+                                    {"id": "rl-4", "supplier_lot_number": "None "}],
+        "public.receipt_raw_material": [{"id": 901, "lotnoqc": " NA"},
+                                        {"id": 902, "lotnoqc": "RM-902"}],
+    }
+
+    @classmethod
+    def setUpClass(cls):
+        tmp = tempfile.TemporaryDirectory()
+        cls.addClassCleanup(tmp.cleanup)
+        path = Path(tmp.name) / "store.sqlite"
+        build_store(path, schema.load_schema(), {"portal_api": Source(cls.ROWS)},
+                    normalizer=identifiers.normalize,
+                    clock=lambda: datetime(2026, 10, 2, tzinfo=timezone.utc))
+        conn = sqlite3.connect(str(path))
+        cls.addClassCleanup(conn.close)
+        cls.values = {}
+        for oid, prop, value, unit in conn.execute(
+                "SELECT object_id, property, value, unit FROM object_values WHERE property IN "
+                "('ordered_quantity', 'final_quantity', 'lot_number')"):
+            cls.values.setdefault((oid.split(":", 2)[2], prop), []).append((value, unit))
+        cls.lots = {oid.split(":", 2)[2] for (oid,) in conn.execute(
+            "SELECT object_id FROM objects WHERE object_type = 'Lot'")}
+
+    def got(self, key, prop):
+        return sorted(self.values.get((json.dumps(key, separators=(",", ":")), prop), []))
+
+    def test_ordered_quantity_is_read_only_when_positive(self):
+        self.assertEqual(self.got({"id": 801}, "ordered_quantity"), [])
+        self.assertEqual(self.got({"id": 802}, "ordered_quantity"), [("800.0", "EA")])
+        self.assertEqual(self.got({"id": 803}, "ordered_quantity"), [])
+        self.assertEqual(self.got({"id": 804}, "ordered_quantity"), [])
+        self.assertEqual(self.got({"id": "mo-1"}, "ordered_quantity"), [])
+        self.assertEqual(self.got({"id": "mo-2"}, "ordered_quantity"), [("12", "EA")])
+        # an FM migration copy's quantity is the expected yield, never the ordered one
+        self.assertEqual(self.got({"id": "mo-3"}, "ordered_quantity"), [])
+
+    def test_a_zero_final_quantity_or_lot_number_is_no_value(self):
+        self.assertEqual(self.got({"id": 801}, "final_quantity"), [])
+        self.assertEqual(self.got({"id": "mo-1"}, "final_quantity"), [])
+        self.assertEqual(self.got({"id": 802}, "final_quantity"), [("795", "each")])
+        self.assertEqual(self.got({"id": 801}, "lot_number"), [])
+        self.assertEqual(self.got({"id": 802}, "lot_number"), [("L-26102", None)])
+
+    def test_a_placeholder_supplier_lot_mints_no_lot(self):
+        self.assertEqual(self.lots, {json.dumps({"id": "rl-2"}, separators=(",", ":")),
+                                     json.dumps({"id": 902}, separators=(",", ":"))})
+
+
+class Aud08CostAndRequiredDateProject(unittest.TestCase):
+    """AUD-08 (made-up rows, shaped as BC and Sage send them): a BC item unit cost of 0 is a
+    gap (source_condition_unmet), never a cost of 0; a positive one is read. A Sage order's
+    expected ship date (oe_order_header.expdate) is its required date at authority rank 2,
+    after the FM date (rank 1), so it never displaces an FM or gold date; an expdate of 0 is
+    Sage's empty date (parse_zero_date), not a date."""
+
+    PORTAL = {
+        "public.order_entry": [{"id": 5001, "datereq": "2025-10-30"}],
+        "sage.oe_order_header": [{"orduniq": 71, "ordnumber": "OR0000071", "expdate": 0},
+                                 {"orduniq": 72, "ordnumber": "OR0000072",
+                                  "expdate": 20251103}],
+    }
+    BC = [{"id": "bc-free", "number": "AUD-0", "unitCost": 0},
+          {"id": "bc-cost", "number": "AUD-1", "unitCost": 4.2}]
+    BOOK = "bc_manufacturing"
+
+    class Portal(Source):
+        def _record(self, rel, row):
+            name = "orduniq" if rel == "sage.oe_order_header" else "id"
+            key = json.dumps({name: row[name]})
+            digest = hashlib.sha256(f"{rel}/{key}".encode()).hexdigest()
+            return CapturedRecord("portal_api", rel, key, row,
+                                  f"api://{rel}/{quote(key, safe='')}@0123456789abcdef-1",
+                                  "row", digest, T, None, T, f"api:{rel}")
+
+    class Bc:
+        def __init__(self, rows, book):
+            self.rows, self.book = rows, book
+
+        def describe(self):
+            return {"generation": 1, "relations": {}}
+
+        def records(self, relations):
+            return {rel: [CapturedRecord(
+                "bc", rel, f"{self.book}/{row['id']}", row,
+                f"bc://production/{self.book}/{rel}/{row['id']}@g-1", "row",
+                hashlib.sha256(f"{rel}/{row['id']}".encode()).hexdigest(), T, None, T,
+                f"bc:production:{self.book}:{rel}", capture_lineage=self.book)
+                for row in (self.rows if rel == "items" else [])] for rel in relations}
+
+    @classmethod
+    def setUpClass(cls):
+        tmp = tempfile.TemporaryDirectory()
+        cls.addClassCleanup(tmp.cleanup)
+        path = Path(tmp.name) / "store.sqlite"
+        cls.report = build_store(
+            path, schema.load_schema(),
+            {"portal_api": cls.Portal(cls.PORTAL), "bc": cls.Bc(cls.BC, cls.BOOK)},
+            normalizer=identifiers.normalize,
+            clock=lambda: datetime(2026, 10, 2, tzinfo=timezone.utc))
+        conn = sqlite3.connect(str(path))
+        cls.addClassCleanup(conn.close)
+        cls.values = {}
+        for oid, prop, value, lineage, rank in conn.execute(
+                "SELECT object_id, property, value, lineage, authority_rank FROM object_values "
+                "WHERE property IN ('bc_unit_cost', 'required_date')"):
+            cls.values.setdefault((oid.split(":", 2)[2], prop), []).append(
+                (value, lineage, rank))
+
+    def got(self, key, prop):
+        return sorted(self.values.get((json.dumps(key, separators=(",", ":")), prop), []))
+
+    def gap(self, code, where):
+        return [g for g in self.report["gaps"] if g["code"] == code and g["where"] == where]
+
+    def test_a_zero_bc_unit_cost_is_a_gap_and_a_positive_one_is_read(self):
+        self.assertEqual(self.got({"id": "bc-free"}, "bc_unit_cost"), [])
+        ((value, lineage, _rank),) = self.got({"id": "bc-cost"}, "bc_unit_cost")
+        self.assertEqual((float(value), lineage), (4.2, self.BOOK))
+        (unmet,) = self.gap("source_condition_unmet", "Product.bc_unit_cost@bc.items")
+        self.assertEqual(unmet["samples"],
+                         [f"bc://production/{self.BOOK}/items/bc-free@g-1"])
+
+    def test_sage_expdate_is_a_required_date_ranked_after_the_fm_date(self):
+        self.assertEqual(self.got({"id": 5001}, "required_date"),
+                         [("2025-10-30", "fm_bronze", 1)])
+        self.assertEqual(self.got({"orduniq": 72}, "required_date"),
+                         [("2025-11-03", "sage_bronze", 2)])
+
+    def test_a_zero_sage_expdate_is_no_date(self):
+        self.assertEqual(self.got({"orduniq": 71}, "required_date"), [])
+        self.assertTrue(self.gap("parse_zero_date",
+                                 "SalesOrder.required_date@portal.sage_oe_order_header"))
+
+
+class SageDocumentNumbersProject(unittest.TestCase):
+    """IN-10: a Sage AR or AP open document's number (IDINVC) is an identifier of its own
+    kind, normalised, held with the value's markings, and found by its number; the same
+    number on two customers' documents is two identifier rows (none chosen). The kinds are
+    never read from text: no mention link type targets the documents."""
+
+    def test_open_document_numbers_are_identifiers_and_no_mention_target(self):
+        global KEYS
+        rows = {"sage.ar_open_document": [
+                    {"_sage_pk": "a1", "idcust": "CUST1", "idinvc": " in0012345  "},
+                    {"_sage_pk": "a2", "idcust": "CUST2", "idinvc": "IN0012345"}],
+                "sage.ap_open_document": [
+                    {"_sage_pk": "p1", "idvend": "VEND1", "idinvc": "inv-7781 "}]}
+        held = KEYS
+        KEYS = {**held, "sage.ar_open_document": "_sage_pk", "sage.ap_open_document": "_sage_pk"}
+        self.addCleanup(lambda: globals().__setitem__("KEYS", held))
+        served = schema.load_schema()
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "store.sqlite"
+            build_store(path, served, {"portal_api": Source(rows)},
+                        normalizer=identifiers.normalize,
+                        clock=lambda: datetime(2026, 10, 2, tzinfo=timezone.utc))
+            conn = sqlite3.connect(str(path))
+            self.addCleanup(conn.close)
+            got = sorted(conn.execute(
+                "SELECT i.identifier_kind, i.normalized, i.raw, i.object_id, i.markings, "
+                "v.value, v.markings FROM identifiers i JOIN object_values v ON "
+                "v.object_id = i.object_id AND v.property = i.property AND "
+                "v.field_path = i.field_path WHERE i.property = 'idinvc'"))
+        self.assertEqual([(k, n, o.split(":", 2)[2]) for k, n, _r, o, *_ in got],
+                         [("sage_ap_document", "INV-7781",
+                           json.dumps({"_sage_pk": "p1"}, separators=(",", ":"))),
+                          ("sage_ar_document", "IN0012345",
+                           json.dumps({"_sage_pk": "a1"}, separators=(",", ":"))),
+                          ("sage_ar_document", "IN0012345",
+                           json.dumps({"_sage_pk": "a2"}, separators=(",", ":")))])
+        self.assertEqual({g[2] for g in got}, {" in0012345  ", "IN0012345", "inv-7781 "})
+        for _k, normalized, _r, _o, marks, value, value_marks in got:
+            self.assertEqual((value, marks), (normalized, value_marks))
+        targets = {lt["to"] for lt in served.link_types.values()
+                   if any(b.get("kind") == "mention" for b in lt["bindings"])}
+        self.assertFalse(targets & {"RelSageArOpenDocument", "RelSageApOpenDocument"})
 
 
 class UnservedRelations(unittest.TestCase):

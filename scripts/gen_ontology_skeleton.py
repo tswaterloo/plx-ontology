@@ -534,6 +534,30 @@ def _value_type(column: str, model: Mapping[str, Any] | None, enums: Mapping[str
     return "text", None
 
 
+# C-09: the zone of a Portal timestamp column. Prisma writes UTC into ``timestamp without
+# time zone``: a Prisma model's DateTime is a UTC instant written zoneless (live 11-12: the
+# ingest's recorded_at trails app_* created_at/updated_at by minutes read as UTC, never the
+# 4-5 h an Eastern reading needs). The Portal's FileMaker ETL (the ``silver`` schema and
+# the FileMaker audit stamps ``audittimestamp*`` of the public FileMaker mirrors) stores
+# FileMaker's Eastern wall clock labelled UTC: live 11-12, the least gap from those stamps
+# to recorded_at is 4.19 h in EDT (October) and 5.08 h in EST (November) on every silver
+# and portal.fm binding, against 0.03-0.14 h for Graph's true UTC stamps.
+FM_WALL_CLOCK_ZONE = "America/New_York"
+FM_AUDIT_STAMP = re.compile(r"^audittimestamp")
+
+
+def _zone(relation: str, column: str, vtype: str,
+          model: Mapping[str, Any] | None) -> dict[str, str]:
+    if vtype != "timestamp":
+        return {}
+    if relation.startswith("silver.") or (model is None and FM_AUDIT_STAMP.match(column)):
+        return {"wall_clock_zone": FM_WALL_CLOCK_ZONE}
+    info = model["columns"].get(column) if model else None
+    if info is not None and info["type"] == "DateTime" and info["db"] is None:
+        return {"naive_zone": "UTC"}
+    return {}
+
+
 def _evidence_prisma(prisma: Mapping[str, Any], model_name: str, note: str | None,
                      lines: str | None = None) -> dict[str, Any]:
     out = {"kind": "upstream_code", "repo": PORTAL, "path": prisma["path"],
@@ -621,7 +645,8 @@ def portal_facts(catalog: Mapping[str, Any], prisma: Mapping[str, Any],
         columns = []
         for column in rel.columns:
             vtype, values = _value_type(column, model, enums, column_types)
-            columns.append({"name": column, "value_type": vtype, "enum_values": values})
+            columns.append({"name": column, "value_type": vtype, "enum_values": values,
+                            **_zone(name, column, vtype, model)})
         relations.append({
             "name": name, "domain": domain, "excluded": None, "key": list(rel.key),
             "key_source": key_source, "columns": columns,

@@ -29,6 +29,8 @@ import threading
 from typing import Iterator, Mapping, Sequence
 import weakref
 
+from ontology import private_tmp
+
 
 class Abandoned(Exception):
     """The calling thread's work was abandoned: it starts no new child or folder."""
@@ -87,10 +89,13 @@ def run(command: Sequence[str], *, timeout: float,
 
 @contextmanager
 def private_directory(prefix: str) -> Iterator[str]:
-    """A ``0700`` temporary folder, removed on exit or when its thread is abandoned."""
+    """A ``0700`` temporary folder, removed on exit or when its thread is abandoned; one
+    left by a killed process is removed by the next process that makes one
+    (:func:`ontology.private_tmp.mkdtemp`)."""
     with _lock:
         owner = _owner()
-        path = tempfile.mkdtemp(prefix=prefix)
+        # named with this process's id; a killed process's leftovers are swept
+        path = private_tmp.mkdtemp(prefix)
         _folders[path] = owner
     try:
         yield path

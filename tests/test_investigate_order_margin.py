@@ -25,9 +25,13 @@ from ontology.json_contract import validate
 from ontology import store_ddl
 from ontology.tests.test_project_bc import FULL, READER, BcWorld
 from operating import ontology_tools as ot
+from operating import ontology_tools_results
 from operating import ontology_tools_investigate as oi
+from operating import ontology_tools_investigate_host
 from operating import ontology_tools_traverse as tt
 from operating import answer_gate, claim_checks, mcp_server
+from operating import claim_checks_parse
+from operating import claim_checks_values
 from operating import order_margin as om
 
 CONTRACTS = ot.load_contracts()
@@ -74,11 +78,11 @@ class OrderMarginTests(unittest.TestCase):
         (``capture_claims``, as ``operating/ontology_host.py`` does), else family only."""
         self.world = world
         table: dict = {}
-        ot.register(table, world.base)
+        ontology_tools_results.register(table, world.base)
         tt.register(table, world.traverse)
         oi.register(table, oi.InvestigateTools(
-            table, rows=resolver(world), scope=oi.read_scope(world.base),
-            captured=oi.capture_claims(world.base) if claims else None))
+            table, rows=resolver(world), scope=ontology_tools_investigate_host.read_scope(world.base),
+            captured=ontology_tools_investigate_host.capture_claims(world.base) if claims else None))
         self.table = table
 
     def failing_world(self, *units: tuple[str, str]) -> BcWorld:
@@ -216,7 +220,7 @@ class OrderMarginTests(unittest.TestCase):
             return om.plan_run(args, evidence, *rest, **kw)
         self.table.pop("plx.investigate")
         oi.register(self.table, oi.InvestigateTools(
-            self.table, rows=resolver(self.world), scope=oi.read_scope(self.world.base),
+            self.table, rows=resolver(self.world), scope=ontology_tools_investigate_host.read_scope(self.world.base),
             engines={**oi.default_engines(), "order_margin": {"check": om.plan_check,
                                                               "run": leads}}))
         result = self.ask(tb.CO[0], "SO-3")
@@ -270,10 +274,10 @@ class OrderMarginTests(unittest.TestCase):
         claim.update({"unit": "percent"} if entry.get("unit") == "%"
                      else {"currency": entry["currency"]})
         handles = list(dict.fromkeys(i["l1_handle"] for i in calc["inputs"]))
-        returned = claim_checks.returned_evidence("plx.investigate", {}, result)
+        returned = claim_checks_values.returned_evidence("plx.investigate", {}, result)
         rows = resolver(self.world)
         return claim_checks.check_items(
-            [{"id": "A", "texts": [], "value_claims": claim_checks.parse_value_claims(
+            [{"id": "A", "texts": [], "value_claims": claim_checks_parse.parse_value_claims(
                 [claim], handles, []),
               "citations": [{"handle": h, "status": "resolved"} for h in handles]}],
             rows=lambda handle: rows(handle, FULL), returned=returned)
@@ -350,7 +354,12 @@ class OrderMarginTests(unittest.TestCase):
                               got["order_margin"]["value"]), ("15", "8.58"))
             self.assertEqual(result["answerability"],
                              {"state": "partial", "reasons": ["credit_memo_unattributed"]})
-            self.assertNotIn("answer_page", result)
+            # one response holds the whole answer: every entry on the first page (its
+            # chain and values, past the room left, on the detail pages after it: AUD-11)
+            self.assertEqual(result.get("answer_page", {}).get("returned", len(
+                result["answer"])), result.get("answer_page", {}).get("total", len(
+                    result["answer"])))
+            self.assertEqual(result.get("answer_page", {}).get("page", 1), 1)
             counted = got["order_margin_unattributed_credits"]
             self.assertEqual(counted["value"], str(count))
             gap = next(g for g in result["gaps"] if g["reason"] == "credit_memo_unattributed")

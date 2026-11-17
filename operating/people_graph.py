@@ -90,6 +90,8 @@ from typing import Any, Callable, Iterable, Mapping, Sequence
 from ontology.identity_scoring import _name_level, mail_address, normalize_name
 from ontology.mentions import mail_domain, registrable_domain, shared_mail_domain, website_domain
 
+from .excluded_people import _GUID, EXTERNAL, PERSON
+
 PEOPLE_ENGINE = "people_on_record"
 SAID_ENGINE = "party_last_said"
 ROLE_WEIGHTS = {"owner": 4, "assignee": 4, "approver": 3, "sender": 2, "author": 2,
@@ -104,12 +106,11 @@ AGENT_PREFIX = "agent:"
 _LABEL = re.compile(r"^[a-z][a-z0-9_]{0,31}$")
 _REREAD = re.compile(r"^row(?:\.[A-Za-z_][A-Za-z0-9_]*){1,3}$")
 _LINK_TYPE = re.compile(r"^[A-Z][A-Za-z0-9]{1,63}\.[a-z][a-z0-9_]{0,63}$")
-_GUID = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
 _CHECK_FAILED = "failed"
 
-# Resolution states of one observed identity.
-PERSON, EXTERNAL, WITHHELD, UNDECIDED, AGENT = (
-    "person", "external", "withheld", "undecided", "agent")
+# Resolution states of one observed identity (PERSON, EXTERNAL and the object-id shape _GUID
+# live in the excluded_people leaf, which the permission gate reads without importing this module).
+WITHHELD, UNDECIDED, AGENT = "withheld", "undecided", "agent"
 
 Resolver = Callable[[str, Any], Any]
 
@@ -188,17 +189,26 @@ class PeopleDirectory:
         domains, with the runtime's bound address guard (``CaseRuntime.address_exclusion``)."""
         from integrations.capture_mail import MailCaptureStore, store_exists
         guard = getattr(runtime, "people_exclusion", None)
-        rows: list[dict[str, Any]] = []
-        withheld: list[str] | None = []
         directory = getattr(runtime, "mail_capture_dir", None)
         if directory is not None and store_exists(directory):
             store = MailCaptureStore(directory, people=guard)
             try:
-                withheld = store.withheld_mailboxes(guard)
-                rows = [dict(r) for r in store.db.execute(
-                    "SELECT mailbox_id, upn, identities FROM mailboxes ORDER BY mailbox_id")]
+                return cls.from_store(runtime, store)
             finally:
                 store.db.close()   # a reader: no WAL checkpoint (``MailCaptureStore.close``)
+        return cls.from_store(runtime, None)
+
+    @classmethod
+    def from_store(cls, runtime: Any, store: Any) -> "PeopleDirectory":
+        """``from_runtime`` over an open mail capture store (``MailCaptureStore``; None:
+        a host without one, so only the guard and the tenant domains decide)."""
+        guard = getattr(runtime, "people_exclusion", None)
+        rows: list[dict[str, Any]] = []
+        withheld: list[str] | None = []
+        if store is not None:
+            withheld = store.withheld_mailboxes(guard)
+            rows = [dict(r) for r in store.db.execute(
+                "SELECT mailbox_id, upn, identities FROM mailboxes ORDER BY mailbox_id")]
         scope = getattr(runtime, "mail_scope", None)
         bound = getattr(runtime, "address_exclusion", None)
         return cls(guard, rows, withheld=withheld,
@@ -457,7 +467,7 @@ def _joined(prefix: str, names: Sequence[str]) -> str:
     out, room = [], MAX_STEP_CHARS - len(prefix) - 12
     for index, name in enumerate(names):
         if len(", ".join([*out, name])) > room:
-            return prefix + ", ".join(out) + f" +{len(names) - index} more"
+            return prefix + ", ".join(out) + f" ({index} of {len(names)})"
         out.append(name)
     return prefix + (", ".join(out) or "none")
 

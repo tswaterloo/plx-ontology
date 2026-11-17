@@ -23,9 +23,12 @@ from unittest import mock
 from integrations.source_mirror import AudienceMap
 from ontology.types import Actor
 from operating import mcp_server, ontology_tools
+from operating import mcp_server_evidence
+from operating import ontology_tools_results
 from operating.case_runtime import CaseRuntime
-from operating.mcp_server import (AGENT_META_KEY, CASE_RUNTIME_TOOLS, FRESHNESS_META_KEY,
-                                  META_RESERVE_BYTES, TOOLS, MCPServer, local_client, serve_stdio)
+from operating.mcp_server import MCPServer, local_client, serve_stdio
+from operating.mcp_server_catalog import CASE_RUNTIME_TOOLS, TOOLS
+from operating.mcp_server_results import AGENT_META_KEY, FRESHNESS_META_KEY, META_RESERVE_BYTES
 from operating.ontology_host import CaseHostTools, case_host_policy
 
 
@@ -226,7 +229,7 @@ class MCPServerStdioTests(unittest.TestCase):
         self.initialize()
         listing = self.send({"jsonrpc": "2.0", "id": 2, "method": "tools/list"})
         names = {tool["name"] for tool in listing["result"]["tools"]}
-        retired = set(ontology_tools.HOST_RETIREMENTS)
+        retired = set(ontology_tools_results.HOST_RETIREMENTS)
         self.assertEqual(len(retired), 13)
         self.assertFalse(retired & names)
         for request_id, name in enumerate(sorted(retired), start=3):
@@ -236,7 +239,7 @@ class MCPServerStdioTests(unittest.TestCase):
     def test_case_tools_merged_for_the_budget_are_unknown_to_a_client(self):
         # 2026-10-03-host-tool-budget: each retired case tool names a listed successor,
         # and no client can list or call it.
-        from operating.mcp_server import CASE_TOOL_RETIREMENTS
+        from operating.mcp_server_catalog import CASE_TOOL_RETIREMENTS
         self.initialize()
         listing = self.send({"jsonrpc": "2.0", "id": 2, "method": "tools/list"})
         names = {tool["name"] for tool in listing["result"]["tools"]}
@@ -489,7 +492,7 @@ class OntologyToolsOnTheCaseHostTests(unittest.TestCase):
         # The policy was decided once per session.
         import sqlite3
 
-        from operating.mcp_server import META_RESERVE_BYTES
+        from operating.mcp_server_results import META_RESERVE_BYTES
         from operating.ontology_host import CaseHostTools
         path = Path(self.temp.name) / "revoke.sqlite"
         target = sqlite3.connect(path)
@@ -528,7 +531,7 @@ class OntologyToolsOnTheCaseHostTests(unittest.TestCase):
         # count told the reader how many objects a revocation hid.
         import sqlite3
 
-        from operating.mcp_server import META_RESERVE_BYTES
+        from operating.mcp_server_results import META_RESERVE_BYTES
         from operating.ontology_host import CaseHostTools
         path = Path(self.temp.name) / "both.sqlite"
         target = sqlite3.connect(path)
@@ -776,7 +779,7 @@ class OntologyToolsOnTheCaseHostTests(unittest.TestCase):
         # Completeness is never cleared for permissions (a restricted reader's is, below).
         self.assertTrue(server._evidence["counts"])
         kept = [entry["complete"] for entry in server._evidence["counts"]]
-        self.assertTrue(server._scope.startswith(mcp_server.UNRESTRICTED_SCOPE))
+        self.assertTrue(server._scope.startswith(mcp_server_evidence.UNRESTRICTED_SCOPE))
 
         # The reader's flag says unrestricted but the call's policy does not: the item
         # gated evidence is not kept and the answer says why.
@@ -1040,7 +1043,7 @@ class RetiredPlatformHostTests(unittest.TestCase):
         # In range: the host's keyword bounds; unset: the host's own defaults.
         import argparse
         from datetime import timedelta
-        from operating.mcp_server import _sharepoint_capture_bounds
+        from operating.mcp_server_host import _sharepoint_capture_bounds
         args = argparse.Namespace(sharepoint_capture_dir=ROOT,
                                   sharepoint_capture_max_age_hours=6.0,
                                   sharepoint_live_rereads=0, sharepoint_live_gets=8)

@@ -46,7 +46,7 @@ Evidence label of tests: ``isolated-fixture``.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation
 import hashlib
@@ -55,7 +55,7 @@ import os
 from pathlib import Path
 import re
 import tempfile
-from typing import Any, Callable, Iterable, Mapping, Sequence
+from typing import Any, Callable, Iterable, Mapping
 
 from . import drafts
 from .copy_gate import say_date
@@ -293,11 +293,14 @@ class ModelExtractor:
     def __call__(self, transcript: Mapping[str, Any]) -> list[dict[str, Any]]:
         from .query_understanding import ClaudeUnderstander
         understander = ClaudeUnderstander(spawn=self.spawn)
-        lines = [{"i": c["i"], "speaker": c.get("speaker"), "text": c["text"]}
-                 for c in transcript.get("cues") or ()]
+        from .card_text import mask_served
+        # the model reads the lines masked (no card number or credential reaches it), and
+        # a quote it gives back is checked against, and kept as, that masked line
+        said = [{**c, "text": mask_served(c["text"])} for c in transcript.get("cues") or ()]
+        lines = [{"i": c["i"], "speaker": c.get("speaker"), "text": c["text"]} for c in said]
+        cues = {c["i"]: c for c in said}
         found = understander(self.RULES, {"lines": lines[:2000]}, self.timeout)
         items = (found or {}).get("items") if isinstance(found, Mapping) else None
-        cues = {c["i"]: c for c in transcript.get("cues") or ()}
         out = []
         for raw in items or ():
             if not isinstance(raw, Mapping) or raw.get("kind") not in (
@@ -656,10 +659,11 @@ def series_key(meeting: Mapping[str, Any]) -> str:
 
 def summary(record: Mapping[str, Any]) -> str:
     m = record["meeting"]
+    def count(n: int, word: str) -> str:
+        return f"{n} {word}" + ("" if n == 1 else "s")
     parts = [f"{m.get('title')} on {str(m.get('start'))[:10]}",
-             f"{len(record['decisions'])} decision(s)", f"{len(record['actions'])} action "
-             f"item(s)", f"{len(record['questions'])} open question(s)",
-             f"{len(record['risks'])} risk(s)"]
+             count(len(record['decisions']), "decision"), count(len(record['actions']), "action item"),
+             count(len(record['questions']), "open question"), count(len(record['risks']), "risk")]
     lead = record["decisions"][:2]
     return "; ".join(parts) + (". Decided: " + " | ".join(d["text"] for d in lead) if lead
                                else ".")

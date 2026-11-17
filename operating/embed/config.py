@@ -14,7 +14,7 @@ from typing import Mapping
 KEYS = ("PLX_EMBED_MODEL", "PLX_EMBED_ALLOW_REMOTE", "OPENAI_API_KEY", "PLX_PG_DSN",
         "PLX_EXCLUDED_PEOPLE_OIDS", "PLX_EXCLUDED_PEOPLE_FILE", "PLX_EMBED_BATCH",
         "PLX_EMBED_THREADS", "PLX_EMBED_DIMENSIONS", "PLX_EMBED_PRECISION", "HF_HOME", "PLX_WORKBENCH_STATE_DIR")
-# The remote
+# Local by decision 2026-10-29 (the OpenAI org has no credits): the remote
 # provider stays wired behind PLX_EMBED_ALLOW_REMOTE=1 and is chosen by PLX_EMBED_MODEL.
 DEFAULT_MODEL = "BAAI/bge-m3"
 LOCAL_MODEL = "BAAI/bge-m3"

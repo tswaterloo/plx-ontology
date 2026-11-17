@@ -576,8 +576,211 @@ class DocumentsTests(unittest.TestCase):
         store.conn.set_trace_callback(None)
         plan = " ".join(str(r["detail"]) for r in store.conn.execute(
             "EXPLAIN QUERY PLAN " + sql[-1]))
-        self.assertIn("SEARCH fd USING INDEX", plan)
-        self.assertNotIn("SCAN t", plan)
+        self.assertRegex(plan, r"SEARCH (fd|f2) USING (COVERING )?INDEX "
+                               r"sqlite_autoindex_text_fields")
+        for table in ("fd", "f2", "t", "t2"):
+            self.assertNotRegex(plan, rf"SCAN {table}\b")
+
+    def test_a_hits_text_read_is_bounded_to_its_ranked_fields_whatever_the_document_size(self):
+        """AUD-11 (live 11-05: a free-text find 205 s, every chunk of every hybrid hit read
+        before ranking). A hit is read from the fields its best-ranked search chunks were
+        cut from (their citations, best first), the first HIT_FIELD_CHUNKS chunks of each;
+        an object with no hint this store holds for the version read (a stale index) from
+        its first HIT_FIELDS fields. 1, 10 and 60 hits of 40 pages of 40 chunks each: one
+        object each, none lost or doubled, the rows read bounded, every statement on the
+        citation and chunk keys."""
+        import re
+        import zlib
+        from operating import ontology_tools as ot
+        from operating import ontology_tools_policy
+        store = self.tools.base.store
+        scope = self.tools.base._scope(FULL, NOW)
+        field = 10_000
+        for n in (1, 10, 60):
+            with self.subTest(hits=n):
+                versions, hints = {}, {}
+                for i in range(n):
+                    oid, handle = f"{A1}-{n}-{i}", f"{A1_H}-{n}-{i}"
+                    store.conn.execute(
+                        "INSERT INTO objects SELECT ?, object_type, binding_id, ?, "
+                        "audience_key, first_recorded_at, missing_from_source_since FROM objects "
+                        "WHERE object_id = ?", (oid, json.dumps([f"a-{n}-{i}"]), A1))
+                    store.conn.execute(
+                        "INSERT INTO object_versions SELECT ?, ?, ?, lineage, markings, "
+                        "recorded_at, superseded_at FROM object_versions WHERE object_id = ?",
+                        (oid, handle, _h(handle), A1))
+                    for page in range(40):
+                        field += 1
+                        store.conn.execute(
+                            "INSERT INTO text_fields (field_id, object_id, version_handle, "
+                            "citation, field_path, document_kind, sender_class, text_digest) "
+                            "VALUES (?,?,?,?,'row.content_text','attachment','person','d')",
+                            (field, oid, handle, f"{handle}&page={page:02d}"))
+                        for chunk in range(40):
+                            store.conn.execute(
+                                "INSERT INTO text_chunks (field_id, start, body) VALUES (?,?,?)",
+                                (field, chunk * 100, zlib.compress(
+                                    f"page {page} chunk {chunk} of {oid}".encode())))
+                    versions[oid] = handle
+                    # every other hit names two pages; the rest a page of an older version
+                    hints[oid] = ([f"{handle}&page=17", f"{handle}&page=31"] if i % 2 == 0
+                                  else [f"{A1_H}-old&page=17"])
+                rows = store.object_chunks(scope, versions, hints)
+                by_object: dict = {}
+                for row in rows:
+                    by_object.setdefault(row["object_id"], []).append(row)
+                self.assertEqual(set(by_object), set(versions))
+                for i, oid in enumerate(versions):
+                    got = by_object[oid]
+                    pages = list(dict.fromkeys(r["citation"].rsplit("=", 1)[1] for r in got))
+                    if i % 2 == 0:   # the ranked pages, in rank order, nothing else
+                        self.assertEqual(pages, ["17", "31"])
+                        self.assertEqual(len(got), 2 * ontology_tools_policy.HIT_FIELD_CHUNKS)
+                    else:            # the stale hint: the first pages instead
+                        self.assertEqual(pages, ["00", "01", "02"][:ontology_tools_policy.HIT_FIELDS])
+                        self.assertEqual(len(got), ontology_tools_policy.HIT_FIELDS * ontology_tools_policy.HIT_FIELD_CHUNKS)
+                    self.assertEqual(len({r["row_no"] for r in got}), len(got))
+                    starts = [r["citation"] + str(r["row_no"]) for r in got]
+                    self.assertEqual(len(starts), len(set(starts)))
+                if not isinstance(store.conn, sqlite3.Connection):
+                    continue   # SQLite's query plan (Postgres reads by its own indexes)
+                sql = []
+                store.conn.set_trace_callback(sql.append)
+                store.object_chunks(scope, versions, hints)
+                store.conn.set_trace_callback(None)
+                for statement in [q for q in sql if "text_chunks" in q]:
+                    plan = " ".join(str(r["detail"]) for r in store.conn.execute(
+                        "EXPLAIN QUERY PLAN " + statement))
+                    for table in ("fd", "f2", "t", "t2"):
+                        self.assertNotRegex(plan, rf"SCAN {table}\b")
+                    self.assertTrue(re.search(r"SEARCH (fd|f2) USING (COVERING )?INDEX "
+                                              r"sqlite_autoindex_text_fields", plan), plan)
+        # a reader who may not read the object gets no row of it, hint or not
+        ops = self.tools.base._scope(OPS, NOW)
+        hidden = {M2: M2_H}
+        self.assertEqual(store.object_chunks(ops, hidden, {M2: [M2_H]}), [])
+
+    def _attachments(self, n, pages=6, chunks=5, tag="h"):
+        """New tools over a store holding ``n`` more attachments like A1 (same mailbox and
+        lineage), each ``pages`` pages of ``chunks`` chunks, page 4 chunk 2 naming "shea
+        butter"; their (object id, version handle). Written before the tools are made, so
+        a Postgres run of this suite (``operating.tests.pg_store_mode``) loads them."""
+        made: list = []
+        self.tools = tools(self.reader, extend=lambda store: made.extend(
+            self._attachment_rows(store, n, pages, chunks, tag)))
+        return made
+
+    @staticmethod
+    def _attachment_rows(store, n, pages, chunks, tag):
+        import zlib
+        made = []
+        for i in range(n):
+            oid, handle = f"{A1}-{tag}{i}", f"{A1_H}-{tag}{i}"
+            store.conn.execute(
+                "INSERT INTO objects SELECT ?, object_type, binding_id, ?, audience_key, "
+                "first_recorded_at, missing_from_source_since FROM objects WHERE object_id = ?",
+                (oid, json.dumps([f"a-{tag}{i}"]), A1))
+            store.conn.execute(
+                "INSERT INTO object_versions SELECT ?, ?, ?, lineage, markings, "
+                "recorded_at, superseded_at FROM object_versions WHERE object_id = ?",
+                (oid, handle, _h(handle), A1))
+            for page in range(pages):
+                field = store.conn.execute(
+                    "INSERT INTO text_fields (object_id, version_handle, citation, field_path, "
+                    "document_kind, sender_class, text_digest) VALUES "
+                    "(?,?,?,'row.content_text','attachment','person','d')",
+                    (oid, handle, f"{handle}&page={page}")).lastrowid
+                for chunk in range(chunks):
+                    store.conn.execute(
+                        "INSERT INTO text_chunks (field_id, start, body) VALUES (?,?,?)",
+                        (field, chunk * 100, zlib.compress(
+                            f"page {page} chunk {chunk}: shea butter lot".encode()
+                            if page == 4 and chunk == 2 else
+                            f"page {page} chunk {chunk}: other words".encode())))
+            made.append((oid, handle))
+        return made
+
+    def _ranked_find(self, hits, arguments, actor=FULL, monotonic=None, waits=None):
+        from unittest import mock
+        from operating.search import document_marks, plug
+
+        def ranked(*args, wait=None, **kwargs):
+            if waits is not None:
+                waits.append(wait)
+            return plug.Ranked(hits, "hybrid:test")
+        base = self.tools.base
+        held = base.monotonic
+        if monotonic is not None:
+            base.monotonic = monotonic
+        try:
+            # search on, and its store read: no document here is marked beyond the reader
+            # (with no search store to read, every file would be withheld: fail closed)
+            with mock.patch.object(plug, "enabled", lambda: True), \
+                    mock.patch.object(plug, "is_now", lambda *args: True), \
+                    mock.patch.object(plug, "prefetch", lambda *a, **k: None), \
+                    mock.patch.object(plug, "ranked", ranked), \
+                    mock.patch.object(document_marks, "withheld_set",
+                                      lambda held: (frozenset(), frozenset())):
+                return ok(self, "plx.find", base.call("plx.find", arguments, actor))
+        finally:
+            base.monotonic = held
+
+    def test_a_free_text_find_quotes_each_hit_from_its_ranked_page_n_1_10_60(self):
+        """AUD-11: each hybrid hit is one candidate, quoted from the page its best search
+        chunk was cut from (the chunk naming the query's words), cited to that page; no hit
+        lost or doubled, whatever the count; one the reader may not read never shown."""
+        for n in (1, 10, 60):
+            with self.subTest(hits=n):
+                self.setUp()
+                made = self._attachments(n, tag=f"n{n}-")
+                hits = [{"object_id": oid, "handle": f"{handle}&page=4",
+                         "chunk_handles": [f"{handle}&page=4", f"{handle}&page=1"]}
+                        for oid, handle in made]
+                hits.append({"object_id": M2, "handle": M2_H, "chunk_handles": [M2_H]})
+                arguments = {"query": "shea butter", "limit": 50}
+                pages = [self._ranked_find(hits, arguments, OPS)]
+                while pages[-1]["completeness"].get("next_cursor") and len(pages) < 40:
+                    pages.append(self._ranked_find(hits, dict(arguments, cursor=pages[-1][
+                        "completeness"]["next_cursor"]), OPS))
+                shown = [c for page in pages for c in page["candidates"]
+                         if not c.get("repeated")]
+                listed = [c["object"]["object_id"] for c in shown]
+                self.assertEqual(len(listed), len(set(listed)))   # none doubled
+                self.assertNotIn(M2, json.dumps(pages))   # another mailbox: never shown
+                self.assertEqual(set(listed), {oid for oid, _ in made})   # none lost
+                for candidate in shown:
+                    raw = candidate["matched"]["raw"]
+                    self.assertTrue(raw["origin"]["citation"].endswith("&page=4"), raw)
+                    self.assertIn("shea butter", raw["untrusted_text"])
+
+    def test_a_free_text_find_past_its_time_budget_returns_what_it_found_and_says_so(self):
+        """AUD-11: a free-text find stops at its wall budget (FIND_TEXT_SECONDS, ~5 s):
+        the ranked hits found by then are the answer, cut (completeness reason
+        time_budget, never complete), with a time_budget gap saying more may exist;
+        the ranking is waited for no longer than the budget."""
+        from operating import ontology_tools as ot
+        from operating import ontology_tools_policy
+        made = self._attachments(3, tag="t")
+        hits = [{"object_id": oid, "handle": f"{handle}&page=4",
+                 "chunk_handles": [f"{handle}&page=4"]} for oid, handle in made]
+        ticks = iter(range(0, 10 ** 6, 4))   # every reading of the clock: 4 s later
+        waits: list = []
+        out = self._ranked_find(hits, {"query": "shea butter"},
+                                monotonic=lambda: float(next(ticks)), waits=waits)
+        self.assertEqual(len(waits), 1)
+        self.assertLessEqual(waits[0], ontology_tools_policy.FIND_TEXT_SECONDS)
+        self.assertEqual({c["object"]["object_id"] for c in out["candidates"]},
+                         {oid for oid, _ in made})
+        self.assertEqual(out["completeness"]["reason"], "time_budget")
+        self.assertFalse(out["completeness"]["complete"])
+        self.assertIsNone(out["completeness"]["total"])
+        (gap,) = [g for g in out["gaps"] if g["reason"] == "time_budget"]
+        self.assertIn("3 record(s)", gap["detail"])
+        self.assertNotIn("scan_cap", [g["reason"] for g in out["gaps"]])
+        # within the budget: the same find is not cut by time
+        still = self._ranked_find(hits, {"query": "shea butter"}, monotonic=lambda: 0.0)
+        self.assertNotIn("time_budget", [g["reason"] for g in still["gaps"]])
+        self.assertNotEqual(still["completeness"].get("reason"), "time_budget")
 
     def test_a_typed_find_of_a_type_holding_no_text_never_runs_hybrid_search(self):
         # A hybrid hit is quoted from its object's stored text: a purchase order (Portal
@@ -1014,7 +1217,11 @@ class BareIdentifierTests(unittest.TestCase):
                                                          {"query": NUMBER}, FULL))
         self.assertEqual(self.reading_gaps(labelled), [])
         self.assertNotIn(self.M3_H, {d["citation"] for d in labelled["documents"]})
-        token = "7" * 90                  # longer than any kind's form: read by no kind
+        # Numbers longer than any numeric kind's form: read by no kind. Since CT-D-09
+        # (90fc841b8a) a Message-ID is any visible ASCII up to 998 characters, no @
+        # needed, so one bare run of digits reads as one; the space between the two
+        # (no visible ASCII) keeps the whole query from being a Message-ID.
+        token = "7" * 45 + " " + "7" * 45
         self.assertEqual(ot._query_keys(identifiers, token, None), [])
         unread = ok(self, "plx.documents", tools_.call("plx.documents",
                                                        {"query": token}, FULL))
@@ -1187,6 +1394,8 @@ class ReadTests(unittest.TestCase):
         that ISO date holds on the cell. Another column, Sage's zero date and a value
         that is no calendar day are shown as held."""
         from operating import claim_checks
+        from operating import claim_checks_cells
+        from operating import claim_checks_values
         whole = ok(self, "plx.read", self.call(citation=SAGE_SHIPMENT))["fields"]
         self.assertEqual(whole["row.shidate"], {"untrusted_text": "2018-07-10", "origin": {
             "citation": SAGE_SHIPMENT, "field_path": "row.shidate"}})
@@ -1200,8 +1409,8 @@ class ReadTests(unittest.TestCase):
         invoice = ok(self, "plx.read", self.call(citation=SAGE_INVOICE))["fields"]
         self.assertEqual(invoice["row.invdate"]["untrusted_text"], "20181332")
         claim = {"kind": "text", "value": "2018-07-10"}
-        form = claim_checks.value_form(claim, SAGE_SHIPMENT, {}, "row.shidate")
-        self.assertTrue(claim_checks._same_value(claim, "20180710", form))
+        form = claim_checks_cells.value_form(claim, SAGE_SHIPMENT, {}, "row.shidate")
+        self.assertTrue(claim_checks_values._same_value(claim, "20180710", form))
 
     JSON_ROW = "api://public.app_purchase_order/j@0000000000000001-1"
 
@@ -1958,7 +2167,7 @@ class MailCaptureReadTests(unittest.TestCase):
         self.assertNotIn("content", out)
         self.assertEqual([(g["reason"], g["state"]) for g in out["gaps"]],
                          [("text_not_extracted", "not_ingested")])
-        self.assertIn("unsupported", out["gaps"][0]["detail"])
+        self.assertIn("binary_no_text", out["gaps"][0]["detail"])  # CAP-L210: a named terminal class, not "unsupported"
         self.assertEqual(out["completeness"]["reason"], "text_not_extracted")
         self.assertFalse(out["completeness"]["complete"])
         # A reader the mailbox audience withholds gets neither text nor gap.
@@ -2024,10 +2233,11 @@ class MailCaptureCitationTests(unittest.TestCase):
 
     def claim(self, runtime: Any, handle: str, actor: Actor, value: str) -> dict:
         from operating import claim_checks
+        from operating import claim_checks_parse
         from operating import ontology_tools_investigate as oi
         item = {"id": "F1", "texts": [], "citations": [{"handle": handle,
                                                         "status": "resolved"}],
-                "value_claims": claim_checks.parse_value_claims(
+                "value_claims": claim_checks_parse.parse_value_claims(
                     [{"value": value, "citation": handle, "field": "row.subject"}],
                     [handle], [])}
         return claim_checks.check_items(
@@ -2043,6 +2253,7 @@ class MailCaptureCitationTests(unittest.TestCase):
         from integrations.captured_text import container_members, member_handle
         from ontology.tests.test_container_members import zipped
         from operating import claim_checks
+        from operating import claim_checks_parse
         from operating import ontology_tools_investigate as oi
         cm = self.cm
         content = zipped([("a/one.txt", b"first spec"), ("a/two.txt", b"second spec")])
@@ -2068,7 +2279,7 @@ class MailCaptureCitationTests(unittest.TestCase):
         def count(cited, actor=cm.READER_A):
             item = {"id": "F1", "texts": [f"At least {len(cited)} specs."],
                     "citations": [{"handle": h, "status": "resolved"} for h in cited],
-                    "value_claims": claim_checks.parse_value_claims(
+                    "value_claims": claim_checks_parse.parse_value_claims(
                         [{"value": str(len(cited)), "op": "count",
                           "of": [{"citation": h} for h in cited]}], cited, [])}
             return claim_checks.check_items(

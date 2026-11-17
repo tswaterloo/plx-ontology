@@ -81,7 +81,11 @@ class Rule(Engine):
         self.thread(w, 1, last=12)                                 # customer asked, idle
         self.thread(w, 2, last=2, n_msgs=2, ours_last=True)        # we wrote last, fresh
         self.thread(w, 3, last=12, customer="b", sender=OTHER)     # another customer
-        self.thread(w, 4, last=12, link=False)                     # no link: its one domain
+        self.thread(w, 4, last=12, link=False)                     # no link, no record: out
+        stated = w.obj("Customer", {"name": "Stated customer", "email": "orders@stated-customer.example"})
+        self.thread(w, 8, last=12, link=False, sender="lab@stated-customer.example")   # by record
+        w.obj("Supplier", {"name": "Stated supplier", "rep_email": "rep@stated-supplier.example"})
+        self.thread(w, 9, last=12, link=False, sender="qa@stated-supplier.example")    # supplier
         self.thread(w, 6, last=12, link=False, sender="someone@gmail.com")   # personal mail
         self.thread(w, 7, last=12, first_ours=True)                # we asked: a supplier's
         mail(w, day(12), sender="news@mail.synth-shop.example", to=(OURS,),
@@ -89,16 +93,19 @@ class Rule(Engine):
         summary = self.run_rules(w)
         self.assertEqual(summary["detectors"][rd.RULE], "complete")
         lines = self.lines()
-        self.assertEqual(len(lines), 4)                             # 1, 2, 3, 4 (not 6 or 7)
+        self.assertEqual(len(lines), 4)                       # 1, 2, 3, 8 (not 4, 6, 7 or 9)
         states = sorted(g["event"]["state"] for g in lines)
         self.assertEqual(states, ["waiting_on_customer", "waiting_on_us", "waiting_on_us",
                                   "waiting_on_us"])
         keys = {g["event"]["project"] for g in lines}
         self.assertEqual(len(keys), 4)                              # one per customer/thread
         idle = self.read(kinds=[rd.IDLE], limit=5000)["gaps"]
-        self.assertEqual(len(idle), 3)                              # threads 1, 3 and 4
-        party = [g["event"] for g in lines if g["event"]["customer"] is None]
-        self.assertEqual([e["party"] for e in party], ["@synth-customer.example"])
+        self.assertEqual(len(idle), 3)                              # threads 1, 3 and 8
+        # never grouped by mail domain: every line has its customer, thread 8 by the record
+        # stating its domain; the supplier's and the unknown company's threads are out
+        self.assertTrue(all(isinstance(g["event"]["customer"], str) for g in lines))
+        self.assertIn(stated, {g["event"]["customer"] for g in lines})
+        self.assertFalse([g for g in lines if g["event"].get("party")])
         self.assertTrue(all(e["owner"] for e in (g["event"] for g in lines)))
         text = json.dumps(lines + idle)
         self.assertNotIn("new blend", text)                         # never a body
@@ -198,6 +205,15 @@ class Board(unittest.TestCase):
         out = rd.board([bad, gone, other, {"kind": rd.LINE, "event": "x"}], date(2026, 11, 8),
                        decide=self.allow("Customer:1"))
         self.assertEqual(out["projects"], [])
+
+    def test_a_line_kept_from_before_with_only_a_mail_domain_is_not_shown(self):
+        """Lines stored before projects needed a customer (grouped by the outside domain,
+        suppliers mixed in) leave the board at once, without waiting for the next run."""
+        by_domain = self.line(1, project="dom")
+        by_domain["event"] = {**by_domain["event"], "customer": None, "party": "@synth-vendor.example"}
+        kept = self.line(2, project="cust")
+        out = rd.board([by_domain, kept], date(2026, 11, 8), decide=self.allow("Customer:1"))
+        self.assertEqual([p["id"] for p in out["projects"]], ["cust"])
 
     def test_idle_waiting_on_and_owner_and_sorting(self):
         gaps = [self.line(1, project="a", days=2), self.line(2, project="b", days=9),

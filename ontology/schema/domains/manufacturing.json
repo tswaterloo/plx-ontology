@@ -247,17 +247,6 @@
             "precedence": [
               {
                 "lineage": [
-                  "gold_etl_from_fm"
-                ],
-                "evidence": [
-                  {
-                    "kind": "ref",
-                    "id": "upstream-code.etlmanufacturingorders.cdba79"
-                  }
-                ]
-              },
-              {
-                "lineage": [
                   "fm_bronze"
                 ],
                 "evidence": [
@@ -270,9 +259,20 @@
                     "id": "upstream-code.fetchassemblyorders.9aa7f9"
                   }
                 ]
+              },
+              {
+                "lineage": [
+                  "gold_etl_from_fm"
+                ],
+                "evidence": [
+                  {
+                    "kind": "ref",
+                    "id": "upstream-code.etlmanufacturingorders.cdba79"
+                  }
+                ]
               }
             ],
-            "note": "The Portal reads AO detail from FM; the gold copy is ETL output. Native MO rows have no confirmed authority until Q1 is answered."
+            "note": "The Portal reads AO detail from FM; the gold copy is ETL output, so FileMaker decides the status and the ETL copy follows it (a Portal copy left SCHEDULED or RELEASED after FileMaker realized or deleted the order is stale: 13 of 15 sampled late alerts on 11-11; option a). Native MO rows have no confirmed authority until Q1 is answered."
           },
           "evidence": [
             {
@@ -284,14 +284,21 @@
         {
           "name": "ordered_quantity",
           "value_type": "quantity",
-          "description": "Quantity ordered at AO creation: FM qtytotal (unit in units), gold MO quantity (unit in uom; the only figure for Portal-native MOs).",
+          "description": "Quantity ordered at AO creation: FM qtytotal (unit in units), gold MO quantity (unit in uom; the only figure for Portal-native MOs), each read only when positive: a 0 or blank is a gap (source_condition_unmet), never a stored 0 (AUD-08: qtytotal is empty and the MO quantity 0 on every sampled AO). The AO's size in pieces and its expected yield, present on 63-69%, are ordered_pieces and expected_quantity.",
           "quantity_role": "ordered",
           "sources": [
             {
               "binding": "portal.fm_assembly_order",
               "path": "qtytotal",
               "parser": "decimal_text",
-              "unit_from": "units"
+              "unit_from": "units",
+              "when": [
+                {
+                  "path": "qtytotal",
+                  "op": "gte",
+                  "value": "0.000001"
+                }
+              ]
             },
             {
               "binding": "portal.app_manufacturing_order",
@@ -302,6 +309,11 @@
                 {
                   "path": "custom_fields.fmId",
                   "op": "absent"
+                },
+                {
+                  "path": "quantity",
+                  "op": "gte",
+                  "value": "0.000001"
                 }
               ],
               "note": "Not on an FM migration copy (custom_fields.fmId set): its quantity is FM qtymanufold, the expected yield, not the ordered quantity.",
@@ -578,19 +590,33 @@
         {
           "name": "final_quantity",
           "value_type": "quantity",
-          "description": "FM finalqty (silver yield_actual). The Portal uses it as a fallback for qty manufactured; its exact meaning is not documented in Portal code, so it is an 'actual' figure, never 'produced' or 'filled'.",
+          "description": "FM finalqty (silver yield_actual). The Portal uses it as a fallback for qty manufactured; its exact meaning is not documented in Portal code, so it is an 'actual' figure, never 'produced' or 'filled'. A 0 or blank final quantity is a gap (source_condition_unmet), never a stored 0: FM finalqty and silver yield_actual are 0 or empty on every sampled AO (AUD-08).",
           "unit": "each",
           "quantity_role": "actual",
           "sources": [
             {
               "binding": "portal.fm_assembly_order",
               "path": "finalqty",
-              "parser": "decimal_text"
+              "parser": "decimal_text",
+              "when": [
+                {
+                  "path": "finalqty",
+                  "op": "gte",
+                  "value": "0.000001"
+                }
+              ]
             },
             {
               "binding": "portal.app_manufacturing_order",
               "path": "yield_actual",
-              "parser": "decimal_text"
+              "parser": "decimal_text",
+              "when": [
+                {
+                  "path": "yield_actual",
+                  "op": "gte",
+                  "value": "0.000001"
+                }
+              ]
             }
           ],
           "authority": {
@@ -726,12 +752,30 @@
             {
               "binding": "portal.fm_assembly_order",
               "path": "lotno",
-              "parser": "trim"
+              "parser": "trim",
+              "when": [
+                {
+                  "path": "lotno",
+                  "op": "not_in",
+                  "value": [
+                    "0"
+                  ]
+                }
+              ]
             },
             {
               "binding": "portal.app_manufacturing_order",
               "path": "lot_number",
-              "parser": "trim"
+              "parser": "trim",
+              "when": [
+                {
+                  "path": "lot_number",
+                  "op": "not_in",
+                  "value": [
+                    "0"
+                  ]
+                }
+              ]
             }
           ],
           "authority": {
@@ -770,7 +814,8 @@
               "kind": "ref",
               "id": "upstream-code.silver-manufacturing-orders.9d477f"
             }
-          ]
+          ],
+          "description": "A lot number of 0 is FM's stand-in for no lot: a gap (source_condition_unmet), never a lot (AUD-08); a blank cell stays a source null."
         },
         {
           "name": "po_reference",
@@ -905,7 +950,8 @@
             {
               "binding": "portal.app_manufacturing_order",
               "path": "deleted_at",
-              "parser": "iso_timestamp"
+              "parser": "iso_timestamp",
+              "naive_zone": "UTC"
             }
           ],
           "evidence": [
@@ -923,7 +969,8 @@
             {
               "binding": "portal.fm_assembly_order",
               "path": "audittimestampmodified",
-              "parser": "iso_timestamp"
+              "parser": "iso_timestamp",
+              "wall_clock_zone": "America/New_York"
             }
           ],
           "evidence": [
@@ -979,7 +1026,8 @@
             {
               "binding": "portal.fm_assembly_order",
               "path": "audittimestampcreated",
-              "parser": "iso_timestamp"
+              "parser": "iso_timestamp",
+              "wall_clock_zone": "America/New_York"
             }
           ],
           "evidence": [
@@ -987,6 +1035,25 @@
               "kind": "context_pack",
               "ref": "devloop/CONTEXT/03-PORTAL.md#6",
               "note": "Portal app_* timestamps are Prisma naive UTC (reporting API since mode timestamp-utc); updated_at is also bumped by the ETL; FM audittimestampcreated/modified are FileMaker's own times."
+            }
+          ]
+        },
+        {
+          "name": "created_by_account",
+          "value_type": "text",
+          "description": "The FileMaker account that created the assembly order (assembly_order.auditcreator, a first name or account name such as \"Jesse\"): who planned it. The with_owners step (ontology/owner_links.py) links it to the one staff Person whose address local part it spells, as a lead (a name is no identity).",
+          "sources": [
+            {
+              "binding": "portal.fm_assembly_order",
+              "path": "auditcreator",
+              "parser": "trim"
+            }
+          ],
+          "evidence": [
+            {
+              "kind": "data_profile",
+              "ref": "source mirror public.assembly_order 2026-11-12",
+              "note": "auditcreator is held on 11,092 of 11,105 current FM assembly orders (12 distinct accounts); 9,672 spell exactly one staff Person's address local part."
             }
           ]
         },
@@ -3323,7 +3390,8 @@
             {
               "binding": "portal.fm_batch",
               "path": "timestampreleased",
-              "parser": "iso_timestamp"
+              "parser": "iso_timestamp",
+              "wall_clock_zone": "America/New_York"
             },
             {
               "binding": "portal.app_batch_record",
@@ -3579,7 +3647,8 @@
             {
               "binding": "portal.app_manufacturing_job",
               "path": "deleted_at",
-              "parser": "iso_timestamp"
+              "parser": "iso_timestamp",
+              "naive_zone": "UTC"
             }
           ]
         }
@@ -5277,7 +5346,8 @@
       "time": {
         "binding": "portal.app_manufacturing_order",
         "path": "scheduled_start_date",
-        "parser": "iso_timestamp"
+        "parser": "iso_timestamp",
+        "naive_zone": "UTC"
       },
       "qualifiers": [
         {
@@ -5301,7 +5371,8 @@
       "time": {
         "binding": "portal.app_manufacturing_order",
         "path": "completed_at",
-        "parser": "iso_timestamp"
+        "parser": "iso_timestamp",
+        "naive_zone": "UTC"
       },
       "qualifiers": [
         {
@@ -5584,7 +5655,8 @@
       "time": {
         "binding": "portal.fm_batch",
         "path": "timestampreleased",
-        "parser": "iso_timestamp"
+        "parser": "iso_timestamp",
+        "wall_clock_zone": "America/New_York"
       },
       "qualifiers": [
         {

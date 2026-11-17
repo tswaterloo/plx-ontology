@@ -361,11 +361,31 @@ class ToolsSearch:
         return (document_hits if self.tool == "plx.documents" else find_hits)(result)
 
 
+def served_path(environ: Mapping[str, str]) -> None:
+    """Refuse a live run that would not read as the served API does: the served path
+    reads Postgres only (``PLX_ONTOLOGY_PG=only``; ``=1`` scopes the reader to the record
+    tables alone, so no document can be found), and under the people exclusion the API
+    loads (without it the scope fails closed: no mailbox is granted and every personal
+    unit, mail, Teams and meetings, is dropped). Either measured a narrower reader than
+    production's (11-15: 0 of 124 mail units, no Teams), so the run stops instead."""
+    from integrations.people_exclusion import PeopleExclusion
+    mode = str(environ.get("PLX_ONTOLOGY_PG") or "")
+    if mode != "only":
+        raise RetrievalError(f"not_served_path:PLX_ONTOLOGY_PG={mode or 'unset'} (served: only)")
+    try:
+        guard = PeopleExclusion.from_env(environ)
+    except Exception:  # noqa: BLE001 - an unreadable guard is an unavailable one
+        raise RetrievalError("not_served_path:people_exclusion_unreadable") from None
+    if guard.unavailable:
+        raise RetrievalError(f"not_served_path:people_exclusion:{guard.unavailable}")
+
+
 def live_host(environ: Mapping[str, str], config: Path) -> Any:
     """The harness reader of ``PLX_EVAL_READER`` on the state and ``config`` (no secret
     is read from the environment: a fresh session secret is minted for this run)."""
     from scripts import eval_case_cards as cards
     from scripts import eval_real_agent as real
+    served_path(environ)
     claims, problem = real.reader_identity(environ, real.READER_ENV)
     state = Path(environ.get(real.STATE_ENV) or "")
     if claims is None or not state.is_dir() or not Path(config).is_file():

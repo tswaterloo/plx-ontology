@@ -289,8 +289,6 @@ PLAYBOOKS: dict[str, dict[str, Any]] = {
         "owner": "{n}: overdue receivables are growing: follow up.", "change": None},
     "aged_payable_worsening": {"about": "subject", "finance": True, "ask": None,
         "owner": "{n}: overdue payables are growing: review the payment plan.", "change": None},
-    "mc_task_overdue": {"about": "subject", "ask": None,
-        "owner": "{n} is overdue: finish it or move the date.", "change": None},
     "mc_task_stuck": {"about": "subject", "ask": None,
         "owner": "{n} has not moved: unblock it or reassign it.", "change": None},
     "mc_approval_pending": {"about": "subject", "ask": None,

@@ -38,14 +38,13 @@ from collections import deque
 from concurrent.futures import FIRST_COMPLETED, Future, ProcessPoolExecutor, wait
 from concurrent.futures.process import BrokenProcessPool
 from dataclasses import dataclass, field
-import multiprocessing
 from multiprocessing import context as mp_context, popen_spawn_posix, spawn as mp_spawn
 import os
 from pathlib import Path
 import sys
 import threading
 import time
-from typing import Any, Callable, Iterable, Mapping, Sequence
+from typing import Any, Callable, Mapping, Sequence
 
 from ontology import parent_watch
 
@@ -103,10 +102,13 @@ class WorkerSpec:
         # the engine's own resolution (``proactive_engine._people``): every worker reads
         # with the exclusion the engine clears mail with, or with none (fail closed)
         env = environ_with_exclusion(os.environ if environ is None else environ)
+        # Names first, then only the exclusion's values: ``env.items()`` read every
+        # variable's value (the Graph and BC credentials included) to keep one prefix,
+        # a read the verifier's env guard counts against a spec that declares none.
         return cls(str(state_dir), str(store), config.tenant, config.principal,
                    str(config.mirror_audience),
                    None if config.capture_audience is None else str(config.capture_audience),
-                   tuple(sorted((k, v) for k, v in env.items()
+                   tuple(sorted((k, env[k]) for k in list(env)
                                 if k.startswith(ENV_PREFIXES))))
 
 

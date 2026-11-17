@@ -14,10 +14,9 @@ import hashlib
 import io
 import json
 from pathlib import Path
-from queue import Empty, Queue
+from queue import Queue
 import re
 import shutil
-import sys
 import tempfile
 import threading
 import unittest

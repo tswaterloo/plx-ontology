@@ -32,6 +32,7 @@ from ontology.project import build_store
 from ontology.schema import load_schema
 from ontology.tests.test_bc_mapping import MAN, StaticCaptures, bc
 from operating import ontology_tools as ot
+from operating import ontology_tools_policy
 from operating.case_runtime import CaseRuntime
 from operating.ontology_host import CaseHostTools
 from tests.test_ontology_tools import FULL, PO, ContractMixin, build, tools
@@ -145,7 +146,7 @@ class PortalConfigurationTests(ContractMixin, unittest.TestCase):
         client = WorkbenchReadApiClient("https://api.example.test", "plxwb_" + "m" * 40,
                                         fetch=down)
         for reasons in self.portal_gaps(self.host_tools("down", client)):
-            self.assertTrue(reasons & ot.FRESHNESS_REASONS, reasons)
+            self.assertTrue(reasons & ontology_tools_policy.FRESHNESS_REASONS, reasons)
             self.assertNotIn("source_not_configured", reasons)
 
     def test_a_capture_read_from_an_unconfigured_source_keeps_its_freshness_gap(self):

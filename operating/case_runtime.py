@@ -843,8 +843,10 @@ class CaseRuntime:
             if source == "teams-chat":
                 named.append(((result.get("meta") or {}).get("source_acl") or {})
                              .get("identities"))
-            if people_excluded(self.people_exclusion, named):
-                # The guard was usable (``exclusion_refusal`` above): it decided.
+            if people_excluded(self.people_exclusion, named) or self.participants_withheld(
+                    named, object_ids_only=True):
+                # The guard was usable (``exclusion_refusal`` above): it decided, and every
+                # identity it names is cleared or the message is withheld.
                 raise gate_refusal("capture_citation_unresolvable", REFUSED)
         if meetings:
             from .ontology_tools_evidence import people_excluded
@@ -857,7 +859,7 @@ class CaseRuntime:
             named.append(((result.get("meta") or {}).get("source_acl") or {})
                          .get("identities"))
             guard = self.address_exclusion() or self.people_exclusion
-            if people_excluded(guard, named):
+            if people_excluded(guard, named) or self.participants_withheld(named):
                 raise gate_refusal("capture_citation_unresolvable", REFUSED)
         stale_at = getattr(audience, "stale_opened_at", None)
         if opening and stale_at is not None:
@@ -865,6 +867,30 @@ class CaseRuntime:
             # full-read grant: journalled now, never for a refusal or a status check.
             self.journal_full_read_stale(audience.entitlement, source, stale_at)
         return result
+
+    def participants_withheld(self, named: Any, *, object_ids_only: bool = False) -> bool:
+        """Whether a captured Teams message or conversation, meeting, event or task naming
+        ``named`` is withheld from every reader by the participant rule
+        (``operating.excluded_people.participants_withheld``: every object id and address it
+        names must be a cleared person or an external counterpart; an excluded or
+        undecidable one withholds it), over the people directory of this runtime
+        (``people_graph.PeopleDirectory``), built once per tool call. ``object_ids_only``: a
+        Teams record, whose people are keyed by object id (``participants_withheld``)."""
+        from integrations.capture_mail import call_memo
+        from .excluded_people import participants_withheld
+        from .people_graph import PeopleDirectory
+        memo = call_memo()
+        key = ("runtime_people_directory", id(self), id(self.people_exclusion))
+        if memo is not None and key in memo:
+            directory = memo[key]
+        else:
+            try:
+                directory = PeopleDirectory.from_runtime(self)
+            except Exception:  # noqa: BLE001 - no directory: every identity undecided
+                directory = None
+            if memo is not None:
+                memo[key] = directory
+        return participants_withheld(directory, [named], object_ids_only=object_ids_only)
 
     def _capture_read(self, path: Path) -> CaptureStore:
         """The read-only connection to a capture store (the caller holds the lock): opened
@@ -895,7 +921,8 @@ class CaseRuntime:
         schema, journal and permission statements per message. Every read decides as
         before (the store's own gates). A store a writer has not brought up to date is
         read through the writer's store, opened and closed for this use, as before."""
-        from integrations.capture_mail import CaptureError, DB_FILE, MailCaptureStore, STORE_DIR
+        from integrations.capture_mail import DB_FILE, MailCaptureStore, STORE_DIR
+        from integrations.capture_mail_scope import CaptureError
         directory = Path(directory)
         stat = (directory.expanduser() / STORE_DIR / DB_FILE).stat()
         identity = (stat.st_dev, stat.st_ino)
@@ -965,7 +992,12 @@ class CaseRuntime:
         captures (``captures``), when they hold it; their gate refusing it is
         ``CitationUnresolvable``."""
         if _captured_handle(handle):
-            return _capture_view(self._capture_resolve(handle, actor, opening=True))
+            view = _capture_view(self._capture_resolve(handle, actor, opening=True))
+            if view["source"] == "bc":
+                # a field page row is cited under the record path's id (``row.id``)
+                from ontology.project_bc import cited_row
+                view["row"] = cited_row(handle, view["row"])
+            return view
         if handle.startswith(MAIL_SCHEME):
             return self.mail_capture(handle, actor)
         if self.captures is not None and handle.startswith(SHAREPOINT_SCHEME):

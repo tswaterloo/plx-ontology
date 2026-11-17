@@ -218,7 +218,8 @@
        "kind": "ref",
        "id": "wb.mc_sources"
       }
-     ]
+     ],
+     "description": "Mission Control's read tools (mc_get_context, mc_search_tasks, mc_get_task) return no createdAt on a task (live 2026-11-12: 0 of 4,862 captured tasks; the row's activity ages are relative words), so this stays empty until MC sends it; a task's dated history is its MCTaskEvent records (at)."
     },
     {
      "name": "updated_at",
@@ -228,6 +229,43 @@
        "binding": "mission_control.tasks",
        "path": "updatedAt",
        "parser": "iso_timestamp"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "wb.mc_sources"
+      }
+     ],
+     "description": "Mission Control's read tools (mc_get_context, mc_search_tasks, mc_get_task) return no updatedAt on a task (live 2026-11-12: 0 of 4,862 captured tasks; the row's activity ages are relative words), so this stays empty until MC sends it; a task's dated history is its MCTaskEvent records (at)."
+    },
+    {
+     "name": "completed_at",
+     "value_type": "timestamp",
+     "description": "When Mission Control marked the task done (completedAt; 2,424 of 4,862 live tasks, 2026-11-12). Absent on an open or cancelled task.",
+     "sources": [
+      {
+       "binding": "mission_control.tasks",
+       "path": "completedAt",
+       "parser": "iso_timestamp"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "wb.mc_sources"
+      }
+     ]
+    },
+    {
+     "name": "estimate",
+     "value_type": "text",
+     "description": "The task's size as Mission Control writes it (estimate: S, M or L).",
+     "sources": [
+      {
+       "binding": "mission_control.tasks",
+       "path": "estimate",
+       "parser": "trim"
       }
      ],
      "evidence": [

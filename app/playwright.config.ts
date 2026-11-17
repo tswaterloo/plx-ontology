@@ -24,7 +24,13 @@ export default defineConfig({
   use: {
     baseURL: external ?? `http://127.0.0.1:${APP_PORT}`,
     launchOptions: executablePath ? { executablePath } : {},
+    // E2E_PROXY: reach E2E_BASE_URL through a proxy (a browser on a Spark walks the box's app
+    // through an ssh -R SOCKS tunnel, so the box only serves pages)
+    ...(process.env.E2E_PROXY ? { proxy: { server: process.env.E2E_PROXY } } : {}),
     trace: "retain-on-failure",
+    // a page that never answers fails its step in a minute instead of holding the walk to its
+    // 45-minute limit (a connection that died under the browser hangs page.goto with no timeout)
+    navigationTimeout: 60_000,
   },
   projects: [
     { name: "desktop", use: { viewport: { width: 1440, height: 900 }, deviceScaleFactor: 1 } },
@@ -48,7 +54,7 @@ export default defineConfig({
       command: `npx next build && npx next start -p ${APP_PORT} -H 127.0.0.1`,
       url: `http://127.0.0.1:${APP_PORT}/signin`,
       reuseExistingServer: false,
-      timeout: 240_000,
+      timeout: 600_000,
       env: { PLX_API_ORIGIN: `http://127.0.0.1:${MOCK_PORT}`, NEXT_TELEMETRY_DISABLED: "1" },
     },
   ],

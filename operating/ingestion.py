@@ -216,7 +216,7 @@ def _error_reason(exc: BaseException) -> str:
     from integrations.live_source_guard import (NotVisible, ReadOnlyGuardError,
                                                 unavailable_detail)
     from integrations.people_exclusion import ExclusionUnavailable
-    from integrations.source_mirror import MirrorError
+    from integrations.source_mirror_values import MirrorError
 
     if isinstance(exc, ReadOnlyGuardError):
         return "guard_refused:ReadOnlyGuardError"

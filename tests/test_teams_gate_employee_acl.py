@@ -38,7 +38,7 @@ from operating.case_runtime import CaseRuntime, LiveReaders, _EmployeeItemAcl
 from operating.case_tools_host import CaptureCaseHostTools
 from operating.cases import CitationUnresolvable
 from operating.employee_permissions import EmployeePermissionPolicy, EmployeePermissionResolver
-from operating.ontology_tools import item_gate_from_case_runtime
+from operating.ontology_tools_results import item_gate_from_case_runtime
 from operating.tests.test_employee_permissions import OID, POLICY, Calls, member, portal_user
 
 EMPLOYEE = Actor("plx", frozenset({"employee:" + OID}))

@@ -297,9 +297,22 @@ SHAREPOINT_LIST_MENTION_LINK_RULE: Mapping[str, Any] = {
     "description": _MC_MENTION_DESCRIPTION.replace(
         "{what}", "SharePoint list item (a text value of its fields)"),
 }
+# A list item a curated type takes (``ontology/schema/domains/sharepoint_lists.json``,
+# rest_to_generated) is the same mention document under its own type: a mention's link
+# type is read from the document's object (ontology.mentions), so each such type declares
+# its own, or typing the item would drop its mention links.
+SHAREPOINT_LIST_MENTION_LINK_RULES: tuple[Mapping[str, Any], ...] = (
+    SHAREPOINT_LIST_MENTION_LINK_RULE,
+    *({**SHAREPOINT_LIST_MENTION_LINK_RULE, "from": source, "from_binding": binding,
+       "reverse_name": reverse, "description": _MC_MENTION_DESCRIPTION.replace(
+           "{what}", f"SharePoint list item typed as {source} (a text value of its fields)")}
+      for source, binding, reverse in (
+          ("ExpenseReceipt", "sharepoint.expense_receipts", "mentioned_in_expense_receipt"),
+          ("VendorInvoiceEntry", "sharepoint.vendor_invoices",
+           "mentioned_in_vendor_invoice_entry"))))
 MENTION_LINK_RULES: tuple[Mapping[str, Any], ...] = (MENTION_LINK_RULE,
                                                      SHAREPOINT_MENTION_LINK_RULE,
-                                                     SHAREPOINT_LIST_MENTION_LINK_RULE,
+                                                     *SHAREPOINT_LIST_MENTION_LINK_RULES,
                                                      ATTACHMENT_MENTION_LINK_RULE,
                                                      CONTAINER_MEMBER_MENTION_LINK_RULE,
                                                      *MC_MENTION_LINK_RULES,
@@ -1218,7 +1231,54 @@ def compile_documents(documents: Iterable[tuple[str, Any]], *,
     # Shadowing: a curated binding hides the generated raw type bound to the same source
     # relation (a Portal relation, a BC entity set, ...).
     curated_relations = {(b["source"], b["relation"]) for _, d in docs if d["origin"] == "curated"
-                         for t in d.get("object_types", []) for b in t["bindings"]}
+                         for t in d.get("object_types", []) for b in t["bindings"]
+                         if not b.get("rest_to_generated")}
+    # a curated binding taking only some rows (``rest_to_generated``) leaves the others to
+    # the generated raw type: its binding gets the complement of each such binding's row test
+    # (``where[0]``, negatable); any further predicate is the complement of another such
+    # binding's on the same relation, so the two take disjoint rows (an item stating both
+    # columns is one object) and the generated binding's complement stays exact.
+    rest: dict[tuple[str, str], list[dict]] = {}
+    rest_bindings: dict[tuple[str, str], list[tuple[str, dict, dict]]] = {}
+    for _, d in docs:
+        if d["origin"] != "curated":
+            continue
+        for t in d.get("object_types", []):
+            for b in t["bindings"]:
+                if not b.get("rest_to_generated"):
+                    continue
+                where = b.get("where") or []
+                negated = _negated(where[0]) if where else None
+                if negated is None:
+                    errors.append(f"{t['id']} binding {b['id']}: rest_to_generated needs one "
+                                  "where predicate (present, eq or in)")
+                    continue
+                rest.setdefault((b["source"], b["relation"]), []).append(negated)
+                rest_bindings.setdefault((b["source"], b["relation"]), []).append(
+                    (f"{t['id']} binding {b['id']}", b, negated))
+    for siblings in rest_bindings.values():
+        for label, b, negated in siblings:
+            others = [n for _, o, n in siblings if o is not b]
+            for extra in b["where"][1:]:
+                if extra not in others:
+                    errors.append(f"{label}: rest_to_generated needs one where predicate "
+                                  "(present, eq or in); a further one only excludes the "
+                                  "rows of another rest_to_generated binding of the relation "
+                                  f"(got {canonical_json(extra)})")
+        for i, (label, b, negated) in enumerate(siblings):
+            for other_label, o, other_negated in siblings[i + 1:]:
+                if other_negated not in b["where"][1:] and negated not in o["where"][1:]:
+                    errors.append(f"{label} and {other_label}: two rest_to_generated "
+                                  "bindings of one relation may take the same row; one "
+                                  "excludes the other's rows (its where holds the "
+                                  "complement of the other's first predicate)")
+    for _, d in docs:
+        if d["origin"] != "generated":
+            continue
+        for t in d.get("object_types", []):
+            for b in t["bindings"]:
+                for negated in rest.get((b["source"], b["relation"]), ()):
+                    b["where"] = [*b.get("where", []), negated]
     # shadowed raw type -> (its binding, the curated type and binding holding its records
     # whole: same relation and key, no row filter, no stand-in)
     retarget: dict[str, tuple[str, str, str]] = {}
@@ -1299,8 +1359,11 @@ def compile_documents(documents: Iterable[tuple[str, Any]], *,
                     item = moved
                 put(kind, table, item["id"], item, name)
     kind_specs = identifiers.get("kinds") if isinstance(identifiers, dict) else None
+    # kinds never read from text: a copy identity, or a number text overlaps
+    # (``never_in_text``): no mention link type targets a type only they identify
     copy_kinds = {name for name, spec in (kind_specs or {}).items()
-                  if isinstance(spec, dict) and spec.get("copies")} \
+                  if isinstance(spec, dict)
+                  and (spec.get("copies") or spec.get("never_in_text"))} \
         if isinstance(kind_specs, dict) else set()
     for rule, catalog_entries, home_types, home in mention_homes:
         for item in mention_links(compiled.object_types, home_types, catalog_entries, rule,
@@ -1511,6 +1574,8 @@ def compile_documents(documents: Iterable[tuple[str, Any]], *,
                                   "never authority (consolidation copies)")
             source_bindings = []
             for s in p["sources"]:
+                errors.extend(f"{where} source {s['binding']}: {e}" for e in _zone_errors(
+                    s, s.get("parser", "as_is"), p["value_type"]))
                 b = own.get(s["binding"])
                 if b is None:
                     errors.append(f"{where}: source binding {s['binding']!r} is not a binding "
@@ -1706,6 +1771,8 @@ def compile_documents(documents: Iterable[tuple[str, Any]], *,
                                   f"binding of {ev['object_type']}")
                 else:
                     check_columns(eid + " time", owner[1], [ev["time"]["path"]])
+                errors.extend(f"{eid} time: {e}" for e in _zone_errors(
+                    ev["time"], ev["time"].get("parser", "iso_timestamp"), "timestamp"))
         for q in ev["qualifiers"]:
             if q["object_type"] not in compiled.object_types:
                 errors.append(f"{eid}: qualifier object type {q['object_type']!r} does not exist")
@@ -1791,6 +1858,38 @@ def _canonical_link(link: Mapping[str, Any]) -> dict:
     out = _sorted_set(dict(link), "markings")
     out["bindings"] = sorted(link["bindings"], key=canonical_json)
     return out
+
+
+def _negated(predicate: Mapping[str, Any]) -> dict | None:
+    """The row test holding exactly where ``predicate`` does not (``rest_to_generated``):
+    present -> absent, eq v -> not_in [v], in vs -> not_in vs (not_in holds on a null or
+    missing cell, as eq/in never do); None for any other test."""
+    op = predicate.get("op")
+    values = ([predicate.get("value")] if op == "eq" else
+              list(predicate.get("value") or ()) if op == "in" else [])
+    if op in ("eq", "in") and any(v is None or (isinstance(v, str) and not v.strip())
+                                  for v in values):
+        return None   # a blank value: eq/in and not_in would both hold on a blank cell
+    if op == "present":
+        return {"path": predicate["path"], "op": "absent"}
+    if op == "eq":
+        return {"path": predicate["path"], "op": "not_in", "value": [predicate["value"]]}
+    if op == "in":
+        return {"path": predicate["path"], "op": "not_in", "value": list(predicate["value"])}
+    return None
+
+
+def _zone_errors(spec: Mapping[str, Any], parser: str, value_type: str) -> list[str]:
+    """A source's time-zone declaration (C-09): ``naive_zone`` or ``wall_clock_zone``,
+    never both, only on an ``iso_timestamp`` source of a timestamp."""
+    declared = [k for k in ("naive_zone", "wall_clock_zone") if k in spec]
+    if not declared:
+        return []
+    if len(declared) > 1:
+        return ["naive_zone and wall_clock_zone exclude each other"]
+    if parser != "iso_timestamp" or value_type != "timestamp":
+        return [f"{declared[0]} needs an iso_timestamp source of a timestamp"]
+    return []
 
 
 def schema_digest(compiled: CompiledSchema) -> str:

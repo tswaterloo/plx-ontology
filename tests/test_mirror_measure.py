@@ -17,6 +17,7 @@ import unittest
 from urllib.parse import parse_qs, urlsplit
 
 from verify import live_verify as lv
+from verify import live_verify_policy
 from integrations.http import SourceHttpError
 from integrations.workbench_read_api import WorkbenchReadApiClient
 from scripts import mirror_measure as mm
@@ -499,7 +500,7 @@ class BoundFirstCoverageTests(unittest.TestCase):
                           .read_text())
         self.assertEqual(lv.validate_spec(spec), [])
         self.assertEqual(spec["cadence"], "daily")
-        self.assertGreater(spec["timeout_seconds"], lv.MAX_TIMEOUT)
+        self.assertGreater(spec["timeout_seconds"], live_verify_policy.MAX_TIMEOUT)
         budget = float(spec["command"][spec["command"].index("--budget-seconds") + 1])
         self.assertLess(budget, spec["timeout_seconds"])
         expect = spec["expect"]
@@ -510,7 +511,7 @@ class BoundFirstCoverageTests(unittest.TestCase):
         for field in ("all_stable_served_complete", "accounted_equals_catalog",
                       "accounted_relation_count"):
             self.assertIn(field, spec["record"])
-        self.assertIn(lv.DAILY_REPORT_ARG, spec["command"])
+        self.assertIn(live_verify_policy.DAILY_REPORT_ARG, spec["command"])
 
     def test_unstable_relations_are_never_staged_and_leave_the_denominator(self):
         names = sorted(self.fake.catalog)
@@ -1121,7 +1122,7 @@ class TwoRunCounterTests(CounterFixture, unittest.TestCase):
     def test_a_carried_counter_check_ages_from_its_own_run_not_the_report_stamp(self):
         """results/daily/latest.json is rewritten as a daily set runs: it carries the
         counter's last check (run 48 h ago) under a fresh ``generated_at``."""
-        from datetime import datetime, timedelta, timezone
+        from datetime import datetime, timezone
         self.fake.add("public.app_child", [cuid(i) for i in range(1000)])
         self.reinsert_each_run("public.app_child")
         with tempfile.TemporaryDirectory() as tmp:
@@ -1333,7 +1334,7 @@ class ConsistentReportTests(unittest.TestCase):
         spec = json.loads((lv.ROOT / lv.SPECS_DIR_NAME / "ontology.projection.json")
                           .read_text())
         self.assertEqual(lv.validate_spec(spec), [])
-        self.assertIn(lv.DAILY_REPORT_ARG, spec["command"])
+        self.assertIn(live_verify_policy.DAILY_REPORT_ARG, spec["command"])
         fields = lv._recorded(spec, result)
         self.assertEqual(fields["completeness"]["unstable_relations"], [unstable])
 
@@ -1388,7 +1389,7 @@ class DailyReportPlaceholderTests(unittest.TestCase):
                 "expect": {"exit_code": 0, "json_fields": []}}
 
     def test_only_the_previous_report_argument_may_name_the_daily_report(self):
-        self.assertEqual(lv.validate_spec(self.spec(lv.DAILY_REPORT_ARG)), [])
+        self.assertEqual(lv.validate_spec(self.spec(live_verify_policy.DAILY_REPORT_ARG)), [])
         for bad in ("{daily_report}", "--other={daily_report}", "--x={secret}"):
             with self.assertRaises(lv.SpecError):
                 lv.validate_spec(self.spec(bad))

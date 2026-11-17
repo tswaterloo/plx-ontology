@@ -21,6 +21,7 @@ from datetime import datetime
 from unittest import mock
 
 from integrations import capture_mail
+from integrations import capture_mail_scope
 from integrations.capture_mail import MailCaptureStore
 from integrations.live_source_guard import LiveSourceAudience
 from integrations.people_exclusion import PeopleExclusion
@@ -265,7 +266,7 @@ class LaterExclusionTests(AllMailboxesCase):
 
     def test_a_mailbox_added_to_the_deny_list_is_hidden_then_purged(self):
         graph = self.captured()
-        scope = json.loads(Path(capture_mail.REPO_ROOT / "integrations" /
+        scope = json.loads(Path(capture_mail_scope.REPO_ROOT / "integrations" /
                                 "mail_all_mailboxes_scope.json").read_text())
         scope["deny"]["address_tokens"].append("box3")
         path = Path(self.tmp.name) / "scope.json"

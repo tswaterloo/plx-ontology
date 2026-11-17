@@ -24,9 +24,10 @@ from unittest.mock import patch
 from urllib.parse import urlsplit
 
 from integrations import mirror_capture as mc, source_mirror as sm
-from integrations.capture_mail import CaptureError
+from integrations.capture_mail_scope import CaptureError
 from integrations.http import SourceHttpError, SourceUnavailable
-from integrations.source_mirror import MirrorError, SourceMirror
+from integrations.source_mirror import SourceMirror
+from integrations.source_mirror_values import MirrorError
 from integrations.tests.test_source_mirror import BASE, KEY, Clock, FakeWorkbench
 from integrations.workbench_read_api import WorkbenchReadApiClient
 from ontology import identifiers, resolve

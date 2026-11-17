@@ -55,7 +55,7 @@ from dataclasses import dataclass
 from datetime import date
 from decimal import Decimal
 import json
-from typing import Any, Callable, Iterable, Mapping, Sequence
+from typing import Any, Callable, Mapping, Sequence
 
 from ontology.units import unit_token
 

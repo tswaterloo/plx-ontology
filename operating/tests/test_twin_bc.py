@@ -350,7 +350,7 @@ class EtagAndFailClosedTests(BcTwinTestCase):
         listed = self.send(world, "PATCH", url, {"If-Match": f'W/"nope", {current}'},
                            {"quantity": 21})
         self.assertEqual((listed["status"], listed["body"]["quantity"]), (200, 21))
-        self.assertEqual(self.send(world, "PATCH", url, {"If-Match": f'W/"a", W/"b"'},
+        self.assertEqual(self.send(world, "PATCH", url, {"If-Match": 'W/"a", W/"b"'},
                                    {"quantity": 1})["status"], 412)
         self.assertEqual(self.send(world, "DELETE", url, {"If-Match": current})["status"], 412)
         self.assertEqual(self.send(world, "DELETE", url)["status"], 428)

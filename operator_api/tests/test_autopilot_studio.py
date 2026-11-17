@@ -20,6 +20,7 @@ from fastapi.testclient import TestClient
 
 from integrations.people_exclusion import PeopleExclusion
 from operating import autopilot as ap
+from operating import autopilot_engine
 from operator_api import autopilot_studio as studio
 from operating import autopilot_write as aw
 from operating.session_identity import CHANNEL_CONSOLE, fixture_session
@@ -52,7 +53,7 @@ class Studio(unittest.TestCase):
             q.add_item(queued("ap_own", OWNER[1]))
             q.add_item(queued("ap_sam", COLLEAGUE[1]))
         q.close()
-        (path.parent / ap.GATE_FILE).write_text(json.dumps({"schema": ap.GATE_SCHEMA, "roles": {
+        (path.parent / autopilot_engine.GATE_FILE).write_text(json.dumps({"schema": autopilot_engine.GATE_SCHEMA, "roles": {
             ROLE: {"members": [OWNER[1]], "workflows": {FLOW: {"judged": 40, "matched": 37}}},
             "receivables": {"members": [COLLEAGUE[1]],
                             "workflows": {"ar_collections": {"judged": 20, "matched": 15}}}}}))
@@ -160,6 +161,35 @@ class Studio(unittest.TestCase):
                                          json={"days": 14}).status_code, 409)
         self.assertEqual(self.owner.post(f"/api/autopilot/workflows/{FLOW}/replay",
                                          json={"days": 0}).status_code, 422)
+
+
+class StepWords(unittest.TestCase):
+    """A registered autopilot's steps in words: numbers and amounts are said as they are,
+    yes/no for a flag, the raw value kept beside the words, and a long value cut."""
+
+    def test_numbers_flags_and_type_names_in_words(self) -> None:
+        self.assertEqual(studio._value_words([20160, 2]), "20160, 2")
+        self.assertEqual(studio._value_words([3, 0.5, ["internal"]]), "3, 0.5, internal")
+        self.assertEqual(studio._value_words("12,400.50"), "12,400.50")
+        self.assertEqual((studio._value_words(True), studio._value_words(False)), ("yes", "no"))
+        self.assertEqual(studio._value_words(["TeamsChatMessage", "On-Hold"]),
+                         "teams chat message, on-hold")
+
+    def test_a_condition_keeps_its_value_and_a_false_flag_is_said(self) -> None:
+        value = ["SalesInvoice", "Café-№42"]
+        _t, conditions, _a = studio.steps_of({"on": "message.received", "when": {
+            "object_type_in": value, "to_me": False, "open": True, "cc_min": 2,
+            "intents_any": ["x" * 400]}, "handler": "desk"})
+        words = {c.kind: c.words for c in conditions}
+        self.assertEqual(words["object_type_in"], "The record is a sales invoice, café-№42")
+        self.assertEqual(words["to_me"], "It is addressed to the person: no")
+        self.assertEqual(words["open"], "It is still open")
+        self.assertEqual(words["cc_min"], "Several people are copied on it: 2")
+        self.assertEqual(len(words["intents_any"]), 300)
+        self.assertEqual([c.params["value"] for c in conditions],
+                         [value, False, True, 2, ["x" * 400]])
+        self.assertIs(conditions[0].params["value"], value)
+        self.assertEqual(value, ["SalesInvoice", "Café-№42"])   # the registry's value as read
 
 
 class DemoStudio(unittest.TestCase):

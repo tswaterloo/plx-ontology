@@ -167,6 +167,24 @@ class UnderstandTest(Base):
         self.assertEqual([(i["kind"], i["text"]) for i in items],
                          [("risk", "we're short on item TAP-2200")])
 
+    def test_the_model_reads_card_numbers_masked(self) -> None:
+        # a network's published test number, never a real card
+        transcript = {"citation": "transcript://granola/x", "cues": [
+            {"i": 0, "t": "00:00:01", "speaker": "Pat",
+             "text": "Charge it to card 4111 1111 1111 1111 for the deposit."}]}
+        seen: list[str] = []
+        shown = "Charge it to card \u2022\u2022\u2022\u2022 \u2022\u2022\u2022\u2022 " \
+                "\u2022\u2022\u2022\u2022 1111"
+
+        def spawn(argv, env, timeout, prompt):
+            seen.append(prompt)
+            return json.dumps({"result": json.dumps({"items": [
+                {"kind": "risk", "line": 0, "quote": shown}]})})
+        items = mf.ModelExtractor(spawn)(transcript)
+        self.assertNotIn("4111111111111111", "".join(ch for ch in seen[0] if ch.isdigit()))
+        # its quote of the masked line is found and kept, masked
+        self.assertEqual([i["text"] for i in items], [shown])
+
 
 class ShowTest(Base):
     def setUp(self) -> None:

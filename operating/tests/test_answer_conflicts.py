@@ -12,7 +12,7 @@ import unittest
 from operating import answer_conflicts as ac
 from operating import query_understanding as qu
 from ontology.types import Actor
-from operating.ontology_tools import ReadPolicy
+from operating.ontology_tools_policy import ReadPolicy
 
 NOW = dt.datetime(2026, 10, 29, 12, tzinfo=dt.timezone.utc)
 BC_PO = "bc://production/co-1/purchaseOrders/po-77@v1"

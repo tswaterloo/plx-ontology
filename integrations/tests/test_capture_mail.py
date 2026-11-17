@@ -24,14 +24,16 @@ from urllib.parse import parse_qs, unquote, urlsplit
 
 from verify import require_live_verify
 from integrations import capture_mail, graph_read
-from integrations.capture_mail import (CaptureError, CaptureScope, MailCapture,
-                                       MailCaptureStore, assert_outside_git)
+from integrations import capture_mail_scope
+from integrations.capture_mail import MailCapture, MailCaptureStore
+from integrations.capture_mail_scope import CaptureError, CaptureScope, assert_outside_git
 from integrations.graph_read import GraphMailReader
-from integrations.live_source_guard import (BoundedBackoff, LiveSourceAudience, NotVisible,
-                                            SourceUnavailable)
+from integrations.live_source_guard import BoundedBackoff, LiveSourceAudience, NotVisible
 from ontology.json_contract import validate
 from ontology.types import Actor
 from operating import claim_checks
+from operating import claim_checks_grammar
+from operating import claim_checks_parse
 from operating.case_mail_scope import MailScope
 
 TENANT_ID = "11111111-2222-3333-4444-555555555555"
@@ -1260,8 +1262,8 @@ class AudienceTests(CaptureCase):
     def test_claim_checks_accepts_captured_handles(self):
         audience = reader_audience()
         handle = graph_read.mail_citation(BOX_A, "MSG-1", "CK-1-1")
-        self.assertIsNotNone(claim_checks.HANDLE.fullmatch(handle))
-        claims = claim_checks.parse_value_claims(
+        self.assertIsNotNone(claim_checks_grammar.HANDLE.fullmatch(handle))
+        claims = claim_checks_parse.parse_value_claims(
             [{"value": "MSG-1", "citation": handle, "field": "row.id"},
              {"value": "CONV-MSG-1", "citation": handle, "field": "row.conversation_id"}],
             [handle], [])
@@ -1310,11 +1312,11 @@ class ScopeAndCliTests(unittest.TestCase):
         self.assertTrue(scope.all_mailboxes)
         every = {"enabled": True, "exclude": [{"address": UPN_B}]}   # an exclusion needs a reason
         for bad in ({"schema": "x", "mailboxes": []},
-                    {"schema": capture_mail.SCOPE_SCHEMA, "all_mailboxes": every},
-                    {"schema": capture_mail.SCOPE_SCHEMA, "mailboxes": []},
-                    {"schema": capture_mail.SCOPE_SCHEMA, "window_days": 0,
+                    {"schema": capture_mail_scope.SCOPE_SCHEMA, "all_mailboxes": every},
+                    {"schema": capture_mail_scope.SCOPE_SCHEMA, "mailboxes": []},
+                    {"schema": capture_mail_scope.SCOPE_SCHEMA, "window_days": 0,
                      "mailboxes": [{"address": UPN_A}]},
-                    {"schema": capture_mail.SCOPE_SCHEMA,
+                    {"schema": capture_mail_scope.SCOPE_SCHEMA,
                      "mailboxes": [{"address": UPN_A, "folders": ["../x"]}]}):
             with self.assertRaises(CaptureError):
                 CaptureScope.from_json(bad, allowlist=SYNTHETIC)
@@ -1352,7 +1354,7 @@ class ScopeAndCliTests(unittest.TestCase):
             return plain(method, url, headers, body, timeout, max_bytes)
         with tempfile.TemporaryDirectory() as tmp:
             scope = Path(tmp) / "scope.json"
-            scope.write_text(json.dumps({"schema": capture_mail.SCOPE_SCHEMA,
+            scope.write_text(json.dumps({"schema": capture_mail_scope.SCOPE_SCHEMA,
                                          "mailboxes": [{"address": UPN_A},
                                                        {"address": UPN_B, "folders": "all"}]}))
             audience = Path(tmp) / "audience.json"
@@ -1386,7 +1388,7 @@ class ScopeAndCliTests(unittest.TestCase):
                       attachments=[file_attachment(f"ATT-{n}")] if n == 1 else None)
         with tempfile.TemporaryDirectory() as tmp:
             scope = Path(tmp) / "scope.json"
-            scope.write_text(json.dumps({"schema": capture_mail.SCOPE_SCHEMA,
+            scope.write_text(json.dumps({"schema": capture_mail_scope.SCOPE_SCHEMA,
                                          "mailboxes": [{"address": UPN_A}]}))
             audience = Path(tmp) / "audience.json"
             audience.write_text(json.dumps({
@@ -1448,7 +1450,7 @@ class ScopeAndCliTests(unittest.TestCase):
                 with tempfile.TemporaryDirectory() as tmp:
                     scope = Path(tmp) / "scope.json"
                     scope.write_text(json.dumps({
-                        "schema": capture_mail.SCOPE_SCHEMA,
+                        "schema": capture_mail_scope.SCOPE_SCHEMA,
                         "mailboxes": [{"address": UPN_A}, {"address": UPN_B}]}))
                     audience = Path(tmp) / "audience.json"
                     audience.write_text(json.dumps({
@@ -1489,7 +1491,7 @@ class ScopeAndCliTests(unittest.TestCase):
                 "audiences": {f"mail:{UPN_A}": ["svc:mail-capture"]},
                 "classifications": {"mail:*": "restricted"}}))
             scope = Path(tmp) / "scope.json"
-            scope.write_text(json.dumps({"schema": capture_mail.SCOPE_SCHEMA,
+            scope.write_text(json.dumps({"schema": capture_mail_scope.SCOPE_SCHEMA,
                                          "mailboxes": [{"address": UPN_A}]}))
             import contextlib
             import io
@@ -1524,7 +1526,7 @@ class ScopeAndCliTests(unittest.TestCase):
                     "audiences": {f"mail:{UPN_A}": ["svc:mail-capture"]},
                     "classifications": {"mail:*": "restricted"}}))
                 scope = Path(tmp) / "scope.json"
-                scope.write_text(json.dumps({"schema": capture_mail.SCOPE_SCHEMA,
+                scope.write_text(json.dumps({"schema": capture_mail_scope.SCOPE_SCHEMA,
                                              "mailboxes": [{"address": UPN_A}]}))
                 out = io.StringIO()
                 calls = []

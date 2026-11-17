@@ -26,7 +26,8 @@ from ontology.core import Actor
 from operating.case_runtime import (CaseRuntime, LiveReaders, LiveSourceNotConfigured,
                                     build_live_readers)
 from operating import source_reads
-from operating.mcp_server import HOST_READS, MCPServer, source_read
+from operating.mcp_server import MCPServer, source_read
+from operating.mcp_server_catalog import HOST_READS
 from operating.tests.firewall_view import client_result
 
 MAILBOX = "vince@petralabx.com"

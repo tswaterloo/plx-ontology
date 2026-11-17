@@ -97,7 +97,9 @@ FALLBACK_RULE = (
     "- The Workbench searched PLX's records for this question and could not confirm all "
     "of it; what the records show and what is missing is said above your words. Give "
     "your best general help on the rest: how a person would find or confirm it, what is "
-    "typical, and the reasoning. Never guess PLX's figures, names or dates.")
+    "typical, and the reasoning. Never guess PLX's figures, names or dates. You cannot see "
+    "what the records showed: never say what they contain or lack, or whether any figure, "
+    "data or record was available or missing.")
 
 ATTACHMENT_RULE = (
     "- The person attached files to this question. Their text is below between "
@@ -114,7 +116,8 @@ MIXED_RULE = (
     "- This question also asks about PLX's own records. Another part of the Workbench "
     "answers that part from the records, with citations, above your words. Answer only "
     "the general part: the method, the norms, what to compare and how to judge it. Never "
-    "guess or restate PLX's figures; refer to them as \"the figures above\".")
+    "guess or restate PLX's figures; refer to them as \"the figures above\". Never say "
+    "whether any figure, data or record was available or missing: you cannot see them.")
 
 
 # A draft's kind: an email the approve-to-send desk can send after the person's confirm,
@@ -202,6 +205,31 @@ PARTY_REF = re.compile(
 PARTY_DID = re.compile(
     r"(?i)\b(?:quoted|owes|owed|shipped|charged|billed|invoiced|paid|delivered|sent|"
     r"received|promised|offered|confirmed|gave|agreed|raised|cut|refused|returned)\b")
+# Beside a records answer (``mixed``, ``fallback``) the model cannot see what the records
+# gave, so a sentence saying what was or was not available ("no margin figures were
+# available", "the records don't show the cost") can contradict the cited answer above
+# it: it goes. A conditional ("if the cost isn't booked, ...") is advice and stays.
+ABSENCE_CLAIM = re.compile(
+    r"(?i)\b(?:no|none|without|missing|lacks?|lacking|unavailable|absent|not\s+(?:"
+    r"available|provided|shown|given|included|listed|found|known|recorded|booked|there)"
+    r"|(?:is|are|was|were|has|have|had|did|does|do|could|can)(?:n['’]t|\s+not)\s+(?:"
+    r"available|provided|shown|given|included|listed|found|recorded|booked|been|show|"
+    r"include|give|provide|find|have|list|contain|confirm|see|returned?)|cannot\s+(?:"
+    r"see|find|confirm|show)|couldn['’]t|did\s+not\s+(?:return|find))\b")
+DATA_NOUN = re.compile(
+    r"(?i)\b(?:figures?|numbers?|data|records?|margins?|costs?|information|details?|"
+    r"totals?|amounts?|values?|results?|revenue|prices?|invoices?|orders?|evidence|"
+    r"breakdown|profitability)\b")
+CONDITIONAL = re.compile(r"(?i)^\W*(?:if|when|whenever|where|unless|once|should|in case)\b")
+BESIDE_RECORDS = ("mixed", "fallback")
+
+
+def _absence_claim(sentence: str) -> bool:
+    """Whether ``sentence`` says what PLX's records had or lacked (``ABSENCE_CLAIM``)."""
+    return bool(ABSENCE_CLAIM.search(sentence)) and bool(DATA_NOUN.search(sentence)) \
+        and not CONDITIONAL.match(sentence)
+
+
 # a sentence whose subject is PLX itself ("PLX makes ...", "At PLX, ...", "PLX's lines
 # ..."): a claim about the company, which the general model cannot know
 COMPANY_SELF = re.compile(r"^\W*(?:(?:At|For|In)\s+)?PLX(?:['’]s)?\b")
@@ -218,7 +246,8 @@ _PLACEHOLDER = re.compile(r"\[[^\[\]\n]{1,60}\]")
 
 def _given(text: str) -> tuple[str, set[Decimal], set[str]]:
     from operating import claim_checks
-    numbers = {number for _written, number in claim_checks.prose_numbers(text)}
+    from operating import claim_checks_text
+    numbers = {number for _written, number in claim_checks_text.prose_numbers(text)}
     numbers |= {abs(number) for number in numbers}
     words = {word.casefold() for word in _WORD.findall(text)}
     return text.casefold(), numbers, words
@@ -234,12 +263,13 @@ def _novel_facts(sentence: str, given: tuple[str, set[Decimal], set[str]],
     """The figures, dates and names ``sentence`` writes that the asker did not;
     ``ordinary``: words the answer also writes in lower case (not names)."""
     from operating import claim_checks
+    from operating import claim_checks_text
     said, numbers, words = given
     out = []
-    for written, _moment, _iso in claim_checks.written_dates(sentence):
+    for written, _moment, _iso in claim_checks_text.written_dates(sentence):
         if written.casefold() not in said:
             out.append(written)
-    for written, number in claim_checks.prose_numbers(sentence):
+    for written, number in claim_checks_text.prose_numbers(sentence):
         if number not in numbers and abs(number) not in numbers \
                 and written.casefold() not in said:
             out.append(written)
@@ -308,18 +338,21 @@ def _sentences(line: str) -> list[str]:
 
 def claim_dates(sentence: str) -> bool:
     from operating import claim_checks
-    return bool(claim_checks.written_dates(sentence))
+    from operating import claim_checks_text
+    return bool(claim_checks_text.written_dates(sentence))
 
 
 def _dated_or_figured(sentence: str) -> bool:
     from operating import claim_checks
-    return bool(claim_checks.written_dates(sentence)) or bool(
-        claim_checks.prose_numbers(sentence))
+    from operating import claim_checks_text
+    return bool(claim_checks_text.written_dates(sentence)) or bool(
+        claim_checks_text.prose_numbers(sentence))
 
 
 def screen(text: str, question: str, earlier: Sequence[str] = (), *,
            strict: bool = False, cited: Sequence[str] = (),
-           quoted: Sequence[str] = ()) -> tuple[str, list[str]]:
+           quoted: Sequence[str] = (), beside_records: bool = False
+           ) -> tuple[str, list[str]]:
     """(the text without its company claims, the sentences removed): a sentence goes when
     it writes a record identifier or label the asker did not, or when it is about the
     company (``COMPANY_REF``, or a record the asker named) and writes a figure, date or
@@ -335,7 +368,9 @@ def screen(text: str, question: str, earlier: Sequence[str] = (), *,
     company or a party the asker named (a supplier, a customer, "your supplier", "the
     PO") that writes any figure or date goes, given by the asker or not, and so does a
     sentence giving a name the asker did not write with a date. The record is
-    answered by the cited path; the general part stays general."""
+    answered by the cited path; the general part stays general. ``beside_records`` (the
+    part under a records answer): a sentence saying what the records had or lacked goes
+    (``ABSENCE_CLAIM``), as the model never saw them."""
     if not isinstance(text, str):
         return "", ["<unreadable>"]
     asked = " ".join([question, *earlier, *cited])
@@ -381,7 +416,7 @@ def screen(text: str, question: str, earlier: Sequence[str] = (), *,
                     removed.append(sentence.strip())
                     continue
             if novel_ids or (about_company and facts) or COMPANY_SELF.match(plain) \
-                    or (strict and numeric):
+                    or (strict and numeric) or (beside_records and _absence_claim(plain)):
                 removed.append(sentence.strip())
             else:
                 kept.append(sentence)
@@ -423,7 +458,10 @@ def claude_call(text: str, *, binary: str = "claude", model: Optional[str] = Non
     """One headless Claude Code turn with no tools and no settings, on the operator's
     login (``agent_environment``: no paid API key passes); the result text, or None.
     ``images`` (``{"media_type", "data"}``, base64) go in the same turn as image blocks
-    (stream-json input on stdin: no file is written)."""
+    (stream-json input on stdin: no file is written). The text goes masked
+    (``operating.card_text``): no card number or credential reaches the model."""
+    from operating.card_text import mask_served
+    text = mask_served(text)
     argv = [binary, "-p", "--setting-sources", "", "--tools", "",
             "--no-session-persistence", "--max-turns", "1"]
     if images:
@@ -539,12 +577,14 @@ def answer(question: str, earlier: Sequence[str] = (), *, mode: str = "general",
         cut = said[:MAX_CHARS]
         said = cut[:max(cut.rfind(". "), cut.rfind("\n"), 0) + 1].strip() or cut
     said, drafts, removed = drafts_of(said, question, earlier, cited)
-    text, more = screen(said, question, earlier, cited=cited, quoted=quoted)
+    beside = mode in BESIDE_RECORDS
+    text, more = screen(said, question, earlier, cited=cited, quoted=quoted,
+                        beside_records=beside)
     # written as a person would (``operating.humanize``): a change is kept only when every
     # fact stays and the same screen removes nothing from it
     from operating import humanize
     text = humanize.polish(text, kind="answer", verify=lambda t: not screen(
-        t, question, earlier, cited=cited, quoted=quoted)[1]).text
+        t, question, earlier, cited=cited, quoted=quoted, beside_records=beside)[1]).text
     # an email draft only: an action's "Label: value" lines are data, never reworded
     drafts = [Draft(d.kind, d.subject, humanize.polish(
         d.body, kind="draft", person=person,

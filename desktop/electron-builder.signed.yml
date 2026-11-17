@@ -1,0 +1,19 @@
+# The SIGNED release: electron-builder.yml plus signing, all values from the environment so no
+# secret or account detail sits in the repo. Run through `npm run dist:*:signed`, which first runs
+# scripts/check-signing.js and stops (builds nothing) when a required variable is missing.
+extends: electron-builder.yml
+win:
+  # Azure Trusted Signing; authenticates with AZURE_TENANT_ID / AZURE_CLIENT_ID / AZURE_CLIENT_SECRET
+  signExecutable: true
+  azureSignOptions:
+    publisherName: ${env.PLX_WIN_PUBLISHER_NAME}
+    endpoint: ${env.PLX_WIN_SIGN_ENDPOINT}
+    codeSigningAccountName: ${env.PLX_WIN_SIGN_ACCOUNT}
+    certificateProfileName: ${env.PLX_WIN_SIGN_PROFILE}
+mac:
+  identity: ${env.PLX_MAC_IDENTITY}   # "Developer ID Application: <Name> (<TEAMID>)"
+  hardenedRuntime: true
+  gatekeeperAssess: false
+  entitlements: build/entitlements.mac.plist
+  entitlementsInherit: build/entitlements.mac.plist
+  notarize: true   # APPLE_ID, APPLE_APP_SPECIFIC_PASSWORD, APPLE_TEAM_ID from the environment

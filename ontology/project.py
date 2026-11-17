@@ -144,6 +144,26 @@ PROJECTOR = "plx-ontology-projector/v1"
 # projector skips its sources; the step writes it, and an incremental build drops it from
 # the seeded generation so the step writes it again.
 POST_PROJECT = "post_project"
+# A capture older than this at the build is stale in ``store_meta.freshness`` unless the
+# caller names the source's own bound; the same 36 h as ``operating.host.
+# DEFAULT_FRESHNESS_HOURS`` (a test holds them equal).
+STALE_AFTER_SECONDS = 36 * 3600.0
+
+
+def _capture_age(captured_at: Any, now: datetime | None) -> int | None:
+    """Whole seconds from ``captured_at`` to ``now`` (never negative); None when either
+    is missing or the time cannot be read: an unknown age is never written as 0."""
+    if now is None or not isinstance(captured_at, str):
+        return None
+    try:
+        then = datetime.fromisoformat(captured_at.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if then.tzinfo is None:
+        then = then.replace(tzinfo=timezone.utc)
+    return max(0, int((now - then).total_seconds()))
+
+
 # Relations one freshness entry lists at most (contract $defs/freshness.relations).
 MAX_FRESHNESS_RELATIONS = 32
 Normalizer = Callable[[str, Any], "str | None"]
@@ -159,9 +179,10 @@ _PROJECTED_LINK_KINDS = ("fk", "json_path", "same_record", "text_match")
 # column holds the silver source key, so a record's natural key is every other column of
 # its row (``_natural_key``): copies of one silver row are equal on all of them. At
 # projection time each binding over one of these relations keeps ONE object per natural
-# key, audience and source presence (a copy removed from the source keeps its removal):
-# the copy inserted first (smallest ``created_at``, then smallest object id), which a
-# later run never displaces (the ETL only adds copies, each newer). Every other copy is
+# key and audience: the copy still in the source inserted first (smallest ``created_at``,
+# then smallest object id), else, when every copy has left the source, the removed one
+# inserted first (``Projector._collapse_reinserted``: a removed copy beside a present one
+# is the row re-inserted, not a second row). Every other copy is
 # dropped from the projection, reported (gap ``etl_duplicate_collapsed`` with its handle,
 # count ``objects.etl_duplicates_collapsed``) and stays readable at L1. Two genuine rows
 # equal on every column but the minted ones collapse too: indistinguishable in the served
@@ -472,13 +493,18 @@ _NOT_DERIVATION = {
     # TeamsCaptures/SharePointListCaptures.__init__: the kinds of their own records
     "ontology.project_graph": ("integrations.capture_teams",
                                "integrations.capture_sharepoint_lists"),
-    # other sources (BC, MC, knowledge, mirror), describe() and the stores' paths
+    # other sources (BC, MC, knowledge, mirror), describe() and the stores' paths; the
+    # mail source's own relations read as records (people, notices: their code is the
+    # reader's, ``build_keys.reader_digest``, and their records are fingerprinted as read)
     "ontology.project": ("integrations.source_mirror", "integrations.mirror_capture",
                          "integrations.capture_mail", "integrations.capture_sharepoint_lists",
+                         "ontology.people_directory", "integrations.notice_mail",
                          "ontology.project_bc", "ontology.project_knowledge",
                          "ontology.project_mc", "ontology.project_meetings",
                          # the table of proven-equivalent derivation code (its own value)
-                         "ontology.code_equivalence"),
+                         "ontology.code_equivalence",
+                         # the build steps' code digest a build records (build_store)
+                         "ontology.step_code"),
     # _pinned: a cited handle parsed for a reader's request (pinned_document_row)
     "ontology.document_fields": ("integrations.capture_sharepoint",
                                  "integrations.graph_evidence",
@@ -634,14 +660,15 @@ def readings_remembered(blobs: Path, rows: Iterable[Mapping[str, Any]]) -> bool:
     (``ontology.mention_memo`` groups)."""
     from integrations import captured_text as ct
 
+    root = ct._blob_root(blobs)   # the process memos key a reading by its blob root too
     for row in rows:
         digest = row.get("content_sha256")
         if not isinstance(digest, str):
             continue
         name, mime = ct._name(row), ct._mime(row)
-        if (digest, mime, name, ct.ocr_digest(row)) not in ct._CACHE:
+        if (root, (digest, mime, name, ct.ocr_digest(row))) not in ct._CACHE:
             return False
-        if (digest, name, mime) not in ct._MEMBER_READINGS and \
+        if (root, (digest, name, mime)) not in ct._MEMBER_READINGS and \
                 ct._may_contain(blobs, digest, row):
             return False
     return True
@@ -1230,9 +1257,24 @@ class MailCaptures(Reopenable):
                 raise ProjectionError("capture_snapshot_changed", "attachments")
             yield got
 
+    # ``dropped``: an attachment of a superseded version that the message's current version
+    # (one that is not a removal) does not list, though that version's listing reached its
+    # end: the attachment is missing from the source since its version was superseded
+    # (CAP-L96), as a removed message's are. A current version whose listing was cut
+    # (``truncated``) or unknown says nothing: the attachment stays superseded as before.
+    _DROPPED = ("(m.superseded_at IS NOT NULL AND NOT m.gone AND EXISTS (SELECT 1 FROM "
+                "messages c WHERE c.mailbox_id = m.mailbox_id AND c.message_id = m.message_id "
+                "AND c.superseded_at IS NULL AND c.removed_reason IS NULL "
+                "AND c.l1_handle <> m.l1_handle AND c.attachments_status = 'complete' "
+                "AND c.version_id = (SELECT MAX(x.version_id) FROM messages x "
+                "WHERE x.mailbox_id = m.mailbox_id AND x.message_id = m.message_id) "
+                "AND NOT EXISTS (SELECT 1 FROM attachments d WHERE d.message_handle = "
+                "c.l1_handle AND d.attachment_id = a.attachment_id))) AS dropped")
+
     def _attached_select(self) -> str:
         return (f"a.*, {self._text}, m.message_id, m.recorded_at, m.superseded_at, "
-                "m.last_seen_at, m.gone, m.record AS message, m.body_sha256 AS message_body")
+                "m.last_seen_at, m.gone, m.record AS message, m.body_sha256 AS message_body, "
+                + self._DROPPED)
 
     def _attached_query(self, low: Any = None, high: Any = None, *, keys: bool = False
                         ) -> tuple[str, list[Any]]:
@@ -1559,6 +1601,8 @@ class MailCaptures(Reopenable):
                 for row in self._attached_rows():
                     metadata = json.loads(row["metadata"])
                     superseded, missing = self._interval(row)
+                    if row["dropped"]:   # its message's current version no longer has it
+                        superseded, missing = None, row["superseded_at"]
                     text = ({"text_status": row["text_status"],
                              "text_sha256": row["text_sha256"]} if ocr else {})
                     # Who sent the message (``sender``): only the document reader asks,
@@ -2361,8 +2405,10 @@ def _blank_date(version: "_Version", raw: Any) -> bool:
 
 
 def _parse(parser: str, value: Any, *, kind: str | None,
-           normalizer: Normalizer | None) -> tuple[str | None, str | None]:
-    """(value text, problem). None value text = source null."""
+           normalizer: Normalizer | None,
+           zone: Mapping[str, Any] | None = None) -> tuple[str | None, str | None]:
+    """(value text, problem). None value text = source null. ``zone``: the source spec
+    whose ``naive_zone``/``wall_clock_zone`` an ``iso_timestamp`` honours."""
     if value is None:
         return None, None
     if parser == "as_is":
@@ -2409,7 +2455,7 @@ def _parse(parser: str, value: Any, *, kind: str | None,
         except ValueError:
             return None, "not_yyyymmdd_date"
     if parser == "iso_timestamp":
-        return _timestamp(value)
+        return _timestamp(value, zone)
     if parser == "boolean_text":
         if isinstance(value, bool):
             return ("true" if value else "false"), None
@@ -2437,18 +2483,51 @@ def _parse(parser: str, value: Any, *, kind: str | None,
     raise ProjectionError("parser_unknown", parser)
 
 
-def _timestamp(value: Any) -> tuple[str | None, str | None]:
+# The zones a timestamp source may declare (schema ``naive_zone``/``wall_clock_zone``).
+TIMESTAMP_ZONES = ("UTC", "America/New_York")
+
+
+@lru_cache(maxsize=None)
+def _zone(name: str) -> Any:
+    from zoneinfo import ZoneInfo
+    return timezone.utc if name == "UTC" else ZoneInfo(name)
+
+
+def _timestamp(value: Any, zone: Mapping[str, Any] | None = None
+               ) -> tuple[str | None, str | None]:
+    """(store text, problem) of an ISO timestamp under its source's declared zone (C-09).
+
+    ``zone`` holds the source's ``naive_zone`` or ``wall_clock_zone`` (none: neither).
+    ``naive_zone``: a value without a zone is an instant in that zone (Prisma writes UTC
+    into ``timestamp without time zone``), so it becomes the UTC instant; a value with a
+    zone keeps it. ``wall_clock_zone``: the source writes the local wall clock of that zone
+    whatever offset its text carries (the Portal's FileMaker ETL stores FileMaker's
+    Eastern wall time as if it were UTC), so the offset is dropped and the wall time read
+    in the zone; a wall time the zone skips or repeats (the DST change hour) is a gap,
+    never a guessed instant. Neither: a zoneless value is kept as written, never assumed
+    UTC."""
     match = _TIMESTAMP.fullmatch(value.strip()) if isinstance(value, str) else None
     if match is None:
         return None, "not_iso_timestamp"
-    if match[8] is None:
-        # No zone: the source's wall time, kept as written (never assumed UTC).
+    naive_zone = (zone or {}).get("naive_zone")
+    wall_zone = (zone or {}).get("wall_clock_zone")
+    if match[8] is None or wall_zone is not None:
         fraction = (match[7] or "0")[:6].ljust(6, "0")
         try:
             moment = datetime(int(match[1]), int(match[2]), int(match[3]), int(match[4]),
                               int(match[5]), int(match[6] or 0), int(fraction))
         except ValueError:
             return None, "not_iso_timestamp"
+        if wall_zone is not None:
+            tz = _zone(wall_zone)
+            first = moment.replace(tzinfo=tz, fold=0)
+            second = moment.replace(tzinfo=tz, fold=1)
+            if first.utcoffset() != second.utcoffset():
+                return None, "wall_time_ambiguous"   # repeated or skipped DST hour
+            return instant(first), None
+        if naive_zone is not None:
+            return instant(moment.replace(tzinfo=_zone(naive_zone))), None
+        # No zone declared: the source's wall time, kept as written (never assumed UTC).
         return moment.strftime("%Y-%m-%dT%H:%M:%S.%f"), None
     try:
         return instant(value), None
@@ -3532,11 +3611,15 @@ class Projector:
         """Keep one object per natural key of a binding over an ETL re-inserted relation
         (``ETL_REINSERTED``): an object's natural key, audience, source presence and
         keep order are its latest version's. Copies are one only under one audience (a
-        collapse never moves a row between readers) and only when all are still in the
-        source or all are removed from it (a removed copy keeps its own removal, which
-        a present copy never absorbs). The object kept is the first in keep order, then
-        the smallest object id; every version of each other object leaves the stage,
-        reported."""
+        collapse never moves a row between readers). A copy still in the source is kept
+        before every removed one: the ETL re-inserts a row under a fresh id and the old
+        id leaves the source, so a removed copy whose natural key a present copy holds is
+        that same row again, never a line of its own (CC-NY-2, 11-14 on the host mirror:
+        659 such removed copies, a repeated line in 263 of the 702 Portal app orders).
+        Removed copies of a natural key no present copy holds stay one removed object
+        (the row did leave the source). The object kept is the first present one in keep
+        order (else the first removed one), then the smallest object id; every version of
+        each other object leaves the stage, reported."""
         bid = b["id"]
         cut = self.cut
 
@@ -3553,8 +3636,8 @@ class Projector:
             """INSERT INTO collapsed (object_id, handle)
                SELECT object_id, handle FROM (
                    SELECT object_id, handle, ROW_NUMBER() OVER (
-                       PARTITION BY natural, audience, plx_removed(missing, end_)
-                       ORDER BY rank, object_id) AS r
+                       PARTITION BY natural, audience
+                       ORDER BY plx_removed(missing, end_), rank, object_id) AS r
                    FROM (SELECT object_id, handle, natural, audience, missing, end_, rank,
                          ROW_NUMBER() OVER (
                              PARTITION BY object_id ORDER BY start DESC, seq DESC) AS n
@@ -3852,7 +3935,9 @@ class Projector:
                     found.append((tv, span, agree, differ, unknown))
             if any(pair.get("split_from") for pair in pairs) and lb.get("unique_target"):
                 found = self._unambiguous_lines(found)
-            self._emit(lid, link, index, lb, fv, found)
+            shared = ({item[0].vid: self._shared_keys(fv, item, pairs, joins)
+                       for item in found} if lb.get("unique_keys") else None)
+            self._emit(lid, link, index, lb, fv, found, shared)
 
     @staticmethod
     def _unambiguous_lines(found: list[tuple]) -> list[tuple]:
@@ -3937,8 +4022,42 @@ class Projector:
                    WHERE j.sig = ? AND j.vid = ? ORDER BY t.vid""", (tsig, jsig, vid))]
         return out
 
+    def _shared_keys(self, fv: _Version, item: tuple, pairs: Sequence[Mapping[str, Any]],
+                     joins: Sequence[tuple[int, int]]) -> list[dict[str, Any]]:
+        """The agreeing pairs of one candidate whose value more than one record of the
+        from or the to binding holds at a time overlapping the link's (``unique_keys``):
+        per side, the number of records, counted within the end's BC company."""
+        tv, span, agree = item[0], item[1], item[2]
+        out: list[dict[str, Any]] = []
+        for feature in agree:
+            at = next(i for i, pair in enumerate(pairs) if pair["from"] == feature["from_path"]
+                      and pair["to"] == feature["to_path"])
+            held = {side: self._holders(sig, feature["value"], span, _bc_company(end))
+                    for side, sig, end in (("from", joins[at][0], fv), ("to", joins[at][1], tv))}
+            if max(held.values()) > 1:
+                out.append({"feature": "non_unique_key", "agrees": None,
+                            "from_path": feature["from_path"], "to_path": feature["to_path"],
+                            "from_records": held["from"], "to_records": held["to"]})
+        return out
+
+    def _holders(self, sig: int, norm: str, span: tuple[str, str | None],
+                 company: str | None) -> int:
+        """How many records hold compare key ``norm`` of ``sig`` at a time overlapping
+        ``span`` (of BC company ``company`` only, when given)."""
+        held: set[str] = set()
+        for vid, object_id, start, end in self._db.execute(
+                "SELECT v.vid, v.object_id, v.start, v.end_ FROM k JOIN v ON v.vid = k.vid "
+                "WHERE k.sig = ? AND k.norm = ? ORDER BY v.vid", (sig, norm)):
+            if object_id in held or _interval(span, (start, end)) is None:
+                continue
+            if company is not None and _bc_company(self._version(vid)) != company:
+                continue
+            held.add(object_id)
+        return len(held)
+
     def _emit(self, lid: str, link: Mapping[str, Any], index: int, lb: Mapping[str, Any],
-              fv: _Version, found: list[tuple]) -> None:
+              fv: _Version, found: list[tuple],
+              shared: Mapping[int, list[dict[str, Any]]] | None = None) -> None:
         if not found:
             return
         from_type, to_type = self.types[link["from"]], self.types[link["to"]]
@@ -4002,6 +4121,12 @@ class Projector:
                 why_not.append({"feature": "ambiguous_target", "agrees": None, "candidates":
                                 len(rivals), "cardinality": link["cardinality"],
                                 **({"cap": capped} if capped != tier else {})})
+                tier = capped
+            if shared and shared.get(tv.vid):
+                capped = _weaker(tier, "lead")
+                if capped != tier:   # a non-unique code yields candidates, never a merge
+                    why_not += [{**f, "cap": capped} for f in shared[tv.vid]]
+                    self.report.add("links.non_unique_key_capped")
                 tier = capped
             if differ:
                 tier = "contradicted"
@@ -4409,7 +4534,7 @@ class Projector:
             raw = None   # BC's empty date: a source null, never year 1
         parser = source.get("parser", "as_is")
         text, problem = _parse(parser, raw, kind=prop.get("identifier_kind"),
-                               normalizer=self.normalizer)
+                               normalizer=self.normalizer, zone=source)
         value_type = prop["value_type"]
         if problem is None and text is not None and value_type in _TYPE_CHECKS and \
                 not _TYPE_CHECKS[value_type](text):
@@ -4709,11 +4834,11 @@ class Projector:
             return []   # no date, or BC's empty date: no event
         parser = spec.get("parser")
         if parser is None:
-            text, problem = _timestamp(raw)
-            if problem:
+            text, problem = _timestamp(raw, spec)
+            if problem == "not_iso_timestamp":
                 text, problem = _parse("iso_date", raw, kind=None, normalizer=None)
         else:
-            text, problem = _parse(parser, raw, kind=None, normalizer=None)
+            text, problem = _parse(parser, raw, kind=None, normalizer=None, zone=spec)
         if problem or text is None:
             if problem:
                 self.report.gap(f"event_time_{problem}", eid, version.rec.l1_handle)
@@ -4796,7 +4921,9 @@ class Projector:
             out[source] = entries
         return out
 
-    def freshness(self, described: Mapping[str, Mapping[str, Any]]) -> list[dict[str, Any]]:
+    def freshness(self, described: Mapping[str, Mapping[str, Any]], *,
+                  now: datetime | None = None,
+                  bounds: Mapping[str, float] | None = None) -> list[dict[str, Any]]:
         """``store_meta.freshness``: one contract ``$defs/freshness`` object per source
         family a binding names (operating/ontology_tool_contracts.json). ``captured_at``
         is the oldest last refresh among the bound relations (the answer is only as
@@ -4808,7 +4935,13 @@ class Projector:
         or held by a mirror whose refresh failed (``described["persisted"]``): then the
         entry is stale, ``served_from`` ``persisted_capture`` (or ``cached_mirror`` when
         every such relation is a held one), with the capture's ``label`` and those
-        ``relations``."""
+        ``relations``.
+
+        Given ``now`` (the build's clock), a source with a capture time also carries
+        ``lag_seconds``, the capture's age at the write, and is ``stale`` once that age
+        passes its bound (``bounds`` by source family, else ``STALE_AFTER_SECONDS``): the
+        write-time fact, never null for a source captured. A reader re-judges the age
+        against the host's own bound when it serves (``operating.ontology_tools.aged``)."""
         relations = self._bound_relations()
         per_relation = self.relation_completeness(described)
         out = []
@@ -4820,6 +4953,10 @@ class Projector:
                 times = [instant(state[rel]["last_refresh_at"]) for rel in sorted(
                     relations[source]) if rel in state and state[rel].get("last_refresh_at")]
                 entry["captured_at"] = min(times) if times else None
+                lag = _capture_age(entry["captured_at"], now)
+                if lag is not None:
+                    entry["lag_seconds"] = lag
+                    entry["stale"] = lag > (bounds or {}).get(source, STALE_AFTER_SECONDS)
                 entry["completeness"] = ("complete" if all(
                     item["completeness"] == "complete"
                     for item in per_relation[source].values()) else "partial")
@@ -5048,12 +5185,16 @@ def build_store(store_path: str | Path, schema: Any, sources: Mapping[str, Captu
                 post_project: Mapping[str, Callable[[StoreBuilder, "Projector"],
                                                     Mapping[str, Any]]] | None = None,
                 checkpoint: Callable[[], None] | None = None,
-                on_stage: Callable[[str, int, int], None] | None = None
+                on_stage: Callable[[str, int, int], None] | None = None,
+                freshness_bounds: Mapping[str, float] | None = None
                 ) -> dict[str, Any]:
     """Project ``sources`` under ``schema`` into a new generation of ``store_path`` and
     swap it in atomically. Returns the build report (with ``content_digest``).
 
     ``on_stage``: ``Projector.on_stage`` (what each stage holds on disk; measurement only).
+
+    ``freshness_bounds``: source family -> seconds past which its capture is ``stale`` in
+    ``store_meta.freshness`` (default ``STALE_AFTER_SECONDS``).
 
     ``checkpoint``: called between batches in every phase; it may raise to stop the build
     (the generation is then abandoned, never swapped in).
@@ -5078,7 +5219,8 @@ def build_store(store_path: str | Path, schema: Any, sources: Mapping[str, Captu
         projector.scratch_dir = builder.temp.parent
         projector.project_into(builder)
         return finish_generation(builder, projector, projector.report.as_dict(),
-                                 post_project=post_project, clock=clock)
+                                 post_project=post_project, clock=clock,
+                                 freshness_bounds=freshness_bounds)
 
 
 def value_rows(conn: sqlite3.Connection) -> int:
@@ -5115,6 +5257,7 @@ def projected_counts(builder: StoreBuilder, projected: Mapping[str, Any]) -> dic
 
 def finish_generation(builder: StoreBuilder, projector: "Projector",
                       projected: Mapping[str, Any], *,
+                      freshness_bounds: Mapping[str, float] | None = None,
                       post_project: Mapping[str, Callable[[StoreBuilder, "Projector"],
                                                           Mapping[str, Any]]] | None = None,
                       clock: Callable[[], datetime] | None = None,
@@ -5174,16 +5317,18 @@ def finish_generation(builder: StoreBuilder, projector: "Projector",
                                         for source, desc in described.items()})
     builder.set_meta("source_freshness", {source: desc.get("relations", {})
                                           for source, desc in described.items()})
-    builder.set_meta("freshness", projector.freshness(described))
+    builder.set_meta("freshness", projector.freshness(
+        described, now=now, bounds=freshness_bounds))
     builder.set_meta("relation_completeness", projector.relation_completeness(described))
     builder.set_meta("audience_keys", [row[0] for row in conn.execute(
         "SELECT DISTINCT audience_key FROM objects ORDER BY audience_key")])
     builder.set_meta("build_report", report)
     builder.set_meta("source_condition_unmet", dict(sorted(unmet.items())))
     # the build steps' code: a Postgres load seeds the deploy check's step baseline with
-    # it (``operating.pg.ontology_migrate.check``)
-    from ontology.step_migrate import steps_digest
-    builder.set_meta("steps_digest", steps_digest())
+    # it (``operating.pg.ontology_migrate.check``); read from the steps' table as written
+    # (``step_code``), so the projector imports none of the steps' own code
+    from ontology.step_code import tree_steps_digest
+    builder.set_meta("steps_digest", tree_steps_digest())
     digest = builder.commit(built_at=instant(now))
     return {**report, "content_digest": digest, "store": str(builder.target),
             "format": store_ddl.FORMAT}

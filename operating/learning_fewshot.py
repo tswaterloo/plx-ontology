@@ -304,7 +304,8 @@ def rules(lessons: Iterable[L.Lesson], at: float = L.APPLY_AT) -> list[str]:
     sentences they always add or take out), at ``at`` confidence or more."""
     out = []
     for l in sorted(lessons, key=lambda l: (-l.confidence, l.key)):
-        if l.kind == "style" and l.confidence >= at and l.text:
+        if l.kind == "style" and l.confidence >= at and l.text \
+                and not l.key.startswith("sender:"):   # one correspondent's: not a rule
             out.append(l.text)
     return out[:12]
 

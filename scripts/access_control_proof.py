@@ -288,7 +288,7 @@ def _reason(error: BaseException) -> str:
 def consumers(runtime: Any) -> list[tuple[str, Callable[[str, Any], bool]]]:
     """Every consumer of a citation the host serves an employee through, as served-or-not."""
     from operating import ontology_tools_investigate as oi
-    from operating.ontology_tools import item_gate_from_case_runtime
+    from operating.ontology_tools_results import item_gate_from_case_runtime
 
     gate, rows = item_gate_from_case_runtime(runtime), oi.citation_rows(runtime)
     return [("item_gate", lambda h, a: bool(gate(a, h))),
@@ -445,7 +445,7 @@ def prove_cases(runtime: Any, tenant: str, readers: list[dict[str, Any]],
     """GOV-19: for each reader, every stored item of the cases it may list (newest
     ``MAX_CASES``) whose citation the item gate refuses that reader is served withheld."""
     from ontology.types import Actor
-    from operating.ontology_tools import item_gate_from_case_runtime
+    from operating.ontology_tools_results import item_gate_from_case_runtime
 
     gate = item_gate_from_case_runtime(runtime)
     out = {"cases_read": 0, "case_reads_refused": 0, "case_items_unresolved": 0,
@@ -491,7 +491,7 @@ def po_reference_values(projection: Path) -> dict[str, list[str]]:
     objects holding it: the non-PO-like ones (``customer_po_coverage.po_like``, the one
     shape test) first, then up to ``MAX_PO_CONTROLS`` PO-like controls."""
     from operating.customer_po_coverage import po_like
-    from operating.ontology_tools import PO_TEXT_FIELD
+    from operating.ontology_tools_identity import PO_TEXT_FIELD
 
     db = _open(projection)
     if db is None:

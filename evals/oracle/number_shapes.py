@@ -90,7 +90,7 @@ def measure(sources: Sources, probes: int = 20, sample_limit: int = BC_SAMPLE_LI
         for entity_set in sorted({e for e, _ in targets}):
             try:
                 records = sources.bc.sample(entity_set, sample_limit)
-            except ReadFailed as exc:
+            except ReadFailed:
                 bc_state[entity_set] = "read_failed"
                 continue
             for _, column in (t for t in targets if t[0] == entity_set):

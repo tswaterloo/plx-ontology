@@ -443,9 +443,19 @@ class ConcurrentListenerTests(unittest.TestCase):
         self.assertEqual(get("/a")[0], 200)
         self.assertLess(time.monotonic() - began, 2)
         self.assertEqual(ran[-1], (worker[0], "/a"))
-        # a fifth open connection is over the bound: answered 503 at once, never queued
+        # a fifth open connection is over the bound: answered 503 at once, never queued.
+        # /a's thread frees its slot just after its reply reaches the client; under load that
+        # is later, so wait for it (else the stall below is the one refused), then for the
+        # stall to hold the last slot, instead of a fixed sleep.
+        def free_slots_reach(n):
+            deadline = time.monotonic() + 10
+            while server._slots._value != n and time.monotonic() < deadline:
+                time.sleep(0.01)
+            self.assertEqual(server._slots._value, n)
+
+        free_slots_reach(1)
         stalls.append(stall())
-        time.sleep(0.2)
+        free_slots_reach(0)
         status, _ = get("/b")
         self.assertEqual(status, 503)
         self.assertNotIn("/b", [path for _, path in ran])

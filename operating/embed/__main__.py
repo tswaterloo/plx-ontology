@@ -10,6 +10,7 @@ only: never text, never an id of an excluded person, never a key).
 Other commands: ``embed`` (only embed pending rows), ``dedup`` (only re-cluster),
 ``follow`` (follow the served generation and its row deltas: ``operating.embed.follow``),
 ``backfill`` (embed the whole pending backlog beside it: ``operating.embed.backfill``),
+``remote`` (the same backlog embedded on remote GPU hosts: ``operating.embed.remote``),
 ``entities --type T ...`` (write the entity rows of those entity types alone, from the
 served projection: a type newly indexed reaches the records already served without a
 chunking pass; rows are upserted, none deleted; ``--dry`` counts only).
@@ -247,7 +248,7 @@ def entity_rows(args: argparse.Namespace) -> dict[str, Any]:
 def dedup(conn: Any, kinds: Sequence[str] | None) -> dict[str, Any]:
     started = time.monotonic()
     rows = ((cid, dd.body_sha(body), body) for cid, body in st.bodies(conn, kinds))
-    groups = dd.groups(rows)
+    groups = dd.groups(rows, body_of=lambda ids: st.bodies_by_id(conn, ids))
     changed = st.write_groups(conn, groups, kinds)
     return {"chunks_in_groups": len(groups), "groups": len(set(groups.values())),
             "rows_changed": changed, "seconds": round(time.monotonic() - started, 1)}
@@ -367,6 +368,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     if argv[:1] == ["records"]:
         from .record_pass import main as records_main
         return records_main(argv[1:])
+    if argv[:1] == ["remote"]:
+        from .remote import main as remote_main
+        return remote_main(argv[1:])
     if argv[:1] == ["backfill"]:
         from .backfill import main as backfill_main
         return backfill_main(argv[1:])

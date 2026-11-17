@@ -155,7 +155,11 @@ Documented limitations (accepted for now, not yet live-verified):
 * ``parentReference.path`` is percent-decoded once; a name that literally
   contains ``%xx`` may be mis-derived (it then fails closed or reads as
   another path that is itself audience-checked).
-* The timeout is per socket operation, not an overall deadline.
+* The timeout is per socket operation; every request also has an overall deadline
+  (``request_seconds``: four timeouts plus its byte bound at
+  ``REQUEST_MIN_BYTES_PER_SECOND``), so a server that trickles bytes or keeps a stream
+  open never holds a reader past it (2026-11-14: an MC capture child sat 25 min in
+  ``ssl.read`` and MC went 76 min without a record).
 * SharePoint usually lists ``quickXorHash``, not ``sha256Hash``, so the
   source-hash check rarely runs; the eTag re-read still binds the bytes.
 * Group grants are not expanded to members; BC has no record ACL.
@@ -175,6 +179,7 @@ from datetime import datetime, timezone
 from decimal import Decimal
 from email.utils import parsedate_to_datetime
 from hashlib import sha256
+import base64
 import contextvars
 import json
 import os
@@ -434,7 +439,8 @@ def is_nextlink_refusal(error: BaseException) -> bool:
 HTTP_STATUS_DETAILS = frozenset({400, 401, 403, 404, 405, 406, 408, 409, 410, 412, 413,
                                  416, 422, 423, 429, 500, 501, 502, 503, 504, 507, 509})
 _TRANSPORT_DETAILS = {
-    "timeout": "timeout", "timeouterror": "timeout", "urlerror": "urlerror",
+    "timeout": "timeout", "timeouterror": "timeout", "requesttooslow": "timeout",
+    "urlerror": "urlerror",
     "connectionreseterror": "conn_reset", "connectionrefusederror": "conn_refused",
     "connectionabortederror": "conn_aborted", "remotedisconnected": "remote_closed",
     "sslerror": "tls_error", "sslcertverificationerror": "tls_error",
@@ -832,9 +838,19 @@ def _teams_urls(environ: Mapping[str, str]) -> list[str]:
     return [value for value in values if isinstance(value, str) and value.strip()]
 
 
+# While this holds a list (``operating.pg.item_audiences``: a gate decision recorded for
+# later reads), no request is sent: each one is noted in the list and refused before any
+# I/O, so a decision that needed a live read is never kept and the recording sends nothing.
+CAPTURES_ONLY: ContextVar[list | None] = ContextVar("live_source_captures_only", default=None)
+
+
 def check_request(method: str, url: str, *, body: Mapping[str, str] | None = None,
                   environ: Mapping[str, str] | None = None) -> str:
     """Validate one credentialed request; return its host. Raise before I/O."""
+    held = CAPTURES_ONLY.get()
+    if held is not None:
+        held.append(method)
+        raise ReadOnlyGuardError("a recorded gate decision reads captures only")
     if not isinstance(method, str) or not isinstance(url, str):
         raise ReadOnlyGuardError("request method/url invalid")
     method = method.upper()
@@ -849,7 +865,7 @@ def check_request(method: str, url: str, *, body: Mapping[str, str] | None = Non
     if (parts.scheme != "https" or parts.username or parts.password or parts.fragment
             or port is not None or parts.netloc.lower() != host):
         raise ReadOnlyGuardError("request url must be plain https without port or userinfo")
-    if host not in ALLOWED_HOSTS:
+    if host not in ALLOWED_HOSTS and grammar.tenant_host_pattern(host) is None:
         raise ReadOnlyGuardError("host not in read-only allowlist")
     for teams in _teams_urls(os.environ if environ is None else environ):
         teams_host = (urlsplit(teams.strip()).hostname or "").lower()
@@ -870,7 +886,7 @@ def check_request(method: str, url: str, *, body: Mapping[str, str] | None = Non
         if host == BC_HOST and not grammar.bc_request_query_ok(path, parts.query):
             # BC queries (incl. nextLinks): only what grammar.bc_query builds.
             raise ReadOnlyGuardError("BC query is not one the closed grammar builds")
-        if host in grammar.EXTERNAL_HOSTS and not grammar.external_query_ok(
+        if grammar.is_external_host(host) and not grammar.external_query_ok(
                 grammar.match(host, path), parts.query):
             raise ReadOnlyGuardError("query is not one the closed external grammar allows")
         return host
@@ -1118,10 +1134,28 @@ class _BoundedConnect(HTTPSHandler):
         super().__init__(context=_shared_tls_context())
         self._pool = _POOL if pool is None else pool
         self._lease: tuple[tuple, Any, Any] | None = None
+        self._opened: list[Any] = []   # this request's connections (``expire``)
+        self.expired = False
 
-    @staticmethod
-    def _connection(http_class, host, timeout, **kwargs):
+    def expire(self) -> None:
+        """The request's overall deadline passed (the watchdog's thread): every
+        connection it holds is shut down, so a blocked read returns now."""
+        self.expired = True
+        lease = self._lease
+        for conn in [*self._opened, *([lease[1]] if lease else [])]:
+            sock = getattr(conn, "sock", None)
+            if sock is None:
+                continue
+            try:
+                # SHUT_RDWR (2 everywhere: Linux, macOS, Windows SD_BOTH), by value: the
+                # egress gate bans importing socket outside the transport modules
+                sock.shutdown(2)
+            except (OSError, AttributeError):
+                pass
+
+    def _connection(self, http_class, host, timeout, **kwargs):
         conn = http_class(host, timeout=min(CONNECT_TIMEOUT_SECONDS, timeout), **kwargs)
+        self._opened.append(conn)
         connect = conn.connect
 
         def bounded_connect():
@@ -1155,6 +1189,8 @@ class _BoundedConnect(HTTPSHandler):
         for attempt in range(2):
             conn = self._pool.take(key) if attempt == 0 else None
             reused = conn is not None
+            if reused:
+                self._opened.append(conn)   # the deadline reaches it too (``expire``)
             if conn is None:
                 conn = self._connection(http_class, host, req.timeout, **http_conn_args)
                 conn.set_debuglevel(self._debuglevel)
@@ -1272,12 +1308,87 @@ def _refuse_non_read_send(method: str, url: str, body: bytes | None) -> None:
                              "POST may be sent")
 
 
+# The slowest a response body may arrive before its request is given up (with four
+# per-operation timeouts on top): a stalled or trickling server ends in bounded time.
+REQUEST_MIN_BYTES_PER_SECOND = 64 * 1024
+
+
+def request_seconds(timeout: float, max_bytes: int) -> float:
+    """One request's overall deadline, from its per-operation ``timeout`` and its body
+    bound: a 4 MB page gets 4 timeouts plus 64 s, a 150 MB attachment about 40 min."""
+    return 4 * float(timeout) + max(0, int(max_bytes)) / REQUEST_MIN_BYTES_PER_SECOND
+
+
+class RequestTooSlow(TimeoutError):
+    """A response that did not arrive whole within its request's overall deadline."""
+
+
+class _Watchdog:
+    """One daemon thread for every request's overall deadline: at its time, a request's
+    ``expire`` runs (its connection's socket shut down, so a read blocked on a trickling
+    or silent server returns at once). One heap, one condition; cheap per request."""
+
+    def __init__(self) -> None:
+        import heapq
+        self._heapq = heapq
+        self._heap: list[tuple[float, int, Any]] = []
+        self._live: set[int] = set()
+        self._serial = 0
+        self._cv = threading.Condition()
+        self._thread: threading.Thread | None = None
+
+    def arm(self, at: float, expire: Callable[[], None]) -> int:
+        with self._cv:
+            self._serial += 1
+            token = self._serial
+            self._heapq.heappush(self._heap, (at, token, expire))
+            self._live.add(token)
+            if self._thread is None or not self._thread.is_alive():
+                self._thread = threading.Thread(target=self._run, name="request-deadlines",
+                                                daemon=True)
+                self._thread.start()
+            self._cv.notify()
+            return token
+
+    def disarm(self, token: int) -> None:
+        with self._cv:
+            self._live.discard(token)
+
+    def _run(self) -> None:
+        while True:
+            with self._cv:
+                while self._heap and self._heap[0][1] not in self._live:
+                    self._heapq.heappop(self._heap)
+                if not self._heap:
+                    self._cv.wait(60)
+                    continue
+                at, token, expire = self._heap[0]
+                wait = at - time.monotonic()
+                if wait > 0:
+                    self._cv.wait(wait)
+                    continue
+                self._heapq.heappop(self._heap)
+                self._live.discard(token)
+            try:
+                expire()
+            except Exception:  # noqa: BLE001 - a socket already gone
+                pass
+
+
+_WATCHDOG = _Watchdog()
+
+
 def urllib_sender(method: str, url: str, headers: Mapping[str, str], body: bytes | None,
                   timeout: float, max_bytes: int) -> tuple[int, Mapping[str, str], bytes]:
-    """Real network sender; called only by ``GuardedTransport`` after checks."""
+    """Real network sender; called only by ``GuardedTransport`` after checks. Each
+    socket operation waits at most ``timeout`` (the connect at most
+    ``CONNECT_TIMEOUT_SECONDS``) and the whole request at most :func:`request_seconds`
+    (``RequestTooSlow``, a ``timeout`` to the transport's bounded retry)."""
     _refuse_non_read_send(method, url, body)
+    deadline = time.monotonic() + request_seconds(timeout, max_bytes)
     request = Request(url, data=body, headers=dict(headers), method=method)
     connect = _BoundedConnect()
+    token = _WATCHDOG.arm(deadline, connect.expire)
     try:
         try:
             opener = build_opener(_RefuseRedirect(), connect)
@@ -1293,11 +1404,16 @@ def urllib_sender(method: str, url: str, headers: Mapping[str, str], body: bytes
             return status, _error_headers(getattr(error, "headers", None)), raw
         with response:
             response_headers = {key.lower(): value for key, value in response.headers.items()}
-            raw = _read_to_eof(response, max_bytes + 1)
+            raw = _read_to_eof(response, max_bytes + 1, deadline=deadline)
             _require_declared_length(response_headers, raw, max_bytes)
             connect.release(response)
             return getattr(response, "status", 200), response_headers, raw
+    except BaseException:
+        if connect.expired:   # the watchdog ended it at the request's deadline
+            raise RequestTooSlow("request_deadline") from None
+        raise
     finally:
+        _WATCHDOG.disarm(token)
         # Any path that did not release the connection (error status, redirect, partial
         # or oversized read, timeout, exception) closes it; it is never pooled.
         connect.discard()
@@ -1328,18 +1444,24 @@ def _error_headers(headers: Any) -> dict[str, str]:
 _READ_CHUNK_BYTES = 65_536
 
 
-def _read_to_eof(response: Any, limit: int) -> bytes:
-    """Read until EOF, never more than ``limit`` bytes in total.
+def _read_to_eof(response: Any, limit: int, *, deadline: float | None = None) -> bytes:
+    """Read until EOF, never more than ``limit`` bytes in total, and never past
+    ``deadline`` (``time.monotonic``; ``RequestTooSlow``).
 
     A single ``read(n)`` may legitimately return fewer than ``n`` bytes, and
     ``http.client`` returns a short body without raising when the connection
-    ends early, so one read is never proof of a whole body.
+    ends early, so one read is never proof of a whole body. A read blocked past the
+    deadline is ended by the sender's watchdog (:class:`_Watchdog`), which shuts the
+    connection's socket down.
     """
     chunks: list[bytes] = []
     total = 0
+    read = response.read
     while total < limit:
+        if deadline is not None and time.monotonic() >= deadline:
+            raise RequestTooSlow("request_deadline")
         try:
-            chunk = response.read(min(_READ_CHUNK_BYTES, limit - total))
+            chunk = read(min(_READ_CHUNK_BYTES, limit - total))
         except IncompleteRead:
             raise DownloadIncomplete() from None
         if not chunk:
@@ -1559,6 +1681,19 @@ ACTION_PATHS = (
                 r"/messages"), frozenset({"body"})),
 )
 MAX_ACTION_BODY_BYTES = 64_000
+# A new email or a reply may carry files (a filled form sent back): each a Graph
+# ``fileAttachment`` with exactly these keys, one of the Workbench's own document types, at
+# most five, together at most 3 MB decoded. The rest of the body keeps its 64 kB cap.
+ACTION_ATTACHMENT_TYPE = "#microsoft.graph.fileAttachment"
+ACTION_ATTACHMENT_KEYS = frozenset({"@odata.type", "name", "contentType", "contentBytes"})
+ACTION_ATTACHMENT_MEDIA = frozenset({
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    "application/pdf"})
+MAX_ACTION_ATTACHMENTS = 5
+MAX_ACTION_ATTACHMENT_BYTES = 3_000_000
+_ACTION_FILE_NAME = re.compile(r"[A-Za-z0-9 ._()-]{1,200}")
+_ATTACHING_PATHS = (r"/v1\.0/users/[^/]+/sendMail", r"/v1\.0/users/[^/]+/messages/[^/]+/reply")
 
 
 # Approved writes (``write_action``): a person-approved autopilot or instruction write
@@ -1606,6 +1741,8 @@ WRITE_SHAPES = (
     ("bc", "POST", BC_HOST, re.compile(rf"{_W_BC_ROOT}/{_W_BC_DOC}"), None),
     ("bc", "POST", BC_HOST,
      re.compile(rf"{_W_BC_ROOT}/{_W_BC_DOC}\({_W_GUID}\)/{_W_BC_LINES}"), None),
+    # a header edit of an open order (the autopilot's sales/purchase order update)
+    ("bc", "PATCH", BC_HOST, re.compile(rf"{_W_BC_ROOT}/{_W_BC_DOC}\({_W_GUID}\)"), None),
     ("bc", "PATCH", BC_HOST,
      re.compile(rf"{_W_BC_ROOT}/{_W_BC_LINES}\({_W_GUID}\)"), None),
     ("bc", "PATCH", BC_HOST,
@@ -1689,14 +1826,48 @@ def action_send_enabled(environ: Mapping[str, str]) -> bool:
     return environ.get(ACTION_FLAG) == "1"
 
 
+def _attachment_bytes(path: str, payload: Any) -> int | None:
+    """The base64 characters a request's file attachments hold (0: none), None when any
+    attachment is not exactly an approved file (wrong place, key, type, name or size)."""
+    message = payload.get("message") if isinstance(payload, dict) else None
+    if not isinstance(message, dict) or "attachments" not in message:
+        return 0
+    files = message["attachments"]
+    if not any(re.fullmatch(p, path) for p in _ATTACHING_PATHS) or \
+            not isinstance(files, list) or not 0 < len(files) <= MAX_ACTION_ATTACHMENTS:
+        return None
+    encoded = decoded = 0
+    for f in files:
+        if not isinstance(f, dict) or set(f) != ACTION_ATTACHMENT_KEYS \
+                or f["@odata.type"] != ACTION_ATTACHMENT_TYPE \
+                or f["contentType"] not in ACTION_ATTACHMENT_MEDIA \
+                or not isinstance(f["name"], str) or not _ACTION_FILE_NAME.fullmatch(f["name"]) \
+                or not isinstance(f["contentBytes"], str) or not f["contentBytes"]:
+            return None
+        try:
+            decoded += len(base64.b64decode(f["contentBytes"], validate=True))
+        except (ValueError, TypeError):
+            return None
+        encoded += len(f["contentBytes"])
+    return encoded if decoded <= MAX_ACTION_ATTACHMENT_BYTES else None
+
+
+MAX_ACTION_ATTACHED_BODY_BYTES = MAX_ACTION_BODY_BYTES + \
+    4 * (MAX_ACTION_ATTACHMENT_BYTES // 3 + 1) + MAX_ACTION_ATTACHMENTS * 400
+
+
 def _action_shape(path: str, body: bytes | None) -> bool:
-    if not isinstance(body, bytes) or not 0 < len(body) <= MAX_ACTION_BODY_BYTES:
+    if not isinstance(body, bytes) or not 0 < len(body) <= MAX_ACTION_ATTACHED_BODY_BYTES:
         return False
     try:
         payload = json.loads(body.decode("utf-8"))
     except (UnicodeDecodeError, ValueError):
         return False
     if "%" in path or ".." in path:
+        return False
+    attached = _attachment_bytes(path, payload)
+    # everything but the files' bytes stays within the plain message cap
+    if attached is None or len(body) - attached > MAX_ACTION_BODY_BYTES:
         return False
     for pattern, keys in ACTION_PATHS:
         if pattern.fullmatch(path):
@@ -2497,8 +2668,8 @@ def _same_collection_next(url: str, continuation: Any, *,
 
 # Spaces are allowed (SharePoint folder names have them); control characters
 # and inner ``*`` are not.
-_RESOURCE = re.compile(r"^(mail|sharepoint|bc|teams|mc|repo):[^\x00-\x1f\x7f*]{1,1024}$")
-_PATTERN = re.compile(r"^(mail|sharepoint|bc|teams|mc|repo):[^\x00-\x1f\x7f*]{0,1024}\*?$")
+_RESOURCE = re.compile(r"^(mail|sharepoint|bc|teams|mc|repo|shopify|edi):[^\x00-\x1f\x7f*]{1,1024}$")
+_PATTERN = re.compile(r"^(mail|sharepoint|bc|teams|mc|repo|shopify|edi):[^\x00-\x1f\x7f*]{0,1024}\*?$")
 # A code repository a case original was committed to (``repo:<owner>/<name>``, GitHub's
 # name grammar; no reader fetches from it, ``operating.captured_originals`` serves the
 # bytes the local object store holds). Granted by exact pattern only: never ``*``, no

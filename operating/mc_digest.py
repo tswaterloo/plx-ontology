@@ -95,6 +95,11 @@ def _instant(raw: Any) -> datetime | None:
 def _decisions(st: Any) -> list[tuple[str, datetime, str, str]]:
     """(audience, decided at, class, approved|rejected) of every decided gate the store
     holds, read once per store connection."""
+    return list(_decisions_of(st).values())
+
+
+def _decisions_of(st: Any) -> dict[str, tuple[str, datetime, str, str]]:
+    """``_decisions`` by the gate's object id."""
     cache = st.__dict__.get("_mc_digest_decisions")
     if cache is not None:
         return cache
@@ -103,21 +108,23 @@ def _decisions(st: Any) -> list[tuple[str, datetime, str, str]]:
         "SELECT object_id, audience_key FROM objects WHERE object_type = 'MCApproval'"
     ).fetchall()
     units = {r[0]: str(r[1] or "") for r in rows}
-    cache = []
+    cache = {}
     for oid, r in _read(st, list(units), ("status", "decided_at", "reason")).items():
         status, at = _v(r, "status").lower(), _instant(_v(r, "decided_at"))
         word = "approved" if status in APPROVED else "rejected" if status in REJECTED else ""
         if at is not None and word:
-            cache.append((units.get(oid, ""), at, classify(_v(r, "reason")), word))
+            cache[oid] = (units.get(oid, ""), at, classify(_v(r, "reason")), word)
     st.__dict__["_mc_digest_decisions"] = cache
     return cache
 
 
-def history(st: Any, audience: str, before: Any, *, days: int = HISTORY_DAYS
+def history(st: Any, audience: str, before: Any, *, days: int = HISTORY_DAYS,
+            decisions: list[tuple[str, datetime, str, str]] | None = None
             ) -> dict[str, Any]:
     """Per class, the gates of ``audience`` decided in the ``days`` before ``before`` (the
     request's time): ``{"days", "by_class": {class: {"approved", "decided"}}}``; an unknown
-    audience or time: no history (``by_class`` empty, ``unknown`` names why)."""
+    audience or time: no history (``by_class`` empty, ``unknown`` names why).
+    ``decisions``: these instead of the store's (``autopilot.OverlayCtx.mc_decisions``)."""
     at = _instant(before)
     if not audience.startswith("mc:") or at is None:
         return {"days": days, "by_class": {},
@@ -125,7 +132,7 @@ def history(st: Any, audience: str, before: Any, *, days: int = HISTORY_DAYS
     since = at - timedelta(days=days)
     by: dict[str, dict[str, int]] = {}
     company: dict[str, dict[str, int]] = {}
-    for unit, decided, cid, word in _decisions(st):
+    for unit, decided, cid, word in (_decisions(st) if decisions is None else decisions):
         if not (unit.startswith("mc:") and since <= decided < at):
             continue
         for scope in ((by, company) if unit == audience else (company,)):

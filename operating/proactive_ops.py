@@ -7,10 +7,6 @@ is never raised); a word, a date or a figure that cannot be read leaves the reco
 ``not_evaluated`` by reason, never a clean "nothing wrong". Thresholds are module constants;
 no rule names a record, a person, a customer or an item.
 
-* ``mc_task_overdue``: an open Mission Control task (stage not ``merged``, ``verified`` or
-  ``cancelled``) past its due date. MC's task carries a due date only where the loaded schema
-  declares one (``MC_TASK_DUE``); while none is declared the rule is ``blocked``
-  (``due_date_not_served``).
 * ``mc_task_stuck``: an MC task in one working stage (``ACTIVE_STAGES``; a backlog task is
   parked, never stuck) with no update for ``STUCK_DAYS`` or more (its own ``updated_at``:
   any edit, so a stage change too, moves it).
@@ -73,9 +69,8 @@ from ontology import store as ostore
 from ontology.units import unit_token
 
 from . import active_population as active
-from .proactive_business import FINANCE, _currency, _day, _dec, _one, _text, _tick
+from .proactive_business import FINANCE, _day, _dec, _one, _text, _tick
 
-MC_OVERDUE = "mc_task_overdue"
 MC_STUCK = "mc_task_stuck"
 MC_APPROVAL = "mc_approval_pending"
 PORTAL_APPROVAL = "portal_approval_pending"
@@ -86,8 +81,8 @@ AGED_AP = "aged_payable_worsening"
 PRODUCTION = "production_late"
 DAMAGE = "assembly_damage_spike"
 TEAMS = "teams_unanswered_ask"
-RULES = (MC_OVERDUE, MC_STUCK, MC_APPROVAL, PORTAL_APPROVAL, PLANNER, AGED, PRODUCTION, DAMAGE, TEAMS)
-KINDS = (MC_OVERDUE, MC_STUCK, MC_APPROVAL, PORTAL_APPROVAL, PLANNER, AGED_AR, AGED_AP, PRODUCTION, DAMAGE,
+RULES = (MC_STUCK, MC_APPROVAL, PORTAL_APPROVAL, PLANNER, AGED, PRODUCTION, DAMAGE, TEAMS)
+KINDS = (MC_STUCK, MC_APPROVAL, PORTAL_APPROVAL, PLANNER, AGED_AR, AGED_AP, PRODUCTION, DAMAGE,
          TEAMS)
 
 SUBJECT_CHARS = 60
@@ -102,7 +97,6 @@ MC_GATE = "MCApproval"
 MC_TERMINAL = frozenset({"merged", "verified", "cancelled"})
 ACTIVE_STAGES = frozenset({"specced", "approved", "planned", "progress", "qa", "review"})
 PARKED_STAGES = frozenset({"backlog"})
-MC_TASK_DUE = ("due_at", "due_date")          # read only where the schema declares one
 STUCK_DAYS = 14
 APPROVAL_DAYS = 3
 PORTAL_APPROVAL_BUSINESS_DAYS = 3
@@ -191,8 +185,7 @@ def declared_sources() -> dict[str, Any]:
         (t, due, done if done in _declared(t, [done]) else None,
          status if status in _declared(t, [status]) else None, keeper)
         for t, due, done, status, keeper in PRODUCTION_DUE if _declared(t, [due]))
-    return {"mc_task_due": _declared(MC_TASK, MC_TASK_DUE),
-            "production_due": production,
+    return {"production_due": production,
             "damage_date": tuple((t, p) for t, p in DAMAGE_DATE if _declared(t, [p])),
             "ask_text": {t: _declared(t, ASK_TEXT) for t in TEAMS_TYPES}}
 
@@ -308,32 +301,29 @@ def _business_days(start: date, end: date) -> int:
 # --------------------------------------------------------------------------- Mission Control
 
 def mc_tasks(st: Any, as_of: date, *, gap: Callable, cites: Callable, result: Callable,
-             skips: Callable, people: Any, settled: Sequence[str],
-             due_props: Sequence[str] | None = None) -> dict[str, dict[str, Any]]:
-    """``mc_task_overdue`` and ``mc_task_stuck`` in one read of the tasks."""
+             skips: Callable, people: Any, settled: Sequence[str]) -> dict[str, dict[str, Any]]:
+    """``mc_task_stuck``: the tasks in one read (MC tasks carry no due date)."""
     blocked = _blocked_people(people, result)
     if blocked is not None:
-        return {MC_OVERDUE: blocked, MC_STUCK: dict(blocked)}
-    due_props = tuple(declared_sources()["mc_task_due"] if due_props is None else due_props)
-    found = st.values([MC_TASK], ("task_id", "title", "stage", "updated_at", *due_props))
+        return {MC_STUCK: blocked}
+    found = st.values([MC_TASK], ("task_id", "title", "stage", "updated_at"))
     linked = _person_ids(st, [MC_TASK_PEOPLE], settled)
     audience = _audiences(st, found)
-    late_skips, stuck_skips = skips(), skips()
-    late, stuck = [], []
+    stuck_skips = skips()
+    stuck = []
     counts: Counter = Counter()
     for oid, entry in sorted(found.items()):
         _tick(st)
         props = entry["props"]
         cause = [(oid, "[]")]
         if not people.unit_clear(audience.get(oid, "")) or not _cleared(people, linked[oid]):
-            for s in (late_skips, stuck_skips):
-                s.note(NOT_JUDGED, [oid], cause)
+            stuck_skips.note(NOT_JUDGED, [oid], cause)
             continue
         stage_row = _one(props.get("stage"))
         stage = _word(stage_row)
         if stage is None or stage not in MC_TERMINAL | ACTIVE_STAGES | PARKED_STAGES:
-            for s in (late_skips, stuck_skips):
-                s.note("stage_missing" if stage is None else "stage_unmapped", [oid], cause)
+            stuck_skips.note("stage_missing" if stage is None else "stage_unmapped", [oid],
+                             cause)
             continue
         if stage in MC_TERMINAL:
             counts["closed"] += 1
@@ -343,27 +333,6 @@ def mc_tasks(st: Any, as_of: date, *, gap: Callable, cites: Callable, result: Ca
         title = _clip((_one(props.get("title")) or {}).get("value"))
         name = (ident + (f" ({title})" if title else "")) if ident else (title or "untitled")
         extra = cites([*props.get("task_id", ()), *props.get("title", ())])
-        # overdue: the first declared due date the task states
-        if due_props:
-            due_row = next((r for p in due_props if (r := _one(props.get(p)))), None)
-            due = _day(due_row["value"]) if due_row else None
-            if due_row is not None and due is None:
-                late_skips.note("due_date_unreadable", [oid], cause)
-            elif due is not None and due < as_of:
-                days = (as_of - due).days
-                counts["overdue"] += 1
-                late.append(gap(
-                    MC_OVERDUE, MC_OVERDUE, oid, MC_TASK, "overdue",
-                    summary=f"Mission Control task {name} is {_plural(days, 'day')} past its "
-                            f"due date {due.isoformat()} (stage {stage})",
-                    missing="Will it still be done, by when, or should its date or owner "
-                            "change?",
-                    why="The task's own stage says it is open and its due date has passed "
-                        "(stage and due date cited).",
-                    priority="high" if days >= STUCK_DAYS else "medium",
-                    about=(MC_TASK, due_row["property"]),
-                    groups=[cites([due_row]), cites([stage_row])], extra=extra,
-                    event={"days": days, "stage": stage}))
         # stuck: a working stage with no update for STUCK_DAYS
         if stage in PARKED_STAGES:
             counts["parked"] += 1
@@ -387,15 +356,10 @@ def mc_tasks(st: Any, as_of: date, *, gap: Callable, cites: Callable, result: Ca
             priority="high" if idle >= 2 * STUCK_DAYS else "medium",
             about=(MC_TASK, "stage"), groups=[cites([stage_row]), cites([moved_row])],
             extra=extra, event={"days": idle, "stage": stage}))
-    if not due_props:
-        overdue = result([], status="blocked", reasons=["due_date_not_served"])
-    else:
-        overdue = result(late, not_evaluated=late_skips)
     stuck_out = result(stuck, not_evaluated=stuck_skips)
-    for out in (overdue, stuck_out):
-        out["counts"] = {k: counts.get(k, 0) for k in ("open", "closed", "parked", "overdue",
-                                                       "stuck")}
-    return {MC_OVERDUE: overdue, MC_STUCK: stuck_out}
+    stuck_out["checked"] = len(found)   # every task read was judged or left unjudged
+    stuck_out["counts"] = {k: counts.get(k, 0) for k in ("open", "closed", "parked", "stuck")}
+    return {MC_STUCK: stuck_out}
 
 
 def mc_approval_pending(st: Any, as_of: date, *, gap: Callable, cites: Callable,
@@ -455,6 +419,7 @@ def mc_approval_pending(st: Any, as_of: date, *, gap: Callable, cites: Callable,
             extra=cites([*props.get("gate_id", ()), *props.get("task_id", ())]),
             event={"days": days}))
     out = result(gaps, not_evaluated=skipped)
+    out["checked"] = len(found)   # every gate read was judged or left unjudged
     out["counts"] = {k: counts.get(k, 0) for k in ("pending", "waiting", "decided")}
     return out
 
@@ -520,6 +485,7 @@ def portal_approval_pending(st: Any, as_of: date, *, gap: Callable, cites: Calla
             event={"days": days, "channel": "portal", "waiting_on": [],
                    "family": "requisition", "asked_on": asked.isoformat()}))
     out = result(gaps, not_evaluated=skipped)
+    out["checked"] = len(found)   # every requisition read was judged or left unjudged
     out["counts"] = {k: counts.get(k, 0) for k in ("pending", "waiting", "decided")}
     return out
 
@@ -652,6 +618,7 @@ def planner_task_overdue(st: Any, as_of: date, *, gap: Callable, cites: Callable
             extra=cites([*props.get("title", ()), *props.get("plan_title", ())]),
             event={"days": days}))
     out = result(gaps, not_evaluated=skipped)
+    out["checked"] = len(found)   # every task read was judged or left unjudged
     out["counts"] = {k: counts.get(k, 0) for k in ("open", "overdue", "completed", "undated",
                                                   "not_yet_created", "dormant_plan")}
     return out
@@ -676,7 +643,7 @@ def _all_versions(st: Any, ids: Sequence[str], props: Sequence[str]) -> list[dic
 def aged_balance_worsening(st: Any, as_of: date, *, gap: Callable, cites: Callable,
                            result: Callable, skips: Callable, settled: Sequence[str]
                            ) -> dict[str, Any]:
-    from .proactive_engine import currency_word
+    from .proactive_engine_cards import currency_word
 
     skipped = skips()
     gaps = []

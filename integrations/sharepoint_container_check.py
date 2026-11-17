@@ -94,7 +94,7 @@ import time
 from typing import Any, Callable, Mapping
 
 from integrations import capture_sharepoint as cs
-from integrations.capture_mail import WORKBENCH_STATE_ENV, assert_outside_git, check_state_dir
+from integrations.capture_mail_scope import WORKBENCH_STATE_ENV, assert_outside_git, check_state_dir
 from integrations.captured_text import split_member
 from integrations.live_source_guard import LiveSourceAudience
 from ontology.mentions import cited_page

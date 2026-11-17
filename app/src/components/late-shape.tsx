@@ -171,7 +171,7 @@ export function LateShape({
 
   if (dated.length === 0) return null;
   return (
-    <section className={cn("space-y-8", className)} aria-label="How late, drawn" data-testid="late-shape" data-embedded={embedded || undefined}>
+    <section className={cn("space-y-8", className)} aria-label="Days late per order" data-testid="late-shape" data-embedded={embedded || undefined}>
       <div>
         <Title aside={<Legend />}>Days late</Title>
         <div ref={box} className="min-w-0">

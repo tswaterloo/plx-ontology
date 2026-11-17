@@ -109,7 +109,7 @@ def _word(rows: Sequence[Mapping[str, Any]] | None) -> str | None:
 def _currency(rows: Sequence[Mapping[str, Any]] | None) -> str | None:
     """The one currency these cells state, read by the ontology's one table (the Portal's
     ``CAD$`` is ``CAD``); None when missing, unreadable or disagreeing."""
-    from .proactive_engine import currency_word
+    from .proactive_engine_cards import currency_word
 
     codes = {currency_word(r.get("value")) for r in _rows(rows)}
     return codes.pop() if len(codes) == 1 and None not in codes else None

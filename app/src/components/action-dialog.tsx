@@ -4,7 +4,7 @@ import { useEffect, useRef, useState } from "react";
 import { confirmAction, previewAction } from "@/lib/api";
 import { confirmBlocked, confirmLabel, EDITABLE, edits, hasPreset, newIdempotencyKey, outcomeUnknown, sameEdits, splitAddresses, withPreset, type Preset } from "@/lib/actions";
 import { plainError } from "@/lib/errors";
-import type { ActionKind, ActionPayload, ActionPreview, ActionResult, CardActionOffer, ProactiveSuggestion } from "@/lib/types";
+import type { ActionKind, ActionPayload, ActionPreview, ActionResult, CardActionOffer } from "@/lib/types";
 import { ChevronRight } from "lucide-react";
 import { cn } from "@/lib/cn";
 import { Button } from "./ui/button";
@@ -27,6 +27,12 @@ function Line({ id, label, children }: { id?: string; label: string; children: R
       <div className="min-w-0 flex-1">{children}</div>
     </div>
   );
+}
+
+/** A file's size as a mail app shows it: "48 KB", "1.2 MB". */
+function fileSize(bytes: number): string {
+  if (bytes < 1024 * 1024) return `${Math.max(1, Math.round(bytes / 1024))} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
 /** The fields one action takes, bound to the form, as one sheet. */
@@ -112,6 +118,25 @@ function Fields({ kind, form, set, preview }: { kind: ActionKind; form: ActionPa
           </div>
         )}
       </div>
+      {(form.attachments ?? []).length > 0 && (
+        <ul className="space-y-1 px-1" data-testid="action-attachments">
+          {(form.attachments ?? []).map((a) => (
+            <li key={a.upload_id} className="flex items-baseline gap-2 text-[12px] leading-[18px]">
+              <span className="text-muted">Attached</span>
+              <span className="min-w-0 truncate text-fg">{a.name ?? "file"}</span>
+              {typeof a.size === "number" && <span className="text-faint tabular-nums">{fileSize(a.size)}</span>}
+              <button
+                type="button"
+                className="ml-auto text-muted hover:text-fg"
+                onClick={() => set({ ...form, attachments: (form.attachments ?? []).filter((b) => b.upload_id !== a.upload_id) })}
+                data-testid="action-attachment-remove"
+              >
+                Remove
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
       {preview.payload.in_reply_to && <p className="px-1 text-[12px] leading-[18px] text-muted">In reply to the cited message; the thread keeps its own subject.</p>}
       {(preview.payload.thread_recipients ?? []).length > 0 && (
         <p className="px-1 text-[12px] leading-[18px]" data-testid="action-thread-recipients">

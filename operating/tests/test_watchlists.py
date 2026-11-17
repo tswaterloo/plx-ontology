@@ -765,3 +765,35 @@ class AuditFixes1112(unittest.TestCase):
         set_value(self.fx.w, po, "expected_date", "2026-12-01")
         self.fx.run([po])
         self.assertEqual(len(self.fx.alerts(OTHER)), 1)
+
+
+class UnreadIsSaid(unittest.TestCase):
+    """harden-1114: a check or an inbox that fails hid every alert and the page said "None
+    yet"; it still hides them (fail closed) and now names what was not read, so the page
+    says its list may be short."""
+
+    def test_a_failed_record_check_or_inbox_is_named(self):
+        rows = [{"alert_id": "a1", "gates": "[]", "body": "{}"}]
+
+        def broken(_ids):
+            raise sqlite3.OperationalError("interrupted")
+
+        failed: list[str] = []
+        self.assertEqual(wl.trim(rows, lambda k: True, (), lambda h: {}, broken,
+                                 failed=failed), [])
+        self.assertEqual(failed, ["alerts_not_read"])
+        failed = []
+        rule = SignalRules.rule(SignalRules(), "tell me when a duplicate supplier invoice "
+                                "is found")
+        self.assertEqual(wl.signal_alerts([rule], lambda *a: broken(a), failed=failed), [])
+        self.assertEqual(failed, ["inbox_not_read"])
+        # one alert whose stored body cannot be read: hidden, and named
+        failed = []
+        self.assertEqual(wl.trim([{"alert_id": "a2", "gates": "[]", "body": "{not json"}],
+                                 lambda k: True, (), lambda h: {}, lambda ids: {},
+                                 failed=failed), [])
+        self.assertEqual(failed, ["alerts_not_read"])
+        # a read that works names nothing
+        failed = []
+        wl.trim([], lambda k: True, (), lambda h: {}, lambda ids: {}, failed=failed)
+        self.assertEqual(failed, [])

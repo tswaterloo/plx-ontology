@@ -99,6 +99,9 @@ CAPTURE_SHARE = 0.75
 FIXTURE_COMPANIES = ("f1000000-0000-4000-8000-000000000001",
                      "f1000000-0000-4000-8000-000000000002")
 FIXTURE_BOOKS = dict(zip(FIXTURE_COMPANIES, ("manufacturing", "distribution")))
+# When the fixture world was captured (``MemoryCaptures``); its store is built at that
+# time, as a capture followed by its build, so the build's age rule never calls it stale.
+FIXTURE_CAPTURED_AT = datetime(2026, 1, 1, tzinfo=timezone.utc)
 
 
 # --------------------------------------------------------------------------- captures
@@ -140,7 +143,7 @@ class MemoryCaptures:
         set is a complete traversal of every company of the fixture world, so each carries
         that company's complete claim (``scopes``), the unit-level proof the host reads
         (``operating.ontology_tools_investigate.capture_claims``)."""
-        at = "2026-01-01T00:00:00Z"
+        at = FIXTURE_CAPTURED_AT.strftime("%Y-%m-%dT%H:%M:%SZ")
         scopes = [{"scope": f"company={c}", "company_id": c, "complete": True, "read_at": at}
                   for c in sorted(self.books)]
         return {"generation": "bc-fixture", "relations": {
@@ -196,7 +199,8 @@ class Product:
     """The ontology store of the captures and the case host's tool table over it."""
 
     def __init__(self, source: Any, work_dir: Path,
-                 rows: Callable[[str, Any], Mapping[str, Any] | None]) -> None:
+                 rows: Callable[[str, Any], Mapping[str, Any] | None], *,
+                 clock: Callable[[], datetime] | None = None) -> None:
         from ontology import identifiers, store_ddl
         from ontology.project import build_store
         from ontology.schema import load_schema
@@ -208,7 +212,8 @@ class Product:
         self.path = work_dir / "ontology.sqlite"
         if self.path.exists():
             self.path.unlink()
-        build_store(self.path, load_schema(), {"bc": source}, normalizer=identifiers.normalize)
+        build_store(self.path, load_schema(), {"bc": source}, normalizer=identifiers.normalize,
+                    clock=clock)
         self.reader = ot.StoreReader.open(self.path)
         policy = ot.ReadPolicy(tenant=TENANT, audiences={"bc:*": {PRINCIPAL}},
                                markings={m: {PRINCIPAL} for m in store_ddl.MARKINGS})
@@ -451,7 +456,8 @@ def fixture(args: argparse.Namespace) -> dict[str, Any]:
     records = fixture_records()
     source = MemoryCaptures(records, FIXTURE_BOOKS)
     with tempfile.TemporaryDirectory(prefix="plx-margin-") as scratch:
-        product = Product(source, Path(scratch), source.resolve)
+        product = Product(source, Path(scratch), source.resolve,
+                          clock=lambda: FIXTURE_CAPTURED_AT)
         try:
             report = run_items(records, product, FIXTURE_BOOKS, run_id=args.run_id,
                                count=args.count, complete=True, min_scored=args.min_scored,

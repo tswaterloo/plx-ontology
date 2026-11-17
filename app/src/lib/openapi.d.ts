@@ -499,13 +499,7 @@ export type paths = {
          */
         get: operations["autopilot_workflow_detail_api_autopilot_workflows__workflow__get"];
         put?: never;
-        /**
-         * Autopilot Workflow
-         * @description Switch a workflow off for everyone, or back on. Owner only (403 for every other
-         *     reader). Nobody switches a workflow on to act for someone else: each person does
-         *     that for themselves (``/api/autopilot/opt-in``).
-         */
-        post: operations["autopilot_workflow_api_autopilot_workflows__workflow__post"];
+        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -811,6 +805,49 @@ export type paths = {
          *     original is the upload you approve.
          */
         post: operations["doc_fill_api_doc_fill_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/entries/{entry_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Entry View
+         * @description An order or PO you prepared that is held until its checks are settled: each
+         *     value it needs, cited, confirmed by you or still a check with its suggestions.
+         */
+        get: operations["entry_view_api_entries__entry_id__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/entries/{entry_id}/confirm": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Entry Confirm
+         * @description Enter or confirm one value of your held entry (recorded as yours, with when).
+         *     Nothing is written to BC: with no check left the entry goes to the write desk,
+         *     where a colleague who holds the write grant approves it.
+         */
+        post: operations["entry_confirm_api_entries__entry_id__confirm_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -1195,6 +1232,34 @@ export type paths = {
          */
         get: operations["memory_items_api_memory_get"];
         put?: never;
+        /**
+         * Memory Write
+         * @description Tell the Workbench something to remember in your own words: a standing
+         *     instruction, a preference, a commitment or a fact. Used in every answer of yours,
+         *     never anyone else's. Pay and finance, and anything naming someone the Workbench
+         *     leaves out, are refused.
+         */
+        post: operations["memory_write_api_memory_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/memory/people": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Memory People
+         * @description The people you work with most and your conversations going (whose turn it is),
+         *     read from your own mailbox for the last 90 days; nothing stored. Only yours.
+         */
+        get: operations["memory_people_api_memory_people_get"];
+        put?: never;
         post?: never;
         delete?: never;
         options?: never;
@@ -1210,7 +1275,13 @@ export type paths = {
             cookie?: never;
         };
         get?: never;
-        put?: never;
+        /**
+         * Memory Correct
+         * @description Correct one of your items in your own words: the new text replaces it, and
+         *     nothing the Workbench learns later writes over it. Another person's reads as not
+         *     found.
+         */
+        put: operations["memory_correct_api_memory__item_id__put"];
         post?: never;
         /**
          * Memory Forget
@@ -1218,6 +1289,27 @@ export type paths = {
          *     your own (another person's reads as not found).
          */
         delete: operations["memory_forget_api_memory__item_id__delete"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/memory/{item_id}/done": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Memory Done
+         * @description Mark one of your commitments done: it leaves Today and your memory, and your
+         *     memory log keeps that it was done. Another person's reads as not found.
+         */
+        post: operations["memory_done_api_memory__item_id__done_post"];
+        delete?: never;
         options?: never;
         head?: never;
         patch?: never;
@@ -1518,7 +1610,8 @@ export type paths = {
          * Team View
          * @description Per person: activity in every captured system over 7 and 28 days, open work,
          *     median reply time, a daily trend and busiest hours. The owner and the named Team
-         *     readers see everyone; every other reader only their own row.
+         *     readers see everyone; every other reader only their own row. Each row carries a
+         *     weekly tracker (done, received, closed, reply time, time saved).
          */
         get: operations["team_view_api_team_get"];
         put?: never;
@@ -1572,6 +1665,49 @@ export type paths = {
          *     are refused, and every placeholder must name a record field.
          */
         post: operations["templates_create_api_templates_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/templates/answer-bank": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Templates Answer Bank
+         * @description The questionnaire answers we gave that any customer may get, as you may read
+         *     them (read only), each with the document it came from; ranked against ``question``
+         *     when given. An answer specific to one customer is on that customer's page.
+         */
+        get: operations["templates_answer_bank_api_templates_answer_bank_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/templates/learned": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Templates Learned
+         * @description The kinds of document learned from your own sent documents (daily), each with
+         *     the words that ask Ask for one.
+         */
+        get: operations["templates_learned_api_templates_learned_get"];
+        put?: never;
+        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -1701,28 +1837,6 @@ export type paths = {
          *     readers only (404 for every other reader); counts, times and switches only.
          */
         get: operations["trust_page_api_trust_get"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/uat-feedback": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /**
-         * Uat Feedback
-         * @description The MRP UAT feedback lists as you may read them (read only): totals per class,
-         *     open items per priority and the items, open first. Items you may not open are
-         *     counted, never shown. ``status`` is open, fixed, answered or unknown.
-         */
-        get: operations["uat_feedback_api_uat_feedback_get"];
         put?: never;
         post?: never;
         delete?: never;
@@ -2037,12 +2151,18 @@ export type paths = {
             path?: never;
             cookie?: never;
         };
-        get?: never;
+        /**
+         * Workload Grant Sheet
+         * @description The owner's grant editor: each person the exclusion clears, their team and the
+         *     teams they see per person. Owner only (403 for every other reader).
+         */
+        get: operations["workload_grant_sheet_api_workload_grants_get"];
         put?: never;
         /**
          * Assign Workload Grants
          * @description The owner assigns each person's team and the teams each manager sees per
-         *     person (kept in the Workbench's own data directory).
+         *     person (kept in the Workbench's own data directory). Entries for people the grant
+         *     sheet never shows are kept as they are.
          */
         post: operations["assign_workload_grants_api_workload_grants_post"];
         delete?: never;
@@ -2145,6 +2265,23 @@ export type paths = {
 export type webhooks = Record<string, never>;
 export type components = {
     schemas: {
+        /**
+         * ActionAttachment
+         * @description A file a message carries: named by its upload (the reader's own kept file); the
+         *     name, type, size and SHA-256 are read from the file itself, never from an edit.
+         */
+        ActionAttachment: {
+            /** Content Type */
+            content_type?: string | null;
+            /** Name */
+            name?: string | null;
+            /** Sha256 */
+            sha256?: string | null;
+            /** Size */
+            size?: number | null;
+            /** Upload Id */
+            upload_id: string;
+        };
         /** ActionCitation */
         ActionCitation: {
             /** Fact */
@@ -2264,6 +2401,11 @@ export type components = {
              * @description Assign to: a colleague's address (kept in the Workbench only).
              */
             assignee?: string | null;
+            /**
+             * Attachments
+             * @description The files the message carries (a filled form's reply): only the card's own; an edit may take one off, never add one.
+             */
+            attachments?: components["schemas"]["ActionAttachment"][] | null;
             /** Body */
             body?: string | null;
             /** Cc */
@@ -2925,6 +3067,12 @@ export type components = {
              * @enum {string}
              */
             mode: "entra" | "dev" | "mock";
+            /**
+             * Sign In
+             * @description How people sign in here: microsoft, access_link (a console session ticket over live state) or demo.
+             * @enum {string}
+             */
+            sign_in?: "microsoft" | "access_link" | "demo";
             /** Sign In Available */
             sign_in_available: boolean;
         };
@@ -2976,6 +3124,8 @@ export type components = {
             my_opt_ins?: components["schemas"]["AutopilotOptIn"][];
             /** Notes */
             notes?: string[];
+            /** @description Accepted / edited / rejected / ignored / waiting per prepared item this reader may see (counts only); absent when nothing was prepared. */
+            outcomes?: components["schemas"]["AutopilotOutcomes"] | null;
             /** Owner */
             owner: boolean;
             /**
@@ -3218,6 +3368,22 @@ export type components = {
             workflow: string;
         };
         /**
+         * AutopilotDraftUse
+         * @description What the draft was written with: ``memory`` (shown as "used for this draft") holds
+         *     only the entries that changed the draft; ``related`` the entries read for it that
+         *     changed nothing ("related, not applied").
+         */
+        AutopilotDraftUse: {
+            /** Memory */
+            memory?: components["schemas"]["AutopilotMemoryUse"][];
+            /**
+             * Related
+             * @description Memory read for this draft that did not change it.
+             */
+            related?: components["schemas"]["AutopilotMemoryUse"][];
+            template?: components["schemas"]["AutopilotTemplateUse"] | null;
+        };
+        /**
          * AutopilotGate
          * @description The write gate's reading of one workflow: held-out (fresh) replay when scored, else
          *     the tuning replay; ``passed`` only from the fresh gate.
@@ -3352,8 +3518,28 @@ export type components = {
              * @description Prepared or due today (Toronto day), or past due.
              */
             today: boolean;
+            /** @description The memory entries that changed the draft, those read but not applied, and the template. */
+            used_for_draft?: components["schemas"]["AutopilotDraftUse"] | null;
             /** Workflow */
             workflow: string;
+        };
+        /**
+         * AutopilotMemoryUse
+         * @description One memory entry an autopilot draft read (``operator_api.autopilot_context``).
+         */
+        AutopilotMemoryUse: {
+            /** Id */
+            id: number;
+            /**
+             * Kind
+             * @description Set only for the person whose memory it is, while they still keep it.
+             */
+            kind?: string | null;
+            /**
+             * Text
+             * @description As it stands now in your memory; empty for anyone else, or once you deleted or changed it.
+             */
+            text?: string | null;
         };
         /** AutopilotModeRequest */
         AutopilotModeRequest: {
@@ -3428,6 +3614,64 @@ export type components = {
             on: boolean;
             /** Workflow */
             workflow: string;
+        };
+        /**
+         * AutopilotOutcomeCounts
+         * @description What became of prepared items (``operating.autopilot_outcomes``): each item in one
+         *     class, so the five counts sum to ``items``; shares (percent, one decimal, as text) are
+         *     over ``decided`` (every class but waiting), null with none decided.
+         */
+        AutopilotOutcomeCounts: {
+            /** Accepted */
+            accepted: number;
+            /** Decided */
+            decided: number;
+            /** Edited */
+            edited: number;
+            /** Ignored */
+            ignored: number;
+            /** Items */
+            items: number;
+            /** Rejected */
+            rejected: number;
+            /** Shares */
+            shares?: {
+                [key: string]: string | null;
+            };
+            /** Waiting */
+            waiting: number;
+        };
+        /**
+         * AutopilotOutcomes
+         * @description Counts only, over the prepared items (open and settled) this reader may see.
+         */
+        AutopilotOutcomes: {
+            /** Accepted */
+            accepted: number;
+            /** By Autopilot */
+            by_autopilot?: {
+                [key: string]: components["schemas"]["AutopilotOutcomeCounts"];
+            };
+            /** Decided */
+            decided: number;
+            /** Edited */
+            edited: number;
+            /** Ignored */
+            ignored: number;
+            /** Ignored Reasons */
+            ignored_reasons?: {
+                [key: string]: number;
+            };
+            /** Items */
+            items: number;
+            /** Rejected */
+            rejected: number;
+            /** Shares */
+            shares?: {
+                [key: string]: string | null;
+            };
+            /** Waiting */
+            waiting: number;
         };
         /** AutopilotPauseRequest */
         AutopilotPauseRequest: {
@@ -3640,6 +3884,21 @@ export type components = {
             workflows_off?: string[];
         };
         /**
+         * AutopilotTemplateUse
+         * @description The template an autopilot draft used (its closing block).
+         */
+        AutopilotTemplateUse: {
+            /** Doc Type */
+            doc_type?: string | null;
+            /** Id */
+            id: number;
+            /**
+             * Name
+             * @description Set only when you may use the template.
+             */
+            name?: string | null;
+        };
+        /**
          * AutopilotWorkflowDetail
          * @description One workflow as the studio shows it: what starts it, what it checks and does, its
          *     gate, its mode, per role its row, what it caught and missed, and its history.
@@ -3774,14 +4033,6 @@ export type components = {
             switched_on?: number;
             /** Workflow */
             workflow: string;
-        };
-        /** AutopilotWorkflowSwitch */
-        AutopilotWorkflowSwitch: {
-            /**
-             * On
-             * @description false: the workflow is switched off for everyone (nothing is performed, not even a dry run); true: back on. Switching it on never makes it act for anyone: each person does that.
-             */
-            on: boolean;
         };
         /**
          * Brief
@@ -4139,10 +4390,15 @@ export type components = {
          */
         BriefingEventType: {
             /**
+             * Checked
+             * @description Records its checks had to judge in their last run; null when not counted or when your access does not show every record the run read.
+             */
+            checked?: number | null;
+            /**
              * Event Type
              * @enum {string}
              */
-            event_type: "po_late" | "po_due" | "eta_slipped" | "vendor_no_reply" | "vendor_terms_unapplied" | "negative_margin" | "lot_near_expiry" | "lot_on_hold" | "quote_accepted_no_order" | "quantity_mismatch" | "customer_order_at_risk" | "po_undated" | "customer_order_late" | "watcher_attention" | "stock_out_risk" | "overdue_receivable" | "unit_cost_jump" | "customer_demand_drop" | "promise_date_slip" | "margin_erosion" | "supplier_reliability" | "shipped_not_invoiced" | "duplicate_customer_order" | "recurring_component_damage" | "customer_chasing_order" | "tell_before_they_ask" | "quality_hold_aging" | "reject_trend" | "expedite_unanswered" | "supplier_shortage_open_orders" | "return_unanswered" | "supplier_chasing_payment" | "customer_paying_slower" | "early_pay_discount_missed" | "duplicate_supplier_invoice" | "duplicate_supplier_payment" | "customer_credits_rising" | "price_below_typical" | "price_below_cost" | "customer_price_drop" | "mc_task_overdue" | "mc_task_stuck" | "mc_approval_pending" | "portal_approval_pending" | "planner_task_overdue" | "aged_receivable_worsening" | "aged_payable_worsening" | "production_late" | "assembly_damage_spike" | "teams_unanswered_ask" | "commitment_due" | "commitment_missed" | "needs_my_reply" | "approval_waiting" | "chase_escalating" | "party_chase_unanswered" | "internal_order_chase" | "slow_moving_stock" | "expiring_lot_stock" | "assembly_blocked_by_component" | "certificate_expiring" | "freight_cost_anomaly" | "stale_quote" | "priority_order_unfilled" | "duplicate_party_candidate" | "key_field_missing" | "twins_disagree" | "source_stale" | "sync_missing" | "sync_mismatch" | "reorder_soon" | "inventory_adjustment" | "blocked_account_activity" | "gl_posting_errors" | "recurring_task_missed" | "label_change" | "label_revision_superseded" | "rd_project" | "unapplied_remittance" | "short_payment" | "statement_difference";
+            event_type: "po_late" | "po_due" | "eta_slipped" | "vendor_no_reply" | "vendor_terms_unapplied" | "negative_margin" | "lot_near_expiry" | "lot_on_hold" | "quote_accepted_no_order" | "quantity_mismatch" | "customer_order_at_risk" | "po_undated" | "customer_order_late" | "watcher_attention" | "stock_out_risk" | "overdue_receivable" | "unit_cost_jump" | "customer_demand_drop" | "promise_date_slip" | "margin_erosion" | "supplier_reliability" | "shipped_not_invoiced" | "duplicate_customer_order" | "recurring_component_damage" | "customer_chasing_order" | "tell_before_they_ask" | "quality_hold_aging" | "reject_trend" | "expedite_unanswered" | "supplier_shortage_open_orders" | "return_unanswered" | "supplier_chasing_payment" | "customer_paying_slower" | "early_pay_discount_missed" | "duplicate_supplier_invoice" | "duplicate_supplier_payment" | "customer_credits_rising" | "price_below_typical" | "price_below_cost" | "customer_price_drop" | "mc_task_stuck" | "mc_approval_pending" | "portal_approval_pending" | "planner_task_overdue" | "aged_receivable_worsening" | "aged_payable_worsening" | "production_late" | "assembly_damage_spike" | "teams_unanswered_ask" | "commitment_due" | "commitment_missed" | "needs_my_reply" | "approval_waiting" | "chase_escalating" | "party_chase_unanswered" | "internal_order_chase" | "slow_moving_stock" | "expiring_lot_stock" | "assembly_blocked_by_component" | "certificate_expiring" | "freight_cost_anomaly" | "stale_quote" | "priority_order_unfilled" | "duplicate_party_candidate" | "key_field_missing" | "twins_disagree" | "source_stale" | "sync_missing" | "sync_mismatch" | "reorder_soon" | "inventory_adjustment" | "blocked_account_activity" | "gl_posting_errors" | "recurring_task_missed" | "label_change" | "label_revision_superseded" | "rd_project" | "unapplied_remittance" | "short_payment" | "statement_difference";
             /** First Found */
             first_found?: string | null;
             /**
@@ -4150,6 +4406,16 @@ export type components = {
              * @description Null where that is withheld.
              */
             found_live?: boolean | null;
+            /**
+             * Judged
+             * @description Of those, the records judged.
+             */
+            judged?: number | null;
+            /**
+             * Judged Share
+             * @description judged / checked, rounded down (never 1 while one is left unjudged); null when not counted.
+             */
+            judged_share?: number | null;
             /** Label */
             label: string;
             /**
@@ -4174,7 +4440,7 @@ export type components = {
              * Event Type
              * @enum {string}
              */
-            event_type: "po_late" | "po_due" | "eta_slipped" | "vendor_no_reply" | "vendor_terms_unapplied" | "negative_margin" | "lot_near_expiry" | "lot_on_hold" | "quote_accepted_no_order" | "quantity_mismatch" | "customer_order_at_risk" | "po_undated" | "customer_order_late" | "watcher_attention" | "stock_out_risk" | "overdue_receivable" | "unit_cost_jump" | "customer_demand_drop" | "promise_date_slip" | "margin_erosion" | "supplier_reliability" | "shipped_not_invoiced" | "duplicate_customer_order" | "recurring_component_damage" | "customer_chasing_order" | "tell_before_they_ask" | "quality_hold_aging" | "reject_trend" | "expedite_unanswered" | "supplier_shortage_open_orders" | "return_unanswered" | "supplier_chasing_payment" | "customer_paying_slower" | "early_pay_discount_missed" | "duplicate_supplier_invoice" | "duplicate_supplier_payment" | "customer_credits_rising" | "price_below_typical" | "price_below_cost" | "customer_price_drop" | "mc_task_overdue" | "mc_task_stuck" | "mc_approval_pending" | "portal_approval_pending" | "planner_task_overdue" | "aged_receivable_worsening" | "aged_payable_worsening" | "production_late" | "assembly_damage_spike" | "teams_unanswered_ask" | "commitment_due" | "commitment_missed" | "needs_my_reply" | "approval_waiting" | "chase_escalating" | "party_chase_unanswered" | "internal_order_chase" | "slow_moving_stock" | "expiring_lot_stock" | "assembly_blocked_by_component" | "certificate_expiring" | "freight_cost_anomaly" | "stale_quote" | "priority_order_unfilled" | "duplicate_party_candidate" | "key_field_missing" | "twins_disagree" | "source_stale" | "sync_missing" | "sync_mismatch" | "reorder_soon" | "inventory_adjustment" | "blocked_account_activity" | "gl_posting_errors" | "recurring_task_missed" | "label_change" | "label_revision_superseded" | "rd_project" | "unapplied_remittance" | "short_payment" | "statement_difference";
+            event_type: "po_late" | "po_due" | "eta_slipped" | "vendor_no_reply" | "vendor_terms_unapplied" | "negative_margin" | "lot_near_expiry" | "lot_on_hold" | "quote_accepted_no_order" | "quantity_mismatch" | "customer_order_at_risk" | "po_undated" | "customer_order_late" | "watcher_attention" | "stock_out_risk" | "overdue_receivable" | "unit_cost_jump" | "customer_demand_drop" | "promise_date_slip" | "margin_erosion" | "supplier_reliability" | "shipped_not_invoiced" | "duplicate_customer_order" | "recurring_component_damage" | "customer_chasing_order" | "tell_before_they_ask" | "quality_hold_aging" | "reject_trend" | "expedite_unanswered" | "supplier_shortage_open_orders" | "return_unanswered" | "supplier_chasing_payment" | "customer_paying_slower" | "early_pay_discount_missed" | "duplicate_supplier_invoice" | "duplicate_supplier_payment" | "customer_credits_rising" | "price_below_typical" | "price_below_cost" | "customer_price_drop" | "mc_task_stuck" | "mc_approval_pending" | "portal_approval_pending" | "planner_task_overdue" | "aged_receivable_worsening" | "aged_payable_worsening" | "production_late" | "assembly_damage_spike" | "teams_unanswered_ask" | "commitment_due" | "commitment_missed" | "needs_my_reply" | "approval_waiting" | "chase_escalating" | "party_chase_unanswered" | "internal_order_chase" | "slow_moving_stock" | "expiring_lot_stock" | "assembly_blocked_by_component" | "certificate_expiring" | "freight_cost_anomaly" | "stale_quote" | "priority_order_unfilled" | "duplicate_party_candidate" | "key_field_missing" | "twins_disagree" | "source_stale" | "sync_missing" | "sync_mismatch" | "reorder_soon" | "inventory_adjustment" | "blocked_account_activity" | "gl_posting_errors" | "recurring_task_missed" | "label_change" | "label_revision_superseded" | "rd_project" | "unapplied_remittance" | "short_payment" | "statement_difference";
             /** In Top */
             in_top: number;
             /** Label */
@@ -4240,7 +4506,7 @@ export type components = {
              * Event Type
              * @enum {string}
              */
-            event_type: "po_late" | "po_due" | "eta_slipped" | "vendor_no_reply" | "vendor_terms_unapplied" | "negative_margin" | "lot_near_expiry" | "lot_on_hold" | "quote_accepted_no_order" | "quantity_mismatch" | "customer_order_at_risk" | "po_undated" | "customer_order_late" | "watcher_attention" | "stock_out_risk" | "overdue_receivable" | "unit_cost_jump" | "customer_demand_drop" | "promise_date_slip" | "margin_erosion" | "supplier_reliability" | "shipped_not_invoiced" | "duplicate_customer_order" | "recurring_component_damage" | "customer_chasing_order" | "tell_before_they_ask" | "quality_hold_aging" | "reject_trend" | "expedite_unanswered" | "supplier_shortage_open_orders" | "return_unanswered" | "supplier_chasing_payment" | "customer_paying_slower" | "early_pay_discount_missed" | "duplicate_supplier_invoice" | "duplicate_supplier_payment" | "customer_credits_rising" | "price_below_typical" | "price_below_cost" | "customer_price_drop" | "mc_task_overdue" | "mc_task_stuck" | "mc_approval_pending" | "portal_approval_pending" | "planner_task_overdue" | "aged_receivable_worsening" | "aged_payable_worsening" | "production_late" | "assembly_damage_spike" | "teams_unanswered_ask" | "commitment_due" | "commitment_missed" | "needs_my_reply" | "approval_waiting" | "chase_escalating" | "party_chase_unanswered" | "internal_order_chase" | "slow_moving_stock" | "expiring_lot_stock" | "assembly_blocked_by_component" | "certificate_expiring" | "freight_cost_anomaly" | "stale_quote" | "priority_order_unfilled" | "duplicate_party_candidate" | "key_field_missing" | "twins_disagree" | "source_stale" | "sync_missing" | "sync_mismatch" | "reorder_soon" | "inventory_adjustment" | "blocked_account_activity" | "gl_posting_errors" | "recurring_task_missed" | "label_change" | "label_revision_superseded" | "rd_project" | "unapplied_remittance" | "short_payment" | "statement_difference";
+            event_type: "po_late" | "po_due" | "eta_slipped" | "vendor_no_reply" | "vendor_terms_unapplied" | "negative_margin" | "lot_near_expiry" | "lot_on_hold" | "quote_accepted_no_order" | "quantity_mismatch" | "customer_order_at_risk" | "po_undated" | "customer_order_late" | "watcher_attention" | "stock_out_risk" | "overdue_receivable" | "unit_cost_jump" | "customer_demand_drop" | "promise_date_slip" | "margin_erosion" | "supplier_reliability" | "shipped_not_invoiced" | "duplicate_customer_order" | "recurring_component_damage" | "customer_chasing_order" | "tell_before_they_ask" | "quality_hold_aging" | "reject_trend" | "expedite_unanswered" | "supplier_shortage_open_orders" | "return_unanswered" | "supplier_chasing_payment" | "customer_paying_slower" | "early_pay_discount_missed" | "duplicate_supplier_invoice" | "duplicate_supplier_payment" | "customer_credits_rising" | "price_below_typical" | "price_below_cost" | "customer_price_drop" | "mc_task_stuck" | "mc_approval_pending" | "portal_approval_pending" | "planner_task_overdue" | "aged_receivable_worsening" | "aged_payable_worsening" | "production_late" | "assembly_damage_spike" | "teams_unanswered_ask" | "commitment_due" | "commitment_missed" | "needs_my_reply" | "approval_waiting" | "chase_escalating" | "party_chase_unanswered" | "internal_order_chase" | "slow_moving_stock" | "expiring_lot_stock" | "assembly_blocked_by_component" | "certificate_expiring" | "freight_cost_anomaly" | "stale_quote" | "priority_order_unfilled" | "duplicate_party_candidate" | "key_field_missing" | "twins_disagree" | "source_stale" | "sync_missing" | "sync_mismatch" | "reorder_soon" | "inventory_adjustment" | "blocked_account_activity" | "gl_posting_errors" | "recurring_task_missed" | "label_change" | "label_revision_superseded" | "rd_project" | "unapplied_remittance" | "short_payment" | "statement_difference";
             /**
              * Evidence
              * @description 'live': a recorded run of this event's check over this data has found one; else 'fixture-only'.
@@ -4317,7 +4583,7 @@ export type components = {
              * Event Type
              * @enum {string}
              */
-            event_type: "po_late" | "po_due" | "eta_slipped" | "vendor_no_reply" | "vendor_terms_unapplied" | "negative_margin" | "lot_near_expiry" | "lot_on_hold" | "quote_accepted_no_order" | "quantity_mismatch" | "customer_order_at_risk" | "po_undated" | "customer_order_late" | "watcher_attention" | "stock_out_risk" | "overdue_receivable" | "unit_cost_jump" | "customer_demand_drop" | "promise_date_slip" | "margin_erosion" | "supplier_reliability" | "shipped_not_invoiced" | "duplicate_customer_order" | "recurring_component_damage" | "customer_chasing_order" | "tell_before_they_ask" | "quality_hold_aging" | "reject_trend" | "expedite_unanswered" | "supplier_shortage_open_orders" | "return_unanswered" | "supplier_chasing_payment" | "customer_paying_slower" | "early_pay_discount_missed" | "duplicate_supplier_invoice" | "duplicate_supplier_payment" | "customer_credits_rising" | "price_below_typical" | "price_below_cost" | "customer_price_drop" | "mc_task_overdue" | "mc_task_stuck" | "mc_approval_pending" | "portal_approval_pending" | "planner_task_overdue" | "aged_receivable_worsening" | "aged_payable_worsening" | "production_late" | "assembly_damage_spike" | "teams_unanswered_ask" | "commitment_due" | "commitment_missed" | "needs_my_reply" | "approval_waiting" | "chase_escalating" | "party_chase_unanswered" | "internal_order_chase" | "slow_moving_stock" | "expiring_lot_stock" | "assembly_blocked_by_component" | "certificate_expiring" | "freight_cost_anomaly" | "stale_quote" | "priority_order_unfilled" | "duplicate_party_candidate" | "key_field_missing" | "twins_disagree" | "source_stale" | "sync_missing" | "sync_mismatch" | "reorder_soon" | "inventory_adjustment" | "blocked_account_activity" | "gl_posting_errors" | "recurring_task_missed" | "label_change" | "label_revision_superseded" | "rd_project" | "unapplied_remittance" | "short_payment" | "statement_difference";
+            event_type: "po_late" | "po_due" | "eta_slipped" | "vendor_no_reply" | "vendor_terms_unapplied" | "negative_margin" | "lot_near_expiry" | "lot_on_hold" | "quote_accepted_no_order" | "quantity_mismatch" | "customer_order_at_risk" | "po_undated" | "customer_order_late" | "watcher_attention" | "stock_out_risk" | "overdue_receivable" | "unit_cost_jump" | "customer_demand_drop" | "promise_date_slip" | "margin_erosion" | "supplier_reliability" | "shipped_not_invoiced" | "duplicate_customer_order" | "recurring_component_damage" | "customer_chasing_order" | "tell_before_they_ask" | "quality_hold_aging" | "reject_trend" | "expedite_unanswered" | "supplier_shortage_open_orders" | "return_unanswered" | "supplier_chasing_payment" | "customer_paying_slower" | "early_pay_discount_missed" | "duplicate_supplier_invoice" | "duplicate_supplier_payment" | "customer_credits_rising" | "price_below_typical" | "price_below_cost" | "customer_price_drop" | "mc_task_stuck" | "mc_approval_pending" | "portal_approval_pending" | "planner_task_overdue" | "aged_receivable_worsening" | "aged_payable_worsening" | "production_late" | "assembly_damage_spike" | "teams_unanswered_ask" | "commitment_due" | "commitment_missed" | "needs_my_reply" | "approval_waiting" | "chase_escalating" | "party_chase_unanswered" | "internal_order_chase" | "slow_moving_stock" | "expiring_lot_stock" | "assembly_blocked_by_component" | "certificate_expiring" | "freight_cost_anomaly" | "stale_quote" | "priority_order_unfilled" | "duplicate_party_candidate" | "key_field_missing" | "twins_disagree" | "source_stale" | "sync_missing" | "sync_mismatch" | "reorder_soon" | "inventory_adjustment" | "blocked_account_activity" | "gl_posting_errors" | "recurring_task_missed" | "label_change" | "label_revision_superseded" | "rd_project" | "unapplied_remittance" | "short_payment" | "statement_difference";
             /** Items */
             items?: components["schemas"]["BriefingItem"][];
             /**
@@ -4731,6 +4997,19 @@ export type components = {
             ok: boolean;
         };
         /**
+         * DocFigure
+         * @description One figure of a document row, as the sheet or the records state it: ``value`` an
+         *     exact decimal string (never a float), ``unit`` its unit or currency when stated.
+         */
+        DocFigure: {
+            /** Label */
+            label: string;
+            /** Unit */
+            unit?: string | null;
+            /** Value */
+            value: string;
+        };
+        /**
          * DocFillRequest
          * @description Fill this form for this record: the file (base64), the record (an identifier such
          *     as "PO 1234" or a record id), and optionally the SharePoint file it came from (the
@@ -4747,6 +5026,89 @@ export type components = {
             reply_to?: string | null;
             /** Source */
             source?: string | null;
+        };
+        /**
+         * DocList
+         * @description One document list on a record's page: the rows of one ``business_documents`` view
+         *     narrowed to the record, with what was left out counted (never shown).
+         */
+        DocList: {
+            /**
+             * Complete
+             * @description False: the read was cut or could not decide everything, so rows may be missing.
+             * @default true
+             */
+            complete: boolean;
+            /**
+             * Error
+             * @description Why the list could not be read at all.
+             */
+            error?: string | null;
+            /**
+             * Needs
+             * @description The access the whole list needs and the reader lacks (e.g. 'finance'): nothing of the list was read.
+             */
+            needs?: string | null;
+            /**
+             * Reading
+             * @description True when this screen's first read for this reader is still going on: nothing of it is shown yet (its lists are empty and its counts zero, never a finding); ask again shortly for the page.
+             */
+            reading?: boolean;
+            /** Rows */
+            rows?: components["schemas"]["DocRow"][];
+            /**
+             * Stale Since
+             * @description Set when the server serves the last page it read for this same reader instead of reading it now: when that page was read (ISO). It is read again in the background.
+             */
+            stale_since?: string | null;
+            /** Title */
+            title: string;
+            /**
+             * View
+             * @enum {string}
+             */
+            view: "supplier_issues" | "forecasts" | "forecast_accuracy" | "price_sheets" | "answer_bank";
+            /**
+             * Withheld
+             * @description Rows left out because they cite a record the reader may not read or need a marking they lack.
+             * @default 0
+             */
+            withheld: number;
+        };
+        /**
+         * DocRow
+         * @description One row of a document list (``operating.business_documents``), read as this reader:
+         *     shown only when the reader may read every record it cites and holds its markings.
+         */
+        DocRow: {
+            /**
+             * Dated
+             * @description The document's or message's day (ISO).
+             */
+            dated?: string | null;
+            /**
+             * Detail
+             * @description Source text (a questionnaire answer, an issue's own words): shown as written.
+             */
+            detail?: string | null;
+            /** Figures */
+            figures?: components["schemas"]["DocFigure"][];
+            /**
+             * Records
+             * @description The customers, suppliers, items and lots the row names that the reader may open.
+             */
+            records?: components["schemas"]["ObjectRef"][];
+            /** @description The document, mail, task or message the row was read from. */
+            source?: components["schemas"]["ObjectRef"] | null;
+            /**
+             * Status
+             * @description The row's state in words the list filters on (an issue's kind, a price sheet's match or mismatch, a forecast's over or under, an answer's scope).
+             */
+            status?: string | null;
+            /** Title */
+            title: string;
+            /** Tone */
+            tone?: ("bad" | "warn" | "good") | null;
         };
         /**
          * DocumentsPending
@@ -4862,6 +5224,108 @@ export type components = {
             scopes: string[];
             /** Tenant Id */
             tenant_id: string;
+        };
+        /**
+         * EntryConfirm
+         * @description One value the person enters or confirms: a record (``record``) for the customer,
+         *     supplier or item; a number (``value``) for a quantity; a number and ``currency`` for
+         *     a price.
+         */
+        EntryConfirm: {
+            /** Currency */
+            currency?: string | null;
+            /** Key */
+            key: string;
+            /** Record */
+            record?: string | null;
+            /** Value */
+            value?: string | null;
+        };
+        /**
+         * EntryField
+         * @description One value the BC entry needs: cited (from the records or the document), a check
+         *     the person settles, or confirmed by the person (who and when).
+         */
+        EntryField: {
+            /** Confirmed At */
+            confirmed_at?: string | null;
+            /** Confirmed By */
+            confirmed_by?: string | null;
+            /** Currency */
+            currency?: string | null;
+            /**
+             * Field
+             * @enum {string}
+             */
+            field: "customer" | "supplier" | "item" | "quantity" | "unit_price";
+            /**
+             * Key
+             * @description ``customer``, ``supplier`` or ``line:<n>:item|quantity|unit_price``: what ``EntryConfirm.key`` names.
+             */
+            key: string;
+            /** Label */
+            label: string;
+            /** Line */
+            line?: number | null;
+            /** Options */
+            options?: components["schemas"]["EntryOption"][];
+            /** Reason */
+            reason?: string | null;
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "cited" | "check" | "confirmed";
+            /** Value */
+            value?: string | null;
+        };
+        /**
+         * EntryHold
+         * @description An order or PO held until every check is settled (``/api/entries/{entry_id}``):
+         *     only the person preparing it sees and confirms it. Confirming writes nothing to BC:
+         *     once ``open`` is 0 the entry goes to the write desk (``write``), where a colleague
+         *     who holds the write grant approves it.
+         */
+        EntryHold: {
+            /** Entry Id */
+            entry_id: string;
+            /** Fields */
+            fields: components["schemas"]["EntryField"][];
+            /**
+             * Kind
+             * @enum {string}
+             */
+            kind: "order" | "purchase_order";
+            /** Label */
+            label: string;
+            /**
+             * Open
+             * @description Checks still to settle.
+             */
+            open: number;
+            write?: components["schemas"]["InstructWrite"] | null;
+        };
+        /**
+         * EntryOption
+         * @description A suggested value for a held field, from a record the reader opens: picking it
+         *     fills the confirm form; it is never used until the person confirms it.
+         */
+        EntryOption: {
+            /** Basis */
+            basis: string;
+            /** Currency */
+            currency?: string | null;
+            /** Date */
+            date?: string | null;
+            /**
+             * Record
+             * @description The record to send back as ``EntryConfirm.record`` (customer, supplier, item).
+             */
+            record?: string | null;
+            /** Unit */
+            unit?: string | null;
+            /** Value */
+            value: string;
         };
         /** ErrorBody */
         ErrorBody: {
@@ -5208,23 +5672,125 @@ export type components = {
         };
         /**
          * FillReply
-         * @description The filled copy as a reply to the email the form came in: prepared, never sent from
-         *     here (``missing`` says what a send with a file needs).
+         * @description The filled copy as a reply to the email the form came in, carrying the file: never
+         *     sent from here. ``card_id`` opens it in the action dialog (``/api/actions/preview``),
+         *     where the reader previews the exact message and file and confirms the send themselves;
+         *     ``not_available`` (with ``missing``) when no such reply can be prepared.
          */
         FillReply: {
+            /**
+             * Actions
+             * @description The sends that carry the file.
+             */
+            actions?: components["schemas"]["CardActionOffer"][];
             /** Attachment */
             attachment: string;
+            /** Card Id */
+            card_id?: string | null;
             /** Missing */
             missing: string[];
             /**
              * Status
-             * @constant
+             * @enum {string}
              */
-            status: "not_available";
+            status: "ready" | "not_available";
             /** Subject */
             subject: string;
             /** To */
             to: string[];
+        };
+        /**
+         * FormulaComponent
+         * @description One line of a formula sheet as the sheet states it (``operating.composition_lines``):
+         *     never filled in, never a price. ``item`` is the one raw-material record the part code
+         *     names (null: the code names no record, or several).
+         */
+        FormulaComponent: {
+            /**
+             * Check
+             * @description The sheet's share x size check for this line, when it fails or cannot be made.
+             */
+            check?: string | null;
+            /**
+             * Description
+             * @default
+             */
+            description: string;
+            item?: components["schemas"]["ObjectRef"] | null;
+            /** @description What the raw material's newest priced purchase order line paid, when this reader may read it. */
+            last_price?: components["schemas"]["FormulaPrice"] | null;
+            /** No */
+            no?: string | null;
+            /** Part */
+            part: string;
+            /** Quantity */
+            quantity?: string | null;
+            /**
+             * Share Percent
+             * @description The share the sheet states, as written (exact decimal text, percent).
+             */
+            share_percent?: string | null;
+            /**
+             * Supplier Items
+             * @description Supplier items of the raw material this reader may read (their prices stay on them).
+             * @default 0
+             */
+            supplier_items: number;
+            /** Unit */
+            unit?: string | null;
+        };
+        /**
+         * FormulaPrice
+         * @description A raw material's last PO price (``business_documents`` view ``item_po_prices``).
+         */
+        FormulaPrice: {
+            /** Currency */
+            currency?: string | null;
+            /** Dated */
+            dated?: string | null;
+            po?: components["schemas"]["ObjectRef"] | null;
+            /**
+             * Price
+             * @description Exact decimal text, per ``uom``.
+             */
+            price: string;
+            /** Uom */
+            uom?: string | null;
+        };
+        /**
+         * FormulaSheet
+         * @description A formula sheet of the product: the document it is read from, the formula number it
+         *     states and its lines in sheet order.
+         */
+        FormulaSheet: {
+            /**
+             * Basis
+             * @description code: the sheet states one of the product's codes; name: it states no code and its product name is this product's.
+             * @enum {string}
+             */
+            basis: "code" | "name";
+            /** Components */
+            components?: components["schemas"]["FormulaComponent"][];
+            /** Dated */
+            dated?: string | null;
+            document: components["schemas"]["ObjectRef"];
+            /** Formula Code */
+            formula_code?: string | null;
+            /** @description Omitted when no line's raw material has a price this reader may read. */
+            material_cost?: components["schemas"]["MaterialCost"] | null;
+            /**
+             * Missing Lines
+             * @default 0
+             */
+            missing_lines: number;
+            /** Share Total */
+            share_total?: string | null;
+            /**
+             * Status
+             * @description partial: some lines could not be read (``missing_lines``); never filled in.
+             * @enum {string}
+             */
+            status: "complete" | "partial";
         };
         /** Freshness */
         Freshness: {
@@ -5677,6 +6243,8 @@ export type components = {
             };
             /** Documents */
             documents?: components["schemas"]["InstructDocument"][];
+            /** @description An order or PO held until you settle its checks. */
+            entry?: components["schemas"]["EntryHold"] | null;
             /**
              * Files
              * @description The files this instruction read (never their content): continuing it needs them attached again.
@@ -5782,11 +6350,8 @@ export type components = {
         InstructWrite: {
             /** Changes */
             changes?: components["schemas"]["WriteChange"][];
-            /**
-             * Intent Id
-             * @default null
-             */
-            intent_id: string | null;
+            /** Intent Id */
+            intent_id?: string | null;
             /** Label */
             label: string;
             /** Problems */
@@ -6197,6 +6762,48 @@ export type components = {
             /** Supplier */
             supplier?: string | null;
         };
+        /**
+         * LearnedTemplate
+         * @description A kind of document learned from the reader's own sent documents.
+         */
+        LearnedTemplate: {
+            /**
+             * Ask
+             * @description The words that ask for one; the record it is for goes after them.
+             */
+            ask: string;
+            /**
+             * Documents
+             * @description How many of your documents it was learned from.
+             */
+            documents: number;
+            /** Kind */
+            kind: string;
+            /** Label */
+            label: string;
+            /**
+             * Last Sent
+             * @description The latest of them (ISO date).
+             */
+            last_sent?: string | null;
+        };
+        /**
+         * LearnedTemplates
+         * @description Templates learned from your documents (re-learned daily). ``none``: nothing learned
+         *     for you yet; ``unavailable``: the people exclusion could not be read, so none is
+         *     listed.
+         */
+        LearnedTemplates: {
+            /** Learned At */
+            learned_at?: string | null;
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "read" | "none" | "unavailable";
+            /** Templates */
+            templates?: components["schemas"]["LearnedTemplate"][];
+        };
         /** LinkGroup */
         LinkGroup: {
             /**
@@ -6292,6 +6899,31 @@ export type components = {
             /** Ok */
             ok: boolean;
         };
+        /**
+         * MaterialCost
+         * @description A sheet's raw-material cost per kg of the product: each line's share times its raw
+         *     material's last PO price per kg, summed (exact Decimal, one currency). Never filled in:
+         *     a line with no price, another currency or a unit not convertible to kg is named in
+         *     ``missing`` and the cost is ``complete`` false.
+         */
+        MaterialCost: {
+            /**
+             * Complete
+             * @default false
+             */
+            complete: boolean;
+            /** Currency */
+            currency?: string | null;
+            /** Missing */
+            missing?: string[];
+            /** Per Kg */
+            per_kg?: string | null;
+            /**
+             * Priced Share
+             * @description The share of the formula (percent) priced.
+             */
+            priced_share: string;
+        };
         /** MaterialRow */
         MaterialRow: {
             assembly: components["schemas"]["ObjectRef"];
@@ -6360,6 +6992,17 @@ export type components = {
              * @description How the identity was proven (entra_access_token, configured_employee, fixture).
              */
             proof: string;
+            /**
+             * Roles
+             * @description The reader's own work roles from the team snapshot (purchasing, customer_service, quality, rnd, ...): the app's per-role defaults. Empty when unknown.
+             */
+            roles?: string[];
+            /**
+             * Sign In
+             * @description How this reader signed in: microsoft, access_link (console session ticket) or demo (mock, fixture or a configured test identity).
+             * @enum {string}
+             */
+            sign_in?: "microsoft" | "access_link" | "demo";
             /** Tenant */
             tenant: string;
         };
@@ -6431,6 +7074,11 @@ export type components = {
             at: string;
             /** Confidence */
             confidence: number;
+            /**
+             * Due
+             * @description A commitment's due day (YYYY-MM-DD, US Eastern) as its words say it, read against when it was said; None when they name no day.
+             */
+            due?: string | null;
             /** Id */
             id: number;
             /** Importance */
@@ -6459,6 +7107,98 @@ export type components = {
             available: boolean;
             /** Items */
             items: components["schemas"]["MemoryItem"][];
+        };
+        /**
+         * MemoryPeople
+         * @description The people you work with and your conversations going, from your own mailbox.
+         */
+        MemoryPeople: {
+            /**
+             * Available
+             * @description False when your mail or the people exclusion cannot be read now (nothing is guessed).
+             */
+            available: boolean;
+            /**
+             * People
+             * @default []
+             */
+            people: components["schemas"]["MemoryPerson"][];
+            /**
+             * Reading
+             * @description True while your mail is still being read: ask again in a few seconds.
+             * @default false
+             */
+            reading: boolean;
+            /**
+             * Threads
+             * @default []
+             */
+            threads: components["schemas"]["MemoryThread"][];
+        };
+        /** MemoryPerson */
+        MemoryPerson: {
+            /** Address */
+            address: string;
+            /**
+             * Inside
+             * @description An address of the company's own domains.
+             */
+            inside: boolean;
+            /** Last At */
+            last_at: string;
+            /**
+             * Last Subject
+             * @description Empty when it carries pay or finance.
+             */
+            last_subject: string;
+            /**
+             * Name
+             * @description Read from the address's own parts.
+             */
+            name: string;
+            /**
+             * Received
+             * @description Messages they sent you in the last 90 days.
+             */
+            received: number;
+            /**
+             * Sent
+             * @description Messages you sent them in the last 90 days.
+             */
+            sent: number;
+        };
+        /**
+         * MemorySave
+         * @description Something to remember in your own words, or a correction of one of your items.
+         */
+        MemorySave: {
+            /**
+             * Kind
+             * @enum {string}
+             */
+            kind: "instruction" | "preference" | "commitment" | "fact";
+            /** Text */
+            text: string;
+        };
+        /** MemoryThread */
+        MemoryThread: {
+            /** Last At */
+            last_at: string;
+            /** Messages */
+            messages: number;
+            /**
+             * Others
+             * @description Who else is on it (up to six addresses).
+             */
+            others: string[];
+            /** Subject */
+            subject: string;
+            /**
+             * Turn
+             * @description yours: the last message came to you; theirs: you wrote last.
+             * @enum {string}
+             */
+            turn: "yours" | "theirs";
         };
         /** Money */
         Money: {
@@ -6752,8 +7492,12 @@ export type components = {
             conflicts?: components["schemas"]["Conflict"][];
             /** @description A customer's revenue, orders and contacts (customers only). */
             customer?: components["schemas"]["CustomerSummary"] | null;
+            /** @description A customer's, supplier's or item's document lists (the documents section). */
+            documents?: components["schemas"]["RecordDocuments"] | null;
             /** Facts */
             facts?: components["schemas"]["Fact"][];
+            /** @description A product's: what its formula sheets say it is made of (the formula section). */
+            formula?: components["schemas"]["ProductFormula"] | null;
             freshness: components["schemas"]["Freshness"];
             /** @description Omitted when nothing counts what is hidden about this record. */
             hidden?: components["schemas"]["Hidden"] | null;
@@ -6764,8 +7508,29 @@ export type components = {
             landed_cost?: components["schemas"]["LandedCost"] | null;
             /** Late Lines */
             late_lines?: components["schemas"]["LateLine"][];
-            /** Linked */
+            /**
+             * Linked
+             * @description Messages and documents linked to the record that this reader may open; each with its title and source.
+             */
             linked?: components["schemas"]["LinkedItem"][];
+            /**
+             * Linked Counted All
+             * @description False when the counts stopped at their page bound: each is then a lower bound.
+             * @default true
+             */
+            linked_counted_all: boolean;
+            /**
+             * Linked Unavailable
+             * @description Linked documents this reader may see whose source has no reader set up here yet: counted only, never titled or cited.
+             * @default 0
+             */
+            linked_unavailable: number;
+            /**
+             * Linked Withheld
+             * @description Linked documents this reader is not permitted to open: counted only, never titled or cited. Documents the people exclusion withholds are never counted.
+             * @default 0
+             */
+            linked_withheld: number;
             /**
              * Links
              * @description The records one hop away, one group per link kind the schema declares for this record's type, each record with the evidence the link was read from.
@@ -6847,6 +7612,10 @@ export type components = {
              * @default true
              */
             applies: boolean;
+            /** @description documents: on a customer's, supplier's or item's page, its lists from what customers and suppliers sent (issues, forecasts, forecast accuracy, price sheets, questionnaire answers). */
+            documents?: components["schemas"]["RecordDocuments"] | null;
+            /** @description formula: on a product's page, its formula sheets' lines, each part linked to the raw material it names. */
+            formula?: components["schemas"]["ProductFormula"] | null;
             /** @description knows: on a person's page, the customers, suppliers and items they correspond about most and the threads waiting on them. */
             knows?: components["schemas"]["PersonKnows"] | null;
             landed_cost?: components["schemas"]["LandedCost"] | null;
@@ -6877,7 +7646,7 @@ export type components = {
              * Section
              * @enum {string}
              */
-            section: "late" | "people" | "landed_cost" | "trail" | "margin" | "knows";
+            section: "late" | "people" | "landed_cost" | "trail" | "margin" | "knows" | "documents" | "formula";
             /**
              * Stale Since
              * @description Set when the server could not read this section in time and serves the last one it read for this same reader: when that was read (ISO). It is refreshed in the background.
@@ -7167,6 +7936,46 @@ export type components = {
             /** Reasoning */
             reasoning?: components["schemas"]["SuggestionReason"][];
             subject: components["schemas"]["ObjectRef"];
+        };
+        /**
+         * ProductFormula
+         * @description What a product is made of, read from its formula sheets as this reader may read
+         *     them (``plx.aggregate`` mode ``business_documents`` view ``formula_lines``: the people
+         *     exclusion first). The Portal's own formula lines are not served, so sheets are the
+         *     only source and say so (``portal_lines_served`` false).
+         */
+        ProductFormula: {
+            /**
+             * Complete
+             * @description False: some sheets or lines were not read (budget, row cap or unreadable lines).
+             * @default false
+             */
+            complete: boolean;
+            /**
+             * Other Products
+             * @description Sheets found by name that state another product's code (never this product's).
+             * @default 0
+             */
+            other_products: number;
+            /**
+             * Portal Lines Served
+             * @default false
+             */
+            portal_lines_served: boolean;
+            /** Sheets */
+            sheets?: components["schemas"]["FormulaSheet"][];
+            /**
+             * Unresolved Parts
+             * @description Lines whose part code names no record.
+             * @default 0
+             */
+            unresolved_parts: number;
+            /**
+             * Withheld
+             * @description Sheets, lines or supplier items this reader may not read (counted, never shown).
+             * @default 0
+             */
+            withheld: number;
         };
         /**
          * ProductMargin
@@ -7525,9 +8334,14 @@ export type components = {
             citations?: string[];
             /**
              * Customer
-             * @description The customer's record handle (open it to read the name); null when the threads' mail is linked to no single customer.
+             * @description The customer's record handle (open it to read the name): the threads' one settled customer link, else the one customer record stating the sender. A thread of a supplier, or of a company no record names, is no project.
              */
-            customer?: string | null;
+            customer: string;
+            /**
+             * Customer Name
+             * @description The customer's name as this reader reads its record; none when it is not readable (the app shows the handle).
+             */
+            customer_name?: string | null;
             /** Days */
             days: number;
             /** @description A drafted status update to the customer, worded from kind, state and dates only. */
@@ -7559,11 +8373,6 @@ export type components = {
              * @default false
              */
             owner_is_you: boolean;
-            /**
-             * Party
-             * @description Then the one outside domain of the threads (a customer or a supplier: not known which).
-             */
-            party?: string | null;
             /**
              * Status
              * @enum {string}
@@ -7638,6 +8447,16 @@ export type components = {
             type: string;
             /** Values */
             values?: components["schemas"]["AsOfValue"][];
+        };
+        /**
+         * RecordDocuments
+         * @description The documents section of a record's page: what customers and suppliers sent in
+         *     sheets, mail and tasks that names this record (quality issues, forecasts and their
+         *     accuracy, price sheets against what was billed, past questionnaire answers).
+         */
+        RecordDocuments: {
+            /** Lists */
+            lists?: components["schemas"]["DocList"][];
         };
         /**
          * RecordHistory
@@ -8392,6 +9211,11 @@ export type components = {
              * @description Everything they did per day, the last 28 days, oldest first.
              */
             trend?: number[];
+            /**
+             * Weeks
+             * @description The weekly tracker: the last four Monday weeks, the current one last.
+             */
+            weeks?: components["schemas"]["TeamTrackerWeek"][];
         };
         /**
          * TeamPersonDetail
@@ -8417,6 +9241,61 @@ export type components = {
              * @default 0
              */
             withheld: number;
+        };
+        /**
+         * TeamTrackerWeek
+         * @description One week of a person's tracker (internal; the owner never appears).
+         */
+        TeamTrackerWeek: {
+            /**
+             * Closed
+             * @description Their alerts closed that week.
+             * @default 0
+             */
+            closed: number;
+            /**
+             * Done
+             * @description Everything they sent or did: mail sent, Teams messages, meetings and each system's recorded actions.
+             * @default 0
+             */
+            done: number;
+            /**
+             * Partial
+             * @description The week is not over yet.
+             * @default false
+             */
+            partial: boolean;
+            /**
+             * Received
+             * @description Mail they received.
+             * @default 0
+             */
+            received: number;
+            /**
+             * Replies
+             * @default 0
+             */
+            replies: number;
+            /**
+             * Reply Minutes
+             * @description Median minutes to reply that week.
+             */
+            reply_minutes?: number | null;
+            /**
+             * Saved Minutes
+             * @description Minutes the Workbench saved them (the work log's estimate); null when not counted.
+             */
+            saved_minutes?: number | null;
+            /**
+             * To
+             * @description Its last day counted (the snapshot's day for the current week).
+             */
+            to: string;
+            /**
+             * Week
+             * @description The week's Monday (ISO date, US Eastern).
+             */
+            week: string;
         };
         /**
          * TeamView
@@ -8701,11 +9580,14 @@ export type components = {
          * TemplateSuggestion
          * @description A template offered for the document you are starting: one you saved or that is
          *     shared with you (``template``), or the layout learned from the documents of this kind
-         *     you sent (``learned``: ``ask`` is the one-box line that makes it).
+         *     you sent (``learned``: ``ask`` is the one-box line that makes it), or mail you keep
+         *     sending in near the same words (``repeated``: ``body`` to save as a template).
          */
         TemplateSuggestion: {
             /** Ask */
             ask?: string | null;
+            /** Body */
+            body?: string | null;
             /**
              * Detail
              * @default
@@ -8720,7 +9602,7 @@ export type components = {
              * Kind
              * @enum {string}
              */
-            kind: "saved" | "learned";
+            kind: "saved" | "learned" | "repeated";
             /** Label */
             label: string;
             template?: components["schemas"]["Template"] | null;
@@ -8938,7 +9820,7 @@ export type components = {
         /**
          * TrustFreshness
          * @description One source system: the newest capture taken from it, the newest capture the served
-         *     data holds, and the lag between them.
+         *     data holds, and the age of the newest capture.
          */
         TrustFreshness: {
             /** Capture */
@@ -8950,7 +9832,7 @@ export type components = {
             captured_at?: string | null;
             /**
              * Lag Seconds
-             * @description captured_at - served_at; absent when either is unknown.
+             * @description The age of captured_at now; absent when no capture time is known.
              */
             lag_seconds?: number | null;
             /**
@@ -9086,118 +9968,6 @@ export type components = {
              * @default false
              */
             stale: boolean;
-        };
-        /**
-         * UatFeedback
-         * @description The MRP UAT feedback lists read as you may read them: totals per class, open items per
-         *     priority word, and the items (open first, then priority, then newest change). Items you
-         *     may not open are counted (``withheld``), never listed. Read only.
-         */
-        UatFeedback: {
-            /** As Of */
-            as_of: string;
-            /**
-             * Cut
-             * @default false
-             */
-            cut: boolean;
-            /** Items */
-            items?: components["schemas"]["UatItem"][];
-            /** Lists */
-            lists?: string[];
-            /**
-             * Matched
-             * @default 0
-             */
-            matched: number;
-            /** Open Priorities */
-            open_priorities?: components["schemas"]["UatPriorityCount"][];
-            /**
-             * Read At
-             * @description Set when this page is the one read for this same reader a moment ago, served as kept: when it was read (ISO). Other people's decisions and actions it shows are as of then.
-             */
-            read_at?: string | null;
-            /**
-             * Reading
-             * @description True when this screen's first read for this reader is still going on: nothing of it is shown yet (its lists are empty and its counts zero, never a finding); ask again shortly for the page.
-             */
-            reading?: boolean;
-            /**
-             * Sent
-             * @default 0
-             * @constant
-             */
-            sent: 0;
-            /**
-             * Served
-             * @description False when the reading could not be made here.
-             * @default true
-             */
-            served: boolean;
-            /**
-             * Stale Since
-             * @description Set when the server serves the last page it read for this same reader instead of reading it now: when that page was read (ISO). It is read again in the background.
-             */
-            stale_since?: string | null;
-            /** Status */
-            status?: string | null;
-            /**
-             * Total
-             * @default 0
-             */
-            total: number;
-            /** Totals */
-            totals?: {
-                [key: string]: number;
-            };
-            /**
-             * Withheld
-             * @default 0
-             */
-            withheld: number;
-            /**
-             * Writes
-             * @default 0
-             * @constant
-             */
-            writes: 0;
-        };
-        /**
-         * UatItem
-         * @description One UAT feedback item (a SharePoint list item) as the list words it.
-         */
-        UatItem: {
-            /**
-             * Age Days
-             * @description Days since the last change; open items only.
-             */
-            age_days?: number | null;
-            /** List */
-            list: string;
-            /** Modified */
-            modified?: string | null;
-            /** Priority */
-            priority?: string | null;
-            /** Record */
-            record: string;
-            /** Resolution Word */
-            resolution_word?: string | null;
-            /** Status */
-            status: string;
-            /** Status Word */
-            status_word?: string | null;
-            /**
-             * Title
-             * @default
-             */
-            title: string;
-        };
-        /** UatPriorityCount */
-        UatPriorityCount: {
-            /** Count */
-            count: number;
-            /** Word */
-            word: string;
         };
         /** UnderstandingEvent */
         UnderstandingEvent: {
@@ -9717,10 +10487,21 @@ export type components = {
         Watchlist: {
             /** Alerts */
             alerts: components["schemas"]["WatchAlert"][];
+            /**
+             * Complete
+             * @description False when some alerts could not be read just now (``not_read`` says which): the list may be short, never read as "no alerts".
+             * @default true
+             */
+            complete: boolean;
             /** Configured */
             configured: boolean;
             /** Follows */
             follows: components["schemas"]["WatchFollow"][];
+            /**
+             * Not Read
+             * @description What could not be read: the stored alerts' records, or the inbox your signal rules read.
+             */
+            not_read?: ("alerts_not_read" | "inbox_not_read")[];
             /** Rules */
             rules: components["schemas"]["WatchRule"][];
             /** Unread */
@@ -9939,6 +10720,48 @@ export type components = {
             /** Teams */
             teams?: components["schemas"]["WorkloadTeam"][];
         };
+        /** WorkloadGrantPerson */
+        WorkloadGrantPerson: {
+            /**
+             * In Snapshot
+             * @default true
+             */
+            in_snapshot: boolean;
+            /**
+             * Name
+             * @description From the team snapshot; null when they are in the grants but not in the snapshot.
+             */
+            name?: string | null;
+            /**
+             * Oid
+             * @description Their Entra object id (the owner's sheet only).
+             */
+            oid: string;
+            /**
+             * Sees
+             * @description The teams whose people they see one by one on Workload.
+             */
+            sees?: string[];
+            /** Team */
+            team?: string | null;
+        };
+        /**
+         * WorkloadGrantSheet
+         * @description The owner's workload grant editor: the people the exclusion clears, each with their
+         *     team and the teams they see per person. ``held_back`` counts grant entries for people the
+         *     sheet never shows (the owner, the hidden list, the excluded); saving keeps them.
+         */
+        WorkloadGrantSheet: {
+            /**
+             * Held Back
+             * @default 0
+             */
+            held_back: number;
+            /** People */
+            people?: components["schemas"]["WorkloadGrantPerson"][];
+            /** Teams */
+            teams?: string[];
+        };
         /**
          * WorkloadGrants
          * @description The owner's assignment: each person's team, and the teams each manager sees per
@@ -9960,6 +10783,11 @@ export type components = {
             alerts: number;
             /** Awaiting Reply */
             awaiting_reply: number;
+            /**
+             * Name
+             * @description From the team snapshot; null when the snapshot does not name them.
+             */
+            name?: string | null;
             /** Person */
             person: string;
             /** Self */
@@ -11303,77 +12131,6 @@ export interface operations {
             };
         };
     };
-    autopilot_workflow_api_autopilot_workflows__workflow__post: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                workflow: string;
-            };
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["AutopilotWorkflowSwitch"];
-            };
-        };
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["AutopilotArea"];
-                };
-            };
-            /** @description Unauthorized */
-            401: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorResponse"];
-                };
-            };
-            /** @description Forbidden */
-            403: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorResponse"];
-                };
-            };
-            /** @description Not Found */
-            404: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorResponse"];
-                };
-            };
-            /** @description Conflict */
-            409: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorResponse"];
-                };
-            };
-            /** @description Unprocessable Entity */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorResponse"];
-                };
-            };
-        };
-    };
     autopilot_set_mode_api_autopilot_workflows__workflow__mode_put: {
         parameters: {
             query?: never;
@@ -11757,7 +12514,7 @@ export interface operations {
     briefing_items_api_briefing_items_get: {
         parameters: {
             query: {
-                event_type: "po_late" | "po_due" | "eta_slipped" | "vendor_no_reply" | "vendor_terms_unapplied" | "negative_margin" | "lot_near_expiry" | "lot_on_hold" | "quote_accepted_no_order" | "quantity_mismatch" | "customer_order_at_risk" | "po_undated" | "customer_order_late" | "watcher_attention" | "stock_out_risk" | "overdue_receivable" | "unit_cost_jump" | "customer_demand_drop" | "promise_date_slip" | "margin_erosion" | "supplier_reliability" | "shipped_not_invoiced" | "duplicate_customer_order" | "recurring_component_damage" | "customer_chasing_order" | "tell_before_they_ask" | "quality_hold_aging" | "reject_trend" | "expedite_unanswered" | "supplier_shortage_open_orders" | "return_unanswered" | "supplier_chasing_payment" | "customer_paying_slower" | "early_pay_discount_missed" | "duplicate_supplier_invoice" | "duplicate_supplier_payment" | "customer_credits_rising" | "price_below_typical" | "price_below_cost" | "customer_price_drop" | "mc_task_overdue" | "mc_task_stuck" | "mc_approval_pending" | "portal_approval_pending" | "planner_task_overdue" | "aged_receivable_worsening" | "aged_payable_worsening" | "production_late" | "assembly_damage_spike" | "teams_unanswered_ask" | "commitment_due" | "commitment_missed" | "needs_my_reply" | "approval_waiting" | "chase_escalating" | "party_chase_unanswered" | "internal_order_chase" | "slow_moving_stock" | "expiring_lot_stock" | "assembly_blocked_by_component" | "certificate_expiring" | "freight_cost_anomaly" | "stale_quote" | "priority_order_unfilled" | "duplicate_party_candidate" | "key_field_missing" | "twins_disagree" | "source_stale" | "sync_missing" | "sync_mismatch" | "reorder_soon" | "inventory_adjustment" | "blocked_account_activity" | "gl_posting_errors" | "recurring_task_missed" | "label_change" | "label_revision_superseded" | "rd_project" | "unapplied_remittance" | "short_payment" | "statement_difference";
+                event_type: "po_late" | "po_due" | "eta_slipped" | "vendor_no_reply" | "vendor_terms_unapplied" | "negative_margin" | "lot_near_expiry" | "lot_on_hold" | "quote_accepted_no_order" | "quantity_mismatch" | "customer_order_at_risk" | "po_undated" | "customer_order_late" | "watcher_attention" | "stock_out_risk" | "overdue_receivable" | "unit_cost_jump" | "customer_demand_drop" | "promise_date_slip" | "margin_erosion" | "supplier_reliability" | "shipped_not_invoiced" | "duplicate_customer_order" | "recurring_component_damage" | "customer_chasing_order" | "tell_before_they_ask" | "quality_hold_aging" | "reject_trend" | "expedite_unanswered" | "supplier_shortage_open_orders" | "return_unanswered" | "supplier_chasing_payment" | "customer_paying_slower" | "early_pay_discount_missed" | "duplicate_supplier_invoice" | "duplicate_supplier_payment" | "customer_credits_rising" | "price_below_typical" | "price_below_cost" | "customer_price_drop" | "mc_task_stuck" | "mc_approval_pending" | "portal_approval_pending" | "planner_task_overdue" | "aged_receivable_worsening" | "aged_payable_worsening" | "production_late" | "assembly_damage_spike" | "teams_unanswered_ask" | "commitment_due" | "commitment_missed" | "needs_my_reply" | "approval_waiting" | "chase_escalating" | "party_chase_unanswered" | "internal_order_chase" | "slow_moving_stock" | "expiring_lot_stock" | "assembly_blocked_by_component" | "certificate_expiring" | "freight_cost_anomaly" | "stale_quote" | "priority_order_unfilled" | "duplicate_party_candidate" | "key_field_missing" | "twins_disagree" | "source_stale" | "sync_missing" | "sync_mismatch" | "reorder_soon" | "inventory_adjustment" | "blocked_account_activity" | "gl_posting_errors" | "recurring_task_missed" | "label_change" | "label_revision_superseded" | "rd_project" | "unapplied_remittance" | "short_payment" | "statement_difference";
                 offset?: number;
                 limit?: number;
                 view?: "all" | "since_visit";
@@ -11973,6 +12730,162 @@ export interface operations {
             };
             /** @description Not Found */
             404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Unprocessable Entity */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Service Unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    entry_view_api_entries__entry_id__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                entry_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["EntryHold"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Unprocessable Entity */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Service Unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    entry_confirm_api_entries__entry_id__confirm_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                entry_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["EntryConfirm"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["EntryHold"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Conflict */
+            409: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -12849,7 +13762,198 @@ export interface operations {
             };
         };
     };
+    memory_write_api_memory_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["MemorySave"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MemoryItem"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Unprocessable Entity */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Service Unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    memory_people_api_memory_people_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MemoryPeople"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    memory_correct_api_memory__item_id__put: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                item_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["MemorySave"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MemoryItem"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Unprocessable Entity */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Service Unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
     memory_forget_api_memory__item_id__delete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                item_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MemoryForgotten"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    memory_done_api_memory__item_id__done_post: {
         parameters: {
             query?: never;
             header?: never;
@@ -13103,7 +14207,7 @@ export interface operations {
             query?: never;
             header?: never;
             path: {
-                section: "late" | "people" | "landed_cost" | "trail" | "margin" | "knows";
+                section: "late" | "people" | "landed_cost" | "trail" | "margin" | "knows" | "documents" | "formula";
                 object_type: string;
                 object_id: string;
             };
@@ -13675,6 +14779,75 @@ export interface operations {
             };
         };
     };
+    templates_answer_bank_api_templates_answer_bank_get: {
+        parameters: {
+            query?: {
+                question?: string | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DocList"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    templates_learned_api_templates_learned_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LearnedTemplates"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
     templates_propose_api_templates_propose_post: {
         parameters: {
             query?: never;
@@ -14145,46 +15318,6 @@ export interface operations {
             };
             /** @description Not Found */
             404: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorResponse"];
-                };
-            };
-        };
-    };
-    uat_feedback_api_uat_feedback_get: {
-        parameters: {
-            query?: {
-                status?: string | null;
-            };
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["UatFeedback"];
-                };
-            };
-            /** @description Unauthorized */
-            401: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorResponse"];
-                };
-            };
-            /** @description Unprocessable Entity */
-            422: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -14881,6 +16014,62 @@ export interface operations {
             };
         };
     };
+    workload_grant_sheet_api_workload_grants_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WorkloadGrantSheet"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Service Unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
     assign_workload_grants_api_workload_grants_post: {
         parameters: {
             query?: never;
@@ -14923,6 +16112,15 @@ export interface operations {
             };
             /** @description Unprocessable Entity */
             422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Service Unavailable */
+            503: {
                 headers: {
                     [name: string]: unknown;
                 };

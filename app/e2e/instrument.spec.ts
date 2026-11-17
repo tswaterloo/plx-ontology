@@ -1,4 +1,5 @@
 import { expect, test } from "@playwright/test";
+import { settle } from "./helpers";
 
 // The instrument views against operator_api --mock (fixture data): the command bar finds a
 // record from the keyboard, a purchase order draws its chain of custody (a chart from 560 px,
@@ -14,6 +15,8 @@ test.beforeEach(async ({ page }) => {
 test("the command bar finds a supplier from the keyboard and opens it", async ({ page }, info) => {
   test.skip(info.project.name !== "desktop", "a keyboard shortcut");
   await page.goto("/late");
+  // the shortcut is the shell's once the page is live (a key before hydration reaches nothing)
+  await settle(page);
   await page.keyboard.press("Control+k");
   const palette = page.getByTestId("command-palette");
   await expect(palette).toBeVisible();

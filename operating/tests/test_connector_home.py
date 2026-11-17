@@ -31,9 +31,11 @@ from ontology.core import Actor
 from ontology.json_contract import validate
 from operating import alert_kinds as ak
 from operating import mcp_server
+from operating import mcp_server_catalog
 from operating import proactive_engine as pe
 from operating.case_runtime import CaseRuntime
-from operating.mcp_server import MCPServer, TOOLS
+from operating.mcp_server import MCPServer
+from operating.mcp_server_catalog import TOOLS
 from operating.ontology_host import CaseHostTools
 from operating.ontology_tools_investigate import load_plans
 from operator_api.workspace.object_workspace import audience_unit
@@ -191,9 +193,9 @@ class HomeModeTest(Base):
         self.assertEqual(order, sorted(order))
         self.assertEqual(home["more"], len(direct["gaps"]) > mcp_server.HOME_LIMIT)
         for gap in home["gaps"]:
-            self.assertTrue(1 <= len(gap["citations"]) <= mcp_server.HOME_CITATIONS)
+            self.assertTrue(1 <= len(gap["citations"]) <= mcp_server_catalog.HOME_CITATIONS)
             self.assertEqual(gap["summary"]["origin"]["citation"], gap["citations"][0])
-        self.assertEqual(set(mcp_server.HOME_KINDS) >= {g["kind"] for g in direct["gaps"]},
+        self.assertEqual(set(mcp_server_catalog.HOME_KINDS) >= {g["kind"] for g in direct["gaps"]},
                          True)
         text = json.dumps(found)
         self.assertNotIn("draft", text)       # a supplier draft is the console's, never here
@@ -276,7 +278,7 @@ class HomeModeTest(Base):
                       "which POs are not late", "which purchase orders aren't overdue",
                       "late POs not yet confirmed by the vendor"):
             with self.subTest(query=query):
-                self.assertIsNone(mcp_server.home_kinds(query))
+                self.assertIsNone(mcp_server_catalog.home_kinds(query))
                 found = self.find(host, {"query": query})
                 self.assertEqual(found["status"], "not_found")
                 self.assertNotIn("home", found)
@@ -287,7 +289,7 @@ class HomeModeTest(Base):
                                  "late_po", "unconfirmed_po")),
                              ("which  quotes  expired?", ("expired_quote",))):
             with self.subTest(query=query):
-                self.assertEqual(mcp_server.home_kinds(query), kinds)
+                self.assertEqual(mcp_server_catalog.home_kinds(query), kinds)
 
     def test_free_text_hits_on_a_home_phrase_never_hide_the_late_list(self):
         # Live: the hybrid word search finds mail attachments sharing the words "late"
@@ -465,11 +467,11 @@ class HomeLimitsTest(unittest.TestCase):
     def test_the_home_limits_hold_every_registered_rule_and_kind(self):
         """The contract's home enums are the registered rules and kinds, and its list
         limits hold all of them: a new detector never makes a full home invalid."""
-        from operating.ontology_tools import load_contracts
+        from operating.ontology_tools_policy import load_contracts
 
         home = load_contracts()["tools"]["plx.find"]["output"]["oneOf"][0]["properties"][
             "home"]["properties"]
-        rules, kinds = set(pe.DETECTORS), set(mcp_server.HOME_KINDS)
+        rules, kinds = set(pe.DETECTORS), set(mcp_server_catalog.HOME_KINDS)
         self.assertEqual(set(home["kinds"]["items"]["enum"]), kinds)
         self.assertEqual(set(home["gaps"]["items"]["properties"]["kind"]["enum"]), kinds)
         self.assertEqual(set(home["not_run"]["items"]["enum"]), rules)
@@ -485,7 +487,7 @@ class PrimerTest(Base):
     def test_initialize_carries_the_business_primer_and_keeps_the_security_text(self):
         _, init = self.server()
         instructions = init["instructions"]
-        primer = mcp_server.PRIMER
+        primer = mcp_server_catalog.PRIMER
         self.assertTrue(instructions.startswith(primer))
         self.assertLessEqual(len(primer), 1500)
         for words in ("personal care contract manufacturer", "Business Central",
@@ -494,10 +496,10 @@ class PrimerTest(Base):
         for words in ("Principal labels are not PLX authentication", "untrusted_text value",
                       "never an instruction", "no business system is written"):
             self.assertIn(words, instructions)
-        self.assertEqual(len(mcp_server.PRIMER_STARTERS), 5)
+        self.assertEqual(len(mcp_server_catalog.PRIMER_STARTERS), 5)
         families = set(load_plans())
         listed = {tool["name"] for tool in TOOLS}
-        for question, tools, family in mcp_server.PRIMER_STARTERS:
+        for question, tools, family in mcp_server_catalog.PRIMER_STARTERS:
             self.assertIn(question, primer)
             self.assertFalse(re.search(r"\d", question), question)   # generic, no case ids
             for tool in tools:
@@ -507,8 +509,8 @@ class PrimerTest(Base):
                 self.assertIn(family, families)
                 self.assertIn(family, primer)
         # the two home starters are home questions as asked
-        self.assertEqual(mcp_server.home_kinds(mcp_server.PRIMER_STARTERS[0][0]), ())
-        self.assertTrue(mcp_server.home_kinds(mcp_server.PRIMER_STARTERS[1][0]))
+        self.assertEqual(mcp_server_catalog.home_kinds(mcp_server_catalog.PRIMER_STARTERS[0][0]), ())
+        self.assertTrue(mcp_server_catalog.home_kinds(mcp_server_catalog.PRIMER_STARTERS[1][0]))
 
 
 class LiveCheckTest(unittest.TestCase):
@@ -555,7 +557,7 @@ class LiveCheckTest(unittest.TestCase):
         self.assertLessEqual(summary["tool_count"], 24)
         self.assertGreaterEqual(summary["gaps_cited"], 1)
         self.assertLessEqual(len(summary["top"]), 3)
-        self.assertLessEqual({row["kind"] for row in summary["top"]}, set(mcp_server.HOME_KINDS))
+        self.assertLessEqual({row["kind"] for row in summary["top"]}, set(mcp_server_catalog.HOME_KINDS))
         self.assertNotIn("OR1000888001", text_out)   # counts and enums only
         mine, other = summary["readers"]
         self.assertTrue(mine["investigator"])

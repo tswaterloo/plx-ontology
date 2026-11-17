@@ -599,7 +599,7 @@ def _fit(head: list[str], items: list[str], tail: list[str], total: int) -> str:
     how many were left out."""
     def build(n: int) -> str:
         rest = total - n
-        more = [f"... {rest} more in the structured result."] if rest > 0 else []
+        more = [f"The other {rest} are in the structured result."] if rest > 0 else []
         return "\n".join([*head, *items[:n], *more, *tail])
     n = len(items)
     while n and len(build(n).encode("utf-8")) > TEXT_BYTES:

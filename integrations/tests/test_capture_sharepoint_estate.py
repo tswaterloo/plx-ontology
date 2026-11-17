@@ -23,7 +23,8 @@ from urllib.parse import parse_qs, quote, unquote, urlsplit
 from integrations import capture_sharepoint as cs
 from integrations import graph_read
 from integrations import live_source_grammar as grammar
-from integrations.capture_sharepoint import CaptureScope, SharePointCapture, version_handle
+from integrations.capture_sharepoint import SharePointCapture, version_handle
+from integrations.capture_sharepoint_scope import CaptureScope
 from integrations.graph_read import SharePointReader
 from integrations.live_source_guard import (BoundedBackoff, LiveSourceAudience,
                                             ReadOnlyGuardError, check_request)

@@ -34,6 +34,10 @@ from pathlib import Path
 from typing import Any, Callable, Iterable, Mapping, Sequence
 
 from . import claim_checks as cc
+from . import claim_checks_grammar
+from . import claim_checks_parse
+from . import claim_checks_text
+from . import time_window
 
 RULES_PATH = Path(__file__).with_name("copy_rules.json")
 SURFACES = ("ui", "summary", "why", "teams", "draft_subject", "draft_body")
@@ -118,10 +122,7 @@ def _as_day(value: Any) -> date | None:
     if isinstance(value, date):
         return value
     if isinstance(value, str) and _ISO.fullmatch(value[:10]):
-        try:
-            return date.fromisoformat(value[:10])
-        except ValueError:
-            return None
+        return time_window.business_day(value)
     return None
 
 
@@ -145,7 +146,7 @@ def _fact_numbers(facts: Sequence[Fact]) -> list[Decimal]:
         if number is not None:
             out.append(number)
         elif isinstance(value, str):
-            out += [n for _w, n in cc.prose_numbers(value)]
+            out += [n for _w, n in claim_checks_text.prose_numbers(value)]
             out += [Decimal(m) for m in re.findall(r"\d+", value)]
     return out
 
@@ -156,7 +157,7 @@ def _fact_days(facts: Sequence[Fact]) -> set[date]:
 
 def _strip_ids(text: str, facts: Sequence[Fact]) -> str:
     """``text`` with handles and the facts' record numbers blanked (kept the same length)."""
-    text = cc.HANDLE.sub(lambda m: " " * len(m.group(0)), text)
+    text = claim_checks_grammar.HANDLE.sub(lambda m: " " * len(m.group(0)), text)
     for ref in sorted(_record_numbers(facts), key=len, reverse=True):
         text = text.replace(ref, " " * len(ref))
     return text
@@ -267,15 +268,15 @@ def _specifics(text: str, surface: str, facts: Sequence[Fact], today: date,
     days = _fact_days(facts) | {today}
     plain = _strip_ids(text, facts)
     found_any = any(r in text for r in refs)
-    for written, number in cc.prose_numbers(plain):
+    for written, number in claim_checks_text.prose_numbers(plain):
         start = plain.find(written)
-        if number in numbers or cc.rounded_from(number, numbers) or \
+        if number in numbers or claim_checks_parse.rounded_from(number, numbers) or \
                 (number == today.day):
             found_any = True
             continue
         _find(findings, "unsupported_number", max(start, 0), max(start, 0) + len(written),
               f"{written} is not a cited fact")
-    for written, moment, _iso in cc.written_dates(plain):
+    for written, moment, _iso in claim_checks_text.written_dates(plain):
         day = _as_day(moment[0]) if moment and isinstance(moment[0], str) else None
         start = plain.find(written)
         if day in days:

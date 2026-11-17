@@ -11,6 +11,7 @@ import time
 import unittest
 
 from operating import proactive_engine as pe
+from operating import proactive_engine_sales
 from operating import sales_order_status as so
 from operating.tests.test_proactive_engine import ALL_MARKINGS, Engine, World, admit
 
@@ -247,7 +248,7 @@ class OpenAcrossSystems(Engine):
         kinds = {g["object_id"]: g["kind"] for g in gaps}
         # 11-13 judging: 15 of 15 "probably fulfilled" notes on made-only orders could not
         # be told shipped or not; made with no dated, confirmed slip is counted, unlisted
-        self.assertEqual(kinds, {fm: pe.PROBABLE_SO, busy: RULE})
+        self.assertEqual(kinds, {fm: proactive_engine_sales.PROBABLE_SO, busy: RULE})
         self.assertIn("shipped", next(g for g in gaps if g["object_id"] == fm)["summary"])
         self.assertEqual(summary["detectors"][RULE], "complete")
         # a reader who may not read the FileMaker records (the work orders' and the
@@ -286,7 +287,7 @@ class OpenAcrossSystems(Engine):
         old, _ = order(w, required="2024-03-01", order_date="2024-02-01")
         st = pe._Store(self._built(w))
         try:
-            inactive = pe._inactive_orders(st, pe.date(2026, 10, 19))
+            inactive = proactive_engine_sales._inactive_orders(st, pe.date(2026, 10, 19))
         finally:
             st.close()
         self.assertEqual(inactive, {shut: "closed", old: "historic"})

@@ -14,7 +14,7 @@ import json
 import unittest
 from pathlib import Path
 
-from integrations.source_mirror import _STRENGTHS, DEFAULT_IDENTIFIERS
+from integrations.source_mirror_values import _STRENGTHS, DEFAULT_IDENTIFIERS
 import ontology.schema as ontology_schema
 
 ROOT = Path(__file__).resolve().parent.parent

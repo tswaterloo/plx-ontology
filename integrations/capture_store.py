@@ -72,10 +72,12 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from hashlib import sha256
 import json
+import os
 from pathlib import Path
 import re
 import secrets
 import sqlite3
+import stat
 from typing import Any, Callable, Iterator, Mapping, Sequence
 from urllib.parse import quote, unquote
 
@@ -163,7 +165,10 @@ class SourceKind:
     last saw it (``last_seen_at``: a run that lists the item reads its permissions again)
     within this bound; past it every version is withheld (INT-008), unless the audience
     opens a stale grant (``stale_unit_acl_allows``). None: no bound (a kind whose capture
-    does not re-read an unchanged item's permissions)."""
+    does not re-read an unchanged item's permissions).
+    ``signals(path, payload)``: True when a new version of this record is one the
+    autopilot's fast feed reads at once (``signal_new``; Mission Control's requested
+    approval gate, ``integrations.mc_sources``); a mail message always signals."""
 
     name: str
     scheme: str
@@ -177,6 +182,7 @@ class SourceKind:
     item_resources: Callable[[tuple[str, ...], Mapping[str, Any]], tuple[str, ...]] | None = None
     current_acl: bool = False
     acl_max_age: timedelta | None = None
+    signals: Callable[[tuple[str, ...], Mapping[str, Any]], bool] | None = None
 
 
 _KINDS: dict[str, SourceKind] = {}
@@ -495,12 +501,91 @@ _CONSTRAINT_MESSAGES = (("unique constraint failed", "constraint_unique"),
                         ("check constraint failed", "constraint_check"))
 
 
+def private_mode(path: str | Path, base: int) -> int:
+    """``base`` (0o700 for a store directory, 0o600 for a store file), plus the shared
+    state group's grant when ``path`` is in a shared-group directory: one with the setgid
+    bit, which only the shared state setup gives (deploy/release/api_user_setup.sh:
+    directory g+rwxs and sticky, store g+rw). There a file is g+rw and a directory g+rwx,
+    keeping its setgid and sticky bits: the API's own user reads the live WAL stores
+    through that group, and a WAL reader, even one opened mode=ro, opens the store's
+    -wal/-shm read-write, which SQLite creates with the store file's own mode.
+
+    The grant is given, not only kept (11-15 5:59-6:3x AM ET: the Teams store had been
+    reset to 0600 by a writer of an older release still running through the ingest move,
+    every later open kept the 0600, and the API's -wal/-shm came out 0600 too, so every
+    Teams run failed with "unable to open database file" until a hand
+    api_user_setup.sh --apply). 11-14 deploy-diag-1114: never narrowed either (mail and
+    SharePoint reset their directory to 0700 on every open and the API refused to start).
+    Outside a setgid directory a umask's group bits are dropped. Others never get anything."""
+    try:
+        have = os.stat(path).st_mode
+        shared = os.stat(path if stat.S_ISDIR(have) else os.path.dirname(path) or ".").st_mode
+    except OSError:
+        return base
+    if not shared & stat.S_ISGID:
+        return base
+    if stat.S_ISDIR(have):
+        return (base & 0o700) | 0o070 | (have & (stat.S_ISGID | stat.S_ISVTX))
+    return (base & 0o700) | 0o060
+
+
+STORE_SIDE_FILES = ("", "-wal", "-shm")
+
+
+def keep_store_modes(path: str | Path) -> None:
+    """Give a SQLite store and its -wal/-shm (those that exist and are ours)
+    ``private_mode(..., 0o600)``. A writer calls it before it opens the store, so the
+    -wal/-shm SQLite creates take the store's mode (a store reset to 0600 by an older
+    writer is set right first), and again once open (a new store, its WAL just made).
+    A side file the API's user owns is not ours to change: left as it is. A -wal/-shm
+    that goes between the stat and the chmod (the last connection closing removes them)
+    is skipped: there is nothing left to set, and the capture run goes on."""
+    me = os.geteuid()
+    for suffix in STORE_SIDE_FILES:
+        side = f"{path}{suffix}"
+        try:
+            st = os.stat(side, follow_symlinks=False)
+        except OSError:
+            continue
+        if not stat.S_ISREG(st.st_mode) or st.st_uid != me:
+            continue
+        want = private_mode(side, 0o600)
+        if stat.S_IMODE(st.st_mode) != want:
+            try:
+                os.chmod(side, want)
+            except FileNotFoundError:
+                continue
+
+
+def keep_store_dir_mode(path: str | Path) -> None:
+    """A store directory that is ours gets ``private_mode(..., 0o700)``: in the shared
+    state (made under the host's UMask 0077, it inherits only the setgid bit) the group
+    may enter it; elsewhere it stays owner-only."""
+    try:
+        st = os.stat(path, follow_symlinks=False)
+    except OSError:
+        return
+    if stat.S_ISDIR(st.st_mode) and st.st_uid == os.geteuid():
+        want = private_mode(path, 0o700)
+        if stat.S_IMODE(st.st_mode) != want:
+            os.chmod(path, want)
+
 NEW_SIGNAL = ".new"   # beside a capture store: touched when it stores a new message
+
+
+def _signals(kind: SourceKind, path: tuple[str, ...], payload: Mapping[str, Any]) -> bool:
+    """``kind.signals`` of one stored version; a test that raises signals nothing (the
+    fast feed's timer and the regular feed still read the version)."""
+    try:
+        return bool(kind.signals(path, payload))
+    except Exception:  # noqa: BLE001 - a signal never fails the capture
+        return False
 
 
 def signal_new(store: str | Path) -> None:
     """Touch ``<store>.new`` (its text: the time, nothing of the message): a capture just
-    stored a new person-to-person message version, and the autopilot's fast feed
+    stored a new person-to-person message version (or a version its kind ``signals``: an
+    MC approval requested), and the autopilot's fast feed
     (``operating.autopilot_fast``, started by a systemd path unit on this file) reads it
     from the store at once instead of after the next delta cycle. Best effort: a signal
     that cannot be written loses nothing (the fast feed's timer and the regular feed
@@ -547,9 +632,11 @@ class CaptureStore:
                  clock: Callable[[], datetime] | None = None,
                  max_versions_per_record: int = DEFAULT_MAX_VERSIONS_PER_RECORD) -> None:
         self._configure(path, audience, clock, max_versions_per_record)
+        keep_store_modes(path)        # before SQLite makes -wal/-shm from the store's mode
         self._db = sqlite3.connect(str(path), isolation_level=None, timeout=30)
         self._db.row_factory = sqlite3.Row
         wal_journal(self._db)
+        keep_store_modes(path)        # a new store and its WAL, just made under the umask
         for statement in _SCHEMA:
             self._db.execute(statement)
         with self._write(bound=False):
@@ -683,6 +770,11 @@ class CaptureStore:
     def now(self) -> str:
         """The store clock as fixed-width UTC ISO text (comparable as text)."""
         return self._now()
+
+    @property
+    def clock(self) -> Callable[[], datetime]:
+        """The store clock itself, so another connection to the same file keeps it."""
+        return self._clock
 
     def later(self, seconds: float) -> str:
         """``now() + seconds`` in the same form (a ``retry_not_before``)."""
@@ -819,7 +911,8 @@ class CaptureStore:
         self._check_binding()
         now = self._now()
         counts = {"records": 0, "new_versions": 0, "unchanged": 0}
-        messages = False   # a new version of a person-to-person message (Teams)
+        messages = False   # a new version of a person-to-person message (Teams), or
+        # one its kind ``signals`` (an MC approval requested)
         with self._write():
             run = self._open_run(run_id)
             kind = source_kind(run["kind"])
@@ -874,7 +967,8 @@ class CaptureStore:
                                      (inserted.lastrowid, current["capture_id"]))
                     self._retain(kind.name, path_text, run["unit"], now)
                 counts["new_versions"] += 1
-                messages = messages or record.lineage == "mail"
+                messages = messages or record.lineage == "mail" or (
+                    kind.signals is not None and _signals(kind, path, payload))
             self._db.executemany("INSERT OR IGNORE INTO run_marks VALUES (?, ?)",
                                  [(run_id, str(mark)) for mark in marks])
             self._db.execute(

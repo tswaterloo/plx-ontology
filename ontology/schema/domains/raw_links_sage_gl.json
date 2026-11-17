@@ -344,6 +344,57 @@
    ]
   },
   {
+   "id": "RelSageGlJeHeader.source_shipment",
+   "from": "RelSageGlJeHeader",
+   "to": "Shipment",
+   "name": "source_shipment",
+   "reverse_name": "gl_entries",
+   "cardinality": "N:1",
+   "description": "sage.gl_je_header: drilldwnlk = sage.oe_shipment_header.shiuniq: the Sage OE shipment a GL journal entry posted (drilldwnlk = shiuniq), for entries whose drill-down source is OE shipments only (drilapp OE, drilsrcty 3); the same column on other ledgers' entries is another document's id (random-shift baseline 1.2-1.9 against 0.007 here; link-completeness audit round 2, 2026-11-08: 83,801 of 83,802 OE-shipment-sourced entries reach a shipment) (verified; declared in ontology/schema/overrides/business.json).",
+   "bindings": [
+    {
+     "kind": "fk",
+     "tier_ceiling": "verified",
+     "from_binding": "gen.sage.gl_je_header",
+     "to_binding": "portal.sage_oe_shipment_header",
+     "pairs": [
+      {
+       "from": "drilldwnlk",
+       "to": "shiuniq",
+       "compare": "text_id"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "workbench_code",
+       "path": "scripts/gen_raw_links.py",
+       "note": "sage.gl_je_header (drilldwnlk = sage.oe_shipment_header.shiuniq): the Sage OE shipment a GL journal entry posted (drilldwnlk = shiuniq), for entries whose drill-down source is OE shipments only (drilapp OE, drilsrcty 3); the same column on other ledgers' entries is another document's id (random-shift baseline 1.2-1.9 against 0.007 here; link-completeness audit round 2, 2026-11-08: 83,801 of 83,802 OE-shipment-sourced entries reach a shipment) (ontology/schema/overrides/business.json)."
+      },
+      {
+       "kind": "workbench_code",
+       "path": "ontology/schema/generated/meta/portal_catalog.json",
+       "note": "the relation's columns in the pinned reporting-API catalog"
+      }
+     ],
+     "where": [
+      {
+       "path": "drilapp",
+       "op": "eq",
+       "value": "OE"
+      },
+      {
+       "path": "drilsrcty",
+       "op": "in",
+       "value": [
+        3,
+        "3"
+       ]
+      }
+     ]
+    }
+   ]
+  },
+  {
    "id": "RelSageGlJec.gl_batch",
    "from": "RelSageGlJec",
    "to": "RelSageGlBatch",

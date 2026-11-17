@@ -11,6 +11,12 @@ every check again), niced to the lowest priority, and reads ahead for:
   projection generation or gap inbox change, and every ``REWARM_SECONDS``;
 * each reader the API names (a sign-in, an app load, a briefing marked seen).
 
+A deploy starts the new API beside the serving one (``deploy/release/plx-release``, ARCH-T6)
+and routes readers to it only once it is ready (``/api/ready``): its first pass over the known
+readers' Today and main screens is kept on disk under its code version (``first_pass``). That
+API serves nobody until then, so the deploy's probe starts this process at once
+(``start_now``) instead of after a first live request.
+
 What it reads is kept in the shared page cache on disk (``page_store``, keyed by the
 reader's policy fingerprint, the generation, the exclusion and inbox state and the code
 version), where the API's requests find it; every source of a kept page is still decided
@@ -37,6 +43,11 @@ POLL_SECONDS = 0.1
 START_QUIET_SECONDS = 2.0  # the API idle this long before the warm-up process starts
 START_WAIT_SECONDS = 180   # ... or this long after the API started, whichever is first
 YIELD_SECONDS = 120        # the longest one read-ahead waits for live requests
+# the longest the first pass is waited for before the API says it is ready: past it the
+# reads still running go on in the background (``first_pass``). Under the hold's 600 s
+# (``server.HOLD_MAX_SECONDS``) and the deploy's 660 s wait, with the API's own start-up
+# (its runtime, the section pool, the readers' policies: ~10-30 s) before it.
+FIRST_PASS_SECONDS = 420
 
 
 class WarmProcess:
@@ -58,12 +69,16 @@ class WarmProcess:
         self._outbox: "queue.Queue[Any]" = queue.Queue(maxsize=256)
         self._busy = busy or (lambda: False)
         self.live = context.Value("b", 0, lock=False)   # 1: the API serves a request
+        # 1: the child's first pass over the known readers is kept on disk (``first_pass``)
+        self.warmed = context.Value("b", 0, lock=False)
+        # set: start the child now (a deploy's standby API serves no reader yet)
+        self.prompt = threading.Event()
         parent, child_end = context.Pipe()
         self.conn = parent
         self._child_end = child_end
         self.process = context.Process(target=child, args=(child_end, list(argv),
                                                             dict(settings), mode, None,
-                                                            self.live),
+                                                            self.live, self.warmed),
                                        name="plx-app-warm", daemon=True)
         self.started = threading.Event()
         self.stopping = threading.Event()
@@ -75,6 +90,8 @@ class WarmProcess:
         """Whether ``busy`` stayed false ``seconds`` (polled), False once stopping."""
         end = time.monotonic() + seconds
         while time.monotonic() < end:
+            if self.prompt.is_set():
+                return True
             if self.stopping.is_set() or self._busy():
                 return False
             time.sleep(POLL_SECONDS)
@@ -84,12 +101,13 @@ class WarmProcess:
         # a live request served first (the API idle before its first request is no
         # reason to start: the first reader's Home would share the machine with this
         # process's own start-up reads), then quiet for a moment
+        # (``start_now``: no reader is routed here yet, so nothing to wait for)
         deadline = time.monotonic() + START_WAIT_SECONDS
         while time.monotonic() < deadline and not self.stopping.is_set() \
-                and not self._busy():
+                and not self.prompt.is_set() and not self._busy():
             time.sleep(POLL_SECONDS)
         while time.monotonic() < deadline and not self.stopping.is_set() \
-                and not self._quiet_for(START_QUIET_SECONDS):
+                and not self.prompt.is_set() and not self._quiet_for(START_QUIET_SECONDS):
             time.sleep(POLL_SECONDS)
         if self.stopping.is_set():
             return
@@ -118,6 +136,17 @@ class WarmProcess:
                 LOG.warning("warm-up message not sent: %s", type(error).__name__)
             if message is None:
                 return
+
+    def start_now(self) -> None:
+        """Start the child without waiting for a first live request (a deploy's probe of
+        this API before any reader is routed to it); once started, nothing changes."""
+        self.prompt.set()
+
+    def ready(self) -> bool:
+        """Whether the child is up and its first pass over the known readers is kept on
+        disk (``first_pass``)."""
+        return bool(self.started.is_set() and self.process.is_alive()
+                    and self.warmed.value == 1)
 
     def _put(self, message: Any) -> bool:
         if self.started.is_set() and not self.process.is_alive():
@@ -148,11 +177,90 @@ class WarmProcess:
             self.process.terminate()
 
 
+def first_pass(backend: Any, stop: threading.Event,
+               warmed: Any = None, budget: float = FIRST_PASS_SECONDS) -> int:
+    """Read ahead for every known reader (``WorkspaceBackend.warm_known``) and wait until
+    each one's Today reads and main screens are done (each read's future, and the screens'
+    own future it returns; a read that fails counts as done: that page is read when
+    opened), then set ``warmed`` to 1. The pages a reader opened last are read after, not
+    waited for. How many reads were waited on; none when ``stop`` is set first.
+
+    At most ``budget`` seconds in all (``FIRST_PASS_SECONDS``, under the deploy's hold and
+    its readiness wait): a read still running then (a slow briefing, a main screen stuck
+    behind a cold store, a resolve that never returns) is logged by name and left to finish
+    in the background, keeping its page as before, and ``warmed`` is set anyway. Readers
+    are routed to the API then; a page not read yet is read when opened (11-15: the
+    standby's screens never ended within the deploy's 600 s and both deploys rolled
+    back)."""
+    from concurrent.futures import Future
+    began = time.monotonic()
+    deadline = began + budget
+    pending_list: list = []
+    backend.warm_pending = pending_list
+    resolved = threading.Event()
+
+    def known() -> None:
+        try:
+            backend.warm_known()
+        except Exception as error:  # noqa: BLE001 - nobody resolved: nothing to wait for
+            LOG.warning("first read-ahead pass: known readers not read: %s",
+                        type(error).__name__)
+        finally:
+            backend.warm_pending = None
+            resolved.set()
+
+    threading.Thread(target=known, name="app-warm-known", daemon=True).start()
+    while not resolved.is_set():
+        if stop.wait(POLL_SECONDS):
+            return 0
+        if time.monotonic() >= deadline:
+            break
+    if not resolved.is_set():
+        backend.warm_pending = None   # later warm() calls are not collected
+    pending = list(pending_list)
+    waited = 0
+    while pending:
+        future = pending[0]
+        while not future.done():
+            if stop.wait(POLL_SECONDS):
+                return waited
+            if time.monotonic() >= deadline:
+                break
+        if not future.done():
+            break
+        pending.pop(0)
+        waited += 1
+        if future.cancelled() or future.exception() is not None:
+            continue
+        inner = future.result()
+        if isinstance(inner, Future):
+            inner.plx_warm = getattr(future, "plx_warm", "read") + " ahead"
+            pending.append(inner)
+    if stop.is_set():
+        return waited
+    if pending or not resolved.is_set():
+        names: dict[str, int] = {}
+        for future in pending:
+            name = str(getattr(future, "plx_warm", "read"))
+            names[name] = names.get(name, 0) + 1
+        LOG.warning("first read-ahead pass cut at %.0f s: %s reads still running (%s)%s; "
+                    "they go on in the background", time.monotonic() - began,
+                    len(pending), ", ".join(f"{n} x{c}" for n, c in sorted(names.items()))
+                    or "none", "" if resolved.is_set()
+                    else "; the known readers still being resolved")
+    if warmed is not None:
+        warmed.value = 1
+    LOG.info("first read-ahead pass done: %s reads in %.1f s", waited,
+             time.monotonic() - began)
+    return waited
+
+
 def child(conn: Any, argv: list[str], settings: dict[str, Any], mode: str,
-          fixtures: Any = None, live: Any = None) -> int:
+          fixtures: Any = None, live: Any = None, warmed: Any = None) -> int:
     """The warm-up process: its own runtime (``fixtures``: the fixture world's module, for
     a run on a thread in tests), its read-ahead on its one worker, the parent's readers
-    taken from ``conn`` until the parent sends None or goes away."""
+    taken from ``conn`` until the parent sends None or goes away. ``warmed``: set to 1
+    once the first pass is kept (``first_pass``)."""
     logging.basicConfig(level=logging.INFO,   # the warm-up's timings, in the app's log
                         format="%(asctime)s %(name)s %(message)s")
     from operating import parent_watch
@@ -210,7 +318,7 @@ def child(conn: Any, argv: list[str], settings: dict[str, Any], mode: str,
 
         def start() -> None:
             backend.warm_store()
-            backend.warm_known()   # the readers seen lately: Today and their pages
+            first_pass(backend, stop, warmed)   # the readers seen lately: Today, their pages
             backend.watch_generation(stop, rewarm_seconds=REWARM_SECONDS)
 
         threading.Thread(target=inbox, name="app-warm-inbox", daemon=True).start()

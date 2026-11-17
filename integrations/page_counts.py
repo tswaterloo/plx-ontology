@@ -50,6 +50,8 @@ class PageCounts:
             self.path.parent.mkdir(parents=True, exist_ok=True)
             fd = os.open(self.path, os.O_RDWR | os.O_CREAT, 0o600)
             os.close(fd)
+            from .capture_store import keep_store_modes
+            keep_store_modes(self.path)   # before SQLite makes -wal/-shm from its mode
             conn = sqlite3.connect(str(self.path), timeout=5, check_same_thread=False)
             conn.execute("PRAGMA journal_mode=WAL")
             _schemas.apply(conn, _PAGE_COUNTS)

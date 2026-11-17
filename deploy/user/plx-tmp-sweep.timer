@@ -1,0 +1,10 @@
+[Unit]
+Description=PLX temp directory sweep (hourly)
+
+[Timer]
+OnCalendar=hourly
+Persistent=true
+RandomizedDelaySec=300
+
+[Install]
+WantedBy=timers.target

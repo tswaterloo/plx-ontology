@@ -6,10 +6,9 @@
 Same sources, scopes, audiences and budgets as ``--from``; what changes is how they run
 (``operating.ingest_forever.Continuous``): every source in its own loop, all at once
 (``max_parallel`` one per source), each re-run ``min_interval_seconds`` after it ends
-(:data:`CADENCE`), and the projection built from snapshots of the stores on its own thread
-(``ingest.build_inputs`` ``snapshot``), so no capture ever waits for a build. One writer
-per store still: each source is one capture process writing its own store, and the host
-alone writes its ledger and the projection.
+(:data:`CADENCE`), and nothing built (``ingest.builds`` ``off``: the row deltas keep
+Postgres current, docs/no-builds.md). One writer per store still: each source is one
+capture process writing its own store, and the host alone writes its ledger.
 
 ``--priority-mailbox`` (repeatable, in order): the mailboxes the mail capture reads first
 (``integrations.capture_mail.MailPriority``); the mail scope is then written beside
@@ -29,8 +28,9 @@ import sys
 # last run (a run, census included, was 285-360 s and 2,300 requests on 2026-11-13: a chat
 # message reaches the autopilot's fast feed about 4 min after it is sent at the median,
 # against 57 min at 30 min plus the build hold), its member lists re-read each run; the
-# rest follow their upstream's pace.
-CADENCE = {"mail": 60, "sharepoint": 60, "teams": 120, "bc": 1800, "portal": 7200,
+# rest follow their upstream's pace, except the Portal: 20 minutes after its last run
+# (a run is ~25 min), so it makes progress within its 1 h freshness target (owner 11-13).
+CADENCE = {"mail": 60, "sharepoint": 60, "teams": 120, "bc": 1800, "portal": 1200,
            "mc": 3600, "sharepoint_lists": 3600, "meetings": 1800}
 
 
@@ -52,13 +52,14 @@ def continuous(document: dict, base: Path) -> dict:
         section.setdefault("min_interval_seconds", seconds)
     ingest = dict(out.get("ingest") or {})
     configured = sum(1 for name in CADENCE if isinstance(out.get(name), dict))
+    ingest.pop("build_inputs", None)
     ingest.update({"mode": "capture_clis", "max_parallel": max(1, min(8, configured)),
-                   "build_inputs": "snapshot"})
+                   "builds": "off"})
     ingest.setdefault("grace_seconds", 900)
     out["ingest"] = ingest
     out["note"] = ("Continuous ingest (scripts/ingest_continuous_config.py): every source in "
-                   "its own loop at once, the projection built from store snapshots on its "
-                   "own thread; written from a cycle-mode config. " + str(out.get("note", "")))
+                   "its own loop at once, nothing built; written from a cycle-mode config. "
+                   + str(out.get("note", "")))
     return out
 
 

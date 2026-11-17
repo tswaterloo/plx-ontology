@@ -1,0 +1,7 @@
+{
+ "_usage": "Which Zendesk tickets are the order queue. A ticket is read only when its original recipient (Zendesk ticket.recipient, the address the customer wrote to) is one of order_recipients. Addresses are compared lower-case, exact. Edit here when the order mailbox changes; nothing else names it.",
+ "order_recipients": ["order@petrasoap.com"],
+ "audience_unit": "zendesk:order-queue",
+ "max_tickets_per_sweep": 500,
+ "max_comment_pages_per_ticket": 5
+}

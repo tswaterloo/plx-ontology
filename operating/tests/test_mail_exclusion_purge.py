@@ -291,6 +291,84 @@ class BccPurgeTests(unittest.TestCase):
         code, missing = self.cli(*purge, "--matches", str(self.state / "nope.json"))
         self.assertEqual((code, missing["error"]), (2, "matches_missing"))
 
+    def test_a_delta_cycle_removes_what_a_capture_run_withheld_at_once(self):
+        """11-16: a capture run withheld two stored messages (journalled their handles) and
+        Postgres served their objects for nine hours, till the daily purge. Each delta
+        cycle now removes them (the journal stays for the daily purge's SQLite stores),
+        purges nothing twice, purges again what a layer projected before the capture
+        purge brings back, and fails loudly when it cannot read Postgres."""
+        from ontology import delta
+        import psycopg
+
+        def forget_marks() -> None:   # the class's database: the other tests count them
+            with psycopg.connect(self.dsn) as pg:
+                pg.execute("DELETE FROM ontology.load_state WHERE name LIKE "
+                           "'purge:mail-exclusion:%%' OR name = %s", (mp.JOURNAL_MARK,))
+        self.addCleanup(forget_marks)
+        before = self.held()
+        imid = self.graph.messages[tm.BOX_A]["M-SENT"]["internetMessageId"]
+        store = MailCaptureStore(self.state, clock=tm.Clock())
+        try:
+            store.remember_withheld([graph_read.withheld_message_key(imid)])
+        finally:
+            store.close()
+        capture(self.state, self.graph)
+        journal = self.journal()
+        self.assertEqual(journal, self.handles["M-SENT"] | self.handles["M-COPY"])
+        environ = {"PLX_DELTA_PG": "1", "PLX_PG_DSN": self.dsn}
+
+        def purges() -> int:
+            with psycopg.connect(self.dsn) as pg:
+                return pg.execute("SELECT count(*) FROM ontology.load_state WHERE name "
+                                  "LIKE 'purge:mail-exclusion:%'").fetchone()[0]
+
+        # Postgres not served: nothing to do
+        self.assertIsNone(delta.exclusion_journal(self.state, {"PLX_PG_DSN": self.dsn}))
+        first = delta.exclusion_journal(self.state, environ)
+        self.assertEqual((first["journal"], first["pending"]), (len(journal), len(journal)))
+        self.assertGreater(first["postgres"]["ontology.objects"], 0, first)
+        after = self.held()
+        for mid in ("M-SENT", "M-COPY"):   # Postgres and search at once; SQLite at the daily
+            self.assertEqual(after[mid][0], 0)
+            self.assertEqual(after[mid][2:], (0, 0))
+            self.assertEqual(after[mid][1], before[mid][1])
+        self.assertEqual(after["M-KEEP"], before["M-KEEP"])
+        self.assertEqual(after["M-BCC-OK"], before["M-BCC-OK"])
+        self.assertEqual(self.journal(), journal)
+        # the next cycle: nothing new, no purge and no record
+        recorded = purges()
+        self.assertEqual(delta.exclusion_journal(self.state, environ),
+                         {"journal": len(journal), "pending": 0})
+        self.assertEqual(purges(), recorded)
+        # a load of a store projected before the capture purge serves them again: the
+        # next cycle finds the versions citing them and removes them again
+        from operating.pg import ontology_load
+        ontology_load.load(self.store_path, self.dsn, workers=1, replace=True,
+                           log=io.StringIO())
+        self.assertGreater(self.held()["M-SENT"][2], 0)
+        again = delta.exclusion_journal(self.state, environ)
+        self.assertNotIn("error", again, again)
+        self.assertGreater(again["pending"], 0, again)
+        self.assertEqual(self.held()["M-SENT"][2:], (0, 0))
+        self.assertEqual(self.held()["M-COPY"][2], 0)
+        self.assertEqual(self.held()["M-KEEP"], before["M-KEEP"])
+        # Postgres unreadable: an error the cycle line reports (and its unit fails on)
+        broken = delta.exclusion_journal(self.state, {
+            "PLX_DELTA_PG": "1", "PLX_PG_DSN": self.dsn.replace(self.name, self.name + "x")})
+        self.assertIn("error", broken)
+        self.assertNotIn(self.name, json.dumps(broken))
+        (self.state / "projection" / "delta").mkdir(parents=True, exist_ok=True)
+        with mock.patch.object(delta, "build_delta", return_value={"status": "ok"}), \
+                mock.patch.object(delta, "exclusion_journal", return_value=broken), \
+                contextlib.redirect_stdout(io.StringIO()), \
+                contextlib.redirect_stderr(io.StringIO()) as err:
+            code = delta.main(["run", "--state-dir", str(self.state)])
+        self.assertEqual(code, 1)
+        self.assertIn("PEOPLE EXCLUSION JOURNAL PURGE FAILED", err.getvalue())
+        cycles = (self.state / "projection" / "delta" / "cycles.jsonl").read_text()
+        line = json.loads(cycles.splitlines()[-1])
+        self.assertTrue(line["error"].startswith("exclusion_purge_failed"), line)
+
     def journal(self) -> set[str]:
         db = sqlite3.connect(self.state / "mail-capture" / "capture.db")
         try:

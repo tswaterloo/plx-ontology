@@ -146,6 +146,8 @@ class ChunkWriter:
             f"ON CONFLICT (chunk_id) DO UPDATE SET "
             + ", ".join(f"{col} = {new[col]}" for col in _CHUNK_COLUMNS if col != "chunk_id")
             + ", embedding = CASE WHEN t.content_sha = EXCLUDED.content_sha THEN t.embedding END"
+            # a rewritten text leaves its old cluster (the next full dedup places it again)
+            ", dup_group = CASE WHEN t.content_sha = EXCLUDED.content_sha THEN t.dup_group END"
             ", embed_model = CASE WHEN t.content_sha = EXCLUDED.content_sha THEN t.embed_model "
             "END, updated_at = now() WHERE " + changed + " RETURNING (xmax = 0)").fetchall()
         inserted = sum(1 for r in rows if r[0])
@@ -451,6 +453,16 @@ def bodies(conn: Any, kinds: Sequence[str] | None = None) -> Iterator[tuple[str,
             yield row[0], row[1]
 
 
+def bodies_by_id(conn: Any, chunk_ids: Sequence[str], batch: int = 5000) -> dict[str, str]:
+    """chunk_id -> body for ``chunk_ids`` (the near-duplicate candidates' check)."""
+    out: dict[str, str] = {}
+    ids = list(chunk_ids)
+    for i in range(0, len(ids), batch):
+        out.update(conn.execute("SELECT chunk_id, body FROM search.chunks WHERE "
+                                "chunk_id = ANY(%s)", (ids[i:i + batch],)).fetchall())
+    return out
+
+
 def write_groups(conn: Any, groups: dict[str, str], kinds: Sequence[str] | None = None) -> int:
     """Set ``dup_group`` from ``groups`` (chunk_id -> group); every other chunk of the
     covered kinds gets none."""
@@ -473,7 +485,8 @@ def write_groups(conn: Any, groups: dict[str, str], kinds: Sequence[str] | None 
     return n
 
 
-__all__ = ["ChunkWriter", "SchemaMissing", "bodies", "column_dim", "connect", "pending",
+__all__ = ["ChunkWriter", "SchemaMissing", "bodies", "bodies_by_id", "column_dim", "connect",
+           "pending",
            "purge_excluded", "purge_objects",
            "require_schema", "reuse_embeddings", "store_embeddings", "texts_for",
            "vector_text", "write_groups"]

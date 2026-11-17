@@ -211,10 +211,33 @@ def _packed(blobs: str | Path, digest: str, suffix: str) -> bytes | None:
     return bytes(row[0])
 
 
+def _zst(blobs: str | Path, digest: str, suffix: str) -> Optional[Path]:
+    """The ``.zst`` file that also holds the bytes form (``integrations.blob_zstd``); None
+    for the other forms."""
+    if suffix or not isinstance(digest, str) or _NAME.fullmatch(digest) is None:
+        return None
+    return _loose(blobs, digest, ".zst")
+
+
+def _inflated(path: Path) -> bytes:
+    """A ``.zst`` file's bytes; ``FileNotFoundError`` when it is not there, another
+    ``OSError`` when it does not inflate (a reader refuses it, as a bad file)."""
+    from integrations import blob_zstd
+    frame = path.read_bytes()
+    try:
+        return blob_zstd.decompress(frame)
+    except ValueError as exc:
+        raise OSError(f"blob_zstd_unreadable:{exc}") from exc
+
+
 def exists(blobs: str | Path, digest: str, suffix: str = "") -> bool:
-    """Whether this form of the blob is held (a loose file or a packed row)."""
+    """Whether this form of the blob is held (a loose file, a packed row or, for the
+    bytes form, its ``.zst`` file)."""
     if _loose(blobs, digest, suffix).exists():
         return True
+    zst = _zst(blobs, digest, suffix)
+    if zst is not None:
+        return zst.exists()
     return _has_row(blobs, digest, suffix)
 
 
@@ -244,6 +267,9 @@ def read(blobs: str | Path, digest: str, suffix: str = "") -> bytes:
     try:
         return path.read_bytes()
     except FileNotFoundError:
+        zst = _zst(blobs, digest, suffix)
+        if zst is not None:
+            return _inflated(zst)
         found = _packed(blobs, digest, suffix)
         if found is None:
             raise
@@ -257,10 +283,34 @@ def open_blob(blobs: str | Path, digest: str, suffix: str = "") -> BinaryIO:
     try:
         return open(path, "rb")
     except FileNotFoundError:
+        zst = _zst(blobs, digest, suffix)
+        if zst is not None:
+            return io.BytesIO(_inflated(zst))
         found = _packed(blobs, digest, suffix)
         if found is None:
             raise
         return io.BytesIO(found)
+
+
+def head(blobs: str | Path, digest: str, size: int = 4096, suffix: str = "") -> bytes:
+    """The first ``size`` stored bytes of this form (of a ``.zst``: the first bytes it
+    inflates to, reading only that much of it), unverified; ``FileNotFoundError`` when
+    not held."""
+    path = _loose(blobs, digest, suffix)
+    try:
+        with open(path, "rb") as handle:
+            return handle.read(size)
+    except FileNotFoundError:
+        zst = _zst(blobs, digest, suffix)
+        if zst is None:
+            with open_blob(blobs, digest, suffix) as handle:
+                return handle.read(size)
+    from integrations import blob_zstd
+    with open(zst, "rb") as handle:
+        try:
+            return blob_zstd.head(handle, size)
+        except ValueError as exc:
+            raise OSError(f"blob_zstd_unreadable:{exc}") from exc
 
 
 def size(blobs: str | Path, digest: str, suffix: str = "") -> int:
@@ -269,6 +319,15 @@ def size(blobs: str | Path, digest: str, suffix: str = "") -> int:
     try:
         return path.stat().st_size
     except FileNotFoundError:
+        zst = _zst(blobs, digest, suffix)
+        if zst is not None:   # the bytes' size, from the frame header
+            from integrations import blob_zstd
+            with open(zst, "rb") as handle:
+                frame_head = handle.read(18)
+            try:
+                return blob_zstd.content_size(frame_head)
+            except ValueError as exc:
+                raise OSError(f"blob_zstd_unreadable:{exc}") from exc
         if not _packable(digest, suffix):
             raise
         conn = _reader(blobs)
@@ -305,6 +364,9 @@ def unlink(blobs: str | Path, digest: str, suffix: str = "") -> None:
                 type(exc).__name__)
         return
     _loose(blobs, digest, suffix).unlink(missing_ok=True)
+    zst = _zst(blobs, digest, suffix)
+    if zst is not None:   # after the bytes file: see blob_zstd.compress_one
+        zst.unlink(missing_ok=True)
 
 
 # The pack's one table, versioned by the file's ``user_version`` (a file of another version
@@ -647,6 +709,21 @@ def unpack(blobs: str | Path) -> dict[str, Any]:
     return out
 
 
+def unseen_reader(entry: Path) -> int:
+    """1 when a process whose open files cannot be listed may still be a Workbench reader;
+    0 for this user's own non-Python helpers (``gpg-agent``, ``ssh-agent``, ``sudo``: not
+    dumpable, so even their user cannot list them; every Workbench reader is Python)."""
+    if _uid_of(entry) != os.getuid():
+        return 1
+    try:
+        for line in (entry / "status").read_text().splitlines():
+            if line.startswith("Name:"):
+                return int(line.split(None, 1)[1].strip().startswith("python"))
+    except (OSError, IndexError):
+        pass
+    return 1
+
+
 def _uid_of(entry: Path) -> Optional[int]:
     """A process's real uid from its ``status`` (readable for every user's process)."""
     try:
@@ -701,7 +778,8 @@ def stale_readers(store: Path, proc: Path = Path("/proc")) -> dict[str, int]:
             fds = list((entry / "fd").iterdir())
         except PermissionError:
             out["unreadable"] += 1
-            if db_stat is None or _could_open(_uid_of(entry), db_stat):
+            if (db_stat is None or _could_open(_uid_of(entry), db_stat)) \
+                    and unseen_reader(entry):
                 out["possible"] += 1
             continue
         except OSError:

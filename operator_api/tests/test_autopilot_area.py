@@ -21,6 +21,7 @@ from fastapi.testclient import TestClient
 
 from integrations.people_exclusion import PeopleExclusion
 from operating import autopilot as ap
+from operating import autopilot_engine
 from operating import autopilot_write as aw
 from operating import autopilot_write_adapters as wa
 from operating.session_identity import CHANNEL_CONSOLE, fixture_session
@@ -64,7 +65,7 @@ class AutopilotArea(unittest.TestCase):
             q.add_item(queued("ap_sam", COLLEAGUE[1]))
         q.close()
         # dev scores beside the queue; the colleague's role is not one of the owner's
-        (path.parent / ap.GATE_FILE).write_text(json.dumps({"schema": ap.GATE_SCHEMA, "roles": {
+        (path.parent / autopilot_engine.GATE_FILE).write_text(json.dumps({"schema": autopilot_engine.GATE_SCHEMA, "roles": {
             ROLE: {"members": [OWNER[1]], "workflows": {FLOW: {"judged": 40, "matched": 37}}},
             "receivables": {"members": [COLLEAGUE[1]],
                             "workflows": {"ar_collections": {"judged": 20, "matched": 15}}}}}))
@@ -91,7 +92,7 @@ class AutopilotArea(unittest.TestCase):
     def pass_fresh_gate(self) -> None:
         run = self.state.parent / "fresh-run"
         (run / "slug").mkdir(parents=True)
-        (run / ap.GATE_FILE).write_text(json.dumps({"schema": ap.GATE_SCHEMA, "roles": {
+        (run / autopilot_engine.GATE_FILE).write_text(json.dumps({"schema": autopilot_engine.GATE_SCHEMA, "roles": {
             ROLE: {"members": [OWNER[1]], "workflows": {FLOW: {"judged": 16, "matched": 15}}}}}))
         (run / "slug" / "result.json").write_text(json.dumps(
             {"role": ROLE, "status": "complete",
@@ -102,6 +103,11 @@ class AutopilotArea(unittest.TestCase):
         aw.sync_gate(aw.Journal(self.state / aw.AUDIT_FILE),
                      aw.WriteGate(self.state / aw.WRITE_GATE_FILE, rules),
                      datetime.now(timezone.utc))
+
+    def go_live_file(self, system: str) -> None:
+        folder = aw.control_dir(self.state, {})
+        folder.mkdir(parents=True, exist_ok=True)
+        (folder / aw.LIVE_FLAG.format(system=system)).write_text("")
 
     def accept_live(self, client: TestClient, item_id: str, **extra) -> dict:
         """A live accept: the first answers a confirm token and performs nothing; the
@@ -118,6 +124,28 @@ class AutopilotArea(unittest.TestCase):
                           json={"decision": "accept", "confirm_token": token, **extra})
         self.assertEqual(got.status_code, 200, got.text)
         return got.json()
+
+    def test_outcomes_count_only_what_the_reader_may_see_settled_items_too(self) -> None:
+        """Row 22 measure: accepted / edited / rejected / ignored / waiting per prepared
+        item, open and settled, under the list's own checks (the finance-marked item is
+        counted for nobody; the colleague never counts the owner's)."""
+        q = ap.Queue(self.backend.autopilot_queue)
+        with q.conn:
+            q.settle_item("ap_sam", "done", "owner_replied", "2026-11-15T12:00:00Z")
+        q.close()
+        owner, sam = self.client(OWNER), self.client(COLLEAGUE)
+        got = owner.post("/api/autopilot/items/ap_own/decision",
+                         json={"decision": "edit", "text": "Changed text."})
+        self.assertEqual(got.status_code, 200, got.text)
+        mine = sam.get("/api/autopilot").json()["outcomes"]
+        self.assertEqual((mine["items"], mine["ignored"], mine["edited"]), (1, 1, 0))
+        self.assertEqual(mine["ignored_reasons"], {"acted_without_it:owner_replied": 1})
+        whole = owner.get("/api/autopilot").json()["outcomes"]
+        self.assertEqual((whole["items"], whole["edited"], whole["ignored"]), (2, 1, 1))
+        self.assertEqual(sum(whole[k] for k in
+                             ("accepted", "edited", "rejected", "ignored", "waiting")), 2)
+        self.assertEqual(whole["shares"], {"accepted": "0.0", "edited": "50.0",
+                                           "rejected": "0.0", "ignored": "50.0"})
 
     def test_reader_sees_only_theirs_and_owner_only_controls(self) -> None:
         owner, sam = self.client(OWNER), self.client(COLLEAGUE)
@@ -148,9 +176,11 @@ class AutopilotArea(unittest.TestCase):
         self.assertLess(len(theirs["known_workflows"]), len(wf.names()))
         self.assertEqual(area["known_workflows"], sorted(wf.names()))
         for path, body in (("/api/autopilot/switches", {"global_off": True}),
-                           (f"/api/autopilot/workflows/{FLOW}", {"on": False}),
                            ("/api/autopilot/audit/k/undo", None)):
             self.assertEqual(sam.post(path, json=body).status_code, 403, path)
+        # the per-workflow stop is the owner's Mode control only
+        self.assertEqual(sam.put(f"/api/autopilot/workflows/{FLOW}/mode",
+                                 json={"mode": "off"}).status_code, 403)
         self.assertEqual(sam.get("/api/autopilot/audit").status_code, 403)
         self.assertFalse((self.state / aw.KILL_FILE).exists())
         self.assertFalse((self.state / aw.WORKFLOW_KILL_FILE).exists())
@@ -168,7 +198,7 @@ class AutopilotArea(unittest.TestCase):
         admitted to the write gate, and the gate synced."""
         run = self.state.parent / f"fresh-{len(list(self.state.parent.glob('fresh-*')))}"
         run.mkdir(parents=True)
-        (run / ap.GATE_FILE).write_text(json.dumps({"schema": ap.GATE_SCHEMA, "roles": {
+        (run / autopilot_engine.GATE_FILE).write_text(json.dumps({"schema": autopilot_engine.GATE_SCHEMA, "roles": {
             r: {"members": list(mem), "workflows": {f: {"judged": j, "matched": k}
                                                      for f, (j, k) in flows.items()}}
             for r, (mem, flows) in roles.items()}}))
@@ -306,8 +336,8 @@ class AutopilotArea(unittest.TestCase):
         path = self.state.parent / "empty" / ap.QUEUE_FILE
         ap.Queue(path).close()
         self.backend.autopilot_queue = path
-        gate = path.parent / ap.GATE_FILE
-        gate.write_text(json.dumps({"schema": ap.GATE_SCHEMA, "roles": {
+        gate = path.parent / autopilot_engine.GATE_FILE
+        gate.write_text(json.dumps({"schema": autopilot_engine.GATE_SCHEMA, "roles": {
             ROLE: {"members": [OWNER[1]], "workflows": {FLOW: {"judged": 40, "matched": 20}}}}}))
         area = self.client(OWNER).get("/api/autopilot").json()
         self.assertEqual(area["items"], [])
@@ -315,7 +345,7 @@ class AutopilotArea(unittest.TestCase):
         self.assertEqual(area["known_workflows"], sorted(wf.names()))
         self.assertIn(FLOW, area["known_workflows"])
         # a passing workflow: the page is empty for another reason, not the gate
-        gate.write_text(json.dumps({"schema": ap.GATE_SCHEMA, "roles": {
+        gate.write_text(json.dumps({"schema": autopilot_engine.GATE_SCHEMA, "roles": {
             ROLE: {"members": [OWNER[1]], "workflows": {FLOW: {"judged": 40, "matched": 37}}}}}))
         area = self.client(OWNER).get("/api/autopilot").json()
         self.assertNotIn(NO_GATE_PASSED, area["notes"])
@@ -323,6 +353,99 @@ class AutopilotArea(unittest.TestCase):
         gate.write_text("{not json")
         area = self.client(OWNER).get("/api/autopilot").json()
         self.assertEqual(area["notes"][0], NO_GATE_PASSED)
+
+    def test_an_unnamed_teams_sender_never_shows_as_an_id_and_a_named_one_is_unchanged(
+            self) -> None:
+        """The queue row line and "What happened" read ``happened.sender``; the title and
+        summary of an item prepared before the rule carry the id too. The API shows
+        "Someone" in all of them; the stored sender (the exclusion's input) is kept."""
+        raw = "e1dd02bd-0017-4203-95ef-585f1c801321"
+        old = f"{raw} is waiting on a reply: (Teams message)"
+        q = ap.Queue(self.backend.autopilot_queue)
+        with q.conn:
+            for item_id, sender, summary in (
+                    ("ap_teams", raw, old),
+                    ("ap_mail", "vince@example.com",
+                     "vince@example.com is waiting on a reply: PO 90412 date")):
+                item = queued(item_id, OWNER[1])
+                item["title"] = "Reply prep: " + summary
+                item["body"] = {**item["body"], "happened": {
+                    "channel": "teams" if item_id == "ap_teams" else "mail",
+                    "object_id": "x:" + item_id, "sender": sender},
+                    "prepared": {**item["body"]["prepared"], "summary": summary}}
+                q.add_item(item)
+        q.close()
+        owner = self.client(OWNER)
+        for path in ("/api/autopilot", "/api/my-work"):
+            got = owner.get(path)
+            self.assertEqual(got.status_code, 200, got.text)
+            self.assertNotIn(raw[:8], got.text.lower(), path)
+            items = {i["item_id"]: i for i in got.json()["items"]}
+            teams, mail = items["ap_teams"], items["ap_mail"]
+            self.assertEqual(teams["happened"]["sender"], "Someone", path)
+            self.assertEqual(teams["prepared"]["summary"],
+                             "Someone is waiting on a reply: (Teams message)", path)
+            self.assertEqual(teams["title"],
+                             "Reply prep: Someone is waiting on a reply: (Teams message)")
+            self.assertEqual(mail["happened"]["sender"], "vince@example.com", path)
+            self.assertEqual(mail["prepared"]["summary"],
+                             "vince@example.com is waiting on a reply: PO 90412 date")
+            self.assertEqual(mail["title"],
+                             "Reply prep: vince@example.com is waiting on a reply: PO 90412 date")
+        # the stored item keeps the raw sender: every action is still cleared against them
+        q = ap.Queue(self.backend.autopilot_queue)
+        try:
+            stored = next(i for i in q.items() if i["item_id"] == "ap_teams")
+        finally:
+            q.close()
+        self.assertEqual(stored["body"]["happened"]["sender"], raw)
+        self.assertTrue(aw.actions_of(stored))
+        for action in aw.actions_of(stored):
+            self.assertIn(raw, action["people"])
+
+    def test_a_teams_item_shows_the_stated_name_and_message_only_to_who_may_see_it(
+            self) -> None:
+        """The live defect (11-16): Teams items read "Someone" / "(Teams message)" and the
+        owners as "<role> colleague N". The item shows the sender's stated name and the
+        message's snippet; an owner the roster names only by id takes the name a message
+        of theirs the reader may see states; a reader the item is not visible to sees
+        neither the snippet nor the name."""
+        q = ap.Queue(self.backend.autopilot_queue)
+        with q.conn:
+            item = queued("ap_chat", OWNER[1])
+            item["title"] = "Teams reply: Sam Lee is waiting on a reply: \u201cIs PO 7 in?\u201d"
+            item["body"] = {**item["body"], "happened": {
+                "channel": "teams", "event_type": "message.received",
+                "object_id": "TeamsChatMessage:x", "sender": COLLEAGUE[1],
+                "sender_name": "Sam Lee", "snippet": "Is PO 7 in? Need it for the run"}}
+            q.add_item(item)
+            bare = queued("ap_bare", OWNER[1])
+            bare["body"] = {**bare["body"], "happened": {
+                "channel": "teams", "event_type": "message.received",
+                "object_id": "TeamsChatMessage:y", "sender": COLLEAGUE[1]}}
+            q.add_item(bare)
+        q.close()
+        area = self.client(OWNER).get("/api/autopilot")
+        self.assertEqual(area.status_code, 200, area.text)
+        items = {i["item_id"]: i for i in area.json()["items"]}
+        chat = items["ap_chat"]["happened"]
+        self.assertEqual(chat["sender"], "Sam Lee")
+        self.assertEqual(chat["message"], "Is PO 7 in? Need it for the run")
+        self.assertNotIn("sender_name", chat)
+        # an item whose text is not read yet says so (``autopilot.name_teams_items``)
+        self.assertEqual(items["ap_bare"]["happened"]["message"],
+                         "(message text not read yet)")
+        people = {p["id"]: p for p in area.json()["people"]}
+        self.assertEqual(people[COLLEAGUE[1]]["name"], "Sam Lee")
+        mine = self.client(OWNER).get("/api/my-work").json()
+        self.assertEqual({i["item_id"]: i for i in mine["items"]}["ap_chat"]["happened"][
+            "message"], "Is PO 7 in? Need it for the run")
+        # Nothing of the message reaches them
+        for path in ("/api/autopilot", "/api/my-work"):
+            got = self.client(COLLEAGUE).get(path)
+            self.assertEqual(got.status_code, 200, path)
+            self.assertNotIn("Is PO 7 in", got.text, path)
+            self.assertNotIn("ap_chat", got.text, path)
 
     def test_decisions_dry_run_records_only(self) -> None:
         owner = self.client(OWNER)
@@ -375,13 +498,15 @@ class AutopilotArea(unittest.TestCase):
                    .json()["workflows"] if w["role"] == ROLE)
         self.assertEqual(row["state"], "live_held")    # the host's master switch is off
         self.backend.writes_environ = {**ENV, aw.MASTER_ENV: "1"}
+        self.go_live_file("bc")             # the owner's go-live files (BC, mail)
+        self.go_live_file("mail")
         # switched off: the accept is recorded killed, nothing written
-        owner.post(f"/api/autopilot/workflows/{FLOW}", json={"on": False})
+        owner.put(f"/api/autopilot/workflows/{FLOW}/mode", json={"mode": "off"})
         self.assertEqual(owner.post("/api/autopilot/items/ap_own/decision",
                                     json={"decision": "accept"}).json()["decision"]["outcome"],
                          "killed")
         self.assertEqual(self.bc.calls, [])
-        owner.post(f"/api/autopilot/workflows/{FLOW}", json={"on": True})
+        owner.put(f"/api/autopilot/workflows/{FLOW}/mode", json={"mode": "draft"})
         self.bc.answers = [(201, {"id": NEW_ID, "@odata.etag": 'W/"1"'}), (204, {})]
         item = self.accept_live(owner, "ap_own")
         # the BC entry went through; the confirmation email has no sender wired here, so
@@ -546,7 +671,9 @@ class AutopilotArea(unittest.TestCase):
         self.pass_fresh_gate()
         owner.post("/api/autopilot/opt-in", json={"workflow": FLOW, "on": True})
         self.backend.writes_environ = {**ENV, aw.MASTER_ENV: "1"}
-        owner.post(f"/api/autopilot/workflows/{FLOW}", json={"on": True})
+        self.go_live_file("bc")             # the owner's go-live files (BC, mail)
+        self.go_live_file("mail")
+        owner.put(f"/api/autopilot/workflows/{FLOW}/mode", json={"mode": "draft"})
 
         class FromMailbox(wa.MailAdapter):
             """The owner's mailbox as the sender (the fixture's owner is an object id)."""

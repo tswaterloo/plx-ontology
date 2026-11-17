@@ -1,0 +1,225 @@
+{
+ "format": "plx-step-code/v2",
+ "about": "Each build step's code files (ontology.step_migrate.STEPS reads them from here) and its roots, the [module, name] definitions the build registry (operating.build_steps.post_project) runs for it. A step's digest is the definitions its roots reach in its code files (docstrings and comments left out), each listed module the roots reach nothing in taken whole, each listed JSON file as canonical JSON (ontology.step_code). A change to one re-derives the step's links and moves the steps digest. Read as data by ontology.step_code, so a build records the steps digest without importing the steps.",
+ "steps": {
+  "confirmations": [
+   "operating/kind_confirmation.py"
+  ],
+  "document_fields": [
+   "ontology/document_fields.py",
+   "ontology/schema/document_fields.json",
+   "integrations/captured_text.py",
+   "integrations/document_understanding.py"
+  ],
+  "key_joins": [
+   "ontology/key_links.py",
+   "ontology/posting_links.py",
+   "ontology/identity_scoring.py"
+  ],
+  "mentions": [
+   "ontology/mentions.py",
+   "ontology/finish_parallel.py",
+   "ontology/list_documents.py",
+   "ontology/identifiers.py",
+   "ontology/schema/identifiers.json"
+  ],
+  "reviews": [
+   "ontology/reviews.py"
+  ],
+  "roles": [
+   "ontology/party_roles.py"
+  ],
+  "sender_corroboration": [
+   "ontology/sender_corroboration.py",
+   "ontology/sender_parallel.py",
+   "ontology/mention_occurrences.py"
+  ],
+  "sender_parties": [
+   "ontology/sender_parties.py"
+  ],
+  "supply_pegging": [
+   "ontology/demand_pegging.py",
+   "ontology/schema/pegging.json",
+   "ontology/sender_parties.py",
+   "ontology/mentions.py"
+  ],
+  "task_ids": [
+   "ontology/mc_task_links.py",
+   "ontology/mention_occurrences.py"
+  ],
+  "task_names": [
+   "ontology/mc_task_links.py"
+  ],
+  "text_index": [
+   "ontology/text_index.py",
+   "ontology/text_parallel.py"
+  ],
+  "trace_postings": [
+   "ontology/posting_links.py"
+  ],
+  "twins": [
+   "ontology/identity_scoring.py"
+  ],
+  "twins_contacts": [
+   "ontology/contact_twins.py"
+  ],
+  "twins_parties": [
+   "ontology/identity_scoring.py"
+  ],
+  "unique_mentions": [
+   "ontology/mention_firm.py",
+   "ontology/mention_firm_parallel.py",
+   "ontology/mention_occurrences.py",
+   "ontology/po_mention_resolve.py"
+  ],
+  "with_formula_lines": [
+   "ontology/formula_lines.py",
+   "ontology/composition_lines.py"
+  ],
+  "with_owners": [
+   "ontology/owner_links.py",
+   "ontology/people_links.py",
+   "ontology/sender_parties.py",
+   "ontology/mentions.py",
+   "integrations/people_exclusion.py"
+  ],
+  "with_people": [
+   "ontology/people_links.py",
+   "ontology/sender_parties.py",
+   "ontology/mentions.py",
+   "ontology/document_fields.py",
+   "ontology/schema/document_fields.json"
+  ],
+  "your_reference": [
+   "ontology/identity_scoring.py"
+  ]
+ },
+ "roots": {
+  "confirmations": [
+   [
+    "operating.kind_confirmation",
+    "projection_step"
+   ]
+  ],
+  "document_fields": [
+   [
+    "ontology.document_fields",
+    "store_document_links"
+   ]
+  ],
+  "key_joins": [
+   [
+    "ontology.key_links",
+    "key_joins_step"
+   ]
+  ],
+  "mentions": [
+   [
+    "ontology.finish_parallel",
+    "store_mention_links"
+   ]
+  ],
+  "reviews": [
+   [
+    "ontology.reviews",
+    "link_step"
+   ]
+  ],
+  "roles": [
+   [
+    "ontology.party_roles",
+    "roles_step"
+   ]
+  ],
+  "sender_corroboration": [
+   [
+    "ontology.sender_parallel",
+    "sender_corroboration_step"
+   ]
+  ],
+  "sender_parties": [
+   [
+    "ontology.sender_parties",
+    "sender_parties_step"
+   ]
+  ],
+  "supply_pegging": [
+   [
+    "ontology.demand_pegging",
+    "supply_pegging_step"
+   ]
+  ],
+  "task_ids": [
+   [
+    "ontology.mc_task_links",
+    "task_ids_step"
+   ]
+  ],
+  "task_names": [
+   [
+    "ontology.mc_task_links",
+    "task_names_step"
+   ]
+  ],
+  "text_index": [
+   [
+    "ontology.text_parallel",
+    "store_text_index"
+   ]
+  ],
+  "trace_postings": [
+   [
+    "ontology.posting_links",
+    "trace_postings_step"
+   ]
+  ],
+  "twins": [
+   [
+    "ontology.identity_scoring",
+    "twin_step"
+   ]
+  ],
+  "twins_contacts": [
+   [
+    "ontology.contact_twins",
+    "step_for"
+   ]
+  ],
+  "twins_parties": [
+   [
+    "ontology.identity_scoring",
+    "party_twin_step"
+   ]
+  ],
+  "unique_mentions": [
+   [
+    "ontology.mention_firm_parallel",
+    "unique_mentions_step"
+   ]
+  ],
+  "with_formula_lines": [
+   [
+    "ontology.formula_lines",
+    "step_for"
+   ]
+  ],
+  "with_owners": [
+   [
+    "ontology.owner_links",
+    "with_owners_step"
+   ]
+  ],
+  "with_people": [
+   [
+    "ontology.people_links",
+    "people_links_step"
+   ]
+  ],
+  "your_reference": [
+   [
+    "ontology.identity_scoring",
+    "your_reference_step"
+   ]
+  ]
+ }
+}

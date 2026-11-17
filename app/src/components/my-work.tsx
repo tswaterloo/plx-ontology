@@ -39,7 +39,7 @@ export function groupsOf(items: MyWorkItem[], now: Date = new Date()): Group[] {
 }
 
 function happenedLine(h: Record<string, unknown>): string {
-  return [h.sender, h.subject].filter((x) => typeof x === "string" && x).join(" · ");
+  return [h.sender, h.subject || h.message].filter((x) => typeof x === "string" && x).join(" · ");
 }
 
 function Item({ item, area, state, onDone, now }: { item: MyWorkItem; area: AutopilotArea | null; state: ActionResult | null; onDone: (r: ActionResult) => void; now: Date }) {
@@ -200,7 +200,7 @@ export function MyWorkList({ work }: { work: MyWork }) {
         {work.status === "off" && <p className="text-[13px] font-medium">The autopilot is switched off: nothing new is prepared and nothing can be approved.</p>}
         <header className="flex flex-wrap items-end gap-x-10 gap-y-3 border-b border-border pb-4">
           <div className="mr-auto">
-            <h2 className="text-[15px] font-semibold">What&apos;s open, and what is prepared</h2>
+            <h2 className="text-[15px] font-semibold">Open and prepared items</h2>
             <p className="text-[12px] text-muted">Nothing is sent or written until you confirm it.</p>
           </div>
           {(

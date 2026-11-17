@@ -29,7 +29,7 @@ import time
 from typing import Any, Iterator, Optional
 from operating import declared_schema as _schemas
 from operating.declared_schema import page_store as _PAGE_STORE
-from operating.file_modes import keep_private
+from operating.file_modes import keep_private, keep_shared
 
 LOG = logging.getLogger("operator_api.page_store")
 FILE = "page-cache.sqlite"
@@ -149,6 +149,7 @@ class PageStore:
             except OSError:
                 pass
             os.close(os.open(self.path, os.O_RDWR | os.O_CREAT, 0o600))
+            keep_shared(self.path, 0o600)   # before SQLite makes -wal/-shm from its mode
             conn = sqlite3.connect(str(self.path), timeout=5, check_same_thread=False)
             conn.execute("PRAGMA journal_mode=WAL")
             conn.execute("PRAGMA synchronous=NORMAL")

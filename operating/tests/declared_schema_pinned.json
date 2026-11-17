@@ -1108,6 +1108,12 @@
    ],
    [
     "table",
+    "detector_checked",
+    "detector_checked",
+    "CREATE TABLE detector_checked (detector TEXT PRIMARY KEY, checked INTEGER, judged INTEGER, run_at TEXT NOT NULL)"
+   ],
+   [
+    "table",
     "detector_history",
     "detector_history",
     "CREATE TABLE detector_history (detector TEXT NOT NULL, run_at TEXT NOT NULL,\n  status TEXT NOT NULL, found INTEGER NOT NULL, PRIMARY KEY (detector, run_at))"

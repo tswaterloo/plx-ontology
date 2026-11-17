@@ -22,6 +22,9 @@ import unittest.mock
 
 from operating import ontology_tools as ot
 from operating import ontology_tools_process as op
+from operating import ontology_tools_process_answer
+from operating import ontology_tools_process_graphs
+from operating import ontology_tools_process_helpers
 from operating.host import projection_path
 from operating.process_risks import undecided_cause
 from scripts import process_dependencies_probe as probe
@@ -139,7 +142,7 @@ class ScheduleRiskTests(Mixin, unittest.TestCase):
             self.assertEqual(undecided_cause(gap), (side, cause), world)
         # a due-date gap reason this module does not know is unproven, never a date; a
         # detail it did not write is no cause
-        new = op.Dated([], None, ot._gap("unknown", "due_date_new_reason", "s"), None)
+        new = ontology_tools_process_answer.Dated([], None, ot._gap("unknown", "due_date_new_reason", "s"), None)
         with unittest.mock.patch.object(op.ProcessTools, "_due_date", lambda *a: new):
             risks, gaps, _, _ = self.risks(expected=("2099-01-09",))
         self.assertEqual((risks, [undecided_cause(g) for g in gaps]),
@@ -278,7 +281,7 @@ class ScheduleRiskTests(Mixin, unittest.TestCase):
             next(s for s in bad["stages"] if s["id"] == "assembly_realized")[
                 "prerequisites"][0]["schedule"][key] = value
             (tmp / "manufacturing_order.json").write_text(json.dumps(bad), "utf-8")
-            with self.assertRaisesRegex(op.ProcessGraphError, problem):
+            with self.assertRaisesRegex(ontology_tools_process_graphs.ProcessGraphError, problem):
                 op.load_graphs(tmp, schema=base.REAL_SCHEMA)
         self.assertIn("schedule", pre)
 
@@ -329,7 +332,7 @@ class NotPeggedTypingTests(Mixin, unittest.TestCase):
     @staticmethod
     def causes(stage):
         return [(b.get("object") is not None, b["missing"]["reason"],
-                 op.not_pegged_waits_on(b["missing"])) for b in stage["blockers"]]
+                 ontology_tools_process_helpers.not_pegged_waits_on(b["missing"])) for b in stage["blockers"]]
 
     def test_each_not_pegged_entry_is_typed_by_the_records_it_waits_on(self):
         for world, want in (
@@ -392,7 +395,7 @@ class NotPeggedTypingTests(Mixin, unittest.TestCase):
             (typed,) = [b["missing"] for b in stage["blockers"]
                         if b["missing"]["reason"] == "dependency_not_pegged"]
             self.assertEqual(stage["blockers"][0]["missing"], typed, n)   # first: never cut
-            self.assertEqual(op.not_pegged_waits_on(typed), "open", n)
+            self.assertEqual(ontology_tools_process_helpers.not_pegged_waits_on(typed), "open", n)
             self.assertIn(f"ties the {read} live PurchaseOrder record(s)", typed["detail"], n)
             self.assertEqual("more past the record cap" in typed["detail"],
                              n > op.MAX_PREREQUISITE_RECORDS, n)
@@ -425,7 +428,7 @@ class NotPeggedTypingTests(Mixin, unittest.TestCase):
                 ({"reason": "dependency_not_pegged"}, None),
                 ({"reason": "dependency_unproven", "detail": detail("X", 3, 1, False)}, None),
                 ({}, None)):
-            self.assertEqual(op.not_pegged_waits_on(gap), want, gap)
+            self.assertEqual(ontology_tools_process_helpers.not_pegged_waits_on(gap), want, gap)
 
 
 if __name__ == "__main__":

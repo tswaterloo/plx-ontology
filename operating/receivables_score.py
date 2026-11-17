@@ -9,6 +9,9 @@ event scan and handler, the day as ``as_of``) and looks up the entry made afterw
   only one). Right lines: the same (item, quantity) of every non-zero item line; right
   amount: the item lines' amount to the cent, same currency (charge lines are named, not
   priced: ``subtotal_right`` counts entries whose amount is the invoice's whole subtotal).
+  An entered invoice whose item lines are not all read (an amount or quantity unreadable,
+  an amount in another currency than the invoice's) is ``truth_unknown`` (by reason): found,
+  never exact, and never judged against a partial sum.
 * ``shipment_posting``: the order's first shipment dated on or after the day, within
   ``AFTER_DAYS``. Right lines: the same (item, quantity) of every non-zero line.
 * ``cash_application``: the receipt whose application lines pay the first invoice the
@@ -33,6 +36,10 @@ import time
 from typing import Any, Mapping, Sequence
 
 from . import autopilot as ap
+from . import autopilot_handlers
+from . import autopilot_queue
+from . import autopilot_reading
+from . import autopilot_records
 from . import autopilot_receivables as ar
 
 WORKFLOWS = ("invoice_entry", "shipment_posting", "cash_application")
@@ -47,15 +54,15 @@ def _lines_of(work: Mapping[str, Any]) -> Counter:
 
 
 def truth_invoice(ctx: Any, shipment: str, order: str, day: date) -> dict[str, Any] | None:
-    head = ap._read(ctx.st, [shipment], ("sage_shipment_number",)).get(shipment)
-    number = ap._v(head, "sage_shipment_number").strip().upper()
+    head = autopilot_records._read(ctx.st, [shipment], ("sage_shipment_number",)).get(shipment)
+    number = autopilot_records._v(head, "sage_shipment_number").strip().upper()
     found = []
     for oid, r in ar.invoices_of(ctx, order).items():
-        d = ar._day(ap._v(r, "invoice_date"))
+        d = ar._day(autopilot_records._v(r, "invoice_date"))
         if d is None or not (day <= d <= day + timedelta(days=AFTER_DAYS["invoice_entry"])):
             continue
-        doc = ar._open_doc(ctx, ap._v(r, "invoice_number").strip())
-        found.append((ap._v(doc, "idshipnbr").strip().upper() == number, d, oid, r))
+        doc = ar._open_doc(ctx, autopilot_records._v(r, "invoice_number").strip())
+        found.append((autopilot_records._v(doc, "idshipnbr").strip().upper() == number, d, oid, r))
     named = [f for f in found if f[0]]
     pick = named[0] if len(named) == 1 else (found[0] if len(found) == 1 else None)
     if pick is None:
@@ -63,20 +70,33 @@ def truth_invoice(ctx: Any, shipment: str, order: str, day: date) -> dict[str, A
     _named, _d, oid, r = pick
     ids = [o for o in ctx.linked(oid, ("SalesInvoiceLine.line_of",))
            if o.startswith("SalesInvoiceLine:")]
-    rows = ap._read(ctx.st, ids, ("sage_item_code", "invoiced_quantity", "line_type",
+    rows = autopilot_records._read(ctx.st, ids, ("sage_item_code", "invoiced_quantity", "line_type",
                                   "extended_amount"))
-    lines = Counter()
-    items = sum((ap._decimal(ap._v(rows.get(o), "extended_amount")) or Decimal(0)
-                 for o in ids if ap._v(rows.get(o), "line_type").strip() != ar.MISC_LINE),
-                Decimal(0))
+    currency = autopilot_records._v(r, "currency").strip()
+    lines: Counter | None = Counter()
+    items: Decimal | None = Decimal(0)
+    why = None      # why the item lines' amount is not known (never a smaller sum)
     for o in ids:
-        if ap._v(rows.get(o), "line_type").strip() == ar.MISC_LINE:
+        if autopilot_records._v(rows.get(o), "line_type").strip() == ar.MISC_LINE:
             continue
-        q = ap._decimal(ap._v(rows.get(o), "invoiced_quantity"))
-        if q:
-            lines[(ap._v(rows.get(o), "sage_item_code").strip().upper(), q.normalize())] += 1
-    return {"lines": lines, "items": items, "subtotal": ap._decimal(ap._v(r, "subtotal")),
-            "currency": ap._v(r, "currency").strip()}
+        cell = (rows.get(o) or {}).get("extended_amount") or {}
+        amount = autopilot_records._decimal(autopilot_records._v(rows.get(o), "extended_amount"))
+        said = str(cell.get("currency") or "").strip().upper()
+        if amount is None:
+            why = why or "line_amount_unreadable"
+        elif said and said != currency.upper():
+            why = why or "line_currency_differs"
+        elif items is not None:
+            items += amount
+        q = autopilot_records._decimal(autopilot_records._v(rows.get(o), "invoiced_quantity"))
+        if q is None:
+            lines = None          # an item line of unknown quantity: lines not known
+        elif q and lines is not None:
+            lines[(autopilot_records._v(rows.get(o), "sage_item_code").strip().upper(), q.normalize())] += 1
+    if why is not None:
+        items = None
+    return {"lines": lines, "items": items, "items_unknown": why,
+            "subtotal": autopilot_records._decimal(autopilot_records._v(r, "subtotal")), "currency": currency}
 
 
 def judge_invoice(ctx: Any, event: Mapping[str, Any], work: Mapping[str, Any],
@@ -87,6 +107,12 @@ def judge_invoice(ctx: Any, event: Mapping[str, Any], work: Mapping[str, Any],
         return c
     entry = work["entry"]
     c["found"] += 1
+    if truth["lines"] is None or truth["items"] is None:
+        # what was entered is not read in full (an item line's amount or quantity
+        # unreadable, or in another currency): never judged against a partial sum
+        c["truth_unknown"] += 1
+        c["truth_unknown:" + (truth["items_unknown"] or "line_quantity_unreadable")] += 1
+        return c
     lines = _lines_of(work) == truth["lines"]
     currency = truth["currency"] == entry["currency"]
     amount = currency and abs(Decimal(entry["subtotal"]) - truth["items"]) <= CENT
@@ -106,8 +132,8 @@ def judge_posting(ctx: Any, event: Mapping[str, Any], work: Mapping[str, Any],
     c: Counter = Counter(prepared=1)
     order = event["object_id"]
     ids = [o for o in ctx.linked(order, ("Shipment.ships",)) if ar._accounting(o)]
-    heads = ap._read(ctx.st, ids, ("ship_date",))
-    dated = sorted((d, s) for s in ids if (d := ar._day(ap._v(heads.get(s), "ship_date")))
+    heads = autopilot_records._read(ctx.st, ids, ("ship_date",))
+    dated = sorted((d, s) for s in ids if (d := ar._day(autopilot_records._v(heads.get(s), "ship_date")))
                    and day <= d <= day + timedelta(days=AFTER_DAYS["shipment_posting"]))
     if not dated:
         return c
@@ -122,20 +148,21 @@ def judge_posting(ctx: Any, event: Mapping[str, Any], work: Mapping[str, Any],
     return c
 
 
-def _receipt(ctx: Any, invoice: str, day: date) -> list[tuple[str, Decimal]] | None:
+def _receipt(ctx: Any, invoice: str, day: date) -> list[tuple[str, Decimal | None]] | None:
     """The application lines (invoice, amount) of the receipt that pays ``invoice``."""
     hits = ctx.find("RelSageArTcp", "idinvc", invoice)
-    rows = ap._read(ctx.st, hits, ("idinvc", "amtpaym", "cntbtch", "cntitem", "audtdate"))
+    rows = autopilot_records._read(ctx.st, hits, ("idinvc", "amtpaym", "cntbtch", "cntitem", "audtdate"))
     lo, hi = day, day + timedelta(days=AFTER_DAYS["cash_application"])
-    keys = sorted({(ap._v(r, "cntbtch"), ap._v(r, "cntitem")) for r in rows.values()
-                   if (d := ar._day(ap._v(r, "audtdate"))) and lo <= d <= hi})
+    keys = sorted({(autopilot_records._v(r, "cntbtch"), autopilot_records._v(r, "cntitem")) for r in rows.values()
+                   if (d := ar._day(autopilot_records._v(r, "audtdate"))) and lo <= d <= hi})
     if not keys:
         return None
     batch, item = keys[0]
     same = ctx.find("RelSageArTcp", "cntbtch", batch)
-    got = ap._read(ctx.st, same, ("idinvc", "amtpaym", "cntbtch", "cntitem"))
-    return [(ap._v(r, "idinvc").strip().upper(), ap._decimal(ap._v(r, "amtpaym")) or Decimal(0))
-            for r in got.values() if ap._v(r, "cntbtch") == batch and ap._v(r, "cntitem") == item]
+    got = autopilot_records._read(ctx.st, same, ("idinvc", "amtpaym", "cntbtch", "cntitem"))
+    # an application amount unreadable stays None: the receipt is not read in full
+    return [(autopilot_records._v(r, "idinvc").strip().upper(), autopilot_records._decimal(autopilot_records._v(r, "amtpaym")))
+            for r in got.values() if autopilot_records._v(r, "cntbtch") == batch and autopilot_records._v(r, "cntitem") == item]
 
 
 def judge_cash(ctx: Any, event: Mapping[str, Any], work: Mapping[str, Any],
@@ -146,6 +173,10 @@ def judge_cash(ctx: Any, event: Mapping[str, Any], work: Mapping[str, Any],
     if not truth:
         return c
     c["found"] += 1
+    if any(amt is None for _inv, amt in truth):
+        c["truth_unknown"] += 1
+        c["truth_unknown:application_amount_unreadable"] += 1
+        return c
     mine = {a["invoice"].strip().upper(): Decimal(a["amount"]) for a in applied}
     theirs: dict[str, Decimal] = {}
     for inv, amt in truth:
@@ -175,13 +206,13 @@ def score_day(st: Any, people: Any, registry: Mapping[str, Any], workflow: str,
         # the handler runs under a per-item budget (an entry it cannot prepare in time is
         # not prepared); the judge reads what was entered, unbudgeted
         try:
-            work = handler(ap.Ctx(st, day, time.monotonic() + HANDLER_SECONDS, ()), event)
-        except ap.HandlerTimeout:
+            work = handler(autopilot_handlers.Ctx(st, day, time.monotonic() + HANDLER_SECONDS, ()), event)
+        except autopilot_queue.HandlerTimeout:
             work = {"skip": "handler_timeout"}
         if work.get("skip"):
             total["skip:" + work["skip"]] += 1
             continue
-        total.update(judge(ap.Ctx(st, day, float("inf"), ()), event, work, day))
+        total.update(judge(autopilot_handlers.Ctx(st, day, float("inf"), ()), event, work, day))
     return {"workflow": workflow, "day": day.isoformat(), "counts": dict(total)}
 
 
@@ -201,7 +232,12 @@ def table(out: Path) -> dict[str, Any]:
         res[wf] = {"days": days[wf], **dict(c),
                    "precision": round(c.get("exact", 0) / n, 3) if n else None,
                    "of_found": round(c.get("exact", 0) / c["found"], 3) if c.get("found")
-                   else None}
+                   else None,
+                   # entries whose entered truth was not read in full are not judged: the
+                   # figures above count them as not exact, so they are a lower bound then
+                   "of_judged": round(c.get("exact", 0) / judged, 3)
+                   if (judged := c.get("found", 0) - c.get("truth_unknown", 0)) > 0 else None,
+                   "complete": not c.get("truth_unknown")}
     return res
 
 
@@ -218,7 +254,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                         "the store)")
     p.add_argument("--budget-seconds", type=float, default=200.0,
                    help="stop after this long (resumable: rerun to go on)")
-    p.add_argument("--source", choices=ap.STORE_SOURCES, default=None,
+    p.add_argument("--source", choices=autopilot_reading.STORE_SOURCES, default=None,
                    help="the SQLite generation at --store, or the Postgres ontology the API "
                         "reads in mode 1 (refused when it does not hold that generation)")
     a = p.parse_args(argv)

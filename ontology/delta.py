@@ -67,7 +67,7 @@ import signal
 import sqlite3
 import sys
 import time
-from typing import Any, Iterable, Iterator, Mapping, Sequence
+from typing import Any, Callable, Iterable, Iterator, Mapping, Sequence
 from urllib.parse import unquote
 from operating import declared_schema as _schemas
 from operating.declared_schema import delta_held as _DELTA_HELD
@@ -244,9 +244,17 @@ class Base:
     the same lookups, read through ``operating.pg.sqlite_compat``, see every change a
     layer brought, so a cycle needs only its own changes and nothing is ever folded."""
 
-    def __init__(self, path: Path, *, postgres: str | None = None) -> None:
+    def __init__(self, path: Path, *, postgres: str | None = None,
+                 workers: int = 1) -> None:
         self.path = Path(path)
         self.postgres = postgres is not None
+        # over Postgres the chunked lookups run ``workers`` statements at a time, each on
+        # its own connection (:meth:`_parts`); a SQLite base reads on its one connection
+        self._dsn = postgres
+        self.workers = max(1, int(workers)) if postgres is not None else 1
+        self._pool: Any = None
+        self._local: Any = None
+        self._extra: list[Any] = []
         if postgres is not None:
             from operating.pg.sqlite_compat import PgCompatConnection
             self.conn = PgCompatConnection(postgres)
@@ -261,7 +269,63 @@ class Base:
         self.freshness = json.loads(meta.get("source_freshness") or "{}")
 
     def close(self) -> None:
+        if self._pool is not None:
+            self._pool.shutdown(wait=True)
+            self._pool = None
+        for conn in self._extra:
+            conn.close()
+        self._extra = []
         self.conn.close()
+
+    def _worker_conn(self) -> Any:
+        """This lookup thread's own Postgres connection, opened on its first statement."""
+        conn = getattr(self._local, "conn", None)
+        if conn is None:
+            from operating.pg.sqlite_compat import PgCompatConnection
+            conn = PgCompatConnection(self._dsn)
+            conn.row_factory = sqlite3.Row
+            self._local.conn = conn
+            self._extra.append(conn)
+        return conn
+
+    def _part(self, sql: str, params: Sequence[Any]) -> list[Any]:
+        return list(self._worker_conn().execute(sql, params))
+
+    def _parts(self, sql: str, params: Iterable[Sequence[Any]]) -> Iterator[list[Any]]:
+        """The rows of ``sql`` run once per parameter tuple, one list per tuple in the
+        order given: what the serial loop over the chunks reads, chunk by chunk. Over
+        Postgres with ``workers`` > 1 the statements run on that many threads, each on
+        its own connection (autocommit, like the base's own: each statement reads its own
+        snapshot either way), at most two per thread ahead of the one consumed; a failed
+        statement fails the lookup as it would serially. Delta cycle 3 (780k owned):
+        the closure's link read alone was 1,077 s of one connection (11-15)."""
+        params = list(params)
+        if self.workers < 2 or len(params) < 2:
+            for one in params:
+                yield list(self.conn.execute(sql, one))
+            return
+        import collections
+        from concurrent.futures import ThreadPoolExecutor
+        import threading
+        if self._pool is None:
+            self._local = threading.local()
+            self._pool = ThreadPoolExecutor(self.workers, thread_name_prefix="delta-lookup")
+        ahead: collections.deque[Any] = collections.deque()
+        todo = iter(params)
+        try:
+            for one in todo:
+                ahead.append(self._pool.submit(self._part, sql, one))
+                if len(ahead) >= 2 * self.workers:
+                    break
+            while ahead:
+                rows = ahead.popleft().result()
+                for one in todo:
+                    ahead.append(self._pool.submit(self._part, sql, one))
+                    break
+                yield rows
+        finally:
+            for future in ahead:
+                future.cancel()
 
     def meta_digest(self) -> str:
         """Digest of every ``store_meta`` row: what the base holds changes it (a layer
@@ -283,11 +347,12 @@ class Base:
         keys = list(keys)
         prefixes = [handle_prefix(source, key) for key in keys]
         held: dict[str, set[str]] = {}
-        for part in _chunks(sorted(set(prefixes))):
-            for prefix, oid in self.conn.execute(
-                    "SELECT DISTINCT p.value, v.object_id FROM json_each(?) p JOIN "
-                    "object_versions v ON v.l1_handle >= p.value AND v.l1_handle < "
-                    "p.value || ?", (json.dumps(list(part)), "\U0010ffff")):
+        for rows in self._parts(
+                "SELECT DISTINCT p.value, v.object_id FROM json_each(?) p JOIN "
+                "object_versions v ON v.l1_handle >= p.value AND v.l1_handle < "
+                "p.value || ?", ((json.dumps(list(part)), "\U0010ffff")
+                                 for part in _chunks(sorted(set(prefixes))))):
+            for prefix, oid in rows:
                 held.setdefault(prefix, set()).add(oid)
         out: dict[str, Any] = {}
         for key, prefix in zip(keys, prefixes):
@@ -297,13 +362,14 @@ class Base:
 
     def links_of(self, object_ids: Sequence[str]) -> list[sqlite3.Row]:
         rows: list[sqlite3.Row] = []
-        for part in _chunks(list(object_ids)):
-            ids = json.dumps(list(part))
-            rows.extend(self.conn.execute(
+        for part in self._parts(
                 "SELECT link_type, from_object, to_object, evidence_handles FROM links "
                 "WHERE from_object IN (SELECT value FROM json_each(?)) UNION ALL "
                 "SELECT link_type, from_object, to_object, evidence_handles FROM links "
-                "WHERE to_object IN (SELECT value FROM json_each(?))", (ids, ids)))
+                "WHERE to_object IN (SELECT value FROM json_each(?))",
+                ((ids, ids) for ids in (json.dumps(list(part))
+                                        for part in _chunks(list(object_ids))))):
+            rows.extend(part)
         return rows
 
     def typed_links(self, object_ids: Sequence[str], link_types: Iterable[str]
@@ -314,32 +380,35 @@ class Base:
         reading a person's every link through ``links`` took most of a cycle, 11-11)."""
         types = json.dumps(sorted(set(link_types)))
         rows: list[sqlite3.Row] = []
-        for part in _chunks(list(object_ids)):
-            ids = json.dumps(list(part))
-            rows.extend(self.conn.execute(
+        for part in self._parts(
                 "SELECT link_type, from_object, to_object FROM link_rows WHERE from_object "
                 "IN (SELECT value FROM json_each(?)) AND link_type IN (SELECT value FROM "
                 "json_each(?)) UNION ALL SELECT link_type, from_object, to_object FROM "
                 "link_rows WHERE to_object IN (SELECT value FROM json_each(?)) AND link_type "
-                "IN (SELECT value FROM json_each(?))", (ids, types, ids, types)))
+                "IN (SELECT value FROM json_each(?))",
+                ((ids, types, ids, types) for ids in (json.dumps(list(part))
+                                                      for part in _chunks(list(object_ids))))):
+            rows.extend(part)
         return rows
 
     def handles_of(self, object_ids: Iterable[str]) -> dict[str, str]:
         """object id -> one L1 handle of it (its records are found from it)."""
         out: dict[str, str] = {}
-        for part in _chunks(sorted(set(object_ids))):
-            for row in self.conn.execute(
-                    "SELECT object_id, l1_handle FROM object_versions WHERE object_id IN "
-                    "(SELECT value FROM json_each(?))", (json.dumps(list(part)),)):
+        for rows in self._parts(
+                "SELECT object_id, l1_handle FROM object_versions WHERE object_id IN "
+                "(SELECT value FROM json_each(?))",
+                ((json.dumps(list(part)),) for part in _chunks(sorted(set(object_ids))))):
+            for row in rows:
                 out.setdefault(row[0], row[1])
         return out
 
     def exists(self, object_ids: Sequence[str]) -> set[str]:
         found: set[str] = set()
-        for part in _chunks(list(object_ids)):
-            found.update(r[0] for r in self.conn.execute(
+        for rows in self._parts(
                 "SELECT object_id FROM objects WHERE object_id IN "
-                "(SELECT value FROM json_each(?))", (json.dumps(list(part)),)))
+                "(SELECT value FROM json_each(?))",
+                ((json.dumps(list(part)),) for part in _chunks(list(object_ids)))):
+            found.update(r[0] for r in rows)
         return found
 
     def holders(self, keys: Iterable[tuple[str, str]], binding: str | None = None
@@ -354,20 +423,21 @@ class Base:
         # one read per kind and 500 values (a cycle looks up ~10^5-10^6 identifiers: one
         # round trip each was most of its closure, 11-11), each value's holders still
         # read no further than the cap + 1
-        for kind in sorted(by_kind):
-            for part in _chunks(sorted(by_kind[kind], key=str)):
-                for _value, held in self.conn.execute(
-                        "SELECT j.value, (SELECT json_group_array(h.object_id) FROM (SELECT "
-                        "DISTINCT i.object_id FROM identifiers i JOIN objects o ON "
-                        "o.object_id = i.object_id WHERE i.normalized = j.value AND "
-                        "i.identifier_kind = ? AND (? IS NULL OR o.binding_id = ?) LIMIT ?) h) "
-                        "FROM json_each(?) j",
-                        (kind, binding, binding, LOOKUP_CAP + 1, json.dumps(list(part)))):
-                    found = json.loads(held) if held else []
-                    if len(found) > LOOKUP_CAP:
-                        capped += 1
-                        continue
-                    out.update(found)
+        for rows in self._parts(
+                "SELECT j.value, (SELECT json_group_array(h.object_id) FROM (SELECT "
+                "DISTINCT i.object_id FROM identifiers i JOIN objects o ON "
+                "o.object_id = i.object_id WHERE i.normalized = j.value AND "
+                "i.identifier_kind = ? AND (? IS NULL OR o.binding_id = ?) LIMIT ?) h) "
+                "FROM json_each(?) j",
+                ((kind, binding, binding, LOOKUP_CAP + 1, json.dumps(list(part)))
+                 for kind in sorted(by_kind)
+                 for part in _chunks(sorted(by_kind[kind], key=str)))):
+            for _value, held in rows:
+                found = json.loads(held) if held else []
+                if len(found) > LOOKUP_CAP:
+                    capped += 1
+                    continue
+                out.update(found)
         return out, capped
 
     def degree(self, object_ids: Iterable[str], cap: int) -> dict[str, int]:
@@ -376,23 +446,43 @@ class Base:
         (160k links on a person) costs ``cap`` + 1 index entries per end, not its whole
         page; 500 objects a round trip."""
         out: dict[str, int] = {}
-        for part in _chunks(sorted(set(object_ids))):
-            for row in self.conn.execute(
-                    "SELECT j.value, (SELECT COUNT(*) FROM (SELECT 1 FROM link_rows WHERE "
-                    "from_object = j.value LIMIT ?)) + (SELECT COUNT(*) FROM (SELECT 1 FROM "
-                    "link_rows WHERE to_object = j.value LIMIT ?)) FROM json_each(?) j",
-                    (cap + 1, cap + 1, json.dumps(list(part)))):
+        for rows in self._parts(
+                "SELECT j.value, (SELECT COUNT(*) FROM (SELECT 1 FROM link_rows WHERE "
+                "from_object = j.value LIMIT ?)) + (SELECT COUNT(*) FROM (SELECT 1 FROM "
+                "link_rows WHERE to_object = j.value LIMIT ?)) FROM json_each(?) j",
+                ((cap + 1, cap + 1, json.dumps(list(part)))
+                 for part in _chunks(sorted(set(object_ids))))):
+            for row in rows:
                 out[row[0]] = row[1]
         return out
 
     def identifiers_of(self, object_ids: Sequence[str]) -> set[tuple[str, str]]:
         out: set[tuple[str, str]] = set()
-        for part in _chunks(list(object_ids)):
-            out.update((r[0], r[1]) for r in self.conn.execute(
+        for rows in self._parts(
                 "SELECT identifier_kind, normalized FROM identifiers WHERE object_id IN "
                 "(SELECT value FROM json_each(?)) AND superseded_at IS NULL",
-                (json.dumps(list(part)),)))
+                ((json.dumps(list(part)),) for part in _chunks(list(object_ids)))):
+            out.update((r[0], r[1]) for r in rows)
         return out
+
+
+LOOKUP_WORKERS_ENV = "PLX_DELTA_LOOKUP_WORKERS"
+# Postgres connections the closure's and mention reads' lookups use at once (one each per
+# thread; the server composes each link's text, so its cores do the work)
+DEFAULT_LOOKUP_WORKERS = 8
+
+
+def lookup_workers(environ: Mapping[str, str]) -> int:
+    """The connections a Postgres base reads its chunked lookups on: ``PLX_DELTA_LOOKUP_
+    WORKERS`` (1 reads serially), else at most ``DEFAULT_LOOKUP_WORKERS`` and the cores
+    less two. A value that is not a whole number from 1 to 64 refuses the cycle."""
+    raw = environ.get(LOOKUP_WORKERS_ENV)
+    if raw is None or raw.strip() == "":
+        return max(1, min(DEFAULT_LOOKUP_WORKERS, (os.cpu_count() or 2) - 2))
+    raw = raw.strip()
+    if not raw.isdigit() or not 1 <= int(raw) <= 64:
+        raise ValueError(f"{LOOKUP_WORKERS_ENV}_invalid")
+    return int(raw)
 
 
 def served_store(state_dir: Path) -> Path:
@@ -496,7 +586,7 @@ class State:
         self.put("state_format", STATE_FORMAT)
 
     def add(self, source: str, keys: Iterable[Any],
-            marks: Mapping[Any, str] | None = None) -> int:
+            marks: Mapping[Any, str] | None = None, *, keep_place: bool = False) -> int:
         """Open ``keys`` (a record changed again is followed and projected again: its
         newest version); the number of records opened or reopened.
 
@@ -504,14 +594,20 @@ class State:
         was found at, its removal stretches...). A record already held under the same mark
         is not reopened: what its layer projected is what it still reads (a discovery
         scan that sees the same version or the same removal again, cycle after cycle,
-        changes nothing). A record added without a mark is always reopened."""
+        changes nothing). A record added without a mark is always reopened.
+
+        ``keep_place``: a record already held keeps its time (the earlier one), so asking
+        again every cycle never sends it behind the records opened since; the cycle cap
+        takes the records open longest (REPROJ-1115b: the reproject queue, asked again
+        each cycle, went to the back every time and never drained)."""
         now = _now()
         before = self.conn.total_changes
         marks = marks or {}
+        seen = "min(changed.seen_at, excluded.seen_at)" if keep_place else "excluded.seen_at"
         self.conn.executemany("INSERT INTO changed (source, key, seen_at, mark) "
                               "VALUES (?, ?, ?, ?) "
                               "ON CONFLICT (source, key) DO UPDATE SET closed = 0, "
-                              "seen_at = excluded.seen_at, mark = excluded.mark "
+                              f"seen_at = {seen}, mark = excluded.mark "
                               "WHERE excluded.mark IS NULL OR changed.mark IS NULL "
                               "OR changed.mark != excluded.mark",
                               [(source, json.dumps(k), now, marks.get(k)) for k in keys])
@@ -1511,6 +1607,7 @@ def mention_targets(mail_state: Path, base: Base, report: dict[str, Any], *,
     from ontology.project import MailCaptures, SharePointCaptures
 
     keys: set[tuple[str, str]] = set()
+    began = time.monotonic()
     opened = (MailCaptures(mail_state, internal_domains=domains) if family == "graph_mail"
               else SharePointCaptures(mail_state))
     with opened as source:
@@ -1535,10 +1632,23 @@ def mention_targets(mail_state: Path, base: Base, report: dict[str, Any], *,
                 keys.update(_group_keys(method, args)[0])
         finally:
             _WORKER_SOURCE.close()
+    read_at = time.monotonic()
     found, capped = base.holders(sorted(keys))
     report.setdefault("closure", {})[f"mentioned_objects_{family}"] = len(found)
     report["closure"]["capped_lookups"] = report["closure"].get("capped_lookups", 0) + capped
-    return set(base.handles_of(found).values())
+    handles = set(base.handles_of(found).values())
+    _mention_seconds(report, family, read_at - began, time.monotonic() - read_at)
+    return handles
+
+
+def _mention_seconds(report: dict[str, Any], family: str, documents: float,
+                     lookups: float) -> None:
+    """Where a cycle's mention reading goes, per family: reading the documents, and the
+    holder and handle lookups (``closure.seconds``, beside the closure's own steps)."""
+    took = report.setdefault("closure", {}).setdefault("seconds", {})
+    for step, value in ((f"mentions_{family}_documents", documents),
+                        (f"mentions_{family}_lookups", lookups)):
+        took[step] = round(took.get(step, 0.0) + value, 2)
 
 
 def store_mention_targets(family: str, live: Path, keys: Sequence[tuple[str, str]],
@@ -1549,6 +1659,7 @@ def store_mention_targets(family: str, live: Path, keys: Sequence[tuple[str, str
     from ontology import project
     from ontology.mentions import candidate_keys, document_mentions
 
+    began = time.monotonic()
     out = work / f"mentions-{family}.sqlite"
     store_subset(live, out, keys)
     found_keys: set[tuple[str, str]] = set()
@@ -1559,12 +1670,15 @@ def store_mention_targets(family: str, live: Path, keys: Sequence[tuple[str, str
         for document in documents():
             for mention in document_mentions(document):
                 found_keys.update(candidate_keys(mention))
+    read_at = time.monotonic()
     found, capped = base.holders(sorted(found_keys))
     counts = report.setdefault("closure", {})
     counts[f"mentioned_objects_{family}"] = len(found)
     counts["capped_lookups"] = counts.get("capped_lookups", 0) + capped
     out.unlink(missing_ok=True)
-    return set(base.handles_of(found).values())
+    handles = set(base.handles_of(found).values())
+    _mention_seconds(report, family, read_at - began, time.monotonic() - read_at)
+    return handles
 
 
 # --------------------------------------------------------------------------- subsets
@@ -1749,7 +1863,8 @@ def build_delta(state_dir: Path, mirror: Path, delta_dir: Path, *, tenant: str =
     if pg_base_enabled(environ):
         from operating.pg import config as pg_config
         pg_base = pg_config.dsn(environ)
-    base = Base(base_path or served_store(state_dir), postgres=pg_base)
+    base = Base(base_path or served_store(state_dir), postgres=pg_base,
+                workers=lookup_workers(environ))
     state = State(delta_dir / "state.sqlite")
     captures: Captures | None = None
     busy = contextlib.ExitStack()
@@ -1825,7 +1940,7 @@ def build_delta(state_dir: Path, mirror: Path, delta_dir: Path, *, tenant: str =
         else:
             added = discover(mirror, state_dir, base, state, plan, stores, exclusion,
                              unavailable, report)
-            reproject_requests(state, base, environ, report)
+            reproject_requests(state, base, environ, report, excluded)
             # held records come back from their queue a batch a cycle, never all at once
             taken = take_held(state, environ, report,
                               skip=("graph_mail",) if unavailable is not None else ())
@@ -2179,6 +2294,16 @@ def build_delta(state_dir: Path, mirror: Path, delta_dir: Path, *, tenant: str =
             report["layer_facts"] = keep_layer_facts(layer["store"],
                                                    workers=report.get("workers") or 1)
             t = lap("layer_facts", t)
+            if isinstance(report.get("postgres"), dict):
+                # once per cycle, after everything a reader waits on: the bare mentions of
+                # the records this cycle changed (SQL rechecks, changed mails read again,
+                # bounded); its seconds count in the apply cost (``ops_alarms``)
+                from operating.pg import config as pg_config
+                from operating.pg.ontology_delta import refresh_bare_cycle
+                report["bare_mentions"] = refresh_bare_cycle(
+                    pg_config.dsn(environ), report["postgres"],
+                    [item["store"] for item in layers])
+                t = lap("bare_mentions", t)
         return report
     finally:
         if budget_was is None:
@@ -2227,6 +2352,23 @@ STALE_READER_HOURS = 4.0
 # A reader whose last run is older than this is not following the layers: it holds none
 # (the count rule never waited for a stopped reader either: ``PG_KEPT_LAYERS`` cycles).
 READER_IDLE_HOURS = 24.0
+
+
+def exclusion_journal(state_dir: Path, environ: Mapping[str, str]
+                      ) -> dict[str, Any] | None:
+    """After each cycle or fold, when Postgres serves: the rows of mail a capture run
+    withheld after it was projected (its journalled handles) removed from Postgres
+    (``operating.pg.ontology_delta.purge_exclusion_journal``), whether or not the cycle
+    changed anything. None when Postgres is not served; ``{"error": ...}`` when the
+    journal or Postgres cannot be read (the caller fails the cycle loudly)."""
+    if not (environ.get("PLX_DELTA_PG") == "1" or pg_base_enabled(environ)):
+        return None
+    try:
+        from operating.pg import config as pg_config
+        from operating.pg.ontology_delta import purge_exclusion_journal
+        return purge_exclusion_journal(state_dir, pg_config.dsn(environ))
+    except Exception as exc:  # noqa: BLE001 - reported: the cycle line's error
+        return {"error": type(exc).__name__[:120]}
 
 
 def postgres_behind(state: "State", base: Base, environ: Mapping[str, str],
@@ -2839,6 +2981,34 @@ def _internal_domains(environ: Mapping[str, str]) -> Sequence[str]:
         return ()
 
 
+def _reinserted_bindings() -> dict[str, list[tuple[str, str]]]:
+    """Portal relation the ETL re-inserts (``ontology.project.ETL_REINSERTED``) -> the
+    (object type, binding id) of every binding over it; none when the schema does not
+    load (nothing is then owned beyond the store's own objects)."""
+    from ontology.project import ETL_REINSERTED
+    relations = ETL_REINSERTED.get("portal_api", {})
+    try:
+        from ontology.schema import load_schema
+        schema = load_schema()
+    except Exception:  # noqa: BLE001 - no schema: no copies owned
+        return {}
+    out: dict[str, list[tuple[str, str]]] = {}
+    for type_id, spec in schema.object_types.items():
+        for binding in spec.get("bindings") or ():
+            if binding.get("source") == "portal_api" and binding.get("relation") in relations \
+                    and binding.get("key") == ["id"]:
+                out.setdefault(binding["relation"], []).append((type_id, binding["id"]))
+    return out
+
+
+def _copy_object_id(type_id: str, binding_id: str, key_json: str) -> str:
+    """The object id a mirror record's key names under a binding keyed on ``id``."""
+    from ontology.project import object_id_of
+    key = json.loads(key_json)
+    return object_id_of(type_id, binding_id, {"id": key.get("id")} if isinstance(
+        key, Mapping) else {"id": None})
+
+
 def finish_store(store: Path, base: Base, changed: Mapping[str, Sequence[Any]]
                  ) -> dict[str, tuple[str, Any]]:
     """Mark the objects of the changed records as owned and give the delta store the served
@@ -2849,13 +3019,23 @@ def finish_store(store: Path, base: Base, changed: Mapping[str, Sequence[Any]]
         conn.execute("BEGIN")
         conn.execute("CREATE TABLE delta_owned (object_id TEXT PRIMARY KEY)")
         owned: dict[str, tuple[str, Any]] = {}
+        copies = _reinserted_bindings()
         for source in SOURCES:
             for key in changed.get(source, ()):
                 prefix = handle_prefix(source, key)
-                for row in conn.execute("SELECT DISTINCT object_id FROM object_versions WHERE "
-                                        "l1_handle >= ? AND l1_handle < ?",
-                                        (prefix, prefix + "\U0010ffff")).fetchall():
+                found = conn.execute("SELECT DISTINCT object_id FROM object_versions WHERE "
+                                     "l1_handle >= ? AND l1_handle < ?",
+                                     (prefix, prefix + "\U0010ffff")).fetchall()
+                for row in found:
                     owned[row[0]] = (source, key)
+                if not found and source == "portal_api" and key[0] in copies:
+                    # A changed record of an ETL re-inserted relation the projection
+                    # dropped as a copy of a row it keeps (``project._collapse_reinserted``):
+                    # its object is owned with no rows, so the served one goes, as a full
+                    # build would drop it (CC-NY-2: a removed copy beside its present one).
+                    for type_id, binding_id in copies[key[0]]:
+                        owned.setdefault(_copy_object_id(type_id, binding_id, key[1]),
+                                         (source, key))
         conn.executemany("INSERT OR IGNORE INTO delta_owned VALUES (?)",
                          [(oid,) for oid in sorted(owned)])
         mine = {r[0]: r[1] for r in conn.execute("SELECT key, value FROM store_meta")}
@@ -2927,13 +3107,24 @@ def _locked(path: Path, *, wait: bool = True) -> Iterator[bool]:
 
 
 def reproject_requests(state: State, base: Base, environ: Mapping[str, str],
-                       report: dict[str, Any]) -> int:
+                       report: dict[str, Any],
+                       excluded: Callable[[str], bool] | None = None) -> int:
     """Open again the records of the objects a schema migration queued in the Postgres
     ontology (``ontology.reproject``: changed since its snapshot, or held out of a layer
-    of the schema it moved from): this cycle projects them under its schema, and the
+    of the schema it moved from, or a version its text index has no fields of yet,
+    ``text_index.reprojected``): this cycle projects them under its schema, and the
     queue entry goes when a layer of the served schema replaces the object
     (``operating.pg.ontology_delta``). Nothing without Postgres; a failure to read the
-    queue is reported and changes nothing."""
+    queue is reported and changes nothing.
+
+    An object a delta cycle projected is found in the state (``owned``). Every other one
+    (projected only by the generation build or a migration: REPROJ-1115, 181,541 of
+    188,603 queued on 11-15) is found by its versions' L1 handles in Postgres
+    (:func:`record_of_handle`). An object whose handles name no record the delta reads (a
+    person of the people directory, an object gone) stays queued and is counted
+    (``no_record``). A mail record is opened only when ``excluded`` says its mailbox is
+    not left out (the people exclusion, decided as ``discover`` decides changed mail):
+    with no guard every mail record stays queued (fail closed)."""
     if not (environ.get("PLX_DELTA_PG") == "1" or base.postgres):
         return 0
     try:
@@ -2944,20 +3135,45 @@ def reproject_requests(state: State, base: Base, environ: Mapping[str, str],
                               ).fetchone()[0]:
                 return 0
             ids = [r[0] for r in pg.execute("SELECT object_id FROM ontology.reproject")]
+            records = state.owned_records(ids)
+            unknown = sorted(set(ids) - set(records))
+            handles: dict[str, set[str]] = {}
+            for part in _chunks(unknown, 10_000):
+                for oid, handle in pg.execute(
+                        "SELECT object_id, l1_handle FROM ontology.object_versions WHERE "
+                        "object_id = ANY(%s)", (list(part),)):
+                    handles.setdefault(oid, set()).add(handle)
     except Exception as exc:  # noqa: BLE001 - reported; the queue stays for the next cycle
         report["reproject"] = {"error": type(exc).__name__}
         return 0
     if not ids:
         return 0
-    records = state.owned_records(ids)
+    wanted: set[tuple[str, Any]] = {(source, key) for source, key in records.values()}
+    resolved = no_record = 0
+    for oid in unknown:
+        found = {hit for hit in map(record_of_handle, sorted(handles.get(oid, ())))
+                 if hit is not None and hit[0] in SOURCES}
+        if found:
+            resolved += 1
+            wanted.update((source, _tuple(key)) for source, key in found)
+        else:
+            no_record += 1
     by_source: dict[str, set[Any]] = {}
-    for source, key in records.values():
+    withheld = 0
+    for source, key in wanted:
+        if source == "graph_mail" and (excluded is None or excluded(key[0])):
+            withheld += 1      # left out, undecided or no guard: stays queued, unread
+            continue
         by_source.setdefault(source, set()).add(key)
-    for source, keys in by_source.items():
-        state.add(source, sorted(keys, key=_order))
-    report["reproject"] = {"queued": len(ids), "records": len(records),
-                           "unknown": len(ids) - len(records)}
-    return len(records)
+    for source, keys in by_source.items():   # asked again each cycle: keeps its place
+        state.add(source, sorted(keys, key=_order), keep_place=True)
+    opened = sum(len(keys) for keys in by_source.values())
+    report["reproject"] = {"queued": len(ids), "owned": len(records),
+                           "resolved": resolved, "no_record": no_record,
+                           "unknown": no_record, "records": opened,
+                           "mail_withheld": withheld,
+                           "by_source": {s: len(k) for s, k in sorted(by_source.items())}}
+    return opened
 
 
 def publish_pointer(delta_dir: Path, layers: Sequence[Mapping[str, Any]], base: Base,
@@ -3415,6 +3631,21 @@ def _temp_beside(delta_dir: Path, environ: Any) -> Path:
     return Path(environ.get("SQLITE_TMPDIR") or environ["TMPDIR"])
 
 
+def _window_skip(job: str, state_dir, unguard: bool = False) -> dict | None:
+    """The window lock's skip line (ontology/window_lock.py), or None to run; a broken
+    window lock never stops a cycle."""
+    try:
+        from ontology import window_lock
+        if unguard:
+            window_lock.unguard(job)
+            return None
+        return window_lock.skip_report(job, state_dir=state_dir)
+    except Exception as exc:  # noqa: BLE001 - logged, the cycle runs
+        print(f"{job}: window check failed, running anyway: {type(exc).__name__}: {exc}",
+              file=sys.stderr, flush=True)
+        return None
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="python3 -m ontology.delta")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -3445,7 +3676,16 @@ def main(argv: Sequence[str] | None = None) -> int:
     # stopped (a unit's timeout): unwind, so what the cycle kept is committed and its
     # work directory unlocked for the next cycle to take in
     signal.signal(signal.SIGTERM, _terminated)
+    job = "delta-compact" if folding else "delta"
     while True:
+        # a migration or maintenance window holding this job: no cycle, the loop ends
+        held = _window_skip(job, state_dir)
+        if held:
+            held["command"] = args.command
+            with open(delta_dir / "cycles.jsonl", "a", encoding="utf-8") as log:
+                log.write(json.dumps(held, sort_keys=True, default=str) + "\n")
+            print(json.dumps(held, sort_keys=True, default=str), flush=True)
+            return 0
         try:
             # one cycle or one fold at a time, on one lock: a fold waits for a running
             # cycle; a cycle skips while a fold (or another cycle) runs
@@ -3462,11 +3702,18 @@ def main(argv: Sequence[str] | None = None) -> int:
                         workers=args.workers, compact_only=folding)
                     line = {k: report.get(k) for k in (
                         "started_at", "layer", "changed", "new_changes", "records", "owned",
-                        "projected", "seconds", "mail_skipped", "closure", "postgres",
+                        "projected", "seconds", "mail_skipped", "closure", "postgres", "bare_mentions",
                         "documents", "swept", "status", "resumed", "resumed_since",
                         "preflight", "followed", "deferred", "held_queue", "released",
-                        "workers_memory_bound", "pruned")}
+                        "workers_memory_bound", "pruned", "reproject")}
                     line["command"] = args.command
+                    purged = exclusion_journal(state_dir, os.environ)
+                    if purged is not None:
+                        line["exclusion_purge"] = purged
+                        if "error" in purged:   # loud, and the unit fails: seen
+                            line["error"] = "exclusion_purge_failed: " + purged["error"]
+                            print("PEOPLE EXCLUSION JOURNAL PURGE FAILED: "
+                                  + purged["error"], file=sys.stderr, flush=True)
                     if report.get("status") == "preflight_refused":   # the unit fails: seen
                         line["error"] = "preflight_refused: " + json.dumps(
                             report["preflight"]["short"], sort_keys=True)
@@ -3481,6 +3728,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(json.dumps(line, sort_keys=True, default=str), flush=True)
         if getattr(args, "loop", 0) <= 0:
             return 0 if "error" not in line else 1
+        _window_skip(job, None, unguard=True)   # between cycles a window need not wait
         time.sleep(args.loop)
 
 

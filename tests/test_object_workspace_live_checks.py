@@ -141,6 +141,7 @@ class ObjectViewLiveCheckTest(unittest.TestCase):
 
     def test_spec_runs_end_to_end_and_records_panel_denominators_only(self):
         from verify import live_verify as lv
+        from verify import live_verify_policy
         from tests import test_live_wiring as wiring
         from scripts import object_workspace_probe as probe
 
@@ -252,7 +253,7 @@ class ObjectViewLiveCheckTest(unittest.TestCase):
             t[key] for t in document["find_by_type"].values()) for key in probe.FIND_COUNTS})
         recorded = lv._recorded(spec_doc, document)
         kept = lv._cap({"fields": recorded}, spec_doc)["fields"]
-        self.assertGreater(len(json.dumps(recorded)), lv.MAX_DETAIL_CHARS)
+        self.assertGreater(len(json.dumps(recorded)), live_verify_policy.MAX_DETAIL_CHARS)
         expect = spec_doc["expect"]
         for path in expect["json_fields"]:
             self.assertTrue(lv.resolve(kept, path), path)

@@ -85,7 +85,7 @@ export function WeeklyReview() {
       {error ? (
         <LoadProblem message={plainError(error)} busy={noticeKind(error) === "busy"} onRetry={retry} />
       ) : !brief ? (
-        <Pending label="Gathering the week" />
+        <Pending label="Reading the week's meetings" />
       ) : (
         <>
           {figures && <FigureStrip section={figures} />}

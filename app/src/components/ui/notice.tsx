@@ -1,6 +1,6 @@
 import * as React from "react";
 import { cn } from "@/lib/cn";
-import { FINAL_ERRORS } from "@/lib/errors";
+import { ACCESS_NOTES, FINAL_ERRORS } from "@/lib/errors";
 import { staleLine } from "@/lib/home";
 
 /** "Reference 8e081121" out of a message that carries "(incident 8e081121)" or "incident 8e081121". */
@@ -16,7 +16,7 @@ export function ErrorNotice({
   message,
   onRetry,
   className,
-  tone = "error",
+  tone: asked = "error",
 }: {
   message: string;
   onRetry?: () => void;
@@ -27,6 +27,8 @@ export function ErrorNotice({
   const { text, reference } = splitReference(message);
   // a missing record or a refused access is the same on a second try: no "Try again" for those
   const retry = FINAL_ERRORS.has(text) ? undefined : onRetry;
+  // viewing as someone, a page outside My work, alerts and drafts says so as a note, not an error
+  const tone = ACCESS_NOTES.has(text) ? "info" : asked;
   return (
     <div
       role={tone === "error" ? "alert" : "status"}

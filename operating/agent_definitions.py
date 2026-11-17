@@ -288,7 +288,7 @@ class AgentRun:
 @lru_cache(maxsize=1)
 def plan_tools() -> frozenset[str]:
     """Every tool the shipped plx.investigate plans call."""
-    from .ontology_tools_investigate import PLAN_DIR
+    from .ontology_tools_investigate_plans import PLAN_DIR
 
     tools: set[str] = set()
     for path in sorted(PLAN_DIR.glob("*.json")):

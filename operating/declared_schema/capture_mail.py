@@ -126,6 +126,33 @@ _FOLDER_LISTING_DDL = """CREATE TABLE IF NOT EXISTS mailbox_folders (
     total INTEGER,
     listed_at TEXT NOT NULL,
     PRIMARY KEY (mailbox_id, folder_id))"""
+# Graph's own count of each listed folder (``mailbox_folders.total``, its
+# ``totalItemCount``) against the current messages the store holds of it, and the non-delta
+# re-list of a folder short by more than the bound (``MailCapture._coverage``, AUD-09):
+# per folder the counts compared, when, the outcome (``status``: in_progress, whole,
+# short, relisting, explained, unexplained) and its ``reason``; ``detail`` (JSON, counts
+# only) says what the last re-list found; ``short_since`` when it was first found short
+# (kept while it waits or is re-listed); ``relist_*`` is a re-list's own resumable cursor
+# (never the folder's delta cursors). Counts and opaque ids only, never mail content or an
+# address. Made with the first comparison kept (not at open).
+_FOLDER_COVERAGE_DDL = """CREATE TABLE IF NOT EXISTS folder_coverage (
+    mailbox_id TEXT NOT NULL,
+    folder_id TEXT NOT NULL,
+    total INTEGER,
+    listed_at TEXT,
+    captured INTEGER,
+    short INTEGER,
+    checked_at TEXT,
+    status TEXT NOT NULL,
+    reason TEXT,
+    detail TEXT,
+    relist_next_url TEXT,
+    relist_before TEXT,
+    relist_started_at TEXT,
+    relist_counts TEXT,
+    last_relist_at TEXT,
+    short_since TEXT,
+    PRIMARY KEY (mailbox_id, folder_id))"""
 # Messages a capture round listed but the people guard could not decide (no complete groups
 # listing, or a list whose members cannot be read): their ids only, re-read by a later
 # round once the guard can decide them (``MailCapture._retry_undecided``). Nothing else

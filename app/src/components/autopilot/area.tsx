@@ -1,18 +1,23 @@
 "use client";
 
 import Link from "next/link";
+import { useSearchParams } from "next/navigation";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { BuilderView, SchedulesView } from "@/components/autopilot/builder";
+import { DraftUse, draftUseOf } from "@/components/autopilot/draft-use";
 import { OptInPanel } from "@/components/autopilot/opt-in";
 import { WorkflowsView } from "@/components/autopilot/workflows";
+import { itemDocTypes, itemRecords, Related } from "@/components/related";
 import { Button } from "@/components/ui/button";
 import { EmptyState } from "@/components/ui/empty-state";
+import { ShowMore } from "@/components/ui/show-more";
 import { ErrorNotice, LoadProblem } from "@/components/ui/notice";
 import { Pending } from "@/components/ui/skeleton";
-import { StatusBadge, StatusWord } from "@/components/ui/status-badge";
+import { StatusWord } from "@/components/ui/status-badge";
 import { ackAutopilotNotice, decideAutopilotItem, getAutopilotAudit, getAutopilotCatalog, setAutopilotGlobal, undoAutopilotAction } from "@/lib/api";
 import {
   ITEM_STATE,
+  auditWhat,
   NO_FILTERS,
   type Filters,
   type Split,
@@ -31,7 +36,7 @@ import {
 import { cn } from "@/lib/cn";
 import { noticeKind, plainError } from "@/lib/errors";
 import { formatDateTime, objectHref, plural, sourceHref } from "@/lib/format";
-import type { AutopilotArea as Area, AutopilotAudit, AutopilotAuditRow, AutopilotCatalog, AutopilotItem } from "@/lib/types";
+import type { AutopilotArea as Area, AutopilotAudit, AutopilotCatalog, AutopilotItem } from "@/lib/types";
 
 // The autopilot studio: the review queue (prepared items with their evidence and drafted
 // action: accept, edit, reject, snooze, one by one or in bulk), the workflows with their
@@ -112,7 +117,7 @@ export function snoozeChoices(now: Date = new Date()): [string, string][] {
 }
 
 function happenedLine(h: Record<string, unknown>): string {
-  const parts = [h.sender, h.subject].filter((x) => typeof x === "string" && x) as string[];
+  const parts = [h.sender, h.subject || h.message].filter((x) => typeof x === "string" && x) as string[];
   return parts.join(" · ");
 }
 
@@ -139,6 +144,7 @@ function Item({
   const objectId = typeof happened.object_id === "string" ? happened.object_id : null;
   const live = itemLive(area, item);
   const [editing, setEditing] = useState(false);
+  const [allCites, setAllCites] = useState(false);
   const [text, setText] = useState(item.decision?.text ?? draft?.body ?? "");
   // the server's confirm token: set when an accept would perform the item live
   const [confirmLive, setConfirmLive] = useState<string | null>(null);
@@ -255,16 +261,17 @@ function Item({
       {(item.citations ?? []).length > 0 ? (
         <p className="flex flex-wrap gap-x-3 gap-y-1 text-[12px]" aria-label="Evidence">
           <span className="text-muted">Evidence</span>
-          {(item.citations ?? []).slice(0, 8).map((h, n) => (
+          {(item.citations ?? []).slice(0, allCites ? undefined : 8).map((h, n) => (
             <Link key={h} href={sourceHref(h)} className="font-medium hover:underline" data-tap="inline">
               Source {n + 1}
             </Link>
           ))}
-          {(item.citations ?? []).length > 8 && <span className="text-muted">and {(item.citations ?? []).length - 8} more</span>}
+          <ShowMore hidden={(item.citations ?? []).length - 8} open={allCites} onToggle={() => setAllCites((v) => !v)} />
         </p>
       ) : (
         <p className="text-[12px] text-muted">No evidence cited.</p>
       )}
+      <DraftUse use={draftUseOf(item)} />
       {item.decision && (
         <p className="text-[12px] text-muted" data-testid="autopilot-decision">
           {ITEM_STATE[item.state]} {formatDateTime(item.decision.at)}
@@ -273,6 +280,15 @@ function Item({
           {outcome && outcomeWords(outcome, item.decision.reasons ?? [], systemLabel(item.system), item.decision.steps ?? [])}
         </p>
       )}
+      <Related
+        records={itemRecords(happened)}
+        docTypes={itemDocTypes(item.system, happened)}
+        itemId={item.item_id}
+        workflow={item.workflow}
+        used={draftUseOf(item)}
+        dense
+        className="border-t border-border pt-3"
+      />
       {error && <ErrorNotice message={error} />}
       {item.mine && open && (
         <div className="space-y-2">
@@ -489,6 +505,19 @@ function QueueView({ area, filters, split, decided, onDecided }: { area: Area; f
 
 /** Owner only: each workflow that passed its check for a role, told once until the owner
  * acknowledges it. A pass turns nothing on: each person switches it on for themselves. */
+/** What became of the prepared items this reader may see (``operating.autopilot_outcomes``):
+ * counts sum to the items; shares are over the decided ones. */
+export function OutcomesLine({ area }: { area: Area }) {
+  const o = area.outcomes;
+  if (!o || !o.items) return null;
+  const pct = (k: string) => (o.shares?.[k] != null ? ` (${o.shares[k]}%)` : "");
+  return (
+    <p className="text-[13px] text-muted" data-testid="autopilot-outcomes">
+      Of {plural(o.items, "prepared item")}: {o.accepted} accepted{pct("accepted")}, {o.edited} edited{pct("edited")}, {o.rejected} rejected{pct("rejected")}, {o.ignored} ignored{pct("ignored")}, {o.waiting} waiting.
+    </p>
+  );
+}
+
 function GateNotices({ area, onArea }: { area: Area; onArea: (a: Area) => void }) {
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
@@ -498,29 +527,53 @@ function GateNotices({ area, onArea }: { area: Area; onArea: (a: Area) => void }
     const row = (area.workflows ?? []).find((w) => w.role === role);
     return row ? rowRole(area, row) : role.startsWith("person:") ? "one person" : roleLabel(role);
   };
-  const ack = async (role: string, workflow: string) => {
+  const ack = async (list: { role: string; workflow: string }[]) => {
     setError(null);
-    setBusy(`${role}|${workflow}`);
+    setBusy(list.length === 1 ? `${list[0].role}|${list[0].workflow}` : "all");
     try {
-      onArea(await ackAutopilotNotice(role, workflow));
+      // one acknowledgement per workflow and role; the area as the last one answered
+      let last: Area | null = null;
+      for (const n of list) last = await ackAutopilotNotice(n.role, n.workflow);
+      if (last) onArea(last);
     } catch (e) {
       setError(plainError(e));
     } finally {
       setBusy(null);
     }
   };
+  const several = notices.length > 1;
   return (
     <section className="border-l-2 border-accent pl-3 text-[13px]" aria-label="Passed their check" data-testid="autopilot-gate-notices">
-      {notices.map((n) => (
-        <div key={`${n.role}|${n.workflow}`} className="flex flex-wrap items-center gap-x-3 gap-y-1 py-1">
-          <span>
-            {workflowLabel(n.workflow)} passed its check for {roleName(n.role)} on {formatDateTime(n.passed_at)}. It runs for nobody until each person turns it on for themselves.
-          </span>
-          <Button size="sm" variant="outline" disabled={busy !== null} onClick={() => void ack(n.role, n.workflow)}>
-            Got it
-          </Button>
-        </div>
-      ))}
+      <div className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1">
+        <p>
+          {several ? `${notices.length} workflows passed their check.` : `${workflowLabel(notices[0].workflow)} passed its check for ${roleName(notices[0].role)} on ${formatDateTime(notices[0].passed_at)}.`}{" "}
+          <span className="text-muted">{several ? "They run for nobody until each person turns them on for themselves." : "It runs for nobody until each person turns it on for themselves."}</span>
+        </p>
+        <Button size="sm" variant="outline" disabled={busy !== null} onClick={() => void ack(notices)}>
+          {several ? "Got it for all" : "Got it"}
+        </Button>
+      </div>
+      {several && (
+        <ul className="mt-1.5 divide-y divide-border">
+          {notices.map((n) => (
+            <li key={`${n.role}|${n.workflow}`} className="flex flex-wrap items-baseline gap-x-3 py-1">
+              <span className="min-w-0 flex-1">
+                {workflowLabel(n.workflow)} <span className="text-muted">for</span> {roleName(n.role)}
+              </span>
+              <span className="text-[12px] text-muted tabular-nums">{formatDateTime(n.passed_at)}</span>
+              <button
+                type="button"
+                disabled={busy !== null}
+                onClick={() => void ack([n])}
+                aria-label={`Got it: ${workflowLabel(n.workflow)} for ${roleName(n.role)}`}
+                className="text-[12px] text-muted underline-offset-2 hover:text-fg hover:underline disabled:opacity-50 cursor-pointer"
+              >
+                Got it
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
       {error && <ErrorNotice message={error} />}
     </section>
   );
@@ -614,24 +667,13 @@ function AuditView({ area, filters }: { area: Area; filters: Filters }) {
   );
 }
 
-function auditWhat(r: AutopilotAuditRow): string {
-  if (r.event === "switch") return "Switch changed";
-  if (r.event === "gate_passed") return "Gate passed";
-  if (r.event === "gate_lost") return "Gate lost: back to dry run";
-  if (r.event === "owner_notified") return "Owner told of the pass";
-  if (r.event === "opt_in") return r.status === "on" ? "Turned on by the person" : "Turned off by the person";
-  if (r.event === "opt_in_paused") return r.status === "paused" ? "Paused everything" : "Resumed";
-  if (r.event === "opt_in_suspended") return "Turned off by itself: under the bar";
-  if (r.event === "reconciled") return `Checked by a person: ${r.status}`;
-  const s = (r.status ?? "").replace(/_/g, " ");
-  if (r.mode === "live") return r.event === "attempt" ? "Live attempt" : `Live: ${s}`;
-  return s ? s.charAt(0).toUpperCase() + s.slice(1) : r.event;
-}
 
 export function AutopilotView({ area: initial, onReload }: { area: Area; onReload: () => void }) {
   const [area, setArea] = useState(initial);
   useEffect(() => setArea(initial), [initial]);
-  const [tab, setTab] = useState<Tab>("queue");
+  // ?tab=audit (the Related panel's "Full audit log") opens on that tab when the reader has it
+  const asked = useSearchParams()?.get("tab");
+  const [tab, setTab] = useState<Tab>(asked === "audit" && initial.owner ? "audit" : asked === "workflows" ? "workflows" : "queue");
   const [filters, setFilters] = useState<Filters>(NO_FILTERS);
   const [split, setSplit] = useState<Split>("");
   const [decided, setDecided] = useState<Set<string>>(new Set());
@@ -738,6 +780,7 @@ export function AutopilotView({ area: initial, onReload }: { area: Area; onReloa
         )}
       </div>
       <GateNotices area={area} onArea={(a) => setArea(a)} />
+      <OutcomesLine area={area} />
       <OptInPanel area={area} onArea={(a) => setArea(a)} />
       <div className="flex flex-wrap items-center gap-x-6 gap-y-2">
         <nav className="flex h-9 max-sm:h-10 max-w-full items-stretch gap-3 sm:gap-4 overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden" role="tablist" aria-label="Autopilot">

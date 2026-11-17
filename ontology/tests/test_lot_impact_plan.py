@@ -28,7 +28,9 @@ from unittest import mock
 from ontology.json_contract import validate
 from operating import lot_impact as li
 from operating import ontology_tools as ot
+from operating import ontology_tools_results
 from operating import ontology_tools_investigate as oi
+from operating import ontology_tools_investigate_host
 from operating import ontology_tools_process as op
 from operating import ontology_tools_traverse as tt
 from operating.tests.test_impact_chain import rows_of
@@ -293,11 +295,11 @@ def table_of(store, policy=None, held=True, schema=None):
     schema = schema or tp.SCHEMA
     base = ot.OntologyTools(ot.StoreReader(store.conn), policy, schema=schema,
                             contracts=CONTRACTS, clock=lambda: tp.NOW)
-    ot.register(table, base)
+    ontology_tools_results.register(table, base)
     tt.register(table, tt.TraverseTools(base))
     op.register(table, op.ProcessTools(base, tp.GRAPHS))
     oi.register(table, oi.InvestigateTools(
-        table, schema=schema, rows=rows_of(store, policy), scope=oi.read_scope(base),
+        table, schema=schema, rows=rows_of(store, policy), scope=ontology_tools_investigate_host.read_scope(base),
         held_markings=policy.held_markings if held else None))
     return table
 
@@ -314,22 +316,29 @@ class Asker:
 
     def investigate(self, store, root, actor=STAFF):
         """Every page of the answer (a paged answer repeats its shared entries); the gaps
-        are listed on the first page only (answer_page.gaps_on_page), so they are its."""
+        and the trace are listed on the first page only (answer_page.gaps_on_page), so
+        they are its. Detail pages (AUD-11: the chain, values and conflicts the first page
+        had no room for, after the answer's last page) hold no entries (``returned`` 0):
+        ``answer_pages`` counts the pages with entries, ``stated_pages`` what the first
+        page said the answer has."""
         arguments = {"family": "F17", "root": root}
         answer: dict = {}
-        self.pages = 0
-        gaps = None
+        self.pages = self.answer_pages = 0
+        first = None
         while True:
             self.pages += 1
             out = self.ask(store, arguments, actor)
             self.assertNotIn("error", out, json.dumps(out)[:2000])
-            if gaps is None:
-                gaps = out["gaps"]
+            if first is None:
+                first = out
+                self.stated_pages = (out.get("answer_page") or {}).get("pages", 1)
+            if out["answer"]:
+                self.answer_pages += 1
             for e in out["answer"]:
                 self.assertEqual(answer.setdefault(e["name"], e), e)
             cursor = out["completeness"].get("next_cursor")
             if not cursor:
-                return dict(out, gaps=gaps), answer
+                return dict(out, **{k: first[k] for k in ("gaps", "trace") if k in first}), answer
             arguments = {**arguments, "cursor": cursor}
 
     @staticmethod
@@ -505,7 +514,9 @@ class LotImpactPlanTests(Asker, unittest.TestCase):
                               {(g["reason"], g["subject"]) for g in out["gaps"]})
                 self.assertEqual(len(unstated), n - 50)
                 self.assertTrue(any("cut" in st for st in answer["lot_impact"]["steps"]))
-            self.assertLessEqual(self.pages, n // 3 + 2, n)   # paging ends, no wall clock
+            # paging ends where the first page said, no wall clock
+            self.assertEqual(self.pages, self.stated_pages, n)
+            self.assertLessEqual(self.answer_pages, n // 3 + 2, n)
 
     def test_engine_arguments_fail_closed(self):
         plan = json.loads(PLAN.read_text("utf-8"))
@@ -555,7 +566,7 @@ class BatchRecallTests(Asker, unittest.TestCase):
             gaps = {(g["reason"], g["subject"]) for g in out["gaps"]}
             missing = [g for g in out["gaps"] if g["reason"] == "shipment_not_found"]
             self.assertEqual(len(missing), 1, out["gaps"])
-            self.assertIn(f"so-ba-1", missing[0]["subject"])
+            self.assertIn("so-ba-1", missing[0]["subject"])
             self.assertNotIn("so-ba-0", missing[0]["subject"])
             self.assertEqual(missing[0]["state"], "unknown")   # never proof of no shipment
             self.assertIn(("touched_order_lines_not_recorded",

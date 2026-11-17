@@ -15,7 +15,6 @@ import json
 import os
 from pathlib import Path
 import sqlite3
-import tempfile
 import unittest
 
 from integrations.live_source_guard import q
@@ -28,7 +27,7 @@ from ontology import schema as schema_loader
 from ontology.json_contract import validate
 from ontology.project import (CAPTURE_SOURCES, SharePointCaptures, build_store,
                               capture_source)
-from ontology.tests.test_mail_documents import StaticPortal, po
+from ontology.tests.test_mail_documents import StaticPortal, identified_from_text, po
 from operating import ontology_tools as ot
 from operating import ontology_tools_evidence as oe
 from operating import ontology_tools_traverse as tt
@@ -111,10 +110,13 @@ class SharePointDocumentsTests(unittest.TestCase):
             self.assertTrue(row["l1_handle"].startswith(f"sharepoint://{q(DRIVE)}/"))
             self.assertIsNotNone(self.store.resolve(row["l1_handle"], CAPTURE,
                                                     capture_audience()))
-        # The files binding is captured; list items are not (no list-item capture here).
-        self.assertEqual([g["where"] for g in self.report.get("gaps", [])
-                          if g["code"] == "source_not_captured" and "sharepoint" in g["where"]],
-                         ["gen.sharepoint.list_items"])
+        # The files binding is captured; list items are not (no list-item capture here),
+        # under any of the types that take them (sharepoint_lists.json, CT-D-08).
+        self.assertEqual(sorted(g["where"] for g in self.report.get("gaps", [])
+                                if g["code"] == "source_not_captured"
+                                and "sharepoint" in g["where"]),
+                         ["gen.sharepoint.list_items", "sharepoint.expense_receipts",
+                          "sharepoint.vendor_invoices"])
 
     def test_mentions_are_lead_links_written_in_the_same_generation(self):
         step = self.report["post_project"]["mentions"]
@@ -200,7 +202,7 @@ class SharePointDocumentsTests(unittest.TestCase):
             if spec["availability"]["state"] == "not_served" or tid in (
                     "Email", "Attachment", "SharePointFile", "ContainerMember"):
                 continue
-            if any(p["value_type"] == "identifier" for p in spec["properties"]):
+            if identified_from_text(spec):
                 self.assertIn(("SharePointFile", tid), declared, tid)
         link = self.compiled.link_types[LINK]
         self.assertEqual((link["reverse_name"], link["bindings"][0]["from_binding"]),

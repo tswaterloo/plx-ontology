@@ -125,6 +125,9 @@ class _Ids:
     labels: list[str] = field(default_factory=list)
     names: list[str] = field(default_factory=list)
     cross: list[tuple[str, str]] = field(default_factory=list)
+    # ids of the document's own stored mention-link targets (``mentioned``): kept in the
+    # chunk's linked ids only, never printed in its header
+    mentioned: list[str] = field(default_factory=list)
 
     def add(self, kind: str, value: str) -> None:
         key = f"{kind}:{value}"
@@ -139,6 +142,7 @@ class _Ids:
             if key not in keys and hd.label_allowed(value, body, False):
                 keys.append(key)
                 labels.append(hd.id_label(kind, value))
+        keys.extend(k for k in self.mentioned if k not in keys)
         return keys, labels, list(self.names)
 
 
@@ -458,7 +462,7 @@ class ProjectionChunker:
         return None
 
     def _ids_and_names(self, ctx: Mapping[str, Any], doc: _Doc, oids: Sequence[str],
-                       text: str) -> "_Ids":
+                       text: str, whole: str | None = None) -> "_Ids":
         """The ids and names a chunk of this document may state (review 2026-10-29):
 
         * its own objects' identifiers (same unit) at markings the chunk carries;
@@ -468,7 +472,12 @@ class ProjectionChunker:
           markings, are all within the chunk's;
         * a linked object in ANOTHER unit: never its name or label, and its ids only where
           the chunk's own text names them (``_Ids.for_body``, per chunk), so a reader of
-          this unit learns nothing it could not read in the text itself.
+          this unit learns nothing it could not read in the text itself;
+        * a stored mention link's target (a lead included; the document's own text named
+          it, quoted text and other parts too): each identifier of the target that
+          ``whole`` (the document's whole text, else ``text``) names, at markings within
+          the chunk's, joins the chunk's linked ids (not its header), so every chunk of a
+          mail reaches the order or invoice another part of the message cites.
         """
         out = _Ids()
         chunk_marks = set(doc.markings)
@@ -484,6 +493,17 @@ class ProjectionChunker:
         for mention in ids.find_identifiers(text):
             if mention.normalized and mention.kind not in hd.TECHNICAL:
                 out.add(mention.kind, mention.normalized)
+        grounds = text if whole is None else whole
+        for oid in oids:
+            for row in ctx["links"].get(oid, ()):
+                if row["binding_kind"] == "mention":
+                    version = ctx["target_marks"].get(row["to_object"])
+                    if version is not None and within(*version):
+                        for kind, value, marks in ctx["idents"].get(row["to_object"], ()):
+                            if within(marks) and hd.label_allowed(value, grounds, False):
+                                key = f"{kind}:{value}"
+                                if key not in out.mentioned:
+                                    out.mentioned.append(key)
         for oid in oids:
             for row in ctx["links"].get(oid, ()):
                 if row["link_type"] in _PARENT:
@@ -586,7 +606,7 @@ class ProjectionChunker:
         subject = value("subject")
         date = value("sent_at") or value("received_at")
         own, forwarded = mail_own_text(full)
-        named = self._ids_and_names(ctx, doc, doc.objects, own)
+        named = self._ids_and_names(ctx, doc, doc.objects, own, full)
         about = (f"forwarded message in thread '{hd.one_line(subject or '')}'" if forwarded
                  else f"message from {role} in thread '{hd.one_line(subject or '(no subject)')}'")
         citation = doc.fields[0].citation

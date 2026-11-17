@@ -13,6 +13,7 @@ import re
 from typing import Any, Mapping, Optional
 
 from . import models as m
+from .errors import NOT_FOUND_CODES, RecordNotFound, RecordReadFailed
 from . import presentation
 
 MAX_KINDS = 12        # kinds of link read per record
@@ -74,10 +75,11 @@ def explore(view: Any, oid: str, *, open_url) -> m.Explore:
     """``oid``'s neighbours as ``view``'s reader reads them. KeyError when the record is
     not one they may read (the same as not found)."""
     card = view._call("plx.object", {"object_id": oid, "response_format": "detailed"})
-    if (card.get("error") or {}).get("code") in ("object_not_found", "not_found"):
-        raise KeyError("object_not_found")
+    code = (card.get("error") or {}).get("code")
+    if code in NOT_FOUND_CODES or code == "invalid_input":
+        raise RecordNotFound()   # absent and withheld read the same
     if card.get("error"):
-        raise KeyError("object_not_found")   # a failed read says nothing about the record
+        raise RecordReadFailed(str(code))   # the server's failure, not a missing record
     obj = card.get("object") or {}
     kind = str(obj.get("object_type") or oid.split(":", 1)[0])
     label = presentation.record_label(_plain(obj.get("display")), kind, oid)

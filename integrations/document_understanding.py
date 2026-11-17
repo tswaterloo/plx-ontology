@@ -42,6 +42,8 @@ from email.parser import BytesParser
 from email.utils import parsedate_to_datetime
 from html.parser import HTMLParser
 from hashlib import sha256
+import bisect
+import html
 import io
 from itertools import islice
 import json
@@ -195,8 +197,98 @@ class _HTMLText(HTMLParser):
         self._skip = 0
         self._after_end = False   # an end tag, with no text since
         self._sibling = False     # a start tag right after an end tag, with no text since
+        # a hidden subtree: [its tag, the tags open inside it, outermost first], kept
+        # with the implied ends HTML gives them, so the hidden scope ends exactly where
+        # its element does; ``_open``: the shown elements open around it (its parent's
+        # end ends it too)
+        self._hidden: list[Any] | None = None
+        self._open: list[str] = []
+
+    # Elements that never hold content (no end tag follows them in HTML).
+    _VOID = {"area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta",
+             "param", "source", "track", "wbr"}
+    _NO_DISPLAY = re.compile(r"(?:^|;)\s*display\s*:\s*none\b", re.IGNORECASE)
+    # An element whose end tag HTML lets a page leave out, and the start tags that end it
+    # (the HTML parsing rules' implied end tags): a hidden one ends there, so what
+    # follows it is read (review of DOC-006).
+    _P_ENDS = frozenset({"address", "article", "aside", "blockquote", "details", "div", "dl",
+                         "fieldset", "figcaption", "figure", "footer", "form", "h1", "h2",
+                         "h3", "h4", "h5", "h6", "header", "hgroup", "hr", "main", "menu",
+                         "nav", "ol", "p", "pre", "section", "table", "ul", "li", "dt",
+                         "dd"})
+    _CELL_ENDS = frozenset({"td", "th", "tr", "tbody", "thead", "tfoot"})
+    _IMPLIED_END = {"li": frozenset({"li"}), "dt": frozenset({"dt", "dd"}),
+                    "dd": frozenset({"dt", "dd"}), "td": _CELL_ENDS, "th": _CELL_ENDS,
+                    "tr": frozenset({"tr", "tbody", "thead", "tfoot"}),
+                    "thead": frozenset({"tbody", "tfoot"}),
+                    "tbody": frozenset({"tbody", "tfoot"}), "tfoot": frozenset({"tbody"}),
+                    "option": frozenset({"option", "optgroup"}),
+                    "optgroup": frozenset({"optgroup"}), "p": _P_ENDS}
+    # Where a start tag's implied ends stop (HTML's scopes): an li, dt or dd ends only
+    # the items of its own list (not past a nested list, table or other container); a
+    # table part only the cells and rows of its own table; a block ends a p only outside
+    # a table or cell between them.
+    _TABLE_PARTS = frozenset({"td", "th", "tr", "tbody", "thead", "tfoot"})
+    _LIST_SCOPE = frozenset({"ul", "ol", "dl", "menu", "table", "td", "th", "tr", "tbody",
+                             "thead", "tfoot", "caption", "blockquote", "section",
+                             "article", "aside", "nav", "header", "footer", "main",
+                             "figure", "fieldset", "form", "details", "dialog", "select",
+                             "button", "object", "template"})
+    _TABLE_SCOPE = frozenset({"table", "template"})
+    _SELECT_SCOPE = frozenset({"select", "template"})
+    _BUTTON_SCOPE = frozenset({"applet", "caption", "table", "td", "th", "marquee",
+                               "object", "template", "button"})
+
+    def _scope(self, tag: str) -> frozenset:
+        if tag in ("li", "dt", "dd"):
+            return self._LIST_SCOPE
+        if tag in self._TABLE_PARTS:
+            return self._TABLE_SCOPE
+        if tag in ("option", "optgroup"):
+            return self._SELECT_SCOPE
+        return self._BUTTON_SCOPE
+
+    def _implied_close(self, tag: str, stack: list[str]) -> int | None:
+        """The depth in ``stack`` (outermost first) from which a ``tag`` start closes the
+        open elements (the lowest one it implies the end of, within its scope), None
+        when it closes none."""
+        lowest = None
+        for depth in range(len(stack) - 1, -1, -1):
+            if tag in self._IMPLIED_END.get(stack[depth], ()):
+                lowest = depth
+            elif stack[depth] in self._scope(tag):
+                break
+        return lowest
+
+    def _hides(self, tag: str, attrs: list[tuple[str, str | None]]) -> bool:
+        """The element and everything in it is not shown (DOC-006): ``<template>``, the
+        ``hidden`` attribute, or an inline ``display: none``."""
+        if tag == "template":
+            return True
+        for name, value in attrs:
+            if name == "hidden":
+                return True
+            if name == "style" and value and self._NO_DISPLAY.search(value):
+                return True
+        return False
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        if self._hidden is not None:
+            hidden, inside = self._hidden
+            depth = self._implied_close(tag, [hidden, *inside])
+            if depth == 0:
+                self._hidden = None   # it ends here (with all open in it): read as shown
+            else:
+                if depth is not None:   # elements inside it end
+                    del inside[depth - 1:]
+                if tag not in self._VOID:
+                    inside.append(tag)
+                return
+        if tag not in self._VOID and self._hides(tag, attrs):
+            self._hidden = [tag, []]
+            return
+        if tag not in self._VOID:
+            self._open.append(tag)
         if self._after_end:
             self._sibling = True
         if tag in {"script", "style"}:
@@ -205,6 +297,19 @@ class _HTMLText(HTMLParser):
             self.parts.append("\n")
 
     def handle_endtag(self, tag: str) -> None:
+        if self._hidden is not None:
+            hidden, inside = self._hidden
+            if tag in inside:   # an element inside it ends (and any left open in that)
+                del inside[len(inside) - 1 - inside[::-1].index(tag):]
+                return
+            if tag == hidden:
+                self._hidden = None
+                return
+            if tag not in self._open:
+                return   # a stray end tag: still hidden
+            self._hidden = None   # its parent (or an ancestor) ends: so does it
+        if tag in self._open:
+            del self._open[len(self._open) - 1 - self._open[::-1].index(tag):]
         if tag in {"script", "style"}:
             self._skip = max(0, self._skip - 1)
             return
@@ -216,7 +321,7 @@ class _HTMLText(HTMLParser):
             self.parts.append("\n")
 
     def handle_data(self, data: str) -> None:
-        if self._skip or not data:
+        if self._skip or self._hidden is not None or not data:
             return
         if self._sibling and self.parts:
             piece = self.parts[-1]
@@ -840,14 +945,138 @@ def local_image_ocr_available() -> bool:
 # The address-space cap of one image OCR process (``prlimit --as``): tesseract on a very
 # large image exits instead of growing without bound.
 IMAGE_OCR_MEMORY_BYTES = 2 * 1024 ** 3
+# The longest a multi-page image's reading may take: its time bound is per page (a TIFF's
+# pages are each prepared and read), never past this, so it ends typed before the
+# capture's outer bound on one reading (``capture_mail.EXTRACT_SECONDS``, 600 s) kills it.
+IMAGE_OCR_MAX_SECONDS = 540.0
+
+
+# The image reading (measured on 50 hand-labelled mail images, 383
+# printed fields: 0.585 of them read before). Each image is first made upright and plain
+# by Pillow (:func:`_image_for_ocr`): its EXIF orientation applied (tesseract never
+# reads the tag: phone photos of a picking slip and a carton label came out sideways, as
+# garbage), a transparent background flattened (:func:`_flattened`), a small image
+# enlarged and a very large one reduced to ``IMAGE_OCR_LONGEST``. Every page of a TIFF
+# is prepared and read on its own (:func:`_ocr_frames`) and the pages' texts are joined
+# as tesseract joins them (each ends with a form feed). It is read in grey; a reading
+# that is not confident (``_CONFIDENT_WORDS`` / ``_CONFIDENT_MEAN``) is read again in
+# colour (tesseract thresholds a colour image channel by channel: coloured text grey
+# merges into its background reads there) and turned upright when tesseract's
+# orientation pass (OSD) says so; the reading with the most sure words wins
+# (:func:`_reading_score`). A reading with fewer than ``_SURE_WORDS_MIN`` sure words
+# (all pages together) is no text: a photo's texture reads as a stray word or two, never
+# as text a person printed. Painting out table rules was measured and left out: it broke
+# more glyphs than rules (tesseract's own layout pass already finds a table's lines).
+IMAGE_OCR_LONGEST = 3_300        # the longest side read: letter at 300 dpi, as a PDF page
+IMAGE_OCR_SMALL = 1_600          # an image whose longest side is shorter is enlarged...
+IMAGE_OCR_MAX_ENLARGE = 3.0      # ...by at most this factor
+_SURE_WORD = 60.0                # a word read at this confidence or more is sure
+_SURE_WORDS_MIN = 2              # fewer sure words than this is no text
+
+
+def _ocr_frames(content: bytes) -> int:
+    """How many pages tesseract reads in ``content``: every frame of a TIFF (a faxed or
+    scanned order of several pages; tesseract's own reader reads each and ends each
+    page's text with a form feed), else 1 (it reads only the first frame of a GIF,
+    WebP or PNG). 1 when Pillow is missing or cannot read it."""
+    try:
+        from PIL import Image
+        with Image.open(io.BytesIO(content)) as opened:
+            return max(1, int(getattr(opened, "n_frames", 1))) \
+                if opened.format == "TIFF" else 1
+    except Exception:  # noqa: BLE001 - unreadable here: tesseract reads (or refuses) it
+        return 1
+
+
+# A transparent image whose visible pixels are mostly light (white text or a logo made
+# for a dark page) is flattened onto black, any other onto white: tesseract drops alpha
+# itself and reads what lies under it, so dark text on transparency read as black on
+# black, and flattening every image onto white would hide white text the same way.
+_LIGHT_GLYPHS = 160.0      # mean grey (0-255) of the visible pixels from which they are light
+
+
+def _flattened(image: Any) -> Any:
+    """``image`` (with transparency) composited onto white, or onto black when it is
+    mostly transparent and what shows is light (``_LIGHT_GLYPHS``)."""
+    from PIL import Image, ImageStat
+    rgba = image.convert("RGBA")
+    shown = rgba.getchannel("A").point(lambda a: 255 if a >= 128 else 0)
+    visible = shown.histogram()[255]
+    background = "white"
+    if 0 < visible < rgba.width * rgba.height / 2 and \
+            ImageStat.Stat(rgba.convert("L"), mask=shown).mean[0] >= _LIGHT_GLYPHS:
+        background = "black"
+    return Image.alpha_composite(Image.new("RGBA", rgba.size, background), rgba)
+
+
+def _image_for_ocr(content: bytes, longest: int,
+                   frame: int = 0) -> tuple[Any, float | None] | None:
+    """(RGB Pillow image, dots per inch or None) of page ``frame`` of ``content``
+    prepared for OCR (see above), its longest side at most ``longest``; None when Pillow
+    is missing or cannot read it (the bytes are then read as they are, as before)."""
+    try:
+        from PIL import Image, ImageOps
+    except ImportError:
+        return None
+    try:
+        with Image.open(io.BytesIO(content)) as opened:
+            if frame:
+                opened.seek(frame)
+            if opened.width * opened.height > _MAX_BMP_PIXELS:
+                return None   # a decompression bomb is tesseract's to refuse under its cap
+            dpi = _plausible_dpi(opened.info.get("dpi"))
+            image = ImageOps.exif_transpose(opened)
+            if image.mode in ("RGBA", "LA", "PA") or (
+                    image.mode == "P" and "transparency" in image.info):
+                image = _flattened(image)
+            image = image.convert("RGB")
+            side = max(image.size)
+            factor = (longest / side if side > longest else
+                      min(IMAGE_OCR_MAX_ENLARGE, IMAGE_OCR_SMALL / side)
+                      if side < IMAGE_OCR_SMALL else 1.0)
+            if factor != 1.0:
+                image = image.resize((max(1, round(image.width * factor)),
+                                      max(1, round(image.height * factor))), Image.LANCZOS)
+                dpi = None if dpi is None else dpi * factor
+    except Exception:  # noqa: BLE001 - unreadable here: tesseract reads (or refuses) it
+        return None
+    return image, dpi
+
+
+def _plausible_dpi(value: Any) -> float | None:
+    """A resolution an image states (Pillow's ``info['dpi']``) when it is one a scan or
+    a render has (50-1200), else None (tesseract then estimates it from the text)."""
+    try:
+        dpi = float(value[0])
+    except (TypeError, ValueError, IndexError):
+        return None
+    return dpi if 50 <= dpi <= 1200 else None
+
+
+def _png(image: Any, dpi: float | None) -> bytes:
+    out = io.BytesIO()
+    image.save(out, "PNG", **({"dpi": (dpi, dpi)} if dpi else {}))
+    return out.getvalue()
+
+
+def _reading_score(confidences: list[float]) -> tuple[int, float]:
+    """How much of a reading tesseract is sure of: its words read at ``_SURE_WORD`` or
+    more, counted and summed (a texture or an upside-down page gives many unsure
+    fragments, never many sure words)."""
+    sure = [c for c in confidences if c >= _SURE_WORD]
+    return len(sure), sum(sure)
 
 
 def local_image_text(content: bytes, *, timeout: float = 60.0) -> str:
     """OCR text of one raster image (PNG, JPEG, GIF, TIFF, BMP, WebP) by local tesseract,
     under the same envelope as the PDF OCR path: a private temporary file, a minimal
-    environment (never credentials), a time bound and 1 MB of output. Machine-read text;
-    any failure raises ``local_image_ocr_failed`` (or ``_unavailable``). Interword spaces
-    are kept as on the PDF path, so a form's column gaps stay two or more spaces."""
+    environment (never credentials), a time bound (``timeout`` per page, all its
+    tesseract runs together, at most ``IMAGE_OCR_MAX_SECONDS`` for a multi-page image)
+    and 1 MB of output. Machine-read text; any failure of its first reading
+    raises ``local_image_ocr_failed`` (or ``_unavailable``); a second reading that fails
+    or runs out of time leaves the readings made. Interword spaces are kept as on the PDF
+    path, so a form's column gaps stay two or more spaces. How it reads: the comment
+    above ``IMAGE_OCR_LONGEST``."""
     tool = shutil.which("tesseract")
     if tool is None:
         raise ValidationError("local_image_ocr_unavailable")
@@ -855,37 +1084,147 @@ def local_image_text(content: bytes, *, timeout: float = 60.0) -> str:
            if key in {"PATH", "LANG", "LC_ALL", "TESSDATA_PREFIX", "HOME", "TMPDIR"}}
     env["OMP_THREAD_LIMIT"] = "1"
     limits = _OCR_LIMITS.get()
-    if limits is not None:   # page-capped OCR: a large image read at the capped size
-        content = _downscaled(content, _MAX_RENDER_PIXELS * limits[1] // 300)
-    with child_process.private_directory("plx-image-ocr-") as directory:
-        path = Path(directory) / "image"
-        path.write_bytes(content)
-        path.chmod(0o600)
+    content = _readable_bmp(content)
+    longest = (IMAGE_OCR_LONGEST if limits is None
+               else _MAX_RENDER_PIXELS * limits[1] // 300)
+    pages = _ocr_frames(content)
+    deadline = time.monotonic() + min(timeout * pages, max(timeout, IMAGE_OCR_MAX_SECONDS))
+    limiter = shutil.which("prlimit")
+
+    def tesseract(path: Path, *args: str) -> subprocess.CompletedProcess:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise ValidationError("local_image_ocr_failed")
+        command = [tool, str(path), *args]
+        if limiter is not None:   # a memory cap: a huge image fails, never the host
+            command = [limiter, f"--as={IMAGE_OCR_MEMORY_BYTES}", "--", *command]
         try:
-            command = [tool, str(path), "stdout", *(["--oem", "1"] if limits else []),
-                       "--psm", "3", "-c", "preserve_interword_spaces=1"]
-            limiter = shutil.which("prlimit")
-            if limiter is not None:   # a memory cap: a huge image fails, never the host
-                command = [limiter, f"--as={IMAGE_OCR_MEMORY_BYTES}", "--", *command]
-            result = child_process.run(command, timeout=timeout, env=env)
+            result = child_process.run(command, timeout=remaining, env=env)
         except (OSError, subprocess.TimeoutExpired) as error:
             raise ValidationError("local_image_ocr_failed") from error
-    if result.returncode != 0 or len(result.stdout) > 1_000_000:
-        raise ValidationError("local_image_ocr_failed")
-    return result.stdout.decode("utf-8", "replace").strip()
+        if result.returncode != 0:
+            raise ValidationError("local_image_ocr_failed")
+        return result
+
+    with child_process.private_directory("plx-image-ocr-") as directory:
+        def write(data: bytes, name: str) -> Path:
+            path = Path(directory) / name
+            path.write_bytes(data)
+            path.chmod(0o600)
+            return path
+
+        def read(data: bytes, name: str, dpi: float | None) -> tuple[str, list[float]]:
+            base = Path(directory) / f"{name}-read"
+            tesseract(write(data, name), str(base),
+                      *(["--dpi", str(round(dpi))] if dpi else []),
+                      *(["--oem", "1"] if limits else []), "--psm", "3",
+                      "-c", "preserve_interword_spaces=1", "txt", "tsv")
+            try:
+                text = base.with_suffix(".txt").read_bytes()
+                tsv = base.with_suffix(".tsv").read_text("utf-8", "replace")
+            except OSError as error:
+                raise ValidationError("local_image_ocr_failed") from error
+            if len(text) > 1_000_000:
+                raise ValidationError("local_image_ocr_failed")
+            try:
+                confidences = [word[5] for word in _tsv_words(tsv)]
+            except OcrFailed as error:
+                raise ValidationError("local_image_ocr_failed") from error
+            return text.decode("utf-8", "replace"), confidences
+
+        def kept(readings: list[tuple[str, list[float]]]) -> str:
+            # The pages as tesseract writes a multi-page image: each page's text ending
+            # in a form feed, the whole stripped (so one page reads as before); fewer
+            # than ``_SURE_WORDS_MIN`` sure words on all pages together is no text.
+            if _reading_score([c for _, sure in readings for c in sure])[0] < \
+                    _SURE_WORDS_MIN:
+                return ""
+            joined = "".join((text[:-1] if text.endswith("\f") else text) + "\f"
+                             for text, _ in readings)
+            if len(joined) > 1_000_000:
+                raise ValidationError("local_image_ocr_failed")
+            return joined.strip()
+
+        def label(number: int, name: str) -> str:   # a file name per page and reading
+            return name if pages == 1 else f"page{number}-{name}"
+
+        # Every page's first (grey) reading is made before any retry: they are what the
+        # reading must have (a failure fails it); retries spend the time left. Only the
+        # grey PNG of a page is held; a page retried is prepared again.
+        readings: list[tuple[str, list[float]]] = []
+        greys: list[tuple[bytes, float | None]] = []
+        for number in range(pages):
+            prepared = _image_for_ocr(content, longest, number)
+            if prepared is None:   # Pillow cannot read it: tesseract reads the bytes (all pages)
+                return kept([read(content, "image", None)])
+            image, dpi = prepared
+            grey = _png(image.convert("L"), dpi)
+            del image, prepared
+            readings.append(read(grey, label(number, "image"), dpi))
+            greys.append((grey, dpi))
+        for number, ((text, confidences), (grey, dpi)) in enumerate(zip(readings, greys)):
+            if len(confidences) >= _CONFIDENT_WORDS and \
+                    sum(confidences) / len(confidences) >= _CONFIDENT_MEAN:
+                continue
+            prepared = _image_for_ocr(content, longest, number)
+            if prepared is None:
+                continue
+            best = _reading_score(confidences)
+            try:
+                for name, data in _image_retries(tesseract, write, prepared[0], grey, dpi):
+                    found = read(data, label(number, name), dpi)
+                    if _reading_score(found[1]) > best:
+                        best, readings[number] = _reading_score(found[1]), found
+            except ValidationError:
+                pass   # a retry past the time bound or the memory cap: the readings made
+        return kept(readings)
 
 
-def _downscaled(content: bytes, longest: int) -> bytes:
-    """``content`` as a greyscale PNG whose longest side is at most ``longest`` pixels
-    when it is larger and Pillow reads it, else the bytes unchanged."""
+def _image_retries(tesseract: Callable[..., subprocess.CompletedProcess],
+                   write: Callable[[bytes, str], Path], image: Any, grey: bytes,
+                   dpi: float | None) -> Iterator[tuple[str, bytes]]:
+    """The second readings of an image not read confidently in grey (PNG ``grey`` of the
+    prepared RGB ``image``): in colour, then in grey turned as tesseract's orientation
+    pass (``--psm 0``) says when it says so. A pass that cannot tell (too little text,
+    a non-zero exit) turns nothing."""
+    yield "colour", _png(image, dpi)
+    try:
+        said = re.findall(r"^Rotate:\s+(\d+)\s*$", tesseract(
+            write(grey, "orient"), "stdout", "--psm", "0").stdout.decode("utf-8", "replace"),
+            re.M)
+    except ValidationError:
+        said = []
+    if len(said) == 1 and said[0] in ("90", "180", "270"):
+        yield f"turned-{said[0]}", _png(image.convert("L").rotate(-int(said[0]), expand=True),
+                                        dpi)
+
+
+_IMAGE_MAGIC = (b"\x89PNG\r\n\x1a\n", b"\xff\xd8\xff", b"GIF87a", b"GIF89a", b"BM",
+                b"II*\x00", b"MM\x00*", b"II+\x00", b"MM\x00+")
+_MAX_BMP_PIXELS = 100_000_000
+
+
+def has_image_magic(content: bytes) -> bool:
+    """Whether ``content`` begins as an image format the OCR tool reads (PNG, JPEG, GIF,
+    BMP, TIFF, WebP): a file named like an image that does not is no image."""
+    return content.startswith(_IMAGE_MAGIC) or (
+        content[:4] == b"RIFF" and content[8:12] == b"WEBP")
+
+
+def _readable_bmp(content: bytes) -> bytes:
+    """A BMP as a PNG when Pillow reads it, else ``content`` unchanged. Leptonica (the OCR
+    tool's reader) refuses a BMP whose header sizes disagree with its data ("size
+    incommensurate with image data": an editor's trailing bytes, a wrong file size)
+    that Pillow decodes; 1,931 captured .bmp files failed on it as ``recognize_exit``."""
+    if not content.startswith(b"BM"):
+        return content
     try:
         from PIL import Image
         with Image.open(io.BytesIO(content)) as image:
-            if max(image.size) <= longest:
+            if image.width * image.height > _MAX_BMP_PIXELS:
                 return content
-            image.thumbnail((longest, longest))
             out = io.BytesIO()
-            image.convert("L").save(out, "PNG")
+            (image if image.mode in ("L", "RGB") else image.convert("RGB")).save(out, "PNG")
             return out.getvalue()
     except Exception:  # noqa: BLE001 - unreadable here: tesseract reads (or refuses) it
         return content
@@ -899,15 +1238,25 @@ def _only_line(output: str, pattern: str) -> re.Match[str]:
     return found[0]
 
 
-def _png_size(path: Path) -> tuple[int, int]:
+_PGM_HEADER = re.compile(rb"P5\n(\d{1,6}) (\d{1,6})\n255\n")
+
+
+def _pgm_size(path: Path) -> tuple[int, int]:
+    """(width, height) of pdftoppm's 8-bit greyscale PGM render (``P5`` header, maxval 255),
+    checked against the file's length: a short or other render is ``render_mismatch``."""
     try:
         with path.open("rb") as handle:
-            header = handle.read(24)
+            header = handle.read(32)
+            size = os.fstat(handle.fileno()).st_size
     except OSError as error:
         raise OcrFailed("render_mismatch") from error
-    if len(header) < 24 or header[:8] != b"\x89PNG\r\n\x1a\n" or header[12:16] != b"IHDR":
+    found = _PGM_HEADER.match(header)
+    if found is None:
         raise OcrFailed("render_mismatch")
-    return int.from_bytes(header[16:20], "big"), int.from_bytes(header[20:24], "big")
+    width, height = int(found.group(1)), int(found.group(2))
+    if size != found.end() + width * height:
+        raise OcrFailed("render_mismatch")
+    return width, height
 
 
 # Why a local OCR run failed (:class:`OcrFailed`): a tool call past the document's
@@ -934,7 +1283,7 @@ OCR_FAILURE_CAUSES = ("deadline", "tool_exit", "pdf_unreadable", "pdfinfo_exit",
                       "not_a_pdf", "pdf_truncated", "pdf_stub",
                       "text_layer_exit", "render_exit", "recognize_exit", "tool_signal",
                       "output_bound", "render_mismatch", "image_page_bound", "page_bound",
-                      "page_count", "ocr_output_invalid")
+                      "page_count", "ocr_output_invalid", "not_an_image")
 _TOOL_EXIT_CAUSE = {"pdftotext": "text_layer_exit", "pdftoppm": "render_exit",
                     "tesseract": "recognize_exit"}
 
@@ -1001,17 +1350,213 @@ def local_pdf_text_layer(content: bytes, *, max_pages: int | None = None,
 MAX_LAYOUT_PAGES = 10
 
 
-def pdf_layout_pages(content: bytes, pages: Iterable[int]) -> dict[int, str]:
+class LayoutViews(dict):
+    """:func:`pdf_layout_pages`' page -> view, with ``readers`` (page -> ``"poppler"`` or
+    ``"pypdf"``, the reader whose view it is) and ``timed_out`` (poppler ran past
+    ``WORD_BOX_TIMEOUT``: the pages are pypdf's for now, and a later read may give the
+    word-box view; never a reading to keep)."""
+
+    def __init__(self, views: Mapping[int, str] = (), readers: Mapping[int, str] = (),
+                 timed_out: bool = False) -> None:
+        super().__init__(views)
+        self.readers = dict(readers)
+        self.timed_out = timed_out
+
+
+# C0 control characters but tab and newline (and DEL): a glyph a text layer maps to no
+# character ('K7QX2ZPA<NUL>0042', its hyphen), never text. A layout view holds a space
+# there; Postgres text holds no NUL.
+CONTROL_CHARACTERS = re.compile(r"[\x00-\x08\x0b-\x1f\x7f]")
+
+
+def without_controls(text: str) -> str:
+    """``text`` with each C0 control character but tab and newline (and DEL) a space."""
+    return CONTROL_CHARACTERS.sub(" ", text)
+
+
+class WordBoxTimeout(Exception):
+    """``pdftotext -bbox`` ran past ``WORD_BOX_TIMEOUT``: no word boxes this time."""
+
+
+@functools.lru_cache(maxsize=1)
+def poppler_version() -> str:
+    """The local poppler the layout views read word boxes with (``pdftotext version
+    24.02.0``), ``"none"`` when it is not installed and ``"unknown"`` when it does not
+    say: part of the derivation code (``ontology.project.environment_digest``), so a
+    poppler upgrade, or a host without it, re-derives what the views placed."""
+    tool = shutil.which("pdftotext")
+    if tool is None:
+        return "none"
+    for _attempt in range(2):
+        try:
+            result = child_process.run([tool, "-v"], timeout=10, env=_tool_env())
+        except (OSError, subprocess.TimeoutExpired):
+            continue
+        said = (result.stderr or b"").decode("utf-8", "replace") + \
+            (result.stdout or b"").decode("utf-8", "replace")
+        m = re.search(r"pdftotext version (\S+)", said)
+        if m:
+            return f"pdftotext {m[1]}"
+    return "unknown"
+
+
+def pdf_layout_pages(content: bytes, pages: Iterable[int]) -> LayoutViews:
     """A layout view of the given text-layer pages of a PDF (1-based, at most
-    ``MAX_LAYOUT_PAGES`` of them): pypdf's layout-mode text, where each glyph stands at
-    its column on the page, so a value printed beside or below its label stays there
-    (pypdf's plain reading, the pinned text, joins cells in content-stream order). Never
-    pinned and never cited: a reader places a value by it and cites the same literal in
-    the pinned text (``ontology.document_fields``). A page the view cannot be made of is
-    left out; deterministic for the same bytes and pypdf version."""
+    ``MAX_LAYOUT_PAGES`` of them), where each word stands at its column on the page, so
+    a value printed beside or below its label stays there (pypdf's plain reading, the
+    pinned text, joins cells in content-stream order). A page is rebuilt from the word
+    boxes of its text layer (poppler's ``pdftotext -bbox``, :func:`pdf_word_boxes`,
+    :func:`word_box_layout`): each word at the column of its left edge, two cells
+    abutting on the page ('PO Number' beside 'Ship Via') kept apart by their gap; a page
+    poppler gives no word box for, or every page when poppler is missing or fails, is
+    pypdf's layout-mode text instead. Never pinned and never cited: a reader places a
+    value by it and cites the same literal in the pinned text
+    (``ontology.document_fields``). A control character (:data:`CONTROL_CHARACTERS`) is a
+    space in the view. A page no view can be made of is left out; deterministic for the
+    same bytes and poppler/pypdf versions (:func:`poppler_version`), but for poppler
+    running past its time (``timed_out``: :class:`LayoutViews`)."""
     wanted = sorted({p for p in pages if isinstance(p, int) and p >= 1})[:MAX_LAYOUT_PAGES]
     if not wanted:
-        return {}
+        return LayoutViews()
+    timed_out = False
+    try:
+        boxed = pdf_word_boxes(content, wanted[0], wanted[-1]) or {}
+    except WordBoxTimeout:
+        boxed, timed_out = {}, True
+    out = {number: text for number in wanted
+           if (text := word_box_layout(boxed.get(number, ())))}
+    readers = dict.fromkeys(out, "poppler")
+    rest = [number for number in wanted if number not in out]
+    if rest:
+        fallback = _pypdf_layout_pages(content, rest)
+        out.update(fallback)
+        readers.update(dict.fromkeys(fallback, "pypdf"))
+    return LayoutViews({number: without_controls(text) for number, text in sorted(out.items())},
+                       readers, timed_out)
+
+
+# Bounds of one ``pdftotext -bbox`` call (:func:`pdf_word_boxes`): its time and its output
+# (a word box is about 90 bytes: 4 MB holds ~45,000 words over ``MAX_LAYOUT_PAGES`` pages).
+WORD_BOX_TIMEOUT = 30
+MAX_WORD_BOX_OUTPUT = 4_000_000
+_BBOX_PAGE = re.compile(r"<page\b[^>]*>(.*?)</page>", re.S)
+_BBOX_WORD = re.compile(r'<word xMin="(-?\d+(?:\.\d+)?)" yMin="(-?\d+(?:\.\d+)?)" '
+                        r'xMax="(-?\d+(?:\.\d+)?)" yMax="(-?\d+(?:\.\d+)?)">([^<]*)</word>')
+
+
+def pdf_word_boxes(content: bytes, first: int, last: int
+                   ) -> dict[int, list[tuple[float, float, float, float, str]]] | None:
+    """The word boxes of a PDF's text layer on pages ``first``-``last`` (1-based): page ->
+    its words (top, bottom, left, right in points, text), by local poppler's ``pdftotext
+    -bbox`` (a private copy of the bytes, the minimal tool environment, ``WORD_BOX_TIMEOUT``
+    seconds, ``MAX_WORD_BOX_OUTPUT`` bytes). None when poppler is missing, fails, runs
+    over its bound or prints another page count than asked: never a partial reading taken
+    for the page; :class:`WordBoxTimeout` when it runs past its time (a later read may
+    finish)."""
+    tool = shutil.which("pdftotext")
+    if tool is None or not 1 <= first <= last:
+        return None
+    with child_process.private_directory("plx-pdf-boxes-") as directory:
+        path = Path(directory) / "source.pdf"
+        path.write_bytes(content)
+        path.chmod(0o600)
+        try:
+            result = child_process.run(
+                [tool, "-q", "-bbox", "-enc", "UTF-8", "-f", str(first), "-l", str(last),
+                 str(path), "-"], timeout=WORD_BOX_TIMEOUT, env=_tool_env())
+        except subprocess.TimeoutExpired:
+            raise WordBoxTimeout() from None
+        except OSError:
+            return None
+    if result.returncode != 0 or len(result.stdout) > MAX_WORD_BOX_OUTPUT:
+        return None
+    pages = _BBOX_PAGE.findall(result.stdout.decode("utf-8", "replace"))
+    if not pages or len(pages) > last - first + 1:
+        return None
+    out = {}
+    for number, body in enumerate(pages, first):
+        words = []
+        for m in _BBOX_WORD.finditer(body):
+            left, top, right, bottom = (float(m[i]) for i in (1, 2, 3, 4))
+            text = without_controls(html.unescape(m[5])).strip()
+            if text and right > left and bottom > top:
+                words.append((top, bottom, left, right, text))
+        out[number] = words
+    return out
+
+
+def word_box_layout(words: Iterable[tuple[float, float, float, float, str]]) -> str:
+    """One page's text rebuilt from its word boxes (top, bottom, left, right, text), as
+    :func:`ocr_layout_text` rebuilds OCR's: words whose boxes overlap vertically by half
+    the smaller height are one line, lines top to bottom, a word at the character column of
+    its left edge (one column per median character width from the leftmost word), words
+    closer than two character widths one space apart and a wider gap two or more (a column
+    gap; so is a narrower one before a word that starts a column, below), a vertical gap
+    over ``2.5`` median word heights a blank line. '' for no word."""
+    words = list(words)
+    if not words:
+        return ""
+    char = max(0.5, statistics.median((w[3] - w[2]) / len(w[4]) for w in words))
+    tall = statistics.median(w[1] - w[0] for w in words)
+    lines: list[list[tuple[float, float, float, float, str]]] = []
+    for word in sorted(words, key=lambda w: ((w[0] + w[1]) / 2, w[2])):
+        if lines:
+            line = lines[-1]
+            top = statistics.median(w[0] for w in line)
+            bottom = statistics.median(w[1] for w in line)
+            if min(word[1], bottom) - max(word[0], top) >= \
+                    0.5 * min(word[1] - word[0], bottom - top):
+                line.append(word)
+                continue
+        lines.append([word])
+    origin = min(w[2] for w in words)
+    lines = [sorted(line, key=lambda w: w[2]) for line in lines]
+    # A narrower gap is a column gap too when the word after it starts a column: a gap
+    # wider than 1.5 times the page's usual word space before a left edge that words on
+    # two other lines share (a label column whose values start one tab stop to its right:
+    # 'Invoice number' 6 pt from its value, its words 2 pt apart; 'TERMS' right-aligned
+    # 4.8 pt from 'Net 30', words 2.8 pt apart).
+    gaps = [b[2] - a[3] for line in lines for a, b in zip(line, line[1:])
+            if 0 < b[2] - a[3] < 2 * char]
+    space = statistics.median(gaps) if gaps else char
+    # (left edge, the word before it on its line, the line's index) of every word
+    edges = sorted((w[2], line[k - 1][4] if k else "", n)
+                   for n, line in enumerate(lines) for k, w in enumerate(line))
+    keys = [edge[0] for edge in edges]
+
+    def column_start(left: float, before: str, number: int) -> bool:
+        # two other lines start a word within 1 pt of ``left``, after another word than
+        # ``before`` (a repeated label's next words, 'Beneficiary  Company' over
+        # 'Beneficiary  A/C', share an edge without starting a column)
+        lo, hi = bisect.bisect_left(keys, left - 1), bisect.bisect_right(keys, left + 1)
+        return len({n for _, word, n in edges[lo:hi] if n != number and word != before}) >= 2
+
+    out: list[str] = []
+    below = None
+    for number, line in enumerate(lines):
+        top = min(w[0] for w in line)
+        if below is not None and top - below > 2.5 * tall:
+            out.append("")
+        below = max(w[1] for w in line)
+        text, right, before = "", None, ""
+        for _top, _bottom, left, end, word in line:
+            column = round((left - origin) / char)
+            if right is not None and left - right < 2 * char and not (
+                    left - right > 1.5 * space and column_start(left, before, number)):
+                text += " "
+            elif text:
+                text += " " * max(2, column - len(text))
+            else:
+                text = " " * column
+            text += word
+            right, before = end, word
+        out.append(text.rstrip())
+    return "\n".join(out).rstrip() if any(line.strip() for line in out) else ""
+
+
+def _pypdf_layout_pages(content: bytes, wanted: list[int]) -> dict[int, str]:
+    """pypdf's layout-mode text of the given pages (:func:`pdf_layout_pages` without word
+    boxes)."""
     try:
         reader, failure, _warnings = _pypdf_open(content, None)
     except ValidationError:
@@ -1030,6 +1575,38 @@ def pdf_layout_pages(content: bytes, pages: Iterable[int]) -> dict[int, str]:
             if isinstance(text, str) and text.strip():
                 out[number] = "\n".join(line.rstrip() for line in text.splitlines())
     return out
+
+
+def open_pdf(content: bytes) -> tuple[Any, str | None]:
+    """``(reader, None)``: pypdf's open reader of a PDF for a caller's structural walk
+    (form fields, page boxes, a filled copy written from it), opened as every reading
+    opens it (``_pypdf_open``: unbounded pages here, its records kept off stderr); else
+    ``(None, failure)`` with the reading's failure (``encrypted``,
+    ``pdf_parser_unavailable``, ``parser_panicked``, ``pdf_parse_error``). A PDF that
+    opens with the empty user password is opened and still says ``is_encrypted``, so a
+    caller that must not write an encrypted file refuses it. The walk takes a page's
+    text only through :func:`pdf_page_text`, never a reader of its own."""
+    reader, failure, _warnings = _pypdf_open(content, None)
+    return reader, failure
+
+
+def pdf_page_text(page: Any, *, layout: bool = False,
+                  visitor: Callable[..., None] | None = None) -> str:
+    """One page's pypdf text for a structural walk over :func:`open_pdf`'s reader (a
+    form's blanks, a document's style), never pinned or cited: with ``visitor``
+    pypdf's ``visitor_text`` callback gets each text run with its matrices (where a
+    blank sits on the page); with ``layout`` the layout-mode text (each glyph at its
+    column), the plain text when this pypdf cannot lay the page out. A page pypdf
+    cannot read raises its error to the caller."""
+    with _pypdf_logged():
+        if visitor is not None:
+            return page.extract_text(visitor_text=visitor) or ""
+        if layout:
+            try:
+                return page.extract_text(extraction_mode="layout") or ""
+            except (TypeError, ValueError):
+                pass
+        return page.extract_text() or ""
 
 
 def pdf_page_count(content: bytes) -> int | None:
@@ -1302,19 +1879,23 @@ def _portable_pdf_text(content: bytes, *, ocr: bool = True, max_pages: int | Non
             raise OcrFailed("output_bound")
         return result.stdout.decode("utf-8", "replace")
 
-    def turn(image: Path) -> int:
+    def turn(image: Path, dpi: int) -> int:
         """The degrees OSD says to turn ``image`` clockwise; 0 when it gives no answer."""
         try:
             said = re.findall(r"^Rotate:\s+(\d+)\s*$", run(
-                [tools["tesseract"], str(image), "stdout", "--psm", "0"]), re.M)
+                [tools["tesseract"], str(image), "stdout", "--dpi", str(dpi), "--psm", "0"]),
+                re.M)
         except OcrFailed as error:
             if error.cause != "recognize_exit":   # a signal or deadline is not "no answer"
                 raise
             return 0
         return int(said[0]) if len(said) == 1 and said[0] in ("90", "180", "270") else 0
 
-    def words(image: Path) -> str:
-        return run([tools["tesseract"], str(image), "stdout", *engine, "--psm", "3", "tsv"])
+    def words(image: Path, dpi: int) -> str:
+        # ``--dpi``: a PGM render carries no resolution (a PNG's did), and tesseract's
+        # guess for none (70) changes how it segments the page
+        return run([tools["tesseract"], str(image), "stdout", "--dpi", str(dpi), *engine,
+                    "--psm", "3", "tsv"])
 
     def confident(tsv: str) -> bool:
         found = [w[5] for w in _tsv_words(tsv)]
@@ -1330,11 +1911,13 @@ def _portable_pdf_text(content: bytes, *, ocr: bool = True, max_pages: int | Non
             width, height = size_pts
             number = str(index)
             image = Path(directory) / f"page-{index}"
-            run([tools["pdftoppm"], "-q", "-cropbox", "-r", str(dpi), "-gray", "-png",
+            # Raw greyscale (PGM): no PNG compression to write and to decode again, and
+            # the same render is the one an upright turn reads.
+            run([tools["pdftoppm"], "-q", "-cropbox", "-r", str(dpi), "-gray",
                  "-singlefile", "-f", number, "-l", number, str(path), str(image)])
-            rendered = image.with_suffix(".png")
+            rendered = image.with_suffix(".pgm")
             # pdftoppm can exit 0 after a failed allocation; check the render.
-            size = _png_size(rendered)
+            size = _pgm_size(rendered)
             expected = (width * dpi / 72, height * dpi / 72)
             if not any(all(abs(got - want) <= 2 for got, want in zip(size, shape))
                        for shape in (expected, expected[::-1])):  # /Rotate swaps
@@ -1343,21 +1926,18 @@ def _portable_pdf_text(content: bytes, *, ocr: bool = True, max_pages: int | Non
             # column gaps stay two or more spaces and a cell under its header.
             # A layout page keeps its first line's indent (it is that line's column)
             # and ends in the mark line that says so.
-            tsv = words(rendered)
+            tsv = words(rendered, dpi)
             # Capped: the orientation pass only for a page that did not read confidently.
-            degrees = 0 if limits is not None and confident(tsv) else turn(rendered)
-            if degrees:   # the same render as raw greyscale, turned upright
-                run([tools["pdftoppm"], "-q", "-cropbox", "-r", str(dpi), "-gray",
-                     "-singlefile", "-f", number, "-l", number, str(path), str(image)])
-                turned = _turned_pgm(image.with_suffix(".pgm"), degrees, size)
-                upright = words(turned)
+            degrees = 0 if limits is not None and confident(tsv) else turn(rendered, dpi)
+            if degrees:   # the same render, turned upright
+                turned = _turned_pgm(rendered, degrees, size)
+                upright = words(turned, dpi)
                 # A page on its side reads as confidently as rendered, but its word
                 # boxes run down the page: a tie is the turned reading's.
                 if sum(w[5] for w in _tsv_words(upright)) >= \
                         sum(w[5] for w in _tsv_words(tsv)):
                     tsv = upright
-                for left in (image.with_suffix(".pgm"), turned):
-                    left.unlink(missing_ok=True)
+                turned.unlink(missing_ok=True)
             page = ocr_layout_text(tsv)
             rendered.unlink(missing_ok=True)
             return page
@@ -2008,7 +2588,12 @@ def _converted_claims(text: str, ranges: list[tuple[int, int, str,
 # nothing worth the loss), its raw bytes hashed as every file's are.
 PLAIN_TEXT_TYPES = ("text/plain", "text/markdown", "text/x-markdown", "text/csv",
                     "text/tab-separated-values", "application/json", "text/json")
-PLAIN_TEXT_SUFFIXES = (".csv", ".tsv", ".md", ".markdown", ".txt", ".json")
+PLAIN_TEXT_SUFFIXES = (".csv", ".tsv", ".md", ".markdown", ".txt", ".json",
+                       *text_formats.TEXT_FILE_SUFFIXES)
+# Plain text is read whole up to this many characters (a bank export or a changelog is a
+# few hundred KB; its claims cost under a second at the bound), never the 100,000 of a
+# converted document: 911 captured .csv/.txt/.json/.md files had failed on that bound.
+MAX_PLAIN_TEXT = 1_000_000
 HTML_TYPES = ("text/html", "application/xhtml+xml")
 HTML_SUFFIXES = (".html", ".htm", ".xhtml")
 # An HTML file is parsed (stdlib HTMLParser) only up to this many bytes (about 1.5 s with
@@ -2171,7 +2756,8 @@ def extract_document(content: bytes, mime_type: str, *, original_url: str,
         # (``text_formats.decode_text``); binary bytes are never read as text.
         decoded = text_formats.decode_text(content)
         if decoded is not None:
-            (text, warnings), status = decoded, "extracted"
+            (text, warnings) = decoded
+            status = "extracted" if text.strip() else "no_text"   # an empty file holds none
             method = "decoded-text" if warnings else "utf8-text"
         else:
             text, status, method = "", "unsupported", "utf8-text"
@@ -2181,7 +2767,9 @@ def extract_document(content: bytes, mime_type: str, *, original_url: str,
         warnings = (f"unsupported_mime_type:{kind}",)
     # An HTML file's cost is bounded by its bytes (MAX_HTML_BYTES); its visible text is
     # never longer than they are, so it is read whole (a map page holds >MAX_TEXT chars).
-    if len(text) > (MAX_HTML_BYTES if method in ("html-text", "xml-text") else MAX_TEXT):
+    if len(text) > (MAX_HTML_BYTES if method in ("html-text", "xml-text")
+                    else MAX_PLAIN_TEXT if method in ("utf8-text", "decoded-text")
+                    else MAX_TEXT):
         raise ValidationError("extracted document text exceeds bound")
     if len(warnings) > MAX_WARNINGS:
         raise ValidationError("document warning count exceeds bound")

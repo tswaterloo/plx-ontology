@@ -22,6 +22,7 @@ import time
 from typing import Any, Iterable, Iterator, Mapping, Optional, Sequence
 
 from . import models as m
+from .errors import RecordNotFound
 from . import presentation
 from operating import sales_order_status as so_status
 from .serving import (MAX_SOURCES_PER_FACT, citation_handle, object_url, plain,
@@ -61,7 +62,7 @@ def inbox_stamp(view: Any) -> Optional[tuple]:
     or None when the workspace names no store. A "seen" mark changes no list, count or
     card but the briefing's, whose key also holds the reader's own last visit
     (``last_visit_of``): one reader's visit never makes every reader's Home read again."""
-    from operating.proactive_engine import inbox_path
+    from operating.proactive_engine import inbox_path   # tests patch it there
     path = getattr(getattr(view, "store_status", None), "store_path", None)
     return None if path is None else inbox_state(inbox_path(path))
 
@@ -174,7 +175,8 @@ def identity_of(view: Any) -> Optional[tuple]:
 def last_visit_of(view: Any) -> tuple:
     """("visit", when this reader last marked its briefing seen): the briefing's own key
     part (its "new since your visit" marks and counts read it)."""
-    from operating.proactive_engine import inbox_path, last_visit, reader_key as visitor
+    from operating.proactive_engine import inbox_path   # tests patch it there
+    from operating.proactive_engine_inbox import last_visit, reader_key as visitor
     path = getattr(getattr(view, "store_status", None), "store_path", None)
     if path is None:
         return ("visit", None)
@@ -194,7 +196,7 @@ def _search_marked(view: Any, oid: str) -> None:
     except Exception:  # noqa: BLE001 - undecidable: nothing held (fail closed)
         held = frozenset()
     if oid in document_marks.withheld([oid], held):
-        raise KeyError("object_not_found")
+        raise RecordNotFound()
 
 
 def merged(page: m.ObjectPage, section: m.ObjectSection) -> m.ObjectPage:
@@ -214,6 +216,10 @@ def merged(page: m.ObjectPage, section: m.ObjectSection) -> m.ObjectPage:
         update["profitability_choices"] = section.profitability_choices
     elif section.section == "knows":
         update["knows"] = section.knows
+    elif section.section == "documents":
+        update["documents"] = section.documents
+    elif section.section == "formula":
+        update["formula"] = section.formula
     elif section.section == "trail":
         update["trail"] = section.trail
         if section.not_found is not None:
@@ -307,6 +313,171 @@ def page_knows(view: Any, oid: str) -> Optional[m.PersonKnows]:
                          suppliers=records("suppliers"), items=records("items"),
                          waiting_on_them=waiting if isinstance(waiting, int) else None,
                          complete=bool(got.get("complete")))
+
+
+# The record types a formula section reads (``business_documents.view_formula_lines``).
+FORMULA_TYPES = ("Product", "FgItem")
+
+
+def _text(value: Any, limit: int) -> str:
+    """A sheet's own text (an ``untrusted_text`` envelope's text): shown, never run."""
+    if isinstance(value, Mapping):
+        value = value.get("untrusted_text")
+    return "" if value is None else str(value)[:limit]
+
+
+def _decimal_text(value: Any) -> Optional[str]:
+    """A stated number as exact text (never a float's rounding); None for none."""
+    if value is None or isinstance(value, bool):
+        return None
+    if isinstance(value, Mapping):
+        value = value.get("value")
+    return None if value is None else str(value)[:40]
+
+
+def page_formula(view: Any, oid: str) -> Optional[m.ProductFormula]:
+    """A product's page section from ``plx.aggregate`` mode ``business_documents`` view
+    ``formula_lines`` read as this reader (the people exclusion first; a sheet, line or
+    supplier item the reader may not read is counted, never shown): each sheet with its
+    lines in sheet order, a part linked to the one raw material its code names. None when
+    the mode refused, the people exclusion is unavailable or no sheet was found."""
+    got = view._call("plx.aggregate", {"mode": "business_documents", "view": "formula_lines",
+                                       "customer": oid})
+    if not isinstance(got, Mapping) or got.get("error") or got.get("withheld"):
+        return None
+    counts = got.get("counts") if isinstance(got.get("counts"), Mapping) else {}
+    withheld = got.get("withheld_counts") if isinstance(got.get("withheld_counts"),
+                                                         Mapping) else {}
+    sheets: dict[str, m.FormulaSheet] = {}
+    for row in got.get("rows") or ():
+        if not isinstance(row, Mapping) or row.get("subject") != oid:
+            continue
+        doc = row.get("document")
+        if not isinstance(doc, str) or not doc:
+            continue
+        if row.get("kind") == "sheet":
+            if row.get("basis") not in ("code", "name") or \
+                    row.get("status") not in ("complete", "partial"):
+                continue   # a sheet the view did not decide is never shown as one
+            missing = row.get("missing_lines")
+            sheets[doc] = m.FormulaSheet(
+                document=m.ObjectRef(object_id=doc, type=doc.split(":", 1)[0],
+                                     label=_text(row.get("name"), 160) or record_words(doc),
+                                     open_url=object_url(doc.split(":", 1)[0], doc)),
+                formula_code=_text(row.get("formula_code"), 40) or None,
+                dated=row.get("dated") if isinstance(row.get("dated"), str) else None,
+                basis=row["basis"], status=row["status"],
+                share_total=_decimal_text(row.get("share_total")),
+                missing_lines=len(missing) if isinstance(missing, list) else 0)
+        elif row.get("kind") == "component" and doc in sheets:
+            item = row.get("item")
+            label = _text(row.get("description"), 160) or _text(row.get("part"), 60)
+            sheets[doc].components.append(m.FormulaComponent(
+                no=_text(row.get("no"), 20) or None, part=_text(row.get("part"), 60),
+                description=_text(row.get("description"), 300),
+                share_percent=_decimal_text(row.get("share_percent")),
+                quantity=_decimal_text(row.get("quantity")),
+                unit=_text(row.get("unit"), 20) or None,
+                check=_text(row.get("check"), 200) or None,
+                item=m.ObjectRef(object_id=item, type=item.split(":", 1)[0], label=label,
+                                 open_url=object_url(item.split(":", 1)[0], item))
+                if isinstance(item, str) and item else None,
+                supplier_items=len(row.get("supplier_items") or ())))
+    if not sheets:
+        return None
+    _price_components(view, list(sheets.values()))
+    return m.ProductFormula(
+        sheets=list(sheets.values()),
+        unresolved_parts=int(counts.get("part_unresolved") or 0),
+        withheld=sum(int(n) for n in withheld.values() if isinstance(n, int)),
+        other_products=int(counts.get("sheet_other_product") or 0),
+        portal_lines_served=not counts.get("portal_formula_lines_not_served"),
+        complete=bool(got.get("complete")))
+
+
+# kg in one unit a PO line states its price per (exact: 1 lb = 0.45359237 kg)
+KG_PER_UNIT = {"kg": Decimal(1), "kgs": Decimal(1), "kilogram": Decimal(1),
+               "kilograms": Decimal(1), "g": Decimal("0.001"), "gram": Decimal("0.001"),
+               "grams": Decimal("0.001"), "lb": Decimal("0.45359237"),
+               "lbs": Decimal("0.45359237")}
+
+
+def _price_components(view: Any, sheets: list[m.FormulaSheet]) -> None:
+    """Each resolved line's raw-material last PO price (``plx.aggregate`` business_documents
+    view ``item_po_prices`` as this reader: a price the reader may not read is not shown),
+    and per sheet the material cost per kg of the product (``m.MaterialCost``)."""
+    wanted = list(dict.fromkeys(c.item.object_id for sh in sheets for c in sh.components
+                                if c.item is not None))[:200]
+    if not wanted:
+        return
+    got = view._call("plx.aggregate", {"mode": "business_documents", "view": "item_po_prices",
+                                       "items": [{"item": oid} for oid in wanted]})
+    if not isinstance(got, Mapping) or got.get("error") or got.get("withheld"):
+        return
+    last: dict[str, m.FormulaPrice] = {}
+    unsettled: set[str] = set()
+    for row in got.get("rows") or ():
+        if isinstance(row, Mapping) and row.get("item") in wanted and \
+                not row.get("lines_withheld") and row.get("priced_lines") and \
+                row.get("last") is None:
+            unsettled.add(row["item"])   # two prices on its newest order day
+        if not isinstance(row, Mapping) or not isinstance(row.get("last"), Mapping) \
+                or row.get("item") not in wanted or row.get("lines_withheld"):
+            continue   # a hidden PO line could be the newer price: none shown
+        one = row["last"]
+        if _decimal_text(one.get("price")) is None:
+            continue
+        po = one.get("po")
+        last[row["item"]] = m.FormulaPrice(
+            price=str(one["price"]), currency=one.get("currency"), uom=one.get("uom"),
+            dated=one.get("dated"),
+            po=m.ObjectRef(object_id=po, type=po.split(":", 1)[0],
+                           label=f"PO {one.get('po_number')}" if one.get("po_number")
+                           else record_words(po), open_url=object_url(po.split(":", 1)[0], po))
+            if isinstance(po, str) and po else None)
+    for sh in sheets:
+        for c in sh.components:
+            if c.item is not None and c.item.object_id in last:
+                c.last_price = last[c.item.object_id]
+        sh.material_cost = _material_cost(sh, unsettled)
+
+
+def _material_cost(sheet: m.FormulaSheet, unsettled: set[str] = frozenset()
+                   ) -> Optional[m.MaterialCost]:
+    """Share x last price per kg over the sheet's lines (``m.MaterialCost``)."""
+    if not any(c.last_price for c in sheet.components):
+        return None
+    total, priced, missing, currencies = Decimal(0), Decimal(0), [], set()
+    for c in sheet.components:
+        try:
+            share = Decimal(c.share_percent) if c.share_percent is not None else None
+        except InvalidOperation:
+            share = None
+        p = c.last_price
+        kg = KG_PER_UNIT.get((p.uom or "").strip().lower()) if p else None
+        if share is None:
+            missing.append(f"{c.part}: no share on the sheet")
+        elif p is None and c.item is not None and c.item.object_id in unsettled:
+            missing.append(f"{c.part}: two prices on its latest order day")
+        elif p is None:
+            missing.append(f"{c.part}: no purchase price you can read")
+        elif kg is None:
+            missing.append(f"{c.part}: priced per {p.uom or 'unstated unit'}, not by weight")
+        else:
+            currencies.add(p.currency)
+            total += share / Decimal(100) * Decimal(p.price) / kg
+            priced += share
+    if len(currencies) > 1 or None in currencies:
+        # never added across currencies (or a price with none stated)
+        return m.MaterialCost(per_kg=None, currency=None, priced_share=format(priced, "f"),
+                              missing=missing + ["prices in more than one currency, or "
+                                                 "none stated: not added"], complete=False)
+    complete = not missing and sheet.status == "complete"
+    return m.MaterialCost(per_kg=format(total.quantize(Decimal("0.0001")), "f")
+                          if priced else None,
+                          currency=next(iter(currencies), None),
+                          priced_share=format(priced, "f"), missing=missing[:50],
+                          complete=complete)
 
 
 def _refusal(code: Optional[str]) -> str:
@@ -878,10 +1049,21 @@ DERIVED_WORDS = {"invoices": "(from its invoices, before tax; the order header h
                  "order_lines": "(from its lines; the order header holds no total)"}
 
 
+# plx.object's gaps on a sales order whose header total was checked against its lines
+# (``operating.order_value.CHECK_REASONS``): they disagree (no value), or they agree once
+# lines the Portal import repeated are counted once (the header's total stands), or the
+# header's total is what is still to ship (Sage, partly shipped: the lines' value stands)
+ORDER_CHECK_REASONS = ("order_total_disagrees_with_lines", "order_lines_repeated",
+                       "order_total_is_value_still_to_ship")
+# How a value derived from its lines is said when the header's total is what is still to ship
+OUTSTANDING_WORDS = "(from its lines; the order total holds only what is still to ship)"
+
+
 def sales_order_view(label: str, values: Sequence[Mapping[str, Any]],
                      related: Sequence[m.ObjectRef], facts: list[m.Fact],
                      currency: Optional[str], derived: Optional[m.Money] = None,
-                     derived_from: Optional[str] = None
+                     derived_from: Optional[str] = None, *, disputed: bool = False,
+                     outstanding: bool = False
                      ) -> tuple[str, list[m.Fact], list[m.NotFound]]:
     """What a customer order's page says about itself, from the same records the briefing
     cites: a plain summary (the customer, the order date, the total when it is a real
@@ -890,7 +1072,11 @@ def sales_order_view(label: str, values: Sequence[Mapping[str, Any]],
     an invoiced order's header often reads 0.00, and its invoiced figures are in the
     margin section (cost lines, profit, when this reader may read them). ``derived``: the
     order's value derived where its header states none (``operating.order_value``, from
-    ``derived_from``: its invoices or lines), said as such in the summary."""
+    ``derived_from``: its invoices or lines), said as such in the summary. ``disputed``:
+    the header's total disagrees with its own lines, so the summary states no total (the
+    fact saying why, with both figures, is the caller's). ``outstanding``: the header's
+    total is what is still to ship (Sage, partly shipped), never stated as the order's
+    total."""
     by_name = {str(v.get("property") or ""): plain(v.get("value")) for v in values}
     customer = next((r for r in related if r.type == "Customer"), None)
     name = customer.label if customer else (
@@ -904,7 +1090,7 @@ def sales_order_view(label: str, values: Sequence[Mapping[str, Any]],
             continue
         if amount == 0:
             zero.add(presentation.field_label(n))
-        elif shown is None:
+        elif shown is None and not outstanding:
             shown = _decimal_money(str(amount), currency)
     facts = [f for f in facts if not (f.text.split(":", 1)[0] in zero and re.fullmatch(
         r"[^:]+:\s*0+(?:\.0+)?(?:\s*[A-Z]{3})?", f.text))]
@@ -914,11 +1100,14 @@ def sales_order_view(label: str, values: Sequence[Mapping[str, Any]],
             and not any("import date" in f.text for f in facts
                         if f.text.startswith(presentation.field_label("order_date"))):
         parts.append(f"ordered {ordered[:10]}")
-    if shown is not None:
+    if disputed:
+        parts.append("its total and its lines disagree")
+    elif shown is not None:
         parts.append(f"total {shown.amount} {shown.currency}")
     elif derived is not None:
         parts.append(f"value {derived.amount} {derived.currency} "
-                     + DERIVED_WORDS.get(derived_from or "", "(derived)"))
+                     + (OUTSTANDING_WORDS if outstanding else
+                        DERIVED_WORDS.get(derived_from or "", "(derived)")))
     summary = "; ".join(parts) + "."
     absent = []
     if not name:
@@ -926,7 +1115,7 @@ def sales_order_view(label: str, values: Sequence[Mapping[str, Any]],
             what="The customer of this order",
             where_it_would_live="No customer is linked to this order in the records you can "
                                 "open."))
-    if shown is None and derived is None:
+    if shown is None and derived is None and not disputed and not outstanding:
         absent.append(m.NotFound(
             what="The order total",
             where_it_would_live="The order header holds no amount; see the margin section "

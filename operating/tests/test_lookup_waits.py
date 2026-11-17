@@ -19,6 +19,8 @@ import unittest
 from unittest import mock
 
 from operating import case_tools_host as host
+from operating import case_tools_host_citations
+from operating import case_tools_host_mailboxes
 
 FOUND = [{"mailbox_upn": "buyer@example.test"}]
 
@@ -34,7 +36,7 @@ class MailboxWaitTests(unittest.TestCase):
         self.key = os.path.realpath(self.capture)
         self.store = SimpleNamespace(path=self.capture)
         self.running = threading.Event()   # a background read that never ends here
-        for patched in (mock.patch.dict(os.environ, {host.MAILBOXES_CACHE_ENV: str(cache)}),
+        for patched in (mock.patch.dict(os.environ, {case_tools_host_mailboxes.MAILBOXES_CACHE_ENV: str(cache)}),
                         mock.patch.dict(host._MAILBOXES, clear=True),
                         mock.patch.dict(host._MAILBOXES_READING, {self.key: self.running}),
                         mock.patch.object(host, "MAILBOXES_WAIT_SECONDS", 0.3)):
@@ -59,7 +61,7 @@ class MailboxWaitTests(unittest.TestCase):
 
 class LookupPoolTests(unittest.TestCase):
     def test_the_lookup_pool_has_a_worker_per_core(self):
-        self.assertGreaterEqual(host._AHEAD_POOL._max_workers,
+        self.assertGreaterEqual(case_tools_host_citations._AHEAD_POOL._max_workers,
                                 max(2, min(16, os.cpu_count() or 2)))
 
 

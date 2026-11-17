@@ -18,7 +18,6 @@ import json
 from pathlib import Path
 import tempfile
 import unittest
-from urllib.parse import quote
 from typing import Callable
 
 from evals import baseline as bl
@@ -188,6 +187,7 @@ class TwinRootTests(unittest.TestCase):
         from ontology import store_ddl
         from ontology.types import Actor
         from operating import ontology_tools as ot
+        from operating import ontology_tools_results
         from operating import ontology_tools_investigate as oi
         from operating import ontology_tools_traverse as tt
         from scripts import eval_dev_baseline as script
@@ -202,7 +202,7 @@ class TwinRootTests(unittest.TestCase):
         base = ot.OntologyTools(reader, policy, schema=ot.default_schema(),
                                 grammar=ot.default_grammar())
         table: dict = {}
-        ot.register(table, base)
+        ontology_tools_results.register(table, base)
         tt.register(table, tt.TraverseTools(base))
         oi.register(table, oi.InvestigateTools(table, schema=base.schema))
         return table["plx.investigate"]["handler"](

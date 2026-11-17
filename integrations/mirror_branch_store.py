@@ -78,7 +78,7 @@ from typing import Any, Callable, Mapping, Sequence
 from urllib.parse import quote, urlsplit
 
 from . import mirror_capture as mc
-from .source_mirror import MirrorError
+from .source_mirror_values import MirrorError
 
 REF = "refs/devloop/mirror"
 REF_SHAPE = re.compile(r"refs/devloop/[a-z0-9][a-z0-9-]*")

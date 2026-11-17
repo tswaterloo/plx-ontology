@@ -41,6 +41,10 @@ function SignIn() {
   const config = state.config;
   const entra = config?.mode === "entra";
   const devAvailable = !!config && config.mode !== "entra" && config.dev_login;
+  // the live server without Microsoft sign-in takes access links: it is no demo, so it says so
+  // in its own words and asks for the link at once
+  const link = !entra && config?.sign_in === "access_link";
+  const askTicket = showTicket || link;
 
   async function demo(t?: string) {
     setBusy(true);
@@ -125,7 +129,7 @@ function SignIn() {
                     {busy && entra ? "Signing in" : "Sign in with Microsoft"}
                   </button>
                   <p className="text-center text-[12px] leading-4 text-muted">
-                    {entra ? "Your PLX work account. You see only what your role allows." : "Microsoft sign-in is off on this demo server."}
+                    {entra ? "Your PLX work account. You see only what your role allows." : link ? "Microsoft sign-in is not on here yet." : "Microsoft sign-in is off on this demo server."}
                   </p>
                 </div>
                 {devAvailable && (
@@ -140,10 +144,10 @@ function SignIn() {
                       className="space-y-3"
                       onSubmit={(e) => {
                         e.preventDefault();
-                        void demo(showTicket ? ticket : undefined);
+                        void demo(askTicket ? ticket : undefined);
                       }}
                     >
-                      {showTicket && (
+                      {askTicket && (
                         <div>
                           <label htmlFor="ticket" className="mb-1.5 block text-[12px] leading-4 font-medium text-muted">
                             Access link or code
@@ -160,12 +164,12 @@ function SignIn() {
                       )}
                       <button
                         type="submit"
-                        disabled={busy || (showTicket && !ticket.trim())}
+                        disabled={busy || (askTicket && !ticket.trim())}
                         className="h-10 w-full rounded-lg bg-accent text-[13px] font-medium text-accent-fg shadow-sm hover:brightness-110 disabled:opacity-50 cursor-pointer"
                       >
-                        Continue with demo sign-in
+                        {link ? "Continue with your access link" : "Continue with demo sign-in"}
                       </button>
-                      {!showTicket && (
+                      {!askTicket && (
                         <button
                           type="button"
                           onClick={() => setShowTicket(true)}

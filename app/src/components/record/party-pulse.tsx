@@ -55,7 +55,7 @@ export function PartyPulse({ obj }: { obj: ObjectPage }) {
     <div className="grid gap-x-10 gap-y-6 lg:grid-cols-2" data-testid="party-pulse">
       {meetings && meetings.length > 0 && (
         <section data-testid="party-meetings">
-          <SectionTitle>Coming up with them</SectionTitle>
+          <SectionTitle>Upcoming meetings</SectionTitle>
           <ul className="divide-y divide-border">
             {meetings.slice(0, 4).map((m) => {
               const s = startOf(m);

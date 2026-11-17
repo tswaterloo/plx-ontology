@@ -33,6 +33,9 @@ from ontology.schema import load_schema
 from ontology.types import Actor
 from operating import case_workspace_live as live_ws
 from operating import ontology_tools as ot
+from operating import ontology_tools_identity
+from operating import ontology_tools_policy
+from operating import ontology_tools_results
 from operating import ontology_tools_evidence as ev
 from operating import ontology_tools_investigate as oi
 from operating import ontology_tools_traverse as tt
@@ -145,13 +148,13 @@ class FindScopeTests(ScopeCase):
         self.assertEqual(out["status"], "found", out)
         (candidate,) = out["candidates"]
         self.assertIn(candidate["reason"], ot.ROOT_REASONS)
-        (scope,) = [f for f in candidate["why_not"] if f["feature"] == ot.SCOPE_FEATURE]
+        (scope,) = [f for f in candidate["why_not"] if f["feature"] == ontology_tools_policy.SCOPE_FEATURE]
         self.assertIs(scope["agrees"], True)
         # The scope is the carrier's scope_field from the registry, cited from the row.
         self.assertEqual((scope["citations"][0]["l1_handle"],
                           scope["citations"][0]["field_path"]),
                          (_handle("so-1"), "row.customer_id"))
-        self.assertTrue(ot.roots_exactly(candidate, "PO-4471", identifiers))
+        self.assertTrue(ontology_tools_identity.roots_exactly(candidate, "PO-4471", identifiers))
         self.assertEqual(self.opener(tools)("PO-4471")["object_id"], _oid("so-1"))
         # Asked as a sales order, the order carrying it roots through its link.
         self.assertEqual(self.opener(tools, "SalesOrder")("PO-4471")["object_id"],
@@ -165,9 +168,9 @@ class FindScopeTests(ScopeCase):
                          {_oid("so-2"), _oid("so-3")})
         for candidate in out["candidates"]:
             self.assertEqual((candidate["reason"], candidate["tier"]),
-                             (ot.SCOPE_LEAD_REASON, "lead"))
+                             (ontology_tools_policy.SCOPE_LEAD_REASON, "lead"))
             self.assertIs(_features(candidate)["identity_scope_ambiguous"], False)
-            self.assertFalse(ot.roots_exactly(candidate, "PO-5000", identifiers))
+            self.assertFalse(ontology_tools_identity.roots_exactly(candidate, "PO-5000", identifiers))
         (gap,) = [g for g in out["gaps"] if g["reason"] == "identity_scope_ambiguous"]
         self.assertTrue(gap["detail"].startswith("2 "), gap)
         # The orders carrying it are candidates through their link, leads saying why.
@@ -176,7 +179,7 @@ class FindScopeTests(ScopeCase):
         self.assertEqual(orders["status"], "ambiguous", orders)
         for candidate in orders["candidates"]:
             self.assertIs(_features(candidate)["identity_scope_ambiguous"], False)
-            self.assertFalse(ot.roots_exactly(candidate, "PO-5000", identifiers))
+            self.assertFalse(ontology_tools_identity.roots_exactly(candidate, "PO-5000", identifiers))
         with self.assertRaises(live_ws.OpenError) as refused:
             self.opener(tools)("PO-5000")
         self.assertEqual(refused.exception.code, "ambiguous_identifier")
@@ -186,9 +189,9 @@ class FindScopeTests(ScopeCase):
         out = self.find(tools, "PO-6000")
         (candidate,) = out["candidates"]
         self.assertEqual((candidate["reason"], candidate["tier"]),
-                         (ot.SCOPE_LEAD_REASON, "lead"))
+                         (ontology_tools_policy.SCOPE_LEAD_REASON, "lead"))
         self.assertIsNone(_features(candidate)["no_scope_value"])
-        self.assertFalse(ot.roots_exactly(candidate, "PO-6000", identifiers))
+        self.assertFalse(ontology_tools_identity.roots_exactly(candidate, "PO-6000", identifiers))
         for object_type in (CPO, "SalesOrder"):
             with self.assertRaises(live_ws.OpenError) as refused:
                 self.opener(tools, object_type)("PO-6000")
@@ -199,8 +202,8 @@ class FindScopeTests(ScopeCase):
         variant = self.find(tools, "PO 7000")
         (candidate,) = variant["candidates"]
         # Found within its one customer, but only after normalisation: never a root.
-        self.assertIs(_features(candidate)[ot.SCOPE_FEATURE], True)
-        self.assertFalse(ot.roots_exactly(candidate, "PO 7000", identifiers))
+        self.assertIs(_features(candidate)[ontology_tools_policy.SCOPE_FEATURE], True)
+        self.assertFalse(ontology_tools_identity.roots_exactly(candidate, "PO 7000", identifiers))
         with self.assertRaises(live_ws.OpenError) as refused:
             self.opener(tools)("PO 7000")
         self.assertEqual(refused.exception.code, "root_lead_only:normalized_only")
@@ -219,7 +222,7 @@ class FindScopeTests(ScopeCase):
                 self.assertEqual((candidate["reason"], candidate["tier"],
                                   candidate["matched"]["identifier_kind"]),
                                  (ot.MARKED_REASON, "lead", "customer_po"))
-                self.assertEqual(ot.scoped_root_lead(candidate, query, identifiers),
+                self.assertEqual(ontology_tools_identity.scoped_root_lead(candidate, query, identifiers),
                                  ot.MARKED_REASON)
                 with self.assertRaises(live_ws.OpenError) as refused:
                     self.opener(tools)(query)
@@ -258,14 +261,14 @@ class FindScopeTests(ScopeCase):
                 self.assertEqual((candidate["object"]["object_id"],
                                   candidate["matched"]["identifier_kind"]),
                                  (_oid(ident), "customer_po"))
-                self.assertEqual(ot.scoped_root_lead(candidate, query, identifiers), why)
+                self.assertEqual(ontology_tools_identity.scoped_root_lead(candidate, query, identifiers), why)
                 with self.assertRaises(live_ws.OpenError) as refused:
                     self.opener(tools)(query)
                 self.assertEqual(refused.exception.code, f"root_lead_only:{why}")
         listed = tools.call("plx.find", {"object_type": CPO, "filters": [
             {"property": "po_number", "op": "eq", "value": "PO-6000"}]}, SALES)
         (candidate,) = listed["candidates"]
-        self.assertEqual(ot.scoped_root_lead(candidate, "PO-6000", identifiers),
+        self.assertEqual(ontology_tools_identity.scoped_root_lead(candidate, "PO-6000", identifiers),
                          "no_scope_value")
         self.assertEqual(self.opener(tools)("PO-4471")["object_id"], _oid("so-1"))
 
@@ -278,7 +281,7 @@ class FindScopeTests(ScopeCase):
         self.assertEqual(out["status"], "found", out)
         self.assertNotIn("identity_scope_ambiguous", {g["reason"] for g in out["gaps"]})
         (candidate,) = out["candidates"]
-        self.assertTrue(ot.roots_exactly(candidate, "PO-4471", identifiers))
+        self.assertTrue(ontology_tools_identity.roots_exactly(candidate, "PO-4471", identifiers))
         # The cancelled order rides on the root as a related lead, never a candidate.
         self.assertIsNone(_features(candidate)["related_scope_lead"])
         self.assertEqual(self.opener(tools)("PO-4471")["object_id"], _oid("so-1"))
@@ -295,7 +298,7 @@ class FindScopeTests(ScopeCase):
         for out in answers:
             self.assertEqual(out["status"], "found", out)
             self.assertNotIn("identity_scope_ambiguous", {g["reason"] for g in out["gaps"]})
-            self.assertTrue(ot.roots_exactly(out["candidates"][0], "PO-5000", identifiers))
+            self.assertTrue(ontology_tools_identity.roots_exactly(out["candidates"][0], "PO-5000", identifiers))
         self.assertEqual(*[(out["candidates"], out["gaps"]) for out in answers])
 
     def test_withheld_scope_value_is_a_lead_and_never_read(self):
@@ -304,7 +307,7 @@ class FindScopeTests(ScopeCase):
         tools = self.tools(finance=["customer_ref"])
         out = self.find(tools, "PO-4471")
         (candidate,) = out["candidates"]
-        self.assertEqual(candidate["reason"], ot.SCOPE_LEAD_REASON)
+        self.assertEqual(candidate["reason"], ontology_tools_policy.SCOPE_LEAD_REASON)
         self.assertIsNone(_features(candidate)["scope_value_withheld"])
         self.assertNotIn("c-1", json.dumps(out))
 
@@ -321,7 +324,7 @@ class FindScopeTests(ScopeCase):
                 self.assertEqual(out["completeness"]["total"], n)
                 ids = [c["object"]["object_id"] for c in out["candidates"]]
                 self.assertEqual(len(ids), len(set(ids)))
-                self.assertEqual(sum(ot.roots_exactly(c, "PO-9100", identifiers)
+                self.assertEqual(sum(ontology_tools_identity.roots_exactly(c, "PO-9100", identifiers)
                                      for c in out["candidates"]), 1 if n == 1 else 0)
                 # The carrier typed by display text: every record, none rooting.
                 out = tools.call("plx.find", {"query": "PO 9100", "object_type": CPO,
@@ -330,18 +333,18 @@ class FindScopeTests(ScopeCase):
                 # record listed first (a long list pages by size), the total not claimed
                 # exact (NAMED_READ_NOTE, which counts them)
                 (cut,) = [g for g in out["gaps"] if g["reason"] == "scan_cap"]
-                self.assertTrue(cut["detail"].startswith(f"{ot.NAMED_READ_NOTE} ({n})"), cut)
+                self.assertTrue(cut["detail"].startswith(f"{ontology_tools_policy.NAMED_READ_NOTE} ({n})"), cut)
                 listed = [c["object"]["object_id"] for c in out["candidates"]]
                 self.assertEqual(len(listed), len(set(listed)))
                 self.assertEqual(len(listed) == n, out["completeness"]["next_cursor"] is None)
-                self.assertEqual({ot.scoped_root_lead(c, "PO 9100", identifiers)
+                self.assertEqual({ontology_tools_identity.scoped_root_lead(c, "PO 9100", identifiers)
                                   for c in out["candidates"]},
                                  {"normalized_only" if n == 1 else "identity_scope_ambiguous"})
 
 
 def _investigate(test, tools, family, identifier, actor=SALES, kind=None):
     table: dict = {}
-    ot.register(table, tools)
+    ontology_tools_results.register(table, tools)
     tt.register(table, tt.TraverseTools(tools))
     oi.register(table, oi.InvestigateTools(table, schema=tools.schema))
     root = {"identifier": identifier, **({"identifier_kind": kind} if kind else {})}
@@ -397,7 +400,7 @@ class OneRootGateTests(ScopeCase):
         planned = (answer["root"]["object_id"] if "root" in answer else
                    next(g["detail"].split(":", 1)[0] for g in answer["gaps"]
                         if g["reason"] == "root_lead_only"))
-        return candidate, ot.roots_exactly(candidate, query, identifiers), opened, planned
+        return candidate, ontology_tools_identity.roots_exactly(candidate, query, identifiers), opened, planned
 
     def test_a_carrier_display_text_match_on_the_literal_po_roots_nowhere(self):
         # A reader without the PO identifier's marking still sees the display text: the
@@ -411,14 +414,14 @@ class OneRootGateTests(ScopeCase):
         self.assertEqual((candidate["reason"], candidate["matched"]["identifier_kind"],
                           candidate["matched"]["raw"]["untrusted_text"]),
                          ("display_text", "customer_po", "PO-4471"))
-        self.assertIs(_features(candidate)[ot.SCOPE_FEATURE], True)
+        self.assertIs(_features(candidate)[ontology_tools_policy.SCOPE_FEATURE], True)
         self.assertEqual((exact, opened, planned),
                          (False, "root_lead_only:display_text", "display_text"))
         # A filter on the carrier is the same lead.
         (listed,) = self.tools().call("plx.find", {"object_type": CPO, "filters": [
             {"property": "po_number", "op": "eq", "value": "PO-4471"}]}, SALES)["candidates"]
-        self.assertEqual((listed["reason"], ot.roots_exactly(listed, "PO-4471", identifiers),
-                          ot.scoped_root_lead(listed, "PO-4471", identifiers)),
+        self.assertEqual((listed["reason"], ontology_tools_identity.roots_exactly(listed, "PO-4471", identifiers),
+                          ontology_tools_identity.scoped_root_lead(listed, "PO-4471", identifiers)),
                          ("filter_match", False, "filter_match"))
 
     def test_a_linked_po_gets_one_verdict(self):
@@ -426,12 +429,12 @@ class OneRootGateTests(ScopeCase):
         order = 'SalesOrder:portal.app_sales_order:{"id":"so-1"}'
         candidate, exact, opened, planned = self.verdicts(
             tools, "PO-4471", "SalesOrder", "order_quantities")
-        self.assertEqual(candidate["reason"], ot.LINKED_REASON)
+        self.assertEqual(candidate["reason"], ontology_tools_policy.LINKED_REASON)
         self.assertEqual((exact, opened, planned), (True, order, order))
         # Linked from a customerless PO: a lead in all three.
         candidate, exact, opened, planned = self.verdicts(
             tools, "PO-6000", "SalesOrder", "order_quantities")
-        self.assertEqual(candidate["reason"], ot.LINKED_REASON)
+        self.assertEqual(candidate["reason"], ontology_tools_policy.LINKED_REASON)
         self.assertEqual((exact, opened, planned),
                          (False, "root_lead_only:no_scope_value", "no_scope_value"))
 
@@ -490,7 +493,7 @@ class TwinRootScopeTests(ScopeCase):
                 tools, actor = self.world(bc_customer, readable)
                 found = tools.call("plx.find", {"query": "PO-4471", "object_type": CPO}, actor)
                 self.assertEqual(found["status"], "ambiguous", found)
-                self.assertTrue(all(ot.roots_exactly(c, "PO-4471", identifiers)
+                self.assertTrue(all(ontology_tools_identity.roots_exactly(c, "PO-4471", identifiers)
                                     for c in found["candidates"]))
                 out = _investigate(self, tools, "decision_evidence", "PO-4471", actor, kind)
                 reasons = {g["reason"] for g in out["gaps"]}
@@ -545,12 +548,12 @@ class IdentityReviewTests(ScopeCase):
         two = self.near_misses(tools, "so-2")
         (miss,) = two["near_misses"]
         self.assertEqual(miss["object"]["object_id"], _oid("so-3"))
-        self.assertIn({"feature": ot.SCOPE_FEATURE, "agrees": False}, miss["failed"])
+        self.assertIn({"feature": ontology_tools_policy.SCOPE_FEATURE, "agrees": False}, miss["failed"])
         self.assertNotIn("ambiguous_identity", {g["reason"] for g in two["gaps"]})
         # One customer's reused PO is still an identity question for a person.
         reused = self.near_misses(tools, "so-6")
         self.assertIn("ambiguous_identity", {g["reason"] for g in reused["gaps"]})
-        self.assertNotIn(ot.SCOPE_FEATURE,
+        self.assertNotIn(ontology_tools_policy.SCOPE_FEATURE,
                          {f["feature"] for m in reused["near_misses"] for f in m["failed"]})
 
     def test_a_record_without_a_customer_stays_an_identity_question(self):
@@ -559,7 +562,7 @@ class IdentityReviewTests(ScopeCase):
         out = self.near_misses(tools, "so-8")
         (miss,) = out["near_misses"]
         self.assertEqual(miss["object"]["object_id"], _oid("so-4"))
-        self.assertIn({"feature": ot.SCOPE_FEATURE, "agrees": None}, miss["failed"])
+        self.assertIn({"feature": ontology_tools_policy.SCOPE_FEATURE, "agrees": None}, miss["failed"])
         self.assertIn("ambiguous_identity", {g["reason"] for g in out["gaps"]})
 
 
@@ -587,18 +590,18 @@ class BcCompanyScopeTests(unittest.TestCase):
         self.assertEqual(out["status"], "ambiguous", out)
         self.assertEqual({c["object"]["object_id"] for c in out["candidates"]},
                          {oid(1), oid(2)})
-        self.assertFalse(any(ot.roots_exactly(c, "CPO-77", identifiers)
+        self.assertFalse(any(ontology_tools_identity.roots_exactly(c, "CPO-77", identifiers)
                              for c in out["candidates"]))
         self.assertIn("identity_scope_ambiguous", {g["reason"] for g in out["gaps"]})
         review = ev.EvidenceTools(w.base).call("plx.identity", {
             "object_ids": [oid(1)], "include_near_misses": True}, actor)
         (miss,) = review["near_misses"]
-        self.assertIn({"feature": ot.SCOPE_FEATURE, "agrees": False}, miss["failed"])
+        self.assertIn({"feature": ontology_tools_policy.SCOPE_FEATURE, "agrees": False}, miss["failed"])
         self.assertNotIn("ambiguous_identity", {g["reason"] for g in review["gaps"]})
         # One company's order is one customer's PO: it roots.
         w, oid, _ = self.world(((1, MAN),))
         (candidate,) = w.call("plx.find", {"query": "CPO-77", "object_type": CPO})["candidates"]
-        self.assertTrue(ot.roots_exactly(candidate, "CPO-77", identifiers))
+        self.assertTrue(ontology_tools_identity.roots_exactly(candidate, "CPO-77", identifiers))
 
 
 class InvoiceCustomerPoCardTests(ScopeCase):

@@ -33,10 +33,11 @@ from operating import action_path as ap
 from operating import goal2_mc_approval as g2
 from operating import mcp_server
 from operating import ontology_tools_investigate as oi
+from operating import ontology_tools_investigate_follow_ups
 from operating.cases import CitationError
 from operating.session_identity import CHANNEL_CONSOLE, CHANNEL_MCP, fixture_session
-from operating.mcp_server import (ACTION_TOOLS, CASE_RUNTIME_TOOLS,
-                                  CASE_TOOL_RETIREMENTS, MCPServer)
+from operating.mcp_server import MCPServer
+from operating.mcp_server_catalog import ACTION_TOOLS, CASE_RUNTIME_TOOLS, CASE_TOOL_RETIREMENTS
 from operating.tests.test_action_path import (DECIDER, EFFECT, EMPLOYEE, OPERATOR, REL, ROSTER, VINCE,
                                               Clock as ActionClock, FakeMc)
 from operating.tests.test_mcp_case_tools import (FINANCE, OPS, OPS_FINANCE, OUTSIDER,
@@ -488,7 +489,7 @@ class ActionToolTests(ActionToolsTestCase):
         # own state (no BC reader, capture state unknown, no projection built): those were
         # addressed to undeclared owners, the Workbench operator among them.
         host_state = [gap for gap in out["gaps"]
-                      if gap["reason"] in oi.HOST_STATE_REASONS]
+                      if gap["reason"] in ontology_tools_investigate_follow_ups.HOST_STATE_REASONS]
         self.assertTrue({"source_not_configured", "freshness_unknown"}
                         <= {gap["reason"] for gap in host_state})
         self.assertEqual(sorted(i for entry in out["follow_ups"] for i in entry["gaps"]),

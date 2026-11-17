@@ -260,12 +260,13 @@ class CitationSchemeTests(unittest.TestCase):
         from integrations.mc_sources import MC_KIND
         from ontology.json_contract import validate
         from operating import claim_checks, ontology_tools
+        from operating import claim_checks_grammar
         from operating.citation_schemes import CITATION_SCHEMES, FIXTURE_SCHEME
         item = json.loads((ROOT / "evals" / "item.schema.json").read_text(encoding="utf-8"))
         item_handle = item["$defs"]["handle"]
         cited = set(CITATION_SCHEMES)
         patterns = {
-            "claim_checks.HANDLE": (claim_checks.HANDLE.pattern, cited),
+            "claim_checks.HANDLE": (claim_checks_grammar.HANDLE.pattern, cited),
             "injection_guard handle": (guard._GRAMMARS["handle"].pattern,
                                        cited | {FIXTURE_SCHEME}),
             "ontology_tools._HANDLE": (ontology_tools._HANDLE.pattern, cited),
@@ -279,16 +280,16 @@ class CitationSchemeTests(unittest.TestCase):
 
         mc = make_handle(MC_KIND, ("ops", "tasks", "T-42"), "0123456789abcdef", 7)
         self.assertTrue(mc.startswith("mc://"))
-        self.assertIsNotNone(claim_checks.HANDLE.fullmatch(mc))
+        self.assertIsNotNone(claim_checks_grammar.HANDLE.fullmatch(mc))
         self.assertEqual(guard.untyped_strings({"citation": mc}), [])
         self.assertEqual(validate(mc, item_handle), [])
         fixture = "fixture://public.app_sales_order/{\"id\":3}"
         self.assertEqual(guard.untyped_strings({"citation": fixture}), [])
-        self.assertIsNone(claim_checks.HANDLE.fullmatch(fixture))
+        self.assertIsNone(claim_checks_grammar.HANDLE.fullmatch(fixture))
         self.assertTrue(validate(fixture, item_handle))
         for other in ("mcx://ops/tasks/T-42@v0-1", "synthetic://ops/tasks/T-42@v0-1",
                       "https://example.invalid/x"):
-            self.assertIsNone(claim_checks.HANDLE.fullmatch(other), other)
+            self.assertIsNone(claim_checks_grammar.HANDLE.fullmatch(other), other)
             self.assertEqual(guard.untyped_strings({"citation": other}), ["citation"], other)
             self.assertTrue(validate(other, item_handle), other)
 

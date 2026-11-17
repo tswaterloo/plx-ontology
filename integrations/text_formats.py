@@ -27,7 +27,20 @@ the one place ``document_understanding.extract_document`` reads them from.
   bitmap of the NiceLabel compound file). The preview is handed to local OCR
   (``captured_text.capture_text``), so a label's printed text (product, item code,
   case pack, customer) becomes OCR text like a scanned page's. A NiceLabel ``.nlbl``
-  (2017 and later) is an encrypted archive and stays unsupported.
+  (2017 and later) is an encrypted archive: ``encrypted_unreadable``, a named gap.
+
+* What is no search text (:func:`terminal_class`): a file the extractor does not read gets
+  a named terminal class instead of a bare ``unsupported``, so it stops counting as an
+  unread gap. Plain-text files of the business's own (:data:`TEXT_FILE_SUFFIXES`: logs,
+  SQL, scripts, configuration) are read as text and searched. Source code
+  (:data:`SOURCE_CODE_SUFFIXES`), a font or glyph source, and a text file without any
+  suffix (a licence, a ``.git`` file, a tool's launcher: what a code tree is made of)
+  are ``code_not_indexed``: the bytes are kept and known to be text, never put in
+  search, where one dependency tree's thousands of files would bury the documents. A
+  type that holds no text by nature (:data:`BINARY_SUFFIXES`), or a text-type file whose
+  bytes are not text, is ``binary_no_text``; an encrypted label archive is
+  ``encrypted_unreadable``; a zip is ``container_members`` (its members
+  are expanded when read: ``captured_text.container_members``).
 
 Pure functions of the bytes: nothing here fetches, writes or runs anything.
 """
@@ -293,5 +306,75 @@ def label_preview(content: bytes, name: str) -> bytes | None:
     return None
 
 
-__all__ = ["LABEL_SUFFIXES", "RTF_FILE_SKIP", "XML_TEXT_ATTRIBUTES", "decode_text",
+# Text files read and searched as written (``document_understanding.PLAIN_TEXT_SUFFIXES``).
+TEXT_FILE_SUFFIXES = (".log", ".sql", ".yml", ".yaml", ".ini", ".inf", ".cfg", ".conf",
+                      ".toml", ".sh", ".bat", ".cmd", ".ps1", ".psm1", ".dat", ".meta",
+                      ".odc", ".vbs", ".rdp", ".ics", ".url", ".srt", ".vtt", ".plist", ".psd1",
+                      ".ps1xml", ".properties", ".mdc")
+# Source code and font sources: text, but never search text (module docstring).
+SOURCE_CODE_SUFFIXES = (".js", ".mjs", ".cjs", ".jsx", ".ts", ".tsx", ".mts", ".cts", ".py",
+                        ".pyi", ".css", ".scss", ".less", ".java", ".c", ".h", ".cpp",
+                        ".hpp", ".cs", ".go", ".rb", ".php", ".rs", ".swift", ".kt",
+                        ".glif", ".glyph", ".map", ".vue", ".svelte", ".sample", ".qml",
+                        ".pyw", ".example", ".template")
+# Types that hold no text (an image, an archive, a database, a binary, a point cloud).
+BINARY_SUFFIXES = (".pkl", ".pickle", ".db", ".sqlite", ".sqlite3", ".lnk", ".psd", ".ai",
+                   ".da_", ".pp_", ".dl_", ".ch_", ".in_", ".dll", ".exe", ".msi", ".so",
+                   ".ttf", ".otf", ".woff", ".woff2", ".cab", ".7z", ".rar", ".gz", ".tgz",
+                   ".iso", ".mp3", ".mp4", ".mov", ".avi", ".wav", ".heic", ".dwg", ".dxf",
+                   ".mpp", ".pbix", ".sst", ".fof", ".cdl", ".dfi", ".hcxs", ".ply",
+                   ".pyc", ".bin", ".ds_store", ".idx", ".pack", ".cat", ".p7s", ".one",
+                   ".onetoc2", ".lib")
+# Text the extractor cannot read for want of a key (a NiceLabel 2017+ ``.nlbl`` archive): a
+# known gap with a named cause, not a file that holds no text.
+ENCRYPTED_SUFFIXES = (".nlbl",)
+NAME_ONLY_SUFFIXES = (*BINARY_SUFFIXES, *ENCRYPTED_SUFFIXES)   # classed by name, no bytes
+ZIP_MAGIC = b"PK\x03\x04"
+_ZIP_EMPTY = b"PK\x05\x06"
+# A suffix-less file is sniffed as text over its first bytes (no byte-order guessing).
+MAX_SNIFF_BYTES = 8_000_000
+
+
+def _suffix(name: str) -> str:
+    """The file's type suffix, a browser's ``.download`` copy by the name it saved
+    (``app.js.download`` is ``.js``); none for a name with no dot after its first
+    character."""
+    base = name.rsplit("/", 1)[-1].lower()
+    if base.endswith(".download") and len(base) > len(".download"):
+        base = base[:-len(".download")]
+    dot = base.rfind(".")
+    return "" if dot <= 0 else base[dot:]
+
+
+def terminal_class(name: str, content: bytes) -> str | None:
+    """The terminal class of a file the extractor called ``unsupported`` (module
+    docstring), or None when it is not one of the named kinds (it stays ``unsupported``
+    and counts as a gap). Pure and decided by the name's suffix and the bytes: source
+    code or a suffix-less file is ``code_not_indexed`` only when its bytes read as text
+    (:func:`decode_text`, no byte-order mark needed), otherwise ``binary_no_text``."""
+    base = name.rsplit("/", 1)[-1]
+    if base.startswith("~$") or (base.startswith("$I") and len(base) <= 24
+                                 and len(content) < 1024):
+        # an Office owner/lock file, a Recycle Bin record: a few hundred bytes of names
+        return "binary_no_text"
+    suffix = _suffix(name)
+    if suffix == ".zip":
+        return "container_members" if content.startswith((ZIP_MAGIC, _ZIP_EMPTY)) \
+            else "binary_no_text"
+    if suffix in ENCRYPTED_SUFFIXES:
+        return "encrypted_unreadable"
+    if suffix in BINARY_SUFFIXES:
+        return "binary_no_text"
+    if suffix in TEXT_FILE_SUFFIXES:
+        return "binary_no_text"   # text by type but not text by bytes (the read refused it)
+    if suffix in SOURCE_CODE_SUFFIXES or suffix == "":
+        if len(content) > MAX_SNIFF_BYTES or b"\x00" in content[:4096] \
+                or decode_text(content) is None:
+            return "binary_no_text"
+        return "code_not_indexed"
+    return None
+
+
+__all__ = ["BINARY_SUFFIXES", "ENCRYPTED_SUFFIXES", "NAME_ONLY_SUFFIXES", "SOURCE_CODE_SUFFIXES", "TEXT_FILE_SUFFIXES", "terminal_class",
+           "LABEL_SUFFIXES", "RTF_FILE_SKIP", "XML_TEXT_ATTRIBUTES", "decode_text",
            "is_rtf_bytes", "label_preview", "rtf_document_text", "xml_text"]

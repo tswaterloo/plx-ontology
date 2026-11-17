@@ -49,11 +49,11 @@ export function staleLine(staleSince?: string | null, readAt?: string | null): s
   return staleSince ? `As of ${clock} ET · refreshing` : `As of ${clock} ET`;
 }
 
-/** The local hour from which Home opens with "Your morning". */
+/** The local hour from which Home opens with its "Today" list. */
 export const MORNING_HOUR = 5;
 
 /**
- * "Your morning" at the top of Home: from 5 AM local, the reader's own items of their
+ * The "Today" list at the top of Home: from 5 AM local, the reader's own items of their
  * briefing (records they are named on, that their mail mentions, or whose supplier or
  * customer writes to them; the server ranks them first, read as the reader) and the
  * day's line. Null before 5 AM local or without a read briefing.
@@ -70,6 +70,39 @@ export function yourMorning(
     ? `${plural(yours, "item")} about your own orders, tasks and contacts.`
     : briefing.today || "Nothing of yours needs action this morning.";
   return { line, items, yours };
+}
+
+export const MORNING_NOTICE_HOUR = 8;
+const MORNINGED = "plx.morning";
+
+/**
+ * The desktop app's one notice a day of the reader's morning (from 8 AM on the computer's
+ * clock): what of their own the briefing holds and the top item, opening Today. Nothing when
+ * the briefing is not read, nothing of theirs is in it, or it was already told today in
+ * `store` (this app: once a day, never again on a restart).
+ */
+export function morningNotice(
+  briefing: Briefing | null,
+  store: Pick<Storage, "getItem" | "setItem"> | null,
+  now: Date = new Date(),
+): { id: string; title: string; body: string; href: string } | null {
+  if (now.getHours() < MORNING_NOTICE_HOUR) return null;
+  const day = now.toLocaleDateString("en-CA");
+  try {
+    if (store?.getItem(MORNINGED) === day) return null;
+  } catch {
+    return null;   // storage unreadable: say nothing rather than every minute
+  }
+  const morning = yourMorning(briefing, now, 1);
+  if (!morning || morning.yours === 0) return null;
+  try {
+    store?.setItem(MORNINGED, day);
+  } catch {
+    return null;
+  }
+  const first = morning.items[0];
+  const top = first ? [first.subject_label, first.label].filter(Boolean).join(" · ") : "";
+  return { id: `morning:${day}`, title: "Your morning", body: top ? `${morning.line} First: ${top}` : morning.line, href: "/" };
 }
 
 /**

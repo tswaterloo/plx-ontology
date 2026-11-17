@@ -103,7 +103,8 @@
       {
        "binding": "portal.app_purchase_requisition",
        "path": "requested_date",
-       "parser": "iso_timestamp"
+       "parser": "iso_timestamp",
+       "naive_zone": "UTC"
       }
      ],
      "evidence": [
@@ -120,7 +121,8 @@
       {
        "binding": "portal.app_purchase_requisition",
        "path": "required_by_date",
-       "parser": "iso_timestamp"
+       "parser": "iso_timestamp",
+       "naive_zone": "UTC"
       }
      ],
      "evidence": [
@@ -137,7 +139,8 @@
       {
        "binding": "portal.app_purchase_requisition",
        "path": "approved_date",
-       "parser": "iso_timestamp"
+       "parser": "iso_timestamp",
+       "naive_zone": "UTC"
       }
      ],
      "evidence": [
@@ -456,7 +459,8 @@
    "time": {
     "binding": "portal.app_purchase_requisition",
     "path": "requested_date",
-    "parser": "iso_timestamp"
+    "parser": "iso_timestamp",
+    "naive_zone": "UTC"
    },
    "qualifiers": [
     {
@@ -480,7 +484,8 @@
    "time": {
     "binding": "portal.app_purchase_requisition",
     "path": "approved_date",
-    "parser": "iso_timestamp"
+    "parser": "iso_timestamp",
+    "naive_zone": "UTC"
    },
    "qualifiers": [
     {
@@ -504,7 +509,8 @@
    "time": {
     "binding": "portal.app_purchase_requisition",
     "path": "required_by_date",
-    "parser": "iso_timestamp"
+    "parser": "iso_timestamp",
+    "naive_zone": "UTC"
    },
    "qualifiers": [
     {

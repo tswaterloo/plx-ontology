@@ -53,7 +53,6 @@ from decimal import Decimal
 import json
 import math
 import re
-import threading
 from typing import Any, Callable, Iterable, Mapping, MutableMapping, Sequence
 
 from ontology.json_contract import validate
@@ -250,7 +249,7 @@ def _read_history(st: Any, as_of: dt.date, settled: Sequence[str]) -> dict[str, 
 
 
 def _join(*texts: Any) -> str:
-    from .proactive_engine import _markings
+    from .proactive_engine_findings import _markings
 
     return _markings(*texts)
 
@@ -609,7 +608,7 @@ def reorder_state(st: Any, as_of: dt.date, items: Iterable[str], settled: Sequen
     unreadable), in the unit ``supply_by`` then compares; its day is ``sheet_days``."""
     from . import proactive_business as pb
     from . import proactive_stock as stock
-    from .proactive_engine import _cites
+    from .proactive_engine_findings import _cites
 
     sources, missing = stock._sources(on_hand)
     if not sources and sheet_on_hand is None:
@@ -699,7 +698,7 @@ def _reorder_of(state: Mapping[str, Any], item: str, unit: str, got: Mapping[str
 # --------------------------------------------------------------------------- the mode
 
 def _contracts() -> Mapping[str, Any]:
-    from .ontology_tools import load_contracts
+    from .ontology_tools_policy import load_contracts
     return load_contracts()
 
 
@@ -719,7 +718,9 @@ def read_book(path: str, as_of: dt.date, *,
               on_hand: Sequence[tuple[str, str, str | None]] | None = None) -> dict[str, Any]:
     """The history and the reorder check's supply over one store file (its own read-only
     connections), per bucket."""
-    from .proactive_engine import SETTLED, _po_source, _Store
+    from .proactive_engine import _Store
+    from .proactive_engine_config import SETTLED
+    from .proactive_engine_purchasing import _po_source
 
     st = _Store(path)
     try:

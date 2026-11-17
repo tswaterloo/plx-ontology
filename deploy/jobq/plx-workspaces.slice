@@ -1,0 +1,17 @@
+# Every workspace job (tools/job.py, tools/testslot.py under the job queue) runs in a
+# scope here: one budget below Postgres, the API and the lander. Cores 0-1 stay with the
+# host's services; the queue's workspaces pool admits jobs by their declared cores
+# (PLX_JOBQ_WORKSPACE_CPUS, 14) and memory (PLX_JOBQ_WORKSPACE_MEM_GB, 26), so the kernel
+# limits below are the backstop, not the scheduler.
+[Unit]
+Description=PLX workspace jobs (tests, evals, scripts)
+Before=slices.target
+
+[Slice]
+CPUWeight=20
+IOWeight=20
+MemoryHigh=26G
+MemoryMax=28G
+MemorySwapMax=0
+AllowedCPUs=2-15
+TasksMax=4096

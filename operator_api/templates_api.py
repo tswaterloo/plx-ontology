@@ -39,6 +39,9 @@ log = logging.getLogger("operator_api.templates")
 LEARNED_KIND = {"quote": "quote", "price_list": "price_list", "proposal": "proposal",
                 "spec_sheet": "spec_sheet", "coa": "coa", "letter": "letter"}
 
+# the reply side each email template type is offered the person's repeated mail for
+REPEAT_SIDE = {"customer_email": "customer", "supplier_email": "supplier"}
+
 
 def refused(error: tp.TemplateRefused) -> UserFacing:
     status = {"not_found": 404, "view_as": 403, "not_kept": 403,
@@ -227,6 +230,8 @@ class TemplatesMixin:
         learned = self._learned(reader, doc_type)
         if learned is not None:
             out.append(learned)
+        out.extend(self._repeated(reader, doc_type, saved=[s.template.body for s in out
+                                                           if s.template is not None]))
         return m.TemplateSuggestions(doc_type=doc_type, suggestions=out)
 
     def _learned(self, reader: Reader, doc_type: str) -> Optional[m.TemplateSuggestion]:
@@ -242,6 +247,28 @@ class TemplatesMixin:
         return m.TemplateSuggestion(
             kind="learned", doc_type=doc_type, label=f"Your usual {words} layout",
             detail=f"learned from {n} you sent", ask=f"make a {words} for ")
+
+    def _repeated(self, reader: Reader, doc_type: str, saved: list[str]
+                  ) -> list[m.TemplateSuggestion]:
+        """Mail of this kind the reader keeps sending in near the same words (the learning
+        ledger's reply shapes, ``Lessons.repeats``), offered to save as a template; none
+        already saved, none when viewing as someone. Never fails the suggestions."""
+        side = REPEAT_SIDE.get(doc_type)
+        if side is None or getattr(reader.session, "view_as", False):
+            return []
+        try:
+            from operating import learning
+            lessons = learning.Lessons.load(learning.ledger_dir(getattr(self, "state_dir", None)))
+            found = lessons.repeats(learning.person_id(reader.key))
+        except Exception:  # noqa: BLE001 - no ledger or unreadable: nothing offered
+            return []
+        have = {" ".join(b.split()).lower() for b in saved}
+        return [m.TemplateSuggestion(
+            kind="repeated", doc_type=doc_type, label=f"Mail you sent {r['count']} times",
+            detail=r["first"],
+            body=r["body"])
+            for r in found if r["side"] == side
+            and " ".join(r["body"].split()).lower() not in have]
 
     # -- the one-box --
 

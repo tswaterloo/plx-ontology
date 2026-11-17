@@ -52,6 +52,10 @@ serves. The steps, each writing into the generation being built
   or (Mission Control) a staff person's unique address local part, ``corroborated``
   (``ontology.people_links.people_links_step``; after ``reviews``, so a pair a person
   rejected is never linked); an excluded person is no Person, so is never linked;
+* ``with_formula_lines``: a product (``Product`` / ``FgItem``) linked to each raw material
+  its formula sheets list (``Product.formula_line`` / ``FgItem.formula_line``, one link per
+  sheet line, cited to the sheet; ``ontology.formula_lines``; after ``text_index``, whose
+  sheet text it reads); excluded people's records are never read;
 * ``text_index``: the words of captured document text ``plx.find`` searches
   (``ontology.text_index.store_text_index``, its documents read by the build's workers:
   ``ontology.text_parallel``).
@@ -59,6 +63,12 @@ serves. The steps, each writing into the generation being built
   corroborated by its supplier and its date or total, as a ``corroborated`` same-record
   link beside the lead (``ontology.identity_scoring.twin_step``; after ``reviews``, so a
   pair a person rejected is never raised);
+* ``twins_contacts``: two BC contact cards of one BC company with the same normalized
+  display name and a specific e-mail or phone in common (not one many names share, not a
+  role mailbox unless their locations agree), as a ``corroborated`` ``Contact.same_record_as``
+  for two Company cards of one side (vendor, customer or none) whose locations do not
+  differ, a ``lead`` otherwise; a name alone never (``ontology.contact_twins``; after ``reviews``, so a pair a person rejected is
+  never linked);
 * ``twins_parties``: a customer, vendor or item joined to a BC record only on its code (a
   ``lead`` by the BC company cap), whose code names one record on each side and whose
   names agree, as a ``corroborated`` same-record link beside the lead
@@ -108,6 +118,8 @@ import threading
 from typing import Any, Callable
 
 from ontology import reviews
+from ontology import contact_twins
+from ontology import formula_lines
 from ontology.identity_scoring import party_twin_step, twin_step, your_reference_step
 from ontology.key_links import key_joins_step
 from ontology.document_fields import store_document_links
@@ -308,6 +320,15 @@ def _documents_cleaned(step: Step) -> Step:
     return run
 
 
+def _bound_exclusion(state_dir: str | Path) -> Callable[[], Any]:
+    """The readers' people exclusion of ``state_dir`` (the guard with the captures'
+    directory, drive owners and chat members), loaded when a step asks for it."""
+    def load() -> Any:
+        from operating.chunking.permissions import load_exclusion
+        return load_exclusion(state_dir)
+    return load
+
+
 def post_project(state_dir: str | Path, tenant: str, *, scratch: str | Path | None = None
                  ) -> dict[str, Step]:
     """The ``post_project`` steps of a build over the Workbench state directory
@@ -344,7 +365,9 @@ def post_project(state_dir: str | Path, tenant: str, *, scratch: str | Path | No
         "task_ids": task_ids_step, "task_names": task_names_step,
         "text_index": _documents_cleaned(store_text_index),
         "trace_postings": trace_postings_step, "twins": twin_step,
+        "twins_contacts": contact_twins.step_for(state_dir),
         "twins_parties": party_twin_step, "unique_mentions": unique_mentions_step,
+        "with_formula_lines": formula_lines.step_for(_bound_exclusion(state_dir)),
         "with_owners": with_owners_step,
         "with_people": people_links_step,
         "your_reference": your_reference_step}.items()}

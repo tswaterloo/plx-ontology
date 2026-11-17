@@ -263,7 +263,8 @@ class MCApprovalAdapter(Adapter):
     denies it to services, so no key this repo holds can decide; the decider must not be
     the requester (403 ``separation_of_duties``). A decided approval has no revoke: a
     launch approval lapses after MC's 4 h launch TTL. Which gates are routine is the
-    rules' ``scope_kind_in`` (launch only), never this adapter."""
+    rules' ``scope_kind_in`` (launch only) and ``risk_in`` (the requester's stated risk),
+    never this adapter."""
 
     system, kind = "mc", "mc_approval"
     documented = "POST https://mc.plxcustomer.io/api/approvals/decide"
@@ -273,7 +274,9 @@ class MCApprovalAdapter(Adapter):
     needs = ("a delegated Entra session token of the owner (MC.Admin/MC.Owner) for the "
              "decide route, issued and refreshed outside git",
              "a reviewed POST shape for /api/approvals/decide in the HTTP egress allowlist",
-             "MC capture of each gate's scope (kind launch) so a gate can be classed routine")
+             "each gate's own MC scope (kind launch) and proposal risk on MCApproval "
+             "(captured as gate_scope since AP-02 11-14; projected once the MCApproval "
+             "schema change gate_scope/proposal_action/proposal_risk applies in place)")
 
     def request(self, action: Mapping[str, Any]) -> dict[str, Any]:
         target, payload = action.get("target") or {}, action.get("payload") or {}
@@ -317,8 +320,8 @@ class MCTaskAdapter(Adapter):
     documented = "MC MCP POST /api/cursor/mcp tools/call mc_report_progress | mc_update_task"
     operations = {"task_note": "mc_report_progress notes; no undo (comments stay)",
                   "task_update": "mc_update_task labels/title/priority; undo: inverse patch"}
-    structural = ("no Workbench MC principal holds a write grant; mc_update_task is a "
-                  "never-sent tool in mc_tool_policy.json")
+    structural = ("MC writes are not opened (live-mc); mc_update_task is a never-sent "
+                  "tool in mc_tool_policy.json")
     needs = ("an MC service principal for the Workbench autopilot (e.g. sp_mcp_workbench) "
              "with task.progress and the project ACL, its key in MC_MCP_API_KEY outside git "
              "(the shared sp_mcp_cursor key is never borrowed for writes)",
@@ -344,7 +347,11 @@ class MCTaskAdapter(Adapter):
             notes = _text(payload.get("notes"), 4000)
             if notes is None:
                 raise AdapterRefused(["mc task: notes missing or longer than 4000"])
-            return _mcp_call("mc_report_progress", {"taskId": task, "notes": notes})
+            call = _mcp_call("mc_report_progress", {"taskId": task, "notes": notes})
+            person = str((action.get("target") or {}).get("acting_for") or "").lower()
+            if person:
+                call["acting_for"] = person      # whose opt-in authorizes the call
+            return call
         _only(payload, self.PATCH_KEYS, "mc task", operation)
         if not payload:
             raise AdapterRefused(["mc task: the update sets nothing"])
@@ -424,8 +431,10 @@ class BCAdapter(Adapter):
     ``lineType`` Comment) are posted to the document's contained lines and checked
     against the same $metadata pin. Undo: a created document or line is deleted with the
     etag BC answered (BC refuses once posted or shipped); a changed line is patched back
-    to the values read before. The BC client here is GET-only and the environment is
-    Production with no sandbox."""
+    to the values read before. The environment is the sandbox when one is named, else
+    Production (owner 11-11: the real company), which the executor opens only with
+    ``live-bc`` and ``live-bc-production`` and writes only on a named person's confirmed
+    approval (``autopilot_write.BC_PRODUCTION_FLAG``)."""
 
     system, kind = "bc", "bc_write"
     documented = "Business Central API v2.0 (POST/PATCH companies({id})/<entity set>)"
@@ -434,8 +443,8 @@ class BCAdapter(Adapter):
     needs = ("Vince's grant of BC API write scopes for the autopilot app "
              "(PLX_WRITES_SCOPES_GRANTED=bc): the BC_* Entra app registered in BC with a "
              "permission set that inserts/modifies Sales and Purchase documents",
-             "a BC sandbox environment to verify against (PLX_BC_SANDBOX_ENVIRONMENT); "
-             "Production only today",
+             "the owner's live-bc and live-bc-production files for Production (a "
+             "sandbox, PLX_BC_SANDBOX_ENVIRONMENT, needs live-bc only)",
              "BC opened to approved writes (PLX_WRITES_LIVE_SYSTEMS=bc) and BC_TENANT_ID",
              "the company id the autopilot writes to (PLX_AUTOPILOT_BC_COMPANY_ID)")
     LINE_OPERATIONS: Mapping[str, Mapping[str, Any]] = {
@@ -449,6 +458,11 @@ class BCAdapter(Adapter):
         "purchase_order_comment": {"parent": "purchaseOrders", "lines": "purchaseOrderLines",
                                    "fields": ("description",),
                                    "fixed": {"lineType": "Comment"}},
+        "purchase_order_line_create": {
+            "parent": "purchaseOrders", "lines": "purchaseOrderLines",
+            "fields": ("lineType", "itemId", "lineObjectNumber", "description", "quantity",
+                       "unitOfMeasureCode", "locationId", "expectedReceiptDate"),
+            "fixed": {}},
     }
     operations = {
         "purchase_order_create": "new purchase order; undo: DELETE with etag while open",
@@ -457,7 +471,60 @@ class BCAdapter(Adapter):
         "sales_order_line_create": "item line on an open sales order; undo: DELETE the line",
         "sales_order_comment": "comment line on a sales order; undo: DELETE the line",
         "purchase_order_comment": "comment line on a purchase order; undo: DELETE the line",
+        "purchase_order_line_create": "item line on an open purchase order (no cost: BC "
+                                      "prices it); undo: DELETE the line",
+        "sales_order_update": "sales order header dates/ship-to/reference; undo: PATCH back",
+        "purchase_order_update": "purchase order header dates/ship-to; undo: PATCH back",
+        "sales_order_line_update": "open sales line quantity/date/description; undo: PATCH back",
+        "sales_order_delete": "delete an open sales order nothing of which shipped; no undo",
+        "purchase_order_delete": "delete an open purchase order nothing of which was "
+                                 "received; no undo",
     }
+    # header edits (PATCH the document with the etag as read); never a party, currency,
+    # price, terms, posting date or status field
+    DOC_UPDATES: Mapping[str, Mapping[str, Any]] = {
+        "sales_order_update": {"set": "salesOrders", "fields": (
+            "externalDocumentNumber", "requestedDeliveryDate", "shipToName", "shipToContact",
+            "partialShipping")},
+        "purchase_order_update": {"set": "purchaseOrders", "fields": (
+            "requestedReceiptDate", "shipToName", "shipToContact")},
+    }
+    LINE_UPDATES: Mapping[str, Mapping[str, Any]] = {
+        "sales_order_line_update": {"parent": "salesOrders", "lines": "salesOrderLines",
+                                    "fields": ("quantity", "shipmentDate", "description")},
+    }
+    # Ricardo's scope: delete only an open order nothing of which shipped or was received;
+    # the reader states it from the document as read (status and the quantities)
+    DELETES: Mapping[str, Mapping[str, Any]] = {
+        "sales_order_delete": {"set": "salesOrders", "done_field": "shipped"},
+        "purchase_order_delete": {"set": "purchaseOrders", "done_field": "received"},
+    }
+    OPEN_STATUSES = frozenset({"Draft", "Open"})
+
+    def _environment(self) -> str:
+        """The autopilot's BC environment: ``PLX_AUTOPILOT_BC_ENVIRONMENT``, else the
+        sandbox (``PLX_BC_SANDBOX_ENVIRONMENT``), else the read environment."""
+        from operating.autopilot_write_readiness import bc_environment
+        environment = bc_environment(self.environ)
+        if not re.fullmatch(r"[A-Za-z0-9_-]{1,50}", environment):
+            raise AdapterRefused(["bc: the write environment name is malformed"])
+        return environment
+
+    def unavailable(self) -> str | None:
+        """What a live write still lacks in the environment this adapter writes (the
+        sandbox needs the sandbox switch, never the Production one)."""
+        if self.transport is None:
+            return super().unavailable()
+        missing = getattr(self.transport, "missing", None)
+        try:
+            environment = self._environment()
+        except AdapterRefused as error:
+            return "; ".join(error.problems)
+        try:
+            found = missing(environment) if callable(missing) else []
+        except TypeError:
+            found = missing() if callable(missing) else []
+        return "; ".join(str(m) for m in found) or None
 
     def _company(self) -> str:
         company = str(self.environ.get("PLX_AUTOPILOT_BC_COMPANY_ID") or "")
@@ -470,6 +537,10 @@ class BCAdapter(Adapter):
         operation = self._operation(action)
         if operation in self.LINE_OPERATIONS:
             return self._line(action, operation)
+        if operation in self.DOC_UPDATES or operation in self.LINE_UPDATES:
+            return self._update(action, operation)
+        if operation in self.DELETES:
+            return self._delete(action, operation)
         problems = wi._check_payload(operation, action.get("payload") or {})
         try:
             company = self._company()
@@ -489,8 +560,8 @@ class BCAdapter(Adapter):
                 problems += error.problems
         if problems:
             raise AdapterRefused(list(problems))
-        intent = {"operation": operation, "environment": self.environ.get("BC_ENVIRONMENT")
-                  or wi.PRODUCTION, "company_id": company, "payload": action["payload"],
+        intent = {"operation": operation, "environment": self._environment(),
+                  "company_id": company, "payload": action["payload"],
                   "precondition": pre, "record_id": record}
         built = wi.build_request(intent, wi.default_metadata())
         if built.get("problems"):
@@ -534,16 +605,115 @@ class BCAdapter(Adapter):
         found = wi.validate_request({"entity_set": op["lines"], "body": typed}, meta)
         if found:
             raise AdapterRefused([str(p) for p in found])
-        root = wi.API_ROOT.replace("{environment}", self.environ.get("BC_ENVIRONMENT")
-                                   or wi.PRODUCTION)
+        root = wi.API_ROOT.replace("{environment}", self._environment())
         return {"method": "POST",
                 "url": f"{root}/companies({company})/{op['parent']}({document.lower()})/"
                        f"{op['lines']}",
                 "headers": {"Content-Type": "application/json"},
                 "body": wi._plain(typed), "body_json": wi._json(typed)}
 
+    def _root(self, company: str) -> str:
+        from operating import write_intents as wi
+        return wi.API_ROOT.replace("{environment}", self._environment()) + \
+            f"/companies({company})"
+
+    @staticmethod
+    def _etag_problem(pre: Mapping[str, Any]) -> list[str]:
+        etag = pre.get("etag")
+        if not isinstance(etag, str) or not etag or "\r" in etag or "\n" in etag \
+                or len(etag) > 300:
+            return ["bc: precondition.etag (the record's etag as read) is required"]
+        return []
+
+    def _update(self, action: Mapping[str, Any], operation: str) -> dict[str, Any]:
+        """A header or line edit: PATCH with the etag as read; every field set has its
+        prior value (the undo), checked against the $metadata pin."""
+        from operating import write_intents as wi
+        doc = self.DOC_UPDATES.get(operation)
+        line = self.LINE_UPDATES.get(operation)
+        spec = doc or line
+        assert spec is not None
+        payload = dict(action.get("payload") or {})
+        _only(payload, spec["fields"], "bc", operation)
+        problems: list[str] = []
+        if not payload:
+            problems.append("bc: the update sets nothing")
+        target = action.get("target") or {}
+        pre = action.get("precondition") or {}
+        document = str(target.get("document_id") or "")
+        if not _GUID.fullmatch(document):
+            problems.append("bc: target.document_id must be the GUID of the open document")
+        line_id = str(target.get("line_id") or "")
+        if line is not None and not _GUID.fullmatch(line_id):
+            problems.append("bc: target.line_id must be the GUID of the line")
+        problems += self._etag_problem(pre)
+        if pre.get("status") not in self.OPEN_STATUSES:
+            problems.append("bc: precondition.status must show the document open")
+        if "quantity" in payload:
+            qty = wi._decimal(payload["quantity"])
+            if qty is None or qty <= 0:
+                problems.append("bc: quantity must be above zero")
+        if "description" in payload and _text(payload["description"], 100) is None:
+            problems.append("bc: description must be 1..100 characters")
+        try:
+            _prior(action, list(payload), "bc")
+        except AdapterRefused as error:
+            problems += error.problems
+        try:
+            company = self._company()
+        except AdapterRefused as error:
+            problems += error.problems
+        if problems:
+            raise AdapterRefused(problems)
+        entity = spec["set"] if doc else spec["lines"]
+        meta = wi.default_metadata()
+        props = meta[0].properties(entity) if meta else {}
+        typed = {k: (wi._decimal(v) if (props.get(k) or {}).get("type") == "Edm.Decimal"
+                     else v) for k, v in payload.items()}
+        found = wi.validate_request({"entity_set": entity, "body": typed}, meta)
+        if found:
+            raise AdapterRefused([str(p) for p in found])
+        url = (f"{self._root(company)}/{spec['set']}({document.lower()})" if doc else
+               f"{self._root(company)}/{spec['parent']}({document.lower()})/"
+               f"{spec['lines']}({line_id.lower()})")
+        return {"method": "PATCH", "url": url,
+                "headers": {"Content-Type": "application/json", "If-Match": pre["etag"]},
+                "body": wi._plain(typed), "body_json": wi._json(typed)}
+
+    def _delete(self, action: Mapping[str, Any], operation: str) -> dict[str, Any]:
+        """Delete an open order nothing of which shipped or was received (Ricardo's
+        scope), with the etag as read; BC itself refuses once anything is posted."""
+        spec = self.DELETES[operation]
+        if action.get("payload"):
+            raise AdapterRefused(["bc: a delete carries no payload"])
+        target = action.get("target") or {}
+        pre = action.get("precondition") or {}
+        problems: list[str] = []
+        document = str(target.get("document_id") or "")
+        if not _GUID.fullmatch(document):
+            problems.append("bc: target.document_id must be the GUID of the open document")
+        problems += self._etag_problem(pre)
+        if pre.get("status") not in self.OPEN_STATUSES:
+            problems.append("bc: only an open (Draft/Open) order is deleted")
+        done = pre.get(spec["done_field"])
+        if not (isinstance(done, (int, str)) and not isinstance(done, bool)
+                and _DIGITS.fullmatch(str(done)) and int(done) == 0):
+            problems.append(f"bc: precondition.{spec['done_field']} must be 0 (nothing "
+                            f"{spec['done_field']}) as read")
+        try:
+            company = self._company()
+        except AdapterRefused as error:
+            problems += error.problems
+        if problems:
+            raise AdapterRefused(problems)
+        return {"method": "DELETE",
+                "url": f"{self._root(company)}/{spec['set']}({document.lower()})",
+                "headers": {"If-Match": pre["etag"]}, "body": None}
+
     def undo_request(self, action: Mapping[str, Any], request: Mapping[str, Any]
                      ) -> dict[str, Any] | None:
+        if request.get("method") == "DELETE":
+            return None          # a deleted order is not restored by the system
         if request.get("method") == "POST":
             return {"method": "DELETE", "url": f"{request['url']}({{response:id}})",
                     "headers": {"If-Match": "{response:@odata.etag}"}, "body": None}
@@ -1181,5 +1351,7 @@ def default_adapters(environ: Mapping[str, str] | None = None) -> dict[str, Adap
     for cls in ADAPTER_TYPES:
         transport = wt.for_system(cls.system, env) if cls.system in (
             "planner", "calendar", "sharepoint", "bc") else None
+        if cls is MCTaskAdapter and env.get("PLX_AUTOPILOT_MC_LIVE") == "1":
+            transport = wt.MCTaskTransport(env)
         out[cls.kind] = cls(environ=env) if cls is MailAdapter else cls(transport, environ=env)
     return out

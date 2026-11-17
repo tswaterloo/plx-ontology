@@ -298,16 +298,18 @@ QUERYABLE_PRINCIPAL = "service:schema-queryable-probe"
 QUERYABLE_WITHHELD = "service:schema-queryable-withheld"
 QUERYABLE_ROWS = 100   # x bindings per type stays inside probe_binding's 20 x 50 find pages
 GROUP_SIZE = 50   # the live verifier MAX_ITEMS: a longer recorded list is only a count
-# The reads' deadline: the catalog read plus 104 relations x a 40 s read (the client's
-# timeout) was 4200 s worst case (Portal 52c9116). The catalog pinned from the 2026-10-26
-# live read binds 248: 9,920 s if every read times out, past this deadline, so such a run
-# counts the rest unreached and is incomplete, never a pass (no timing of 248 live reads
-# is recorded yet: measure before moving the deadline). Pages already read are still projected and
-# probed for up to the grace after it (seconds for 104 x 100 rows), so a slow read phase never
-# wastes what it read; the daily spec's 5400 s timeout covers budget + one read in flight +
-# grace.
+# The reads' deadline: the catalog read, then the bound relations read QUERYABLE_READERS at a
+# time (the mirror's sync reads up to four at once; the service refuses a sixth concurrent
+# request), each reader its own fixed share in name order. The catalog pinned from the
+# 2026-10-26 live read binds 248: if every read takes the client's whole 40 s timeout, one
+# reader's 62 reads are 2,480 s, so the catalog read plus every share fits this deadline with
+# room for the catalog to grow to ~470 bound relations (one reader alone would be 9,920 s,
+# past it). Pages already read are still projected and probed for up to the grace after it
+# (seconds for 248 x 100 rows), so a slow read phase never wastes what it read; the daily
+# spec's 5400 s timeout covers budget + one read in flight + grace.
 QUERYABLE_BUDGET_SECONDS = 4800.0
 QUERYABLE_GRACE_SECONDS = 300.0
+QUERYABLE_READERS = 4
 # The spec declares the floor (expect.json_min.queryable_share: the share of bound relations
 # that must come back) and what a complete run is (complete_when).
 QUERYABLE_SPEC = Path(__file__).resolve().parents[1] / "devloop" / "live-checks" / \
@@ -389,9 +391,13 @@ def _named_groups(names: Sequence[str]) -> dict[str, list[str]]:
 def schema_queryable(environ: Mapping[str, str], *, client: Any = None,
                      rows: int = QUERYABLE_ROWS,
                      budget_seconds: float = QUERYABLE_BUDGET_SECONDS,
+                     readers: int = QUERYABLE_READERS,
                      clock: Callable[[], float] = time.monotonic) -> dict[str, Any]:
     """Every Portal relation the compiled schema binds, live: one page read, projected
-    and read back through the ontology tools; names and counts only.
+    and read back through the ontology tools; names and counts only. ``readers`` (1..4)
+    relations are read at the same time, reader ``i`` taking the ``i``-th of every
+    ``readers`` bound names in sorted order, and each reader checks the deadline before each
+    of its reads.
 
     Each relation gets its own outcome; one that fails never stops the others.
     ``queryable``: relations with rows where every sampled binding came back and none
@@ -428,6 +434,8 @@ def schema_queryable(environ: Mapping[str, str], *, client: Any = None,
         raise ValueError("schema-queryable --rows must be 1..5000")
     if not 0 < budget_seconds <= 7200:
         raise ValueError("schema-queryable --budget-seconds must be in (0, 7200]")
+    if isinstance(readers, bool) or not isinstance(readers, int) or not 1 <= readers <= 4:
+        raise ValueError("schema-queryable readers must be an integer 1..4")
     floor, complete_when = _queryable_terms(QUERYABLE_SPEC)
     deadline = clock() + budget_seconds
     stop = deadline + QUERYABLE_GRACE_SECONDS
@@ -458,24 +466,51 @@ def schema_queryable(environ: Mapping[str, str], *, client: Any = None,
     unavailable: dict[str, str] = {}
     unreached: list[str] = []
     not_queryable: dict[str, str] = {}
-    for name in sorted(bound):
-        if clock() >= deadline:
-            unreached.append(name)
-            continue
-        if name not in catalog:
-            not_queryable[name] = "catalog_absent"
-            continue
-        try:
-            entry = served_entry(catalog, name)
-            page = client.read_page(name, entry, columns=list(entry["columns"]),
-                                    page_size=rows)
-        except RelationUnavailable as exc:
-            unavailable[name] = exc.reason
-            continue
-        except Exception as exc:  # noqa: BLE001 - the class only; messages may carry values
-            not_queryable[name] = "read_" + type(exc).__name__
-            continue
-        pages[name] = (list(entry["key"]), page["rows"])
+
+    def read(names: Sequence[str]) -> None:
+        # One reader's share; each outcome is one dict entry under its own name, so the
+        # readers never write the same key (dict item writes are atomic).
+        for name in names:
+            if clock() >= deadline:
+                unreached.append(name)
+                continue
+            if name not in catalog:
+                not_queryable[name] = "catalog_absent"
+                continue
+            try:
+                entry = served_entry(catalog, name)
+                page = client.read_page(name, entry, columns=list(entry["columns"]),
+                                        page_size=rows)
+            except RelationUnavailable as exc:
+                unavailable[name] = exc.reason
+                continue
+            except Exception as exc:  # noqa: BLE001 - the class only; messages may carry values
+                not_queryable[name] = "read_" + type(exc).__name__
+                continue
+            pages[name] = (list(entry["key"]), page["rows"])
+
+    names = sorted(bound)
+    if readers == 1:
+        read(names)
+    else:   # one thread per reader, so a reader's reads are its own share, in order
+        import threading
+        failed: list[BaseException] = []
+
+        def reader(share: Sequence[str]) -> None:
+            try:
+                read(share)
+            except BaseException as exc:  # noqa: BLE001 - re-raised below
+                failed.append(exc)
+
+        threads = [threading.Thread(target=reader, args=(names[i::readers],),
+                                    name=f"schema-queryable-{i}", daemon=True)
+                   for i in range(readers)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
+        if failed:
+            raise failed[0]
     empty = sorted(name for name, (_, page_rows) in pages.items() if not page_rows)
     filled = sorted(name for name, (_, page_rows) in pages.items() if page_rows)
     who, nobody = frozenset({QUERYABLE_PRINCIPAL}), frozenset({QUERYABLE_WITHHELD})
@@ -636,8 +671,9 @@ def mirror_fallback(environ: Mapping[str, str], *, client: Any = None,
                               "PLX_WORKBENCH_API_KEY")
         from integrations.workbench_read_api import WorkbenchReadApiClient
         client = WorkbenchReadApiClient(base_url, key)
-    from integrations.source_mirror import (AudienceMap, MirrorError, load_ingest_config,
-                                            mirror_options)
+    from integrations.source_mirror import AudienceMap, load_ingest_config
+    from integrations.source_mirror_query import mirror_options
+    from integrations.source_mirror_values import MirrorError
     from ontology import identifiers, resolve
     from ontology.core import Actor
     from ontology.project import build_store

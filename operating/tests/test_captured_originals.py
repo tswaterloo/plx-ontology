@@ -44,7 +44,6 @@ from operating.case_tools_host import CaptureCaseHostTools, CaseCaptures
 from operating.cases import CitationUnresolvable
 from operating.mcp_server import MCPServer
 from operating.tests.test_case_host_sharepoint import SOON, SharePointHostCase
-from operating.tests.test_case_tools_host import _client
 
 EXCLUDED_OID = "0e0e0e0e-0000-4000-8000-00000000e0e1"
 EXCLUDED_UPN = "excluded.person@example-plx.com"

@@ -14,6 +14,17 @@ Real cases are evaluation data, never code paths.
 - Repo: private `tswaterloo/OntologyProject`.
   Code map: `python3 scripts/gen_codemap.py --section <prefix>`.
 The old dev loop (routines) was removed.
+- The ontology is served from Postgres (`PLX_ONTOLOGY_PG=only`); gen 11/12 SQLite is retired. No more generation
+  builds: delta/follow keeps rows current and schema, link and marking changes apply in place
+  (`docs/no-builds.md`, `docs/pg-cutover.md`). Migrations: `operating/pg/migrations/`, numbers claimed before use.
+- Every service runs from one sealed release, `deploy/release/plx-release` (`docs/release.md`); each landing is
+  deployed as a new release, with rollback if the API is unhealthy. `deploy/` is the only source of host config.
+- Host background work and hand-run jobs share one Postgres job queue (`operating/jobq/`): jobs declare cores,
+  memory and disk; hand-run ones (tests, evals, scripts) form the workspaces pool in `plx-workspaces.slice`
+  (`tools/job.py`, `tools/testslot.py`; `deploy/jobq/apply.sh --workspaces` turns it on).
+- The product is one Next app (`app/`) plus an Electron desktop shell (`desktop/`, unsigned builds; signing waits
+  on credentials). Answers, alerts, per-role autopilots (per-person opt-in), assist and create mode, document
+  templates and form filling are in; autopilots run in Draft until each passes its test on fresh days.
 - Live sources (Portal API, Graph mail, SharePoint, BC, MC/VMC) are read-only. Live evidence is
   the verifier's (the live-results branch, `results/latest.json`; off, may be old).
 - Known red tests: `tools/KNOWN-RED.md`.
@@ -45,8 +56,8 @@ Trim per employee on every view.
 - Delete dead code continuously (`plx-mechanic`); record removals in BLOAT-MAP.
 `Plx-mechanic` for mechanical work.
 
-` (merge, contract
-  checks, `tools/smoke-tests.txt` plus the named modules, push only on success; never by hand).
+## Commands
+- Land through the batch lander: queue `branch|sha|modules|message`.
   Mock demo `tools/demo.sh` (demo data, prints the URL, Ctrl-C stops it). Load flakes: `tools/FLAKY.md`.
-- Tests `python3 tools/affected_tests.py --base <base>`;
+- Tests go through `tools/testslot.py`; type check `python3 tools/typecheck.py` (baseline file); whole suite `python3 tools/main_ci.py`; `python3 tools/affected_tests.py --base <base>`;
   app `cd app && npm test && npm run typecheck`; Python `python3 -m unittest <module>`.

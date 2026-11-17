@@ -41,6 +41,7 @@ import subprocess
 import time
 from typing import Any, Iterator
 
+from ontology import parent_watch
 from ontology import step_migrate as sm
 from ontology import unit_park
 
@@ -154,7 +155,8 @@ def _all_parts(jobs: list[tuple[Any, ...]], workers: int, folder: Path) -> list[
     import multiprocessing
     from ontology.store import main_not_imported
     with main_not_imported():
-        pool = cf.ProcessPoolExecutor(workers, mp_context=multiprocessing.get_context("spawn"))
+        pool = cf.ProcessPoolExecutor(workers, mp_context=multiprocessing.get_context("spawn"),
+                                      **parent_watch.pool_init())
     try:
         futures = [pool.submit(_staged_value_part, str(folder / name), *args)
                    for name, args in zip(names, jobs)]

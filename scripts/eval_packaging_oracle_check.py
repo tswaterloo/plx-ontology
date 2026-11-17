@@ -446,7 +446,7 @@ def investigate(call: Callable[[str, dict], Mapping[str, Any]], root: str
         page = call("plx.investigate", {"family": "landed_cost", "root": root,
                                         **({"cursor": cursor} if cursor else {})})
         if "error" in page:
-            from operating.case_workspace_live import _code
+            from operating.case_workspace_live_evidence import _code
             return {**merged, "error": _code(page)}
         merged["pages"] += 1
         for entry in page.get("answer") or []:
@@ -748,7 +748,7 @@ def open_purchase_orders(call: Callable[[str, dict], Mapping[str, Any]],
             "filters": [{"property": "status", "op": "present"}],
             **({"cursor": cursor} if cursor else {})})
         if "error" in page:
-            from operating.case_workspace_live import _code
+            from operating.case_workspace_live_evidence import _code
             return ids, "incomplete", _code(page)
         for candidate in page.get("candidates") or []:
             oid = (candidate.get("object") or {}).get("object_id")

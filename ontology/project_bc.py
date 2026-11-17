@@ -71,6 +71,29 @@ INCOMPLETE = "source_capture_incomplete"
 _INCREMENTAL = "incremental"
 
 
+
+def field_page_row(relation: str, row: Any, record_id: str) -> Any:
+    """The row of a captured record as projected and as cited. A field page row
+    (``BC_FIELD_PAGES``: Page 50 references, Page 38 lots) is stored under its parent
+    record's API v2.0 id (the record path) and carries no ``id`` of its own: that path id
+    is the row's key. The projector and the citation reader (``CaseRuntime``) both read
+    the row through this, so ``row.id`` resolves to the id the record path names. Any
+    other row, and a row that has its own ``id``, is returned as captured."""
+    if relation in BC_FIELD_PAGES and isinstance(row, dict) and "id" not in row:
+        return {**row, "id": record_id}
+    return row
+
+
+def cited_row(handle: str, row: Any) -> Any:
+    """``field_page_row`` for the BC capture handle ``handle`` names (its entity set and
+    record id); the row unchanged when the handle is not a well-formed BC capture handle."""
+    from integrations.capture_store import parse_handle
+    try:
+        _kind, path, _generation, _capture = parse_handle(handle)
+    except Exception:  # noqa: BLE001 - not a capture handle: nothing to add
+        return row
+    return field_page_row(path[2], row, path[3]) if len(path) == 4 else row
+
 class BcCaptures(Reopenable):
     """Every retained version of a BC capture store file, read-only (``source = "bc"``)."""
 
@@ -244,10 +267,7 @@ class BcCaptures(Reopenable):
         path = BC_KIND.canonical_path([unquote(p) for p in str(row["path"]).split("/")])
         payload = json.loads(row["payload"])
         held = payload["row"]
-        if relation in BC_FIELD_PAGES and isinstance(held, dict) and "id" not in held:
-            # A field page row is stored under its parent record's API v2.0 id (the
-            # record path, so the citation names it): that id is the row's key.
-            held = {**held, "id": path[3]}
+        held = field_page_row(relation, held, path[3])
         return CapturedRecord(
             source=SOURCE, relation=relation, record_key=f"{path[1]}/{path[3]}",
             row=held, l1_handle=make_handle(BC_KIND, path, self.generation,

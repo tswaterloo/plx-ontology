@@ -42,17 +42,19 @@ import argparse
 import ast
 import contextlib
 import dataclasses
-import hashlib
 import json
 import os
 from pathlib import Path
 import re
 import sqlite3
-import subprocess
 import sys
 import tempfile
 import time
 from typing import Any, Callable, Iterable, Iterator, Mapping, Sequence
+from ontology import parent_watch
+
+from ontology import step_code
+from ontology.step_code import _read, _sha
 
 FORMAT = "plx-step-migration/v1"
 TABLE = "step_migration"
@@ -62,11 +64,6 @@ MENTION = "mention"
 
 def _get(item: Any, name: str) -> Any:
     return item.get(name) if isinstance(item, Mapping) else getattr(item, name, None)
-
-
-def _sha(value: Any) -> str:
-    return hashlib.sha256(json.dumps(value, sort_keys=True, separators=(",", ":"),
-                                     default=str).encode()).hexdigest()
 
 
 def prefix_end(prefix: str) -> str:
@@ -301,35 +298,44 @@ class Spec:
         return set(got) | (_property_types(*names)(schema) if names else set())
 
 
+# each step's code files: a table of data (``ontology/step_code.json``), so a build records
+# the steps digest (``step_code``) without importing this module
+CODE: dict[str, tuple[str, ...]] = step_code.step_files() or {}
+# and the definitions the build runs for each (the v2 table: a step's digest is the code its
+# roots reach in its files, not their bytes; None: a v1 table, the byte scheme)
+ROOTS: dict[str, tuple[tuple[str, str | None], ...]] | None = step_code.step_roots()
+
 STEPS: dict[str, Spec] = {
     # kind_confirmation.PROJECTED_TYPE / PROJECTED_BINDING (a test holds them equal)
-    "confirmations": Spec((), ("operating/kind_confirmation.py",),
+    "confirmations": Spec((), CODE["confirmations"],
                           values=(("SharePointFile", "sharepoint.drive_items"),),
                           inputs=_confirmation_inputs),
-    "document_fields": Spec(("docfield:",), ("ontology/document_fields.py",
-                                             "ontology/schema/document_fields.json"),
+    # the readings it parses (captured_text, document_understanding) are the units'
+    # derivation code (``project._DERIVATION_ROOTS``, the unit digest): this step's roots
+    # reach only ``document_understanding.EXTRACTOR_VERSION``
+    "document_fields": Spec(("docfield:",), CODE["document_fields"],
                             writes=_writes_document_fields, inputs=_mention_inputs(True),
                             from_inputs=_mention_froms(True)),
-    "mentions": Spec(("mention:",), ("ontology/mentions.py", "ontology/finish_parallel.py",
-                                   "ontology/list_documents.py"),
+    # the identifier grammar is the extractor's (``mentions.extractor_version``): a pattern
+    # change re-derives the step's links (live 2026-11-12: a narrower petra_po pattern
+    # left 58,086 stale links, the step's own code unchanged)
+    "mentions": Spec(("mention:",), CODE["mentions"],
                      writes=_writes_mentions, documents=True, inputs=_mention_inputs(False),
                      from_inputs=_mention_froms(False), properties=_mention_properties),
-    "key_joins": Spec(("keyjoin:",), ("ontology/key_links.py", "ontology/posting_links.py",
-                                      "ontology/identity_scoring.py"),
+    "key_joins": Spec(("keyjoin:",), CODE["key_joins"],
                       writes=_key_join_links, inputs=_key_join_inputs),
-    "reviews": Spec(("rvw-",), ("ontology/reviews.py",), writes=_reviewed_links,
+    "reviews": Spec(("rvw-",), CODE["reviews"], writes=_reviewed_links,
                     amends=("document_fields", "mentions"), inputs=_reviews_inputs),
-    "roles": Spec(("roles:",), ("ontology/party_roles.py",),
+    "roles": Spec(("roles:",), CODE["roles"],
                   writes=_named_links("Customer.same_party_as_supplier"),
                   inputs=_fixed("Customer", "Supplier")),
     "sender_corroboration": Spec(("docfirm:", "doccarrier:"),
-                                 ("ontology/sender_corroboration.py",
-                                  "ontology/sender_parallel.py"),
+                                 CODE["sender_corroboration"],
                                  reads=("document_fields",), documents=True,
                                  inputs=_union(_stepped_link_ends, _identifier_types,
                                                _twin_inputs),
                                  properties=_sender_properties),
-    "sender_parties": Spec(("sendparty:",), ("ontology/sender_parties.py",),
+    "sender_parties": Spec(("sendparty:",), CODE["sender_parties"],
                            writes=_named_links("Email.sent_by_supplier",
                                                "Email.sent_by_customer",
                                                "CalendarEvent.with_supplier",
@@ -341,20 +347,28 @@ STEPS: dict[str, Spec] = {
                                          "Supplier", "Contact", "SalesOrder", "PurchaseOrder",
                                          "SalesInvoice", "PurchaseInvoice", "Shipment",
                                          "AgedPayable", "CustomerPurchaseOrder")),
-    "with_owners": Spec(("owner:",), ("ontology/owner_links.py", "ontology/people_links.py",
-                                      "ontology/sender_parties.py", "ontology/mentions.py",
-                                      "integrations/people_exclusion.py"),
-                        writes=_named_links("PurchaseOrder.buyer", "SalesOrder.sales_rep",
+    # formula sheets' lines: the sheets' names and text, the products' codes and names,
+    # the parts' identifiers and the item twins (ontology.formula_lines)
+    "with_formula_lines": Spec(("formula:",), CODE["with_formula_lines"],
+                               writes=_named_links("Product.formula_line",
+                                                   "FgItem.formula_line"),
+                               reads=("twins_parties",),
+                               inputs=_fixed("Attachment", "ContainerMember", "SharePointFile",
+                                             "Product", "FgItem")),
+    "with_owners": Spec(("owner:",), CODE["with_owners"],
+                        writes=_named_links("AssemblyOrder.created_by", "PurchaseOrder.buyer",
+                                            "SalesOrder.sales_rep",
                                             "Customer.account_owner", "PlannerTask.assigned_to",
-                                            "MCTask.assigned_to"),
+                                            "MCTask.assigned_to", "MCTask.reported_by",
+                                            "MCApproval.requested_by_person",
+                                            "MCApproval.decided_by_person"),
                         # its contradicted MCTask.assigned_to links: a type the task id
                         # and name steps write too (every MCTask link type)
                         reads=("task_ids", "task_names"),
-                        inputs=_fixed("Person", "PurchaseOrder", "SalesOrder", "Customer",
-                                      "PlannerTask", "MCTask")),
-    "with_people": Spec(("person:",), ("ontology/people_links.py", "ontology/sender_parties.py",
-                                 "ontology/mentions.py", "ontology/document_fields.py",
-                                 "ontology/schema/document_fields.json"),
+                        inputs=_fixed("Person", "AssemblyOrder", "PurchaseOrder",
+                                      "SalesOrder", "Customer", "PlannerTask", "MCTask",
+                                      "MCApproval")),
+    "with_people": Spec(("person:",), CODE["with_people"],
                         writes=_named_links("Email.sent_by_person", "Email.addressed_to_person",
                                             "CalendarEvent.with_person", "Meeting.with_person",
                                             "TeamsChatMessage.sent_by_person",
@@ -362,38 +376,42 @@ STEPS: dict[str, Spec] = {
                                             "TeamsChat.with_person",
                                             "TeamsChannel.with_person",
                                             "PlannerTask.with_person", "MCTask.with_person",
-                                            "MCApproval.with_person"),
+                                            "MCApproval.with_person", "Contact.same_person_as",
+                                            "Person.same_person_as"),
                         inputs=_fixed("Person", "Email", "CalendarEvent", "Meeting",
                                       "TeamsChatMessage", "TeamsChannelMessage", "TeamsChat",
-                                      "TeamsChannel", "PlannerTask", "MCTask", "MCApproval")),
+                                      "TeamsChannel", "PlannerTask", "MCTask", "MCApproval",
+                                      "Contact")),
     # demand pegging reads open order and PO lines, their orders, items and assembly orders
-    "supply_pegging": Spec(("peg:",), ("ontology/demand_pegging.py",
-                                       "ontology/schema/pegging.json",
-                                       "ontology/sender_parties.py", "ontology/mentions.py"),
+    "supply_pegging": Spec(("peg:",), CODE["supply_pegging"],
                            writes=_named_links("SalesOrderLine.supplied_by",
                                                "SalesOrder.awaits_purchase_order"),
                            inputs=_fixed("SalesOrder", "SalesOrderLine", "PurchaseOrder",
                                          "PurchaseOrderLine", "Product", "AssemblyOrder",
                                          "AssemblyOrderAllocation", "AssemblyOrderComponent")),
-    "task_ids": Spec(("crb-mcid:",), ("ontology/mc_task_links.py",),
+    "task_ids": Spec(("crb-mcid:",), CODE["task_ids"],
                      writes=_from_type_links("MCTask"), reads=("mentions",),
                      inputs=_union(_fixed("MCTask"), _identifier_types)),
-    "task_names": Spec(("mcname:",), ("ontology/mc_task_links.py",),
+    "task_names": Spec(("mcname:",), CODE["task_names"],
                        writes=_from_type_links("MCTask"),
                        inputs=_fixed("MCTask", "Customer", "Supplier", "Product")),
     # the text index's inputs are the apply's: a unit migration re-marks the text fields
     # of the objects it rewrites and refuses what it cannot (ontology_migrate._text_index);
     # a change of its code is refused unless it only marks (MARKS_ONLY: re-marked in place)
-    "text_index": Spec((), ("ontology/text_index.py", "ontology/text_parallel.py"),
-                       supported=False, inputs=_fixed()),
-    "trace_postings": Spec(("postdoc:",), ("ontology/posting_links.py",),
+    "text_index": Spec((), CODE["text_index"],
+                       # it writes no links, so no person's rejection of a link reaches it
+                       # (a reviews code change is no reason to re-index text)
+                       reads_own=(), supported=False, inputs=_fixed()),
+    "trace_postings": Spec(("postdoc:",), CODE["trace_postings"],
                            writes=_posting_links, inputs=_posting_inputs),
-    "twins": Spec(("crb-po-",), ("ontology/identity_scoring.py",), inputs=_twin_inputs),
-    "twins_parties": Spec(("crb-party-",), ("ontology/identity_scoring.py",),
+    "twins": Spec(("crb-po-",), CODE["twins"], inputs=_twin_inputs),
+    # two cards of one BC company with one name and one e-mail or phone (contact_twins)
+    "twins_contacts": Spec(("crb-contact-",), CODE["twins_contacts"],
+                           writes=_named_links("Contact.same_record_as"),
+                           inputs=_fixed("Contact")),
+    "twins_parties": Spec(("crb-party-",), CODE["twins_parties"],
                           reads=("twins",), inputs=_party_twin_inputs),
-    "unique_mentions": Spec(("crb-mid:",), ("ontology/mention_firm.py",
-                                            "ontology/mention_firm_parallel.py",
-                                            "ontology/po_mention_resolve.py"),
+    "unique_mentions": Spec(("crb-mid:",), CODE["unique_mentions"],
                             # po_mention_resolve reads the order and party twins
                             writes=_firm_mention_links,
                             reads=("mentions", "twins", "twins_parties"),
@@ -403,7 +421,7 @@ STEPS: dict[str, Spec] = {
                                           _fixed("PurchaseOrder", "Supplier", "Contact",
                                                  "Customer", "Email")),
                             from_inputs=_mention_froms(False)),
-    "your_reference": Spec(("yrf-po-",), ("ontology/identity_scoring.py",),
+    "your_reference": Spec(("yrf-po-",), CODE["your_reference"],
                            reads=("twins",), inputs=_twin_inputs),
 }
 
@@ -419,7 +437,11 @@ STEPS: dict[str, Spec] = {
 MARKS_ONLY: dict[str, frozenset[tuple[str, str]]] = {
     "text_index": frozenset({
         ("becab53876388be8bf17db03631e2af2ecbd9c89eeb814e3b715dc6c0d6c403f",
-         "134dfec62ca16d17b649eed64dabcd8b1ad3db3c740c9fd1037831b5f99e801b")}),
+         "134dfec62ca16d17b649eed64dabcd8b1ad3db3c740c9fd1037831b5f99e801b"),
+        # 8a3ac9ab84 (train 2): text_parallel's pool ends with its parent; 134dfec6 ->
+        # badc3269 writes the same rows (SAME_ROWS below), so it is the same marks target
+        ("becab53876388be8bf17db03631e2af2ecbd9c89eeb814e3b715dc6c0d6c403f",
+         "badc326924d02c09f2db6c7fdfd44d20642de7e4bea168bcaf2aaa4f2a01d8e5")}),
 }
 # Code changes of a step proven to write the same rows, as (from, to) pairs of its code
 # digest (:func:`code_digests`), each pinned by reading the change: a step migration across
@@ -443,7 +465,84 @@ MARKS_ONLY: dict[str, frozenset[tuple[str, str]]] = {
 # From the served step code (eab7a9759c's pin target) to defb027118. Old and new code
 # agreed on all 92,248 served Person object ids and addresses (3 exclusion settings) and
 # on the step's fixture links.
+# twins and your_reference, 4029b28005..2de675a044 (C-07 with identity-1 C-06, 11-12):
+# ``identity_scoring.py`` is their one code file, and the change is ``_PartyTwin`` (the
+# ``two_companies`` outcome of ``judge``; ``partners`` reads stored-key links only) and the
+# ``_PARTY_OUTCOMES`` tally of the ``twins_parties`` step. Neither name is
+# reachable from ``twin_step`` or ``your_reference_step`` (every name and attribute their
+# code reads, classes whole); the identifier grammar change beside it (C-03) is the
+# mention profiles, which neither step reads (they parse values by ``kinds``).
+# with_people, 062ecdc47b..(the combined migration's part 1, 11-12): its code files moved
+# only by DOC-002's ``document_fields._parse`` compound-unit refusal (``_COMPOUND_UNIT``)
+# and an ``_excluder`` people_links defines for owner_links and never calls. Resolved by
+# module, the step reaches document_fields only through ``profiles`` (sender_parties
+# ``own_domains``), which reaches neither. Its alias change (identity-1) is part 2's.
+# with_people, CT-D-06 (11-12): ``CertificateOfAnalysis.for_lot`` is derived inside
+# ``document_fields.store_document_links`` (``_holder_candidates``, ``_lot_links`` and their
+# helpers; the document_fields step runs again for it and DOC-002 in the one part 1 run).
+# with_people's one module crossing, ``profiles``, reaches none of these names. The same
+# served step code (062ecdc47b) to the part 1 tree with it (f83d28080d).
+# with_people, DOC-001/003/004/006 (11-12, trust-2): ``date_order``, ``carrier_promises``,
+# the fields memo (``_fields_of``, ``_bytes_kept``, ``_documents``) in document_fields and
+# the reading modules it imports (captured_text's memo scope and ``reading_kept``,
+# document_understanding's hidden HTML); ``profiles`` reaches none of them. The same served
+# step code to the part 1 tree with them (5bb94a934a), replacing f83d28080d's pair.
+# text_index and sender_corroboration, a725d74f07 (train 4b, 11-14) -> train2-1114: their
+# one change is the worker pools' initializer (``**parent_watch.pool_init(_init, args)``,
+# perm-box-1114-steps 8a3ac9ab84): the workers run ``_init(*args)`` as before and also end
+# with their parent; nothing they read or write moved (text_parallel.py, sender_parallel.py).
 SAME_ROWS: dict[str, frozenset[tuple[str, str]]] = {
+    "text_index": frozenset({
+        ("134dfec62ca16d17b649eed64dabcd8b1ad3db3c740c9fd1037831b5f99e801b",
+         "badc326924d02c09f2db6c7fdfd44d20642de7e4bea168bcaf2aaa4f2a01d8e5")}),
+    "sender_corroboration": frozenset({
+        ("2da89ef877c4f4a44802c76b8af2cc7ba697c1fac85a72059c650e45966b6058",
+         "a5a65898f83ffcc0ee77f731a1ca3307bae87657488921d9f56812993b9f1200")}),
+    "with_people": frozenset({
+        ("4d746596a06bc0c717a9d387183a8a38c5b2308bcf1df835cbb16de11a8ee6ce",
+         "36d660ba7aa04ecb6b9a2befcf5fe40ee06b6f9dd5f5177c74e031f7f5e344e5"),
+        ("4d746596a06bc0c717a9d387183a8a38c5b2308bcf1df835cbb16de11a8ee6ce",
+         "9742bcf6d6538a7ffccc733ab423e69f69bd1dcb9e8e9bbd2e727dee830f0d1a"),
+        # NW-13 (7edac7f84d): a batch of objects per read, equal row for row
+        # (ontology/tests/test_step_reads.py at 1/10/60 objects)
+        ("4d746596a06bc0c717a9d387183a8a38c5b2308bcf1df835cbb16de11a8ee6ce",
+         "aeed06f808cf7be5f4f195ae65ff32716c2ad01dac9dc1f911da678db2218dc0"),
+        # blob-zstd on c387ba7453 (train 3's PIN): document_fields' _bytes_held tests a held
+        # form through blob_held; the step (people_links_step) reaches document_fields only
+        # through ``profiles``, which reaches no name the change touched
+        ("21fd8ef42a0954e3f8b605ebbcc85de9b4a9f4b39b252e453d6d760ec54ae57d",
+         "f38da8fa9aa4706248c1575265c2ce0ea6bb0af923150dba232b4637dc52bfd6"),
+        # TRAIN2-B1 (v2 scheme; compare_code of c387ba7453, f9bdbbbcb3 and M are all the
+        # first): alias_pairs takes a part (k, n) and people_links_step passes conn.part.
+        # Unparted, part is None (SplitConnection.part's default; a SQLite build's
+        # connection has none), mine() is True for every Person, and the three added
+        # ``not mine`` tests never skip: the same pairs, rows, order and counts. Only a
+        # parted run (pg_step_inplace.PARTED_STEPS) narrows, its union equal to the
+        # unparted output (ontology/tests/test_people.py PartedStepTest). with_owners
+        # reaches none of the changed definitions; its v2 digest does not move
+        ("111dcf4fa6374a312ac746ede3e0f55c32561d1b62e137caf735ea948fa1dfc3",
+         "1b522413232efbc6a9cfce8ec6c0fb3c63909c4f86740c4f667be0b0fee619c2")}),
+    # NW-13 too: the batched reads (test_step_reads); supply_pegging reads only
+    # sender_parties' _digest, _q, _values and _versions, which NW-13 left as they were
+    "sender_parties": frozenset({
+        ("2b3effc22bd4b1a05839a1dde1ae5f4cbda4eb908a381136943f8934d84baff6",
+         "90024d09ea422aba97701afbf3e5c175273790ecd5921c9976acc74f2083a93d")}),
+    "unique_mentions": frozenset({
+        ("31f2628ad7d359b774b0403161c5f32dd4d22d1733d14a67ab0672d144722969",
+         "ab125ea7895e988607114d4939cb816caba104317a8df54e843d26bd9fcc3cb3"),
+        # NW-13 (88fdc30dff): one same_record read per window of candidates; equal row for
+        # row to the served step's applied crb-mid: rows on the served store (11-14) and to the per-object step in test_step_reads
+        ("08d75715ea690c5c2adf69dc15098f0a80b844cd1ef027dfe29d983991a018cb",
+         "90ab15b2dee3ab609a1d03cb764526e0eb5eb9ac830a8eacddfa27281dd327b0")}),
+    "supply_pegging": frozenset({
+        ("51d8ce8f082dae86258dcb6a589246933dc6184c56367e0d9b5df7f72e90b44a",
+         "ae067f2d98c6c50fee42f7a9658120a97c9a6a137e3a2eba249a282bc72e8ac3")}),
+    "twins": frozenset({
+        ("131db39416cf5c60510416648e4679711ec956f989e287fc3311577473ef6d05",
+         "8881e1c06adcc734fe71ded0903b5fabdc89ae7cec70376c723268567290de51")}),
+    "your_reference": frozenset({
+        ("131db39416cf5c60510416648e4679711ec956f989e287fc3311577473ef6d05",
+         "8881e1c06adcc734fe71ded0903b5fabdc89ae7cec70376c723268567290de51")}),
     "with_owners": frozenset({
         ("a2887e8a79b92a6f292887258f83414460eceaed3b0bad5f37abf4f5aea9d14b",
          "f8b5571f8f1d35ccfe76cae434b2b602eb8e92e168b7ffb06d1af1fa63f8454e"),
@@ -451,11 +550,140 @@ SAME_ROWS: dict[str, frozenset[tuple[str, str]]] = {
          "5583b37cf462ccb7750b52d8e5b9de3b755fa945a44c469390171ba899c6b448")}),
     "document_fields": frozenset({
         ("ab0f767f19df54ad663aae34db67584c2ee1d25230104edea7735af56e68eb38",
-         "b4256f70d305a06e1a7ee37bb9068ddb6f39bfe6fe720fe9342bc016d8ff1de2")}),
+         "b4256f70d305a06e1a7ee37bb9068ddb6f39bfe6fe720fe9342bc016d8ff1de2"),
+        # blob-zstd (29ea163b53 onto train 3's c387ba7453): the held tests (_bytes_kept
+        # through reading_kept, _bytes_held) and read_blob/stored_text/_may_contain see a
+        # file, a packed row or the bytes' .zst where they saw a file. They differ only
+        # for a form held packed or .zst and not as a file: none of the documents' blobs
+        # on the served store (11-15), and every
+        # .zst the compress pass writes holds the bytes the file held; the derivation,
+        # readings and document codes keep c387ba7453's (ontology/code_equivalence.py)
+        ("2b6d76170dedb80ddb2fb994f7a12ca5a8507ae791a0ef92d5ffac6b697d4e70",
+         "42e1baeea91b73c1bf3d9071b667108c05b12570f315fff6591bd0a9cab7a848"),
+        # the same change in the v2 scheme (CAP-L180): compare_code(c387ba7453) -> this
+        # tree, whose v2 digests are PIN_4 f9bdbbbcb3's; the plan compares v2 on both sides
+        ("10343bcdc3d9b30ddf9353b085321b60092c68f7a8b199b2cbf34564dd174268",
+         "e5515c63986f66fb40d5da12f3e8ad7f815c0438fc55c3cd14fb5bf56f6c8b26")}),
     "confirmations": frozenset({
         ("fff623a24d1b3f3fb7ed8ba05247e25092474886446e5ceb6a3e35f3201d3efd",
          "3cfad85742ea1f054c91a43ccd0a56003a6ee321b079846a92b973e017e16224")}),
+    # CC-C-04 (rewrite-d-1114, onto PIN_3 c387ba7453): mc_task_links.py moved only in
+    # task_ids' code (firm_links/_firm_row/task_ids_step), which task_names never calls
+    "task_names": frozenset({
+        ("db4aea67eb592dbe2f8c65254acd78f3da26d05d037300f0d753fece1a60e8c9",
+         "b5d7bc1727a61b0abf8b68ba57a9756c0c7331806bc270afdf194ff04e2abbfb"),
+        # the same change in the v2 scheme (CAP-L180): compare_code(c387ba7453) -> this
+        # tree, whose v2 digests are PIN_4 f9bdbbbcb3's; the plan compares v2 on both sides
+        ("e5557647466ea90ecb8ad4a667638711a213c5bb5b2a0b0b6f1488074052cd58",
+         "fe77ce5725e624240a754e0745a6ceaa89ed3162e8d6ba0ae32e54ddc34e4594")}),
 }
+# Code changes of a step proven to write, on a store ``operating.pg.mention_collapse`` folded
+# (CC-C-04: a document's repeated mention rows of one link held as one row carrying its
+# occurrences, ``ontology.mention_occurrences``), exactly the rows that collapse leaves, and
+# on a store it never folded the rows it wrote before: (from, to) pairs of the step's code
+# digest, each pinned by reading the change and by the collapse's proof (its ``verify`` and
+# the occurrence-aware step re-run on a rehearsal copy). A step migration across one does not
+# run the step again, nor its readers for it (as :data:`SAME_ROWS`); the plan names the step
+# under ``"collapsed"`` and the migration runs the collapse (``mention_collapse run``, then
+# ``verify``) in place of it. Filled at the train's PIN from the served step code.
+COLLAPSED: dict[str, frozenset[tuple[str, str]]] = {
+    # CC-C-04 onto PIN_3 c387ba7453 (c04_pins.py --from-ref c387ba7453, merge 5cb87c200f)
+    "unique_mentions": frozenset({
+        ("11cb2931ab6ab2f4e7c39e993abce57751dce855749648a78483bddc514c2f69",
+         "cc42c6c5b5c3e53a8bf493d21e746a719847a5a1e1233a276af117528c740a00"),
+        # the same change in the v2 scheme (CAP-L180): compare_code(c387ba7453) -> this
+        # tree, whose v2 digests are PIN_4 f9bdbbbcb3's; the plan compares v2 on both sides
+        ("57eb9068227262e8890040d3260bb487b1ba5bd0ce2976558035b876d687db5f",
+         "9334e3f38d1a5d6e0b3e7407307dfc243ca327d7149c1508cdf2fccfbfb14320")}),
+    "task_ids": frozenset({
+        ("db4aea67eb592dbe2f8c65254acd78f3da26d05d037300f0d753fece1a60e8c9",
+         "1d3bc77e26f482ea16f2ea776a23d395c2cf048e18a0433731455e6066336dc1"),
+        # the same change in the v2 scheme (CAP-L180): compare_code(c387ba7453) -> this
+        # tree, whose v2 digests are PIN_4 f9bdbbbcb3's; the plan compares v2 on both sides
+        ("079903a8981e4ec436d4218a6443ac53864664638e4e5d00bb77a91a516ce703",
+         "6c348054033e0388295a6d677d50dadb643f669aff9d75c35e07ab659f3b1996")}),
+}
+# The steps whose re-run on a store ``operating.pg.mention_collapse`` folded writes the rows it
+# writes on the uncollapsed store (11-15). Every other step is
+# refused there (``collapsed_store:<step>``): a step that reads ``mention:`` rows one at a time
+# (as ``sender_corroboration`` did before it read the twins back: one row per occurrence) sees
+# only the keepers and loses its rows for the folded twins, and a step that reads the moved
+# ``crb-mid:``/``crb-mcid:`` rows or a keeper's reason sees other ids and text. Fail closed: a
+# step is named here only on a proof (its code read, or a collapsed-vs-uncollapsed test).
+COLLAPSE_SAFE: dict[str, str] = {
+    # occurrence-aware: read every occurrence back (``ontology.mention_occurrences.views``)
+    "unique_mentions": "occurrence_aware",
+    "task_ids": "occurrence_aware",
+    # reads every folded twin back with its own id (sender_corroboration.as_uncollapsed);
+    # ontology/tests/test_sender_corroboration_collapsed.py: row for row the uncollapsed rows
+    "sender_corroboration": "occurrence_aware",
+    # read no link row at all (operating/kind_confirmation.py: its own SQLite only;
+    # ontology/text_index.py: document texts only)
+    "confirmations": "reads_no_links",
+    "text_index": "reads_no_links",
+}
+COLLAPSE_REFUSAL = "collapsed_store:"
+
+
+def collapse_refusals(run: Iterable[str], store_collapsed: bool,
+                      safe: Mapping[str, str] = COLLAPSE_SAFE) -> list[str]:
+    """``collapsed_store:<step>`` for each step of ``run`` not :data:`COLLAPSE_SAFE`, when the
+    store is collapsed; nothing otherwise."""
+    if not store_collapsed:
+        return []
+    return [f"{COLLAPSE_REFUSAL}{name}" for name in sorted(set(run)) if name not in safe]
+
+
+# The collapse's own markers (``operating.pg.mention_collapse`` ``MARK``, ``RETIRED``, ``UNDO``;
+# the guard's test holds them equal): read here, below ``operating`` in the layer contract.
+COLLAPSE_MARK = "c04:"
+COLLAPSE_RETIRED = "c04-retired"
+COLLAPSE_UNDO = "ontology.mention_collapse_undo"
+
+
+def store_collapsed(cur: Any) -> bool:
+    """Whether ``operating.pg.mention_collapse`` folded (part of) the store at cursor ``cur``:
+    a done batch's mark (``c04:<type>:<n>`` in ``ontology.load_state``: kept after
+    ``retire``, dropped when the batch is undone whole), the ``c04-retired`` record, or a
+    row in the undo table. An unreadable store raises (fail closed)."""
+    cur.execute("SELECT to_regclass('ontology.load_state') IS NOT NULL, to_regclass(%s) "
+                "IS NOT NULL", (COLLAPSE_UNDO,))
+    has_state, has_undo = cur.fetchone()
+    if has_state:
+        cur.execute("SELECT EXISTS (SELECT 1 FROM ontology.load_state WHERE "
+                    "starts_with(name, %s) OR name = %s)", (COLLAPSE_MARK, COLLAPSE_RETIRED))
+        if cur.fetchone()[0]:
+            return True
+    if has_undo:
+        cur.execute(f"SELECT EXISTS (SELECT 1 FROM {COLLAPSE_UNDO})")
+        if cur.fetchone()[0]:
+            return True
+    return False
+
+
+def collapse_refusal(cur: Any, run: Iterable[str]) -> str | None:
+    """Why the steps ``run`` may not be re-run or applied on the store of cursor ``cur``
+    (``collapsed_store:<step>,...`` when ``mention_collapse`` folded it and one of them is
+    not :data:`COLLAPSE_SAFE`), else None. Raises when the store cannot be read."""
+    run = sorted(set(run))
+    if not [n for n in run if n not in COLLAPSE_SAFE]:
+        return None
+    found = collapse_refusals(run, store_collapsed(cur))
+    return ",".join(found) or None
+
+
+def refuse_on_collapsed(dsn: str, run: Iterable[str]) -> None:
+    """:func:`collapse_refusal` on the store at ``dsn``, raised as ``ValueError``."""
+    run = sorted(set(run))
+    if not [n for n in run if n not in COLLAPSE_SAFE]:
+        return
+    import psycopg
+    with psycopg.connect(dsn) as pg, pg.cursor() as cur:
+        why = collapse_refusal(cur, run)
+    if why:
+        raise ValueError(why)
+
+
 SENSITIVE_MARKS = ("finance", "pii")
 TEXT_MARKS = "text_marks"   # the layer's table: the version handles whose fields are marked
 
@@ -514,38 +742,31 @@ def step_of(link_id: str, specs: Mapping[str, Spec] = STEPS) -> str | None:
     return None
 
 
-def _read(path: str, ref: str | None, repo: Path) -> bytes | None:
-    if ref is None:
-        file = repo / path
-        return file.read_bytes() if file.is_file() else None
-    done = subprocess.run(["git", "-C", str(repo), "show", f"{ref}:{path}"],
-                          capture_output=True)
-    return done.stdout if done.returncode == 0 else None
+def _tree_roots(names: Iterable[str]) -> dict[str, tuple[tuple[str, str | None], ...]] | None:
+    """This tree's scheme for the steps ``names``: their roots (a step this tree's table
+    does not root: none, each of its modules whole), or None (a v1 table: bytes)."""
+    if ROOTS is None:
+        return None
+    return {name: ROOTS.get(name, ()) for name in names}
 
 
 def code_digests(ref: str | None = None, repo: str | Path = ROOT,
                  specs: Mapping[str, Spec] = STEPS) -> dict[str, str]:
-    """step -> digest of its code files at ``ref`` (None: this tree)."""
-    cache: dict[str, str] = {}
-    out = {}
-    for name, spec in sorted(specs.items()):
-        parts = []
-        for path in spec.code:
-            if path not in cache:
-                data = _read(path, ref, Path(repo))
-                cache[path] = "absent" if data is None else hashlib.sha256(data).hexdigest()
-            parts.append([path, cache[path]])
-        out[name] = _sha(parts)
-    return out
+    """step -> digest of its code files at ``ref`` (None: this tree) under this tree's
+    scheme (its table's roots: the definitions they reach, ``ontology.step_code``)."""
+    files = {name: spec.code for name, spec in specs.items()}
+    return step_code.code_digests(ref, repo, files, _tree_roots(files))
 
 
-def code_at(ref: str, repo: str | Path = ROOT) -> dict[str, str] | None:
-    """step -> digest of its code files at ``ref``, as that commit's own ``STEPS`` lists them
-    (its step names and code files, read from its ``ontology/step_migrate.py`` without
-    running it): the code digests ``ref``'s build recorded, so ``steps_from`` is the digest
-    the served store holds even after this tree adds a step or a code file to one. None:
-    ``ref`` has no step migration. A ``STEPS`` entry that is not a literal ``Spec`` with a
-    literal code tuple raises (never a guessed digest)."""
+def byte_digests(ref: str | None = None, repo: str | Path = ROOT,
+                 specs: Mapping[str, Spec] = STEPS) -> dict[str, str]:
+    """step -> digest of its code files' bytes at ``ref`` (the v1 scheme, what a build of a
+    v1 table recorded; the :data:`SAME_ROWS`/:data:`MARKS_ONLY` pins made before v2)."""
+    return step_code.code_digests(ref, repo, {name: spec.code for name, spec in specs.items()})
+
+
+def _legacy_files(ref: str, repo: str | Path) -> dict[str, tuple[str, ...]] | None:
+    """step -> code files of a commit before the table, from its ``STEPS`` as written."""
     data = _read("ontology/step_migrate.py", ref, Path(repo))
     if data is None:
         return None
@@ -562,16 +783,58 @@ def code_at(ref: str, repo: str | Path = ROOT) -> dict[str, str] | None:
                 if key is None or not isinstance(spec, ast.Call) or len(spec.args) < 2:
                     raise ValueError(f"steps_unreadable:{ref}")
                 files[ast.literal_eval(key)] = tuple(ast.literal_eval(spec.args[1]))
+    return files
+
+
+def code_at(ref: str, repo: str | Path = ROOT) -> dict[str, str] | None:
+    """step -> digest of its code files at ``ref``, as that commit's own table lists them
+    (``ontology/step_code.json``, in its own scheme; before it, its ``STEPS`` as written
+    in its ``ontology/step_migrate.py``, read without running it, by bytes): the code
+    digests ``ref``'s build recorded, so ``steps_from`` is the digest the served store
+    holds even after this tree adds a step or a code file to one, or roots its steps by
+    definition. None: ``ref`` has no step migration. A table or ``STEPS`` entry that is
+    not literal raises (never a guessed digest)."""
+    tabled = step_code.code_at(ref, repo)
+    if tabled is not None:
+        return tabled
+    files = _legacy_files(ref, repo)
     if files is None:
         return None
-    specs = {name: Spec((), paths) for name, paths in files.items()}
-    return code_digests(ref, repo, specs)
+    return step_code.code_digests(ref, repo, files)
+
+
+def recorded_code(ref: str, repo: str | Path = ROOT,
+                  specs: Mapping[str, Spec] = STEPS) -> dict[str, str]:
+    """The step code a build of ``ref`` recorded (:func:`code_at`; a commit older than
+    step migrations: this tree's step files there, by bytes, what ``seed-steps`` held)."""
+    held = code_at(ref, repo)
+    return byte_digests(ref, repo, specs) if held is None else held
+
+
+def recorded_steps_digest(ref: str, repo: str | Path = ROOT) -> str:
+    """The steps digest a build of ``ref`` recorded (``seed-steps``, a load's
+    ``--steps-ref``): :func:`recorded_code`, in ``ref``'s own scheme."""
+    return step_code.steps_digest_of(recorded_code(ref, repo))
+
+
+def compare_code(ref: str, repo: str | Path = ROOT,
+                 specs: Mapping[str, Spec] = STEPS) -> dict[str, str]:
+    """step -> digest of its code at ``ref`` under THIS tree's scheme, over ``ref``'s own
+    step files (its table or ``STEPS``; none: this tree's): what a plan compares with this
+    tree's :func:`code_digests`, step by step, so a v1 served commit and a v2 tree with the
+    same definitions run nothing (``plan``'s ``steps_from`` stays the served digest)."""
+    files = step_code.step_files(ref, repo)
+    if files is None:
+        files = _legacy_files(ref, repo)
+    if files is None:
+        return code_digests(ref, repo, specs)
+    return step_code.code_digests(ref, repo, files, _tree_roots(files))
 
 
 def steps_digest(ref: str | None = None, repo: str | Path = ROOT,
                  specs: Mapping[str, Spec] = STEPS) -> str:
     """The digest of every step's code (a delta layer records its own: ``steps_digest``)."""
-    return "steps:" + _sha(code_digests(ref, repo, specs))[:32]
+    return step_code.steps_digest_of(code_digests(ref, repo, specs))
 
 
 def _written(schema: Any, spec: Spec) -> dict[str, Any]:
@@ -586,13 +849,16 @@ def plan_steps(served: Any, new: Any, old_code: Mapping[str, str],
                specs: Mapping[str, Spec] = STEPS,
                inputs: Mapping[str, Mapping[str, Any]] | None = None,
                marks_only: Mapping[str, Iterable[tuple[str, str]]] = MARKS_ONLY,
-               same_rows: Mapping[str, Iterable[tuple[str, str]]] = SAME_ROWS
+               same_rows: Mapping[str, Iterable[tuple[str, str]]] = SAME_ROWS,
+               collapsed: Mapping[str, Iterable[tuple[str, str]]] | None = None
                ) -> dict[str, Any]:
     """The steps to run again (module docstring): ``{"run": {step: from_types | None},
     "refused": [...], "why": {step: reason}}``, and ``"remark": [...]`` when an
     unsupported step runs again only for a code change ``marks_only`` pins (its rows are
     re-marked in place, :data:`MARKS_ONLY`); a code change ``same_rows`` pins
-    (:data:`SAME_ROWS`) is no reason to run a step again. ``present``: the step names this tree's
+    (:data:`SAME_ROWS`) is no reason to run a step again, nor one ``collapsed`` pins
+    (:data:`COLLAPSED`: named under ``"collapsed"``, the migration folds the store in place
+    instead). ``present``: the step names this tree's
     build runs. ``inputs``: the steps whose declared inputs the unit migration touches
     (``schema_migrate.diff``'s ``steps_required``: :func:`step_inputs`)."""
     present = set(present)
@@ -601,10 +867,14 @@ def plan_steps(served: Any, new: Any, old_code: Mapping[str, str],
     changed: dict[str, set[str]] = {}
     refused: list[str] = []
     inputs = dict(inputs or {})
+    collapsed = COLLAPSED if collapsed is None else collapsed
+    folded: list[str] = []
     for name in sorted(present & set(specs)):
         spec = specs[name]
-        if old_code.get(name) != new_code.get(name) and \
-                (old_code.get(name), new_code.get(name)) not in set(same_rows.get(name, ())):
+        pair = (old_code.get(name), new_code.get(name))
+        if pair[0] != pair[1] and pair in set(collapsed.get(name, ())):
+            folded.append(name)   # the collapse stands for the run (``COLLAPSED``)
+        elif pair[0] != pair[1] and pair not in set(same_rows.get(name, ())):
             why[name] = "code"
             run[name] = None
             continue
@@ -655,6 +925,8 @@ def plan_steps(served: Any, new: Any, old_code: Mapping[str, str],
     out = {"run": {k: run[k] for k in sorted(run)}, "why": why, "refused": refused}
     if remark:
         out["remark"] = remark
+    if folded:
+        out["collapsed"] = folded
     return out
 
 
@@ -681,24 +953,356 @@ def served_code(path: str | Path) -> dict[str, str]:
     return dict(code)
 
 
+def compare_pin(tree: str | Path, specs: Mapping[str, Spec] = STEPS) -> dict[str, Any]:
+    """The ``--served-compare-code`` pin of a build-only served tree (a directory holding
+    the served build's files, its ``ontology/step_code.json`` or ``STEPS``): its step code
+    under THIS tree's scheme (:func:`compare_code`), with ``of``, the steps digest that
+    tree's own build recorded (:func:`recorded_code`, which must be the ``--served-code``
+    pin's ``steps_digest``: :func:`bound_compare_code`)."""
+    code = compare_code(None, tree, specs)   # type: ignore[arg-type]
+    return {"code": code, "steps_digest": step_code.steps_digest_of(code),
+            "of": step_code.steps_digest_of(recorded_code(None, tree, specs))}  # type: ignore[arg-type]
+
+
+def bound_compare_code(path: str | Path, served: Mapping[str, str]) -> dict[str, str]:
+    """A ``--served-compare-code`` pin (:func:`compare_pin`), verified as :func:`served_code`
+    and bound to the served code ``served`` (step -> digest in the served build's own
+    scheme): its ``of`` is ``served``'s steps digest and it holds the same steps. Refused
+    (``served_compare_code_unbound``) otherwise: a pin made from another tree is never
+    compared."""
+    code = served_code(path)
+    pin = json.loads(Path(path).read_text(encoding="utf-8"))
+    if pin.get("of") != step_code.steps_digest_of(served) or set(code) != set(served):
+        raise ValueError("served_compare_code_unbound")
+    return code
+
+
 def plan(served_ref: str, new: Any = None, repo: str | Path = ROOT,
          specs: Mapping[str, Spec] = STEPS, present: Iterable[str] | None = None,
-         old_code: Mapping[str, str] | None = None) -> dict[str, Any]:
+         old_code: Mapping[str, str] | None = None,
+         compare: Mapping[str, str] | None = None,
+         store_collapsed: bool = False) -> dict[str, Any]:
     """The whole migration from the code at ``served_ref`` to this tree's
     (:func:`plan_schemas` with the served commit's schema and step code). ``old_code``:
     the served step code when no commit holds it (:func:`served_code`); the schema still
-    comes from ``served_ref``."""
+    comes from ``served_ref``.
+
+    Two digests of the served step code: the plan's ``steps_from`` is the one the served
+    build recorded, in its own scheme (:func:`recorded_code`, or ``old_code``), the digest
+    the served store holds (an apply refuses ``other_steps`` otherwise); each step is
+    compared with this tree's under this tree's scheme on both sides (:func:`compare_code`,
+    or ``compare``: a pin of the build-only served tree's code in this tree's scheme). The
+    first plan from a byte-scheme (v1) served commit to a v2 tree with the same
+    definitions therefore runs nothing and only moves the held digest. A pinned
+    ``old_code`` over a v1 served commit compares only with its ``compare`` pin (its
+    digests are bytes): refused (``served_compare_code_needed``) without it."""
     from ontology.schema import load_schema
     from ontology import schema_migrate
 
     new = load_schema() if new is None else new
     served = schema_migrate.schema_at(served_ref, repo)
-    if old_code is None:
-        old_code = code_at(served_ref, repo)
-    if old_code is None:   # older than step migrations: its files under this tree's steps
-        old_code = code_digests(served_ref, repo, specs)
+    recorded = recorded_code(served_ref, repo, specs) if old_code is None else dict(old_code)
+    if compare is None:
+        if old_code is None:
+            compare = compare_code(served_ref, repo, specs)
+        elif ROOTS is not None and step_code.step_roots(served_ref, repo) is None:
+            raise ValueError("served_compare_code_needed")
+        else:
+            compare = old_code
     new_code = code_digests(None, repo, specs)
-    return plan_schemas(served, new, old_code, new_code, present, specs)
+    grammar = grammar_changes(_grammar(served_ref, Path(repo)), _grammar(None, Path(repo)))
+    return plan_schemas(served, new, compare, new_code, present, specs, grammar=grammar,
+                        steps_from=step_code.steps_digest_of(recorded),
+                        store_collapsed=store_collapsed)
+
+
+# What of the identifier grammar (``ontology/schema/identifiers.json``) decides no stored
+# row: the words written for a reader.
+_GRAMMAR_PROSE = frozenset({"description", "upstream", "why", "example"})
+# Its sections only the mentions step reads (its code: a change re-runs it, ``Spec.code``).
+_GRAMMAR_MENTIONS_ONLY = frozenset({"mention_profiles"})
+# A kind's keys only one step reads, never a projection unit's parse: ``firm_mention``
+# (which record a mention of the kind is raised to, ``identifiers.firm_types``/``firm_shape``)
+# is unique_mentions' (``mention_firm``). A change moves no unit; it re-runs that step
+# (``grammar_changes`` ``steps``, :func:`plan_schemas`).
+_GRAMMAR_KIND_STEP_ONLY = {"firm_mention": "unique_mentions"}
+
+
+def _grammar(ref: str | None, repo: Path) -> dict[str, Any]:
+    data = _read("ontology/schema/identifiers.json", ref, repo)
+    if data is None:
+        return {}
+    grammar = json.loads(data)
+    if not isinstance(grammar, dict) or not isinstance(grammar.get("kinds", {}), dict):
+        raise ValueError(f"identifier_grammar_unreadable:{ref or 'tree'}")
+    return grammar
+
+
+def _rows_part(item: Any) -> Any:
+    if isinstance(item, Mapping):
+        return {k: _rows_part(v) for k, v in item.items() if k not in _GRAMMAR_PROSE}
+    if isinstance(item, list):
+        return [_rows_part(v) for v in item]
+    return item
+
+
+def grammar_changes(served: Mapping[str, Any], new: Mapping[str, Any]) -> dict[str, list[str]]:
+    """What moved in the identifier grammar between the served tree and this one, prose
+    aside: ``kinds`` (a kind whose pattern, normalizer, length or any other rule changed,
+    added or gone) and ``sections`` (any other top-level section but the mentions step's
+    own). A kind's parse decides the identifier rows a projection unit writes for the
+    properties carrying it, which no schema slice holds (CT-D-09: a looser Message-ID
+    pattern left 291,569 served Email identifier rows unwritten under the old grammar)."""
+    def parse(spec: Any) -> Any:
+        part = _rows_part(spec)
+        return {k: v for k, v in part.items() if k not in _GRAMMAR_KIND_STEP_ONLY} \
+            if isinstance(part, Mapping) else part
+    kinds_a, kinds_b = served.get("kinds") or {}, new.get("kinds") or {}
+    kinds = sorted(k for k in set(kinds_a) | set(kinds_b)
+                   if parse(kinds_a.get(k)) != parse(kinds_b.get(k)))
+    sections = sorted(k for k in set(served) | set(new)
+                      if k != "kinds" and k not in _GRAMMAR_MENTIONS_ONLY | _GRAMMAR_PROSE
+                      and _rows_part(served.get(k)) != _rows_part(new.get(k)))
+
+    def rest(spec: Any) -> Any:
+        return {k: v for k, v in (parse(spec) or {}).items() if k not in _WIDENING}
+    # a kind whose only change is what text it accepts (its pattern, its length): every
+    # served row of it is re-read equal or the phase that relies on it refuses
+    # (``operating.pg.identifier_reparse check``)
+    widened = sorted(k for k in kinds if k in kinds_a and k in kinds_b
+                     and rest(kinds_a[k]) == rest(kinds_b[k]))
+    out = {"kinds": kinds, "sections": sections, "widened": widened}
+    steps = sorted({step for key, step in _GRAMMAR_KIND_STEP_ONLY.items()
+                    for k in set(kinds_a) | set(kinds_b)
+                    if _rows_part((kinds_a.get(k) or {}).get(key))
+                    != _rows_part((kinds_b.get(k) or {}).get(key))})
+    if steps:
+        out["steps"] = steps
+    return out
+
+
+# What a kind's change may touch for its served rows to be completed in place, set-based
+# (``reparse_carriers``): the text it accepts, never its normalizer, forms or identity.
+_WIDENING = frozenset({"value_pattern", "max_length"})
+# Sources whose records the in-place re-parse reads by handle
+# (``operating.pg.identifier_reparse``): a carrier of another source is re-projected.
+REPARSE_SOURCES = frozenset({"graph_mail"})
+
+
+def reparse_carriers(new: Any, kind: str) -> list[dict[str, Any]] | None:
+    """The carriers of ``kind`` whose only rows a parse of it decides are their own value
+    cell and identifier row (the projector's ``_value``/``_project_values``), so a kind
+    that only accepts more text adds rows for the records it newly parses and changes no
+    other row: a set-based phase (``operating.pg.identifier_reparse``) instead of
+    re-projecting their units. None (re-project them) when any link compares by the kind,
+    a mention profile reads it from text or another kind aliases it,
+    another property names a carrier (placeholders, eras), an event type of the type
+    reads it, a carrier has an authority precedence, its binding has marking rules (a
+    version's own markings) or reads a source the phase cannot read by handle."""
+    types = _get(new, "object_types") or {}
+    links = _get(new, "link_types") or {}
+    events = _get(new, "event_types") or {}
+
+    def names(item: Any, value: str) -> bool:
+        if isinstance(item, Mapping):
+            return any(names(v, value) for v in item.values())
+        if isinstance(item, (list, tuple)):
+            return any(names(v, value) for v in item)
+        return item == value
+    if any(names(link, kind) for link in links.values()):
+        return None
+    from ontology import identifiers
+    grammar = json.loads(identifiers.SCHEMA_PATH.read_text(encoding="utf-8"))
+    if names(grammar.get("mention_profiles"), kind) or any(
+            kind in (spec.get("alias_kinds") or ()) for spec in grammar["kinds"].values()):
+        return None   # read from text: the mention scope would have to cover its new keys
+    out = []
+    for tid, t in sorted(types.items()):
+        for prop in t.get("properties", ()):
+            if prop.get("identifier_kind") != kind:
+                continue
+            if prop.get("authority") or prop.get("availability") == "not_served":
+                return None
+            others = [p for p in t.get("properties", ()) if p is not prop]
+            if any(names(p.get("placeholder_when_equal_to"), prop["name"])
+                   or names(p.get("authority"), prop["name"]) for p in others):
+                return None
+            if any(ev.get("object_type") == tid and names(ev, prop["name"])
+                   for ev in events.values()):
+                return None
+            unique = any(prop["name"] in key.get("properties", ()) and key.get("unique")
+                         for key in t.get("identity_keys", ()))
+            for src in prop.get("sources", ()):
+                b = next((b for b in t.get("bindings", ()) if b["id"] == src["binding"]),
+                         None)
+                if (b is None or src.get("parser") != "identifier" or src.get("when")
+                        or b.get("marking_rules") or b["source"] not in REPARSE_SOURCES):
+                    return None
+                out.append({"kind": kind, "type": tid, "property": prop["name"],
+                            "binding": b["id"], "relation": b["relation"],
+                            "source": b["source"], "path": src["path"],
+                            "role": "primary" if unique else "alias",
+                            "markings": sorted(set(t.get("markings", ()))
+                                               | set(prop.get("markings", ())))})
+    return out or None
+
+
+# A timestamp source's declared zone (C-09, ``project._timestamp``): the only keys a
+# zone-only change may add for its served rows to be rewritten in place, set-based
+# (``operating.pg.timestamp_rezone``) instead of re-projecting their units.
+ZONE_KEYS = ("naive_zone", "wall_clock_zone")
+
+
+def _unzoned(spec: Any) -> Any:
+    return {k: v for k, v in spec.items() if k not in ZONE_KEYS} \
+        if isinstance(spec, Mapping) else spec
+
+
+def _zone_of(spec: Mapping[str, Any]) -> dict[str, str]:
+    return {k: spec[k] for k in ZONE_KEYS if k in spec}
+
+
+def rezone_carriers(served: Any, new: Any) -> dict[str, Any]:
+    """The timestamp sources and event times whose only change from ``served`` to ``new``
+    is a zone declared where none was (C-09): their served rows change in nothing but the
+    text of a timestamp, which ``operating.pg.timestamp_rezone`` rewrites in Postgres from
+    the stored text (``project._timestamp`` of it under the new zone), so their units are
+    not rewritten.
+
+    ``{"values": [...], "events": [...], "served": <served with those zones declared>}``:
+    ``served`` is what the unit diff compares against (its digest stays the served one),
+    so a unit whose slice differs only by them keeps its rows. A source is a carrier only
+    when its parse decides nothing but its own value cell: an ``iso_timestamp`` source of
+    a ``timestamp`` property with no ``when``, no identifier kind, in no identity key, no
+    other property of its type naming it (authority, placeholder), no link type touching
+    its type naming it (a pair, a compared field), no capture-observed event observing it,
+    and the source declared no zone before. Anything else stays in the unit diff (its
+    units are rewritten), never guessed."""
+    types_a = dict(_get(served, "object_types") or {})
+    types_b = dict(_get(new, "object_types") or {})
+    links = _get(new, "link_types") or {}
+    events_a = dict(_get(served, "event_types") or {})
+    events_b = dict(_get(new, "event_types") or {})
+
+    def names(item: Any, value: str) -> bool:
+        if isinstance(item, Mapping):
+            return any(names(v, value) for v in item.values())
+        if isinstance(item, (list, tuple)):
+            return any(names(v, value) for v in item)
+        return item == value
+
+    bindings = _get(new, "bindings") or {}
+
+    def relation(bid: str) -> str | None:
+        b = bindings.get(bid)
+        return b[1].get("relation") if b else None
+    values: list[dict[str, Any]] = []
+    patched_types: dict[str, Any] = {}
+    for tid in sorted(set(types_a) & set(types_b)):
+        ta, tb = types_a[tid], types_b[tid]
+        props_a = {p["name"]: p for p in ta.get("properties", ())}
+        new_props = []
+        changed = False
+        for pb in tb.get("properties", ()):
+            pa = props_a.get(pb["name"])
+            if pa is None or pa == pb:
+                new_props.append(pa if pa is not None else pb)
+                continue
+            srcs_a, srcs_b = list(pa.get("sources", ())), list(pb.get("sources", ()))
+            same_but_zone = (
+                {k: v for k, v in pa.items() if k != "sources"}
+                == {k: v for k, v in pb.items() if k != "sources"}
+                and len(srcs_a) == len(srcs_b)
+                and all(_unzoned(a) == _unzoned(b) for a, b in zip(srcs_a, srcs_b)))
+            zoned = [(a, b) for a, b in zip(srcs_a, srcs_b) if a != b]
+            eligible = (
+                same_but_zone and zoned
+                and pb.get("value_type") == "timestamp" and not pb.get("identifier_kind")
+                and all(not _zone_of(a) and _zone_of(b) and b.get("parser") == "iso_timestamp"
+                        and not b.get("when") for a, b in zoned)
+                and not any(pb["name"] in key.get("properties", ())
+                            for key in tb.get("identity_keys", ()))
+                and not any(names(p.get("authority"), pb["name"])
+                            or names(p.get("placeholder_when_equal_to"), pb["name"])
+                            for p in tb.get("properties", ()) if p is not pb)
+                and not any(tid in (link.get("from"), link.get("to"))
+                            and names(link.get("bindings"), pb["name"])
+                            for link in links.values())
+                and not any(ev.get("object_type") == tid
+                            and ev.get("observed_property") == pb["name"]
+                            for ev in events_b.values())
+                # a same_record link between two records of the type compares every
+                # property both ends hold (``Projector._conflict``): its rows could move
+                and not any(lb.get("kind") == "same_record"
+                            and {lb.get("from_binding"), lb.get("to_binding")}
+                            <= {s.get("binding") for s in srcs_b}
+                            for link in links.values()
+                            if link.get("from") == tid and link.get("to") == tid
+                            for lb in link.get("bindings", ())))
+            if not eligible:
+                new_props.append(pa)
+                continue
+            changed = True
+            new_props.append(pb)   # the served schema as if it had declared the zone
+            for _, b in zoned:
+                values.append({"type": tid, "property": pb["name"], "binding": b["binding"],
+                               "relation": relation(b["binding"]), "path": b["path"],
+                               "zone": _zone_of(b)})
+        if changed:
+            patched_types[tid] = {**ta, "properties": new_props}
+    events: list[dict[str, Any]] = []
+    patched_events: dict[str, Any] = {}
+    for eid in sorted(set(events_a) & set(events_b)):
+        ea, eb = events_a[eid], events_b[eid]
+        if ea == eb:
+            continue
+        ta, tb = ea.get("time") or {}, eb.get("time") or {}
+        if ({k: v for k, v in ea.items() if k != "time"}
+                == {k: v for k, v in eb.items() if k != "time"}
+                and _unzoned(ta) == _unzoned(tb) and not _zone_of(ta) and _zone_of(tb)
+                and tb.get("parser", "iso_timestamp") == "iso_timestamp"
+                and eb.get("time_basis") != "capture_observed"):
+            events.append({"event_type": eid, "type": eb.get("object_type"),
+                           "binding": tb["binding"], "relation": relation(tb["binding"]),
+                           "path": tb["path"], "parser": tb.get("parser"),
+                           "zone": _zone_of(tb)})
+            patched_events[eid] = eb
+    patched = served
+    if patched_types or patched_events:
+        patched = dataclasses.replace(
+            served, object_types={**types_a, **patched_types},
+            event_types={**events_a, **patched_events}) \
+            if dataclasses.is_dataclass(served) else {
+                **served, "object_types": {**types_a, **patched_types},
+                "event_types": {**events_a, **patched_events}}
+    return {"values": values, "events": events, "served": patched}
+
+
+def _identifier_units(new: Any, kinds: Iterable[str]) -> list[str]:
+    """The units whose rows a change of ``kinds`` moves: every binding (or shard) of a type
+    with a property carrying one (its identifier rows), and every link unit of a link type
+    that compares by one (its keys)."""
+    from ontology.project_incremental import plan as unit_plan
+    kinds = set(kinds)
+    if not kinds:
+        return []
+    the_plan = unit_plan(new)
+    types = {tid for tid, t in (_get(new, "object_types") or {}).items()
+             if any(p.get("identifier_kind") in kinds for p in t.get("properties", ()))}
+    bindings = {b["id"] for tid in types
+                for b in ((_get(new, "object_types") or {})[tid].get("bindings", ()))}
+
+    def compares(item: Any) -> bool:
+        if isinstance(item, Mapping):
+            return item.get("identifier_kind") in kinds or any(
+                compares(v) for v in item.values())
+        if isinstance(item, (list, tuple)):
+            return any(compares(v) for v in item)
+        return False
+    links = {lid for lid, link in (_get(new, "link_types") or {}).items() if compares(link)}
+    return sorted(u for u, row in the_plan.rows.items()
+                  if (row[0] in ("binding", "shard") and row[1] in bindings)
+                  or (row[0] == "links" and row[1] in links))
 
 
 def present_steps() -> list[str]:
@@ -709,12 +1313,23 @@ def present_steps() -> list[str]:
 
 def plan_schemas(served: Any, new: Any, old_code: Mapping[str, str],
                  new_code: Mapping[str, str], present: Iterable[str] | None = None,
-                 specs: Mapping[str, Spec] = STEPS) -> dict[str, Any]:
+                 specs: Mapping[str, Spec] = STEPS,
+                 grammar: Mapping[str, Sequence[str]] | None = None,
+                 steps_from: str | None = None,
+                 store_collapsed: bool = False) -> dict[str, Any]:
     """The whole migration from ``served`` (its step code ``old_code``) to ``new``
     (``new_code``): the unit migration (``ontology.schema_migrate.diff``, its step link and
     step input refusals left to the step migration, the document-field bindings forced
     when their derivation changed) and the step migration (:func:`plan_steps`: the steps
-    whose code, written link types or declared inputs changed, and their readers)."""
+    whose code, written link types or declared inputs changed, and their readers).
+    ``grammar``: :func:`grammar_changes`; the units its changed kinds move are forced
+    (:func:`_identifier_units`), and a changed section no unit rule covers is refused
+    (``identifier_grammar_changed:<section>``), never left as served rows.
+    ``steps_from``: the digest the served store holds when ``old_code`` is the served
+    code in another scheme than the one it recorded (:func:`plan`); default its own.
+    ``store_collapsed``: the served store is one ``operating.pg.mention_collapse`` folded;
+    each step run again that is not :data:`COLLAPSE_SAFE` is refused
+    (``collapsed_store:<step>``)."""
     from ontology import schema_migrate
 
     present = sorted(present_steps() if present is None else present)
@@ -722,9 +1337,41 @@ def plan_schemas(served: Any, new: Any, old_code: Mapping[str, str],
     force = []
     if "document_fields" in first["run"] and first["why"]["document_fields"] == "code":
         force = _document_field_units(new)
-    units = schema_migrate.diff(served, new, force=force, present=present, specs=specs)
+    grammar = grammar or {}
+    reparse = {k: c for k in grammar.get("widened", ())
+               if (c := reparse_carriers(new, k)) is not None}
+    forced_kinds = [k for k in grammar.get("kinds", ()) if k not in reparse]
+    force = sorted(set(force) | set(_identifier_units(new, forced_kinds)))
+    touch = sorted({c["type"] for carriers in reparse.values() for c in carriers})
+    # C-09: a zone declared on a timestamp source rewrites its served text in place
+    # (``operating.pg.timestamp_rezone``); the unit diff sees the zone as served
+    rezone = rezone_carriers(served, new)
+    touch = sorted(set(touch) | {c["type"] for c in rezone["values"] + rezone["events"]})
+    units = schema_migrate.diff(rezone["served"], new, force=force, present=present,
+                                specs=specs, touch=touch)
+    # a carrier whose binding unit is rewritten anyway is parsed by the projection
+    rewritten = {u[2:].split("#")[0] for u in units.get("units", {}).get("affected", ())
+                 if u.startswith("b:")}
+    units["identifier_reparse"] = [c for k in sorted(reparse) for c in reparse[k]
+                                   if c["binding"] not in rewritten]
+    units["timestamp_rezone"] = {
+        "values": [c for c in rezone["values"] if c["binding"] not in rewritten],
+        "events": [c for c in rezone["events"] if c["binding"] not in rewritten]}
+    # their objects are in the migration's scope: one a delta of the served schema writes
+    # after the snapshot is projected again under this one (``ontology_migrate._newer``)
+    units["scope"] = sorted(set(units.get("scope") or ()) | {
+        f"{c['type']}:{c['binding']}:" for c in units["identifier_reparse"]} | {
+        f"{c['type']}:{c['binding']}:" for part in units["timestamp_rezone"].values()
+        for c in part})
     steps = plan_steps(served, new, old_code, new_code, present, specs,
                        inputs=units.get("steps_required"))
+    for name in grammar.get("steps", ()):   # a grammar key only that step reads moved
+        if name in present and name in specs and name not in steps["run"]:
+            steps["run"][name] = None
+            steps["why"][name] = "identifier_grammar"
+    if store_collapsed:   # a store the collapse folded: only occurrence-safe steps re-run
+        steps["refused"] = list(steps["refused"]) + collapse_refusals(steps["run"], True)
+        steps["store_collapsed"] = True
     covered = set()
     for r in units["refused"]:
         if r.startswith("step_link_type:"):
@@ -733,9 +1380,11 @@ def plan_schemas(served: Any, new: Any, old_code: Mapping[str, str],
                 covered.add(r)
         elif r.startswith("step_input_changed:") and r.split(":")[1] in steps["run"]:
             covered.add(r)
-    units["refused"] = [r for r in units["refused"] if r not in covered]
+    units["refused"] = [r for r in units["refused"] if r not in covered] + [
+        f"identifier_grammar_changed:{section}" for section in grammar.get("sections", ())]
+    units["identifier_kinds_changed"] = list(grammar.get("kinds", ()))
     out = {"format": FORMAT, "units": units, "steps": steps,
-           "steps_from": "steps:" + _sha(old_code)[:32],
+           "steps_from": steps_from or "steps:" + _sha(old_code)[:32],
            "steps_to": "steps:" + _sha(new_code)[:32]}
     out["id"] = _sha([units["id"], out["steps_from"], out["steps_to"],
                       steps["run"]])[:16]
@@ -836,7 +1485,8 @@ def _parts_in_order(job: Callable[..., str], jobs: Sequence[tuple[Any, ...]], wo
                "_layer_value_part": canonical._layer_value_part,
                "_layer_link_part": canonical._layer_link_part}[job.__name__]
     with main_not_imported():
-        pool = cf.ProcessPoolExecutor(workers, mp_context=multiprocessing.get_context("spawn"))
+        pool = cf.ProcessPoolExecutor(workers, mp_context=multiprocessing.get_context("spawn"),
+                                      **parent_watch.pool_init())
     try:
         todo = iter(zip(names, jobs))
         pending: collections.deque[Any] = collections.deque()
@@ -1826,6 +2476,7 @@ def _side_step(name: str, step: Callable[..., Any], new: Any, sources: Mapping[s
     """A forked process: ``step`` over the input, its links into a part; sends
     ("ok", report, part, seconds) or ("here", why)."""
     from ontology.store import StoreBuilder
+    parent_watch.die_with(parent_watch.spawned_parent())   # never outlives the build
     t = time.monotonic()
     part = StoreBuilder(Path(part_path), foreign_keys=False)
     try:
@@ -2319,6 +2970,17 @@ def main(argv: Sequence[str] | None = None) -> int:
     p.add_argument("--from-ref", required=True)
     p.add_argument("--served-code", default=None,
                    help="the served step code pin (code + steps_digest) when no commit holds it")
+    p.add_argument("--store-collapsed", choices=("yes", "no"), default=None,
+                   help="the served store is one mention_collapse folded (refuses each step "
+                        "re-run not COLLAPSE_SAFE); read from --dsn when not given")
+    p.add_argument("--dsn", default=None,
+                   help="read whether the served store is collapsed (no writes)")
+    p.add_argument("--served-compare-code", default=None,
+                   help="that code in this tree's scheme (a pin of the same form, from "
+                        "compare-pin), compared step by step")
+    c = sub.add_parser("compare-pin", help="the --served-compare-code pin of a build-only "
+                                           "served tree (a directory)")
+    c.add_argument("--tree", required=True)
     b = sub.add_parser("build", help="the step migration layer over the served ontology")
     b.add_argument("--from-ref", required=True)
     b.add_argument("--state-dir", required=True)
@@ -2328,9 +2990,26 @@ def main(argv: Sequence[str] | None = None) -> int:
     b.add_argument("--dsn", default=None)
     b.add_argument("--served-code", default=None,
                    help="the served step code pin (code + steps_digest) when no commit holds it")
+    b.add_argument("--served-compare-code", default=None,
+                   help="that code in this tree's scheme (a pin of the same form, from "
+                        "compare-pin), compared step by step")
     args = parser.parse_args(argv)
-    the_plan = plan(args.from_ref, old_code=served_code(args.served_code)
-                    if args.served_code else None)
+    if args.command == "compare-pin":
+        print(json.dumps(compare_pin(args.tree), indent=1, sort_keys=True))
+        return 0
+    old = served_code(args.served_code) if args.served_code else None
+    compare = None
+    if args.served_compare_code:
+        compare = bound_compare_code(args.served_compare_code, old if old is not None
+                                     else recorded_code(args.from_ref))
+    collapsed = False
+    if args.command == "plan" and args.store_collapsed is not None:
+        collapsed = args.store_collapsed == "yes"
+    elif args.command == "plan" and args.dsn:
+        import psycopg
+        with psycopg.connect(args.dsn) as pg, pg.cursor() as cur:
+            collapsed = store_collapsed(cur)
+    the_plan = plan(args.from_ref, old_code=old, compare=compare, store_collapsed=collapsed)
     if args.command == "plan":
         print(json.dumps(the_plan, indent=1, sort_keys=True, default=str))
         return 1 if the_plan["units"]["refused"] or the_plan["steps"]["refused"] else 0

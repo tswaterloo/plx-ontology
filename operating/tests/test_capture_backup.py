@@ -112,6 +112,62 @@ class CaptureBackupTest(unittest.TestCase):
         self.assertEqual(code, 1)
         self.assertTrue(any(p.startswith("skipped:") for p in checked["problems"]))
 
+    def test_the_copy_stays_within_its_root_disk_budget_and_prunes_what_no_piece_names(self):
+        with self.stage_free:
+            code, out = self.cb.backup()
+        self.assertEqual((code, out["pruned"]), (0, 0))
+        held = json.loads((self.root / "manifest.json").read_text())["pieces"]
+        stray = [self.root / "db" / "retired-store.sqlite.zst",
+                 self.root / "blobs" / "mail-zz.tar.zst", self.root / "lists" / "db_old.gz"]
+        for path in stray:
+            path.write_bytes(b"x" * 100)
+        (self.blobs / "cc").mkdir()
+        (self.blobs / "cc" / "cc01.z").write_bytes(os.urandom(50_000))   # a new shard
+        os.environ["PLX_CAPTURE_BACKUP_BUDGET_GB"] = str(   # room for what is held, not it
+            (sum(p["bytes"] for p in held.values()) + 10_000) / 1e9)
+        with self.stage_free:
+            code, out = self.cb.backup()
+        self.assertEqual(code, 3)                         # over budget: skipped, never removed
+        self.assertEqual(out["skipped"], {"blobs/mail-cc.tar.zst": "budget"})
+        self.assertEqual(out["pruned"], 0)                # a run that skipped prunes nothing
+        self.assertTrue(all(p.exists() for p in stray))
+        del os.environ["PLX_CAPTURE_BACKUP_BUDGET_GB"]
+        with self.stage_free:
+            code, out = self.cb.backup()
+        self.assertEqual((code, out["pruned"], out["pruned_bytes"]), (0, 3, 300))
+        self.assertFalse(any(p.exists() for p in stray))
+        for key in json.loads((self.root / "manifest.json").read_text())["pieces"]:
+            self.assertTrue((self.root / key).is_file(), key)
+        self.assertEqual(self.cb.restore_test()[0], 0)
+
+    def test_an_unreadable_manifest_never_lets_a_run_prune_a_held_copy(self):
+        with self.stage_free:
+            self.assertEqual(self.cb.backup()[0], 0)
+        held = self.root / "db" / "feedback.sqlite.zst"
+        self.assertTrue(held.is_file())
+        (self.state / "feedback" / "feedback.sqlite").unlink()     # the source is lost
+        for broken in ("", "{not json"):
+            (self.root / "manifest.json").write_text(broken)       # and the manifest unread
+            with self.stage_free:
+                code, out = self.cb.backup()
+            self.assertEqual((out["pruned"], out["prune_skipped"]), (0, "no_prior_manifest"))
+            self.assertEqual(code, 3)                     # adopted: the restore test fails once
+            self.assertIn("db/feedback.sqlite.zst", out["skipped"])   # adopted, its source lost
+            self.assertTrue(json.loads((self.root / "manifest.json").read_text())
+                            ["pieces"]["db/feedback.sqlite.zst"]["adopted"])
+            self.assertEqual(self.cb.restore_test()[0], 1)
+            for _ in range(2):        # no later run prunes it; its lost source keeps failing
+                with self.stage_free:
+                    code, out = self.cb.backup()
+                self.assertEqual((code, out["pruned"]), (3, 0))
+                self.assertEqual(out["skipped"], {"db/feedback.sqlite.zst": "source_missing"})
+                self.assertTrue(held.is_file(), broken)
+            self.assertEqual(self.cb.restore_test()[0], 1)
+
+    def test_the_root_floor_is_the_one_in_ops_health(self):
+        from operating import ops_health
+        self.assertEqual(self.cb.ROOT_FLOOR_GB, ops_health.DISK_FLOOR_GB["/"])
+
     def pieces(self) -> dict:
         return {p.relative_to(self.root).as_posix(): p.read_bytes()
                 for p in self.root.rglob("*") if p.is_file() and "lists" not in p.parts

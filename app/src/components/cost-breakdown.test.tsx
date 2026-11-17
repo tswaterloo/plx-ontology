@@ -92,7 +92,7 @@ describe("ProfitabilityView", () => {
     render(<ProfitabilityView p={{ ...p, ranking: "partial: worst of the 3 most recent orders; 214 more in the period not read", orders_more: 4 }} />);
     const t = screen.getByTestId("order-ranking");
     expect(t).toHaveTextContent("Partial: worst of the 3 most recent orders; 214 more in the period not read");
-    expect(screen.getByTestId("orders-more")).toHaveTextContent("and 4 more");
+    expect(screen.getByTestId("orders-more")).toHaveTextContent("4 other orders not listed here");
   });
 
   it("never lists a test order in the ranking", () => {

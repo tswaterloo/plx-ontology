@@ -102,7 +102,8 @@ def check_bc_projection(conn: sqlite3.Connection, schema: Any, *, sample: int = 
     from ontology.types import Actor
     from operating import ontology_tools as ot
     from operating import ontology_tools_traverse as tt
-    from operating.ontology_tools_process import EVIDENCE_NOT_HELD, ProcessTools
+    from operating.ontology_tools_process import ProcessTools
+    from operating.ontology_tools_process_helpers import EVIDENCE_NOT_HELD
 
     reader = ot.StoreReader(conn)
     policy = ot.ReadPolicy(tenant="plx", audiences={"bc:*": {PRINCIPAL}, "api:*": {PRINCIPAL}},

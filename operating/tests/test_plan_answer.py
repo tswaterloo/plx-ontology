@@ -103,6 +103,25 @@ class FromPlanTests(unittest.TestCase):
                                  "check": "not_applicable"})
         self.assertEqual(len(plan_answer.from_plan(fitted)["claims"]), 2)
 
+    def test_a_paged_answer_is_stated_only_from_a_first_page_that_lists_every_entry(self):
+        # AUD-11: the details the first page cannot hold (chain, values) go to pages after
+        # it (``answer_paged``); a first page with every entry is the whole answer, any
+        # other page (an entry on a later one, or a later page itself) is the planner's
+        entries = [prop("po_1", "PO1"), line_entry(1)]
+
+        def paged(page, returned, total):
+            return {**result(entries), "answer_page": {"page": page, "pages": 2,
+                                                       "returned": returned, "total": total},
+                    "completeness": {"complete": False, "truncated": True,
+                                     "reason": "answer_paged", "next_cursor": "c"}}
+        self.assertEqual(len(plan_answer.from_plan(paged(1, 2, 2))["claims"]), 2)
+        for label, bad in (("an entry on a later page", paged(1, 2, 3)),
+                           ("a later page", paged(2, 2, 2)),
+                           ("no page", {**paged(1, 2, 2), "answer_page": None}),
+                           ("a page count that is not its entries", paged(1, 1, 1))):
+            with self.subTest(label):
+                self.assertIsNone(plan_answer.from_plan(bad))
+
     def test_an_answerable_plan_lists_no_gap_and_the_input_is_not_changed(self):
         given = result([prop("po_1", "PO1")], answerability={"state": "answerable"})
         before = copy.deepcopy(given)

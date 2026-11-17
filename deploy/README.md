@@ -226,8 +226,9 @@ host's cycle lock refuses the second).
    ```
    It keeps every scope, audience and budget, adds each source's cadence
    (`min_interval_seconds`: mail and SharePoint back to back, Teams every 30 min) and
-   `ingest.build_inputs: "snapshot"`; with `--priority-mailbox` it writes the mail scope
-   beside it with that `priority` order.
+   `ingest.builds: "off"` (the host never builds; the settings `builds` and `build_inputs`
+   are retired, any other value is named in the host's warnings and builds nothing); with
+   `--priority-mailbox` it writes the mail scope beside it with that `priority` order.
 3. `/etc/plx/ingest.env`: `PLX_INGEST_STATE=/data/plx-state` and
    `PLX_INGEST_CONFIG=/data/scratch/cfg/ingest_continuous.local.json`; then
    `sudo cp deploy/systemd/plx-ingest.service /etc/systemd/system/ && sudo systemctl
@@ -249,15 +250,44 @@ files and drop-ins.
 ## Keeping data and readings current (upkeep units)
 
 `deploy/ops/install_keep_fresh.sh` (idempotent; `--dry-run` renders and verifies only) installs
-and enables, after a build: user timers `plx-sheet-readings` (daily 02:40 ET),
+and enables, after a build: system timers run as the Workbench user with its groups
+(user timers until 11-15; the installer removes the old ones) `plx-sheet-readings` (daily 02:40 ET),
 `plx-system-activity` (daily 02:50 ET, 13 weekly aggregates and the last 35 days),
 `plx-team-activity` (daily 03:30 ET, the Team view's snapshot: `PLX_TEAM_ACTIVITY_FILE`; who
-sees everyone, `PLX_TEAM_VIEW_READERS`; who is in no people view, `PLX_TEAM_HIDDEN_PEOPLE`, object ids or e-mail addresses; with it unset the server hides the owner by the object ids their own sessions showed it, and names no one in a drill-down until it knows them) and `plx-work-graph` (Sunday
+sees everyone, `PLX_TEAM_VIEW_READERS`; who is in no people view, `PLX_TEAM_HIDDEN_PEOPLE`, object ids or e-mail addresses; with it unset the server hides the owner by the object ids their own sessions showed it, and names no one in a drill-down until it knows them; written 0640, group plx-state, so the API
+user reads it, as `plx-system-activity`'s file), `plx-work-graph` (Sunday
 03:30 ET, role owners from the last 13 weeks, written to a candidate roles file the autopilot
-reads only if `PLX_AUTOPILOT_ROLES_FILE` names it); system timers `plx-proactive-whole` (every 4
+reads only if `PLX_AUTOPILOT_ROLES_FILE` names it; run as the Workbench user with its groups,
+on Postgres only), `plx-proactive-whole` (every 4
 h), `plx-backup` (03:15 ET), `plx-restore-test` (04:30 ET) and `plx-ops-health` (every 15
 min, `/etc/plx/ingest.env`), `plx-autopilot-follow` (the autopilot's live feed, 5 min after the
 last cycle and on each delta publish via its `.path`; prepares My work items only, ordered event
-queue on), `plx-autopilot-fast` (the fast feed: a Teams or mail message the capture just stored is prepared within seconds, started by its `.path` on `<capture store>.new` and a 1-min timer; same guards, prepares only); and links `plx-release` into `~/.local/bin`. Each unit sets `Nice` and
+queue on), `plx-autopilot-fast` (the fast feed: a Teams or mail message the capture just stored is prepared within seconds, started by its `.path` on `<capture store>.new` and a 1-min timer; same guards, prepares only; each handled message leaves a times-only latency sample, and `plx-ops-health` pages `autopilot_reply_latency` when the p95 from message to prepared reply passes 10 min over the last 2 h and `autopilot_fast_waiting` when captured messages wait past the feed's mark that long; quiet until the feed has run; its continuous consumer `plx-autopilot-fast-serve` ends when `proactive.env` changes so its restart reads the new people exclusion or `PLX_AUTOPILOT_OFF` before another cycle, backs off 15 s doubling to 15 min after a failure, and pages `autopilot_fast_restarts` after 3 failures in a row); and links `plx-release` into `~/.local/bin`. Each unit sets `Nice` and
 `MemoryMax`; the ones that read people data load `proactive.env` (the people exclusion only);
 no unit embeds a secret.
+
+## The host keeps itself up (11-14)
+
+* **deploy/ is the only source of host config.** `python3 deploy/ops/host/install.py` installs
+  every unit and drop-in deploy/ renders, the host overlay `~/.config/plx/host.d/{system,user}`
+  (this host's own values, never committed; `--capture` copies in every installed file with no
+  source), and the ops scripts, guards and the batch lander (deploy/ops/host,
+  deploy/ops/guards, deploy/ops/lander) into /usr/local/lib/plx-ops by atomic rename. What
+  /data/scratch/cfg still holds, who calls it, the switch steps onto the Git copies and the
+  retire list: deploy/ops/CFG-INVENTORY.md (AUD-06). Runbook tools: deploy/ops/runbook. `--check [--diff]` names every drift (missing,
+  differing, sourceless, runtime `set-property` overrides, a unit running from a checkout)
+  and exits 1; `plx-host-drift.timer` runs `--check --alarm` hourly.
+* **The API and the app are always up.** Both units restart always (backing off to 2 min,
+  at most 20 starts in 30 min); `plx-liveness.timer` (root, every minute) restarts one that
+  stops answering for 3 probes and starts one that is stopped, unless a pause lease holds it.
+* **Releases protect themselves.** `plx-release switch` runs the configuration preflight
+  (`plx-api-check@<id>`: `operator_api serve --check` under the API's own user and drop-ins)
+  and refuses a release that fails it; `plx-release restart` starts the API and the app,
+  needs `/api/health` and one authenticated read, and on failure rolls back by itself and
+  raises a host alarm.
+The root keeper (every 5 min) starts it again when the lease's time passes or its owner
+  process is gone, and alarms on a pause held past 6 h. Window locks (tools/batch_land.py)
+  give exclusion; leases give expiry.
+* **Host alarms** (`unit_alarm.py raise KEY MESSAGE`) land in /var/lib/plx-ops/status.json
+  `attention` for 24 h, where the notifier reads them.
+`Plx-worktree-prune.timer` removes merged or idle-and-pushed clean ones daily.

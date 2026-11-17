@@ -12,7 +12,7 @@ import re
 from dataclasses import dataclass, field
 from typing import Any, Callable, Mapping, Sequence
 
-from operating.ontology_tools import _ITEM_ACL_SCHEMES
+from operating.ontology_tools_policy import _ITEM_ACL_SCHEMES
 from operating.search.config import INTENTS
 
 # Citation schemes whose items carry their own ACL (mail, files, chats, calendar events,
@@ -107,6 +107,18 @@ class Query:
             for token in re.findall(r"[A-Za-z]*[-_/]?\d[\w\-/.]*", text or ""):
                 token = token.strip(".-/")
                 if len(token) >= 3 and token not in out:
+                    out.append(token)
+        return out[:12]
+
+    def code_tokens(self) -> list[str]:
+        """The codes the question and the entity texts name, as written and with a
+        prefix written apart joined (``codes.code_tokens``): what the exact list reads
+        in every spelling."""
+        from operating.search.codes import code_tokens
+        out: list[str] = []
+        for text in [self.question] + [e.text for e in self.entities]:
+            for token in code_tokens(text):
+                if token not in out:
                     out.append(token)
         return out[:12]
 

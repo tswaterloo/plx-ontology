@@ -69,6 +69,7 @@ from typing import Any, Callable, Container, Iterable, Mapping, Sequence
 
 from operating.impact_chain import (FIRM_TIERS, LEAD_TIERS, MAX_GAP_SUBJECTS, MAX_STEP_CHARS,
                                     Edge, Graph, _dec_str, _digest, _number, _type_of)
+from operating.prose_style import some_of
 
 ENGINE = "lot_impact"
 MAX_ORDERS = 100        # order entries one answer carries (the answer holds 200 entries)
@@ -379,7 +380,6 @@ def break_gap(found: Sequence[Break], reason: str, *, complete: bool,
     types, source = BREAKS.get(reason, ((), "unknown"))
     known = complete and bool(types) and all(covers(t) for t in types)
     subjects = sorted({b.subject for b in found})
-    more = len(subjects) - MAX_GAP_SUBJECTS
     detail = (f"{reason}: {len(found)} walk(s) from the lot stop here; the source that "
               f"would hold the link: {source}"
               + ("; the walk read every such link this reader may see" if known else
@@ -387,8 +387,7 @@ def break_gap(found: Sequence[Break], reason: str, *, complete: bool,
                  "proof that none is recorded")
               + "; no link is inferred from a shared code, name or date")
     return {"state": "absent_in_source" if known else "unknown", "reason": reason,
-            "subject": (", ".join(subjects[:MAX_GAP_SUBJECTS])
-                        + (f" and {more} more" if more > 0 else ""))[:700],
+            "subject": some_of(subjects, MAX_GAP_SUBJECTS)[:700],
             "detail": detail[:600]}
 
 

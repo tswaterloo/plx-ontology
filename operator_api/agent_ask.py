@@ -41,6 +41,9 @@ import time
 from typing import Any, Callable, Mapping, Optional, Sequence
 
 from operating import deep_investigation as deep
+from operating.card_text import masked_spawn
+
+from .errors import RecordNotFound
 
 AGENT = "plx.agent.investigate"
 ASK_SECONDS = deep.DEEP_SECONDS   # the hard cap of one Ask's session; each question's own
@@ -81,8 +84,14 @@ LOOKUP_EFFORT = "medium"
 APP_READER_RULE = (
     "Who reads your reply: a PLX employee in the Workbench app, not an engineer. Outside "
     "the json block (and in its \"text\"), write plain business sentences: name records "
-    "as the business does (a PO by its number, a document by its title) "
-    "and fields in words (the PO line's description, the expected receipt date). Never "
+    "as the business does (a PO by its number, a document by its title, a customer or "
+    "vendor by the party_name a tool gave for its code, written exactly as given with "
+    "the code in brackets; a code with no party_name stays a code) "
+    "and every amount with its currency exactly as the tool gave it: the code after the "
+    "figure (\"1,500.00 CAD\"), then \"(from customer/vendor record)\" when its "
+    "currency_basis is counterparty_record, or \"$ (currency not stated)\" after the "
+    "figure when the tool gave no currency; never a currency guessed or converted. "
+    "Write fields in words (the PO line's description, the expected receipt date). Never "
     "mention the answer gate, checks, claims, quotes, null values, answer values, field "
     "paths (row.<column>, text), citation handles (original://, bc://, api://) or gap "
     "codes (snake_case). Where you could not confirm something, say \"I couldn't confirm "
@@ -259,15 +268,30 @@ class AgentAsk:
                   environ: Mapping[str, str], **options: Any) -> Optional["AgentAsk"]:
         """The API's agent path, or None when it cannot run here (no host config or no
         session secret): the Ask then stays on the console's objective box."""
+        from operating.session_identity import session_secret
+
+        if cls.missing(host_config, environ, options.get("claude_bin") or "claude"):
+            return None
+        secret = session_secret(environ)
+        return cls(state_dir=Path(state_dir), host_config=Path(host_config), secret=secret,
+                   **options)
+
+    @staticmethod
+    def missing(host_config: Path | None, environ: Mapping[str, str],
+                claude_bin: str = "claude") -> Optional[str]:
+        """Why the agent path cannot run here (``from_args``), as a code: ``no_host_config``,
+        ``no_session_secret`` or ``no_claude_cli`` (the CLI is not on this process's PATH:
+        a systemd unit's PATH lacks ``~/.local/bin``); None when it can."""
         import shutil
         from operating.session_identity import session_secret
 
-        secret = session_secret(environ)
-        if host_config is None or not Path(host_config).is_file() or not secret \
-                or shutil.which(options.get("claude_bin") or "claude") is None:
-            return None
-        return cls(state_dir=Path(state_dir), host_config=Path(host_config), secret=secret,
-                   **options)
+        if host_config is None or not Path(host_config).is_file():
+            return "no_host_config"
+        if not session_secret(environ):
+            return "no_session_secret"
+        if shutil.which(claude_bin, path=environ.get("PATH")) is None:
+            return "no_claude_cli"
+        return None
 
     def serves(self, session: Any) -> bool:
         """Whether this reader gets the agent path: an employee session (a stand-in host
@@ -305,7 +329,8 @@ class AgentAsk:
         # the session submits what it established rather than being stopped mid-search.
         return runner.ClaudeCodeAgent(binary=self.claude_bin, model=self.model,
                                       timeout=int(seconds), max_turns=self.max_turns,
-                                      spawn=runner.streaming_spawn(on_line),
+                                      # no card number or credential in the task
+                                      spawn=masked_spawn(runner.streaming_spawn(on_line)),
                                       budget_seconds=seconds, max_steps=MAX_STEPS,
                                       lookup_model=self.lookup_model,
                                       helpers=host_helpers())
@@ -366,7 +391,7 @@ class AgentAsk:
                 close()
         got = plain_tree(got) if isinstance(got, Mapping) else {}
         if got.get("error") or got.get("status") not in ("resolved", "changed_since"):
-            raise KeyError("citation_unresolvable_for_actor")
+            raise RecordNotFound("citation_unresolvable_for_actor")
         return dict(got)
 
     # ---- one Ask ---------------------------------------------------------------------

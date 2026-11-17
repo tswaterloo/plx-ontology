@@ -160,7 +160,8 @@ class AskWorkerCountTests(unittest.TestCase):
     def test_ask_workers_go_to_four_only_where_memory_holds_them(self):
         from operator_api.backend import ask_worker_count
         self.assertEqual(ask_worker_count(4, 40.0), 4)
-        self.assertEqual(ask_worker_count(4, 24.0), 2)    # 12 GB above the floor
+        self.assertEqual(ask_worker_count(4, 18.0), 2)    # 6 GB above the floor
+        self.assertEqual(ask_worker_count(2, 20.0), 2)    # 11-14: 20 GB available, two
         self.assertEqual(ask_worker_count(4, 10.0), 1)    # never none when asked for
         self.assertEqual(ask_worker_count(9, 200.0), 4)   # never past the most
         self.assertEqual(ask_worker_count(4, None), 4)    # unknown memory: as asked

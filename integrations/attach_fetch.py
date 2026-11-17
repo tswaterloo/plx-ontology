@@ -209,6 +209,68 @@ class FetchStore:
             added = self.db.total_changes - before
         return {"deferred": len(rows), "unique_new": unique, "added": added}
 
+    def plan_dropped(self, mail: Any, withheld: Iterable[str], *,
+                     min_bytes: int = MIN_IMAGE_BYTES) -> dict[str, int]:
+        """Add the mail store's unread images (``unsupported``) whose original the store
+        dropped (``MailCaptureStore.original_dropped``: kept as readings only, from before
+        mail images were read) to the work list, so ``download`` fetches each again by
+        its message and attachment id and ``read`` reads it; ingest applies the reading
+        through the stored plan (``capture_mail.apply_stored_pass``: by bytes, type and
+        name, only where the attachment is still unread). One row per distinct reading
+        (bytes, type and name; its newest current message version), an OCR image type of
+        at least ``min_bytes`` by its listed size, never one of a ``withheld`` mailbox;
+        rows already listed keep their state. A reading of fetched bytes that differ from
+        the pin is keyed by those bytes and never applied. Counts only."""
+        from .captured_text import _ocr_image
+        held = {str(m).lower() for m in withheld}
+        counts = {"seen": 0, "withheld": 0, "not_image": 0, "no_size": 0, "small": 0,
+                  "distinct": 0, "added": 0}
+        rows = mail.db.execute(
+            "SELECT a.message_handle, a.attachment_id, a.mailbox_id, m.message_id, "
+            "m.version_id, a.metadata, a.content_sha256 FROM attachments a JOIN messages m "
+            "ON m.l1_handle=a.message_handle AND m.superseded_at IS NULL JOIN blobs b ON "
+            "b.sha256=a.content_sha256 AND b.dropped_at IS NOT NULL WHERE "
+            "a.content_status='captured' AND a.text_status='unsupported' "
+            "ORDER BY m.version_id DESC, a.attachment_id").fetchall()
+        seen: set[str] = set()
+        out = []
+        for row in rows:
+            counts["seen"] += 1
+            if str(row["mailbox_id"]).lower() in held:
+                counts["withheld"] += 1
+                continue
+            try:
+                meta = json.loads(row["metadata"])
+            except (TypeError, ValueError):
+                meta = {}
+            meta = meta if isinstance(meta, dict) else {}
+            name, kind, size = meta.get("name"), meta.get("content_type"), meta.get("size")
+            if not _ocr_image(str(name or ""), str(kind or "")):
+                counts["not_image"] += 1
+                continue
+            if not isinstance(size, int):
+                counts["no_size"] += 1
+                continue
+            if size < min_bytes:
+                counts["small"] += 1
+                continue
+            key = read_key(row["content_sha256"], meta)
+            if key in seen:   # one per reading the stored plan applies (bytes, type, name)
+                continue
+            seen.add(key)
+            out.append((row["message_handle"], row["attachment_id"], row["mailbox_id"],
+                        row["message_id"], row["version_id"],
+                        json.dumps(meta, sort_keys=True), size, type_rank(name, kind)))
+        counts["distinct"] = len(out)
+        with self.lock, self.db:
+            before = self.db.total_changes
+            self.db.executemany(
+                "INSERT OR IGNORE INTO work (message_handle, attachment_id, mailbox_id, "
+                "message_id, version_id, metadata, size, priority) VALUES (?,?,?,?,?,?,?,?)",
+                out)
+            counts["added"] = self.db.total_changes - before
+        return counts
+
     # ------------------------------------------------------------------ rows
     def todo(self, limit: int | None = None) -> list[sqlite3.Row]:
         return self.db.execute(
@@ -801,6 +863,38 @@ NOTE_FULL_AFTER_CAP = "read in full after page cap"
 _FULL_READ = ("extracted", "extracted_ocr", "ocr_no_text")
 
 
+# A download whose bytes the mail store already read (``read_pass(reuse_withheld=...)``).
+REUSED = "reused: the mail store's reading of the same bytes"
+_REUSABLE = ("extracted", "extracted_ocr")
+
+
+def mail_reading(mail: Any, digest: str, metadata: Mapping[str, Any],
+                 withheld: set[str]) -> tuple[str, str] | None:
+    """(text status, text) of the mail store's own reading of these exact bytes as the
+    same kind of file (``type_rank`` of name and type), from an attachment in a mailbox
+    ``withheld`` does not hold, whose text blob re-hashes; else None (read it)."""
+    kind = type_rank(metadata.get("name"), metadata.get("content_type"))
+    for row in mail.db.execute(
+            "SELECT metadata, text_status, text_sha256, mailbox_id FROM attachments "
+            "WHERE content_sha256=? AND text_status IN (?,?) AND text_sha256 IS NOT NULL",
+            (digest, *_REUSABLE)):
+        if row["mailbox_id"] in withheld:
+            continue
+        try:
+            meta = json.loads(row["metadata"])
+        except (TypeError, ValueError):
+            continue
+        if type_rank(meta.get("name"), meta.get("content_type")) != kind:
+            continue
+        try:
+            text = mail.blob(row["text_sha256"]).decode("utf-8")
+        except Exception:  # noqa: BLE001 - text dropped or altered: read the bytes instead
+            continue
+        if text.strip():
+            return row["text_status"], text
+    return None
+
+
 def _text_digest(text: str | None) -> str | None:
     return None if text is None else sha256(text.encode("utf-8")).hexdigest()
 THUMB_SIDE = 256
@@ -874,7 +968,8 @@ def read_pass(root: str | Path, *, workers: int = 12, budget_seconds: float,
               reader: Callable[[bytes, Mapping[str, Any], bool],
                                tuple[str, str | None, dict[str, Any] | None]] | None = None,
               ocr_limits: tuple[int, int] | None = None, prefilter: bool = False,
-              mail: Any = None, text_first: bool = False) -> dict[str, Any]:
+              mail: Any = None, text_first: bool = False,
+              reuse_withheld: Iterable[str] | None = None) -> dict[str, Any]:
     """Read every fetched (bytes, type, name) not read yet, best priority first, with
     ``workers`` extraction processes (``capture_mail._Extractors``: scrubbed environment,
     a reading past ``seconds_each`` or whose process died is the capture's own gap
@@ -895,9 +990,17 @@ def read_pass(root: str | Path, *, workers: int = 12, budget_seconds: float,
     (the capture's ``defer_ocr``); a file that needs OCR (``ocr_pending``) is not recorded,
     so it stays unread for a later OCR pass over the same store, which reads it and ingest
     applies as any reading (counted ``left_for_ocr``). Not with ``ocr_limits`` or ``mail``
-    (the stored plan holds only images and scans)."""
+    (the stored plan holds only images and scans).
+
+    ``reuse_withheld`` (with ``mail``; the mailboxes the people exclusion withholds now,
+    decided fail-closed by the caller): a download whose exact bytes the mail store already
+    read, as the same kind of file, in a mailbox not withheld, takes that reading's status
+    and text (:func:`mail_reading`; counted ``reused``) instead of being read again: about
+    a third of the backlog's distinct files were OCR-read by the capture already. A
+    reading with fewer pages than the file (a page-capped one) is never taken."""
     from concurrent.futures import ThreadPoolExecutor
-    from .capture_mail import EXTRACT_SECONDS, _Extractors
+    from .capture_mail import EXTRACT_SECONDS
+    from .capture_mail_extract import _Extractors
     from .captured_text import OCR_PENDING
     if text_first and (ocr_limits is not None or mail is not None):
         raise ValueError("text_first_reads_downloads_without_ocr")
@@ -914,7 +1017,7 @@ def read_pass(root: str | Path, *, workers: int = 12, budget_seconds: float,
     deadline = started + budget_seconds
     counts: dict[str, Any] = {"read": 0, "by_status": {}, "seconds_reading": 0.0,
                               "digest_mismatch": 0, "stored_read": 0, "page_capped": 0, "deduped": 0,
-                              "no_text_likely": 0, "left_for_ocr": 0}
+                              "no_text_likely": 0, "left_for_ocr": 0, "reused": 0}
     extractors = None
     if reader is None:
         extractors = _Extractors(workers, seconds_each or EXTRACT_SECONDS, nice=nice)
@@ -922,6 +1025,8 @@ def read_pass(root: str | Path, *, workers: int = 12, budget_seconds: float,
         def reader(content, metadata, image_ocr):
             return extractors.read(content, metadata, defer_ocr=text_first, defer_all=False,
                                    image_ocr=image_ocr, ocr_limits=ocr_limits)
+
+    withheld_now = None if reuse_withheld is None or mail is None else set(reuse_withheld)
 
     def one(digest: str, metadata: dict[str, Any], source: str
             ) -> tuple[str, str | None, Any, float, tuple[str, Any] | None] | None:
@@ -934,6 +1039,13 @@ def read_pass(root: str | Path, *, workers: int = 12, budget_seconds: float,
                 content = fetch.bytes_of(digest)
         except Exception:  # noqa: BLE001 - bytes gone or altered: nothing recorded
             return None
+        if withheld_now is not None and source == "fetched":
+            with mail_lock:
+                known = mail_reading(mail, digest, metadata, withheld_now)
+            # a reading with fewer pages than the file (page-capped) is not taken: these
+            # bytes are read here, so a cut-short text is noted for the recap as always
+            if known is not None and _capped_pages(content, metadata, *known) is None:
+                return known[0], known[1], None, time.monotonic() - began, (REUSED, None)
         image_ocr = image_ocr_rule(content, metadata, min_image_bytes)
         note = None
         if image_ocr and prefilter and _is_image(metadata) and not text_likely(content):
@@ -969,6 +1081,13 @@ def read_pass(root: str | Path, *, workers: int = 12, budget_seconds: float,
                     "SELECT rowid, read_key, content_sha256, read_meta, priority FROM stored "
                     "WHERE rowid > ? ORDER BY rowid", (since["rowid"],)):
                 since["rowid"] = max(since["rowid"], r["rowid"])
+                with mail_lock:
+                    dropped = mail.original_dropped(r["content_sha256"])
+                if dropped:
+                    # no bytes in the mail store: its copy fetched again (``plan_dropped``)
+                    # is read under the same read key when it lands
+                    counts["stored_dropped"] += 1
+                    continue
                 rows.append((r["read_key"], r["content_sha256"], r["read_meta"],
                              r["priority"], "stored", None))
         for key, digest, meta, priority, source, done_at in rows:
@@ -993,6 +1112,7 @@ def read_pass(root: str | Path, *, workers: int = 12, budget_seconds: float,
         since["looked"] = time.monotonic()
         return found
 
+    counts["stored_dropped"] = 0   # stored rows whose original the store dropped
     inflight: dict[Any, tuple[str, str, str]] = {}
     last_new = last_report = time.monotonic()
     try:
@@ -1021,6 +1141,9 @@ def read_pass(root: str | Path, *, workers: int = 12, budget_seconds: float,
                         counts["digest_mismatch"] += 1
                         continue
                     status, text, made, seconds, note = answer
+                    if note is not None and note[0] == REUSED:
+                        counts["reused"] += 1
+                        note = None   # the reading itself: nothing to note
                     if text_first and status == OCR_PENDING:
                         # needs OCR: left unread (with its twins) for the OCR pass
                         counts["left_for_ocr"] += 1 + len(twins.pop(heads.pop(key, None), ()))
@@ -1073,7 +1196,8 @@ def recap_pass(root: str | Path, *, workers: int = 12, budget_seconds: float,
     and its note for a later run. Bytes from this store, or the mail store (``mail``)
     for a stored item. Counts only."""
     from concurrent.futures import ThreadPoolExecutor
-    from .capture_mail import EXTRACT_SECONDS, _Extractors
+    from .capture_mail import EXTRACT_SECONDS
+    from .capture_mail_extract import _Extractors
     fetch = FetchStore(root, read_only=True)
     readings = Readings(root)
     stored = None
@@ -1172,7 +1296,7 @@ def _print(value: Mapping[str, Any]) -> None:
 
 def _scrubbed_environment() -> None:
     """The read pool holds no credential: only what an extraction process gets."""
-    from .capture_mail import extraction_env
+    from .capture_mail_extract import extraction_env
     kept = extraction_env(os.environ)
     os.environ.clear()
     os.environ.update(kept)
@@ -1228,6 +1352,12 @@ def main(argv: Sequence[str] | None = None, *, environ: Mapping[str, str] | None
                             help="list the mail store's unread images and scans on disk")
     stored.add_argument("--state-dir", required=True)
     stored.add_argument("--fetch-dir", required=True)
+    dropped = sub.add_parser("plan-dropped",
+                             help="list the unread images whose original the mail store "
+                                  "dropped, to download again")
+    dropped.add_argument("--state-dir", required=True)
+    dropped.add_argument("--fetch-dir", required=True)
+    dropped.add_argument("--min-bytes", type=int, default=MIN_IMAGE_BYTES)
     status = sub.add_parser("status", help="counts of the fetch store")
     status.add_argument("--fetch-dir", required=True)
     args = parser.parse_args(argv)
@@ -1268,11 +1398,16 @@ def main(argv: Sequence[str] | None = None, *, environ: Mapping[str, str] | None
                                             and 100 <= limits[1] <= 300)):
             _print({"ok": False, "error": "arguments_invalid"})
             return 2
-        _scrubbed_environment()
-        mail = None
+        mail = withheld = None
         if args.state_dir is not None:
             from .capture_mail import MailCaptureStore
+            from .people_exclusion import PeopleExclusion
             mail = MailCaptureStore.open_read_only(args.state_dir, timeout=60)
+            # Reuse of the mail store's readings, fail-closed like plan-stored: no
+            # exclusion decided, no reuse (every download is read).
+            guard = PeopleExclusion.from_env(env_in)
+            withheld = None if guard.unavailable else mail.withheld_mailboxes(guard)
+        _scrubbed_environment()
         if args.recap:
             if not args.full_ocr:
                 _print({"ok": False, "error": "recap_needs_full_ocr"})
@@ -1286,7 +1421,7 @@ def main(argv: Sequence[str] | None = None, *, environ: Mapping[str, str] | None
                         idle_seconds=args.idle_seconds, min_image_bytes=args.min_image_bytes,
                         progress=_print, progress_seconds=args.progress_seconds,
                         ocr_limits=limits, prefilter=not args.no_prefilter, mail=mail,
-                        text_first=text_first)
+                        text_first=text_first, reuse_withheld=withheld)
         _print({"ok": True, "final": True, **out})
         return 0
 
@@ -1300,7 +1435,7 @@ def main(argv: Sequence[str] | None = None, *, environ: Mapping[str, str] | None
     if args.command == "plan":
         _print({"ok": True, **fetch.plan(mail), **fetch.counts()})
         return 0
-    if args.command == "plan-stored":
+    if args.command in ("plan-stored", "plan-dropped"):
         # The people exclusion from the environment, fail-closed: a withheld mailbox's
         # files are never listed (and ingest checks again before applying a reading).
         from .people_exclusion import PeopleExclusion
@@ -1309,6 +1444,14 @@ def main(argv: Sequence[str] | None = None, *, environ: Mapping[str, str] | None
         if withheld is None:
             _print({"ok": False, "error": "people_exclusion_unavailable"})
             return 3
+        if args.command == "plan-dropped":
+            # a fetched reading is applied through the stored plan's read key: the plan
+            # is listed first (idempotent), so a fetched image never waits unapplied
+            stored_counts = StoredPlan(args.fetch_dir).plan(mail, withheld)
+            _print({"ok": True, **fetch.plan_dropped(mail, withheld,
+                                                     min_bytes=args.min_bytes),
+                    "stored_plan": stored_counts})
+            return 0
         _print({"ok": True, **StoredPlan(args.fetch_dir).plan(mail, withheld)})
         return 0
 

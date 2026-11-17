@@ -15,6 +15,7 @@ import unittest
 
 from ontology.json_contract import validate
 from operating import ontology_tools as ot
+from operating import ontology_tools_results
 from operating import ontology_tools_impact as oimp
 from operating import ontology_tools_traverse as tt
 from operating.tests import test_impact_chain as tic
@@ -32,7 +33,7 @@ def table_of(store, policy=None, **options):
     table: dict = {}
     base = ot.OntologyTools(ot.StoreReader(store.conn), policy or tp.POLICY, schema=tp.SCHEMA,
                             contracts=CONTRACTS, clock=lambda: tp.NOW)
-    ot.register(table, base)
+    ontology_tools_results.register(table, base)
     traverse = tt.TraverseTools(base)
     tt.register(table, traverse)
     oimp.register(table, traverse, schema=tp.SCHEMA, contracts=CONTRACTS, **options)

@@ -15,7 +15,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from ontology import link_pack, store
+from ontology import link_pack
 from ontology.store import StoreBuilder
 
 

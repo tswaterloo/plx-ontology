@@ -94,6 +94,7 @@ from typing import Any, Callable, Mapping, Sequence
 
 from ontology.document_fields import CHECKED
 from operating.cases import _field
+from operating.prose_style import some_of
 
 ENGINE = "decision_evidence"
 ROLES = ("time", "actor", "outcome", "basis")
@@ -218,7 +219,7 @@ def _joined(names: Sequence[str], limit: int) -> str:
         if len(", ".join([*shown, item])) + 16 > limit:
             break
         shown.append(item)
-    return f"{', '.join(shown)} and {len(names) - len(shown)} more"
+    return some_of(names, max(1, len(shown)))
 
 
 def _instant(text: Any) -> tuple[dt.datetime, dt.datetime] | None:
@@ -498,12 +499,12 @@ def plan_run(args: Mapping[str, Any], evidence: Mapping[str, Sequence[Mapping[st
                     _joined([entries[k]["name"] for k in group], 700),
                     prefix + _joined(records, 570 - len(prefix)))
     context = _context(run, args.get("context", ()), name)
-    noted = (f"; {len(context)} context record(s) cited, not counted as decisions"
+    noted = (f"; {len(context)} context record{'' if len(context) == 1 else 's'} cited, not counted as decisions"
              if context else "")
     if entries:
         entries.append({"name": name, "kind": "computed", "value": len(entries),
                         "inputs": [e["name"] for e in entries][:50],
-                        "steps": [f"{len(entries)} recorded decision(s) listed in time order"
+                        "steps": [f"{len(entries)} recorded decision{'' if len(entries) == 1 else 's'} listed in time order"
                                   + noted + ("" if complete else "; the run was cut, so "
                                              "others may exist")], "check": "not_applicable"})
     elif context:

@@ -2038,9 +2038,12 @@ def _reference_row(order: Any, candidate: Mapping[str, Any], tier: str, rule_cod
 #
 # * ``code``: the lead's own stored-key pair agreed (its reason's ``pair`` features, the
 #   identifier compare the schema declares);
-# * ``unique``: the code names one record on each side: the BC record has this one partner
-#   in the other end's binding, and the other end has at most one partner in the BC
-#   record's book (a code a bill-to group or a reused number shares never qualifies);
+# * ``unique``: the code names one record on each side: the BC record has this one
+#   stored-key partner in the other end's binding, and the other end has this one partner
+#   in the BC binding, in any company (a code a bill-to group or a reused number shares
+#   never qualifies; a name lead to another card is no code partner; a code two companies'
+#   cards carry is ``two_companies``: two legal entities, whose balances and credit are
+#   each their own, are never made one party through it);
 # * ``name``: the two records' own names agree (``normalize_name`` level ``exact`` or
 #   ``close``, or one is the other cut short at a word: at least ``PARTY_PREFIX_WORDS``
 #   words, as a 100-character BC name copies a longer one); a ``near`` or differing name,
@@ -2054,8 +2057,8 @@ PARTY_TWIN_LINKS = ("Customer.same_record_as", "Supplier.same_record_as",
                     "Product.same_record_as")
 PARTY_TWIN_PREFIX = "crb-party-"
 PARTY_PREFIX_WORDS = 2
-_PARTY_OUTCOMES = ("firm", "rejected", "already_firm", "ambiguous", "lineage_not_authority",
-                   "code_not_agreed", "name_unknown", "name_conflict")
+_PARTY_OUTCOMES = ("firm", "rejected", "already_firm", "ambiguous", "two_companies",
+                   "lineage_not_authority", "code_not_agreed", "name_unknown", "name_conflict")
 
 
 def party_twin_step(builder: Any, projector: Any) -> dict[str, Any]:
@@ -2178,12 +2181,16 @@ class _PartyTwin:
 
     def partners(self, oid: str, binding: str, book: str | None = None) -> set[str]:
         """Records of ``binding`` (and, for BC, of book ``book``) a current, not
-        contradicted same-record link of this type joins ``oid`` to."""
+        contradicted stored-key (``same_record``) link of this type joins ``oid`` to: the
+        records its code names. A name lead (``text_match``) to a second card of the same
+        name (BC keeps a blocked, renumbered copy beside the coded one) names no record by
+        code, so it never makes the code ambiguous."""
         out = set()
         for (other,) in self.conn.execute(
                 "SELECT CASE WHEN from_object = :o THEN to_object ELSE from_object END FROM "
                 "links WHERE link_type = :t AND superseded_at IS NULL AND tier <> "
-                "'contradicted' AND (from_object = :o OR to_object = :o)",
+                "'contradicted' AND binding_kind = 'same_record' AND (from_object = :o OR "
+                "to_object = :o)",
                 {"o": oid, "t": self.link_type}):
             if self.binding(other) != binding:
                 continue
@@ -2216,6 +2223,11 @@ class _PartyTwin:
         if self.partners(bc, self.binding(other)) != {other} or \
                 self.partners(other, self.binding(bc), book) != {bc}:
             return "ambiguous", None
+        if self.partners(other, self.binding(bc)) != {bc}:
+            # the code answers in another company too: two legal entities' cards, never
+            # one party through this record (live 2026-11-12: 1,751 distribution customers
+            # repeat manufacturing numbers, 1,729 joined through one Sage customer)
+            return "two_companies", None
         names = {oid: self.names(oid) for oid in (bc, other)}
         if not names[bc] or not names[other]:
             return "name_unknown", None

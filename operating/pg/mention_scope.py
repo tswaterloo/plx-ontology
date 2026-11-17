@@ -42,7 +42,7 @@ from pathlib import Path
 import sqlite3
 import sys
 import time
-from typing import Any, Iterable, Mapping, Sequence
+from typing import Any, Iterable, Sequence
 
 from ontology import parent_watch
 
@@ -52,6 +52,8 @@ class ScopeRefused(RuntimeError):
 
 
 # One object's digest: what resolving and corroborating a mention reads of a candidate.
+# A link's evidence is digested as the view gives it, so how a row stores it (plain or
+# packed, ``operating.pg.link_partitions``) changes no digest.
 _OBJECT_DIGEST = """
 SELECT o.object_id, o.object_type, md5(concat_ws('|', o.object_type,
   (SELECT string_agg(concat_ws(',', i.identifier_kind, i.normalized, i.property, i.role,
@@ -65,7 +67,8 @@ SELECT o.object_id, o.object_type, md5(concat_ws('|', o.object_type,
      FROM ontology.object_versions v WHERE v.object_id = o.object_id),
   (SELECT string_agg(concat_ws(',', l.link_id, l.link_type, l.to_object, l.tier,
                                l.binding_kind, l.markings, l.recorded_at, l.superseded_at,
-                               l.evidence_handles, l.evidence_id, l.slots::text), ';'
+                               coalesce(l.evidence_handles, ontology.link_text(
+                                 l.evidence_id, l.slots, 1, l.ek))), ';'
                      ORDER BY l.link_id)
      FROM ontology.link_rows l WHERE l.from_object = o.object_id
       AND l.tier IN ('verified', 'reviewed'))))
@@ -73,6 +76,25 @@ SELECT o.object_id, o.object_type, md5(concat_ws('|', o.object_type,
 _KEYS = ("SELECT DISTINCT i.identifier_kind, i.normalized, i.object_id FROM "
          "ontology.identifiers i JOIN ontology.objects o ON o.object_id = i.object_id "
          "WHERE o.binding_id = %s")
+
+
+def half_applied(pg: Any) -> bool:
+    """A chunked migration is recorded in progress, and it is not a units-first run whose
+    unit chunks are all applied (``operating.pg.migrate_chunks``: its rows are the
+    migrated units, whole; only the steps and the switch are to come)."""
+    row = pg.execute("SELECT value FROM ontology.store_meta WHERE key = "
+                     "'migration_in_progress'").fetchone()
+    if row is None:
+        return False
+    try:
+        flag = json.loads(row[0])
+    except ValueError:
+        return True   # a flag this cannot read is a migration half applied
+    if not isinstance(flag, dict) or not flag.get("units_first"):
+        return True
+    done = pg.execute("SELECT count(*) FROM ontology.load_state WHERE starts_with(name, %s)",
+                      (f"migration_chunk:{flag['key']}:",)).fetchone()[0]
+    return done < int(flag.get("chunks") or 0) or not flag.get("chunks")
 
 
 def _snapshot_part(dsn: str, jobs: Sequence[tuple[str, int, int]], out: str) -> dict[str, Any]:
@@ -87,8 +109,7 @@ def _snapshot_part(dsn: str, jobs: Sequence[tuple[str, int, int]], out: str) -> 
     with psycopg.connect(dsn) as pg:
         pg.execute("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY")
         pg.execute("SET LOCAL jit = off")
-        if pg.execute("SELECT value FROM ontology.store_meta WHERE key = "
-                      "'migration_in_progress'").fetchone() is not None:
+        if half_applied(pg):
             raise ScopeRefused("migration_in_progress")
         for binding, part, parts in jobs:
             cond = ("" if parts == 1 else
@@ -114,7 +135,7 @@ def snapshot(dsn: str, bindings: Sequence[str], out: str | Path, *, before: bool
     migration is in progress (checked by each), so the rows they read are the same."""
     if workers > 1:
         return _snapshot_parallel(dsn, bindings, out, domain_property=domain_property,
-                                  log=log, workers=workers)
+                                  log=log, workers=workers, before=before)
     import psycopg
     out = Path(out)
     tmp = out.with_name(out.name + ".part")
@@ -131,7 +152,7 @@ def snapshot(dsn: str, bindings: Sequence[str], out: str | Path, *, before: bool
         pg.execute("SET LOCAL jit = off")
         row = pg.execute("SELECT value FROM ontology.store_meta WHERE key = "
                          "'migration_in_progress'").fetchone()
-        if before and row is not None:
+        if row is not None and (before or half_applied(pg)):
             raise ScopeRefused("migration_in_progress")
         report["in_progress"] = row is not None
         for k in ("schema_digest", "steps_digest"):
@@ -219,7 +240,8 @@ _SPLIT = 50_000   # objects per part of a large binding (parallel snapshot)
 
 
 def _snapshot_parallel(dsn: str, bindings: Sequence[str], out: str | Path, *,
-                       domain_property: str, log: Any, workers: int) -> dict[str, Any]:
+                       domain_property: str, log: Any, workers: int,
+                       before: bool = True) -> dict[str, Any]:
     import concurrent.futures as futures
     import multiprocessing
     import psycopg
@@ -232,10 +254,11 @@ def _snapshot_parallel(dsn: str, bindings: Sequence[str], out: str | Path, *,
                               "workers": workers}
     with psycopg.connect(dsn) as pg:
         pg.execute("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY")
-        if pg.execute("SELECT value FROM ontology.store_meta WHERE key = "
-                      "'migration_in_progress'").fetchone() is not None:
+        held = pg.execute("SELECT value FROM ontology.store_meta WHERE key = "
+                          "'migration_in_progress'").fetchone() is not None
+        if held and (before or half_applied(pg)):
             raise ScopeRefused("migration_in_progress")
-        report["in_progress"] = False
+        report["in_progress"] = held
         for k in ("schema_digest", "steps_digest"):
             got = pg.execute("SELECT value FROM ontology.store_meta WHERE key = %s",
                              (k,)).fetchone()
@@ -294,10 +317,19 @@ def _snapshot_parallel(dsn: str, bindings: Sequence[str], out: str | Path, *,
 
 # ------------------------------------------------------------------ the cache, scanned
 
-def _scan_part(cache: str, xcode: str, keys_db: str, low: int, high: int, out: str) -> str:
+def lists_records(mentions: Iterable[Mapping[str, Any]]) -> bool:
+    """Whether a document's mentions name ``mentions.LIST_FILE_MIN`` or more records of one
+    type in one cited field version: the step then writes its links ``list_file``."""
+    from ontology.mentions import LIST_FILE_MIN, listed_records
+    return max(listed_records(mentions).values(), default=0) >= LIST_FILE_MIN
+
+
+def _scan_part(cache: str, xcode: str, keys_db: str, low: int, high: int, out: str,
+               listed: bool = False) -> str:
     """Rows ``[low, high)`` of the cache's ``extracted``: (document key, citation, whether
-    a candidate key of one of its mentions is in ``keys_db``) into ``out``; and of its
-    ``groups``: (group key, document key)."""
+    a candidate key of one of its mentions is in ``keys_db``, or with ``listed`` whether
+    it lists records: :func:`lists_records`) into ``out``; and of its ``groups``: (group
+    key, document key)."""
     import zlib
     from ontology.mentions import candidate_keys
     k = sqlite3.connect(f"file:{keys_db}?mode=ro", uri=True)
@@ -314,7 +346,8 @@ def _scan_part(cache: str, xcode: str, keys_db: str, low: int, high: int, out: s
                                   "rowid < ? AND xcode = ?", (low, high, xcode)):
         entry = json.loads(zlib.decompress(value))
         hit = any(key2 in hit_keys for m in entry.get("mentions") or ()
-                  for key2 in candidate_keys(m))
+                  for key2 in candidate_keys(m)) or (
+            listed and lists_records(entry.get("mentions") or ()))
         rows.append((key, entry["document"]["citation"], int(hit)))
     dst.executemany("INSERT INTO docs VALUES (?, ?, ?)", rows)
     rows = []
@@ -330,10 +363,12 @@ def _scan_part(cache: str, xcode: str, keys_db: str, low: int, high: int, out: s
 
 
 def scan_cache(cache: str | Path, hit_keys: Iterable[tuple[str, str]], out: str | Path,
-               workers: int = 8) -> dict[str, Any]:
+               workers: int = 8, xcode: str | None = None,
+               listed: bool = False) -> dict[str, Any]:
     """``out`` (SQLite, replaced): every document the extraction cache holds under this
-    extractor code with its citation and whether one of its mentions' candidate keys is
-    in ``hit_keys``, and every group's documents; scanned by ``workers`` processes."""
+    extractor code (``xcode``: another's) with its citation and whether one of its mentions'
+    candidate keys is in ``hit_keys`` (or, ``listed``, it lists records), and every group's
+    documents; scanned by ``workers`` processes."""
     import concurrent.futures as futures
     import multiprocessing
     import tempfile
@@ -355,8 +390,8 @@ def scan_cache(cache: str | Path, hit_keys: Iterable[tuple[str, str]], out: str 
         k.commit()
         k.close()
         step = max(1, -(-top // (workers * 8)))
-        jobs = [(str(cache), extractor_code(), str(keys_db), a, min(a + step, top),
-                 str(Path(tmp) / f"part-{n}.sqlite"))
+        jobs = [(str(cache), xcode or extractor_code(), str(keys_db), a, min(a + step, top),
+                 str(Path(tmp) / f"part-{n}.sqlite"), listed)
                 for n, a in enumerate(range(0, top, step))]
         with futures.ProcessPoolExecutor(max_workers=workers,
                                          mp_context=multiprocessing.get_context("spawn"),
@@ -554,11 +589,19 @@ def remapped_documents(pg: Any, link_types: Sequence[str]) -> set[str]:
 def scope(dsn: str, before: str | Path, after: str | Path, cache: str | Path,
           work: str | Path, *, served: Any, new: Any, undo: str | Path | None = None,
           workers: int = 8, log: Any = None,
-          not_documents: str | Path | None = None) -> dict[str, Any]:
+          not_documents: str | Path | None = None,
+          also_keys: Iterable[tuple[str, str]] = (), xcode: str | None = None,
+          listed: bool = False) -> dict[str, Any]:
     """The mention scope (module docstring): ``{"groups", "objects", "counts"}``, or
     ``{"refused": reason}`` when it cannot be bounded (the caller re-derives every
     document). ``before`` / ``after``: :func:`snapshot` files around the unit applies
-    (the same bindings); ``undo``: the marks-only apply's undo folder."""
+    (the same bindings); ``undo``: the marks-only apply's undo folder. ``also_keys``:
+    candidate keys in scope besides the changed objects' (an identifier grammar change: the
+    tokens the new grammar no longer reads). ``xcode``: the extraction code the served links
+    were made with (default this tree's): the scan reads that extraction of the cache, and
+    with a narrowing grammar change it holds every token the new one reads. ``listed``: the
+    documents that list records are in scope too (the ``list_file`` change, a step
+    migration from code before it: :func:`list_scope`)."""
     import psycopg
     from ontology.mention_cache import extractor_code
     started = time.monotonic()
@@ -583,24 +626,27 @@ def scope(dsn: str, before: str | Path, after: str | Path, cache: str | Path,
         counts.update(changed=len(changed), marked=len(marked))
         with psycopg.connect(dsn) as pg:
             pg.execute("SET TRANSACTION READ ONLY")
-            if pg.execute("SELECT value FROM ontology.store_meta WHERE key = "
-                          "'migration_in_progress'").fetchone() is not None:
+            if half_applied(pg):
                 raise ScopeRefused("migration_in_progress")
             keys |= keys_of(pg, marked)
+            keys |= {(str(a), str(b)) for a, b in also_keys}
+            counts["also_keys"] = len(set(also_keys))
             refs = reference_keys(pg)
             remapped = remapped_link_types(served, new)
             redocs = remapped_documents(pg, remapped)
             counts.update(changed_keys=len(keys), reference_keys=len(refs),
                           remapped_link_types=remapped, remapped_documents=len(redocs))
+            xcode = xcode or extractor_code()
             src = sqlite3.connect(f"file:{cache}?mode=ro", uri=True)
             try:
                 held = src.execute("SELECT count(*) FROM extracted WHERE xcode = ?",
-                                   (extractor_code(),)).fetchone()[0]
+                                   (xcode,)).fetchone()[0]
             finally:
                 src.close()
             if not held:   # the cache is of other extraction code: nothing can be told
                 raise ScopeRefused("mention_cache_of_other_code")
-            scanned = scan_cache(cache, keys | refs, work / "scan.sqlite", workers=workers)
+            scanned = scan_cache(cache, keys | refs, work / "scan.sqlite", workers=workers,
+                                 xcode=xcode, listed=listed)
             counts["scan"] = scanned
             if log is not None:
                 print(json.dumps(counts, sort_keys=True, default=str), file=log, flush=True)
@@ -615,6 +661,53 @@ def scope(dsn: str, before: str | Path, after: str | Path, cache: str | Path,
             if uncached:
                 raise ScopeRefused(f"documents_not_in_cache:{uncached}")
             out = documents(work / "scan.sqlite", pg, also=changed | marked | redocs)
+        out["counts"] = {**counts, **out["counts"],
+                         "seconds": round(time.monotonic() - started, 1)}
+        return out
+    except ScopeRefused as exc:
+        return {"refused": str(exc), "counts": counts}
+
+
+def list_scope(dsn: str, cache: str | Path, work: str | Path, *, new: Any,
+               workers: int = 8, not_documents: str | Path | None = None) -> dict[str, Any]:
+    """The mention scope of the ``list_file`` change (CC-NY-3, 11-14), read only: the
+    documents whose text names ``LIST_FILE_MIN`` or more records of one type (their
+    links gain ``list_file`` and lose their corroboration), widened as :func:`scope`
+    widens (conversations, whole groups). No unit migration moves any other document's
+    links. Refused as :func:`scope` refuses: a chunked migration in progress, a cache
+    of other extraction code, a current document the cache does not hold."""
+    import psycopg
+    from ontology.mention_cache import extractor_code
+    from ontology.mentions import mention_link_types
+    started = time.monotonic()
+    work = Path(work)
+    work.mkdir(parents=True, exist_ok=True)
+    counts: dict[str, Any] = {}
+    try:
+        with psycopg.connect(dsn) as pg:
+            pg.execute("SET TRANSACTION READ ONLY")
+            if pg.execute("SELECT value FROM ontology.store_meta WHERE key = "
+                          "'migration_in_progress'").fetchone() is not None:
+                raise ScopeRefused("migration_in_progress")
+            src = sqlite3.connect(f"file:{cache}?mode=ro", uri=True)
+            try:
+                held = src.execute("SELECT count(*) FROM extracted WHERE xcode = ?",
+                                   (extractor_code(),)).fetchone()[0]
+            finally:
+                src.close()
+            if not held:
+                raise ScopeRefused("mention_cache_of_other_code")
+            counts["scan"] = scan_cache(cache, (), work / "scan.sqlite", workers=workers,
+                                        listed=True)
+            doc_types = sorted({frm for frm, _to in mention_link_types(new.link_types)})
+            excused = [] if not_documents is None else [
+                line.split("\t", 1)[0] for line in
+                Path(not_documents).read_text(encoding="utf-8").splitlines() if line]
+            uncached = uncached_documents(work / "scan.sqlite", pg, doc_types, excused)
+            counts["uncached_documents"] = uncached
+            if uncached:
+                raise ScopeRefused(f"documents_not_in_cache:{uncached}")
+            out = documents(work / "scan.sqlite", pg)
         out["counts"] = {**counts, **out["counts"],
                          "seconds": round(time.monotonic() - started, 1)}
         return out
@@ -644,18 +737,39 @@ def main(argv: Sequence[str] | None = None) -> int:
     c.add_argument("--out", required=True)
     c.add_argument("--workers", type=int, default=8)
     c.add_argument("--dsn", default=None)
+    c.add_argument("--also-keys", default=None,
+                   help="a JSON list of [kind, normalized] candidate keys also in scope")
+    c.add_argument("--xcode", default=None,
+                   help="the extraction code of the served links (default this tree's)")
+    c.add_argument("--list-files", action="store_true",
+                   help="also every document listing records (from code before list_file)")
+    ls = sub.add_parser("list-scope", help="the documents the list_file change re-links")
+    ls.add_argument("--cache", required=True, help="the warm mention extraction cache")
+    ls.add_argument("--not-documents", default=None)
+    ls.add_argument("--work", required=True)
+    ls.add_argument("--out", required=True)
+    ls.add_argument("--workers", type=int, default=4)
+    ls.add_argument("--dsn", default=None)
     args = parser.parse_args(argv)
     from ontology.mentions import MENTION_FEATURES
     from operating.pg import config
     dsn = args.dsn or config.dsn()
-    if args.command == "scope":
+    if args.command in ("scope", "list-scope"):
         from ontology import schema_migrate
         from ontology import step_migrate as sm
         from ontology.schema import load_schema
-        out = scope(dsn, args.before, args.after, args.cache, args.work,
-                    served=schema_migrate.schema_at(args.served_ref, sm.ROOT),
-                    new=load_schema(), undo=args.undo, workers=args.workers, log=sys.stderr,
-                    not_documents=args.not_documents)
+        if args.command == "list-scope":
+            out = list_scope(dsn, args.cache, args.work, new=load_schema(),
+                             workers=args.workers, not_documents=args.not_documents)
+        else:
+            out = scope(dsn, args.before, args.after, args.cache, args.work,
+                        served=schema_migrate.schema_at(args.served_ref, sm.ROOT),
+                        new=load_schema(), undo=args.undo, workers=args.workers,
+                        log=sys.stderr, not_documents=args.not_documents,
+                        xcode=args.xcode, listed=args.list_files,
+                        also_keys=[tuple(k) for k in
+                                   json.loads(Path(args.also_keys).read_text())]
+                        if args.also_keys else ())
         tmp = Path(args.out + ".part")
         tmp.write_text(json.dumps(out, sort_keys=True, default=str))
         tmp.replace(args.out)

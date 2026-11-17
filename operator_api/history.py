@@ -12,7 +12,9 @@ import re
 from typing import Any, Mapping, Optional
 
 from . import models as m
+from .errors import NOT_FOUND_CODES, RecordNotFound, RecordReadFailed
 from . import presentation
+from operating import currency_display
 from .explorer import FIRM, kind_label
 
 PARTIAL = "Some changes are not shown: they are of values or records you may not see."
@@ -41,6 +43,8 @@ def value_text(value: Mapping[str, Any]) -> str:
     kind = value.get("value_type")
     if kind == "money" and re.fullmatch(r"-?\d+(?:\.\d+)?", text):
         currency = value.get("currency")
+        if not currency and currency_display.is_unstated(value):
+            return currency_display.amount_words(presentation.money_words(text))
         return presentation.money_words(text) + (f" {currency}" if currency else "")
     if kind == "quantity" and isinstance(value.get("unit"), str):
         return f"{text} {value['unit']}"
@@ -69,8 +73,12 @@ def history(view: Any, oid: str, cursor: Optional[str], *, open_url) -> m.Record
     code = (card.get("error") or {}).get("code")
     if code == "invalid_input" and cursor:
         raise ValueError("invalid_cursor")
+    if code in ("invalid_input", "invalid_cursor") and cursor:
+        raise ValueError("invalid_cursor")
+    if code in NOT_FOUND_CODES or code == "invalid_input":
+        raise RecordNotFound()   # absent and withheld read the same
     if code or "history" not in card:
-        raise KeyError("object_not_found")   # a failed read says nothing about the record
+        raise RecordReadFailed(str(code or "history_missing"))   # the server's failure
     kind, label = _label(card, oid)
     entries = [entry for entry in (_entry(e, open_url) for e in card.get("history") or ())
                if entry is not None]
@@ -106,8 +114,9 @@ def _entry(event: Mapping[str, Any], open_url) -> Optional[m.HistoryEntry]:
         out.title = f"First recorded{' from ' + who if who else ''}"
     elif kind == "changed":
         names = [c.label for c in changes]
-        out.title = ("Changed " + ", ".join(names[:3]) + (" and more" if len(names) > 3
-                                                          else "")) if names else "Changed"
+        # up to three fields by name; past that the count (the changes list names each)
+        out.title = ("Changed " + ", ".join(names) if 0 < len(names) <= 3 else
+                     f"Changed {len(names)} fields" if names else "Changed")
     elif kind in ("removed_from_source", "restored"):
         basis = presentation.words(str(event.get("basis") or ""))
         out.title = ("No longer held by its source" if kind == "removed_from_source"
@@ -148,8 +157,11 @@ def as_of(view: Any, oid: str, at: str) -> m.RecordAsOf:
     record they may read then (as not found)."""
     card = view._call("plx.object", {"object_id": oid, "as_known_at": as_known_at(at),
                                      "response_format": "detailed"}) or {}
-    if card.get("error") or "values" not in card:
-        raise KeyError("object_not_found")
+    code = (card.get("error") or {}).get("code")
+    if code in NOT_FOUND_CODES or code == "invalid_input":
+        raise RecordNotFound()   # absent, withheld or not yet recorded then: the same
+    if code or "values" not in card:
+        raise RecordReadFailed(str(code or "values_missing"))   # the server's failure
     kind, label = _label(card, oid)
     grouped: dict[str, m.AsOfValue] = {}
     for value in card.get("values") or ():

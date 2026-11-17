@@ -1473,7 +1473,7 @@ class AskAgent:
                                {**self._record(), "root": "withheld"})
 
     def run(self, prompt: str, host: Any) -> runner.AgentRun:
-        from operating.mcp_server import AGENT_META_KEY
+        from operating.mcp_server_results import AGENT_META_KEY
         if host.object_id is None:
             refused = self.admit(host)
             if refused is not None:
@@ -1543,7 +1543,7 @@ def ask_summary(transcripts: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
     digest), withheld roots, failed sessions (start-up refused or raised), claims the
     workspace withheld, unsupported claims (``confident_unsupported``: answers the loop's
     claim gate refused whole) and context reuse. Counts and enums only."""
-    from operating.mcp_server import AGENT_META_KEY
+    from operating.mcp_server_results import AGENT_META_KEY
     records = [t.get("agent") or {} for t in transcripts]
     records = [r for r in records if r.get("kind") == ASK_KIND]
     resolved = [r for r in records if r.get("root") == "resolved"]

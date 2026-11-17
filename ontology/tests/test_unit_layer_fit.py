@@ -111,7 +111,8 @@ def _world(copies: int) -> tuple[list[dict], list[dict]]:
              _copy("h2", "2026-01-01T00:00:00", name="hist"),
              _copy("h3", "2026-02-01T00:00:00", name="hist")]
     versions = [_copy("h1", "2025-01-01T00:00:00", name="before")]
-    # Removed from the source: a partition of its own.
+    # Removed copies beside a present one: that row re-inserted, the present copy kept
+    # (CC-NY-2), however late it was inserted.
     gone = "2026-11-02T00:00:00Z"
     rows += [{**_copy("m1", "2026-03-01T00:00:00", name="gone"), "missing": gone},
              _copy("m2", "2026-01-01T00:00:00", name="gone"),
@@ -175,12 +176,14 @@ class CollapsingMirrorTests(unittest.TestCase):
                 objects = {P.native_key_of(o["object_id"]) for o in full["objects"]}
                 self.assertIn('{"id":"a!b"}', objects)        # escaped order, not raw
                 self.assertIn('{"id":"h1"}', objects)         # history wins on its own
-                self.assertTrue({'{"id":"m1"}', '{"id":"m2"}'} <= objects)   # gone apart
+                self.assertIn('{"id":"m2"}', objects)          # the present copy
+                self.assertFalse({'{"id":"m1"}', '{"id":"m3"}'} & objects)
                 self.assertIn('{"id":"b1"}', objects)
                 self.assertGreaterEqual(len([o for o in objects if '"x' in o]), 3)
                 # 3 x (copies - 1) record copies, 2 of the tie, h2 h3 vs one another,
-                # m1 m3, u2 u3: what the collapse drops, never read
-                self.assertEqual(unread, {RELATION: 3 * (copies - 1) + 2 + 1 + 1 + 1 + 2})
+                # m1 and m3 (beside the present m2), u2 u3: what the collapse drops,
+                # never read
+                self.assertEqual(unread, {RELATION: 3 * (copies - 1) + 2 + 1 + 1 + 2 + 2})
 
     def test_a_relation_with_a_row_it_cannot_check_is_read_whole(self):
         odd = (
@@ -253,8 +256,9 @@ class CollapsingMirrorTests(unittest.TestCase):
             self.assertFalse(after[2])
 
     def test_a_worker_loads_the_parents_kept_copies_and_never_computes_them(self):
-        """The parent computes the kept copies once, for every relation it collapses; a
-        worker (``kept_file``) loads that file filtered to what it reads, never computes,
+        """The parent computes the kept copies once, for the relations it reads and no
+        other it could collapse (11-13: 33 min on six relations no unit of the train read);
+        a worker (``kept_file``) loads that file filtered to what it reads, never computes,
         and fails its open when the file is missing. A worker whose file marks moved (a
         WAL touched by a reader) reads the parent's records while its relation marks are
         the parent's, and only then."""
@@ -269,14 +273,23 @@ class CollapsingMirrorTests(unittest.TestCase):
                 full, unread = self.project(path, collapse=True)
                 kept = Path(tmp) / "kept"
                 kept.mkdir()
-                with fit.CollapsingMirror(path, collapse=self.collapse,
-                                          kept_dir=kept) as parent:
+                computed = []
+                real = fit._kept_copies
+
+                def counted(conn, relation, *rest):   # a function: its code is digested
+                    computed.append(relation)
+                    return real(conn, relation, *rest)
+                with mock.patch.object(fit, "_kept_copies", counted), \
+                        fit.CollapsingMirror(path, collapse=self.collapse,
+                                             kept_dir=kept) as parent:
                     self.assertEqual(project(parent, tmp), full)
                     self.assertEqual(parent.unread, unread)          # what it read only
                     file = parent.kept_path
-                with sqlite3.connect(file) as db:                    # every collapse relation
+                self.assertGreater(len(self.collapse), 1)
+                self.assertEqual(computed, [RELATION])               # the one it reads
+                with sqlite3.connect(file) as db:
                     self.assertEqual({r for (r,) in db.execute("SELECT relation FROM collapsed")},
-                                     set(self.collapse))
+                                     {RELATION})
                 with mock.patch.object(fit, "_kept_copies",
                                        side_effect=AssertionError("computed in a worker")), \
                         fit.CollapsingMirror(path, collapse=self.collapse,
@@ -324,7 +337,7 @@ class CollapsingMirrorTests(unittest.TestCase):
                     P.Projector(self.schema, {"portal_api": source}, scratch_dir=tmp,
                                 scope=[BINDING], emit=[P.binding_unit(BINDING)]).project()
             self.assertIs(P.MirrorCaptures, fit.CollapsingMirror.__mro__[1])
-            self.assertEqual(seen["unread"][RELATION], 4 * 3 + 7)
+            self.assertEqual(seen["unread"][RELATION], 4 * 3 + 8)   # m1 and m3 (CC-NY-2)
 
 
 class ParallelLinksTests(tp.ProjectionCase):
@@ -655,6 +668,88 @@ class ParallelUnitsTests(tp.ProjectionCase):
             self.assertGreater(stats["resumed_units"], 0)
             self.assertEqual(resumed, one)
 
+    def test_a_source_without_a_watermark_projects_its_units_here_to_the_same_rows(self):
+        """A capture store whose snapshot has no watermark (written while it opened) is
+        not reopened by a worker: its units are projected in this process, named, and the
+        layer holds the one projector's rows."""
+        from ontology import project_incremental as pi
+        every = sorted(pi.plan(self.schema).units)
+        with tempfile.TemporaryDirectory() as tmp:
+            scratch = Path(tmp)
+            one, _, _ = self.layer(scratch, every, mode="serial")
+            with mock.patch.object(P.MirrorCaptures, "watermark", return_value=None):
+                many, stats, _ = self.layer(scratch, every, mode="parallel")
+            self.assertEqual(stats["serial_sources"], ["portal_api"])
+            self.assertEqual(stats["serial_units"], len(every))
+            self.assertIn("source_watermark_unknown:portal_api", stats["unavailable"])
+            self.assertTrue(any(one.values()))
+            self.assertEqual(many, one)
+
+
+    def test_a_source_changed_under_the_workers_is_marked_again_then_projected_here(self):
+        """A live capture written between the build's mark and the workers' opening (the
+        11-13 build: the mail capture marked, then half an hour of kept copies, then
+        every worker refused it and all 96 units ran on one core) is opened and marked
+        again and the units go to the workers; one that keeps changing has its units
+        projected here. Either way the layer holds the one projector's rows."""
+        from ontology import project_incremental as pi
+        from ontology import project_parallel as par
+        every = sorted(pi.plan(self.schema).units)
+        real = par.project
+        for stale_calls, repins, serial in ((1, 1, 0), (99, fit.SOURCE_REPINS, len(every))):
+            with self.subTest(stale_calls=stale_calls), tempfile.TemporaryDirectory() as tmp:
+                scratch = Path(tmp)
+                one, _, _ = self.layer(scratch, every, mode="serial")
+                calls = [0]
+
+                def project(builder, **kwargs):
+                    calls[0] += 1
+                    if calls[0] <= stale_calls:   # the capture moved since its mark
+                        kwargs["marks"]["portal_api"]["mark"] = "stale"
+                    return real(builder, **kwargs)
+                with mock.patch.object(par, "project", project):
+                    many, stats, _ = self.layer(scratch, every, mode="parallel")
+                self.assertEqual(stats["repinned"], {"portal_api": repins}, stats)
+                self.assertEqual(stats["serial_units"], serial, stats)
+                if serial:
+                    self.assertEqual(stats["serial_sources"], ["portal_api"])
+                else:
+                    self.assertGreaterEqual(stats.get("tasks", 0), 2, stats)
+                self.assertTrue(any(one.values()))
+                self.assertEqual(many, one)
+
+
+    def test_a_changed_source_written_while_it_opens_again_goes_here_alone(self):
+        """Opened again while it is written (no watermark: the 11-13 Portal mirror mid-
+        sync), the changed source's units are projected here; the build never sends a
+        source without a mark to the workers (which refused every unit of the 11-13
+        resumed build), and the layer holds the one projector's rows."""
+        from ontology import project_incremental as pi
+        from ontology import project_parallel as par
+        every = sorted(pi.plan(self.schema).units)
+        real, real_mark = par.project, P.MirrorCaptures.watermark
+        with tempfile.TemporaryDirectory() as tmp:
+            scratch = Path(tmp)
+            one, _, _ = self.layer(scratch, every, mode="serial")
+            calls, opened = [0], [0]
+
+            def project(builder, **kwargs):
+                calls[0] += 1
+                if calls[0] == 1:
+                    kwargs["marks"]["portal_api"]["mark"] = "stale"
+                return real(builder, **kwargs)
+
+            def watermark(self_):
+                opened[0] += 1 if calls[0] else 0
+                return None if calls[0] else real_mark(self_)
+            with mock.patch.object(par, "project", project), \
+                    mock.patch.object(P.MirrorCaptures, "watermark", watermark):
+                many, stats, _ = self.layer(scratch, every, mode="parallel")
+            self.assertEqual(stats["repinned"], {"portal_api": 1}, stats)
+            self.assertEqual(stats["serial_sources"], ["portal_api"], stats)
+            self.assertEqual(calls[0], 1, "a source without a mark never reaches the workers")
+            self.assertTrue(any(one.values()))
+            self.assertEqual(many, one)
 
 class CandidateBudgetTests(tp.ProjectionCase):
     """A link type whose key join would write more candidates than the budget stops the

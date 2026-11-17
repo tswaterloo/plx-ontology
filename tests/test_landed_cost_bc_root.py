@@ -31,7 +31,9 @@ from ontology import store_ddl
 from ontology.json_contract import validate
 from ontology.types import Actor
 from operating import ontology_tools as ot
+from operating import ontology_tools_results
 from operating import ontology_tools_investigate as oi
+from operating import ontology_tools_investigate_host
 from operating import ontology_tools_traverse as tt
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -120,11 +122,11 @@ class BcRootedLandedCost(unittest.TestCase):
         base = ot.OntologyTools(reader, policy, schema=ot.default_schema(),
                                 grammar=ot.default_grammar())
         table: dict = {}
-        ot.register(table, base)
+        ontology_tools_results.register(table, base)
         tt.register(table, tt.TraverseTools(base))
         oi.register(table, oi.InvestigateTools(
             table, rows=oi.citation_rows(self.runtime, held_markings=policy.held_markings),
-            scope=oi.read_scope(base),
+            scope=ontology_tools_investigate_host.read_scope(base),
             held_markings=lambda actor: policy.held_markings(actor)))
         result = table["plx.investigate"]["handler"](
             {"family": "landed_cost", "root": self.root, "as_known_at": AT},

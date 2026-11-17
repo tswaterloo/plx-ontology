@@ -85,6 +85,12 @@ class _History:
         except Exception:  # noqa: BLE001 - unreadable: no proposal, drafted as before
             return None
 
+    def reading(self, state: Path, oid: str) -> bool:
+        """True while this reader's mail read is still running (started, not done)."""
+        with self._lock:
+            kept = self._kept.get((str(state), oid))
+        return kept is not None and not kept[2].done()
+
 
 def _read_mail(state: Path, oid: str) -> Optional[tuple[Any, list]]:
     from operating.chunking.permissions import load_exclusion
@@ -114,6 +120,14 @@ class InstructAssistMixin:
         if not state or not oid:
             return None
         return HISTORY.get(Path(state), oid, wait)
+
+    def _assist_mail_reading(self, reader: Any) -> bool:
+        """True while the reader's own mail is still being read in the background."""
+        if self.instruct_history is not None:
+            return False
+        state = getattr(self, "state_dir", None)
+        oid = str(getattr(reader.session, "subject_oid", "") or "").lower()
+        return bool(state and oid) and HISTORY.reading(Path(state), oid)
 
     def _assist_intent(self, text: str, sent: list) -> Optional[assist.Intent]:
         try:

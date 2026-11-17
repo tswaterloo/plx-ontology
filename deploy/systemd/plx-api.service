@@ -10,8 +10,15 @@
 Description=PLX Workbench API (operator_api)
 After=network-online.target postgresql.service
 Wants=network-online.target
+# always up: a crash loop backs off (3 s doubling to 2 min) instead of
+# restarting 140 times an hour (seen on plx-api), and past 20 starts in 30 min the unit stays
+# failed for plx-liveness.timer to start again after its cooldown, with an alarm
+StartLimitIntervalSec=30min
+StartLimitBurst=20
 
 [Service]
+# DI-02: Postgres is the only store (no projection file)
+Environment=PLX_ONTOLOGY_PG=only
 # names its Postgres sessions after the unit (ARCH T2)
 Environment=PGAPPNAME=%N
 Type=simple
@@ -24,8 +31,13 @@ Environment=PLX_PRECEDENCE_TABLE=/data/plx-state/precedence/measured.json
 # every model call counted (operating/model_ledger.py: no prompt or answer text)
 Environment=PLX_MODEL_LEDGER=/var/lib/plx-workbench/model-calls.jsonl
 ExecStart=/usr/bin/env python3 -m operator_api serve --bind 127.0.0.1 --port 8780 $PLX_API_ARGS
-Restart=on-failure
+# always: a clean exit (0, or a stop that was not systemctl's) is brought back too
+Restart=always
+RestartSteps=6
+RestartMaxDelaySec=2min
 RestartSec=3
+# SIGTERM: the requests under way end (60 s at most), then the workers (20 s) (ARCH-T6)
+TimeoutStopSec=100
 
 # Hardening: read-only everywhere except the API's own state directory.
 StateDirectory=plx-workbench

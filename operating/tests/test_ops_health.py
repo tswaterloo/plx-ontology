@@ -10,6 +10,7 @@ from pathlib import Path
 import sqlite3
 import tempfile
 import unittest
+from unittest import mock
 from contextlib import redirect_stdout
 
 from operating import ops_health
@@ -63,8 +64,9 @@ class OpsHealthTest(unittest.TestCase):
         self.tmp.cleanup()
 
     def test_a_fresh_state_has_no_breach(self) -> None:
-        report = ops_health.collect(make_state(self.root), now=NOW, environ={},
-                                    api_p95_ms=800)
+        # fresh: mail captured 15 min ago (its own bound is 30 min)
+        report = ops_health.collect(make_state(self.root, capture="2030-01-02T11:45:00Z"),
+                                    now=NOW, environ={}, api_p95_ms=800)
         self.assertEqual(report["breaches"], [], report)
         self.assertEqual(states(report)["pg_follow"], "unknown")  # no DSN: not a breach
         self.assertNotIn("capture:unused", states(report))
@@ -252,6 +254,9 @@ class StaleCaptureAlarmTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = make_state(Path(tmp), capture="2030-01-02T11:00:00Z")   # 60 min ago
             health = root / "host" / "serve-health.json"
+            loose = mock.patch.dict(ops_health.DEFAULT_TARGETS, {"capture_mail_minutes": 1e6})
+            loose.start()
+            self.addCleanup(loose.stop)
             for turn, expected in ((1500, "breach"), (3600, "ok"), (True, "ok")):
                 health.write_text(json.dumps({"turn_seconds": {"mail": turn}}))
                 report = ops_health.collect(root, now=NOW, environ={}, include_api=False)
@@ -267,6 +272,17 @@ class StaleCaptureAlarmTest(unittest.TestCase):
             report = ops_health.collect(root, now=NOW, environ={}, include_api=False)
             self.assertEqual(states(report)["capture:mail"], "ok")
             self.assertNotIn("ingest_start", states(report))
+            # Mail keeps its own 30-minute bound whatever its turn (owner 11-14: mail
+            # fresh within 15-30 min; a long turn once let it go 5 h unalarmed).
+            loose.stop()
+            health.write_text(json.dumps({"turn_seconds": {"mail": 3600}}))
+            report = ops_health.collect(root, now=NOW, environ={}, include_api=False)
+            self.assertEqual(states(report)["capture:mail"], "breach")
+            fresh = make_state(Path(tmp) / "fresh", capture="2030-01-02T11:40:00Z")
+            (fresh / "host" / "serve-health.json").write_text(
+                json.dumps({"turn_seconds": {"mail": 3600}}))
+            report = ops_health.collect(fresh, now=NOW, environ={}, include_api=False)
+            self.assertEqual(states(report)["capture:mail"], "ok")
 
 
 if __name__ == "__main__":

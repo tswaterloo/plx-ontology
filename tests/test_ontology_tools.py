@@ -26,6 +26,9 @@ from ontology import store_ddl
 from ontology.json_contract import check_schema, validate
 from ontology.types import Actor
 from operating import ontology_tools as ot
+from operating import ontology_tools_identity
+from operating import ontology_tools_policy
+from operating import ontology_tools_results
 
 ROOT = Path(__file__).resolve().parents[1]
 CONTRACTS = json.loads((ROOT / "operating/ontology_tool_contracts.json").read_text("utf-8"))
@@ -440,14 +443,14 @@ class FindTests(ContractMixin, unittest.TestCase):
 
     def test_exact_match_follows_each_kinds_declared_compare(self):
         from ontology import identifiers
-        self.assertTrue(ot.exact_match("petra_po", " PO100012 ", "po100012", identifiers))
-        self.assertFalse(ot.exact_match("petra_po", "PO100012", "PO1000%", identifiers))
-        self.assertTrue(ot.exact_match("so_number", "SO100201 ", " SO100201", identifiers))
-        self.assertFalse(ot.exact_match("so_number", "SO100201", "so100201", identifiers))
-        self.assertFalse(ot.exact_match("petra_po", "PO#4821", "PO4821", identifiers))
+        self.assertTrue(ontology_tools_identity.exact_match("petra_po", " PO100012 ", "po100012", identifiers))
+        self.assertFalse(ontology_tools_identity.exact_match("petra_po", "PO100012", "PO1000%", identifiers))
+        self.assertTrue(ontology_tools_identity.exact_match("so_number", "SO100201 ", " SO100201", identifiers))
+        self.assertFalse(ontology_tools_identity.exact_match("so_number", "SO100201", "so100201", identifiers))
+        self.assertFalse(ontology_tools_identity.exact_match("petra_po", "PO#4821", "PO4821", identifiers))
         # No grammar (or one without exact_compare): trimmed, case-sensitive only.
-        self.assertFalse(ot.exact_match("petra_po", "PO100012", "po100012", None))
-        self.assertTrue(ot.exact_match("petra_po", "PO100012", " PO100012", FixtureGrammar()))
+        self.assertFalse(ontology_tools_identity.exact_match("petra_po", "PO100012", "po100012", None))
+        self.assertTrue(ontology_tools_identity.exact_match("petra_po", "PO100012", " PO100012", FixtureGrammar()))
 
     def test_alias_written_in_text_form_is_found_through_the_grammar(self):
         result = self.ok(self.t, "plx.find", {"query": "Our P.O. #4821"})
@@ -947,6 +950,36 @@ class ObjectTests(ContractMixin, unittest.TestCase):
     def setUp(self):
         self.t = tools()
 
+    def test_a_bc_record_carries_its_company_and_two_of_one_number_are_told_apart(self):
+        """C-07 (live 2026-11-12: 1,751 distribution customers repeat manufacturing numbers):
+        plx.object names a BC record's company from its lineage and handle by the pinned
+        books; a lineage the handle's company disagrees with, an unpinned company or another
+        source carries none (never guessed)."""
+        store = build()
+        made = {"m": ("fbd2ba74-f148-f111-b476-7ced8db443c4", "bc_manufacturing"),
+                "d": ("ca41a27f-809d-f111-8072-6045bd5bf768", "bc_distribution"),
+                "x": ("ca41a27f-809d-f111-8072-6045bd5bf768", "bc_manufacturing"),
+                "u": ("00000000-0000-0000-0000-00000000000a", "bc_manufacturing")}
+        for key, (company, lineage) in made.items():
+            oid = f"Customer:bc.customers:c-{key}"
+            handle = f"bc://production/{company}/customers/c-{key}@cap"
+            store.obj(oid, f"bc:production:{lineage[3:]}:customers", handle, lineage)
+            store.val(oid, "name", "text", "Delta Hospitality", handle, "row.displayName",
+                      lineage)
+        store.conn.commit()
+        t = tools(store, policy=ot.ReadPolicy(tenant="plx", audiences={"bc:*": {"sales"}}))
+        got = {key: self.ok(t, "plx.object", {"object_id": f"Customer:bc.customers:c-{key}"},
+                            SALES)["object"].get("company") for key in made}
+        self.assertEqual((got["m"]["book"], got["m"]["name"]), ("manufacturing", "My Company"))
+        self.assertEqual((got["d"]["book"], got["d"]["name"]),
+                         ("distribution", "PLX Distribution"))
+        self.assertTrue(got["d"]["l1_handle"].startswith("bc://production/ca41a27f"))
+        self.assertIsNone(got["x"])   # lineage and handle disagree
+        self.assertIsNone(got["u"])   # a company the books do not pin
+        self.assertIsNone(self.ok(tools(), "plx.object", {"object_id": SO}, FULL)["object"]
+                          .get("company"))
+        self.assertIsNone(ot.bc_company("bc_manufacturing", "api://x/1@c"))
+
     def test_a_zeroed_order_total_shows_its_derived_value_only_from_what_the_reader_reads(self):
         """C-01 (live 11-11: 73,472 of 75,189 Sage headers read 0 once invoiced): a sales
         order whose header total is 0 is shown the value its invoices (closed) or priced
@@ -1004,6 +1037,144 @@ class ObjectTests(ContractMixin, unittest.TestCase):
         self.assertEqual((got["value"], got["derived_from"], len(got["inputs"])),
                          ("670.89", "order_lines", 4))
 
+    def test_a_header_total_its_lines_contradict_is_said_with_both_figures_to_its_reader(self):
+        """CC-NY-1 (live 11-14: 117 of 297 Portal app orders with a total disagree with
+        their lines): plx.object states the disagreement as a gap with both figures and
+        that neither is the order's value; Portal lines repeated by the import, counted
+        once, that match say the header's total stands. A reader without finance, or who
+        may not see a line, gets no figure and no check."""
+        def order(amounts, descriptions, audience="api:public.app_sales_order_line"):
+            store = build()
+            store.val(SO, "subtotal", "money", "1250.50", SO_V2, "row.subtotal",
+                      "gold_etl_from_fm", currency="CAD", markings='["finance"]',
+                      recorded="2099-01-05T00:00:00Z")
+            for n, (amount, words) in enumerate(zip(amounts, descriptions)):
+                line = f"SalesOrderLine:portal.app_sales_order_line:c-{n}"
+                line_h = f"api://public.app_sales_order_line/c-{n}@0000000000000001-7"
+                store.obj(line, audience, line_h, "gold_etl_from_fm")
+                store.val(line, "line_total", "money", amount, line_h, "row.total_price",
+                          "gold_etl_from_fm", currency="CAD", markings='["finance"]')
+                store.val(line, "description", "text", words, line_h, "row.description",
+                          "gold_etl_from_fm")
+                store.link(f"lnk-c{n}", "SalesOrderLine.line_of", line, SO, "verified", "fk",
+                           [line_h, SO_V2])
+            store.conn.commit()
+            return store
+
+        def checks(result):
+            return [g for g in result["gaps"] if g["reason"].startswith("order_")]
+        store = order(["1000.00", "1556.61"], ["Lid", "Jar"])
+        full = self.ok(tools(store), "plx.object", {"object_id": SO}, FULL)
+        (gap,) = checks(full)
+        self.assertEqual((gap["reason"], gap["subject"]),
+                         ("order_total_disagrees_with_lines", f"{SO}.total_amount"))
+        self.assertIn("1,250.50 CAD", gap["detail"])
+        self.assertIn("2,556.61 CAD", gap["detail"])
+        self.assertTrue(gap["detail"].startswith("No order value is given"))
+        self.assertNotIn("derived", full)
+        # the source copy stays, as stored
+        self.assertIn(("total_amount", "1250.50"),
+                      [(v["property"], v["value"]) for v in full["values"]])
+        sales = self.ok(tools(store), "plx.object", {"object_id": SO}, SALES)
+        self.assertEqual(checks(sales), [])
+        self.assertNotIn("2556.61", json.dumps(sales))
+        self.assertNotIn("2,556.61", json.dumps(sales))
+        # finance held, the lines' audience not: the header unchecked, nothing about lines
+        store = order(["1000.00", "1556.61"], ["Lid", "Jar"], audience="bc:company_a/lines")
+        self.assertEqual(len(checks(self.ok(tools(store), "plx.object", {"object_id": SO},
+                                            FULL))), 1)
+        split = ot.ReadPolicy(tenant="plx", audiences={"api:*": {"sales", "finance_clerk"},
+                                                       "bc:*": {"bc_only"}},
+                              markings={"finance": {"finance_clerk"}})
+        hidden = self.ok(tools(store, policy=split), "plx.object", {"object_id": SO}, FULL)
+        self.assertEqual(checks(hidden), [])
+        self.assertNotIn("2,556.61", json.dumps(hidden))
+        self.assertIn(("total_amount", "1250.50"),
+                      [(v["property"], v["value"]) for v in hidden["values"]])
+        # three copies of one 1250.50 line: the header's total stands, the repeats said
+        store = order(["1250.50"] * 3, ["Lid"] * 3)
+        (gap,) = checks(self.ok(tools(store), "plx.object", {"object_id": SO}, FULL))
+        self.assertEqual(gap["reason"], "order_lines_repeated")
+        self.assertIn("2 of them repeat another line exactly", gap["detail"])
+        # lines that add up to the header: no gap
+        store = order(["1000.25", "250.25"], ["Lid", "Jar"])
+        self.assertEqual(checks(self.ok(tools(store), "plx.object", {"object_id": SO}, FULL)),
+                         [])
+
+    def test_a_header_holding_the_value_still_to_ship_gives_the_lines_value(self):
+        """CC-NY-1 (host mirror 11-14: 221 of 228 non-zero Sage headers that differ from
+        their lines' ordered value equal the value still to ship): plx.object values the
+        open order from its lines, says the header's total is what is still to ship, and
+        never states that figure as the order's value. A reader without finance sees
+        neither; a line whose quantity still to ship is unreadable leaves no value."""
+        def order(left=("4", "0"), outstanding_marks='[]'):
+            store = build()
+            store.val(SO, "subtotal", "money", "1250.50", SO_V2, "row.subtotal",
+                      "gold_etl_from_fm", currency="CAD", markings='["finance"]',
+                      recorded="2099-01-05T00:00:00Z")
+            # ordered 10 x 200 less 10% + 5 x 50 = 2050; still to ship 4 x 180 + 0 = 720
+            for n, (qty, price, disc, rest) in enumerate(
+                    (("10", "200", "10", left[0]), ("5", "50", "0", left[1]))):
+                line = f"SalesOrderLine:portal.sage_oe_order_detail:s-{n}"
+                line_h = f"api://sage.oe_order_detail/s-{n}@0000000000000001-7"
+                store.obj(line, "api:sage.oe_order_detail", line_h, "sage_bronze")
+                store.val(line, "ordered_quantity", "quantity", qty, line_h, "row.origqty",
+                          "sage_bronze", unit="EA", role="ordered")
+                store.val(line, "unit_price", "money", price, line_h, "row.unitprice",
+                          "sage_bronze", unit="EA", currency="CAD",
+                          markings='["finance"]')
+                store.val(line, "line_discount_percent", "decimal", disc, line_h,
+                          "row.discper", "sage_bronze", markings='["finance"]')
+                if rest is not None:
+                    store.val(line, "outstanding_quantity", "decimal", rest, line_h,
+                              "row.qtyordered", "sage_bronze",
+                              markings=outstanding_marks)
+                store.link(f"lnk-s{n}", "SalesOrderLine.line_of", line, SO, "verified",
+                           "fk", [line_h, SO_V2])
+            store.conn.commit()
+            return store
+
+        def checks(result):
+            return [g for g in result["gaps"] if g["reason"].startswith("order_")]
+        store = order(left=("4", "0"))
+        store.conn.execute("UPDATE object_values SET value = '720.00' WHERE object_id = ? "
+                           "AND property IN ('subtotal', 'total_amount')", (SO,))
+        store.conn.commit()
+        full = self.ok(tools(store), "plx.object", {"object_id": SO}, FULL)
+        (gap,) = checks(full)
+        self.assertEqual((gap["reason"], gap["subject"]),
+                         ("order_total_is_value_still_to_ship", f"{SO}.total_amount"))
+        self.assertTrue(gap["detail"].startswith(
+            "The order's value is what its item lines ordered, 2,050.00 CAD."), gap["detail"])
+        self.assertIn("still to ship", gap["detail"])
+        self.assertIn("720.00 CAD", gap["detail"])
+        (got,) = full["derived"]
+        self.assertEqual((got["value"], got["derived_from"], got["source_total"]["value"]),
+                         ("2050.0", "order_lines", "720.00"))
+        # no finance: no figure, no check, no derived value
+        sales = self.ok(tools(store), "plx.object", {"object_id": SO}, SALES)
+        self.assertEqual(checks(sales), [])
+        self.assertNotIn("derived", sales)
+        self.assertNotIn("2050", json.dumps(sales))
+        # the quantity still to ship hidden from the reader: the header disagrees, no value
+        store = order(left=("4", "0"), outstanding_marks='["l5"]')
+        store.conn.execute("UPDATE object_values SET value = '720.00' WHERE object_id = ? "
+                           "AND property IN ('subtotal', 'total_amount')", (SO,))
+        store.conn.commit()
+        hidden = self.ok(tools(store), "plx.object", {"object_id": SO}, FULL)
+        self.assertEqual([g["reason"] for g in checks(hidden)],
+                         ["order_total_disagrees_with_lines"])
+        self.assertNotIn("derived", hidden)
+        self.assertNotIn("720.00 CAD is what", json.dumps(hidden))
+        # a header matching neither the ordered nor the remaining value: no value
+        store = order(left=("4", "0"))
+        store.conn.execute("UPDATE object_values SET value = '999.00' WHERE object_id = ? "
+                           "AND property IN ('subtotal', 'total_amount')", (SO,))
+        store.conn.commit()
+        self.assertEqual([g["reason"] for g in checks(self.ok(
+            tools(store), "plx.object", {"object_id": SO}, FULL))],
+            ["order_total_disagrees_with_lines"])
+
     def test_what_the_linked_records_link_to_is_counted_one_link_further(self):
         """plx.object counts what the records linked to it link to in turn (an invoice of
         the order, and the purchase order that invoice names), firm links only and only
@@ -1055,7 +1226,7 @@ class ObjectTests(ContractMixin, unittest.TestCase):
                                  [{c: r[c] for c in reader.HOP_COLUMNS}
                                   for r in reader.links_of(kid)], kid)
                 self.assertTrue(got[kid])
-        with ot.snapshot_reads():
+        with ontology_tools_policy.snapshot_reads():
             reader.links_of(kids[0])
             statements.clear()
             self.assertEqual(len(reader.links_of_many(kids[:2])[kids[1]]),
@@ -1089,11 +1260,12 @@ class ObjectTests(ContractMixin, unittest.TestCase):
 
     def test_values_cite_handles_claim_checks_accept(self):
         from operating import claim_checks
+        from operating import claim_checks_grammar
         from operating.case_runtime import SUPPORTED_SCHEMES
         result = self.ok(self.t, "plx.object", {"object_id": SO})
         for value in result["values"]:
             self.assertTrue(value["citation"]["l1_handle"].startswith(SUPPORTED_SCHEMES))
-            self.assertTrue(claim_checks._FIELD.match(value["citation"]["field_path"]))
+            self.assertTrue(claim_checks_grammar._FIELD.match(value["citation"]["field_path"]))
 
     def test_conflict_with_identity_peer_is_reported_never_resolved(self):
         result = self.ok(self.t, "plx.object", {"object_id": SO})
@@ -1201,7 +1373,7 @@ class ObjectTests(ContractMixin, unittest.TestCase):
                       {(g["state"], g["reason"]) for g in result["gaps"]})
 
     def test_a_capture_older_than_the_hosts_bound_is_stale_once_with_its_age(self):
-        # A projected source is judged by the host's
+        # Decision 2026-10-27: a projected source is judged by the host's
         # capture bound (its ingest cadence); past it, one stale_source with its age.
         store = build()
 
@@ -1826,7 +1998,7 @@ class ReviewL81Tests(ContractMixin, unittest.TestCase):
             self.assertNotIn("error", t.call("plx.object", {"object_id": DOC}, SALES))
         self.assertGreaterEqual(calls.count((SALES, DOC_H)), 2)
         del calls[:]
-        with ot.run_memo():
+        with ontology_tools_policy.run_memo():
             for _ in range(3):
                 self.assertNotIn("error", t.call("plx.object", {"object_id": DOC}, SALES))
             self.assertEqual(calls.count((SALES, DOC_H)), 1)
@@ -1834,7 +2006,7 @@ class ReviewL81Tests(ContractMixin, unittest.TestCase):
             other = t.call("plx.object", {"object_id": DOC}, OUTSIDER)
             self.assertEqual(other["error"]["code"], "object_not_found")
         allowed["open"] = False
-        with ot.run_memo():
+        with ontology_tools_policy.run_memo():
             self.assertEqual(t.call("plx.object", {"object_id": DOC}, SALES)["error"]["code"],
                              "object_not_found")
         # every reader's answers inside a run are the ones it gets outside one
@@ -1844,7 +2016,7 @@ class ReviewL81Tests(ContractMixin, unittest.TestCase):
                                     ("plx.object", {"object_id": DOC})):
                 with self.subTest(actor=sorted(actor.principals), tool=name):
                     outside = without_set(t.call(name, arguments, actor))
-                    with ot.run_memo():
+                    with ontology_tools_policy.run_memo():
                         t.call(name, arguments, FULL)   # a fuller reader decided first
                         inside = without_set(t.call(name, arguments, actor))
                     self.assertEqual(inside, outside)
@@ -1865,7 +2037,7 @@ class ReviewL81Tests(ContractMixin, unittest.TestCase):
                     raise PermissionError("employee_acl_denied")
                 return {"citation": handle}
 
-        gate = ot.item_gate_from_case_runtime(Runtime())
+        gate = ontology_tools_results.item_gate_from_case_runtime(Runtime())
         self.assertTrue(gate(SALES, "sharepoint://drive-1/ok@e"))
         self.assertFalse(gate(SALES, "sharepoint://drive-1/denied@e"))
 
@@ -1954,7 +2126,7 @@ class SchemaToolTests(ContractMixin, unittest.TestCase):
 
 class HostWiringTests(unittest.TestCase):
     def test_tool_specs_are_read_only_with_self_contained_schemas(self):
-        specs = ot.tool_specs()
+        specs = ontology_tools_results.tool_specs()
         self.assertEqual([spec["name"] for spec in specs], list(ot.TOOL_NAMES))
         for spec in specs:
             self.assertLessEqual(len(spec["description"]),
@@ -1965,15 +2137,16 @@ class HostWiringTests(unittest.TestCase):
         self.assertEqual(result["status"], "found")
 
     def test_retirement_plan_matches_the_case_host(self):
-        from operating.mcp_server import CASE_RUNTIME_TOOLS, FRESHNESS_META_KEY
+        from operating.mcp_server_catalog import CASE_RUNTIME_TOOLS
+        from operating.mcp_server_results import FRESHNESS_META_KEY
 
         host = set(CASE_RUNTIME_TOOLS)
         self.assertLessEqual(set(ot.TOOL_NAMES), host)
-        self.assertFalse(ot.DIRECTIVE_RETIRED & host)
-        self.assertFalse(set(ot.HOST_RETIREMENTS) & host)
-        self.assertLessEqual({"plx.around", "plx.timeline"}, host)  # L9
+        self.assertFalse(ontology_tools_results.DIRECTIVE_RETIRED & host)
+        self.assertFalse(set(ontology_tools_results.HOST_RETIREMENTS) & host)
+        self.assertLessEqual({"plx.around", "plx.timeline"}, host)
         self.assertEqual(FRESHNESS_META_KEY.split("/")[0], "plx")
-        for name, plan in ot.HOST_RETIREMENTS.items():
+        for name, plan in ontology_tools_results.HOST_RETIREMENTS.items():
             self.assertIn(plan["basis"], {"directive", "lead", "merge"}, name)
             # A successor exists now: a tool on the host, or the freshness _meta.
             self.assertTrue(plan["successor"] in host or plan["successor"] == "_meta",
@@ -1984,7 +2157,10 @@ class HostWiringTests(unittest.TestCase):
 
 class GenericityTests(unittest.TestCase):
     def test_module_names_no_kind_type_or_binding(self):
-        source = (ROOT / "operating/ontology_tools.py").read_text("utf-8")
+        # the module and the siblings split out of it (not the other ontology_tools_* tools)
+        parts = ("", "_find", "_identity", "_object", "_policy", "_reader", "_results", "_scope")
+        source = "".join((ROOT / f"operating/ontology_tools{part}.py").read_text("utf-8")
+                         for part in parts)
         words = set(FixtureGrammar().kinds()) | set(SCHEMA.object_types) | {
             b["id"] for t in DOMAIN["object_types"] for b in t["bindings"]}
         real = ROOT / "ontology/schema/identifiers.json"

@@ -22,9 +22,25 @@ SERVED_INDEXES = (
     "WHERE evidence_id IS NOT NULL")
 
 
+def _texts(link_id):
+    """A row's reason and evidence as the served table holds them (plain): most JSON the
+    conversion packs (a gated handle among the evidence, a '%' and a shared citation in
+    the reason), some with an odd slot text (an escaped quote: left plain), some not JSON."""
+    n = sum(map(ord, link_id))
+    if n % 5 == 3:
+        return f"reason {link_id}", "[]"
+    handles = [f"sharepoint://site/doc{n % 7}", f"mail://box/{link_id}"]
+    note = (r"the buyer wrote \"rush\" on the order line" if n % 5 == 4 else
+            "50% shipped, rest on the next truck from the yard")
+    reason = ('[{"feature": "same_item", "agrees": true, "citation": "%s", "note": "%s", '
+              '"link_id": "%s"}]' % (handles[0], note, link_id))
+    return reason, '["%s", "%s"]' % tuple(handles)
+
+
 def _row(link_id, link_type, frm, to, *, tier="verified", markings="2", sup=None, row_no=None):
+    reason, evidence = _texts(link_id)
     return (link_id, link_type, frm, to, tier, "fk", None, None, "", None, None, None, None, 0,
-            [], markings, "2026-11-01T00:00:00Z", sup, f"reason {link_id}", "[]", row_no)
+            [], markings, "2026-11-01T00:00:00Z", sup, reason, evidence, row_no)
 
 
 def _rows(n: int):
@@ -117,7 +133,7 @@ class LinkPartitionTests(unittest.TestCase):
         p = {"schemes": ["sharepoint"], "odd": [], "name": BIG, "owned": ["Big:1", "Item:0"],
              "lo": "L:", "hi": "L;"}
         with self.conn() as c:
-            return {
+            out = {
                 "from": c.execute("SELECT link_id FROM ontology.link_rows WHERE from_object = "
                                   "'Big:1'").fetchall(),
                 "to": sorted(c.execute("SELECT link_id FROM ontology.link_rows WHERE to_object "
@@ -127,10 +143,16 @@ class LinkPartitionTests(unittest.TestCase):
                 "prefix": c.execute('SELECT count(*) FROM ontology.link_rows WHERE link_id '
                                     'COLLATE "C" >= \'mention:\' AND link_id COLLATE "C" < '
                                     "'mention;'").fetchall(),
-                "typed": sorted(c.execute(r.link_slice_sql(typed=True), p).fetchall()),
-                "owned": sorted(c.execute(r.link_slice_sql(owned=True), p).fetchall()),
-                "ranged": sorted(c.execute(r.link_slice_sql(ranged=True), p).fetchall()),
+                "typed": sorted(c.execute(r.link_slice_sql(typed=True), p).fetchall(), key=repr),
+                "owned": sorted(c.execute(r.link_slice_sql(owned=True), p).fetchall(), key=repr),
+                "ranged": sorted(c.execute(r.link_slice_sql(ranged=True), p).fetchall(), key=repr),
             }
+        # a packed row's gated handles come one a row, a plain row's as a list: the read's
+        # answer is the fold (``ontology_tools_traverse._folded_slices``), compared as such
+        from operating.ontology_tools_traverse import _folded_slices
+        for k in ("typed", "owned", "ranged"):
+            out[k] = _folded_slices(out[k])
+        return out
 
     def parts(self):
         with self.conn() as c:
@@ -180,6 +202,181 @@ class LinkPartitionTests(unittest.TestCase):
                     self.assertIsNotNone(c.execute(
                         "SELECT row_no FROM ontology.link_rows WHERE link_id = 'L:new'"
                     ).fetchone()[0])
+
+    def counts(self):
+        """Rows stored packed, rows stored plain, packed rows whose texts hold an odd slot."""
+        with self.conn() as c:
+            return c.execute(
+                "SELECT count(*) FILTER (WHERE reason_id IS NOT NULL), count(*) FILTER "
+                "(WHERE reason IS NOT NULL), count(*) FILTER (WHERE reason_id IS NOT NULL "
+                "AND link_id IN (SELECT link_id FROM ontology.links WHERE strpos(reason, "
+                "chr(92)) > 0)) FROM ontology.link_rows").fetchone()
+
+    def test_repack_packs_every_partition_and_keeps_every_answer_writes_and_undo(self):
+        lp = self.lp
+        insert = ("INSERT INTO ontology.link_rows (link_id, link_type, from_object, to_object, "
+                  "tier, binding_kind, why_not, markings, recorded_at, reason, evidence_handles)"
+                  " VALUES (%s, %s, 'W:1', 'Big:1', 'lead', 'fk', '', '2', 'x', %s, %s)")
+
+        class Writer(lp.Session):
+            """A delta writing a row of the repacked type just before the swap."""
+            row: tuple = ()
+
+            def timed(self, key, fn):
+                if key == "swap" and self.row:
+                    with pg_testdb.psycopg.connect(self.dsn, autocommit=True) as c:
+                        c.execute(insert, (*self.row, *_texts(self.row[0])))
+                    self.row = ()
+                return super().timed(key, fn)
+
+        for n in (1, 10, 60):
+            with self.subTest(n=n):
+                if n != 1:
+                    self.setUp()
+                # n=10: while the conversion's undo is still open (a repack may run then)
+                self.convert(n, finish=n != 10)
+                before, reads = self.snapshot(), self.reads()
+                self.assertEqual(self.counts()[0], 0)        # the conversion copies as stored
+                w = Writer(self.dsn, workers=3)
+                w.row = (f"L:during{n}", SMALL)
+                parts = self.parts()
+                out = lp.repack_all(w, every=True)
+                # one rebuild a partition, each swapped alone; the write caught up
+                self.assertEqual(len(out["repacked"]), len(parts) - 1)   # not the default
+                self.assertEqual(sorted(self.parts()).__len__(), len(parts))
+                packed, plain, odd = self.counts()
+                self.assertEqual(packed, sum(r["packed"].get("packed", 0) for r in out["repacked"]))
+                self.assertEqual(odd, 0)
+                self.assertEqual(packed + plain, len(before) + 1)
+                with self.conn() as c:
+                    self.assertEqual(c.execute("SELECT count(*) FROM ontology.link_rows WHERE "
+                                               "link_id = %s", (f"L:during{n}",)).fetchone()[0], 1)
+                    c.execute("DELETE FROM ontology.link_rows WHERE link_id = %s",
+                              (f"L:during{n}",))
+                self.assertEqual(self.snapshot(), before)
+                self.assertEqual(self.reads(), reads)
+                self.assertGreater(packed, 0)
+                if n >= 10:
+                    self.assertGreater(packed, plain)
+                    self.assertGreater(plain, 0)
+                self.assertTrue(all(r["verified"]["differ"] == 0 for r in out["repacked"]))
+                # a rerun skips what is done; a rebuild of a kept partition is refused
+                self.assertEqual(lp.repack_all(self.s, every=True)["repacked"], [])
+                with self.conn() as c, c.cursor() as cur:
+                    with self.assertRaisesRegex(lp.Refused, "rebuild_undo_open"):
+                        lp.plan(cur, lp.repack((BIG,)))
+                    # writes after the swaps: an update, a delete, an insert
+                    c.execute("UPDATE ontology.link_rows SET tier = 'contradicted' WHERE "
+                              "link_id = 'L:0000s'")
+                    c.execute("DELETE FROM ontology.link_rows WHERE link_id = 'L:0000o'")
+                    c.execute(insert, ("L:after", BIG, *_texts("L:after")))
+                    gens = lp.kept_rebuilds(cur)
+                want = self.snapshot()
+                for g in sorted(gens, reverse=True):
+                    lp.rebuild_undo(self.s, g)
+                self.assertEqual(self.snapshot(), want)
+                # the old partitions, as stored, plus the one row updated since (as the
+                # new partition held it: packed)
+                self.assertEqual(self.counts()[0], 1)
+                with self.conn() as c, c.cursor() as cur:
+                    self.assertEqual(lp.kept_rebuilds(cur), [])
+                    # no rebuild's trigger left (the conversion's own undo trigger stays
+                    # while its undo is open)
+                    self.assertEqual(c.execute("SELECT count(*) FROM pg_trigger t JOIN pg_class "
+                                               "r ON r.oid = t.tgrelid WHERE t.tgname ~ "
+                                               "'^log_(undo|rebuild)_[0-9]' AND r.relname LIKE "
+                                               "'link_rows%%'").fetchone()[0], 0)
+                    c.execute("DELETE FROM ontology.link_rows_repacked")
+                # packed again and made final: the old partitions dropped
+                out = lp.repack_all(self.s, every=True)
+                with self.conn() as c, c.cursor() as cur:
+                    for g in lp.kept_rebuilds(cur):
+                        lp.rebuild_finish(self.s, g)
+                    self.assertEqual(lp.kept_rebuilds(cur), [])
+                    self.assertEqual(c.execute(
+                        "SELECT count(*) FROM pg_class WHERE relnamespace = 'ontology'::"
+                        "regnamespace AND relname LIKE 'link_rows_%%' AND relkind = 'r' AND "
+                        "NOT relispartition AND relname NOT IN ('link_rows_change_log', "
+                        "'link_rows_rebuilds', 'link_rows_retired', 'link_rows_rebuild_undo', "
+                        "'link_rows_repacked', 'link_rows_unpartitioned')").fetchone()[0], 0)
+                self.assertEqual(self.snapshot(), want)
+                self.assertGreater(self.counts()[0], 0)
+                if n == 10:
+                    # the conversion taken back after the repack: every row as read
+                    lp.undo(self.s)
+                    self.assertEqual(self.snapshot(), want)
+                    with self.conn() as c:
+                        self.assertEqual(c.execute("SELECT relkind FROM pg_class WHERE oid = "
+                                                   "'ontology.link_rows'::regclass"
+                                                   ).fetchone()[0], "r")
+
+    def test_a_row_a_writer_moved_during_the_fill_is_in_the_repack_once(self):
+        """A writer's update between two ranges' reads leaves both versions copied (found
+        on the Spark's real-row rehearsal, 11-14): the rebuild keeps one, the new one."""
+        lp = self.lp
+        self.convert(10)
+
+        class Mover(lp.Session):
+            def timed(self, key, fn):
+                out = super().timed(key, fn)
+                if key == "fill":
+                    with pg_testdb.psycopg.connect(self.dsn, autocommit=True) as c:
+                        # the old version copied, then the update (logged): its new version
+                        # is copied too, as a later range's read would
+                        new = c.execute(
+                            "SELECT c.relname FROM pg_class c WHERE c.relname LIKE "
+                            "'link_rows_%%' AND c.relkind = 'r' AND NOT c.relispartition "
+                            "AND c.relname ~ '_[0-9]+$' AND EXISTS (SELECT 1 FROM "
+                            "pg_constraint k WHERE k.conrelid = c.oid AND k.contype = 'c' "
+                            "AND pg_get_constraintdef(k.oid) LIKE '%%Big.uses%%')"
+                        ).fetchone()[0]
+                        c.execute("UPDATE ontology.link_rows SET tier = 'reviewed' WHERE "
+                                  "link_id = 'L:0002b'")
+                        c.execute(f"INSERT INTO ontology.{new} SELECT * FROM ontology.link_rows "
+                                  "WHERE link_id = 'L:0002b'")
+                return out
+
+        want = self.snapshot()
+        want = [r if r[0] != "L:0002b" else (r[:4] + ("reviewed",) + r[5:]) for r in want]
+        lp.repack_all(Mover(self.dsn, workers=2), types=[BIG], keep_old=False)
+        self.assertEqual(self.snapshot(), want)
+
+    def test_a_text_id_held_by_another_text_leaves_its_row_plain_and_a_differing_row_refuses(self):
+        lp = self.lp
+        rows = _rows(10)
+        self.convert(10)
+        before = self.snapshot()
+        # a slot text whose id another text already holds (a hash collision)
+        row = next(r for r in rows if lp.packed_row(r) is not None)
+        victim = f"mail://box/{row[0]}"
+        with self.conn() as c:
+            # (an earlier test's repack may have stored the text itself: texts stay)
+            c.execute("DELETE FROM ontology.link_texts WHERE id = %s", (lp.text_id(victim),))
+            c.execute("INSERT INTO ontology.link_texts (id, text) VALUES (%s, 'another')",
+                      (lp.text_id(victim),))
+        out = lp.repack_all(self.s, every=True, keep_old=False)
+        self.assertEqual(self.snapshot(), before)
+        self.assertEqual(sum(r["packed"].get("collided", 0) for r in out["repacked"]), 1)
+        with self.conn() as c:
+            self.assertEqual(c.execute("SELECT reason_id, reason IS NOT NULL FROM "
+                                       "ontology.link_rows WHERE link_id = %s",
+                                       (row[0],)).fetchone(), (None, True))
+            self.assertEqual(c.execute("SELECT text FROM ontology.link_texts WHERE id = %s",
+                                       (lp.text_id(victim),)).fetchone()[0], "another")
+        # the rebuild's check: a new row the view reads differently is found
+        with self.conn() as c, c.cursor() as cur:
+            cur.execute("CREATE TABLE ontology.link_rows_x AS SELECT * FROM ontology.link_rows")
+            cur.execute("UPDATE ontology.link_rows_x SET slots = slots[2:] || slots[1:1] "
+                        "WHERE link_id = (SELECT min(link_id) FROM ontology.link_rows_x "
+                        "WHERE ek > 1)")
+            got = lp.verify_sample(cur, "link_rows_x", "ontology.link_rows", "none",
+                                   percent=100)
+            self.assertEqual((got["checked"], got["differ"]), (len(before), 1))
+            self.assertGreater(got["packed"], 0)
+            cur.execute("DROP TABLE ontology.link_rows_x")
+        # a pack that would replace rows is refused (only a repack is checked row for row)
+        with self.assertRaisesRegex(lp.Refused, "pack_is_for_a_repack_only"):
+            lp.rebuild(self.s, lp.Rebuild((BIG,), pack=True))
 
     def test_rebuild_of_one_type_swaps_only_its_partition(self):
         self.convert(10)
@@ -448,6 +645,69 @@ class LinkPartitionTests(unittest.TestCase):
                                         ).fetchone()[0])
             self.assertEqual(c.execute("SELECT count(*) FROM pg_trigger t JOIN pg_class r ON r.oid = t.tgrelid "
                                        "WHERE t.tgname LIKE 'log_%%' AND r.relname LIKE 'link_rows%%'").fetchone()[0], 0)
+
+    def test_the_change_log_is_keyed_so_a_migrations_undo_log_takes_it(self):
+        """TRAIN2-B2: the keyless log stopped train 2's units at 9:46 PM 11-14
+        (undo_needs_primary_key). An UPDATE logs its OLD and NEW pair, the same triple
+        twice, under the surrogate key; the undo log takes the table and puts it back."""
+        from operating.pg import migrate_chunks as mc
+        self.convert(4, finish=False)   # the conversion's own undo trigger logs every write
+        with self.conn() as c, c.cursor() as cur:
+            c.execute("UPDATE ontology.link_rows SET tier = 'contradicted' WHERE link_id = "
+                      "'L:0001s'")
+            got = c.execute("SELECT token, link_id, link_type FROM "
+                            "ontology.link_rows_change_log ORDER BY seq").fetchall()
+            self.assertEqual(len(got), 2)
+            self.assertEqual(got[0], got[1])
+            tables = {f"{a}.{b}": k for a, b, k in mc._logged_tables(cur)}
+            self.assertEqual(tables["ontology.link_rows_change_log"], ["seq"])
+            before = c.execute("SELECT * FROM ontology.link_rows_change_log ORDER BY seq"
+                               ).fetchall()
+        undo = "undo_lp_b2_t"
+        self.addCleanup(self._drop_undo, undo)
+        with pg_testdb.psycopg.connect(self.dsn) as pg:
+            with pg.transaction(), pg.cursor() as cur:
+                mc.install_undo_log(cur, undo)
+            with pg.transaction(), pg.cursor() as cur:
+                mc.log_into(cur, undo)
+                cur.execute("DELETE FROM ontology.link_rows_change_log WHERE seq = %s",
+                            (before[0][-1],))
+                cur.execute("INSERT INTO ontology.link_rows_change_log (token, link_id, "
+                            "link_type) VALUES ('rebuild-9', 'L:x', %s)", (BIG,))
+        done = mc.undo_migration(self.dsn, undo)
+        self.assertTrue(done["undone"], done)
+        with self.conn() as c:
+            self.assertEqual(c.execute("SELECT * FROM ontology.link_rows_change_log "
+                                       "ORDER BY seq").fetchall(), before)
+
+    def test_a_keyless_change_log_left_from_before_gets_its_key_once(self):
+        lp = self.lp
+        with self.conn() as c, c.cursor() as cur:
+            c.execute("DROP TABLE IF EXISTS ontology.link_rows_change_log")
+            c.execute("CREATE TABLE ontology.link_rows_change_log (token text NOT NULL, "
+                      "link_id text NOT NULL, link_type text NOT NULL)")
+            c.execute("INSERT INTO ontology.link_rows_change_log VALUES ('undo', 'L:1', %s), "
+                      "('undo', 'L:1', %s)", (BIG, BIG))
+            lp._log_table(cur)
+            key = "SELECT a.attname FROM pg_index i JOIN pg_attribute a ON a.attrelid = " \
+                  "i.indrelid AND a.attnum = ANY(i.indkey) WHERE i.indisprimary AND " \
+                  "i.indrelid = 'ontology.link_rows_change_log'::regclass"
+            self.assertEqual(c.execute(key).fetchall(), [("seq",)])
+            self.assertEqual(c.execute("SELECT count(DISTINCT seq) FROM "
+                                       "ontology.link_rows_change_log").fetchone()[0], 2)
+            node = c.execute("SELECT relfilenode FROM pg_class WHERE oid = "
+                             "'ontology.link_rows_change_log'::regclass").fetchone()
+            lp._log_table(cur)   # keyed now: no ALTER, the table not rewritten
+            self.assertEqual(c.execute("SELECT relfilenode FROM pg_class WHERE oid = "
+                                       "'ontology.link_rows_change_log'::regclass"
+                                       ).fetchone(), node)
+            self.assertEqual(c.execute(key).fetchall(), [("seq",)])
+
+    def _drop_undo(self, undo):
+        from operating.pg import migrate_chunks as mc
+        with self.conn() as c, c.cursor() as cur:
+            mc.drop_undo_triggers(cur, undo)
+            c.execute(f"DROP SCHEMA IF EXISTS {undo} CASCADE")
 
     def test_new_rows_of_a_link_id_another_type_holds_are_refused(self):
         lp = self.lp

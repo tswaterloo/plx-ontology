@@ -9,6 +9,7 @@
 
 import { useState } from "react";
 import type { AskRequest, InstructPart, InstructWrite } from "@/lib/types";
+import { EntryHold } from "./entry-hold";
 import { FillReview } from "./fill-review";
 import { TemplateFilledView } from "./templates";
 import { Upload } from "./upload-draft";
@@ -185,7 +186,7 @@ export function InstructionPart({
           <p className="text-[12px] leading-4 text-muted">Proposed in Draft mode: it prepares work for approval and never acts on its own. The Autopilot studio cannot keep workflows on this server yet; this proposal stays in your work log.</p>
         </section>
       )}
-      <Writes writes={part.writes ?? []} />
+      {part.entry ? <EntryHold entry={part.entry} renderWrite={(w) => <Writes writes={[w]} />} /> : <Writes writes={part.writes ?? []} />}
       {part.template && <TemplateFilledView filled={part.template} />}
       {(part.fills ?? []).map((f) => (
         <FillReview key={f.digest_before + f.record.object_id} fill={f} />

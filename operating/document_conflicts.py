@@ -17,7 +17,8 @@ contract's "provided that" or "as provided in") every distinctive word of one of
 items, in order. An item named only by generic words (``page 2``, ``the attachment``)
 names nothing, so it is never matched. Reads nothing, and is bounded: at most
 ``MAX_SCAN_CHARS`` of the text (to a line end), ``MAX_ABSENT_LINES``, ``MAX_HELD_LINES``,
-``MAX_ITEMS`` per line and ``MAX_SCAN_SECONDS``; a scan stopped by a bound says so
+``MAX_ITEMS`` per line and ``MAX_SCAN_SECONDS`` (of the scan's CPU time, so a loaded
+host stops no scan earlier); a scan stopped by a bound says so
 (``scan_conflicts``: ``stopped_at_line``), and each text's scan is
 kept by the text's sha256 (``CACHE_ENTRIES``), so a document version is scanned once
 however many reads of it follow.
@@ -37,7 +38,7 @@ import hashlib
 import re
 from bisect import bisect_right
 from threading import Lock
-from time import monotonic
+from time import thread_time
 from typing import Any
 
 CONFLICT_REASON = "conflicting_sources"
@@ -170,7 +171,9 @@ def _tokens(text: str) -> set[str]:
 
 
 def _scan(text: str) -> dict[str, Any]:
-    deadline = monotonic() + MAX_SCAN_SECONDS
+    # the scan's own CPU time: a busy host stretches the wall clock, never what a text
+    # scans to, so the same text always finds the same conflicts and stops at the same line
+    deadline = thread_time() + MAX_SCAN_SECONDS
     base = part_line_base(text)
     scanned = text
     if len(text) > MAX_SCAN_CHARS:
@@ -202,7 +205,7 @@ def _scan(text: str) -> dict[str, Any]:
     index: dict[str, list[int]] = {}
     words_of: dict[int, set[str]] = {}
     for h, line in enumerate(lines):
-        if h % 256 == 0 and monotonic() > deadline:
+        if h % 256 == 0 and thread_time() > deadline:
             stop.append(h)
             break
         if not _supplies(line):
@@ -220,7 +223,7 @@ def _scan(text: str) -> dict[str, Any]:
             items = items[:MAX_ITEMS]
             stop.append(n)
         for words in items:
-            if monotonic() > deadline:
+            if thread_time() > deadline:
                 stop.append(n)
                 return result()
             needed = _tokens(" ".join(words))

@@ -38,6 +38,10 @@ from typing import Any, Iterable, Optional
 import urllib.error
 import urllib.parse
 import urllib.request
+try:   # /data/plx-tmp/<unit>/<pid>, swept once this process is gone (operating/tmp.py)
+    from ontology.tmp_root import mkdtemp as _mkdtemp
+except ImportError:   # run alone, outside a checkout
+    _mkdtemp = tempfile.mkdtemp
 
 ROOT = Path(__file__).resolve().parents[2]
 CONFIG = Path(os.environ.get("PLX_CONFIG", Path.home() / ".config" / "plx"))
@@ -495,7 +499,7 @@ def main(argv: Optional[list[str]] = None) -> int:
     if baseline:
         env.pop("PGOPTIONS", None)
     refuse_other_reader(env)
-    tmp = Path(tempfile.mkdtemp(prefix="plx-role-walk-"))
+    tmp = Path(_mkdtemp(prefix="plx-role-walk-"))
     log = tmp / "api.log"
     args.host_config, synthetic = synthetic_host(
         args.host_config, json.loads(env["PLX_EVAL_READER"]), tmp,
@@ -587,7 +591,7 @@ def walk_running(args: argparse.Namespace) -> int:
     ticket for the owner reader, walk, read the unit's journal and the Postgres log."""
     env = api_env(role_dsn(args.pg_dsn, args.role))
     refuse_other_reader(env)
-    tmp = Path(tempfile.mkdtemp(prefix="plx-role-walk-"))
+    tmp = Path(_mkdtemp(prefix="plx-role-walk-"))
     offset = pg_log_size(args.pg_log)
     since = time.time()
     client = Client(args.api_url.rstrip("/"))

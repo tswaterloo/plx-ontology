@@ -87,8 +87,9 @@ import shutil
 import sqlite3
 from typing import Any, Callable, Iterable, Mapping, Sequence
 
-from .capture_mail import assert_outside_git
-from .source_mirror import POINTER_TABLE, PERSISTED_FALLBACK_META, MirrorError, SourceMirror
+from .capture_mail_scope import assert_outside_git
+from .source_mirror import SourceMirror
+from .source_mirror_values import POINTER_TABLE, PERSISTED_FALLBACK_META, MirrorError
 
 STORE_DIR = "mirror-capture"
 MANIFEST_SCHEMA = "plx-mirror-capture/v1"      # a file copy (from the mirror branch)

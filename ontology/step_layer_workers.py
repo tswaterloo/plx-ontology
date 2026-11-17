@@ -214,8 +214,7 @@ def build_layer(the_plan: Mapping[str, Any], new: Any, steps: Mapping[str, Any],
     checkpoint after its input and after each finished step or wave (module docstring).
     ``checkpoints`` None: the active build's (``wired``), else none."""
     from ontology.project import open_generation
-    from ontology.schema_migrate import read_layer
-    from ontology.store import StoreBuilder, CHECKPOINT_META
+    from ontology.store import StoreBuilder
     from ontology import store_ddl
 
     keep = checkpoints if checkpoints is not None else _ACTIVE.get("checkpoints")

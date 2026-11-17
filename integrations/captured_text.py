@@ -76,7 +76,8 @@ from urllib.parse import parse_qs, quote
 
 from . import blob_pack
 from .captured_pages import PAGE_BREAK, is_paged_file, text_pages
-from .text_formats import LABEL_SUFFIXES, label_preview
+from .text_formats import (LABEL_SUFFIXES, NAME_ONLY_SUFFIXES, SOURCE_CODE_SUFFIXES,
+                           TEXT_FILE_SUFFIXES, label_preview, terminal_class)
 from operating.msg_reader import CFB_MAGIC
 from operating import declared_schema as _schemas
 from operating.declared_schema import captured_text as _CAPTURED_TEXT
@@ -97,6 +98,13 @@ OCR_PENDING = "ocr_pending"
 # or "absent" document), and a later pass re-fetches the bytes and OCR-reads them.
 OCR_DEFERRED = "ocr_deferred"
 TEXT_EXCEEDS_BOUND = "exceeds_bound"  # over the extractor's bound: never read whole
+# Terminal classes of a file the extractor does not read (``text_formats.terminal_class``):
+# named, so none counts as an unread gap. Neither holds searchable text.
+TEXT_CODE = "code_not_indexed"        # source code / suffix-less text: kept, never searched
+TEXT_BINARY = "binary_no_text"        # holds no text by nature (or by its bytes)
+TEXT_CONTAINER = "container_members"  # a zip: its members are read (``container_members``)
+TEXT_ENCRYPTED = "encrypted_unreadable"   # an encrypted archive (.nlbl): text, no key
+TERMINAL_CLASSES = (TEXT_CODE, TEXT_BINARY, TEXT_CONTAINER, TEXT_ENCRYPTED)
 TEXT_READ = (TEXT_EXTRACTED, TEXT_OCR)
 # Statuses a later capture run re-reads from the stored bytes when this host has OCR.
 TEXT_UNREAD = ("no_text", OCR_UNAVAILABLE, OCR_PENDING)
@@ -224,11 +232,15 @@ def capture_text(content: bytes, record: Mapping[str, Any], *,
     if image_ocr and (preview is not None or _ocr_image(name, mime)):
         # A raster image (a scan, a photographed label or CoA, a label file's preview):
         # its text is OCR text, untrusted like a scanned page's, pinned as ``extracted_ocr``.
-        from .document_understanding import local_image_ocr_available, local_image_text
+        from .document_understanding import (has_image_magic, local_image_ocr_available,
+                                             local_image_text)
         if not local_image_ocr_available():
             return OCR_UNAVAILABLE, None
         if defer_ocr:
             return OCR_PENDING, None
+        if preview is None and not has_image_magic(content):
+            # named like an image, no image bytes (a text file saved as .bmp)
+            return f"{OCR_FAILED}:not_an_image", None
         try:
             text = local_image_text(content if preview is None else preview,
                                     timeout=IMAGE_OCR_TIMEOUT_SECONDS)
@@ -247,8 +259,12 @@ def capture_text(content: bytes, record: Mapping[str, Any], *,
         # and one that needs its user password unsupported (status below), as without OCR.
         if ocr and str(exc) == "local_pdf_ocr_unavailable":
             return OCR_UNAVAILABLE, None
-        if max_chars is not None and str(exc) in _TEXT_BOUND_ERRORS:
-            return _first_chars(content, mime, name, max_chars)
+        if str(exc) in _TEXT_BOUND_ERRORS:
+            # over the extractor's bound: its first ``max_chars`` characters when asked
+            # for, else the named class (never a bare ``failed``), the bytes kept
+            if max_chars is not None:
+                return _first_chars(content, mime, name, max_chars)
+            return TEXT_EXCEEDS_BOUND, None
         if ocr and isinstance(exc, OcrFailed):
             return f"{OCR_FAILED}:{exc.cause}", None
         return (OCR_FAILED if ocr and str(exc) == "local_pdf_ocr_failed" else "failed"), None
@@ -267,7 +283,10 @@ def capture_text(content: bytes, record: Mapping[str, Any], *,
         if found.skipped_pages is not None and found.skipped_pages[0] <= MAX_PAGES:
             return OCR_PENDING, None
         return OCR_NO_TEXT, None
-    return (found.status if found.status in ("no_text", "unsupported") else "failed"), None
+    if found.status == "unsupported":
+        # a file of a named kind that holds no search text is its own terminal class
+        return terminal_class(name, content) or "unsupported", None
+    return (found.status if found.status == "no_text" else "failed"), None
 
 
 def _first_chars(content: bytes, mime: str, name: str, max_chars: int
@@ -410,7 +429,9 @@ def read_text(content: bytes, mime_type: str, *, filename: str = "",
 # (:class:`CapturedText`) every reader got from those bytes, kept so that a citation of its
 # text still resolves to the same text, pages and status, plus the bytes' size and
 # quickXorHash. The bytes themselves are re-read from the source on demand
-# (``MailCaptureStore.refetch_original``), never guessed.
+# (``MailCaptureStore.refetch_original``), never guessed. The bytes form may also be held
+# as ``<sha256>.zst`` (one zstd frame of them, ``integrations.blob_zstd``): every
+# ``blob_pack`` read of the bytes form falls back to it, so no reader is told.
 
 COMPRESSED_SUFFIX = ".z"
 DROPPED_SUFFIX = ".dropped"
@@ -421,6 +442,12 @@ MAX_INFLATED_BYTES = 64 * 1024 * 1024   # a stored body or text inflates to at m
 def blob_path(blobs: str | Path, digest: str, suffix: str = "") -> Path:
     """The file of one form of the blob ``digest`` (a SHA-256 hex digest)."""
     return Path(blobs) / digest[:2] / (digest + suffix)
+
+
+def blob_held(blobs: str | Path, digest: str, suffix: str = "") -> bool:
+    """Whether one form of a blob is held: a file, a packed row (``integrations.blob_pack``)
+    or, for the bytes form, its ``.zst`` (``integrations.blob_zstd``)."""
+    return blob_pack.exists(blobs, digest, suffix)
 
 
 def blob_form_size(blobs: str | Path, digest: str, suffix: str = "") -> int:
@@ -449,7 +476,7 @@ def read_blob(blobs: str | Path, digest: Any) -> bytes | None:
     if not isinstance(digest, str) or _SHA256.fullmatch(digest) is None:
         return None
     try:
-        content: bytes | None = blob_path(blobs, digest).read_bytes()
+        content: bytes | None = blob_pack.read(blobs, digest)   # or its .zst
     except FileNotFoundError:
         try:   # loose or packed (``integrations.blob_pack``)
             content = inflate(blob_pack.read(blobs, digest, COMPRESSED_SUFFIX))
@@ -650,13 +677,28 @@ class ReadingMemo(Generic[_T]):
             return len(self._entries)
 
     def read(self, key: Hashable, read: Callable[[], _T],
-             present: Callable[[], bool] | None = None) -> _T | None:
+             present: Callable[[], bool] | None = None,
+             scope: Hashable = None) -> _T | None:
         """The remembered result of ``key``, else ``read()``'s, remembered; when ``read``
-        raised, None (remembered only over a bound) or :class:`NotRemembered`'s value."""
+        raised, None (remembered only over a bound) or :class:`NotRemembered`'s value.
+        ``present``: whether the bytes the reading came from are still on disk, asked on
+        every hit too, so a file deleted or dropped since reads exactly as a cold read
+        would (DOC-001); ``scope``: where those bytes live (a capture's blob root), part
+        of the in-process key, so two stores holding the same digest never share an
+        entry (the kept readings on disk stay keyed by ``key`` alone)."""
+        memo_key = key if scope is None else (scope, key)
         with self._lock:
-            if key in self._entries:
-                self._entries.move_to_end(key)
-                return self._entries[key]
+            hit = memo_key in self._entries
+        if hit and present is not None and not present():
+            with self._lock:   # gone since it was read: forget it, read cold
+                if memo_key in self._entries:
+                    self._total -= self._size(self._entries.pop(memo_key))
+            hit = False
+        if hit:
+            with self._lock:
+                if memo_key in self._entries:
+                    self._entries.move_to_end(memo_key)
+                    return self._entries[memo_key]
         backing = self.backing
         # A kept reading is served only while its bytes (or their dropped readings) are
         # on disk: a file gone reads as gone, as the read itself would.
@@ -680,10 +722,10 @@ class ReadingMemo(Generic[_T]):
             if backing is not None:
                 backing.put(key, found)
         with self._lock:
-            if key in self._entries:   # another thread read it meanwhile: one entry
-                self._entries.move_to_end(key)
-                return self._entries[key]
-            self._entries[key] = found
+            if memo_key in self._entries:   # another thread read it meanwhile: one entry
+                self._entries.move_to_end(memo_key)
+                return self._entries[memo_key]
+            self._entries[memo_key] = found
             self._total += self._size(found)
             while self._total > self.bound and len(self._entries) > 1:
                 self._total -= self._size(self._entries.popitem(last=False)[1])
@@ -701,6 +743,22 @@ def _size(found: CapturedText | None) -> int:
 
 
 _CACHE: ReadingMemo[CapturedText] = ReadingMemo(MAX_CACHED_CHARS, _size)
+
+
+def _blob_root(blobs: str | Path) -> str:
+    """The blob directory a memo entry's bytes came from (its in-process scope)."""
+    return os.path.abspath(os.fspath(blobs))
+
+
+def reading_kept(blobs: str | Path, digest: str, text_digest: str | None) -> bool:
+    """What a reading of ``digest`` (with its pinned OCR text ``text_digest``) is made
+    from is still on disk, exactly as :func:`captured_text`'s read needs it: the bytes
+    (stored or compressed) and the pinned text, or else the dropped original's kept
+    readings (which need no text blob). Held as :func:`read_blob` reads it: a file, a
+    packed row or, for the bytes, their ``.zst`` (:func:`blob_held`)."""
+    if any(blob_held(blobs, digest, suffix) for suffix in ("", COMPRESSED_SUFFIX)):
+        return text_digest is None or _blob_kept(blobs, text_digest)
+    return blob_held(blobs, digest, DROPPED_SUFFIX)
 
 
 def _blob_kept(blobs: str | Path, digest: str) -> bool:
@@ -855,14 +913,19 @@ class KeptReadings:
 # stored ``failed``/``unsupported`` version of these once per generation:
 # ``SharePointCaptureStore.reader_stale_rows``). Bump the generation when a reader
 # change makes more of these readable; add the suffixes it newly reads.
-REREAD_GENERATION = "2026-11-10-text-formats"
+REREAD_GENERATION = "2026-11-14-terminal-classes"
 REREAD_SUFFIXES = (".xlsx", ".xlsm", ".xltx", ".xltm", ".xls", ".xlt", ".doc", ".dot",
                    *IMAGE_OCR_SUFFIXES,
                    # 11-08: RTF, generic XML, legacy-encoded text, OOXML templates/macros
                    ".rtf", ".xml", ".txt", ".csv", ".md", ".json", ".htm", ".html",
                    ".dotx", ".docm", ".dotm", ".pptm", ".potx", ".ppsx", ".ppsm",
                    # 11-09: SVG, TSV, XML naming attributes, label-file previews (OCR)
-                   ".svg", ".tsv", *LABEL_SUFFIXES)
+                   ".svg", ".tsv", *LABEL_SUFFIXES,
+                   # 11-14: plain-text types, source code, types that hold no text, zips,
+                   # and files without a suffix ("": ``text_formats.terminal_class``);
+                   # plain text read whole to MAX_PLAIN_TEXT; BMPs Pillow re-encodes
+                   *TEXT_FILE_SUFFIXES, *SOURCE_CODE_SUFFIXES, *NAME_ONLY_SUFFIXES,
+                   ".zip", ".download", ".docx", "")
 
 # The modules that read a captured file's bytes into the text a reading holds (PDF pages,
 # OCR, Office, ``.msg``, spreadsheets, the converter children), named one by one: what
@@ -897,10 +960,15 @@ def readings_code(modules: tuple[str, ...] = READING_MODULES,
             digest.update(f"{library} {version(library)}\n".encode())
         except Exception:  # noqa: BLE001 - not installed: files are read without it
             digest.update(f"{library} none\n".encode())
+    files = []
     for module in sorted(modules):
         path = root.joinpath(*module.split(".")).with_suffix(".py")
+        files.append((module, sha256(path.read_bytes()).hexdigest() if path.is_file() else None))
+    # a module proven to read what an earlier commit's read is digested as that commit's
+    from ontology.code_equivalence import earlier_files
+    for module, sha in earlier_files("readings_code", files):
         digest.update(f"{module}\n".encode())
-        digest.update(sha256(path.read_bytes()).digest() if path.is_file() else b"missing")
+        digest.update(bytes.fromhex(sha) if sha is not None else b"missing")
     return digest.hexdigest()
 
 
@@ -947,8 +1015,8 @@ def captured_text(blobs: str | Path, row: Mapping[str, Any]) -> CapturedText | N
         return read_text(content, mime, filename=name,
                          text=None if text is None else text.decode("utf-8"))
     found = _CACHE.read((digest, mime, name, text_digest), read,
-                        lambda: _blob_kept(blobs, digest)
-                        and (text_digest is None or _blob_kept(blobs, text_digest)))
+                        lambda: reading_kept(blobs, digest, text_digest),
+                        scope=_blob_root(blobs))
     if found is not None and row.get("text_status") == OCR_DEFERRED:
         return replace(found, ocr_deferred=True)
     return found
@@ -992,7 +1060,7 @@ def stored_text(blobs: str | Path, row: Mapping[str, Any]) -> StoredText:
     paged = is_paged_file({"mime_type": mime, "name": name})
     digest = row.get("content_sha256")
     if isinstance(digest, str) and _SHA256.fullmatch(digest) is not None \
-            and not blob_path(blobs, digest).exists() \
+            and not blob_pack.exists(blobs, digest) \
             and not blob_pack.exists(blobs, digest, COMPRESSED_SUFFIX):
         # A dropped original: the reading it kept is the one every reader cites.
         kept = read_dropped(blobs, digest)
@@ -1147,7 +1215,8 @@ def container_members(blobs: str | Path, row: Mapping[str, Any]) -> ContainerRea
         return None
     name, mime = _name(row), _mime(row)
     memo = _MEMBER_READINGS
-    if (digest, name, mime) not in memo and not _may_contain(blobs, digest, row):
+    root = _blob_root(blobs)
+    if (root, (digest, name, mime)) not in memo and not _may_contain(blobs, digest, row):
         return None
 
     def read() -> ContainerReading | None:
@@ -1158,7 +1227,10 @@ def container_members(blobs: str | Path, row: Mapping[str, Any]) -> ContainerRea
         if found is not None and found.retry:   # a member read again by the next caller
             raise NotRemembered(digest, found)
         return found
-    return memo.read((digest, name, mime), read)
+    return memo.read((digest, name, mime), read,   # a dropped container reads as None
+                     lambda: any(blob_held(blobs, digest, suffix)
+                                 for suffix in ("", COMPRESSED_SUFFIX)),
+                     scope=root)
 
 
 def _members_size(found: ContainerReading | None) -> int:
@@ -1218,8 +1290,7 @@ def _may_contain(blobs: str | Path, digest: str, row: Mapping[str, Any]) -> bool
     if _SHA256.fullmatch(digest) is None:
         return False
     try:
-        with open(Path(blobs) / digest[:2] / digest, "rb") as handle:
-            return handle.read(8).startswith(_CONTAINER_MAGIC)
+        return blob_pack.head(blobs, digest, 8).startswith(_CONTAINER_MAGIC)
     except OSError:
         return False
 
@@ -1258,7 +1329,7 @@ def split_member(handle: Any) -> tuple[str, str, str | None] | None:
 
 
 __all__ = ["COMPRESSED_SUFFIX", "blob_form_size", "DROPPED_SUFFIX", "KeptReadings", "READING_LIBRARIES",
-           "READING_MODULES", "REREAD_GENERATION", "REREAD_SUFFIXES", "readings_code", "blob_path", "decode_reading",
+           "READING_MODULES", "TEXT_CODE", "TEXT_BINARY", "TEXT_ENCRYPTED", "TEXT_CONTAINER", "TERMINAL_CLASSES", "REREAD_GENERATION", "REREAD_SUFFIXES", "readings_code", "blob_path", "decode_reading",
            "encode_reading", "file_type", "inflate", "read_dropped", "reading_key", "readings_of",
            "write_dropped",
            "CapturedText", "ContainerReading", "LIMIT_ERRORS", "MAX_CACHED_CHARS",

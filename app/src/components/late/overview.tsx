@@ -60,7 +60,7 @@ function FirstSteps({ items, onPick }: { items: LatePo[]; onPick?: (po: LatePo) 
   if (first.length === 0) return null;
   return (
     <section data-testid="late-first">
-      <h2 className="text-[12px] font-medium text-muted">Act on first</h2>
+      <h2 className="text-[12px] font-medium text-muted">Most days late</h2>
       <table className="mt-1 w-full text-left text-[13px]">
         <tbody className="divide-y divide-border">
           {first.map((p) => {

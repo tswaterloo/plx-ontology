@@ -32,8 +32,8 @@ from integrations.capture_store import (REMOVALS_COLUMN, CaptureStore, CapturedR
                                         removals_of)
 from integrations.live_source_guard import LiveSourceAudience
 from integrations.http import SourceHttpError
-from integrations.source_mirror import (PRISMA_FACTS_PATH, SourceMirror, replacement_key,
-                                        replacement_models)
+from integrations.source_mirror import SourceMirror, replacement_models
+from integrations.source_mirror_rules import PRISMA_FACTS_PATH, replacement_key
 from integrations.tests.test_source_mirror import (ALL, BASE, KEY, OPS, OUTSIDER, Clock,
                                                    FakeWorkbench)
 from integrations.workbench_read_api import WorkbenchReadApiClient
@@ -522,15 +522,19 @@ class ParentOnlyReplacementTests(unittest.TestCase):
 
     def replaced(self, count):
         """A mirror whose two full captures saw, under each of ``count`` parents, every
-        relation's row deleted and one with the same values added."""
+        relation's row deleted and one with the same key values added."""
         fake, clock = FakeWorkbench(), Clock()
-        fake.catalog = {name: {"columns": ["id", parent, *rest, "updated_at"],
+        # The added row carries a changed quantity: a row added again with every value
+        # the same is the ETL re-inserting it (CC-NY-2), which leaves the projection as
+        # that row, not a removal with a successor.
+        fake.catalog = {name: {"columns": ["id", parent, *rest, "quantity", "updated_at"],
                                "key": ["id"], "domain": "orders", "since": SINCE}
                         for name, (parent, rest) in self.TABLES.items()}
 
         def rows(prefix):
             return {name: [{"id": f"{prefix}{i}", parent: f"p{i}",
-                            **{c: f"v{i}" for c in rest}, "updated_at": "2026-09-29T10:00:00"}
+                            **{c: f"v{i}" for c in rest}, "quantity": 1 if prefix == "old" else 2,
+                            "updated_at": "2026-09-29T10:00:00"}
                            for i in range(count)]
                     for name, (parent, rest) in self.TABLES.items()}
 

@@ -37,24 +37,30 @@ from . import work_log as wl
 from . import memory as mem
 from .ask_drafts import cited_handles
 from operating.instruct import route as route_of
-from operating.secret_text import mask_secrets, mask_secrets_in
+from operating.card_text import mask_served, mask_served_in
 from . import models as m
 from .auth import SESSION_COOKIE, AuthRequired, DevAuth, Reader
-from .errors import BUSY, UserFacing
+from .errors import BUSY, RecordNotFound, UserFacing, source_refused
 
 log = logging.getLogger("operator_api")
 latency_log = logging.getLogger("operator_api.latency")
 
+# The only routes the Ask canary's service session is served (session_identity.SERVICE_CANARY)
+CANARY_ROUTES = frozenset({("GET", "/api/me"), ("POST", "/api/ask")})
 PUBLIC_ROUTES = frozenset({("GET", "/api/auth/config"), ("POST", "/api/auth/dev-login"),
-                           ("GET", "/api/health")})
+                           ("GET", "/api/health"), ("GET", "/api/ready")})
+# the loopback addresses a deploy's probe of /api/ready comes from (never through Caddy,
+# which answers /api/ready itself and adds X-Forwarded-For to everything it proxies)
+LOOPBACK = frozenset({"127.0.0.1", "::1"})
 
 MESSAGES = {
     "sign_in_required": "Please sign in with your PLX Microsoft account.",
+    "canary_route_refused": "This service session asks its one question only.",
     "no_workbench_access": "Your account is signed in but has no Workbench access yet. "
                            "Ask your manager or IT to grant it.",
     "insufficient_scope": "Your sign-in does not include Workbench access. Sign out and "
                           "sign in again.",
-    "dev_ticket_required": "This demo sign-in needs the access link you were given.",
+    "dev_ticket_required": "Signing in here needs the access link you were given.",
     "dev_ticket_not_accepted": "This demo sign-in does not take an access link.",
     "access_link_refused": "This access link has expired or is not valid. Ask for a new one.",
     "dev_login_not_served": "Demo sign-in is off. Sign in with Microsoft.",
@@ -95,17 +101,78 @@ def _incident(error: BaseException, where: str) -> str:
 
 
 class JSONResponse(_JSONResponse):
-    """Every JSON body the API sends, with credential-shaped text masked (SEC-S-09: a
-    secret in captured mail or a document is never shown, whichever route reads it)."""
+    """Every JSON body the API sends, with credential-shaped text and payment card numbers
+    masked (SEC-S-09, ``operating.card_text``: a secret or a card in captured mail, an OCR
+    reading or a document is never shown, whichever route reads it)."""
 
     def render(self, content: Any) -> bytes:
-        return super().render(mask_secrets_in(content))
+        return super().render(mask_served_in(content))
 
 
 def sse(event: str, payload: Any) -> str:
     data = payload.model_dump(mode="json") if hasattr(payload, "model_dump") else payload
-    data = mask_secrets_in(data)
+    data = mask_served_in(data)
     return f"event: {event}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
+
+
+# How often a stream with nothing new to send says it is still alive (an SSE comment the
+# app's parser skips): the app stops waiting after a minute of silence (``ask`` in
+# app/src/lib/api.ts), so a frozen or restarted server reads as "the answer was cut off",
+# never a question that waits for ever, while an answer still being worked on keeps going.
+KEEP_ALIVE_SECONDS = 15.0
+KEEP_ALIVE = ": keep-alive\n\n"
+_STREAM_DONE = object()
+
+
+def kept_alive(chunks: Iterator[str], every: float = KEEP_ALIVE_SECONDS) -> Iterator[str]:
+    """``chunks`` as they come, read on a thread of their own (in this context), with
+    ``KEEP_ALIVE`` whenever none came for ``every`` seconds. Closed early (the reader went
+    away): ``chunks`` is closed at its next chunk, as a closed stream was before."""
+    import contextvars
+    import queue
+    import threading
+
+    box: "queue.Queue[Any]" = queue.Queue(maxsize=64)
+    stop = threading.Event()
+
+    def put(item: Any) -> None:
+        while not stop.is_set():
+            try:
+                box.put(item, timeout=0.5)
+                return
+            except queue.Full:
+                continue
+
+    def pump() -> None:
+        try:
+            for chunk in chunks:
+                if stop.is_set():
+                    break
+                put(chunk)
+        except BaseException as error:  # noqa: BLE001 - handed to the reading side
+            put((_STREAM_DONE, error))
+        finally:
+            close = getattr(chunks, "close", None)
+            if callable(close):
+                close()
+            put(_STREAM_DONE)
+
+    threading.Thread(target=contextvars.copy_context().run, args=(pump,), daemon=True,
+                     name="plx-stream").start()
+    try:
+        while True:
+            try:
+                item = box.get(timeout=every)
+            except queue.Empty:
+                yield KEEP_ALIVE
+                continue
+            if item is _STREAM_DONE:
+                return
+            if isinstance(item, tuple) and len(item) == 2 and item[0] is _STREAM_DONE:
+                raise item[1]
+            yield item
+    finally:
+        stop.set()
 
 
 def origin_allowed(origin: str, headers: Any, allowed_origins: frozenset[str]) -> bool:
@@ -147,6 +214,42 @@ OPS_READERS_ENV = "PLX_TEAM_VIEW_READERS"
 # Every request body but a question's (``/api/ask``: its attachments, ``ASK_BODY_MAX``):
 # notes, decisions and sign-in bodies are a few kilobytes (SEC-007).
 BODY_MAX = 1024 * 1024
+# Threads for the synchronous routes at once (AnyIO's default is 40). A screen route's
+# thread waits on the read workers (up to its read limit), so at 40 such waits every other
+# route queued behind them, the ones that read nothing too (11-16 walk: /api/auth/config
+# up to 40 s, /api/health 29 s, /api/me 44 s with 93 requests in flight). A waiting
+# thread holds no worker and little memory; the read workers still bound the real work.
+ROUTE_THREADS = 256
+
+
+# A record id no record can have (malformed for its type, ``ObjectWorkspace``): read as
+# not found, as an unseen record is (no oracle), never a 500 incident (11-13: a Sage AR id
+# with padded spaces in /api/object raised one).
+BAD_OBJECT_IDS = frozenset({"object_id_invalid", "object_id_required"})
+READ_TIMEOUT = UserFacing("timeout", "That took too long to read. Try again in a moment; "
+                          "if it keeps happening, tell the Workbench team.", 504)
+
+
+def _known(error: BaseException) -> Optional[JSONResponse]:
+    """The honest answer to a failure with a known meaning, else None (an incident): a
+    malformed record id or a ``RecordNotFound`` is not found (404), any other ``KeyError``
+    an incident; a store read stopped at its time limit (a SQLite interrupt, a Postgres
+    statement cancelled: ``sqlite3.OperationalError`` "interrupted"; a Postgres read that
+    waited past the role's ``lock_timeout`` behind a schema change) timed out (504), never
+    "the server failed"."""
+    import sqlite3
+    if isinstance(error, RecordNotFound):   # a record not one the reader may read
+        return problem("not_found", 404)
+    if isinstance(error, ValueError) and str(error) in BAD_OBJECT_IDS:
+        return problem("not_found", 404)
+    if isinstance(error, sqlite3.OperationalError) and (
+            str(error) == "interrupted"
+            or str(error).startswith(("postgres: LockNotAvailable", "postgres: QueryCanceled"))):
+        return JSONResponse({"error": {"code": READ_TIMEOUT.code,
+                                       "message": READ_TIMEOUT.message}},
+                            status_code=READ_TIMEOUT.status,
+                            headers={"Cache-Control": "no-store"})
+    return None
 
 
 class BodyLimit:
@@ -194,15 +297,53 @@ class BodyLimit:
         await self.app(scope, replay, send)
 
 
+# A refusal reason public health may show as it is: a lower-case code. Any other text (a
+# parser's message quoting the file) is shown there as ``POLICY_REFUSED`` only.
+_POLICY_CODE = re.compile(r"[a-z][a-z0-9_]{0,63}")
+POLICY_REFUSED = "employee_policy_unreadable"
+
+
+def public_policy_status(status: Any) -> dict[str, Any] | None:
+    """The employee policy's status for public health: state, counts, times and a refusal
+    code, never the refusal's text or anything else the status holds."""
+    if not isinstance(status, Mapping):
+        return None
+    error = status.get("reload_error")
+    if error is not None:
+        error = error if isinstance(error, str) and _POLICY_CODE.fullmatch(error) \
+            else POLICY_REFUSED
+    alarm = status.get("alarm_error")
+    return {"digest": status.get("digest") if isinstance(status.get("digest"), str) else None,
+            "reload_error": error,
+            "reloads": status.get("reloads") if isinstance(status.get("reloads"), int) else 0,
+            "state": status.get("state") if status.get("state") in (
+                "in_force", "kept_last_good") else "unknown",
+            "refused_since": status.get("refused_since")
+            if isinstance(status.get("refused_since"), str) else None,
+            # an exception's class name, else the code
+            "alarm_error": None if alarm is None else alarm if isinstance(alarm, str)
+            and alarm.isidentifier() and len(alarm) <= 64 else POLICY_REFUSED}
+
+
+def _route_threads() -> None:
+    """At least ``ROUTE_THREADS`` threads for the synchronous routes (on the event loop)."""
+    from anyio import to_thread
+    limiter = to_thread.current_default_thread_limiter()
+    if limiter.total_tokens < ROUTE_THREADS:
+        limiter.total_tokens = ROUTE_THREADS
+
+
 def create_app(backend: Any, auth: Any, *, allowed_origins: frozenset[str] = frozenset(),
                auth_config: Optional[dict[str, Any]] = None,
                secure_cookie: bool = True) -> FastAPI:
     """``auth_config``: the public sign-in configuration (``AuthConfig`` fields beyond the
     authenticator's own mode and dev-login switch)."""
     app = FastAPI(title="PLX Workbench app API", version=m.API_VERSION,
-                  description="Read-only Workbench API for the web app. Every "
-                              "route but auth/config, auth/dev-login and health needs a "
-                              "signed-in reader. Errors are {error:{code,message}}.",
+                  description="Workbench API for the web app. Every route but "
+                              "auth/config, auth/dev-login and health needs a signed-in "
+                              "reader. Errors are {error:{code,message}}. Generated from "
+                              "operator_api/models.py by `python3 -m operator_api openapi "
+                              "--write`; never edit openapi.json by hand.",
                   docs_url=None, redoc_url=None, openapi_url=None,
                   default_response_class=JSONResponse)
     app.state.backend, app.state.auth = backend, auth
@@ -213,6 +354,12 @@ def create_app(backend: Any, auth: Any, *, allowed_origins: frozenset[str] = fro
     pages = LatencyWindow()
     state_dir = getattr(backend, "state_dir", None)
     ops = CachedHealth(state_dir, pages) if state_dir else None
+    # Each person's own writing style for the drafts written as them and their humanize
+    # rewrite (``operating.person_style``: learned from the mail they sent; none for a
+    # fixture without a state dir, or PLX_PERSON_STYLE=off)
+    if state_dir:
+        from operating import person_style
+        person_style.register(state_dir)
     app.state.page_latency = pages
     feedback_store = getattr(backend, "feedback_store", None) \
         or fb.FeedbackStore.for_backend(backend)
@@ -234,6 +381,19 @@ def create_app(backend: Any, auth: Any, *, allowed_origins: frozenset[str] = fro
                 "memory off: %s", type(error).__name__)
             backend.memory = None
     notes.memory = backend.memory
+    if backend.memory is not None and getattr(backend.memory, "stated", False) is None:
+        # what a person states about their drafts ("sign off with Thanks, Ana") is a rule
+        # the drafter applies over anything learned (``operating.learning.stated_rules``)
+        from operating import learning as _learning
+        rules_dir = _learning.ledger_dir(state_dir)
+
+        def _stated(who: Any, item: int, text: Optional[str]) -> Any:
+            return _learning.set_stated(rules_dir, _learning.person_id(who.key), item, text)
+        backend.memory.stated = _stated if rules_dir is not None else None
+
+        def _unlearn(who: Any, subject: str) -> Any:
+            return _learning.unlearn(rules_dir, _learning.person_id(who.key), subject)
+        backend.memory.unlearn = _unlearn if rules_dir is not None else None
 
     # "View as <person>" (UI-07): who the owner may view as and the audit of every view.
     viewing = getattr(backend, "view_as", None) or va.ViewAs(audit=va.Audit(state_dir))
@@ -297,13 +457,15 @@ def create_app(backend: Any, auth: Any, *, allowed_origins: frozenset[str] = fro
 
     @app.exception_handler(Exception)
     async def _unexpected(request: Request, error: Exception) -> JSONResponse:
-        return problem("internal", 500, incident=_incident(error, request.url.path))
+        return _known(error) or problem("internal", 500,
+                                        incident=_incident(error, request.url.path))
 
     # ---- middleware -------------------------------------------------------------------
 
     @app.middleware("http")
     async def _guard_and_time(request: Request, call_next: Callable) -> Response:
         started = time.perf_counter()
+        _route_threads()
         origin = request.headers.get("origin")
         if origin is not None and request.method not in ("GET", "HEAD", "OPTIONS"):
             if not origin_allowed(origin, request.headers, allowed_origins):
@@ -311,7 +473,8 @@ def create_app(backend: Any, auth: Any, *, allowed_origins: frozenset[str] = fro
         try:
             response = await call_next(request)
         except Exception as error:  # noqa: BLE001 - never a stack trace to a person
-            response = problem("internal", 500, incident=_incident(error, request.url.path))
+            response = _known(error) or problem("internal", 500,
+                                                incident=_incident(error, request.url.path))
         wrote = getattr(request.state, "plx_wrote", None)
         if wrote is not None:
             backend.reader_wrote(*wrote)
@@ -323,7 +486,7 @@ def create_app(backend: Any, auth: Any, *, allowed_origins: frozenset[str] = fro
             "method": request.method, "route": path, "status": response.status_code,
             "ms": ms}))
         if request.method == "GET" and path.startswith("/api/") and path not in (
-                "/api/health", "/api/ask") and response.status_code < 500:
+                "/api/health", "/api/ready", "/api/ask") and response.status_code < 500:
             pages.add(ms)
         response.headers.setdefault("Cache-Control", "no-store")
         response.headers.setdefault("X-Content-Type-Options", "nosniff")
@@ -335,6 +498,12 @@ def create_app(backend: Any, auth: Any, *, allowed_origins: frozenset[str] = fro
             raise AuthRequired("sign_in_required")
         if getattr(who.session, "view_as", False):   # only ever made below, per request
             raise AuthRequired("sign_in_required")
+        if getattr(who.session, "canary", False) and (
+                (request.method, request.url.path) not in CANARY_ROUTES
+                or request.headers.get(va.HEADER) is not None):
+            # the Ask canary's service session (operating.ask_canary): its one question,
+            # nothing of the reader's own screens, log or memory, never a view-as
+            raise AuthRequired("canary_route_refused", 403)
         asked = request.headers.get(va.HEADER)
         if asked is not None:
             # the owner viewing as someone (``operator_api.view_as``): read only, audited
@@ -368,10 +537,12 @@ def create_app(backend: Any, auth: Any, *, allowed_origins: frozenset[str] = fro
         out: dict[str, Any] = {"status": "ok"}
         # the employee policy in force (its digest) and why a file edit was not applied
         # (reload_error), so an operator sees an edit take or not (SEC-005)
+        # (AUDIT4-13: public health holds status, ages and counts; the refusal is a code,
+        # its text only on /api/ops/status)
         policy_of = getattr(getattr(auth, "resolver", None), "policy_status", None)
         if callable(policy_of):
             try:
-                out["employee_policy"] = policy_of()
+                out["employee_policy"] = public_policy_status(policy_of())
             except Exception as error:  # noqa: BLE001 - liveness never fails on a check
                 log.warning("employee policy status failed: %s", type(error).__name__)
                 out["employee_policy"] = None
@@ -382,6 +553,33 @@ def create_app(backend: Any, auth: Any, *, allowed_origins: frozenset[str] = fro
         except Exception as error:  # noqa: BLE001 - liveness never fails on a check
             log.warning("ops health failed: %s", type(error).__name__)
             return {**out, "ops": None}
+
+    @app.get("/api/ready", include_in_schema=False)
+    def ready(request: Request) -> Response:
+        """Public readiness, for a deploy (``deploy/release/plx-release``, ARCH-T6): 200 once
+        this API may be routed readers (``WorkspaceBackend.ready``: it serves and the
+        known readers' first read-ahead is kept under this code version), else 503; the
+        body is that and the code version only. Asked directly on loopback (not through
+        Caddy), it also starts the warm-up now rather than after a first live request:
+        no reader is routed to an API a deploy is still probing."""
+        from .page_store import code_version
+        client = request.client.host if request.client is not None else ""
+        if client in LOOPBACK and "x-forwarded-for" not in request.headers:
+            start = getattr(backend, "start_warm_now", None)
+            if callable(start):
+                try:
+                    start()
+                except Exception as error:  # noqa: BLE001 - the warm-up starts on its own
+                    log.warning("warm-up start failed: %s", type(error).__name__)
+        try:
+            check = getattr(backend, "ready", None)
+            is_ready = bool(check()) if callable(check) else True
+        except Exception as error:  # noqa: BLE001 - unknown is not ready
+            log.warning("readiness check failed: %s", type(error).__name__)
+            is_ready = False
+        return JSONResponse({"ready": is_ready, "code_version": code_version()},
+                            status_code=200 if is_ready else 503,
+                            headers={"Cache-Control": "no-store"})
 
     @app.get("/api/ops/status", include_in_schema=False,
              responses={401: {"model": m.ErrorResponse}, 403: {"model": m.ErrorResponse}})
@@ -401,7 +599,16 @@ def create_app(backend: Any, auth: Any, *, allowed_origins: frozenset[str] = fro
                     "checks": [], "queue": {"configured": False, "fresh": False}}
         from operating.jobq.status import read_snapshot
         from operating.ops_alarms import read_status
-        return {**read_status(state_dir), "queue": read_snapshot(state_dir)}
+        out = {**read_status(state_dir), "queue": read_snapshot(state_dir)}
+        # the employee policy's refusal in full (public health shows only its code)
+        policy_of = getattr(getattr(auth, "resolver", None), "policy_status", None)
+        if callable(policy_of):
+            try:
+                out["employee_policy"] = policy_of()
+            except Exception as error:  # noqa: BLE001 - the status page never fails on it
+                log.warning("employee policy status failed: %s", type(error).__name__)
+                out["employee_policy"] = None
+        return out
 
     @app.get("/api/trust", response_model=m.TrustPage, tags=["trust"],
              responses={401: {"model": m.ErrorResponse}, 404: {"model": m.ErrorResponse}})
@@ -479,7 +686,9 @@ def create_app(backend: Any, auth: Any, *, allowed_origins: frozenset[str] = fro
     @app.get("/api/me", response_model=m.Me, tags=["identity"],
              responses={401: {"model": m.ErrorResponse}, 403: {"model": m.ErrorResponse}})
     def me(who: Reader = Depends(reader)) -> m.Me:
+        roles = getattr(backend, "my_roles", None)
         return backend.me(who).model_copy(update={"feedback_admin": fb.is_admin(who),
+                                                  "roles": roles(who) if roles else [],
                                                   "ops_reader": ops_reader(who),
                                                   "owner": is_owner(who),
                                                   "can_view_as": viewing.available
@@ -517,6 +726,7 @@ def create_app(backend: Any, auth: Any, *, allowed_origins: frozenset[str] = fro
                 events = (my_work_answer(who, body) if route == "ask"
                           and body.clarified is None
                           and wl.asks_about_my_work(body.question)
+                          and not getattr(who.session, "canary", False)
                           and not body.object_id and not body.source
                           else backend.ask(who, body) if route == "ask"
                           else backend.instruct_ask(who, body))
@@ -525,7 +735,7 @@ def create_app(backend: Any, auth: Any, *, allowed_origins: frozenset[str] = fro
                 held: list[str] = []
                 for event, payload in itertools.chain(events, [("", None)]):
                     if held and event != "token":
-                        for word in re.findall(r"^\s+|\S+\s*", mask_secrets("".join(held))):
+                        for word in re.findall(r"^\s+|\S+\s*", mask_served("".join(held))):
                             yield sse("token", m.TokenEvent(text=word))
                         held = []
                     if event == "token":
@@ -564,7 +774,7 @@ def create_app(backend: Any, auth: Any, *, allowed_origins: frozenset[str] = fro
                 if failed:
                     notes.ask_failed(who, body, failed, steps=steps[:40], stream_ms=int(
                         (time.perf_counter() - started) * 1000))
-        return StreamingResponse(stream(), media_type="text/event-stream",
+        return StreamingResponse(kept_alive(stream()), media_type="text/event-stream",
                                  headers={"Cache-Control": "no-store",
                                           "X-Accel-Buffering": "no"})
 
@@ -720,6 +930,8 @@ def create_app(backend: Any, auth: Any, *, allowed_origins: frozenset[str] = fro
         """Your item's prepared order as an import file (CSV, one row per order line) to
         paste or import into the Portal or Business Central. Nothing is entered."""
         name, data = backend.my_work_order_import(who, item_id)
+        data = mask_served(data.decode("utf-8")).encode("utf-8") \
+            if isinstance(data, bytes) else mask_served(data)
         return Response(data, media_type="text/csv; charset=utf-8",
                         headers={"Cache-Control": "no-store",
                                  "Content-Disposition": f'attachment; filename="{name}"'})
@@ -801,6 +1013,14 @@ def create_app(backend: Any, auth: Any, *, allowed_origins: frozenset[str] = fro
         out = backend.templates_list(who, doc_type)
         return JSONResponse(out.model_dump(mode="json"), headers={"Cache-Control": "no-store"})
 
+    @app.get("/api/templates/learned", response_model=m.LearnedTemplates, tags=["templates"],
+             responses={401: {"model": m.ErrorResponse}})
+    def templates_learned(who: Reader = Depends(reader)) -> Response:
+        """The kinds of document learned from your own sent documents (daily), each with
+        the words that ask Ask for one."""
+        out = backend.learned_templates(who)
+        return JSONResponse(out.model_dump(mode="json"), headers={"Cache-Control": "no-store"})
+
     @app.post("/api/templates", response_model=m.Template, tags=["templates"],
               responses=errs)
     def templates_create(body: m.TemplateSave, who: Reader = Depends(reader)) -> m.Template:
@@ -858,19 +1078,6 @@ def create_app(backend: Any, auth: Any, *, allowed_origins: frozenset[str] = fro
         """The global kill switch of the write path. Owner only (403 for every other
         reader)."""
         return backend.autopilot_global(who, body)
-
-    @app.post("/api/autopilot/workflows/{workflow}", response_model=m.AutopilotArea,
-              tags=["actions"], responses={401: {"model": m.ErrorResponse},
-                                           403: {"model": m.ErrorResponse},
-                                           404: {"model": m.ErrorResponse},
-                                           409: {"model": m.ErrorResponse},
-                                           422: {"model": m.ErrorResponse}})
-    def autopilot_workflow(workflow: str, body: m.AutopilotWorkflowSwitch,
-                           who: Reader = Depends(reader)) -> m.AutopilotArea:
-        """Switch a workflow off for everyone, or back on. Owner only (403 for every other
-        reader). Nobody switches a workflow on to act for someone else: each person does
-        that for themselves (``/api/autopilot/opt-in``)."""
-        return backend.autopilot_workflow(who, workflow, body)
 
     @app.post("/api/autopilot/notices/ack", response_model=m.AutopilotArea, tags=["actions"],
               responses={401: {"model": m.ErrorResponse}, 403: {"model": m.ErrorResponse},
@@ -980,8 +1187,26 @@ def create_app(backend: Any, auth: Any, *, allowed_origins: frozenset[str] = fro
     def team_view(who: Reader = Depends(reader)) -> m.TeamView:
         """Per person: activity in every captured system over 7 and 28 days, open work,
         median reply time, a daily trend and busiest hours. The owner and the named Team
-        readers see everyone; every other reader only their own row."""
-        return backend.team_view(who)
+        readers see everyone; every other reader only their own row. Each row carries a
+        weekly tracker (done, received, closed, reply time, time saved)."""
+        view = backend.team_view(who)
+        if getattr(view, "state", None) != "ready" or not view.people:
+            return view
+        view = view.model_copy(deep=True)
+        team_saved(view.people, who, everyone=view.scope == "everyone")
+        return view
+
+    def team_saved(people: list, who: Reader, *, everyone: bool) -> None:
+        """Time saved joined into the tracker per request (the work log moves faster than
+        the snapshot); everyone's only for the owner (as /api/time-saved): a named Team
+        reader sees everyone's activity but only their own time saved."""
+        from .team_view import attach_saved
+        alone = None if everyone and is_owner(who) else who.key
+        try:
+            found = wl.time_saved(work, reader=alone, weeks=4)
+        except Exception:  # noqa: BLE001 - the page stands without the figure (None)
+            found = None
+        attach_saved(people, found, alone)
 
     @app.get("/api/team/{key}", response_model=m.TeamPersonDetail, tags=["actions"],
              responses={401: {"model": m.ErrorResponse}, 404: {"model": m.ErrorResponse}})
@@ -989,7 +1214,10 @@ def create_app(backend: Any, auth: Any, *, allowed_origins: frozenset[str] = fro
         """One person's drill-down: each day of the last 28 across systems, who they work
         with most and their open items (marked items you cannot open stay withheld). 404 for
         a person you may not open."""
-        return backend.team_person(who, key)
+        found = backend.team_person(who, key).model_copy(deep=True)
+        # only a person the reader may open reaches here (404 otherwise)
+        team_saved([found.person], who, everyone=True)
+        return found
 
     @app.get("/api/rd-projects", response_model=m.RdBoard, tags=["actions"],
              responses={401: {"model": m.ErrorResponse}})
@@ -1000,22 +1228,32 @@ def create_app(backend: Any, auth: Any, *, allowed_origins: frozenset[str] = fro
         with first_partial():
             return backend.rd_board(who)
 
-    @app.get("/api/uat-feedback", response_model=m.UatFeedback, tags=["actions"],
-             responses={401: {"model": m.ErrorResponse}, 422: {"model": m.ErrorResponse}})
-    def uat_feedback(status: Optional[str] = None, who: Reader = Depends(reader)
-                     ) -> m.UatFeedback:
-        """The MRP UAT feedback lists as you may read them (read only): totals per class,
-        open items per priority and the items, open first. Items you may not open are
-        counted, never shown. ``status`` is open, fixed, answered or unknown."""
-        return backend.uat_feedback(who, status)
+    @app.get("/api/templates/answer-bank", response_model=m.DocList, tags=["templates"],
+             responses={401: {"model": m.ErrorResponse}})
+    def templates_answer_bank(question: Optional[str] = Query(None, max_length=700),
+                              who: Reader = Depends(reader)) -> m.DocList:
+        """The questionnaire answers we gave that any customer may get, as you may read
+        them (read only), each with the document it came from; ranked against ``question``
+        when given. An answer specific to one customer is on that customer's page."""
+        with first_partial():
+            return backend.answer_bank(who, question)
+
+    @app.get("/api/workload/grants", response_model=m.WorkloadGrantSheet, tags=["actions"],
+             responses={401: {"model": m.ErrorResponse}, 403: {"model": m.ErrorResponse},
+                        404: {"model": m.ErrorResponse}, 503: {"model": m.ErrorResponse}})
+    def workload_grant_sheet(who: Reader = Depends(reader)) -> m.WorkloadGrantSheet:
+        """The owner's grant editor: each person the exclusion clears, their team and the
+        teams they see per person. Owner only (403 for every other reader)."""
+        return backend.workload_grant_sheet(who)
 
     @app.post("/api/workload/grants", response_model=m.WorkloadGrants, tags=["actions"],
               responses={401: {"model": m.ErrorResponse}, 403: {"model": m.ErrorResponse},
-                         422: {"model": m.ErrorResponse}})
+                         422: {"model": m.ErrorResponse}, 503: {"model": m.ErrorResponse}})
     def assign_workload_grants(body: m.WorkloadGrants,
                                who: Reader = Depends(reader)) -> m.WorkloadGrants:
         """The owner assigns each person's team and the teams each manager sees per
-        person (kept in the Workbench's own data directory)."""
+        person (kept in the Workbench's own data directory). Entries for people the grant
+        sheet never shows are kept as they are."""
         return backend.assign_workload_grants(who, body)
 
     @app.get("/api/label-changes/{object_id:path}", response_model=m.LabelChanges,
@@ -1109,7 +1347,7 @@ def create_app(backend: Any, auth: Any, *, allowed_origins: frozenset[str] = fro
              responses={401: {"model": m.ErrorResponse}})
     def qc_audit_text(who: Reader = Depends(reader)) -> PlainTextResponse:
         """The QC audit pack as one printable plain-text page, each line with its sources."""
-        return PlainTextResponse(mask_secrets(backend.qc_pack_text(who, "audit")))
+        return PlainTextResponse(mask_served(backend.qc_pack_text(who, "audit")))
 
     @app.get("/api/meetings/follow-up/{meeting_id}", response_model=m.MeetingFollowUp,
              tags=["briefs"], responses={401: {"model": m.ErrorResponse},
@@ -1209,6 +1447,22 @@ def create_app(backend: Any, auth: Any, *, allowed_origins: frozenset[str] = fro
         view = backend.write_prepare(who, body)
         notes.write(who, "prepared", view)
         return view
+
+    @app.get("/api/entries/{entry_id}", response_model=m.EntryHold, tags=["writes"],
+             responses=_wr)
+    def entry_view(entry_id: str, who: Reader = Depends(reader)) -> m.EntryHold:
+        """An order or PO you prepared that is held until its checks are settled: each
+        value it needs, cited, confirmed by you or still a check with its suggestions."""
+        return backend.entry_view(who, entry_id)
+
+    @app.post("/api/entries/{entry_id}/confirm", response_model=m.EntryHold,
+              tags=["writes"], responses=_wr)
+    def entry_confirm(entry_id: str, body: m.EntryConfirm, who: Reader = Depends(reader)
+                      ) -> m.EntryHold:
+        """Enter or confirm one value of your held entry (recorded as yours, with when).
+        Nothing is written to BC: with no check left the entry goes to the write desk,
+        where a colleague who holds the write grant approves it."""
+        return backend.entry_confirm(who, entry_id, body)
 
     @app.get("/api/writes", response_model=m.WriteIntentList, tags=["writes"], responses=_wr)
     def write_list(who: Reader = Depends(reader)) -> m.WriteIntentList:
@@ -1344,7 +1598,7 @@ def create_app(backend: Any, auth: Any, *, allowed_origins: frozenset[str] = fro
             with first_partial():
                 page = (backend.object_page(who, object_type, object_id, quick=True)
                         if quick else backend.object_page(who, object_type, object_id))
-        except (KeyError, LookupError):
+        except RecordNotFound:   # only that: any other error is a logged 500
             return problem("not_found", 404)
         return JSONResponse(page.model_dump(mode="json"))
 
@@ -1359,7 +1613,7 @@ def create_app(backend: Any, auth: Any, *, allowed_origins: frozenset[str] = fro
             return problem("invalid_request", 422)
         try:
             out = backend.explore(who, object_type, object_id)
-        except (KeyError, LookupError):
+        except RecordNotFound:   # only that: any other error is a logged 500
             return problem("not_found", 404)
         return JSONResponse(out.model_dump(mode="json"))
 
@@ -1382,7 +1636,7 @@ def create_app(backend: Any, auth: Any, *, allowed_origins: frozenset[str] = fro
             out = backend.record_history(who, object_type, object_id, cursor)
         except ValueError:
             return problem("invalid_request", 422)
-        except (KeyError, LookupError):
+        except RecordNotFound:   # only that: any other error is a logged 500
             return problem("not_found", 404)
         return JSONResponse(out.model_dump(mode="json"))
 
@@ -1404,7 +1658,7 @@ def create_app(backend: Any, auth: Any, *, allowed_origins: frozenset[str] = fro
             out = backend.record_as_of(who, object_type, object_id, at)
         except ValueError:
             return problem("invalid_request", 422)
-        except (KeyError, LookupError):
+        except RecordNotFound:   # only that: any other error is a logged 500
             return problem("not_found", 404)
         return JSONResponse(out.model_dump(mode="json"))
 
@@ -1412,7 +1666,7 @@ def create_app(backend: Any, auth: Any, *, allowed_origins: frozenset[str] = fro
              response_model=m.ObjectSection, tags=["object"],
              responses={401: {"model": m.ErrorResponse}, 404: {"model": m.ErrorResponse}})
     def object_section(section: Literal["late", "people", "landed_cost", "trail", "margin",
-                                        "knows"],
+                                        "knows", "documents", "formula"],
                        object_type: str, object_id: str,
                        who: Reader = Depends(reader)) -> Response:
         """One slow section of a record's page (late check, people, landed cost, how we
@@ -1422,7 +1676,7 @@ def create_app(backend: Any, auth: Any, *, allowed_origins: frozenset[str] = fro
             return problem("invalid_request", 422)
         try:
             out = backend.object_section(who, object_type, object_id, section)
-        except (KeyError, LookupError):
+        except RecordNotFound:   # only that: any other error is a logged 500
             return problem("not_found", 404)
         return JSONResponse(out.model_dump(mode="json"))
 
@@ -1455,7 +1709,7 @@ def create_app(backend: Any, auth: Any, *, allowed_origins: frozenset[str] = fro
             return problem("invalid_request", 422)
         try:
             out = backend.object_impact(who, object_type, object_id, mode, spec)
-        except (KeyError, LookupError):
+        except RecordNotFound:   # only that: any other error is a logged 500
             return problem("not_found", 404)
         return JSONResponse(out.model_dump(mode="json"))
 
@@ -1467,7 +1721,9 @@ def create_app(backend: Any, auth: Any, *, allowed_origins: frozenset[str] = fro
         """A cited source as this reader may open it (a Source's open_url page reads it)."""
         try:
             view = backend.source(who, handle, text_offset)
-        except (KeyError, LookupError, ValueError):
+        except (LookupError, ValueError) as error:   # only a not-found: else a logged 500
+            if not source_refused(error):
+                raise
             return problem("not_found", 404)
         return JSONResponse(view.model_dump(mode="json"))
 
@@ -1480,7 +1736,9 @@ def create_app(backend: Any, auth: Any, *, allowed_origins: frozenset[str] = fro
         found, as on ``/api/source``; a record they cannot read is left out."""
         try:
             out = backend.source_records(who, handle)
-        except (KeyError, LookupError, ValueError):
+        except (LookupError, ValueError) as error:   # only a not-found: else a logged 500
+            if not source_refused(error):
+                raise
             return problem("not_found", 404)
         return JSONResponse(out.model_dump(mode="json"))
 
@@ -1493,7 +1751,7 @@ def create_app(backend: Any, auth: Any, *, allowed_origins: frozenset[str] = fro
         try:
             entry, out = fb.record_answer(feedback_store, backend, who, body,
                                           then=lambda: backend.feedback(who, body))
-        except (KeyError, LookupError):
+        except RecordNotFound:   # not an answer given to this reader; else a logged 500
             return problem("not_found", 404)
         notes.answer_rated(who, body, entry)
         out = out.model_copy(update={"feedback_id": entry["id"],
@@ -1553,7 +1811,7 @@ def create_app(backend: Any, auth: Any, *, allowed_origins: frozenset[str] = fro
             return problem("forbidden", 403)
         try:
             row = feedback_store.set_status(feedback_id, body.status, who.display_name)
-        except KeyError:
+        except RecordNotFound:   # only that: any other error is a logged 500
             return problem("not_found", 404)
         shown = fb.Viewer(backend, who, [row]).entry(row)
         return JSONResponse(_feedback_entry(shown, who, True).model_dump(mode="json"))
@@ -1581,14 +1839,101 @@ def create_app(backend: Any, auth: Any, *, allowed_origins: frozenset[str] = fro
             try:
                 decide = getattr(backend, "_memory_decide", None)
                 rows = store.items(who, decide=decide(who, wait=True) if decide else None)
-                out = m.MemoryItems(available=store._reading(who) is not None, items=[
-                    m.MemoryItem(**{k: r[k] for k in m.MemoryItem.model_fields})
-                    for r in rows])
+                out = m.MemoryItems(available=store._reading(who) is not None,
+                                    items=[_memory_item(r) for r in rows])
             except Exception as error:  # noqa: BLE001 - unreadable now: said, never guessed
                 logging.getLogger("operator_api.memory").warning(
                     "memory list failed: %s", type(error).__name__)
                 out = m.MemoryItems(items=[], available=False)
         return JSONResponse(out.model_dump(mode="json"), headers={"Cache-Control": "no-store"})
+
+    @app.get("/api/memory/people", response_model=m.MemoryPeople, tags=["work-log"],
+             responses={401: {"model": m.ErrorResponse}})
+    def memory_people(who: Reader = Depends(reader)) -> Response:
+        """The people you work with most and your conversations going (whose turn it is),
+        read from your own mailbox for the last 90 days; nothing stored. Only yours."""
+        from operating import my_people
+        out = m.MemoryPeople(available=False)
+        mail_of = getattr(backend, "_assist_mail", None)
+        oid = str(getattr(who.session, "subject_oid", "") or "").lower()
+        if mail_of is not None and oid and not getattr(who.session, "view_as", False):
+            try:
+                # never held on a cold mailbox: the read runs in the background and the
+                # page asks again while ``reading`` (a pool thread waits 1 s at most)
+                mail = mail_of(who, 1.0)
+                reading = getattr(backend, "_assist_mail_reading", None)
+                if mail is None and callable(reading) and reading(who):
+                    return JSONResponse(m.MemoryPeople(available=False, reading=True)
+                                        .model_dump(mode="json"),
+                                        headers={"Cache-Control": "no-store"})
+                found = None if mail is None else my_people.people_and_threads(
+                    mail[0], oid, mail[1], now=datetime.now(timezone.utc),
+                    finance=mem.finance_text)
+                if found is not None:
+                    out = m.MemoryPeople(
+                        available=True, threads=[m.MemoryThread(**t) for t in found["threads"]],
+                        people=[m.MemoryPerson(name=my_people.label(p["address"]), **p)
+                                for p in found["people"]])
+            except Exception as error:  # noqa: BLE001 - unreadable now: said, never guessed
+                logging.getLogger("operator_api.memory").warning(
+                    "memory people failed: %s", type(error).__name__)
+                out = m.MemoryPeople(available=False)
+        return JSONResponse(out.model_dump(mode="json"), headers={"Cache-Control": "no-store"})
+
+    def _memory_item(row: Mapping[str, Any]) -> m.MemoryItem:
+        due = mem.due_of(row["text"], row["at"]) if row["kind"] == "commitment" else None
+        return m.MemoryItem(due=due, **{k: row[k] for k in m.MemoryItem.model_fields
+                                        if k != "due"})
+
+    def _memory_saved(who: Reader, body: m.MemorySave, replaces: Optional[int]) -> Response:
+        store = getattr(backend, "memory", None)
+        if store is None:
+            raise UserFacing("memory_refused", mem.WRITE_REFUSED["unavailable"], 503)
+        kept, why = store.write(who, kind=body.kind, text=body.text, replaces=replaces)
+        if kept is None:
+            if why == "not_found":
+                return problem("not_found", 404)
+            raise UserFacing("memory_refused", mem.WRITE_REFUSED.get(why, why or ""),
+                             503 if why == "unavailable" else 422)
+        decide = getattr(backend, "_memory_decide", None)
+        rows = [r for r in store.items(who, decide=decide(who, wait=True) if decide else None)
+                if r["id"] == kept]
+        if not rows:   # kept, but not openable to this reader now (it cites a source)
+            raise UserFacing("memory_refused", mem.WRITE_REFUSED["unavailable"], 503)
+        item = _memory_item(rows[0])
+        return JSONResponse(item.model_dump(mode="json"), headers={"Cache-Control": "no-store"})
+
+    @app.post("/api/memory", response_model=m.MemoryItem, tags=["work-log"],
+              responses={401: {"model": m.ErrorResponse}, 422: {"model": m.ErrorResponse},
+                         503: {"model": m.ErrorResponse}})
+    def memory_write(body: m.MemorySave, who: Reader = Depends(reader)) -> Response:
+        """Tell the Workbench something to remember in your own words: a standing
+        instruction, a preference, a commitment or a fact. Used in every answer of yours,
+        never anyone else's. Pay and finance, and anything naming someone the Workbench
+        leaves out, are refused."""
+        return _memory_saved(who, body, None)
+
+    @app.put("/api/memory/{item_id}", response_model=m.MemoryItem, tags=["work-log"],
+             responses={401: {"model": m.ErrorResponse}, 404: {"model": m.ErrorResponse},
+                        422: {"model": m.ErrorResponse}, 503: {"model": m.ErrorResponse}})
+    def memory_correct(body: m.MemorySave, item_id: int = PathParam(ge=1),
+                       who: Reader = Depends(reader)) -> Response:
+        """Correct one of your items in your own words: the new text replaces it, and
+        nothing the Workbench learns later writes over it. Another person's reads as not
+        found."""
+        return _memory_saved(who, body, item_id)
+
+    @app.post("/api/memory/{item_id}/done", response_model=m.MemoryForgotten,
+              tags=["work-log"],
+              responses={401: {"model": m.ErrorResponse}, 404: {"model": m.ErrorResponse}})
+    def memory_done(item_id: int = PathParam(ge=1), who: Reader = Depends(reader)) -> Response:
+        """Mark one of your commitments done: it leaves Today and your memory, and your
+        memory log keeps that it was done. Another person's reads as not found."""
+        store = getattr(backend, "memory", None)
+        if store is None or getattr(who.session, "view_as", False) \
+                or not store.done(who, item_id):
+            return problem("not_found", 404)
+        return JSONResponse(m.MemoryForgotten(forgotten=True).model_dump(mode="json"))
 
     @app.delete("/api/memory/{item_id}", response_model=m.MemoryForgotten, tags=["work-log"],
                 responses={401: {"model": m.ErrorResponse}, 404: {"model": m.ErrorResponse}})

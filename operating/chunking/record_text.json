@@ -144,7 +144,8 @@
         "priority",
         "assignee",
         "reporter",
-        "accountable_owner"
+        "accountable_owner",
+        "estimate"
       ]
     },
     "Meeting": {

@@ -22,6 +22,8 @@ overriding any of them):
   ``capture_failing:<source>:<error>`` so a new cause opens a new incident, and says it in
   words: ``mail: ExclusionUnavailable since 5:15 AM ET (4 runs failed in a row); last
   success Nov 10 12:13 PM ET; newest record 11:12 PM ET`` (times in US Eastern).
+* ``exclusion_unavailable:<source>``: the source's last run failed closed on the people
+  exclusion (``exclusion_checks``): a breach at the first such run, critical.
 * ``capture:sage``, ``capture:filemaker``, ``capture:calendar``, ``capture:planner``: the
   sources one capture carries (``source_checks``): Sage and FileMaker relations of the
   Portal mirror (its newest refresh of a relation of that lineage), calendar events and
@@ -32,6 +34,11 @@ overriding any of them):
   in ``mail-capture/capture.db``) has stayed undecided; every reader is withheld the mail
   naming one meanwhile, so past ``capture_undecided_list_hours`` it is a breach (counts
   and times only, never an address). No mail capture: no check.
+* ``capture_mail_coverage``: messages the mail capture's folders are short of Graph's own
+  ``totalItemCount`` (``folder_coverage``, kept by each capture run, AUD-09), with how the
+  short folders stand; a breach when the shortfall no re-list explains passes
+  ``capture_mail_unexplained_share`` of Graph's total, or a short folder waited
+  ``capture_mail_relist_hours`` for its re-list. Counts only.
 * ``search_follow_last_pass``: minutes since the search index follower last saved its
   cursor (``search/follow.json``).
 * ``search_follow_lag``: minutes the search index has been missing a published delta layer
@@ -52,7 +59,8 @@ overriding any of them):
   layer pending with no apply for ``pg_follow_stall_minutes`` (stalled), or a different
   generation, is a breach.
 * ``proactive_last_pass``: minutes since the proactive engine's last run (its inbox).
-* ``truth_contradicted_share``: the truth check's contradicted claims / claims checked.
+* ``truth_contradicted_share``: the truth check's contradicted claims / the claims it could
+  judge (not ``not_checked``), with the checked share of all claims beside it.
 * ``ai_watcher_last_run``: minutes since the AI watcher's last run.
 * ``api_page_p95``: the API's p95 milliseconds over its recent page requests (given by the
   API process itself; ``LatencyWindow``).
@@ -77,27 +85,61 @@ import time
 from typing import Any, Callable, Iterable, Mapping, Optional
 from urllib.request import HTTPRedirectHandler, Request, build_opener
 
+# The disk floor table lives in operating/disk_floor.py (a leaf); its names stay importable here.
+from operating.disk_floor import DISK_FLOOR_GB, disk_floor_bytes, mount_floor_bytes, mount_of  # noqa: E402,F401
+
+
 DEFAULT_TARGETS: dict[str, float] = {
     "delta_last_cycle_minutes": 15,
     "delta_cycle_runtime_minutes": 30,
     "capture_minutes": 360,
+    # mail's own capture bound whatever its turn (owner 11-14: mail fresh within 15-30
+    # min; the host schedules it by a 15-minute target, ingest_forever.Continuous)
+    "capture_mail_minutes": 30,
     # minutes since a capture last made progress (owner 11-13: mail and Teams within
     # 30 min, Portal within 1 h), whatever its runs report: ``capture_progress_checks``
     "capture_progress_mail_minutes": 30,
     "capture_progress_teams_minutes": 30,
     "capture_progress_portal_minutes": 60,
     "capture_failed_runs": 2,      # runs in a row a capture source may fail
+    # runs in a row the people exclusion may stop a capture (fail-closed, nothing read):
+    # 0, the first one alarms (2026-11-10..12: mail and Teams stopped two days)
+    "capture_exclusion_runs": 0,
     "capture_undecided_list_hours": 24,   # an address withheld as undecided this long
+    # mail short of Graph's folder counts that no re-list explains, share of Graph's total;
+    # and how long a short folder may wait for its re-list (``capture_mail_coverage``)
+    "capture_mail_unexplained_share": 0.01,
+    "capture_mail_relist_hours": 48,
     "ingest_start_failures": 3,
     "pg_follow_behind_layers": 6,
     "pg_follow_stall_minutes": 30,
     "proactive_last_pass_minutes": 180,
     "truth_contradicted_share": 0.25,
+    # operating.ops_alarms outcome checks (alarms-1115: truth, not run recency)
+    "truth_checked_share_min": 0.02,    # claims the truth check judged, share of all claims
+    "truth_checked_drop": 0.5,          # ... or under this share of its last week's best
+    "truth_check_age_hours": 6,         # the truth check's last report (hourly)
+    "search_dense_failing_share": 0.2,  # searches ranked without the dense list
+    "ask_canary_seconds": 90,           # the live Ask canary's answer time
+    "ask_canary_age_minutes": 75,       # its last run (every 20 minutes)
+    "exclusion_leak_age_hours": 3,      # the exclusion leak scan's last run (hourly)
+    # newest record of a source (mail: received time; else its newest stored version):
+    # mail in wall-clock hours, the rest in weekday business hours (7 AM - 7 PM ET,
+    # ``ops_alarms.business_hours``): nobody changes BC or chats on a Sunday
+    "capture_newest_mail_hours": 4,
+    "capture_newest_teams_hours": 4,
+    "capture_newest_portal_hours": 4,
+    "capture_newest_bc_hours": 6,
+    "capture_newest_mc_hours": 6,
+    "capture_newest_meetings_hours": 24,
+    "capture_newest_sharepoint_hours": 12,
+    "capture_newest_sharepoint_lists_hours": 24,
     "ai_watcher_last_run_minutes": 120,
     "api_page_p95_ms": 5000,
     "search_follow_minutes": 60,
     "search_follow_lag_minutes": 120,   # a published delta layer not yet in the search index
     "detector_complete_hours": 24,      # a proactive detector's last complete run
+    "change_feed_follow_hours": 6,      # a consumer's change feed cursor left behind
     # operating.ops_alarms
     "pg_connections_share": 0.8,
     "pg_idle_in_transaction_minutes": 10,
@@ -105,10 +147,28 @@ DEFAULT_TARGETS: dict[str, float] = {
     "memory_available_gb": 6,
     "memory_warn_gb": 8,          # early warning: any one sample, top consumers named
     "memory_low_minutes": 5,
+    "load_cores_factor": 2,        # load_high: the 1-minute load over this many per core...
+    "load_high_minutes": 10,       # ... on every full pass for this long
     "unit_activating_hours": 6,
     "delta_activating_hours": 2,   # a delta cycle normally takes minutes
-    "backup_age_hours": 30,
-    "credential_expiry_days": 30,   # a credential that expires sooner, and nothing renews itself
+    # the delta apply's Postgres seconds per owned record, from cycles.jsonl: over this
+    # factor of its best of the window on the last two cycles of at least min_owned
+    # records (a smaller cycle is fixed costs: 5,956 records took 4,023 s on 11-13);
+    # the 11-15 regression ran 24-32 ms against 11-12's 2-7 ms unnoticed
+    "delta_apply_cost_factor": 2,
+    "delta_apply_cost_min_owned": 10_000,
+    "delta_apply_cost_window_days": 14,
+    # minutes the delta has carried a deferred backlog (records past its cycle cap) without
+    # one finished cycle that left none
+    "delta_backlog_minutes": 60,
+    "backup_age_hours": 30,         # the newest complete backup set (nightly)
+    "restore_test_age_hours": 30,   # the last restore test (nightly)
+    # a credential that expires sooner, and nothing renews itself: warning at 14 days,
+    # high at 7, critical at 2 (ops_alarms.EXPIRY_TIERS)
+    "credential_expiry_days": 14,
+    "disk_forecast_days": 14,       # a disk that fills sooner at its last week's rate
+    "pg_xid_age": 1_000_000_000,    # oldest unfrozen transaction (wraparound at 2^31)
+    "pg_dead_share": 0.2,           # dead rows over this share of live ones, unvacuumed 24 h
     "credential_list_age_days": 3,  # the expiry list (plx-expiry) older than this: unknown
 }
 
@@ -227,6 +287,8 @@ def capture_checks(state: Path, now: datetime, t: Mapping[str, float]) -> list[C
         turn = turns.get(source) if isinstance(turns, dict) else None
         bound = (round(2 * float(turn) / 60, 1) if isinstance(turn, (int, float))
                  and not isinstance(turn, bool) and turn > 0 else t["capture_minutes"])
+        if source == "mail":
+            bound = min(bound, t["capture_mail_minutes"])
         # stale until a run the ingest recorded since (the ledger catches up at a refresh)
         ran = _parse(run.get("last_success_at"))
         stale = bool(stale_since) and not (ran is not None and _parse(stale_since) is not None
@@ -286,6 +348,65 @@ def undecided_list_check(state: Path, now: datetime, t: Mapping[str, float]
     return _check("capture_undecided_list", hours, bound, hours > bound, "h",
                   f"{count} undecided address(es) since {_et(since, now)}; mail naming "
                   "them is withheld from every reader")
+
+
+def mail_coverage_check(state: Path, now: datetime, t: Mapping[str, float]
+                        ) -> Optional[Check]:
+    """``capture_mail_coverage``: the mail capture against Graph's own folder counts
+    (``folder_coverage`` in ``mail-capture/capture.db``, kept by each run: AUD-09). Value:
+    the messages the folders compared are short of Graph's ``totalItemCount``; the detail
+    says how much is held and how the short folders stand (awaiting or in a re-list,
+    explained by what Graph never lists or the exclusion, unexplained). A breach when the
+    shortfall no re-list explains passes ``capture_mail_unexplained_share`` of Graph's
+    total, or a short folder has waited ``capture_mail_relist_hours`` for its re-list
+    (the re-list is starved). Counts and times only. None without a mail capture store
+    or before the first comparison; ``unknown`` when unreadable."""
+    path = state / "mail-capture" / "capture.db"
+    if not path.is_file():
+        return None
+    share, hours = t["capture_mail_unexplained_share"], t["capture_mail_relist_hours"]
+    try:
+        conn = _ro(path)
+        try:
+            rows = conn.execute(
+                "SELECT status, COUNT(*), COALESCE(SUM(total), 0), "
+                "COALESCE(SUM(captured), 0), COALESCE(SUM(short), 0), MIN(short_since) "
+                "FROM folder_coverage WHERE captured IS NOT NULL OR status != 'whole' "
+                "GROUP BY status").fetchall()
+        finally:
+            conn.close()
+    except sqlite3.OperationalError as exc:
+        if "no such table" in str(exc):
+            return None
+        return _check("capture_mail_coverage", None, share, None, "msgs",
+                      "mail capture store unreadable")
+    except sqlite3.Error:
+        return _check("capture_mail_coverage", None, share, None, "msgs",
+                      "mail capture store unreadable")
+    by = {status: (n, total, captured, short, since)
+          for status, n, total, captured, short, since in rows}
+    compared = [v for k, v in by.items() if k not in ("in_progress", "not_judged")]
+    total = sum(v[1] for v in compared)
+    captured = sum(v[2] for v in compared)
+    short = sum(v[3] for v in compared)
+    unexplained = by.get("unexplained", (0, 0, 0, 0, None))[3]
+    waiting = [_parse(v[4]) for k, v in by.items() if k in ("short", "relisting") and v[4]]
+    oldest = min((w for w in waiting if w is not None), default=None)
+    starved = oldest is not None and (now - oldest).total_seconds() > hours * 3600
+    breach = bool(total) and unexplained > share * total or starved
+    held = f"{captured:,} of {total:,} messages held" + (
+        f" ({100 * captured / total:.1f}%)" if total else "")
+    parts = [held]
+    for status, label in (("short", "awaiting re-list"), ("relisting", "re-listing"),
+                          ("explained", "explained"), ("unexplained", "unexplained"),
+                          ("in_progress", "still being read")):
+        if status in by and by[status][0]:
+            parts.append(f"{by[status][0]} folder(s) {label} ({by[status][3]:,} short)"
+                         if status != "in_progress" else
+                         f"{by[status][0]} folder(s) {label}")
+    if oldest is not None:
+        parts.append("oldest short folder waiting since " + _et(oldest, now))
+    return _check("capture_mail_coverage", short, share, breach, "msgs", "; ".join(parts))
 
 
 def _iso(when: Optional[datetime]) -> Optional[str]:
@@ -430,6 +551,17 @@ def capture_run_checks(state: Path, now: datetime, t: Mapping[str, float]) -> li
     out = []
     for source in configured:
         run = runs.get(source) or {}
+        stopped = run.get("exclusion_unavailable_runs")
+        if isinstance(stopped, int) and not isinstance(stopped, bool) and stopped > 0:
+            since = _parse(run.get("exclusion_unavailable_since"))
+            limit = t.get("capture_exclusion_runs", 0)
+            check = _check(f"capture_exclusion:{source}", stopped, limit, stopped > limit,
+                           "runs", f"{source}: people exclusion unavailable since "
+                           f"{_et(since, now)} ({stopped} runs read nothing, fail-closed); "
+                           f"last success {_et(_parse(run.get('last_success_at')), now)}")
+            check.update(source=source, exclusion_unavailable_since=run.get(
+                "exclusion_unavailable_since"))
+            out.append(check)
         failures = run.get("consecutive_failures")
         failures = failures if isinstance(failures, int) and not isinstance(failures, bool) \
             else None
@@ -447,6 +579,36 @@ def capture_run_checks(state: Path, now: datetime, t: Mapping[str, float]) -> li
                        text)
         check.update(source=source, last_success_at=run.get("last_success_at"),
                      newest_record_at=_iso(newest), failing_since=run.get("failing_since"))
+        out.append(check)
+    return out
+
+
+EXCLUSION_MARKS = ("people_exclusion", "ExclusionUnavailable")
+
+
+def exclusion_checks(state: Path, now: datetime) -> list[Check]:
+    """``exclusion_unavailable:<source>``: the source's last run failed closed because the
+    people exclusion could not be read (``blocked:people_exclusion:<code>`` or
+    ``source_error:ExclusionUnavailable:<code>``): nothing of it is captured until that is
+    fixed, so it breaches on the first such run (``capture_failing`` waits for
+    ``capture_failed_runs`` and its key follows the error text). Mail failed closed this
+    way for two days (11-10..11-12) without an alarm of its own."""
+    out = []
+    for source, run in sorted(source_runs(state).items()):
+        failures = run.get("consecutive_failures")
+        if run.get("last_status") in ("complete", "partial") or not isinstance(
+                failures, int) or isinstance(failures, bool) or failures < 1:
+            continue
+        reason = str(run.get("failing_reason") or run.get("last_error") or "")
+        if not any(mark in reason for mark in EXCLUSION_MARKS):
+            continue
+        since = _parse(run.get("reason_since")) or _parse(run.get("failing_since"))
+        code = reason.rsplit(":", 1)[-1]
+        check = _check(f"exclusion_unavailable:{source}", _minutes(now, since), 0, True,
+                       "min", f"{source} capture is failing closed: the people exclusion "
+                       f"could not be read ({code}) since {_et(since, now)}; nothing of "
+                       f"{source} is captured until it can")
+        check.update(source=source, level="critical")
         out.append(check)
     return out
 
@@ -626,8 +788,9 @@ def service_check(state: Path, now: datetime) -> Optional[Check]:
 
 def config_keys_check(state: Path) -> Optional[Check]:
     """Config keys the running host ignored (unknown to its code: a typo such as
-    ``ingest.build`` for ``ingest.builds``, or a newer checkout's setting): a breach, so
-    the setting that did not take effect is on Home, never only in a log line."""
+    ``ingest.build`` for ``ingest.builds``, or a newer checkout's setting) and capture
+    units a source's own list leaves out (``bc.entity_sets:unlisted:projects``): a breach,
+    so the setting that did not take effect is on Home, never only in a log line."""
     held = serve_health(state)
     if not held:
         return None
@@ -720,6 +883,46 @@ def pg_check(state: Path, now: datetime, t: Mapping[str, float],
     detail = (f"stalled: last apply {since} min ago" if stalled else
               f"behind: last write {since} min ago" if far else f"last write {since} min ago")
     return _check("pg_follow", len(behind), bound, stalled or far, "layers", detail)
+
+
+def change_feed_check(now: datetime, t: Mapping[str, float], dsn: Optional[str]) -> Check:
+    """``change_feed``: the consumers of the change feed (``operating.pg.change_feed``,
+    migration 0026) not following it: one with no cursor while the feed holds a cycle
+    older than ``change_feed_follow_hours``, or whose cursor is behind and was last
+    written longer ago than that (it cannot write it, or it stopped). Each then reads its
+    own way, slower and with more to judge; names in the detail. Unknown without a DSN
+    or the feed."""
+    bound = t["change_feed_follow_hours"]
+    if not dsn:
+        return _check("change_feed", None, bound, None, "consumers", "no DSN configured")
+    try:
+        from operating.pg import change_feed
+        with change_feed.connect(dsn) as conn:
+            if not change_feed.present(conn):
+                return _check("change_feed", None, bound, None, "consumers",
+                              "feed not migrated (0026)")
+            head, oldest = conn.execute(
+                "SELECT coalesce(max(seq), 0), (SELECT min(applied_at) FROM "
+                "ontology.change_cycles) FROM ontology.change_feed").fetchone()
+            cursors = {r[0]: (r[1], r[2]) for r in conn.execute(
+                "SELECT consumer, position, updated_at FROM ontology.change_cursors")}
+    except Exception as exc:  # noqa: BLE001 - any database failure is "unknown"
+        return _check("change_feed", None, bound, None, "consumers",
+                      f"unreadable ({type(exc).__name__})")
+    late = []
+    for name in sorted(change_feed.CONSUMERS):
+        if name not in cursors:
+            age = _minutes(now, oldest) if isinstance(oldest, datetime) else None
+            if age is not None and age > bound * 60:
+                late.append(f"{name} (never read it)")
+            continue
+        position, at = cursors[name]
+        age = _minutes(now, at) if isinstance(at, datetime) else None
+        if position < head and age is not None and age > bound * 60:
+            late.append(f"{name} ({head - position} rows behind, cursor written "
+                        f"{round(age / 60, 1)} h ago)")
+    return _check("change_feed", len(late), bound, bool(late), "consumers",
+                  "not following: " + "; ".join(late) if late else "every consumer follows")
 
 
 # The store's own record of a capture's last progress, one indexed read each: the mail
@@ -843,15 +1046,27 @@ def detectors_check(state: Path, now: datetime, t: Mapping[str, float]) -> Optio
 
 
 def truth_check(state: Path, t: Mapping[str, float]) -> Check:
+    """Contradicted claims over the claims the check could judge (``checked``: its verdict
+    is not ``not_checked``), with the checked share beside it: a contradiction rate over
+    claims nobody checked says nothing (audit 11-15: 3.4% judged). A report from before
+    ``checked`` was written: over all claims, said so."""
     bound = t["truth_contradicted_share"]
     try:
         status = json.loads((state / "truth-check" / "status.json").read_text())
         claims, contradicted = int(status["claims"]), int(status["contradicted"])
+        checked = status.get("checked")
+        checked = None if checked is None else int(checked)
     except (OSError, ValueError, KeyError, TypeError):
         return _check("truth_contradicted_share", None, bound, None, "share", "no report")
-    share = round(contradicted / claims, 3) if claims else 0.0
+    base = claims if checked is None else checked
+    share = round(contradicted / base, 3) if base else 0.0
+    judged = ("checked count not reported" if checked is None else
+              f"{checked} of {claims} claims checked"
+              + (f" ({100 * checked / claims:.1f}%)" if claims else ""))
+    over = f"of {base} checked" if checked is not None else f"of {base} claims"
     return _check("truth_contradicted_share", share, bound, share > bound, "share",
-                  f"{contradicted} of {claims} claims, {status.get('generated_at', '')}")
+                  f"{contradicted} contradicted {over}; {judged}; "
+                  f"{status.get('generated_at', '')}")
 
 
 def collect(state_dir: Any, *, now: Optional[datetime] = None,
@@ -866,12 +1081,15 @@ def collect(state_dir: Any, *, now: Optional[datetime] = None,
     checks += capture_checks(state, now, t)
     checks += capture_progress_checks(state, now, t)
     checks += capture_run_checks(state, now, t)
+    checks += exclusion_checks(state, now)
     checks += source_checks(state, now, t)
     for extra in (start_check(state, t), service_check(state, now),
-                  config_keys_check(state), undecided_list_check(state, now, t)):
+                  config_keys_check(state), undecided_list_check(state, now, t),
+                  mail_coverage_check(state, now, t)):
         if extra is not None:
             checks.append(extra)
     checks.append(pg_check(state, now, t, pg_dsn))
+    checks.append(change_feed_check(now, t, pg_dsn))
     checks.append(_age_check(
         "proactive_last_pass", now,
         _scalar(state / "projection" / "ontology.sqlite.gap-inbox.sqlite",

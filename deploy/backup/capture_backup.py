@@ -25,9 +25,20 @@ disk holds one copy plus at most one piece in flight:
   ``completed_at`` and what was skipped.
 
 Disk guard: a piece is written only when the backup disk keeps ``PLX_CAPTURE_BACKUP_MIN_FREE_GB``
-(default 10) free after it (estimate: its last copy's size, else its raw size); a piece that
-does not fit is listed in ``skipped`` and the run exits 3 after writing everything that fits,
-in priority order (small stores first, the mail blobs last). SQLite copies are staged in
+(default ``ROOT_FLOOR_GB``, the root disk's floor in ``operating.ops_health.DISK_FLOOR_GB``,
+copied here because this file runs alone from /usr/local/lib/plx) free after it, and when
+the copy stays within ``PLX_CAPTURE_BACKUP_BUDGET_GB`` (the root-disk budget for the whole
+copy; unset: no cap) with it (estimate: its last copy's size, else its raw size); a piece that
+does not fit is listed in ``skipped`` (``disk_guard`` or ``budget``) and the run exits 3 after writing everything that fits,
+in priority order (small stores first, the mail blobs last). A held copy is never removed to
+make room (the capture is irreplaceable): a skipped piece fails the restore test, so a person
+grows the disk or the budget. After a complete run, files under the copy's directories that no
+manifest piece names (a piece of a store since retired, a rename's leftover) are pruned
+(``pruned``, ``pruned_bytes``), and only when the run began from a cleanly read manifest of
+an earlier complete run (``prune_skipped`` otherwise). A run that began without one adopts
+every copy no piece names as a held piece (``adopted_unlisted`` in ``skipped`` that run, so
+the restore test fails once and a person looks): a lost or unreadable manifest never lets
+this or any later run remove a copy it no longer knows about. SQLite copies are staged in
 ``PLX_CAPTURE_BACKUP_STAGE`` (default ``/data/plx-tmp/capture-backup``) and removed at once.
 
 Never a worse copy (11-12 review): the run refuses (exit 4, nothing written) when the state
@@ -58,6 +69,7 @@ Stdlib plus the ``zstd`` and ``tar`` commands; runs from the root disk.
 """
 from __future__ import annotations
 
+import contextlib
 import datetime as dt
 import gzip
 import hashlib
@@ -106,7 +118,7 @@ BLOBS = (("sharepoint", "sharepoint-capture/blobs"), ("mail", "mail-capture/blob
 # exclusion purge), so a shard without it is still a full copy; one it lists is lost.
 BLOB_DBS = {"sharepoint": "sharepoint-capture/capture.db", "mail": "mail-capture/capture.db"}
 # A blob's stored forms (``integrations.captured_text``): the same blob under another name.
-BLOB_SUFFIXES = (".z", ".dropped")
+BLOB_SUFFIXES = (".zst", ".z", ".dropped")   # .zst before .z: integrations.blob_zstd
 # Each blob store's pack of small compressed blobs (``integrations.blob_pack``, GA-F16): a
 # blob moved there leaves its shard. The pack is copied before the shards (the backup API:
 # one snapshot) and that copy's snapshot is what a shard is checked against: a blob missing
@@ -118,6 +130,9 @@ SENTINELS = ("mail-capture/capture.db",)
 SKIPPED_BY_DESIGN = {"case-runtime/source-mirror.sqlite":
                      "disposable projection of the Portal reporting API, re-fetched"}
 ZSTD = ["zstd", "-q", "-3", "-T0", "--no-progress"]
+# The root disk's floor: a copy of operating.ops_health.DISK_FLOOR_GB["/"] (a test keeps them
+# equal; this file runs alone from /usr/local/lib/plx and imports nothing of the repo).
+ROOT_FLOOR_GB = 10.0
 # A database copy smaller than this share of the held one is a fresh store, not a smaller one.
 SHRINK_FLOOR = 0.5
 
@@ -165,13 +180,21 @@ def _sound(path: Path) -> bool:
 
 
 class Run:
-    def __init__(self, root: Path, stage: Path, min_free: int) -> None:
-        self.root, self.stage, self.min_free = root, stage, min_free
+    def __init__(self, root: Path, stage: Path, min_free: int,
+                 budget: int | None = None) -> None:
+        self.root, self.stage, self.min_free, self.budget = root, stage, min_free, budget
         self.manifest_path = root / "manifest.json"
         try:
             self.old: dict[str, Any] = json.loads(self.manifest_path.read_text())
+            # what pruning needs: the pieces of an earlier run that ran to its end, read
+            # cleanly (a run with skipped pieces still lists every held copy)
+            self.prior_complete = (self.old.get("format") == "plx-capture-backup/v1"
+                                   and bool(self.old.get("completed_at"))
+                                   and isinstance(self.old.get("pieces"), dict)
+                                   and bool(self.old["pieces"]))
         except (OSError, ValueError):
             self.old = {}
+            self.prior_complete = False
         self.pieces: dict[str, Any] = dict(self.old.get("pieces", {}))
         self.skipped: dict[str, str] = {}
         self.written = self.kept = 0
@@ -188,7 +211,61 @@ class Run:
         if shutil.disk_usage(self.root).free - estimate < self.min_free:
             self.skipped[key] = "disk_guard"
             return False
+        if self.budget is not None:
+            held = sum(int(p.get("bytes") or 0) for k, p in self.pieces.items() if k != key)
+            if held + estimate > self.budget:
+                self.skipped[key] = "budget"
+                return False
         return True
+
+    def adopt_unlisted(self) -> list[str]:
+        """A run that began without a cleanly read manifest of a finished run keeps every
+        copy it finds that no piece names, as a held piece of its own (``adopted``), and
+        lists it in ``skipped`` once so the restore test fails until a person looks: it may
+        be the only copy of a store whose source is gone, which this run cannot know
+        (review 396bcf3297). Later runs keep it like any held piece; pruning never sees it."""
+        if self.prior_complete:
+            return []
+        adopted = []
+        for sub in ("db", "blobs"):
+            for path in sorted((self.root / sub).glob("*.zst")):
+                key = path.relative_to(self.root).as_posix()
+                if key in self.pieces or not path.is_file() or path.is_symlink():
+                    continue
+                members = None
+                if sub == "blobs":
+                    listed = subprocess.run(f"zstd -dc -- '{path}' | tar -tf - | wc -l",
+                                            shell=True, capture_output=True, text=True)
+                    members = int(listed.stdout.strip() or 0) if listed.returncode == 0 else None
+                self.pieces[key] = {"bytes": path.stat().st_size, "raw_bytes": None,
+                                    "sha256": _sha256(path), "members": members,
+                                    "listing": None, "adopted": True,
+                                    "written_at": dt.datetime.fromtimestamp(
+                                        path.stat().st_mtime, dt.timezone.utc).isoformat(
+                                        timespec="seconds")}
+                self.skipped[key] = "adopted_unlisted"
+                adopted.append(key)
+        return adopted
+
+    def prune(self) -> tuple[int, int]:
+        """Remove files under the copy's piece directories that no piece names (and the
+        listings of pieces no longer held); (files, bytes). Never without a cleanly read
+        manifest of an earlier complete run: with none, a held copy whose source is gone
+        is not known as one, and pruning would remove the only copy (review e71c91921f)."""
+        if not self.prior_complete:
+            return 0, 0
+        keep = set(self.pieces)
+        keep |= {self._names_path(k).relative_to(self.root).as_posix() for k in self.pieces}
+        files = size = 0
+        for sub in ("db", "blobs", "lists"):
+            for path in sorted((self.root / sub).glob("*")):
+                rel = path.relative_to(self.root).as_posix()
+                if not path.is_file() or path.is_symlink() or rel in keep:
+                    continue
+                size += path.stat().st_size
+                path.unlink()
+                files += 1
+        return files, size
 
     def commit(self, key: str, tmp: Path, raw_bytes: int, members: int | None = None,
                listing: str | None = None) -> None:
@@ -212,9 +289,18 @@ class Run:
                 "complete": complete and not self.skipped if complete else
                 self.old.get("complete", False)}
         tmp = self.manifest_path.with_suffix(".json.tmp")
-        tmp.write_text(json.dumps(body, indent=1, sort_keys=True))
+        with open(tmp, "w") as handle:
+            handle.write(json.dumps(body, indent=1, sort_keys=True))
+            handle.flush()
+            os.fsync(handle.fileno())
         os.chmod(tmp, 0o600)
         os.replace(tmp, self.manifest_path)
+        with contextlib.suppress(OSError):   # the rename itself survives a crash
+            fd = os.open(self.root, os.O_RDONLY)
+            try:
+                os.fsync(fd)
+            finally:
+                os.close(fd)
         if complete:
             self.old = body
 
@@ -482,7 +568,10 @@ def backup() -> tuple[int, dict[str, Any]]:
     for path in (root, root / "db", root / "blobs", root / "lists", stage):
         path.mkdir(parents=True, exist_ok=True)
         os.chmod(path, 0o700)
-    run = Run(root, stage, int(float(_env("PLX_CAPTURE_BACKUP_MIN_FREE_GB", "10")) * 1e9))
+    budget = _env("PLX_CAPTURE_BACKUP_BUDGET_GB", "")
+    run = Run(root, stage, int(float(_env("PLX_CAPTURE_BACKUP_MIN_FREE_GB", str(ROOT_FLOOR_GB)))
+                               * 1e9),
+              budget=int(float(budget) * 1e9) if budget else None)
     volume = volume_id()
     refused = volume_refused(run.volume, volume)
     if refused:   # another filesystem than the copy's: nothing written
@@ -490,6 +579,7 @@ def backup() -> tuple[int, dict[str, Any]]:
     run.volume = volume or run.volume
     for leftover in [*root.rglob("*.tmp"), *stage.iterdir()]:
         leftover.unlink(missing_ok=True)
+    run.adopt_unlisted()
     started = _now()
     for name, rel in DBS:
         run.database(name, rel)
@@ -507,10 +597,15 @@ def backup() -> tuple[int, dict[str, Any]]:
         for snapshot in run.pack_copies.values():
             snapshot.unlink(missing_ok=True)
     run.save(complete=True)
+    pruned, pruned_bytes = run.prune() if not run.skipped else (0, 0)
     total = sum(p["bytes"] for p in run.pieces.values())
     out = {"written": run.written, "kept": run.kept, "pieces": len(run.pieces),
            "total_bytes": total, "skipped": run.skipped,
            "free_bytes": shutil.disk_usage(root).free,
+           "floor_bytes": run.min_free, "budget_bytes": run.budget,
+           "pruned": pruned, "pruned_bytes": pruned_bytes,
+           "prune_skipped": ("no_prior_manifest" if not run.prior_complete else
+                             "skipped_pieces" if run.skipped else None),
            "minutes": round((_now() - started).total_seconds() / 60, 1),
            "by_kind": {kind: sum(p["bytes"] for k, p in run.pieces.items()
                                  if k.startswith(prefix))

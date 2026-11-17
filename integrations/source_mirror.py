@@ -201,6 +201,25 @@ from .workbench_read_api import PagingDefect, RelationUnavailable, catalog_revis
 from .capture_store import bound_wal, checkpoint
 from . import mirror_records
 from operating.declared_schema.source_mirror import _DDL, _CHANGE_DDL
+from .source_mirror_values import (
+    attach_scoped, _BASE_CAVEATS, _candidate_identity, _canonical, CATALOG_OUTAGE_HOLD_SECONDS,
+    DEFAULT_IDENTIFIERS, failure_class, _FINAL_DATABASE_CODES, _FINAL_PAGE_CODES, _GROW_PAGE_CODES,
+    IDENTIFIER_NOTES, _identifier_value, LARGE_RELATION_ROWS, _load_strict_json, _LockCredit,
+    MAX_PAGE_SIZE, MAX_SYNC_WORKERS, MERGE_BATCH_ROWS, MirrorError, _norm_identifier, _number,
+    _order_value, PERSISTED_FALLBACK_META, portal_trim_text, ROW_STRENGTH_RULES, _sha, _SINCE_MODES,
+    _STRENGTHS, _TIMESTAMP, _WHERE_OPS, _YYYYMMDD)
+from .source_mirror_rules import (
+    AMBIGUOUS_REPLACEMENT, CHANGE_EPOCH, CHANGE_TRIGGERS, _DDL_OBJECTS, DEFAULT_INGEST_PATH,
+    _INDEX_CLEANUP, INGEST_SCHEMA, _later_watermark, _LINEAGE_OPS, LINEAGES,
+    MAX_ROWS_PER_RELATION_CAP, MISSING_FROM_SOURCE, natural_text, OPEN_WRITE_RETRIES,
+    pair_replacements, _pattern_matches, PRISMA_FACTS_PATH, _REPLACED_SQL, replacement_key,
+    REPLACEMENT_RULE, _ROW_CURRENT_COLUMNS, _rules_digest, _seen, _SEEN_AT, _SEEN_CAPTURE,
+    _sighting_sql, SOFT_DELETE, soft_delete_columns, SOFT_DELETE_OBSERVED, SOURCE_REPLACEMENT,
+    _stage_bound, stale_replacement_relations, _successors_remapped, _superseded_outcome,
+    _SYNC_KEYS, UNCLASSIFIED, UNTIL_OBSERVED, UNTIL_SOURCE_UPDATE)
+from .source_mirror_query import (
+    _capture_dict, _index_forms, _matches, mirror_options, PROBE_PRINCIPAL, scan_freshness,
+    _SCAN_STALENESS_MAX, soft_delete_counts, _sql_prefilter)
 
 
 AUDIENCE_SCHEMA = "plx-source-mirror-audience/v1"
@@ -216,328 +235,6 @@ _IDENTIFIER_PATH = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_
 _HANDLE = re.compile(r"^api://([a-z][a-z0-9_]*\.[a-z][a-z0-9_]*)/([^/@\s]+)"
                      r"@(?:([0-9a-f]{16})-)?([1-9][0-9]{0,17})$")
 _GENERATION = re.compile(r"^[0-9a-f]{16}$")
-_NUMERIC_TEXT = re.compile(r"^[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?$")
-_TIMESTAMP = re.compile(r"^(\d{4})-(\d{2})-(\d{2})[T ](\d{2}):(\d{2})"
-                        r"(?::(\d{2})(?:\.(\d{1,9}))?)?(Z|[+-]\d{2}(?::?\d{2})?)?$")
-_YYYYMMDD = re.compile(r"^(\d{4})(\d{2})(\d{2})$")
-_SINCE_MODES = ("timestamptz", "timestamp-utc", "yyyymmdd-text")
-# mirror_meta name of a copy restored from the capture store (integrations/mirror_capture.py).
-PERSISTED_FALLBACK_META = "persisted_fallback"
-# A scoped fallback (``integrations/mirror_capture.py``): a small file holding its own
-# ``mirror_meta`` and this table, which names the shared mirror (attached read-only) and the
-# scope relations; TEMP views over the shared mirror's relation tables show only the scope.
-POINTER_TABLE = "mirror_pointer"
-# Shared-mirror tables keyed by relation, shown through scope views; capture_state and
-# absence_seen follow their capture and scan.
-_SCOPED_TABLES = ("absence_scan", "capture", "identifier_index", "persisted_relation",
-                  "refresh_failure", "relation_lineage", "relation_soft_delete",
-                  "relation_state", "row_current", "row_removal", "row_version", "stage_row",
-                  "stage_seen", "sync_progress")
-
-
-def attach_scoped(conn: sqlite3.Connection) -> list[str] | None:
-    """When ``conn``'s file is a scoped fallback (it holds ``POINTER_TABLE``): attach the
-    shared mirror it names read-only and shadow its relation tables with TEMP views of the
-    scope; returns the scope relations. None for any other file (nothing changed). Staged
-    pages and unfinished traversals are never shown (they were never served)."""
-    if conn.execute("SELECT 1 FROM main.sqlite_master WHERE name = ?",
-                    (POINTER_TABLE,)).fetchone() is None:
-        return None
-    path, relations = conn.execute(f"SELECT path, relations FROM {POINTER_TABLE}").fetchone()
-    scope = json.loads(relations)
-    conn.execute("ATTACH DATABASE ? AS shared", (f"file:{path}?mode=ro",))
-    have = {row[0] for row in conn.execute("SELECT name FROM shared.sqlite_master "
-                                           "WHERE type = 'table'")}
-    # A TEMP view cannot take parameters: the scope is written into it as quoted literals.
-    quoted = ", ".join("'" + str(name).replace("'", "''") + "'" for name in scope)
-    for table in _SCOPED_TABLES:
-        if table not in have:
-            continue
-        where = "0" if table in ("stage_row", "stage_seen", "sync_progress") \
-            else f"relation IN ({quoted})"
-        conn.execute(f"CREATE TEMP VIEW {table} AS SELECT * FROM shared.{table} WHERE {where}")
-    if "capture_state" in have:
-        # Correlated on the capture's key: a filtered read (the unfinished captures) looks
-        # up only its own rows' captures instead of listing every scope capture first.
-        conn.execute("CREATE TEMP VIEW capture_state AS SELECT s.* FROM shared.capture_state s "
-                     "WHERE EXISTS (SELECT 1 FROM temp.capture c "
-                     "WHERE c.capture_id = s.capture_id)")
-    if "absence_seen" in have and "absence_scan" in have:
-        conn.execute("CREATE TEMP VIEW absence_seen AS SELECT * FROM shared.absence_seen "
-                     "WHERE scan_id IN (SELECT scan_id FROM temp.absence_scan)")
-    return scope
-
-
-_WHERE_OPS = ("eq", "prefix", "in", "gte", "lte", "is_null")
-# IEEE-754 binary64 round-trips at most 15 significant decimal digits.
-_BINARY64_DIGITS = 15
-_BASE_CAVEATS = (
-    "Rows are the reporting replica of the Portal staging primary (FM/Sage/gold ETL), "
-    "not from the UAT database the staging Portal UI writes: not what staff entered "
-    "or see in the staging Portal.",
-    "Pages are read one at a time from a reporting replica; no capture is an "
-    "atomic upstream snapshot.",
-    "Deletions are not proven: a row deleted upstream stays until a full "
-    "traversal no longer returns it, and even that absence is not proof.",
-)
-
-# Exact-match identifier columns per relation, seeded from the approved
-# Workbench manifest. Strength tells the caller how much a match means:
-# system_document_number is assigned by the owning system; external_reference
-# is typed from another party's document and can collide; free_text is not an
-# identity at all. ``column.key`` names one key inside a JSON-object column.
-DEFAULT_IDENTIFIERS: dict[str, tuple[tuple[str, str, str], ...]] = {
-    "public.app_sales_order": (
-        ("order_number", "portal_sales_order_number", "system_document_number"),
-        # Declared conservatively; each match is re-rated from its own row by
-        # ROW_STRENGTH_RULES (Sage/FM-ensure/Portal entry = external_reference,
-        # legacy SO-FM-* migration = free_text).
-        ("po_reference", "sales_order_po_reference_text", "free_text"),
-        ("custom_fields.erpCode", "fm_order_erp_code", "system_document_number"),
-        ("custom_fields.custPoCode", "customer_po_number", "external_reference"),
-        ("custom_fields.sageOrdNumber", "sage_order_number", "system_document_number"),
-        # order_number is rewritten to the BC document No. after drain
-        # (business-central/align-portal-so-number.ts); the earlier number stays here.
-        ("custom_fields.fmOeNumber", "portal_sales_order_previous_number",
-         "system_document_number")),
-    "public.app_purchase_order": (
-        ("po_number", "portal_purchase_order_number", "system_document_number"),
-        ("tracking_number", "carrier_tracking_number", "external_reference")),
-    "public.app_receipt": (
-        ("receipt_number", "portal_receipt_number", "system_document_number"),
-        ("po_reference", "receipt_po_reference", "external_reference"),
-        ("vendor_invoice_number", "vendor_invoice_number", "external_reference")),
-    "public.app_shipment": (
-        ("shipment_code", "portal_shipment_code", "system_document_number"),
-        ("tracking_number", "carrier_tracking_number", "external_reference")),
-    "public.app_manufacturing_order": (
-        ("mo_code", "portal_manufacturing_order_code", "system_document_number"),
-        ("lot_number", "lot_number", "lot_number")),
-    "public.app_quote": (
-        ("quote_number", "portal_quote_number", "system_document_number"),),
-    "public.app_product": (
-        ("code", "portal_product_code", "product_code"),
-        ("erp_code", "erp_item_code", "product_code"),
-        ("barcode", "product_barcode", "barcode")),
-    "public.app_fg_item": (("code", "portal_fg_item_code", "product_code"),),
-    "public.assembly_order": (
-        ("nameamo_c", "fm_assembly_order_code", "system_document_number"),
-        ("lotno", "lot_number", "lot_number")),
-    "public.order_entry": (
-        ("erpcode", "fm_order_erp_code", "system_document_number"),
-        ("custpocode", "customer_po_number", "external_reference"),
-        ("reference", "fm_order_reference_text", "free_text")),
-    "public.generated_purchase_order": (
-        ("ponumber", "fm_purchase_order_number", "system_document_number"),),
-    "public.finished_product": (
-        ("codefp_c", "fm_finished_product_code", "product_code"),
-        ("codeerp", "erp_item_code", "product_code"),
-        ("barcode", "product_barcode", "barcode")),
-    "public.bulk_product": (("bulkcode_u", "fm_bulk_product_code", "product_code"),),
-    "public.packaging": (
-        ("packcode", "fm_packaging_code", "product_code"),
-        ("barcode_pack_c", "packaging_barcode", "barcode")),
-    "public.raw_material": (
-        ("rawcode", "fm_raw_material_code", "product_code"),
-        ("barcode_raw_c", "raw_material_barcode", "barcode")),
-    "sage.oe_order_header": (
-        ("ordnumber", "sage_order_number", "system_document_number"),
-        ("ponumber", "customer_po_number", "external_reference"),
-        ("invnumber", "sage_invoice_number", "system_document_number")),
-    "sage.oe_invoice_header": (
-        ("invnumber", "sage_invoice_number", "system_document_number"),
-        ("ordnumber", "sage_order_number", "system_document_number"),
-        ("ponumber", "customer_po_number", "external_reference"),
-        ("shinumber", "sage_shipment_number", "system_document_number")),
-    # Portal snapshots of BC invoices (no company column: a match is a lead, never an identity).
-    "public.bc_invoice_snapshot": (
-        ("number", "bc_sales_invoice_number", "system_document_number"),
-        ("external_document_number", "bc_invoice_external_document_number", "external_reference")),
-    "public.bc_purchase_invoice_snapshot": (
-        ("number", "bc_purchase_invoice_number", "system_document_number"),
-        ("order_number", "bc_purchase_order_number", "system_document_number"),
-        ("vendor_invoice_number", "vendor_invoice_number", "external_reference")),
-    "sage.oe_shipment_header": (
-        ("shinumber", "sage_shipment_number", "system_document_number"),
-        ("ordnumber", "sage_order_number", "system_document_number"),
-        ("ponumber", "customer_po_number", "external_reference"),
-        ("shiptrack", "carrier_tracking_number", "external_reference")),
-    "sage.po_header": (
-        ("ponumber", "sage_purchase_order_number", "system_document_number"),
-        ("rqnnumber", "sage_requisition_number", "system_document_number")),
-    "sage.po_receipt_header": (
-        ("rcpnumber", "sage_receipt_number", "system_document_number"),
-        ("ponumber", "sage_purchase_order_number", "system_document_number"),
-        ("invnumber", "vendor_invoice_number", "external_reference")),
-    "sage.ic_item": (
-        ("itemno", "sage_item_number", "product_code"),
-        ("fmtitemno", "sage_formatted_item_number", "product_code")),
-}
-_STRENGTHS = frozenset({"system_document_number", "external_reference", "free_text",
-                        "product_code", "lot_number", "barcode"})
-IDENTIFIER_NOTES = {
-    ("public.app_sales_order", "po_reference"):
-        "On legacy migrated rows (migrate-fm-to-portal.sql, order_number SO-FM-*) this "
-        "holds FM order_entry.reference text, observed to be person names: a match "
-        "there is not a PO identity.",
-    ("public.app_sales_order", "custom_fields.custPoCode"):
-        "Written only by the legacy migrate-fm-to-portal.sql (FM custpocode at "
-        "migration time); no runtime Portal code reads or writes it.",
-}
-
-# JavaScript String.prototype.trim also removes U+FEFF, which Python's strip keeps.
-_JS_TRIM = re.compile(r"^[\s\ufeff]+|[\s\ufeff]+$")
-
-
-def _js_string(value: Any) -> str:
-    """JavaScript ``String(value)`` for a JSON-decoded value.
-
-    Exact for null, booleans, integers, integral floats below 1e21 and text;
-    other floats use Python's repr (JavaScript may format the exponent
-    differently, but the text is never empty, which is what callers test).
-    """
-    if value is None:
-        return "null"
-    if isinstance(value, bool):
-        return "true" if value else "false"
-    if isinstance(value, int):
-        return str(value)
-    if isinstance(value, float):
-        if math.isnan(value):
-            return "NaN"
-        if math.isinf(value):
-            return "Infinity" if value > 0 else "-Infinity"
-        return str(int(value)) if value.is_integer() and abs(value) < 1e21 else repr(value)
-    if isinstance(value, str):
-        return value
-    if isinstance(value, list):
-        # Array.prototype.join: null elements render as "".
-        return ",".join("" if item is None else _js_string(item) for item in value)
-    return "[object Object]"
-
-
-def portal_trim_text(value: Any) -> str | None:
-    """Portal's ``trimText`` (lib/wms/sage-ship-queue.ts:25): null for null/undefined,
-    else ``String(value).trim()`` or null when that is empty.
-
-    Mirrored exactly so a numeric ``sageOrdUniq`` (``70123.0``), a boolean or an
-    object counts as Portal counts it; only ``None`` and blank text are empty.
-    """
-    if value is None:
-        return None
-    text = _JS_TRIM.sub("", _js_string(value))
-    return text or None
-
-
-
-LEGACY_SALES_ORDER_PREFIX = "SO-FM-"
-PO_REFERENCE_STRENGTH_RULE = (
-    "public.app_sales_order.po_reference strength follows the Portal writer of the row "
-    "(petralabx/plx-customer-portal staging@8da33e4): legacy migrate-fm-to-portal.sql rows "
-    "(id fm-so-*, order_number or custom_fields.fmOeNumber SO-FM-*, or a custPoCode key) "
-    "copied FM order_entry.reference text -> free_text; Sage ETL "
-    "(etl-sage-distribution-gold.mjs, Sage-backed as lib/wms/sage-ship-queue.ts), FM-ensure "
-    "(ensure-sales-order-from-fm-oe.ts, custpocode) and Portal order entry "
-    "(sales-order/service.ts, also bridged 'gold-so-bridge' rows; an fmId row without "
-    "source is basis fm_linked_without_source) -> external_reference, "
-    "which Portal resolves as an order identity only together with the order's customer, "
-    "on customer_id plus the normalised PO (staging@40f7802 lib/orders/order-identity.ts "
-    "resolveOrderByNumber:98-152, customer-po.ts normalizePoReference; a PO is unique per "
-    "customer, so each match carries its customer-scoped identity); an unreadable "
-    "custom_fields, missing order_number or another source value -> free_text.")
-
-
-def _custom_fields_object(row: Mapping[str, Any]) -> dict[str, Any] | None:
-    value = row.get("custom_fields")
-    if value is None:
-        return {}
-    if isinstance(value, str):
-        if not value.strip():
-            return {}
-        try:
-            value = json.loads(value)
-        except ValueError:
-            return None
-    return value if isinstance(value, dict) else None
-
-
-def sales_order_po_reference_strength(row: Mapping[str, Any]) -> tuple[str, str]:
-    """(strength, basis) of one app_sales_order row's po_reference (PO_REFERENCE_STRENGTH_RULE)."""
-    fields = _custom_fields_object(row) if "custom_fields" in row else None
-    number = row.get("order_number")
-    previous = fields.get("fmOeNumber") if fields else None
-    if (str(row.get("id") or "").startswith("fm-so-") or
-            any(isinstance(text, str) and text.strip().startswith(LEGACY_SALES_ORDER_PREFIX)
-                for text in (number, previous)) or
-            (fields is not None and "custPoCode" in fields)):
-        return "free_text", "legacy_fm_migration_reference_text"
-    if fields is None or not isinstance(number, str) or not number.strip():
-        return "free_text", "origin_unknown"
-    if (portal_trim_text(fields.get("sageOrdUniq")) or
-            portal_trim_text(fields.get("sageSourceOrdUniq")) or
-            portal_trim_text(fields.get("source")) == "sage.oe_order_header"):
-        return "external_reference", "sage_etl_ponumber"
-    source = portal_trim_text(fields.get("source"))
-    if source == "fm-oe-ensure":
-        return "external_reference", "fm_oe_ensure_custpocode"
-    if source is None and portal_trim_text(fields.get("fmId")):
-        # Same lineage name as customer_po_coverage.classify_origin for an fmId row
-        # without source (review 7f818ce minor); the strength is unchanged.
-        return "external_reference", "fm_linked_without_source"
-    if source in (None, "gold-so-bridge"):
-        return "external_reference", "portal_order_entry"
-    return "free_text", "origin_unknown"
-
-
-# (relation, identifier path) -> rule re-rating each match from its own row.
-ROW_STRENGTH_RULES: dict[tuple[str, str], tuple[Callable[[Mapping[str, Any]],
-                                                          tuple[str, str]], str]] = {
-    ("public.app_sales_order", "po_reference"):
-        (sales_order_po_reference_strength, PO_REFERENCE_STRENGTH_RULE),
-}
-
-
-class MirrorError(Exception):
-    """A refused or failed mirror operation with a stable ``code``."""
-
-    def __init__(self, code: str, message: str = "", *, status: int | None = None,
-                 upstream_code: str | None = None) -> None:
-        super().__init__(message or code)
-        self.code = code
-        self.status = status  # the upstream HTTP status behind the failure, if any
-        # The service's own error code (``{"error": {"code": ...}}``), if it sent one.
-        self.upstream_code = upstream_code
-        # Counts of the traversal the failure stopped (pages, rows_received, page_size).
-        self.detail: dict[str, Any] = {}
-        # Whether a refresh already wrote this failure to ``refresh_failure``: None (not
-        # tried), "recorded", or the type of the exception that blocked the write.
-        self.failure_record: str | None = None
-        # A failure no page size cures on this cursor now, whose traversal is kept: the
-        # next run reads the relation last instead of giving it up (``defer_next_run``).
-        self.defer_next_run = False
-
-
-# A catalog read that met an outage (5xx, unreachable, throttled past the policy) is
-# answered from that failure, without a request, for this long: through an outage every
-# read would otherwise pay the full retry contract again (live 2026-10-05:
-# case.unfamiliar_order spent its 1500 s re-reading a catalog that answered 500).
-CATALOG_OUTAGE_HOLD_SECONDS = 60.0
-
-# Failure classes a sync run reports per relation, so the next failure is evidence-led.
-# HTTP 500 codes the service raises where a *larger* page is the remedy, and those no
-# page size can fix (petralabx/plx-customer-portal
-# services/workbench-api/src/core/query.mjs@c3ffda3 encodeCursor/pageResult).
-_GROW_PAGE_CODES = ("key-run-too-long", "null-key")
-_FINAL_PAGE_CODES = ("row-too-large", "key-too-long")
-# 503 codes for a database connection only an operator can repair (wrong or expired
-# wb_api login, wrong database or host, TLS): a retry reads the same, so they are final
-# (docs/runbooks/WORKBENCH-API.md@12db891 "Database errors", TASK-2358). The other
-# database-* 503s (unreachable, unavailable, busy, permission-denied during a full load)
-# can clear and keep the throttle retries.
-_FINAL_DATABASE_CODES = ("database-login-failed", "database-not-found",
-                         "database-host-not-found", "database-tls")
-MAX_PAGE_SIZE = 5000      # the service's LIMITS.maxLimit
-MAX_SYNC_WORKERS = 4      # wb_api allows 5 connections; one stays free for other readers
 # A relation in a sync waits at most LOCK_WAIT_ALLOWANCE_SECONDS in all for another
 # connection's write lock, then fails as mirror_store_busy. That wait is not charged to
 # the run's time budget while the run's shared credit (LOCK_WAIT_RUN_CAP_SECONDS over
@@ -547,133 +244,6 @@ LOCK_WAIT_RUN_CAP_SECONDS = 600.0
 # A failed refresh's ``refresh_failure`` write waits at most this long for the write
 # lock; a record it cannot write is reported (``record_error``), never waited out.
 FAILURE_RECORD_WAIT_SECONDS = 5.0
-# A first fill merges its staged rows into ``row_current`` in transactions of about this
-# many rows (``_merge_batches``), each committed with the merge's progress, so a killed run
-# keeps them and the next continues; one transaction for a 30M-row fill never finishes
-# inside a budget and its rollback repeated it every cycle.
-MERGE_BATCH_ROWS = 20_000
-# A relation whose last capture or in-progress traversal holds at least this many rows is
-# synced after every smaller one (``sync``), so it never starves them.
-LARGE_RELATION_ROWS = 1_000_000
-_FAILURE_CLASSES = {"sync_budget_exhausted": "budget", "paging_defect": "paging_defect",
-                    "row_bound": "row_bound", "source_defect": "source_defect",
-                    "statement_timeout": "source_defect", "source_throttled": "throttled",
-                    "source_contract": "contract", "capture_superseded": "superseded",
-                    "mirror_store_busy": "store_busy", "internal_error": "internal_error"}
-
-
-def failure_class(code: str | None, status: int | None) -> str:
-    """One word for why a relation's refresh failed (see ``_FAILURE_CLASSES``)."""
-    if code in _FAILURE_CLASSES:
-        return _FAILURE_CLASSES[code]
-    if code == "source_unavailable":
-        if status is not None and status >= 500:
-            return "source_defect"
-        return "http_client_error" if status is not None else "transport"
-    return "other"
-
-
-# Failure classes (``failure_class``) that are the source's own failure, not the run's
-# budget or the local store.
-UPSTREAM_FAILURES = frozenset({"source_defect", "http_client_error", "transport", "throttled",
-                               "contract", "paging_defect"})
-_UPSTREAM_CODE = re.compile(r"[A-Za-z][A-Za-z0-9_.:\-]{0,63}")
-
-
-def upstream_failures(runs: Iterable[Mapping[str, Any]]) -> dict[str, dict[str, Any]]:
-    """Relation -> HTTP status / error code of each sync run the source itself failed
-    (``UPSTREAM_FAILURES``); a budget cut or a local store failure is not upstream."""
-    out: dict[str, dict[str, Any]] = {}
-    for run in runs:
-        if run.get("outcome") != "failed" or run.get("failure_class") not in UPSTREAM_FAILURES:
-            continue
-        code = run.get("upstream_error_code") or str(run.get("error") or "").partition(":")[0]
-        status = run.get("http_status")
-        out[str(run["relation"])] = {
-            **({"http_status": status} if isinstance(status, int) else {}),
-            **({"error_code": code} if isinstance(code, str) and _UPSTREAM_CODE.fullmatch(code)
-               else {})}
-    return out
-
-
-class _LockCredit:
-    """Lock-wait seconds a sync run may still leave uncharged, shared by its workers."""
-
-    def __init__(self, seconds: float) -> None:
-        self._left = float(seconds)
-        self._guard = threading.Lock()
-
-    def take(self, seconds: float) -> float:
-        """Up to ``seconds`` of the credit; returns the seconds granted."""
-        with self._guard:
-            granted = max(0.0, min(seconds, self._left))
-            self._left -= granted
-            return granted
-
-    def refund(self, seconds: float) -> None:
-        """Return the unused part of a ``take``."""
-        with self._guard:
-            self._left += max(0.0, seconds)
-
-
-# ---------------------------------------------------------------- decimals
-
-def parse_decimal(value: Any) -> dict[str, Any]:
-    """Money/quantity reading that keeps the raw value and never hides rounding.
-
-    ``exact`` is the Decimal of the text the API sent. ``normalized`` equals it
-    unless the value has a fractional part and more than 15 significant digits,
-    which a binary64 float cannot carry meaningfully (for example
-    ``"35.099999999999994"``); then it is rounded half-even to 15 significant
-    digits and ``changed_by_normalization`` is true. Callers choose which to use
-    and cite ``rule``.
-    """
-    result: dict[str, Any] = {"raw": value, "raw_type": type(value).__name__,
-                              "exact": None, "normalized": None,
-                              "significant_digits": None,
-                              "changed_by_normalization": False}
-    if value is None:
-        return {**result, "rule": "null"}
-    if isinstance(value, bool):
-        return {**result, "rule": "not_numeric"}
-    if isinstance(value, int):
-        text = str(value)
-    elif isinstance(value, float):
-        if not math.isfinite(value):
-            return {**result, "rule": "non_finite"}
-        text = repr(value)
-    elif isinstance(value, Decimal):
-        if not value.is_finite():
-            return {**result, "rule": "non_finite"}
-        text = str(value)
-    elif isinstance(value, str):
-        text = value.strip()
-        if text.lower().lstrip("+-") in {"nan", "inf", "infinity"}:
-            return {**result, "rule": "non_finite"}
-        if not _NUMERIC_TEXT.fullmatch(text):
-            return {**result, "rule": "not_numeric"}
-    else:
-        return {**result, "rule": "not_numeric"}
-    try:
-        exact = Decimal(text)
-    except InvalidOperation:
-        return {**result, "rule": "not_numeric"}
-    digits = len(exact.as_tuple().digits)
-    result.update(exact=_plain(exact), significant_digits=digits)
-    if digits > _BINARY64_DIGITS and exact.as_tuple().exponent < 0:
-        with localcontext() as context:
-            context.prec = _BINARY64_DIGITS
-            rounded = +exact
-        normalized = _plain(rounded.normalize())
-        return {**result, "normalized": normalized,
-                "rule": "binary64-artifact-rounded-to-15-significant-digits",
-                "changed_by_normalization": Decimal(normalized) != exact}
-    return {**result, "normalized": result["exact"], "rule": "exact-decimal"}
-
-
-def _plain(value: Decimal) -> str:
-    text = format(value, "f")
-    return "0" if text in {"-0", "+0"} else text
 
 
 # ---------------------------------------------------------------- audience
@@ -773,17 +343,6 @@ def _check_pattern(pattern: Any) -> None:
         raise ValueError("source_mirror_audience_pattern_invalid")
 
 
-def _load_strict_json(raw: bytes) -> Any:
-    def pairs(items: list[tuple[str, Any]]) -> dict[str, Any]:
-        result: dict[str, Any] = {}
-        for key, value in items:
-            if key in result:
-                raise ValueError("source_mirror_audience_duplicate_key")
-            result[key] = value
-        return result
-    return json.loads(raw.decode("utf-8"), object_pairs_hook=pairs)
-
-
 class _FileAudience:
     """Re-reads the audience file on every use; any read or parse error denies all."""
 
@@ -853,14 +412,6 @@ def _parse_handle(handle: Any) -> tuple[str, str, dict[str, Any], int, str | Non
 
 # ---------------------------------------------------------------- helpers
 
-def _canonical(value: Any) -> str:
-    return json.dumps(value, sort_keys=True, separators=(",", ":"),
-                      ensure_ascii=False, allow_nan=False)
-
-
-def _sha(text: str) -> str:
-    return sha256(text.encode("utf-8")).hexdigest()
-
 
 def _iso(moment: datetime) -> str:
     return moment.astimezone(_UTC).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
@@ -901,145 +452,7 @@ def _since_instant(mode: str, value: Any) -> datetime | None:
     return _parse_instant(value)
 
 
-def _text(value: Any) -> str | None:
-    if value is None:
-        return None
-    if isinstance(value, bool):
-        return "true" if value else "false"
-    if isinstance(value, (int, str)):
-        return str(value)
-    if isinstance(value, float):
-        return repr(value)
-    return _canonical(value)
-
-
-def _number(value: Any) -> Decimal | None:
-    if isinstance(value, bool) or value is None:
-        return None
-    if isinstance(value, int):
-        return Decimal(value)
-    if isinstance(value, float):
-        return Decimal(repr(value)) if math.isfinite(value) else None
-    if isinstance(value, str) and _NUMERIC_TEXT.fullmatch(value.strip()):
-        try:
-            return Decimal(value.strip())
-        except InvalidOperation:
-            return None
-    return None
-
-
-def _norm_identifier(value: Any) -> str | None:
-    if isinstance(value, bool) or value is None:
-        return None
-    if isinstance(value, int):
-        text = str(value)
-    elif isinstance(value, str):
-        text = value.strip()
-    else:
-        return None
-    if not text or len(text) > 256 or any(ord(char) < 32 for char in text):
-        return None
-    return text.casefold()
-
-
-def _identifier_value(row: Mapping[str, Any], path: str) -> Any:
-    column, _, field = path.partition(".")
-    value = row.get(column)
-    if not field:
-        return value
-    if isinstance(value, str):
-        try:
-            value = json.loads(value)
-        except ValueError:
-            return None
-    return value.get(field) if isinstance(value, dict) else None
-
-
-@functools.lru_cache(maxsize=256)
-def _scoped_carrier(relation: str, column: str) -> tuple[str, tuple[str, str] | None] | None:
-    """(kind, identity scope) of a column carrying a scoped identifier kind, else None
-    (read once per column: the grammar is fixed for the process)."""
-    kind = identifiers.carrier_kind(relation, column)
-    if kind is None or not identifiers.kind_spec(kind).get("identity_scope"):
-        return None
-    return kind, identifiers.identity_scope(kind, relation, column)
-
-
-def _candidate_identity(relation: str, column: str, value: Any,
-                        row: Mapping[str, Any]) -> dict[str, Any] | None:
-    """The scoped identity one match names, for a column the identifier grammar declares
-    a carrier of a kind unique only within a scope (``identity_scope``: a customer PO is
-    unique per customer; Portal resolveOrderByNumber matches customer plus normalised PO,
-    staging@40f7802 lib/orders/order-identity.ts:98-152). Matches with one ``key`` name
-    one identity; ``key`` None names none and says why (``reason``): no scope field is
-    declared for the column, the row holds no scope value (the Portal skips the PO match
-    without a customer) or the value is not a form of the kind. None for other columns."""
-    carrier = _scoped_carrier(relation, column)
-    if carrier is None:
-        return None
-    kind, scope = carrier
-    out: dict[str, Any] = {"kind": kind, "scope_field": scope[1] if scope else None}
-    key = identifiers.identity_key(
-        kind, value, (scope[0], _identifier_value(row, scope[1])) if scope else None)
-    if key is not None:
-        out["key"] = sha256(json.dumps(key).encode("utf-8")).hexdigest()[:24]
-    elif identifiers.normalize(kind, value) is None:
-        out.update(key=None, reason="value_not_a_form_of_kind")
-    else:
-        out.update(key=None, reason="no_scope_value" if scope else "no_scope_field")
-    return out
-
-
-def _order_value(value: Any) -> tuple[int, Any]:
-    number = _number(value)
-    return (0, number) if number is not None else (1, _text(value))
-
-
 # ---------------------------------------------------------------- ingest config
-
-INGEST_SCHEMA = "plx-source-mirror-ingest/v1"
-DEFAULT_INGEST_PATH = Path(__file__).with_name("source_mirror_ingest.json")
-# The C0 lineage values (ontology/schema/_format.schema.json $defs.lineage) a Portal mirror row can carry. Like the C0 binding examples, a gold row with
-# no exposed origin marker defaults to gold_native_staging (never authority until a
-# human confirms it, Q1); its rule id (lineage_rule ``gold_no_origin_marker``)
-# says the origin is unproven. A row no rule matches has lineage None.
-LINEAGES = frozenset({"fm_bronze", "sage_bronze", "silver_view", "gold_etl_from_fm",
-                      "gold_etl_from_sage", "gold_native_staging"})
-UNCLASSIFIED = (None, "no_lineage_rule")
-_LINEAGE_OPS = ("eq", "prefix", "gte", "in", "is_null", "present")
-# The highest ``max_rows_per_relation`` a configuration may set. The bound stops a
-# runaway traversal (one that keeps reading rows appended behind its cursor, as the
-# Portal ETL's cuid() re-inserts can); it is counted over the whole traversal, across
-# the runs a budget-cut traversal resumes in, and must never cut a real relation.
-# Measured 2026-10-29 by key-ordered full reads (page size 5000): the largest served
-# relation, public.app_manufacturing_order_line, holds 31,658,270 rows (262,608
-# natural keys: the ETL's per-run copies), read in 3,608 s (8,776 rows/s). The
-# configured bound (source_mirror_ingest.json) is about twice that; the cap leaves
-# room to raise it again without letting one traversal stage an unbounded file.
-MAX_ROWS_PER_RELATION_CAP = 100_000_000
-_SYNC_KEYS = {"page_size": (1, 5000), "min_page_size": (1, 5000),
-              "max_rows_per_relation": (1, MAX_ROWS_PER_RELATION_CAP),
-              "throttle_attempts": (1, 20),
-              "max_retry_after_seconds": (0, 3600)}
-# Why a key was not held by its source over a ``row_removal`` interval; the row label
-# of a soft delete says how its time was read (the source's value, or the capture).
-MISSING_FROM_SOURCE = "missing_from_source"
-SOFT_DELETE = "source_soft_delete"
-SOFT_DELETE_OBSERVED = "source_soft_delete_observed"
-# How a closed ``row_removal`` interval's end was read: the row's own update time, or
-# the capture that saw the key held again.
-UNTIL_SOURCE_UPDATE = "source_updated_at"
-UNTIL_OBSERVED = "capture_observed"
-# The label of a missing key whose successor a full capture found (module docstring).
-SOURCE_REPLACEMENT = "source_replacement"
-AMBIGUOUS_REPLACEMENT = "ambiguous_replacement"
-# The rule :func:`replacement_key` applies; a mirror file labelled under another one
-# drops, when opened, the labels the rule in force no longer infers, and its labels are
-# not read before (``ontology.project.MirrorCaptures``). v2: a unique constraint on the
-# cascade parent alone pairs again (v1 dropped it).
-REPLACEMENT_RULE = "beyond-cascade-parent/v2"
-PRISMA_FACTS_PATH = (Path(__file__).resolve().parent.parent / "ontology" / "schema" /
-                     "generated" / "meta" / "portal_prisma.json")
 
 
 def _check_lineage_rules(rules: Any) -> tuple[dict[str, Any], ...]:
@@ -1092,14 +505,6 @@ def _check_soft_delete_rules(rules: Any) -> tuple[dict[str, Any], ...]:
         checked.append({"id": rule["id"], "relations": tuple(rule["relations"]),
                         "column": rule["column"]})
     return tuple(checked)
-
-
-def soft_delete_columns(rules: Sequence[Mapping[str, Any]], relation: str,
-                        columns: Iterable[str]) -> list[str]:
-    """The declared soft-delete columns ``relation``'s catalog ``columns`` carry."""
-    have = set(columns)
-    return sorted({rule["column"] for rule in rules if rule["column"] in have and
-                   any(_pattern_matches(p, relation) for p in rule["relations"])})
 
 
 def _soft_deleted(rows: Iterable[Mapping[str, Any]], columns: Sequence[str],
@@ -1164,83 +569,6 @@ def generated_replacement_models() -> dict[str, dict[str, Any]]:
     return replacement_models(_load_strict_json(PRISMA_FACTS_PATH.read_bytes()))
 
 
-def stale_replacement_relations(conn: sqlite3.Connection,
-                                models: Mapping[str, Mapping[str, Any]],
-                                relation: str | None = None) -> list[str]:
-    """The relations of mirror file ``conn`` (of ``relation`` alone when given) holding a
-    replacement label that :func:`replacement_key` under ``models`` no longer infers, for
-    their stored columns (a relation not in ``relation_state`` has none, so no key). The
-    one rule a writer clearing stale labels and a read-only reader skipping them apply."""
-    return [name for name, columns in conn.execute(
-                "SELECT DISTINCT rm.relation, rs.columns_json FROM row_removal rm "
-                "LEFT JOIN relation_state rs ON rs.relation = rm.relation "
-                "WHERE rm.replaced_basis IS NOT NULL AND (? IS NULL OR rm.relation = ?) "
-                "ORDER BY rm.relation", (relation, relation))
-            if replacement_key(models, name, json.loads(columns) if columns else ()) is None]
-
-
-def replacement_key(models: Mapping[str, Mapping[str, Any]], relation: str,
-                    columns: Iterable[str]) -> list[str] | None:
-    """The columns a successor of a missing ``relation`` row must match, or None when
-    no replacement is inferred: the model has no owning parent (a relation with
-    ``onDelete: Cascade``), or ``columns`` (the stored ones) lack one of them. The
-    natural key is a unique constraint holding an owner's columns and no id column
-    (the owner's alone included: the source holds one row per value at a time), else
-    every foreign-key column (parent and the rest, pairing one to one only) less an
-    unserved ``onDelete: SetNull`` one, never when those are the parent's columns alone
-    (an unrelated delete and add under one parent is no replacement)."""
-    model = models.get(relation)
-    if model is None:
-        return None
-    owners = [set(r["columns"]) for r in model["relations"]
-              if r["on_delete"] == "Cascade" and r["columns"]]
-    if not owners:
-        return None
-    ident = set(model["id"])
-    natural = next((u for u in model["unique"] if not ident & set(u)
-                    and any(owner <= set(u) for owner in owners)), None)
-    if natural is None:
-        # An optional link the Portal clears itself (onDelete SetNull) that the source does
-        # not serve takes no part: it is unknown on both sides of every pairing, and the
-        # one-to-one rule of pair_replacements still holds on the served keys.
-        natural = list(dict.fromkeys(
-            c for r in model["relations"] for c in r["columns"]
-            if r["on_delete"] != "SetNull" or set(r["columns"]) <= set(columns)))
-        if any(set(natural) <= owner for owner in owners):
-            return None
-    return list(natural) if not ident & set(natural) and set(natural) <= set(columns) \
-        else None
-
-
-def natural_text(row: Mapping[str, Any], natural: Sequence[str]) -> str | None:
-    """The canonical natural-key values of ``row``, or None when one is null (a null
-    never matches, as in a unique constraint)."""
-    values = [row.get(column) for column in natural]
-    return None if any(value is None for value in values) else _canonical(values)
-
-
-def pair_replacements(vanished: Mapping[str, str], appeared: Mapping[str, str],
-                      kept: Mapping[str, int]) -> dict[str, tuple[str, list[str]]]:
-    """Missing key -> (basis, successor keys) for the keys of ``vanished`` (key ->
-    natural text, gone since the previous capture) whose natural text a key of
-    ``appeared`` (new since then) carries. ``kept``: natural text -> keys held in both
-    captures. ``source_replacement`` names the one successor only when the text
-    belongs to exactly one key in each capture; any other pairing is
-    ``ambiguous_replacement`` with every candidate. A key with no candidate is left
-    out (missing, nothing more)."""
-    gone = Counter(vanished.values())
-    fresh: dict[str, list[str]] = {}
-    for key, text in appeared.items():
-        fresh.setdefault(text, []).append(key)
-    out = {}
-    for key, text in vanished.items():
-        found = sorted(fresh.get(text, ()))
-        if found:
-            one = gone[text] == 1 and len(found) == 1 and not kept.get(text)
-            out[key] = (SOURCE_REPLACEMENT if one else AMBIGUOUS_REPLACEMENT, found)
-    return out
-
-
 def load_ingest_config(source: str | Path | Mapping[str, Any] | None = None) -> dict[str, Any]:
     """The validated ingest configuration (default: the bundled file)."""
     document = (source if isinstance(source, Mapping) else
@@ -1265,10 +593,6 @@ def load_ingest_config(source: str | Path | Mapping[str, Any] | None = None) -> 
                 document.get("soft_delete_rules", ()))}
 
 
-def _pattern_matches(pattern: str, relation: str) -> bool:
-    return relation == pattern or (pattern.endswith("*") and relation.startswith(pattern[:-1]))
-
-
 def _lineage_clause(row: Mapping[str, Any], path: str, op: str, value: Any) -> bool:
     cell = _identifier_value(row, path)
     if op == "present":
@@ -1291,13 +615,6 @@ def classify_lineage(rules: Sequence[Mapping[str, Any]], relation: str,
                 all(_lineage_clause(row, *clause) for clause in rule["when"])):
             return rule["lineage"], rule["id"]
     return UNCLASSIFIED
-
-
-def _rules_digest(rules: Sequence[Mapping[str, Any]], relation: str) -> str:
-    return _sha(_canonical([[rule["id"], list(rule["relations"]),
-                             [list(clause) for clause in rule["when"]], rule["lineage"]]
-                            for rule in rules
-                            if any(_pattern_matches(p, relation) for p in rule["relations"])]))
 
 
 # ---------------------------------------------------------------- mirror
@@ -1329,114 +646,6 @@ _ADDED_COLUMNS["row_current"] += (
     # The ``seen_through_capture`` in force when a key scan lifted the row's absence:
     # that traversal did not see the row, so only a later one counts as its sighting.
     "sighting_floor INTEGER",)
-# Every table and index ``_DDL`` creates: a file holding them all needs no DDL at open.
-_DDL_OBJECTS = frozenset(re.findall(
-    r"CREATE\s+(?:UNIQUE\s+)?(?:TABLE|INDEX|TRIGGER)\s+IF\s+NOT\s+EXISTS\s+(\w+)",
-    _DDL + _CHANGE_DDL))
-# The change-counter triggers (``relation_change``): a file missing one has counters that
-# do not cover every write, so its writer open gives it a new ``change_epoch``.
-CHANGE_TRIGGERS = frozenset(re.findall(r"CREATE\s+TRIGGER\s+IF\s+NOT\s+EXISTS\s+(\w+)",
-                                        _CHANGE_DDL))
-CHANGE_EPOCH = "change_epoch"
-# Retries (with backoff) of the open's own write when another process holds the lock.
-OPEN_WRITE_RETRIES = 3
-_ROW_CURRENT_COLUMNS = ("relation, key_json, run_index, run_length, row_json, row_digest, "
-                        "capture_id, first_seen_capture, first_seen_at, last_seen_capture, "
-                        "last_seen_at, absent_since_capture, missing_from_source_since, "
-                        "missing_basis, lineage, lineage_basis, deleted_in_source, "
-                        "deleted_basis")
-
-
-def _sighting_sql(r: str) -> tuple[str, str]:
-    """SQL for the last sighting (capture id, time) of a ``row_current`` row ``r``.
-
-    A full traversal writes only the rows whose content or state changed; a row it saw
-    unchanged keeps its stored ``last_seen_*`` and the relation records the traversal
-    once (``relation_state.seen_through_*``, set only when every row then present was
-    seen). A present row's sighting is the later of the two; an absent row's (and one
-    whose absence a key scan lifted after that traversal: ``sighting_floor``) is its
-    own. Every write that ends a row's presence or supersedes it stores this value first,
-    so the stored value is exact wherever the rule no longer applies."""
-    applies = (f"s.relation = {r}.relation AND {r}.absent_since_capture IS NULL AND "
-               f"s.seen_through_capture > COALESCE({r}.sighting_floor, 0)")
-    return (f"MAX({r}.last_seen_capture, COALESCE((SELECT s.seen_through_capture FROM "
-            f"relation_state s WHERE {applies}), 0))",
-            f"MAX({r}.last_seen_at, COALESCE((SELECT s.seen_through_at FROM "
-            f"relation_state s WHERE {applies}), ''))")
-
-
-_SEEN_CAPTURE, _SEEN_AT = _sighting_sql("row_current")
-
-
-def _seen(record: sqlite3.Row, part: str) -> Any:
-    """A cited record's last sighting (``part``: ``capture`` or ``at``): a current row
-    read with ``_sighting_sql`` (``seen_*``), else a version's stored value."""
-    if f"seen_{part}" in record.keys():
-        return record[f"seen_{part}"]
-    return record[f"last_seen_{part}"]
-
-
-# The replacement label of a key's open absence, for a ``row_current`` row ``{r}``.
-def _successors_remapped(row: dict[str, Any], mapping: Mapping[int, int]) -> dict[str, Any]:
-    """A removal row copied from a persisted capture with its successors' content captures
-    (``replaced_by``: [[key, capture id], ...]) under this file's capture ids. A successor
-    whose capture the copy does not bring, or a list that does not read, drops the label
-    (never a citation of another capture)."""
-    raw = row.get("replaced_by")
-    if raw is None:
-        return row
-    try:
-        pairs = json.loads(raw)
-        moved = [[key, mapping[capture]] for key, capture in pairs]
-    except (TypeError, ValueError, KeyError):
-        return dict(row, replaced_by=None, replaced_basis=None)
-    return dict(row, replaced_by=_canonical(moved))
-
-
-_REPLACED_SQL = ("(SELECT json_array(rm.replaced_basis, rm.replaced_by) FROM row_removal rm "
-                 "WHERE rm.relation = {r}.relation AND rm.key_json = {r}.key_json AND "
-                 "rm.basis = 'missing_from_source' AND rm.until IS NULL AND "
-                 "rm.replaced_basis IS NOT NULL) AS replaced")
-
-
-# ``mirror_meta`` name prefix of a completed full re-read's identifier cleanup.
-_INDEX_CLEANUP = "index-cleanup:"
-
-
-def _stage_bound(bound: tuple[str | None, str, str] | None) -> tuple[str, tuple[str, ...]]:
-    """The ``stage_row`` key condition of one merge batch (``_merge_batches``): ``(after,
-    "<", key)`` the keys after ``after`` (None: from the first) and before ``key``, ``"<="``
-    through it; None: no bound."""
-    if bound is None:
-        return "", ()
-    after, op, key = bound
-    if op not in ("<", "<="):
-        raise ValueError("merge bound operator")
-    if after is None:
-        return f" AND key_json {op} ?", (key,)
-    return f" AND key_json > ? AND key_json {op} ?", (after, key)
-
-
-def _later_watermark(a: tuple[datetime | None, Any], b: tuple[datetime | None, Any]
-                     ) -> tuple[datetime | None, Any]:
-    """The later of two (instant, raw value) watermarks; the first on a tie."""
-    if b[0] is not None and (a[0] is None or b[0] > a[0]):
-        return b
-    return a
-
-
-def _superseded_outcome(progress: Mapping[str, Any]) -> str:
-    """What a superseded refresh leaves behind, for its ``capture_superseded`` message.
-
-    Pages it committed before it was superseded are not discarded: they stay with
-    the stored traversal, which the refresh that took it over continues (or has
-    completed) from them. Only its uncommitted page is dropped.
-    """
-    committed = progress["pages"] - progress.get("pages_at_start", 0)
-    if progress.get("capture_id") is None or committed <= 0:
-        return "this refresh stored nothing"
-    return (f"this refresh stores no further page; the {committed} page(s) it committed "
-            "stay with the traversal the other refresh holds")
 
 
 class SourceMirror:
@@ -2500,7 +1709,7 @@ class SourceMirror:
         for this tenant and upstream, marked stale with ``exc``. False, and nothing
         changed, when no store is configured, the mirror has no client (it cannot
         check the upstream), the failure is not an outage or no copy verifies."""
-        from .capture_mail import CaptureError
+        from .capture_mail_scope import CaptureError
         from .mirror_capture import is_outage
         store = self._persisted_store
         if store is None or self._client is None or not is_outage(exc.code, exc.status):
@@ -4922,21 +4131,6 @@ class SourceMirror:
         return result
 
 
-def _capture_dict(row: sqlite3.Row | None) -> dict[str, Any] | None:
-    if row is None:
-        return None
-    return {"capture_id": row["capture_id"], "relation": row["relation"],
-            "mode": row["mode"], "reason": row["reason"],
-            "started_at": row["started_at"], "finished_at": row["finished_at"],
-            "since_sent": row["since_sent"], "catalog_revision": row["catalog_revision"],
-            "page_count": row["page_count"], "rows_received": row["rows_received"],
-            "state": (row["capture_state"] or "complete")
-                     if "capture_state" in row.keys() else "complete",
-            "health_before": json.loads(row["health_before_json"]),
-            "health_after": json.loads(row["health_after_json"]),
-            "atomic_upstream_snapshot": False, "deletions_proven": False}
-
-
 def _check_where(where: Any) -> list[tuple[str, str, Any]]:
     if isinstance(where, (str, bytes)) or not isinstance(where, Sequence) or len(where) > 20:
         raise MirrorError("invalid_where", "where must be a list of at most 20 clauses")
@@ -4992,108 +4186,6 @@ def _check_order(order: Any) -> list[tuple[str, bool]]:
     return result
 
 
-def _matches(row: Mapping[str, Any], column: str, op: str, value: Any) -> bool:
-    cell = row.get(column)
-    if op == "is_null":
-        return (cell is None) is value
-    if cell is None:
-        return False
-    if op == "eq":
-        return _text(cell) == _text(value)
-    if op == "in":
-        return _text(cell) in {_text(item) for item in value}
-    if op == "prefix":
-        text = _text(cell)
-        return text is not None and text.startswith(value)
-    left, right = _number(cell), _number(value)
-    if left is None or right is None:
-        if not isinstance(cell, str) or not isinstance(value, str):
-            return False
-        left, right = cell, value
-    return left >= right if op == "gte" else left <= right
-
-
-_INTEGER_TEXT = re.compile(r"^[+-]?\d+$")
-
-
-def _index_forms(op: str, value: Any) -> list[str] | None:
-    """The identifier-index values (``_norm_identifier``) a cell equal to ``value`` (``eq``)
-    or to one of its items (``in``) is indexed under, or None when some match might not
-    be indexed: only a text or integer cell is (a float, boolean, object or array cell is
-    not), so an asked value whose text a float's ``repr``, a boolean or a JSON value could
-    also have, or one the index never holds (empty, control characters, past 256
-    characters), reads the relation as before."""
-    if op not in ("eq", "in"):
-        return None
-    items = value if op == "in" else [value]
-    if not isinstance(items, (list, tuple)) or not items:
-        return None
-    forms: set[str] = set()
-    for item in items:
-        if isinstance(item, bool) or not isinstance(item, (int, str)):
-            return None
-        text = str(item)
-        if text in ("true", "false") or text.startswith(("{", "[", '"')) \
-                or text != text.strip() \
-                or (_NUMERIC_TEXT.fullmatch(text) and not _INTEGER_TEXT.fullmatch(text)) \
-                or text.casefold().lstrip("+-") in ("inf", "nan", "infinity"):
-            return None
-        norm = _norm_identifier(text)
-        if norm is None:
-            return None
-        forms.add(norm)
-    return sorted(forms)
-
-
-def _sql_prefilter(column: str, op: str, value: Any) -> tuple[str, list[Any]]:
-    """A SQLite condition over ``row_json`` that every exact match satisfies.
-
-    It narrows the candidates without changing the result: ``_matches``
-    decides every candidate. Text and integer cells are compared in SQL;
-    other JSON types pass through to the exact check when they could match.
-    """
-    path = f'$."{column}"'
-    kind = "json_type(row_json, ?)"
-    if op == "is_null":
-        if value:
-            return f"({kind} IS NULL OR {kind} = 'null')", [path, path]
-        return f"{kind} <> 'null'", [path]
-    if op in ("gte", "lte"):
-        return f"{kind} <> 'null'", [path]
-    if op == "prefix":
-        return (f"(({kind} = 'text' AND substr(json_extract(row_json, ?), 1, ?) = ?) OR "
-                f"{kind} IN ('integer', 'real', 'true', 'false', 'object', 'array'))",
-                [path, path, len(value), value, path])
-    texts, integers, others = set(), set(), set()
-    for item in (value if op == "in" else [value]):
-        text = _text(item)
-        texts.add(text)
-        if isinstance(item, int) or (isinstance(item, str) and _INTEGER_TEXT.fullmatch(item)):
-            number = int(item)
-            if -2 ** 63 <= number < 2 ** 63:
-                integers.add(number)
-            else:  # SQLite cannot bind it; let every integer cell through
-                others.add("integer")
-        if isinstance(item, float) or (isinstance(item, str) and
-                                       _NUMERIC_TEXT.fullmatch(item.strip())):
-            others.add("real")
-        if text in ("true", "false"):
-            others.update(("true", "false"))
-        if text.startswith(("{", "[")):
-            others.update(("object", "array"))
-    parts = [f"({kind} = 'text' AND json_extract(row_json, ?) IN "
-             f"({','.join('?' for _ in texts)}))"]
-    params: list[Any] = [path, path, *sorted(texts)]
-    if integers:
-        parts.append(f"({kind} = 'integer' AND json_extract(row_json, ?) IN "
-                     f"({','.join('?' for _ in integers)}))")
-        params += [path, path, *sorted(integers)]
-    if others:
-        parts.append(f"{kind} IN ({','.join('?' for _ in others)})")
-        params += [path, *sorted(others)]
-    return "(" + " OR ".join(parts) + ")", params
-
-
 # ---------------------------------------------------------------- CLI
 
 def _build_client(base_url: str | None, key_env: str) -> Any:
@@ -5102,35 +4194,6 @@ def _build_client(base_url: str | None, key_env: str) -> Any:
         return None
     from .workbench_read_api import WorkbenchReadApiClient
     return WorkbenchReadApiClient(base_url, key)
-
-
-def mirror_options(config: Mapping[str, Any]) -> dict[str, Any]:
-    """``SourceMirror`` keyword options from a loaded ingest configuration."""
-    sync = config.get("sync", {})
-    names = {"page_size": "page_size", "min_page_size": "min_page_size",
-             "max_rows_per_relation": "max_rows_per_relation",
-             "throttle_attempts": "throttle_attempts",
-             "max_retry_after_seconds": "max_retry_after_seconds"}
-    options: dict[str, Any] = {target: sync[name] for name, target in names.items()
-                               if name in sync}
-    if config.get("projections"):
-        options["projections"] = config["projections"]
-    options["lineage_rules"] = config["lineage_rules"]
-    options["soft_delete_rules"] = config["soft_delete_rules"]
-    return options
-
-
-PROBE_PRINCIPAL = "service:mirror-full-coverage-probe"
-
-
-def soft_delete_counts(coverage: Mapping[str, Any]) -> dict[str, Any]:
-    """Counts only: rows the source soft-deleted, in total and per relation whose
-    catalog carries a declared soft-delete column (relation names, never values)."""
-    declared = {item["relation"]: item["rows_deleted_in_source"]
-                for item in coverage["relations"] if item["soft_delete_columns"]}
-    return {"rows_deleted_in_source_total": coverage["rows_deleted_in_source_total"],
-            "soft_delete_relation_count": len(declared),
-            "soft_deleted_rows": dict(sorted(declared.items()))}
 
 
 def full_coverage_probe(client: Any, db_path: str | Path, *,
@@ -5229,7 +4292,6 @@ def full_coverage_probe(client: Any, db_path: str | Path, *,
 
 
 SCAN_PAGE = 500
-_SCAN_STALENESS_MAX = 86_400.0 * 365
 
 
 def scan_relation(mirror: Any, actor: Actor, relation: str, limit: int,
@@ -5274,32 +4336,6 @@ def scan_relation(mirror: Any, actor: Actor, relation: str, limit: int,
                 **({"upstream": upstream} if exc.code == "source_unavailable" else {})}
     return {"status": "read", "rows": rows, "columns": columns, "complete": not reasons,
             "reasons": reasons, "freshness": freshness}
-
-
-def scan_freshness(freshness: Mapping[str, Any] | None) -> dict[str, Any] | None:
-    """What a scan's reader must say about its rows (INT-013): whether the capture they
-    come from is stale, as of when, and the refresh that failed (the rows are then the
-    last capture held, never a live read)."""
-    if not freshness:
-        return None
-    return {"stale": bool(freshness.get("stale")), "as_of": freshness.get("last_refresh_at"),
-            "refresh_error": freshness.get("refresh_error"),
-            "refresh_error_code": freshness.get("refresh_error_code"),
-            "refresh_http_status": freshness.get("refresh_http_status"),
-            "latest_capture_id": freshness.get("latest_capture_id")}
-
-
-def scan_label(scan: Mapping[str, Any]) -> dict[str, Any]:
-    """The freshness fields a consumer of a scan carries beside its counts: ``stale``
-    (also true when the refresh failed) and ``as_of``, plus ``refresh_error`` when one
-    failed; a scan with no freshness (not read) carries none."""
-    found = scan.get("freshness")
-    if not found:
-        return {}
-    out = {"stale": bool(found["stale"] or found["refresh_error"]), "as_of": found["as_of"]}
-    if found["refresh_error"]:
-        out["refresh_error"] = found["refresh_error_code"] or found["refresh_error"]
-    return out
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -5413,16 +4449,11 @@ def main(argv: Sequence[str] | None = None) -> int:
 __all__ = ["AUDIENCE_SCHEMA", "AudienceMap", "DEFAULT_IDENTIFIERS", "IDENTIFIER_NOTES",
            "INGEST_SCHEMA", "LINEAGES", "MAX_BATCH_HANDLES", "classify_lineage",
            "full_coverage_probe", "load_ingest_config", "mirror_options", "scan_freshness",
-           "scan_label", "scan_relation",
-           "PO_REFERENCE_STRENGTH_RULE", "ROW_STRENGTH_RULES", "portal_trim_text",
-           "sales_order_po_reference_strength",
-           "MAX_ROWS_LIMIT", "MirrorError", "PERSISTED_FALLBACK_META", "POINTER_TABLE",
-           "SourceMirror", "attach_scoped",
-           "citation_generation",
-           "make_citation", "main", "parse_citation", "parse_decimal",
-           "MISSING_FROM_SOURCE", "SOFT_DELETE", "SOFT_DELETE_OBSERVED",
-           "SOURCE_REPLACEMENT", "AMBIGUOUS_REPLACEMENT", "PRISMA_FACTS_PATH",
-           "generated_replacement_models", "natural_text", "pair_replacements",
+           "scan_relation", "ROW_STRENGTH_RULES", "portal_trim_text", "MAX_ROWS_LIMIT",
+           "MirrorError", "PERSISTED_FALLBACK_META", "SourceMirror", "attach_scoped",
+           "citation_generation", "make_citation", "main", "parse_citation", "MISSING_FROM_SOURCE",
+           "SOFT_DELETE", "SOFT_DELETE_OBSERVED", "SOURCE_REPLACEMENT", "AMBIGUOUS_REPLACEMENT",
+           "PRISMA_FACTS_PATH", "generated_replacement_models", "natural_text", "pair_replacements",
            "replacement_key", "replacement_models", "stale_replacement_relations",
            "soft_delete_columns", "soft_delete_counts"]
 

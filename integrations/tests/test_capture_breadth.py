@@ -23,7 +23,10 @@ from urllib.parse import parse_qs, unquote, urlsplit
 import zipfile
 
 from integrations import capture_breadth, capture_mail, capture_sharepoint, graph_read
-from integrations.capture_mail import CaptureScope, MailCaptureStore
+from integrations import capture_mail_scope
+from integrations import capture_sharepoint_scope
+from integrations.capture_mail import MailCaptureStore
+from integrations.capture_mail_scope import CaptureScope
 from integrations.capture_sharepoint import SharePointCaptureStore
 from integrations.graph_read import GraphMailReader, SharePointReader
 from integrations.live_source_guard import BoundedBackoff, LiveSourceAudience
@@ -240,7 +243,7 @@ class MailBreadthTests(BreadthCase):
     def test_a_mailbox_not_on_the_allowlist_is_never_requested(self):
         # Not listed, pending confirmation, an object id: set aside when read, never run.
         named = [UPN_X, "accounting1@petrasoap.com", BOX_R, UPN_S]
-        scope = CaptureScope.from_json({"schema": capture_mail.SCOPE_SCHEMA,
+        scope = CaptureScope.from_json({"schema": capture_mail_scope.SCOPE_SCHEMA,
                                         "mailboxes": [{"address": a} for a in named]})
         self.assertEqual(scope.outside_allowlist, tuple(named[:3]))
         self.assertEqual(scope.mailboxes, ((UPN_S, ("inbox",)),))
@@ -283,7 +286,7 @@ class TenantScopeTests(BreadthCase):
 
     def scope(self, *excluded):
         return CaptureScope.from_json({
-            "schema": capture_mail.SCOPE_SCHEMA, "mailboxes": [],
+            "schema": capture_mail_scope.SCOPE_SCHEMA, "mailboxes": [],
             "all_mailboxes": {"enabled": True, "folders": ["inbox", "sentitems"],
                               "exclude": [{"address": a, "reason": "test"} for a in excluded]}})
 
@@ -1076,10 +1079,10 @@ class CliTests(BreadthCase):
         routing SharePoint requests to the drive fake, mail to the mail fake."""
         tmp = Path(self.tmp.name)
         (tmp / "mail.json").write_text(json.dumps({
-            "schema": capture_mail.SCOPE_SCHEMA,
+            "schema": capture_mail_scope.SCOPE_SCHEMA,
             "mailboxes": [{"address": UPN_R, "folders": ["inbox", "sentitems"]}]}))
         (tmp / "sp.json").write_text(json.dumps({
-            "schema": capture_sharepoint.SCOPE_SCHEMA,
+            "schema": capture_sharepoint_scope.SCOPE_SCHEMA,
             "targets": [{"id": "quality", "drive_id": ts.DRIVE,
                          "folders": [ts.QUALITY_FOLDER]}]}))
         (tmp / "audience.json").write_text(json.dumps({

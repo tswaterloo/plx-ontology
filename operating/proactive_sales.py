@@ -44,7 +44,7 @@ from dataclasses import dataclass, field
 from datetime import date, timedelta
 from decimal import Decimal
 import json
-from typing import Any, Callable, Iterable, Mapping, MutableMapping, Sequence
+from typing import Any, Callable, Mapping, MutableMapping, Sequence
 
 from . import proactive_business as pb
 
@@ -293,6 +293,7 @@ def stale_quote(st: Any, as_of: date, *, gap: Callable, cites: Callable, result:
             made["requires"] = requires
         gaps.append(made)
     out = result(gaps, not_evaluated=skipped, reasons=reasons)
+    out["checked"] = counts.get("quotes", 0)   # every quote read, judged or left unjudged
     out["counts"] = {k: counts.get(k, 0) for k in
                      ("quotes", "evaluated", "young", "stale", "converted", "not_open",
                       "bc_copy_of_portal_quote")}
@@ -581,7 +582,8 @@ def cross_sell(book: Mapping[str, Any], as_of: date, customer: str, *,
 # --------------------------------------------------------------------------- the modes
 
 def read_book(path: str, as_of: date) -> dict[str, Any]:
-    from .proactive_engine import SETTLED, _Store
+    from .proactive_engine import _Store
+    from .proactive_engine_config import SETTLED
 
     st = _Store(path)
     try:

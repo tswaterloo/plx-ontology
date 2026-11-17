@@ -28,6 +28,7 @@ from multiprocessing import Pool
 from typing import Any, Iterator, Sequence
 
 from .sensitive import MARKS, folders, labelled, personal_financial
+from ontology import parent_watch
 
 RECORD_KINDS = ("record_text", "bc_text", "record_words")   # a record's own text: its record's markings
 BATCH = 2000
@@ -166,7 +167,7 @@ def run(dsn: str, *, capture: str | None, apply: bool, workers: int) -> dict[str
                 if len(pending) >= BATCH:
                     flush()
 
-        with Pool(max(1, workers)) as pool:
+        with Pool(max(1, workers), **parent_watch.pool_init()) as pool:
             batch: list[tuple] = []
             for document in _documents(reader, captured):
                 batch.append(document)

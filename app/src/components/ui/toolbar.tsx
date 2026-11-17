@@ -2,8 +2,40 @@
 
 import Link from "next/link";
 import * as React from "react";
+import { Pin, PinOff } from "lucide-react";
 import { cn } from "@/lib/cn";
+import { pinsFrom, togglePin } from "@/lib/pins";
+import { useSaved } from "@/lib/saved";
 import { MobileAccount, MobileSearch } from "../shell";
+import { useAuth } from "../auth";
+
+/** Pin this page to My work and the sidebar (or unpin it). `label`: what the pin says. */
+export function PinButton({ label }: { label: string }) {
+  const items = useSaved();
+  const { state } = useAuth();
+  const me = state.status === "signed-in" ? state.me : null;
+  // the page as it is now, query included (a tab or filter is part of what is pinned)
+  const [href, setHref] = React.useState("");
+  React.useEffect(() => {
+    const now = window.location.pathname + window.location.search;
+    if (now !== href) setHref(now);
+  });
+  if (!me || !href) return null;
+  const pinned = pinsFrom(items, me).pins.some((p) => p.href === href);
+  return (
+    <button
+      type="button"
+      onClick={() => togglePin({ href, label }, items, me)}
+      aria-pressed={pinned}
+      title={pinned ? "Unpin from My work" : "Pin to My work"}
+      aria-label={pinned ? `Unpin ${label} from My work` : `Pin ${label} to My work`}
+      className="inline-flex size-8 items-center justify-center rounded-lg text-muted hover:bg-hover hover:text-fg cursor-pointer max-lg:hidden"
+      data-testid="pin-page"
+    >
+      {pinned ? <PinOff className="size-[15px]" aria-hidden /> : <Pin className="size-[15px]" aria-hidden />}
+    </button>
+  );
+}
 
 /**
  * A page's toolbar: the 52 px line every pane shares. The title (with the place it sits in
@@ -17,10 +49,13 @@ export function Toolbar({
   className,
   testId,
   heading,
+  pin,
 }: {
   /** The page's own heading (h1) when nothing else on the page names it. */
   heading?: boolean;
   title: React.ReactNode;
+  /** What a pin of this page says; a plain-text title is used when this is not given. False: no pin button. */
+  pin?: string | false;
   parent?: { label: string; href: string };
   actions?: React.ReactNode;
   className?: string;
@@ -49,6 +84,7 @@ export function Toolbar({
         )}
       </div>
       {actions && <div className="flex shrink-0 items-center gap-0.5">{actions}</div>}
+      {pin !== false && (pin || (typeof title === "string" && title)) && <PinButton label={(pin || title) as string} />}
       <div className="flex items-center lg:hidden">
         <MobileSearch />
         <MobileAccount quiet={!!actions} />

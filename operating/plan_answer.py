@@ -17,7 +17,9 @@ value, so a value is never dropped to make the rest fit:
 * a result with an error, no ``answer`` list, or more entries than one answer may claim;
 * a result the host cut for any reason but fitting it to one response (a step budget, a
   page cap), so that an entry could be missing; one the host fitted by cutting a select
-  entry's cells (``inputs_cut``) when that entry holds a value and now no cell of it;
+  entry's cells (``inputs_cut``) when that entry holds a value and now no cell of it. The
+  first page of a paged answer (``answer_paged``) that lists every entry is fitted too:
+  the pages after it hold only the details it could not (chain, values, conflicts);
 * a ``property`` entry whose check is not ``passed`` or ``unverified``, or whose value is
   not a string or an integer, or that carries no citation;
 * a ``select`` entry with a value but no cited cell of that value is not claimed (a
@@ -73,8 +75,16 @@ def from_plan(result: Any) -> dict[str, Any] | None:
     # The host fits a big result to one response by cutting the chain first and then the
     # cells of the largest entries (``result_too_large``): the entries stay, so a cell may be
     # gone from one. Any other cut (a step budget, a page cap) may have dropped an entry.
-    fitted = completeness.get("truncated") is True \
-        and completeness.get("reason") == "result_too_large"
+    # A paged answer (``answer_paged``) whose first page lists every entry (``answer_page``
+    # returned == total) is the same: the entries and the gaps are all on that page, and the
+    # pages after it hold only the details it could not (chain, values, conflicts).
+    page = result.get("answer_page")
+    whole_first_page = isinstance(page, Mapping) and page.get("page") == 1 \
+        and isinstance(page.get("total"), int) \
+        and page.get("returned") == page.get("total") == len(entries)
+    fitted = completeness.get("truncated") is True and (
+        completeness.get("reason") == "result_too_large"
+        or completeness.get("reason") == "answer_paged" and whole_first_page)
     if completeness.get("truncated") is not False and not fitted:
         return None
     claims: list[dict[str, Any]] = []

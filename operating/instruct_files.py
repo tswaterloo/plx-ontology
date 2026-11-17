@@ -39,6 +39,7 @@ import threading
 from typing import Any, Callable, Mapping, Optional
 from xml.sax.saxutils import escape
 import zipfile
+from operating.card_text import mask_served
 from operating.file_modes import keep_private
 
 KINDS = ("docx", "xlsx", "pdf")
@@ -186,6 +187,7 @@ def make(kind: str, content: str) -> bytes:
         raise FileRefused("kind_unknown")
     if not content.strip() or len(content) > MAX_CONTENT:
         raise FileRefused("content_size")
+    content = mask_served(content)   # an exported file never holds a card or a secret
     return {"docx": _docx, "xlsx": _xlsx, "pdf": _pdf}[kind](content)
 
 
@@ -357,10 +359,11 @@ class UploadDesk:
         return path.read_bytes() if path.is_file() else None
 
     def prepare(self, reader_key: str, *, name: str, kind: str, data: bytes,
-                target: Optional[Target], people: tuple[str, ...] | list[str] = ()
-                ) -> dict[str, Any]:
+                target: Optional[Target], people: tuple[str, ...] | list[str] = (),
+                reply_to: Optional[str] = None) -> dict[str, Any]:
         """A draft upload (``people``: the addresses the document names, cleared by the
-        people exclusion before it is made)."""
+        people exclusion before it is made; ``reply_to``: the email the document answers,
+        whose reply may carry it as an attachment, ``card_actions``)."""
         digest = hashlib.sha256(data).hexdigest()
         where = target.__dict__ if target else None
         file_id = self.keep_file(data)
@@ -372,12 +375,15 @@ class UploadDesk:
             for r in reversed(rows):
                 if r["event"] == "prepared" and r["reader"] == reader_key and \
                         r["digest"] == digest and r["name"] == name and r["kind"] == kind \
-                        and r["target"] == where and r["upload_id"] not in approved:
+                        and r["target"] == where and r.get("reply_to") == reply_to \
+                        and r["upload_id"] not in approved:
                     return r
             row = {"event": "prepared", "upload_id": "up_" + secrets.token_hex(12),
                    "reader": reader_key, "file_id": file_id, "name": name, "kind": kind,
                    "size": len(data), "digest": digest, "target": where,
                    "people": sorted({str(p).lower() for p in people})[:200], "at": _now()}
+            if reply_to:
+                row["reply_to"] = reply_to
             self._append(row)
         return row
 

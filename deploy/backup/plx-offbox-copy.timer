@@ -1,0 +1,10 @@
+[Unit]
+Description=PLX off-box copy, daily after the capture backup (1:30 AM ET) and nightly backup (3:15 AM ET)
+
+[Timer]
+OnCalendar=*-*-* 06:45:00 America/New_York
+Persistent=true
+RandomizedDelaySec=10m
+
+[Install]
+WantedBy=timers.target

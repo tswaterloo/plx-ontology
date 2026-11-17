@@ -51,11 +51,16 @@ import re
 import sqlite3
 import sys
 import time
-from typing import Any, Callable, Iterable, Mapping, Sequence
+from typing import Any, Callable, Mapping, Sequence
 
 from ontology import store as ostore
 
 from . import autopilot as ap
+from . import autopilot_engine
+from . import autopilot_events
+from . import autopilot_queue
+from . import autopilot_reading
+from . import autopilot_records
 from . import workflows as wf
 from operating import declared_schema as _schemas
 from operating.declared_schema import autopilot_replay as _AUTOPILOT_REPLAY
@@ -187,9 +192,9 @@ def mail_sent(st: Any, people: Any, who: set[str], since: str, until: str
            if o.startswith("Email:")]
     out = []
     for start in range(0, len(ids), CHUNK):
-        typed = ap._types(st, ids[start:start + CHUNK])
+        typed = autopilot_records._types(st, ids[start:start + CHUNK])
         mine = sorted(o for o, (_t, aud) in typed.items() if aud in boxes)
-        rows = ap._read(st, mine, ("sender", "to_addresses", "cc_addresses", "subject",
+        rows = autopilot_records._read(st, mine, ("sender", "to_addresses", "cc_addresses", "subject",
                                    "body_preview", "conversation_id", "sent_at",
                                    "received_at", "mailbox"))
         links: dict[str, set[str]] = defaultdict(set)
@@ -197,26 +202,26 @@ def mail_sent(st: Any, people: Any, who: set[str], since: str, until: str
             if MENTIONS.match(row[2]) and row[3] in rows:
                 links[row[3]].add(row[4])
         for oid, r in rows.items():
-            box = ap._v(r, "mailbox").lower()
-            sender = (ap._addresses(ap._v(r, "sender")) or [""])[0]
+            box = autopilot_records._v(r, "mailbox").lower()
+            sender = (autopilot_records._addresses(autopilot_records._v(r, "sender")) or [""])[0]
             if box not in who or sender not in addresses_of.get(box, set()):
                 continue
-            to = ap._addresses(ap._v(r, "to_addresses")) + ap._addresses(ap._v(r, "cc_addresses"))
-            outside = [a for a in to if not ap._internal(a, domains)]
+            to = autopilot_records._addresses(autopilot_records._v(r, "to_addresses")) + autopilot_records._addresses(autopilot_records._v(r, "cc_addresses"))
+            outside = [a for a in to if not autopilot_records._internal(a, domains)]
             if outside:
-                sides = {s for a in outside for s, _o in ap._parties(st, a)}
+                sides = {s for a in outside for s, _o in autopilot_events._parties(st, a)}
                 side = next(iter(sides)) if len(sides) == 1 else "internal_out"
             else:
                 side = "internal"
-            subject, body = ap._v(r, "subject"), ap._v(r, "body_preview")
-            out.append({"person": box, "at": ap._v(r, "sent_at") or ap._v(r, "received_at"),
+            subject, body = autopilot_records._v(r, "subject"), autopilot_records._v(r, "body_preview")
+            out.append({"person": box, "at": autopilot_records._v(r, "sent_at") or autopilot_records._v(r, "received_at"),
                         "kind": "mail_sent", **sent_shape(sender, subject, body),
-                        **ap.routine_note(ap._v(r, "subject"), ap._v(r, "body_preview"),
+                        **autopilot_events.routine_note(autopilot_records._v(r, "subject"), autopilot_records._v(r, "body_preview"),
                                           sender, to, addresses_of.get(box, set()), domains,
                                           oid),
-                        "workflow": wf.classify(ap._v(r, "subject"), ap._v(r, "body_preview"),
+                        "workflow": wf.classify(autopilot_records._v(r, "subject"), autopilot_records._v(r, "body_preview"),
                                                 side),
-                        "conversation": ap._v(r, "conversation_id") or None,
+                        "conversation": autopilot_records._v(r, "conversation_id") or None,
                         "to": sorted(set(to)), "records": sorted(links.get(oid, ()))})
     return out
 
@@ -234,22 +239,22 @@ def mail_received(st: Any, people: Any, who: set[str], since: str, until: str
     out = []
     machine = it.automated_mail()   # the live feed's test (``autopilot._mail_events``)
     for start in range(0, len(ids), CHUNK):
-        typed = ap._types(st, ids[start:start + CHUNK])
+        typed = autopilot_records._types(st, ids[start:start + CHUNK])
         mine = sorted(o for o, (_t, aud) in typed.items() if aud in boxes)
-        rows = ap._read(st, mine, ("sender", "subject", "body_preview", "conversation_id",
+        rows = autopilot_records._read(st, mine, ("sender", "subject", "body_preview", "conversation_id",
                                    "received_at", "sent_at", "mailbox", "internet_message_id"))
         for oid, r in rows.items():
-            box = ap._v(r, "mailbox").lower()
-            sender = (ap._addresses(ap._v(r, "sender")) or [""])[0]
+            box = autopilot_records._v(r, "mailbox").lower()
+            sender = (autopilot_records._addresses(autopilot_records._v(r, "sender")) or [""])[0]
             if box not in who or not sender or sender in addresses_of.get(box, set()):
                 continue
-            subject, text = ap._v(r, "subject"), pt._own(ap._v(r, "body_preview"))
+            subject, text = autopilot_records._v(r, "subject"), pt._own(autopilot_records._v(r, "body_preview"))
             if machine(sender, text, subject):
                 continue
             out.append({"event_type": "message.received", "mailbox": box, "sender": sender,
-                        "conversation_id": ap._v(r, "conversation_id") or None,
-                        "message_id": ap._v(r, "internet_message_id") or oid,
-                        "at": ap._v(r, "received_at") or ap._v(r, "sent_at")})
+                        "conversation_id": autopilot_records._v(r, "conversation_id") or None,
+                        "message_id": autopilot_records._v(r, "internet_message_id") or oid,
+                        "at": autopilot_records._v(r, "received_at") or autopilot_records._v(r, "sent_at")})
     return out
 
 
@@ -257,13 +262,13 @@ def approval_decided(st: Any, people: Any, who: set[str], since: str, until: str
                      ) -> list[dict[str, Any]]:
     directory, _a, _d = ap._people_maps(people)
     ids = [o for o, _t in _window(st, ("MCApproval.decided",), since, until)]
-    rows = ap._read(st, ids, ("decided_by", "decided_at"))
+    rows = autopilot_records._read(st, ids, ("decided_by", "decided_at"))
     out = []
     for oid, r in rows.items():
-        by = ap._v(r, "decided_by").lower()
+        by = autopilot_records._v(r, "decided_by").lower()
         person = directory.get(by, by)
         if person in who:
-            out.append({"person": person, "at": ap._v(r, "decided_at"), "kind": "approval",
+            out.append({"person": person, "at": autopilot_records._v(r, "decided_at"), "kind": "approval",
                         "workflow": "internal_approval", "conversation": None, "to": [],
                         "records": [oid]})
     return out
@@ -283,15 +288,15 @@ def task_event(st: Any, people: Any, who: set[str], since: str, until: str
     ``mc_question`` workflow, naming the question."""
     directory, _a, _d = ap._people_maps(people)
     ids = [o for o, _t in _window(st, ("MCTaskEvent.occurred",), since, until)]
-    rows = ap._read(st, ids, ("actor", "at", "kind"))
+    rows = autopilot_records._read(st, ids, ("actor", "at", "kind"))
     reader = getattr(st, "autopilot_mc", None)
     named: dict[str, str | None] = {}
     out = []
     for oid, r in rows.items():
-        kind = ap._v(r, "kind")
+        kind = autopilot_records._v(r, "kind")
         if kind in TASK_EVENTS_COUNTED_ELSEWHERE:
             continue
-        actor = ap._v(r, "actor").lower()
+        actor = autopilot_records._v(r, "actor").lower()
         if actor not in named:
             named[actor] = ap.handle_person(
                 actor, directory, reader.home_domains() if reader is not None else None)
@@ -305,7 +310,7 @@ def task_event(st: Any, people: Any, who: set[str], since: str, until: str
         if ev is None or ev["by_agent"]:
             continue
         tasks = [o for _t, o in ap._linked(st, oid) if o.startswith("MCTask:")]
-        action = {"person": person, "at": ap._v(r, "at"), "kind": "task", "workflow": None,
+        action = {"person": person, "at": autopilot_records._v(r, "at"), "kind": "task", "workflow": None,
                   "conversation": None, "to": [], "records": tasks}
         if kind == "question.answered":
             action.update(kind="question", workflow="mc_question")
@@ -351,8 +356,8 @@ def teams_sent(st: Any, people: Any, who: set[str], since: str, until: str
         p for ps in declared_sources()["ask_text"].values() for p in ps))
     lo, hi = ap._instant(since), ap._instant(until)
     out = []
-    for otype in ap.TEAMS_TYPES:
-        dated = ap._dated(st, otype, "created_at")
+    for otype in autopilot_events.TEAMS_TYPES:
+        dated = autopilot_events._dated(st, otype, "created_at")
         ids = [o for _t, o in dated[bisect.bisect_left(dated, (lo,)):
                                     bisect.bisect_left(dated, (hi,))]]
         # conversation -> sender -> when they last wrote there (messages in time order):
@@ -360,33 +365,33 @@ def teams_sent(st: Any, people: Any, who: set[str], since: str, until: str
         last_by: dict[str, dict[str, datetime]] = defaultdict(dict)
         for start in range(0, len(ids), CHUNK):
             chunk = ids[start:start + CHUNK]
-            typed = ap._types(st, chunk)
-            rows = ap._read(st, chunk, ("created_at", "from", "deleted_at", "reply_to_id")
+            typed = autopilot_records._types(st, chunk)
+            rows = autopilot_records._read(st, chunk, ("created_at", "from", "deleted_at", "reply_to_id")
                             + text_props)
             mine = {o: r for o, r in rows.items()
-                    if ap.teams_sender(ap._v(r, "from"), directory) in who}
-            bodies = ap.teams_bodies(st, [h for r in mine.values()
-                                          for h in ap._handles_of(r)[:1]])
+                    if autopilot_events.teams_sender(autopilot_records._v(r, "from"), directory) in who}
+            bodies = autopilot_events.teams_bodies(st, [h for r in mine.values()
+                                          for h in autopilot_events._handles_of(r)[:1]])
             for oid in chunk:
                 row = rows.get(oid) or {}
                 aud = typed.get(oid, ("", ""))[1]
                 channel = aud.startswith("teams:channel:")
-                sender = ap.teams_sender(ap._v(row, "from"), directory)
-                when = ap._instant(ap._v(row, "created_at"))
+                sender = autopilot_events.teams_sender(autopilot_records._v(row, "from"), directory)
+                when = ap._instant(autopilot_records._v(row, "created_at"))
                 if not (channel or aud.startswith("teams:chat:")) or not sender or \
                         when is None:
                     continue
-                conversation = ap.teams_thread(aud, oid, ap._v(row, "reply_to_id")) \
+                conversation = autopilot_events.teams_thread(aud, oid, autopilot_records._v(row, "reply_to_id")) \
                     if channel else aud
                 others = [t for s, t in last_by[conversation].items() if s != sender]
                 last_by[conversation][sender] = when
                 if oid not in mine or not people.unit_clear(aud) or \
-                        ap._v(row, "deleted_at"):
+                        autopilot_records._v(row, "deleted_at"):
                     continue
-                text = bodies.get((ap._handles_of(row) or [""])[0]) or next(
-                    (ap._v(row, p) for p in text_props if ap._v(row, p)), "")
+                text = bodies.get((autopilot_events._handles_of(row) or [""])[0]) or next(
+                    (autopilot_records._v(row, p) for p in text_props if autopilot_records._v(row, p)), "")
                 out.append({"person": sender,
-                            "at": ap._v(row, "created_at"), "kind": "teams_sent",
+                            "at": autopilot_records._v(row, "created_at"), "kind": "teams_sent",
                             "workflow": TEAMS_WORKFLOW,
                             "topic": wf.classify("", text, "internal"),
                             "conversation": conversation,
@@ -405,14 +410,14 @@ def teams_received(st: Any, people: Any, who: set[str], since: str, until: str
     lo, hi = ap._instant(since), ap._instant(until)
     out: list[dict[str, Any]] = []
     skipped: Counter = Counter()
-    for otype in ap.TEAMS_TYPES:
-        dated = ap._dated(st, otype, "created_at")
+    for otype in autopilot_events.TEAMS_TYPES:
+        dated = autopilot_events._dated(st, otype, "created_at")
         ids = [o for _t, o in dated[bisect.bisect_left(dated, (lo,)):
                                     bisect.bisect_left(dated, (hi,))]]
         for start in range(0, len(ids), CHUNK):
             chunk = ids[start:start + CHUNK]
-            typed = ap._types(st, chunk)
-            out += [e for e in ap._teams_events(st, list(typed), typed, people, directory,
+            typed = autopilot_records._types(st, chunk)
+            out += [e for e in autopilot_events._teams_events(st, list(typed), typed, people, directory,
                                                 skipped, words=False)
                     if e["mailbox"] in who]
     return out
@@ -576,8 +581,8 @@ def score(items: Sequence[Mapping[str, Any]], events: Mapping[str, Mapping[str, 
             Decimal("0.001"))) if judged else None
         out[flow]["coverage"] = str((Decimal(c["anticipated"]) / c["actions"]).quantize(
             Decimal("0.001"))) if c["actions"] else None
-        out[flow]["passes_gate"] = bool(judged >= ap.GATE_MIN_JUDGED and
-                                        Decimal(c["matched"]) / judged >= ap.GATE_PRECISION)
+        out[flow]["passes_gate"] = bool(judged >= autopilot_engine.GATE_MIN_JUDGED and
+                                        Decimal(c["matched"]) / judged >= autopilot_engine.GATE_PRECISION)
     return out
 
 
@@ -746,7 +751,7 @@ class Progress:
 
 def _role_ids(st: Any, ids: Sequence[str], who: set[str]) -> list[str]:
     """The day's records less the mail of mailboxes outside the role (never read)."""
-    typed = ap._types(st, ids)
+    typed = autopilot_records._types(st, ids)
     boxes = {f"mail:{m}" for m in who}
     return [o for o in ids if typed.get(o, ("", ""))[0] != "Email"
             or typed[o][1] in boxes]
@@ -784,17 +789,17 @@ def text_gap(st: Any, since: datetime, until: datetime) -> dict[str, Any] | None
     the replay refuses (fail closed), as it does when the index cannot be read."""
     handles: list[str] = []
     try:
-        for otype in ap.TEAMS_TYPES:
-            dated = ap._dated(st, otype, "created_at")
+        for otype in autopilot_events.TEAMS_TYPES:
+            dated = autopilot_events._dated(st, otype, "created_at")
             ids = [o for _t, o in dated[bisect.bisect_left(dated, (since,)):
                                         bisect.bisect_left(dated, (until,))]]
             step = max(1, len(ids) // TEXT_SAMPLE)
-            rows = ap._read(st, ids[::step][:TEXT_SAMPLE], ("created_at",))
-            handles += [h for r in rows.values() for h in ap._handles_of(r)[:1]]
+            rows = autopilot_records._read(st, ids[::step][:TEXT_SAMPLE], ("created_at",))
+            handles += [h for r in rows.values() for h in autopilot_events._handles_of(r)[:1]]
         if not handles:
             return None
         where = ("f.citation IN (SELECT value FROM json_each(?)) AND f.field_path = ?")
-        args = (json.dumps(sorted(set(handles))), ap.TEAMS_BODY)
+        args = (json.dumps(sorted(set(handles))), autopilot_events.TEAMS_BODY)
         fields = st.conn.execute(f"SELECT COUNT(*) FROM text_fields f WHERE {where}",
                                  args).fetchone()[0]
         held = st.conn.execute(
@@ -826,17 +831,17 @@ def replay(st: Any, people: Any, *, role: str, out: Path, since: datetime, until
     gap = text_gap(st, since, until)
     if gap:
         return {"schema": SCHEMA, "role": role, "status": "blocked", **gap,
-                "source": ap.store_source(st)}
+                "source": autopilot_reading.store_source(st)}
     slug = re.sub(r"[^a-z0-9_]+", "_", role.lower())[:60]
     root = out / slug
     root.mkdir(parents=True, exist_ok=True)
-    (root / ap.ROLES_FILE).write_text(json.dumps(
+    (root / autopilot_queue.ROLES_FILE).write_text(json.dumps(
         {"roles": {**roles, **({role: sorted(who)} if not role.startswith("person:") else {})}}))
     queue = ap.Queue(root / ap.QUEUE_FILE)
     progress = Progress(root / "progress.sqlite")
-    env = {k: v for k, v in environ.items() if k != ap.ROLES_ENV}
+    env = {k: v for k, v in environ.items() if k != autopilot_queue.ROLES_ENV}
     status = "complete"
-    source = ap.store_source(st)
+    source = autopilot_reading.store_source(st)
     try:
         # a queue holds the days one store prepared: a resumed run on the other store
         # (SQLite generation vs Postgres) would mix two data sets in one score
@@ -946,11 +951,11 @@ def replay(st: Any, people: Any, *, role: str, out: Path, since: datetime, until
                   e["seen_from"] for e in events.values() if e.get("seen_from")).items()))}
     # the gate is decided on the held-out days when the window has them (never tuned on)
     gated = splits["held_out"]["workflows"] if splits else flows
-    result["gate"] = {"precision": str(ap.GATE_PRECISION), "min_judged": ap.GATE_MIN_JUDGED,
+    result["gate"] = {"precision": str(autopilot_engine.GATE_PRECISION), "min_judged": autopilot_engine.GATE_MIN_JUDGED,
                       "on": "held_out" if splits else "window",
                       "passed": sorted(f for f, v in gated.items() if v["passes_gate"])}
     (root / "result.json").write_text(json.dumps(result, indent=1, sort_keys=True))
-    write_gate(out / ap.GATE_FILE, role, sorted(who), gated)
+    write_gate(out / autopilot_engine.GATE_FILE, role, sorted(who), gated)
     return result
 
 
@@ -960,7 +965,7 @@ def write_gate(path: Path, role: str, who: Sequence[str],
     verdict from them. Copy it beside the live queue to switch passed workflows on."""
     try:
         raw = json.loads(path.read_text(encoding="utf-8"))
-        if raw.get("schema") != ap.GATE_SCHEMA:
+        if raw.get("schema") != autopilot_engine.GATE_SCHEMA:
             raw = {}
     except (OSError, ValueError):
         raw = {}
@@ -969,7 +974,7 @@ def write_gate(path: Path, role: str, who: Sequence[str],
                    "workflows": {f: {"judged": v["judged"], "matched": v["matched"]}
                                  for f, v in flows.items() if v["judged"]}}
     tmp = path.with_suffix(".tmp")
-    tmp.write_text(json.dumps({"schema": ap.GATE_SCHEMA, "roles": roles}, indent=1,
+    tmp.write_text(json.dumps({"schema": autopilot_engine.GATE_SCHEMA, "roles": roles}, indent=1,
                               sort_keys=True))
     os.replace(tmp, path)
 
@@ -990,7 +995,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     p.add_argument("--mem-max-gb", type=float, default=8.0)
     p.add_argument("--held-out-days", type=float, default=10.0,
                    help="the window's last days scored apart (the gate's test days); 0: none")
-    p.add_argument("--source", choices=ap.STORE_SOURCES, default=None,
+    p.add_argument("--source", choices=autopilot_reading.STORE_SOURCES, default=None,
                    help="read the SQLite generation at --store, or the Postgres ontology "
                         "the API reads in mode 1 (refused when it does not hold that "
                         "generation); default: as PLX_ONTOLOGY_PG says")
@@ -1016,7 +1021,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             if a.until:
                 ends["judged_to"] = ap._iso(data_end(st, ap._iso(answer_end(
                     ap._instant(a.until), config["horizon"]))))
-            print(json.dumps({**ends, **ap.store_source(st)}))
+            print(json.dumps({**ends, **autopilot_reading.store_source(st)}))
         finally:
             st.close()
         return 0
@@ -1031,7 +1036,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         until = ap._instant(a.until) if a.until else data_end(
             st, ap._iso(datetime.now(timezone.utc)))
         since = until - timedelta(days=a.days)
-        roles = ap._roles({ap.ROLES_ENV: a.roles_file} if a.roles_file else {},
+        roles = ap._roles({autopilot_queue.ROLES_ENV: a.roles_file} if a.roles_file else {},
                           Path(a.out))
         result = replay(st, people, role=a.role, out=Path(a.out), since=since, until=until,
                         roles=roles, config=config, floor_gb=a.min_available_gb,

@@ -121,24 +121,12 @@ def charge_accounts(gl_rows: Sequence[Mapping[str, Any]], kind: str = "duty",
     return out
 
 
-def duty_accounts(gl_rows: Sequence[Mapping[str, Any]], rules: Mapping[str, Any] = RULES
-                  ) -> dict[str, str]:
-    """``{account key: description}`` for G/L accounts whose description names a duty charge."""
-    return charge_accounts(gl_rows, "duty", rules)
-
-
 def charge_vendors(rows: Sequence[Mapping[str, Any]], id_col: str, name_col: str,
                    kind: str = "duty", rules: Mapping[str, Any] = RULES) -> set[str]:
     """Vendor ids whose name names a party of ``kind`` (a customs broker, a forwarder)."""
     words = kind_rules(kind, rules)["vendor_name_keywords"]
     return {_s(r.get(id_col)) for r in rows
             if _s(r.get(id_col)) and _named(_s(r.get(name_col)), words, ())}
-
-
-def broker_vendors(rows: Sequence[Mapping[str, Any]], id_col: str, name_col: str,
-                   rules: Mapping[str, Any] = RULES) -> set[str]:
-    """Vendor ids whose name names a customs broker."""
-    return charge_vendors(rows, id_col, name_col, "duty", rules)
 
 
 _LINE_TEXT = ("glref", "gldesc", "descomp", "glcomment")
@@ -351,7 +339,11 @@ def po_effective_rates(links: Sequence[Mapping[str, Any]], goods: Mapping[str, M
     PO's recorded exchange rate to the home currency (not needed for a home-currency PO). A PO
     whose goods value, currency or rate is missing, or whose charge currency differs, has no
     rate: ``rate`` None and ``gap`` names why. A rate above ``max_plausible_rate`` is no rate
-    either (the charge probably covers more than this PO)."""
+    either (the charge probably covers more than this PO). ``<kind>_paid`` is the charges'
+    sum in ``currency``, the one currency they are all in (never labelled the home currency
+    unless it is); charges in several currencies have no ``<kind>_paid`` (None, currency
+    None) and ``<kind>_paid_by_currency`` (code -> sum as text) instead: no figure adds two
+    currencies."""
     home = rules["home_currency"]
     ceiling = Decimal(kind_rules(kind, rules)["max_plausible_rate"])
     per_po: dict[str, list[Mapping[str, Any]]] = defaultdict(list)
@@ -360,11 +352,24 @@ def po_effective_rates(links: Sequence[Mapping[str, Any]], goods: Mapping[str, M
             per_po[link["po"]].append(link)
     out: dict[str, dict[str, Any]] = {}
     for po, items in per_po.items():
-        duty = sum((i["amount"] for i in items), Decimal(0))
-        base = {f"{kind}_paid": duty, "currency": home, "charges": len(items),
+        # summed per currency (no charge carries a rate to convert it by): one currency's
+        # sum is ``<kind>_paid`` in that currency, several are ``<kind>_paid_by_currency``
+        # with no single figure
+        by_currency: dict[str, Decimal] = defaultdict(Decimal)
+        for i in items:
+            by_currency[_s(i["currency"]).upper()] += i["amount"]
+        duty: Decimal | None = None
+        if len(by_currency) == 1:
+            (paid_in, duty), = by_currency.items()
+        else:
+            paid_in = None
+        base = {f"{kind}_paid": duty, "currency": paid_in or None, "charges": len(items),
                 "includes_brokerage": any(i["includes_brokerage"] for i in items),
                 "rate": None, "basis": BASIS_ACTUAL,
                 "linked_by": sorted({k for i in items for k in i["linked_by"]})}
+        if duty is None:
+            base[f"{kind}_paid_by_currency"] = {c or "unstated": str(v)
+                                                for c, v in sorted(by_currency.items())}
         unstated = sum(1 for i in items if i.get("posting") == "unknown")
         if unstated:
             # the snapshot did not say whether these invoices are posted: the rate stands,
@@ -378,7 +383,7 @@ def po_effective_rates(links: Sequence[Mapping[str, Any]], goods: Mapping[str, M
             # proven, is no actual: never a rate on what remains (BIZ-012/013/014)
             out[po] = {**base, "gap": "CHARGE_INCOMPLETE_" + problems[0],
                        "problems": problems}
-        elif any(i["currency"].upper() != home for i in items):
+        elif set(by_currency) != {home}:
             out[po] = {**base, "gap": "CHARGE_CURRENCY_NOT_HOME"}
         elif value is None or value <= 0 or not cur:
             out[po] = {**base, "gap": "GOODS_VALUE_NOT_RECORDED"}

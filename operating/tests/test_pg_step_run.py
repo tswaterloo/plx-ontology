@@ -254,6 +254,32 @@ class MentionScopeTests(CommittedRunTests):
         for workers in (1, 3):
             with self.assertRaises(ms.ScopeRefused):
                 self._snap(root / "mid.sqlite", workers)
+        # a units-first run (migrate_chunks --units-first) whose unit chunks are all
+        # applied: the after snapshot reads the migrated units; one chunk short, refused;
+        # a before snapshot is refused by any run in progress
+        with psycopg_connect(self.other) as pg:
+            pg.execute("UPDATE ontology.store_meta SET value = %s WHERE key = "
+                       "'migration_in_progress'",
+                       (json.dumps({"key": "u+-", "chunks": 2, "units_first": True}),))
+            pg.execute("INSERT INTO ontology.load_state (name, value) VALUES "
+                       "('migration_chunk:u+-:events', '{}')")
+        with psycopg_connect(self.other) as pg:
+            bindings = [r[0] for r in pg.execute(
+                "SELECT DISTINCT binding_id FROM ontology.objects ORDER BY 1").fetchall()]
+        for workers in (1, 3):
+            with self.assertRaises(ms.ScopeRefused):
+                ms.snapshot(self.other, bindings, root / "mid.sqlite", before=False,
+                            domain_property="website", workers=workers)
+        with psycopg_connect(self.other) as pg:
+            pg.execute("INSERT INTO ontology.load_state (name, value) VALUES "
+                       "('migration_chunk:u+-:units:0', '{}')")
+        for workers in (1, 3):
+            with mock.patch.object(ms, "_SPLIT", 2):
+                after = ms.snapshot(self.other, bindings, root / f"after{workers}.sqlite",
+                                    before=False, domain_property="website", workers=workers)
+            self.assertEqual((after["objects"], after["in_progress"]), (one["objects"], True))
+            with self.assertRaises(ms.ScopeRefused):
+                self._snap(root / "mid.sqlite", workers)
 
     def test_a_scope_that_cannot_be_bounded_is_refused(self):
         from ontology.schema import load_schema
@@ -274,6 +300,20 @@ class MentionScopeTests(CommittedRunTests):
         got = ms.scope(self.other, root / "before.sqlite", root / "after.sqlite", cache,
                        root / "w", served=schema, new=schema)
         self.assertEqual(got["refused"], "mention_cache_of_other_code")
+        # the served links' extraction named: the cache holds it, the scan reads it, and
+        # the keys named besides the changed objects' are counted in
+        import zlib
+        db = sqlite3.connect(cache)
+        db.execute("UPDATE extracted SET value = ? WHERE key = 'd'", (zlib.compress(json.dumps(
+            {"document": {"citation": "nowhere://d"}, "mentions": []}).encode()),))
+        db.commit()
+        db.close()
+        got = ms.scope(self.other, root / "before.sqlite", root / "after.sqlite", cache,
+                       root / "w", served=schema, new=schema, xcode="other-code",
+                       also_keys=[("petra_po", "PO12"), ("petra_po", "PO12")])
+        self.assertNotEqual(got.get("refused"), "mention_cache_of_other_code", got)
+        self.assertEqual(got["counts"]["also_keys"], 1)
+        self.assertEqual(got["counts"]["scan"]["documents"], 1, got)
         db = sqlite3.connect(root / "after.sqlite")
         db.execute("INSERT INTO domains VALUES ('Supplier:x', 'https://moved.example')")
         db.commit()
@@ -775,6 +815,31 @@ class OwnPeopleLinksLocalTests(unittest.TestCase):
                 self.assertEqual(after, before)
                 self.assertEqual(len(after[1]), 3 * n)
 
+    def test_held_checks_of_its_hidden_range_never_reach_postgres_for_1_10_60(self):
+        """Its own range hidden whole (``hidden_whole``, as ``run_steps`` sets it): a read
+        of link ids all inside it is answered by its store alone, equal to the read that
+        asks Postgres too (the overlay hides every served row there); a read naming an id
+        outside it still asks Postgres."""
+        for n in (1, 10, 60):
+            with self.subTest(messages=n):
+                others = self._contradicting(n)
+                asked = self._builder(True, others, f"pask-{n}")
+                local = self._builder(True, others, f"pskip-{n}")
+                local.connection.hidden_whole = (("person:", "person;"),)
+                sent = []
+                pg = local.connection.pg
+                plain = pg.execute
+                pg.execute = lambda sql, params=(): sent.append(sql) or plain(sql, params)
+                self.assertEqual(self._people(local, n), self._people(asked, n))
+                self.assertFalse([q for q in sent if "link_id IN" in q], sent)
+                self.assertTrue([q for q in sent if "contradicted" in q])   # still asked
+        from ontology.sender_parties import _q
+        sent.clear()
+        mixed = ["person:x", self._others(3)[0]["link_id"]]
+        got = _q(local.connection, self._HELD.format("?,?"), mixed)
+        self.assertTrue([q for q in sent if "link_id IN" in q])
+        self.assertEqual([r[0] for r in got], [mixed[1]])
+
     def test_other_link_row_reads_and_a_link_on_both_sides_are_refused(self):
         from ontology import pg_step_inplace as ip
         builder = self._builder(True, self._contradicting(3), "plocal")
@@ -1254,6 +1319,56 @@ class MentionPartsTests(unittest.TestCase):
             self.assertEqual(parts[0]["counts"]["duplicate_groups"], 1)
             with self.assertRaises(ip.Refused):   # another version of h2 in another group
                 ip.mention_parts("x", {"groups": ["gA", "gC"], "objects": []}, cache, 2)
+
+
+class ConcurrentMentionPartsTests(unittest.TestCase):
+    """The parted mentions run side by side with the steps named before it (11-12): its
+    parts run --concurrent and it stages none of those steps (mentions reads none of
+    them); serial, it stages them once before its parts as before."""
+
+    def _parts(self, concurrent):
+        import argparse
+        import tempfile
+        from pathlib import Path
+        from unittest import mock
+        from ontology import pg_step_inplace as ip
+        work = Path(tempfile.mkdtemp())
+        self.addCleanup(__import__("shutil").rmtree, work, True)
+        narrowed = work / "narrowed.json"
+        narrowed.write_text(json.dumps({"run": {n: None for n in (
+            "confirmations", "document_fields", "key_joins", "mentions", "sender_parties")}}))
+        args = argparse.Namespace(plan="p.json", narrowed=str(narrowed), state_dir="s",
+                                  work=str(work), mention_cache="c.sqlite", stage_key="run-1",
+                                  mention_batches=1, apply_now=False, emulate_batches=False,
+                                  concurrent=concurrent)
+        cmds, staged = [], []
+
+        class Done:
+            def wait(self):
+                return 0
+        two = [{"groups": ["g1"], "objects": []}, {"groups": ["g2"], "objects": []}]
+        with mock.patch.object(ip, "mention_parts", return_value=two), \
+                mock.patch.object(ip, "_staged_entry",
+                                  side_effect=lambda dsn, key, n, *a, **k: staged.append(n)), \
+                mock.patch("subprocess.Popen",
+                           side_effect=lambda cmd, **k: cmds.append(cmd) or Done()):
+            try:
+                ip.mentions_in_parts(args, "postgresql://nowhere.invalid/x",
+                                     {"groups": ["g1", "g2"], "objects": []}, 2)
+            except Exception:   # noqa: BLE001 - past the parts it reads Postgres: not here
+                pass
+        self.assertEqual(len(cmds), 2)
+        return cmds, staged
+
+    def test_side_by_side_parts_run_concurrent_and_stage_nothing_before(self):
+        cmds, staged = self._parts(True)
+        self.assertEqual(staged, [])
+        self.assertTrue(all("--concurrent" in c for c in cmds))
+
+    def test_serial_parts_stage_the_steps_before_once(self):
+        cmds, staged = self._parts(False)
+        self.assertEqual(staged, ["confirmations", "document_fields", "key_joins"])
+        self.assertFalse(any("--concurrent" in c for c in cmds))
 
 
 class MentionReadAheadTests(CommittedRunTests):

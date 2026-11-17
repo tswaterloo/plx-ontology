@@ -19,8 +19,9 @@ module is the pure part:
   handle. A link reaching two records, or values of one property that disagree, makes the
   facts it would give ambiguous, never one picked.
 * **Plan** (``plan``): a blank is filled only when its normalized label is one the terms
-  file lists and exactly one distinct value stands among the properties that field may be
-  read from. Otherwise it stays blank and is flagged: ``unknown_field`` (no rule for the
+  file lists (else the schema's own names: ``_schema_rule``, then the general step
+  ``_general_rule``, whose near matches are only suggested for the person to check) and
+  exactly one distinct value stands among the properties that field may be read from. Otherwise it stays blank and is flagged: ``unknown_field`` (no rule for the
   label), ``no_fact`` (nothing read), ``ambiguous`` (two values, a disputed property or a
   link reaching two records), ``person_only`` (a signature, who signs, the day it is
   signed), ``kept`` (it already holds a value: never overwritten).
@@ -45,6 +46,8 @@ from typing import Any, Callable, Iterable, Mapping, Optional, Sequence
 from xml.etree import ElementTree as ET
 from xml.sax.saxutils import escape
 import zipfile
+
+from integrations import document_understanding as du
 
 TERMS_FILE = Path(__file__).with_name("doc_fill_terms.json")
 TERMS_SCHEMA = "plx-doc-fill-terms/v1"
@@ -304,6 +307,62 @@ def _schema_rule(key: str, facts: Sequence[Fact]) -> Optional[tuple[str, tuple[s
     return (key, tuple(sorted(props))) if props else None
 
 
+# words a label wraps its ask in, never what it asks for
+_FILLER = frozenset({"the", "of", "a", "an", "your", "our", "please", "enter", "provide",
+                     "if", "any", "applicable", "here", "this", "list", "state", "give"})
+
+
+def _tokens(text: str, terms: Terms) -> frozenset[str]:
+    """A label's or a schema name's words as matched: shortened words spelled out
+    (``Terms.words``), plurals dropped, the filler words around an ask left out."""
+    out = set()
+    # a parenthetical is part of what is asked here (``Lead time (days)``): kept as words
+    words = []
+    for w in re.split(r"[\s/]+", normalize(re.sub(r"[()\[\]]", " ", str(text or "")))):
+        w = terms.words.get(w, w)            # ``e-mail`` spelled out before ``-`` splits
+        words.extend(terms.words.get(x, x) for x in w.split("-"))
+    for w in words:
+        if len(w) > 3 and w.endswith("s") and not w.endswith(("ss", "us", "is")):
+            w = w[:-1]
+        if w and w not in _FILLER:
+            out.add(w)
+    return frozenset(out)
+
+
+def _general_rule(label_text: str, facts: Sequence[Fact], terms: Terms
+                  ) -> Optional[tuple[str, tuple[str, ...], bool]]:
+    """The general label-to-fact step (AUDIT3-12) for a label neither the terms file nor
+    the schema's exact names know: its words against every read fact's ``<type>
+    <property>`` words, in any order. **Sure** (the third item True): the label says each
+    of the property's words and nothing but those and its type's, and a one-word property
+    only beside a word of its type (``Lead time (days)``, ``Supplier's lead-time``,
+    ``Code HS``). **Near** (False, filled only for the person to check): two or more of the
+    label's words are the property's and every other is its type's (``Supplier lead time``
+    for ``lead_time_days``). Sure properties win over near ones; every property matched
+    takes part, so two values disagree."""
+    key = normalize(label_text)
+    label = _tokens(label_text, terms)
+    if not label:
+        return None
+    sure, near = set(), set()
+    for fact in facts:
+        kind, _, prop = fact.key.partition(".")
+        if prop == "*" or not prop:
+            continue
+        p, t = _tokens(_words(prop), terms), _tokens(_words(kind), terms)
+        if not p:
+            continue
+        if p <= label <= p | t and (len(p) >= 2 or bool(label & (t - p))):
+            sure.add(fact.key)
+        elif label <= p | t and len(label & p) >= 2:
+            near.add(fact.key)
+    if sure:
+        return key, tuple(sorted(sure)), True
+    if near:
+        return key, tuple(sorted(near)), False
+    return None
+
+
 def plan(fields: Sequence[FormField], facts: Sequence[Fact], terms: Terms) -> list[Filled]:
     """Each field's outcome (module doc, **Plan**)."""
     out = []
@@ -318,6 +377,11 @@ def plan(fields: Sequence[FormField], facts: Sequence[Fact], terms: Terms) -> li
                               reason="for the person who signs"))
             continue
         rule = terms.fields.get(key) or _schema_rule(key, facts)
+        sure = True
+        if rule is None and f.kind == "text":
+            general = _general_rule(f.label, facts, terms)
+            if general is not None:
+                rule, sure = general[:2], general[2]
         if rule is None or f.kind != "text":
             out.append(Filled(f.field_id, f.label, "", "", "unknown_field",
                               reason="no rule for this label" if rule is None
@@ -340,6 +404,14 @@ def plan(fields: Sequence[FormField], facts: Sequence[Fact], terms: Terms) -> li
         elif len(values) > 1:
             out.append(Filled(f.field_id, f.label, "", "", "ambiguous", name,
                               reason=f"{len(values)} different values"))
+        elif not sure:
+            # a near match: shown with its source for the person to check, never written
+            got = next(iter(values.values()))
+            out.append(Filled(f.field_id, f.label, "", got[0].value, "suggested", name,
+                              got[0].citation, tuple(x.citation for x in got[1:5]),
+                              reason="check: read as " + ", ".join(
+                                  _words(k.split(".", 1)[0]) + " " + _words(k.split(".", 1)[1])
+                                  for k in sorted({x.key for x in got}))))
         else:
             got = next(iter(values.values()))
             out.append(Filled(f.field_id, f.label, "", got[0].value, "filled", name,
@@ -853,7 +925,7 @@ class _PdfFlat(_Doc):
                     y = tm[4] * cm[1] + tm[5] * cm[3] + cm[5]
                     runs.append((text, x, y, float(size or 10) * abs(tm[0] or 1)))
             try:
-                page.extract_text(visitor_text=visit)
+                du.pdf_page_text(page, visitor=visit)
             except Exception:  # noqa: BLE001 - an unreadable text layer: no field there
                 continue
             for k, (text, x, y, size) in enumerate(runs):
@@ -881,7 +953,7 @@ class _PdfFlat(_Doc):
             from reportlab.pdfgen import canvas
         except ImportError:
             raise FillRefused("pdf_overlay_unavailable") from None
-        from pypdf import PdfReader, PdfWriter
+        from pypdf import PdfWriter
         writer = PdfWriter(clone_from=self.reader)
         by_page: dict[int, list[tuple[float, float, float, str]]] = {}
         for fid, value in values.items():
@@ -897,7 +969,10 @@ class _PdfFlat(_Doc):
                 pdf.setFont("Helvetica", max(6.0, min(size, 12.0)))
                 pdf.drawString(x, y, value)
             pdf.save()
-            page.merge_page(PdfReader(io.BytesIO(buf.getvalue())).pages[0])
+            overlay, _failure = du.open_pdf(buf.getvalue())
+            if overlay is None:
+                raise FillRefused("pdf_overlay_unavailable")
+            page.merge_page(overlay.pages[0])
         out = io.BytesIO()
         writer.write(out)
         return out.getvalue()
@@ -913,14 +988,17 @@ def open_document(data: bytes, terms: Terms) -> _Doc:
             return _Xlsx(data, terms)
         except (KeyError, ET.ParseError):
             raise FillRefused("not_a_form") from None
+    # opened as every reading opens a PDF (integrations.document_understanding.open_pdf)
+    reader, failure = du.open_pdf(data)
+    if failure in ("pdf_parser_unavailable", "parser_panicked"):
+        raise FillRefused("pdf_unavailable")
+    if failure == "encrypted":
+        raise FillRefused("encrypted")
+    if reader is None:
+        raise FillRefused("not_a_form")
+    from pypdf.errors import PdfReadError
     try:
-        from pypdf import PdfReader
-        from pypdf.errors import PdfReadError
-    except ImportError:
-        raise FillRefused("pdf_unavailable") from None
-    try:
-        reader = PdfReader(io.BytesIO(data))
-        if reader.is_encrypted:
+        if reader.is_encrypted:   # opened with the empty password: never written unlocked
             raise FillRefused("encrypted")
         form = _PdfForm(reader) if reader.get_fields() else None
     except (PdfReadError, ValueError, KeyError, TypeError):

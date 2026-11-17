@@ -38,6 +38,7 @@ from ontology.core import Actor
 from ontology.json_contract import validate
 from operating import case_workspace_live as live
 from operating import connector_home_check, mcp_portfolio, mcp_server, po_status, status_card
+from operating import mcp_server_home
 from operating import proactive_engine as pe
 from operating.case_runtime import CaseRuntime
 from operating.tests import test_status_card as tsc
@@ -212,7 +213,7 @@ class PortfolioOverStdioTest(unittest.TestCase):
             self.assertTrue(gap["citations"], gap)
         rest = len(found["home"]["gaps"]) - len(shown)
         if rest:
-            self.assertIn(f"... {rest} more in the structured result.", text)
+            self.assertIn(f"The other {rest} are in the structured result.", text)
 
         # -- unscoped: late POs from the inbox's late and unconfirmed orders; landed cost
         # names the scope it needs (never complete, never a scan)
@@ -407,9 +408,11 @@ class InboxRouteTest(unittest.TestCase):
         with mock.patch.object(mcp_portfolio, "scan", side_effect=AssertionError("scanned")), \
                 mock.patch.object(status_card, "verdict",
                                   side_effect=AssertionError("judged on the request")):
-            started = time.monotonic()
+            # the route's own work (this process's CPU, every thread): a busy host adds
+            # wall time, never this; a scan or a verdict on the request fails above anyway
+            started = time.process_time()
             found = self.ask(server, 2, {"query": "What needs my attention?"})
-            elapsed = time.monotonic() - started
+            elapsed = time.process_time() - started
         self.assertLess(elapsed, 1.0)
         self.assertEqual(found["status"], "home")
         with pe.closing(pe._attach(pe.inbox_path(self.fx.store), self.fx.store)) as conn:
@@ -556,7 +559,7 @@ class InboxAgeTest(unittest.TestCase):
     day boundary in both directions. Evidence label: isolated-fixture."""
 
     RULES = [{"rule": name, "status": "complete", "not_evaluated": 0, "reasons": []}
-             for name in mcp_server._HOME_RULES]
+             for name in mcp_server_home._HOME_RULES]
 
     def answer(self, as_of: str, run_at: datetime, now: datetime, changed=False) -> dict:
         inbox = {"status": "read", "as_of": as_of, "run_at": run_at.isoformat(),
@@ -693,9 +696,9 @@ class ScanTest(unittest.TestCase):
         for total in (1, 10, 60, 61):
             call, readable, asked = self.caller(total, failing={0} if total > 1 else (),
                                                 uncited={1} if total > 2 else ())
-            started = time.monotonic()
+            started = time.process_time()   # the scan's work, which load does not add to
             found = mcp_portfolio.scan(call, self.PLAN, as_of=None, readable=readable)
-            self.assertLess(time.monotonic() - started, 2.0, total)
+            self.assertLess(time.process_time() - started, 2.0, total)
             judged = min(total, mcp_portfolio.SCAN_CAP)
             self.assertEqual(len(asked), judged)                 # each object asked once
             self.assertEqual(len(set(asked)), judged)

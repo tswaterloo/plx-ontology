@@ -18,6 +18,7 @@ from unittest import mock
 
 from ontology.types import Actor
 from operating import ontology_tools as ot
+from operating import ontology_tools_policy
 from operating import ontology_tools_aggregate as oa
 from tests.test_ontology_tools import ContractMixin, Store, tools
 
@@ -357,7 +358,7 @@ class FindScanResumeTests(ContractMixin, unittest.TestCase):
         plain = self.listed(self.pages(t, PRESENT, limit=4))
         outside, scanned[0] = scanned[0], 0
         self.assertGreater(outside, 60)
-        with ot.run_memo():
+        with ontology_tools_policy.run_memo():
             kept = self.listed(self.pages(t, PRESENT, limit=4))
             once, scanned[0] = scanned[0], 0
             full = self.listed(self.pages(t, PRESENT, actor=FULL, limit=4))

@@ -102,7 +102,7 @@ export function OrderRanking({ orders, note, more = 0, inPeriod, footnote = true
           <tfoot>
             <tr>
               <td colSpan={4} className="pt-2 text-[12px] text-muted" data-testid="orders-more">
-                and {more} more
+                {plural(more, "other order")} not listed here
               </td>
             </tr>
           </tfoot>

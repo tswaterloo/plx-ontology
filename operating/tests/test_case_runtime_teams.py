@@ -37,6 +37,7 @@ from ontology.project_graph import TeamsCaptures
 from ontology.text_index import store_text_index
 from ontology.types import Actor
 from operating import claim_checks
+from operating import claim_checks_parse
 from operating import ontology_tools_investigate as oi
 from operating.case_runtime import CaseRuntime, LiveReaders, _EmployeeItemAcl
 from operating.employee_permissions import EmployeeEntitlement, EmployeePrincipal
@@ -83,7 +84,7 @@ class TeamsHostCase(tct.CaptureCase):
 
     def claim(self, actor: Actor, value: str, handle: str | None = None) -> dict:
         handle = handle or self.root["citation"]
-        claims = claim_checks.parse_value_claims(
+        claims = claim_checks_parse.parse_value_claims(
             [{"value": value, "citation": handle, "field": "row.body_text"}], [handle], [])
         # The text states the value its claim backs (claim_value_unstated otherwise).
         item = {"id": "F1", "texts": [f"The channel holds the message: {value}"],

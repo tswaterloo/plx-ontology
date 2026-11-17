@@ -92,6 +92,78 @@ class DeltaToPostgresTests(unittest.TestCase):
             for migration in MIGRATIONS:
                 pg.execute(migration.read_text(encoding="utf-8"))
 
+    def test_layers_never_rebuild_the_kept_link_slice_and_a_build_counts_them_in(self):
+        # live 11-15: the slice was never current from migration 0028 on; review
+        # 3f30c615a8: a rebuild inside the delta cycle held every layer off for 30-60 min.
+        # A layer never rebuilds it; a build beside the layers counts each one in.
+        from ontology.tests.test_delta import DeltaEquivalenceTests
+        from ontology.tests.test_projection import T1, T2
+        from datetime import timedelta
+        from operating.pg import link_marks, ontology_delta, ontology_load
+        import psycopg
+
+        fixture = DeltaEquivalenceTests("test_changed_records_equal_a_full_build_and_nothing_"
+                                        "else_is_owned")
+        fixture.setUp()
+        self.addCleanup(fixture.doCleanups)
+        fixture.capture(T1)
+        base = fixture.full("gen1.sqlite")
+        fixture.fake.set("public.app_purchase_order", "po-a", status="RECEIVED")
+        fixture.capture(T2)
+        report = fixture.cycle(base)
+        fixture.fake.set("public.app_purchase_order_line", "l1", purchase_order_id="po-b")
+        fixture.capture(T2 + timedelta(hours=1))
+        later = fixture.cycle(base)
+        fixture.fake.set("public.app_purchase_order", "po-a", status="CLOSED")
+        fixture.capture(T2 + timedelta(hours=2))
+        last = fixture.cycle(base)
+        # a database of its own: the class's carries no kept slice for its other layers
+        name, dsn = pg_testdb.create_db()
+        self.addCleanup(pg_testdb.drop_db, name)
+        with psycopg.connect(dsn, autocommit=True) as pg:
+            for migration in MIGRATIONS:
+                pg.execute(migration.read_text(encoding="utf-8"))
+        ontology_load.load(base, dsn, workers=1, replace=True, log=io.StringIO())
+        with psycopg.connect(dsn, autocommit=True) as pg, pg.cursor() as cur:
+            if not link_marks.present(cur):   # a replacing load drops it: migrated again
+                cur.execute((Path(link_marks.__file__).parent / "migrations" /
+                             "0028_link_marks.sql").read_text(encoding="utf-8"))
+            self.assertTrue(link_marks.present(cur))
+
+        def kept():
+            with psycopg.connect(dsn, autocommit=True) as pg, pg.cursor() as cur:
+                return link_marks.vouched_now(cur)
+
+        self.assertFalse(kept(), "a load leaves it not current")
+        # not current, never built: the layer goes on, nothing rebuilt or started
+        with mock.patch.object(link_marks, "refresh", side_effect=AssertionError("rebuilt")), \
+                mock.patch("subprocess.Popen", side_effect=AssertionError("started")):
+            first = ontology_delta.apply_layer(report["store"], dsn)
+        self.assertTrue(first["applied"], first)
+        self.assertEqual(first["link_marks_rebuild"], "never_built")
+        applied = []
+        real = link_marks._bounds
+
+        def a_layer_mid_build(conn, pieces):   # the follower goes on during the read
+            applied.append(ontology_delta.apply_layer(later["store"], dsn))
+            return real(conn, pieces)
+
+        with mock.patch.object(link_marks, "_bounds", side_effect=a_layer_mid_build), \
+                mock.patch("subprocess.Popen", side_effect=AssertionError("started")):
+            out = link_marks.refresh(dsn, workers=2, log=io.StringIO(), settle=5)
+        self.assertTrue(applied[0]["applied"], applied)
+        self.assertNotIn("link_marks_rebuild", applied[0], "a build counted it in")
+        self.assertTrue(out["readers_use_it"], out)
+        self.assertEqual(out["build"]["layers"], 1)
+        self.assertTrue(kept())
+        # current now: the next layer carries it in its own transaction, no rebuild
+        with mock.patch.object(link_marks, "refresh", side_effect=AssertionError), \
+                mock.patch("subprocess.Popen", side_effect=AssertionError("started")):
+            again = ontology_delta.apply_layer(last["store"], dsn)
+        self.assertTrue(again["applied"], again)
+        self.assertNotIn("link_marks_rebuild", again)
+        self.assertTrue(kept())
+
     def test_owned_objects_hold_the_full_builds_rows_once(self):
         from ontology.tests.test_delta import DeltaEquivalenceTests
         from ontology.tests.test_projection import T1, T2
@@ -1128,7 +1200,6 @@ class DeltaToPostgresTests(unittest.TestCase):
         the backlog drains a layer a cycle, each applied before the next closure, every
         record followed once, and Postgres ends with a full build's rows, as one uncapped
         cycle leaves them (the uncapped cycle is checked against the same full build)."""
-        from datetime import timedelta
         from ontology import delta
         from ontology.tests.test_delta import DeltaEquivalenceTests, normalizer
         from ontology.tests.test_projection import T1, T2

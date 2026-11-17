@@ -57,8 +57,8 @@ export function freshOnes(seen: ReadonlySet<string> | null, now: Pending[]): Pen
 }
 
 /** At most `max` notifications at once; the rest are said as one line. */
-export function capNotices(list: Pending[], max = 3): DesktopNotice[] {
+export function capNotices(list: Pending[], max = 3, more = "/my-work"): DesktopNotice[] {
   const shown: DesktopNotice[] = list.slice(0, max).map((p) => ({ title: p.title, body: p.body, href: p.href }));
-  if (list.length > max) shown.push({ title: `${list.length - max} more need you`, href: "/my-work" });
+  if (list.length > max) shown.push({ title: `${list.length - max} more need you`, href: more });
   return shown;
 }

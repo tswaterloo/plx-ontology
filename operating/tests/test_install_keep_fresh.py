@@ -18,8 +18,12 @@ class Verification(unittest.TestCase):
         fake = tmp / "bin" / "systemd-analyze"
         fake.write_text(FAKE)
         fake.chmod(0o755)
+        # the host's own deploy.env may be absent: render the units from a fixture one
+        deploy_env = tmp / "deploy.env"
+        deploy_env.write_text("PLX_USER=u\nPLX_GROUP=u\nPLX_HOME=/home/u\n")
         env = dict(os.environ, PATH=f"{tmp / 'bin'}:{os.environ['PATH']}", FAKE_OUT=out,
-                   FAKE_RC=str(rc))
+                   FAKE_RC=str(rc), PLX_DEPLOY_ENV=str(deploy_env))
+        env.pop("SUDO_USER", None)
         for key in list(env):
             if any(w in key for w in ("KEY", "SECRET", "TOKEN", "DSN", "PASSWORD")):
                 del env[key]
@@ -65,15 +69,38 @@ class AutopilotFollowUnit(unittest.TestCase):
             lines = [ln for ln in unit.splitlines() if ln and not ln.startswith("#")]
             start = [ln for ln in lines if ln.startswith("ExecStart=")]
             self.assertEqual(len(start), 1)
-            self.assertIn(f"-m operating.autopilot {command} --state-dir", start[0])
+            # run through operator_api.autopilot_context (the person's memory and template
+            # for each draft): the same autopilot command line, nothing more
+            self.assertIn(f"-m operator_api.autopilot_context {command} --state-dir", start[0])
+            self.assertIn("Environment=PLX_AUTOPILOT_MEMORY_DSN=postgresql:///plx", lines)
+            self.assertIn("Environment=PLX_AUTOPILOT_ENV_FILE=/home/u/.config/plx/plx.env",
+                          lines)
+            # plx.env is read only through the allowlist, never loaded whole into the unit
+            files = [ln for ln in lines if ln.startswith("EnvironmentFile=")]
+            self.assertEqual(files, ["EnvironmentFile=-/home/u/.config/plx/proactive.env"])
+            self.assertFalse([ln for ln in lines if "PLX_PG_DSN" in ln])
             self.assertIn("Environment=PLX_AUTOPILOT_EVQ=1", lines)
-            self.assertIn("Environment=PLX_ONTOLOGY_PG=1", lines)
+            self.assertIn("Environment=PLX_ONTOLOGY_PG=only", lines)
             for live in ("autopilot_write", "PLX_AUTOPILOT_WRITES", "PLX_ACTIONS_LIVE",
                          "PLX_AUTOPILOT_OFF=0"):
                 self.assertFalse([ln for ln in lines if live in ln], live)
             self.assertTrue((tmp / "out" / f"{name}.timer").is_file())
             path = (tmp / "out" / f"{name}.path").read_text()
             self.assertIn(f"Unit={name}.service", path)
+        # AUDIT3-10: the fast feed as one continuous consumer, same guards, no timer
+        self.assertIn("plx-autopilot-fast-serve", text.split("SYS_DAEMONS=", 1)[1].splitlines()[0])
+        unit = (tmp / "out" / "plx-autopilot-fast-serve.service").read_text()
+        lines = [ln for ln in unit.splitlines() if ln and not ln.startswith("#")]
+        self.assertEqual([ln for ln in lines if ln.startswith("ExecStart=")],
+                         ["ExecStart=/data/venv/bin/python3 -m operating.autopilot fast --serve"
+                          " --state-dir /data/plx-state"])
+        for want in ("Type=simple", "Restart=always", "Environment=PLX_AUTOPILOT_EVQ=1",
+                     "Environment=PLX_ONTOLOGY_PG=only"):
+            self.assertIn(want, lines)
+        self.assertTrue([ln for ln in lines if ln.startswith("Environment=PLX_RELEASE_CURRENT=/")])
+        for live in ("autopilot_write", "PLX_AUTOPILOT_WRITES", "PLX_ACTIONS_LIVE",
+                     "PLX_AUTOPILOT_OFF=0"):
+            self.assertFalse([ln for ln in lines if live in ln], live)
 
 if __name__ == "__main__":
     unittest.main()
