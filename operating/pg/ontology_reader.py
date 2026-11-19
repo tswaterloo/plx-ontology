@@ -953,6 +953,20 @@ class PgStoreReader(StoreReader):
         if problem is not None:
             raise PostgresNotWhole(problem)
 
+    def whole_stamp(self) -> Any:
+        """``check_whole`` and ``state_stamp`` in one statement (one round trip, one
+        snapshot): what a host asks at every request when Postgres is the only store."""
+        with self.lock, self.conn._lock:
+            try:
+                row = self.conn._pg.execute(_WHOLE_SQL.replace("%%", "%")
+                                            + ", ontology.sq_data_version()").fetchone()
+            except Exception as error:  # noqa: BLE001 - unreadable: refused
+                raise PostgresNotWhole(f"unreachable:{type(error).__name__}") from error
+        problem = whole_problem(row)
+        if problem is not None:
+            raise PostgresNotWhole(problem)
+        return ("postgres", int(row[3]))
+
     def state_stamp(self) -> Any:
         """The Postgres ontology's data version (new with every applied delta layer,
         migration or load): what a host keys what it decided over the store by."""

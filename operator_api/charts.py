@@ -609,6 +609,12 @@ def refused(text: str, events: Sequence[Mapping[str, Any]]) -> list[tuple[str, s
     return out
 
 
+def why_code(why: str) -> str:
+    """A refusal's kind for a log line: the first words of ``NotDrawn``'s fixed text
+    (``two_rows_are_for``), never the column, label or value that follows."""
+    return "_".join(re.findall(r"[a-z]+", why.lower())[:4]) or "unknown"
+
+
 def chart_blocks(text: str) -> list[str]:
     """The fenced chart blocks of ``text``, as written."""
     return [m.group(0).strip() for m in _CHART_BLOCK.finditer(text)]

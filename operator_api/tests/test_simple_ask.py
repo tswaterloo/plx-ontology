@@ -454,7 +454,8 @@ class SessionTest(unittest.TestCase):
         self.assertNotIn("--append-system-prompt", argv)
         system = argv[argv.index("--system-prompt") + 1]
         for word in ("sales_invoices", "customer_balances", "Sage is the system of record",
-                     "plx.search", "currency", "in digits (2, not two)", "in one turn"):
+                     "plx.search", "currency", "in digits (2, not two)", "in one turn",
+                     "what you covered and what you left out", "emails.received_at"):
             self.assertIn(word, system)
         self.assertEqual(system, sa.system_prompt())
         # no minutes of extended thinking by default: low effort (adaptive thinking stays)
@@ -759,6 +760,37 @@ class WarmTest(unittest.TestCase):
         ran = self.ask("ann", "And as a chart again?", conversation="c2")
         self.assertEqual(len(self.opened[-1].prompts), 1)
         self.assertEqual(len(ran.charts), 1)
+
+    def test_the_ask_log_line_tells_a_chart_never_asked_from_one_dropped(self):
+        """The one log line per Ask counts the chart blocks the answer wrote, the charts
+        drawn and why each other block drew nothing, as a kind of refusal only (never the
+        value inside it): "never asked" and "dropped" read apart."""
+        import json as _json
+        rid = "sql://0123456789abcdef0123"
+        mixed = ('```chart\n{"type": "bar", "title": "Totals", "result": "%s", "x": "n", '
+                 '"y": ["total"]}\n```' % rid)
+        fixed = mixed.replace('"x": "n"', '"x": "currency"')
+        def line(answers, conversation):
+            self.answers = answers
+            with self.assertLogs("operator_api.ask", "INFO") as got:
+                self.ask("ann", "October sales?", conversation=conversation)
+            return [_json.loads(r.getMessage()) for r in got.records
+                    if r.getMessage().startswith("{") and "simple_ask" in r.getMessage()][-1]
+        failed = AgentRun(events=[OCT], final_text="It was 703,058.44 CAD.\n\n" + mixed,
+                          usage={"subtype": "success"})
+        got = line([failed, AgentRun(events=[], final_text=mixed,
+                                     usage={"subtype": "success"})], "c1")
+        self.assertEqual((got["charts_asked"], got["charts_drawn"], got["charts_refused"]),
+                         (2, 0, ["the_rows_are_in", "the_rows_are_in"]))  # + the redo
+        self.assertNotIn("CAD", _json.dumps(got))
+        got = line([AgentRun(events=[OCT], final_text="It was 703,058.44 CAD.\n\n" + fixed,
+                             usage={"subtype": "success"})], "c2")
+        self.assertEqual((got["charts_asked"], got["charts_drawn"], got["charts_refused"]),
+                         (1, 1, []))
+        got = line([AgentRun(events=[OCT], final_text="It was 703,058.44 CAD.",
+                             usage={"subtype": "success"})], "c3")
+        self.assertEqual((got["charts_asked"], got["charts_drawn"], got["charts_refused"]),
+                         (0, 0, []))
 
     def test_an_attached_image_is_shown_to_the_kept_session_with_its_turn(self):
         """The person's attached image goes to the session's turn as an image (the task

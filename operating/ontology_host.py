@@ -1118,8 +1118,12 @@ class CaseHostTools:
         reader = self._reader
         from operating.pg.ontology_reader import PostgresNotWhole
         try:
-            reader.check_whole()
-            stamp = reader.state_stamp()
+            both = getattr(reader, "whole_stamp", None)
+            if callable(both):
+                stamp = both()   # one round trip per request, not two
+            else:
+                reader.check_whole()
+                stamp = reader.state_stamp()
         except (PostgresNotWhole, sqlite3.Error):
             self.close()
             raise

@@ -111,9 +111,10 @@ class Rows(unittest.TestCase):
 
 class FakeWorker:
     def __init__(self, out):
-        self.out, self.sql = out, []
+        self.out, self.sql, self.how = out, [], []
 
-    def run(self, reader, job, timeout=0):
+    def run(self, reader, job, timeout=0, priority=0, long=False):
+        self.how.append((priority, long))
         view = type("V", (), {})()
         view._call = lambda tool, args: (self.sql.append(args["sql"]), self.out)[1]
         return job(view)
@@ -127,6 +128,22 @@ class Backend(ins.InsightsMixin):
 
     def _team_scope(self, reader):
         return self.scope
+
+
+class ReadQueueTest(unittest.TestCase):
+    """Insight reads run on the page read workers, never the access workers (those decide
+    every request's door: a dashboard's tiles held both and every page waited); a read
+    nobody waits on goes after the page reads and as a long read."""
+
+    def test_tile_reads_skip_the_access_workers_and_reads_ahead_yield(self):
+        b = Backend(sql_out([["P", "1", "p1"]]), everyone=True)
+        b.access_worker = FakeWorker(None)   # would fail the read if it were used
+        ins.read_sql(b, reader("owner"), "SELECT 1")
+        ins.read_sql(b, reader("owner"), "SELECT 2", ahead=True)
+        self.assertEqual(b.access_worker.sql, [])
+        self.assertEqual(b.reads.sql, ["SELECT 1", "SELECT 2"])
+        self.assertEqual(b.reads.how, [(0, False), (ins.AHEAD_PRIORITY, True)])
+        self.assertGreater(ins.AHEAD_PRIORITY, 2)   # after warm-ups (serving.WARM_PRIORITY)
 
 
 def sql_out(rows, cols=("person", "mail_sent", "person_id")):
@@ -265,7 +282,7 @@ class ServedView(unittest.TestCase):
         view = objects.ObjectWorkspace(access.tools(), actor, access=access)
 
         class Worker:
-            def run(self, reader, job, timeout=0):
+            def run(self, reader, job, timeout=0, priority=0, long=False):
                 return job(view)
 
         b = Backend(None, everyone=True)

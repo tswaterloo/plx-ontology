@@ -24,10 +24,12 @@ Freightcom: a hit drops the whole decision), the proposal checks (``autopilot_jo
 a write adapter's own shape, never FileMaker, Sage or Freightcom, never a delete), and the
 person's confirm before anything is sent or written (the items go to their queue).
 
-A conversation with a reader outside the company gets no record read tool (``reads``): the
-session writes from the message and that party's own records' lines, and every reply, option
-and proposed message to an outside reader passes ``autopilot_outbound``'s check
-(``operating.autopilot._model_agent``).
+The session reads with the person's own access, like Ask, also when someone outside the
+company reads the conversation (the input then carries that party's own records' lines); the
+guard is on the finished text: every reply, option and proposed message to an outside reader
+passes ``autopilot_outbound``'s check, and what it flags is held for the person, never sent
+(``operating.autopilot._model_agent``). ``reads`` False (no record tool) stays for callers
+that ask for it.
 
 Every decision then passes the second check (``autopilot_check``: a cheaper model with no
 tools, after the screens): only what the message, the thread and the reads support stands.
@@ -55,13 +57,18 @@ Prepare what {person} would do about it now, the way they would do it:
 - a reply in this conversation: "reply", in {person}'s own voice, saying only what the \
 records, the thread or the message show; a status, a date, a confirmation, a document, a \
 how-to, a short courtesy answer;
-- a question to {person} instead of a reply when the answer turns on what only they know or \
-decide (their decision, the state of their own work, their plan or availability, money, \
-a commitment the records do not back): "ask", with the two or three answers they would choose \
-between, each with the full reply that answer would send. An answer's reply says that answer \
-and only what the message, the thread or the records show: no time, promise, price, name or \
-step of anyone's that nobody stated. When the substance must come from {person} (their plan, \
-a specification, figures, files), ask with no options: they write it;
+- when the answer turns on what only {person} knows or decides (their decision, the state \
+of their own work, their plan or availability, money, a commitment the records do not back), \
+still write the reply in full, ready to send, with each piece only they can give as a \
+placeholder in square brackets ([yes or no], [ship date], [quantity]): never pick it for them \
+and never invent it. A placeholder is a few words naming one piece, never a sentence or a list \
+of alternatives, and the reply around it is what {person} would send, as short as they write, \
+answering what the message asks first: when nearly all of it is theirs to give, the one or two \
+lines they would write around it, never a form of blanks; never "I'll check and come back" \
+where their answer goes: the answer is the placeholder. Put what they must fill in as "ask": the question, and when the message \
+offers a choice, the two or three answers they would choose between, each with the full reply \
+that answer would send. Any reply says only what the message, the thread or the records show: \
+no time, promise, price, name or step of anyone's that nobody stated;
 - a change in a business system: plx.prepare_write (plx.edit_document for a document's text \
 or cells), with the record's ids as the records hold them; a message to someone other than \
 the sender (asking a colleague to do their part, a supplier, passing it on): plx.prepare_write \
@@ -113,7 +120,10 @@ def look_text(kind: str, person: str, changes: Sequence[Mapping[str, str]]) -> s
         f"- [{c['record']}] {c['line']}" for c in changes))
 
 
-READS = "Look up what you need with plx.sql, plx.search and plx.open."
+READS = ("Look up what you need with plx.sql, plx.search and plx.open. When someone outside "
+         "the company reads the conversation, what you read is for getting their answer "
+         "right: put in what is theirs only, never another customer or supplier or anything "
+         "of theirs.")
 # a conversation with a reader outside the company (``autopilot_outbound``): no record tool
 NO_READS = ("Someone outside the company reads this conversation: you have no record tools. "
             "Write only from the message, the thread and the lines given about their own "
@@ -135,6 +145,14 @@ class Decision:
     ask: Optional[dict[str, Any]] = None
     proposals: list[dict[str, Any]] = field(default_factory=list)
     todos: list[dict[str, str]] = field(default_factory=list)
+    # what the person must fill in or decide beside a written reply (the question asked), or ""
+    note: str = ""
+    # why the written reply needs the person's eye before it goes (the outbound or support
+    # check flagged it; in review the reply is kept with this), or ""
+    warning: str = ""
+    # the support check's repair of a reply it flagged (what it could not support taken out
+    # or left as [placeholders]), or ""
+    fixed: str = ""
     # what the session's read tools returned (a reply's figures are checked against it)
     looked: list[str] = field(default_factory=list)
 
@@ -154,8 +172,9 @@ def _text(value: Any, most: int) -> str:
 def parsed(final: Any, proposals: Sequence[Mapping[str, Any]], message: bool) -> Decision:
     """The session's answer as a ``Decision``: unknown or malformed parts are dropped (never
     guessed); a reply only for a message; a question with no usable answer is kept only when
-    it asks something; when both a reply and a question came, the question stands (the
-    answer is the person's)."""
+    it asks something; when both a reply and a question came, the written reply stands and
+    the question is its ``note`` (what the person fills in): a reply the model wrote is
+    never replaced by a card."""
     got = aj._json(final) or {}
     ask = got.get("ask") if isinstance(got.get("ask"), Mapping) else {}
     question = _text(ask.get("question"), 300)
@@ -166,11 +185,11 @@ def parsed(final: Any, proposals: Sequence[Mapping[str, Any]], message: bool) ->
              for t in (got.get("todos") if isinstance(got.get("todos"), list) else [])
              if isinstance(t, Mapping) and _text(t.get("what"), 300)][:TODOS]
     reply = _text(got.get("reply"), REPLY_CHARS) if message else ""
-    return Decision(summary=_text(got.get("summary"), 300),
-                    reply="" if question else reply,
+    return Decision(summary=_text(got.get("summary"), 300), reply=reply,
                     ask={"question": question, "options": options if message else []}
-                    if question else None,
-                    proposals=aj.kept(proposals), todos=todos)
+                    if question and not reply else None,
+                    proposals=aj.kept(proposals), todos=todos,
+                    note=question if reply else "")
 
 
 def when_of(as_of: str) -> str:

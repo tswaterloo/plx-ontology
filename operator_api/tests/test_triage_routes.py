@@ -95,11 +95,27 @@ class Routes(unittest.TestCase):
                          "queued")
         self.backend.state_dir = self.dir
         rd.Kept(rd.path_of(self.dir)).mark(ME, "Email:synth-1", "ready", kind="reply",
-                                           body="Order 1 ships Friday.")
-        (line,) = self.client().get("/api/replies").json()["lines"]
-        self.assertEqual((line["draft_state"], line["drafted_by"], line["draft"]["body"]),
-                         ("ready", "model", "Order 1 ships Friday."))
+                                           body="Order 1 ships [day].", ask="Which day?",
+                                           why="Check before sending: x")
+        client = self.client()
+        (line,) = client.get("/api/replies").json()["lines"]
+        self.assertEqual((line["draft_state"], line["drafted_by"], line["draft"]["body"],
+                          line["draft_note"], line["draft_warning"]),
+                         ("ready", "model", "Order 1 ships [day].", "Which day?",
+                          "Check before sending: x"))
         self.assertFalse(line["draft"]["sent"])
+        # the send dialog's card is rebuilt with the same kept draft, never the holding body
+        shown = client.post("/api/actions/preview", json={"card_id": line["card_id"],
+                                                          "kind": "send_email"})
+        self.assertEqual(shown.status_code, 200, shown.text)
+        self.assertEqual(shown.json()["payload"]["body"], "Order 1 ships [day].")
+        # an unfilled blank never goes out: the send refuses it until the person fills it
+        self.assertIn("Fill in [day] before you send.", shown.json()["problems"])
+        filled = client.post("/api/actions/preview", json={
+            "card_id": line["card_id"], "kind": "send_email",
+            "payload": {"body": "Order 1 ships after the check."}}).json()
+        self.assertFalse([p for p in filled["problems"] if p.startswith("Fill in")],
+                         filled["problems"])
 
     def test_an_alert_list_not_read_yet_is_said_so_never_as_no_access(self):
         # UX walk 11-13: Team's approvals said "couldn't find that, or you don't have

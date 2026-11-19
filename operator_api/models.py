@@ -2849,6 +2849,13 @@ class ReplyLine(_Model):
         "queued", description="The model's draft: ``ready`` (on ``draft``, or a question in "
         "``your_call``), ``drafting`` (being written), ``queued`` (the holding reply until "
         "it is written).")
+    draft_note: Optional[str] = Field(
+        None, description="The drafter's one line to the person beside a ready reply: what a "
+        "[bracketed blank] in it needs, or what was checked.")
+    draft_warning: Optional[str] = Field(
+        None, description="The outbound check's warning on a ready reply someone outside the "
+        "company reads (it names another party's order, PO, invoice, name or price, or could "
+        "not be checked): shown with the draft, read before any send.")
     drafted_by: Optional[Literal["model"]] = None
     your_call: Optional[ReplyQuestion] = Field(
         None, description="A question only you can answer, with each answer's reply.")

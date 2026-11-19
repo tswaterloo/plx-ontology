@@ -1502,9 +1502,11 @@ def _model_agent(queue: Queue, held: dict[str, Any], summary: Mapping[str, Any],
     sent_to = {str(a).lower() for a in [*(event.get("to") or ()), *(event.get("cc") or ())]}
     person = next((a for a in mine if a in sent_to), mine[0] if mine else owner)
     from . import autopilot_agent_io as io
-    described, inside = io.agent_input(event, text, material, addresses_of)
+    # reads as the person also with an outside reader; the outbound check on the finished
+    # text holds what it flags for the person (Guard the output, not the reads)
+    described, _inside = io.agent_input(event, text, material, addresses_of)
     got, why = assistant.run(event, owner, described, str(person), people, key=key,
-                             reads=inside)
+                             reads=True)
     if got is None:
         # an invitation the session left nothing on: its answer is still a to-do
         got = io.invitation_only(event, material, why)
@@ -1518,6 +1520,8 @@ def _model_agent(queue: Queue, held: dict[str, Any], summary: Mapping[str, Any],
     if got.empty:
         return out, why
     out.update({"summary": got.summary, "drafted_by": "model"})
+    if got.note:
+        out["note"] = got.note
     if got.todos:
         out["todos"] = got.todos
     if got.ask or got.reply:

@@ -10,6 +10,12 @@ environment), checks out the sha, then execs ``bwrap`` with:
 * ``/run/postgresql``: ~/plx-ai/run, whose socket is spark_pg_balance.py (spread over the
   box's reverse tunnels), so ``postgresql:///plx`` reaches the box's Postgres. The box end
   maps every login to ``plx_eval`` (read-only);
+  with ``pg: standby`` (spark_run.sh ``--pg standby``) and standby_guard.py's check passed
+  (in recovery, its slot on the box kept, replay within 10 min), ~/plx-ai/standby-run
+  instead: the Spark's own hot standby of the box (read-only by being one), the box's
+  socket then at ``/run/plx-primary`` (``PLX_PG_KEYSET_DSN``: a reader asks the box to keep
+  a long key list's shared set there, migration 0050); a failed check reads the box, said
+  on stderr;
 * ``/usr/local/bin/claude``: the same Claude Code version as the box, for this CPU;
   ``/var/lib/plx-workbench`` and ``/var/lib/plx-autopilot/claude-home``: their Spark copies,
   holding only the access token the box syncs (deploy/spark/spark_cred_sync.sh);
@@ -29,6 +35,8 @@ folders spark_run.sh copies back.
 """
 from __future__ import annotations
 
+from typing import Callable
+
 import json
 import os
 import re
@@ -43,6 +51,12 @@ RUN = HOME / "plx-run"
 TESTS = HOME / "plx-tests"
 AI = HOME / "plx-ai"
 STATE_COPY = HOME / "plx-state-copy"
+# usage metering (operating/usage_meter.py): the Spark's exporter settings, KEY=VALUE lines;
+# its endpoint is the box receiver through the reverse tunnel (127.0.0.1:4318 on the Spark)
+OTEL_FILE = AI / "otel.env"
+CONTENT_SWITCHES = frozenset({
+    "OTEL_LOG_USER_PROMPTS", "OTEL_LOG_TOOL_DETAILS", "OTEL_LOG_TOOL_CONTENT",
+    "OTEL_LOG_ASSISTANT_RESPONSES", "OTEL_LOG_RAW_API_BODIES"})
 SAFE_PATH = re.compile(r"^/[A-Za-z0-9._/@+-]+$")
 # where a sudo may sit on a Spark's PATH (/bin and /sbin are links into /usr there)
 SUDO_PATHS = ("/usr/bin/sudo", "/usr/sbin/sudo", "/usr/local/bin/sudo", "/usr/local/sbin/sudo")
@@ -57,6 +71,28 @@ exec "$@"
 def _fail(msg: str, code: int = 97) -> None:
     print(f"spark_run (remote): {msg}", file=sys.stderr)
     sys.exit(code)
+
+
+def telemetry_env(name: str, path: Path = OTEL_FILE) -> dict[str, str]:
+    """The metering settings from ``OTEL_FILE`` (none when it is missing or telemetry is
+    off), never a content switch or exporter header; the run's name joins the resource
+    attributes as ``plx.run``."""
+    try:
+        text = path.read_text()
+    except OSError:
+        return {}
+    env = {}
+    for line in text.splitlines():
+        key, sep, value = line.strip().partition("=")
+        if (sep and re.fullmatch(r"(OTEL_[A-Z0-9_]+|CLAUDE_CODE_ENABLE_TELEMETRY)", key)
+                and key not in CONTENT_SWITCHES and "HEADERS" not in key):
+            env[key] = value.strip()
+    if env.get("CLAUDE_CODE_ENABLE_TELEMETRY", "").strip() in ("", "0", "false"):
+        return {}
+    run = re.sub(r"[^A-Za-z0-9._-]", "_", name or "run")
+    env["OTEL_RESOURCE_ATTRIBUTES"] = ",".join(
+        p for p in (env.get("OTEL_RESOURCE_ATTRIBUTES", ""), f"plx.run={run}") if p)
+    return env
 
 
 def checkout(sha: str) -> Path:
@@ -90,8 +126,33 @@ def run_tmp(spec: dict) -> str:
     return str(tmp)
 
 
-def mounts(spec: dict, wt: Path) -> list[tuple[str, str, bool]]:
-    """(source on the Spark, path in the sandbox, read-only) for every bind of the run."""
+PRIMARY_IN_SANDBOX = "/run/plx-primary"
+
+
+def database(spec: dict, pick: Callable[[], tuple[bool, str]] | None = None
+             ) -> tuple[Path, dict[str, str]]:
+    """(the socket folder the run reads as /run/postgresql, environment it adds): the box's
+    balancer unless the run asks for the standby (``pg: standby``) and its guard passes."""
+    if spec.get("pg", "box") != "standby":
+        return AI / "run", {}
+    if pick is None:
+        sys.path.insert(0, str(Path(__file__).resolve().parent))
+        import standby_guard
+        pick = standby_guard.pick
+    try:
+        use, why = pick()
+    except Exception as exc:  # noqa: BLE001 - a failed guard reads the box
+        use, why = False, f"standby guard failed ({type(exc).__name__})"
+    print(f"spark_run: postgres = {'the standby' if use else 'the box'}: {why}", file=sys.stderr)
+    if not use:
+        return AI / "run", {}
+    return AI / "standby-run", {
+        "PLX_PG_KEYSET_DSN": f"host={PRIMARY_IN_SANDBOX} dbname=plx user=plx_eval"}
+
+
+def mounts(spec: dict, wt: Path, pg: Path | None = None) -> list[tuple[str, str, bool]]:
+    """(source on the Spark, path in the sandbox, read-only) for every bind of the run;
+    ``pg``: the socket folder read as /run/postgresql (the box's balancer by default)."""
     out: list[tuple[str, str, bool]] = []
     venv = TESTS / "venv"
     out.append((str(venv), "/data/venv", True))
@@ -118,7 +179,10 @@ def mounts(spec: dict, wt: Path) -> list[tuple[str, str, bool]]:
             _fail(f"shipped path missing on the Spark: {p}")
         out.append((str(src), p, p not in outs))
     out.append((run_tmp(spec), "/tmp", False))
-    out.append((str(AI / "run"), "/run/postgresql", True))
+    pg = pg or AI / "run"
+    out.append((str(pg), "/run/postgresql", True))
+    if pg != AI / "run":
+        out.append((str(AI / "run"), PRIMARY_IN_SANDBOX, True))
     claude = AI / "bin" / "claude"
     if claude.exists():
         out.append((str(claude.resolve()), "/usr/local/bin/claude", True))
@@ -195,16 +259,19 @@ def main() -> int:
     if not cmd or not all(isinstance(c, str) for c in cmd):
         _fail("no command")
     wt = checkout(spec.get("sha", ""))
-    binds = mounts(spec, wt)
+    pg, pg_env = database(spec)
+    binds = mounts(spec, wt, pg)
     env = {k: v for k, v in os.environ.items()
            if k in ("HOME", "USER", "LOGNAME", "LANG", "TERM", "SHELL", "XDG_RUNTIME_DIR",
                     "DBUS_SESSION_BUS_ADDRESS")}
+    env.update(telemetry_env(spec.get("name") or ""))
     for k, v in (spec.get("env") or {}).items():
         if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", k) and isinstance(v, str):
             env[k] = v
     env["PATH"] = f"{AI / 'shim'}:/data/venv/bin:/usr/local/bin:/usr/bin:/bin"
     env["PGHOST"] = "/run/postgresql"
     env["PGUSER"] = "plx_eval"
+    env.update(pg_env)
     env["PLX_SPARK_RUN"] = spec.get("name") or "1"
     env.setdefault("TZ", "America/New_York")
     cwd = spec.get("cwd") or "/data/OntologyProject"

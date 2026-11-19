@@ -67,20 +67,22 @@ class ReplyDrafts(unittest.TestCase):
                          "options": [{"label": "Yes", "reply": "Yes, Friday."}]}]
             if oid == "Email:none":
                 return [{"why": "nothing_useful"}]
-            return [{"kind": "reply", "draft": "PO 4521 ships on 21 November."}]
+            return [{"kind": "reply", "draft": "PO 4521 ships on [date].", "note": "the date is yours"}]
 
         counts = rd.run([(ANA, "Email:r"), (ANA, "Email:q"), (ANA, "Email:none"),
                          (BEN, "Email:boom")], self.kept, draft, parallel=2)
         self.assertEqual(seen, ["drafting"] * 4)
         self.assertEqual(counts, {"ready": 2, "none": 2})
         ana = self.kept.rows([ANA])
-        self.assertEqual(ana["Email:r"]["body"], "PO 4521 ships on 21 November.")
+        self.assertEqual(ana["Email:r"]["body"], "PO 4521 ships on [date].")
+        self.assertEqual(ana["Email:r"]["ask"], "the date is yours")      # a reply's note
         self.assertEqual(ana["Email:q"]["options"][0]["reply"], "Yes, Friday.")
         self.assertEqual(ana["Email:none"]["why"], "nothing_useful")
         self.assertTrue(self.kept.rows([BEN])["Email:boom"]["why"].startswith("draft_failed"))
 
     def test_attach_puts_the_kept_draft_on_its_line_never_waiting(self):
-        self.kept.mark(ANA, "Email:r", "ready", kind="reply", body="PO 4521 ships Friday.")
+        self.kept.mark(ANA, "Email:r", "ready", kind="reply", body="PO 4521 ships Friday.",
+                       ask="checked the PO's date")
         self.kept.mark(ANA, "Email:q", "ready", kind="your_call", ask="Ship Friday?",
                        options=[{"label": "Yes", "reply": "Yes."}])
         self.kept.mark(ANA, "Email:d", "drafting")
@@ -92,6 +94,9 @@ class ReplyDrafts(unittest.TestCase):
                          ["ready", "ready", "drafting", "queued"])
         self.assertEqual(lines[0]["draft"]["body"], "PO 4521 ships Friday.")
         self.assertEqual(lines[0]["drafted_by"], "model")
+        self.assertEqual(lines[0]["draft_note"], "checked the PO's date")
+        self.assertNotIn("draft_note", lines[3])
+        self.assertNotIn("draft_warning", lines[0])
         self.assertEqual(lines[1]["your_call"]["ask"], "Ship Friday?")
         self.assertEqual(lines[3]["draft"]["body"], hold["body"])
         # another person's kept drafts never reach this reader's lines
@@ -101,6 +106,61 @@ class ReplyDrafts(unittest.TestCase):
         # no state dir, nothing kept: the page still answers
         self.assertEqual(rd.kept_for(None, [ANA], lines), {})
         self.assertEqual(rd.kept_for(self.tmp / "none", [ANA], lines), {})
+
+    def test_a_flagged_reply_is_kept_with_its_warning_on_the_line(self):
+        got = rd.result_of([{"draft": "Order 777 ships Monday.", "note": "",
+                             "warning": "Check before sending: it names another customer."}])
+        state = got.pop("state")
+        self.kept.mark(ANA, "Email:w", state, **got)
+        lines = [{"object_id": "Email:w", "draft": {"body": "hold"}}]
+        rd.attach(lines, rd.kept_for(self.tmp, [f"tenant:{ANA}"], lines))
+        self.assertEqual(lines[0]["draft"]["body"], "Order 777 ships Monday.")
+        self.assertEqual(lines[0]["draft_warning"], "Check before sending: it names another customer.")
+
+    def test_line_draft_screens_first_then_the_assistant_reply_kept_with_note_and_warning(self):
+        from unittest import mock
+        from operating import autopilot as apm, autopilot_engine as eng
+        from operating.autopilot_agent import Decision
+        reg = {"autopilots": [{"id": "assistant"}], "limits": {"handler_seconds": 5}}
+        ev = {"event_type": "message.received", "cleared": True, "object_id": "Email:r",
+              "side": "internal", "sender": "bo@plx.example", "to": ["ana@plx.example"],
+              "to_me": True, "asks": True}
+        ran = []
+
+        class Assistant:
+            answer = Decision(reply="Ships [date].", note="date is yours")
+
+            def run(self, event, owner, described, person, people, **kw):
+                ran.append((owner, person, kw.get("reads")))
+                got = self.answer
+                return Decision(**{k: v for k, v in got.__dict__.items()}), ""
+        a = Assistant()
+        both = {ANA: {"ana@plx.example"}, "employee:BO": {"bo@plx.example"}}
+        maps = ({}, both, ("plx.example",))
+        with mock.patch.object(apm, "discover", return_value=([ev], {})), \
+                mock.patch.object(eng, "_prepare", return_value={"work": {"material": {"text": "When?"}}}):
+            self.assertEqual(rd.line_draft(None, reg, None, maps, a, ANA, "Email:r"),
+                             [{"draft": "Ships [date].", "note": "date is yours"}])
+            self.assertEqual(ran, [(ANA, "ana@plx.example", True)])    # reads as the person
+            # the support check flagged it: a reviewed draft is kept with the warning
+            a.answer = Decision(reply="Ships Friday.", warning="Check before sending: x")
+            self.assertEqual(rd.line_draft(None, reg, None, maps, a, ANA, "Email:r"),
+                             [{"draft": "Ships Friday.", "note": "",
+                               "warning": "Check before sending: x"}])
+            # a question alone is the model's own card
+            a.answer = Decision(ask={"question": "Which day?", "options": []})
+            self.assertEqual(rd.line_draft(None, reg, None, maps, a, ANA, "Email:r"),
+                             [{"kind": "your_call", "ask": "Which day?", "options": []}])
+            self.assertEqual(rd.line_draft(None, reg, None, maps, None, ANA, "Email:r"),
+                             [{"why": "draft_model_off"}])
+            ev["cleared"] = False
+            self.assertEqual(rd.line_draft(None, reg, None, maps, a, ANA, "Email:r"),
+                             [{"why": "participants_not_cleared"}])
+            ev["cleared"] = True
+            with mock.patch.object(eng, "pay_or_hr", return_value=True):
+                self.assertEqual(rd.line_draft(None, reg, None, maps, a, ANA, "Email:r"),
+                                 [{"why": "pay_or_hr"}])
+            self.assertEqual(len(ran), 3)
 
 
 if __name__ == "__main__":

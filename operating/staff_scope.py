@@ -388,6 +388,13 @@ def load_units(reader: Any) -> Mapping[str, Unit] | None:
                                       if isinstance(p, str) and p.strip()))
              for key, sharing, people in rows}
     with _UNITS_LOCK:
+        held = _UNITS.get(id(reader))
+        if held is not None and held[1] == units:
+            # the same units under a new generation (a search write that changed no unit:
+            # new mail's chunks): the same object, so a policy kept over it stays kept
+            # (``policy_inputs`` holds it by identity; a new one decided every reader's
+            # policy again on every worker after each ingest batch)
+            units = held[1]
         _UNITS[id(reader)] = (generation, units)
     return units
 

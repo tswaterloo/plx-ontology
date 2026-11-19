@@ -97,6 +97,10 @@ def reply_due(event: Mapping[str, Any]) -> str:
     return ""
 
 
+WARN_FIGURE = ("Check before sending: a date or figure in this reply is not in the message or "
+               "the records it read.")
+
+
 def gated(got: Any, event: Mapping[str, Any]) -> Any:
     """``got`` (an assistant decision on a message) with only what ``reply_due`` allows: no
     reply due -> no reply, question or to-do (a change the message's records call for still
@@ -106,10 +110,9 @@ def gated(got: Any, event: Mapping[str, Any]) -> Any:
     due = reply_due(event)
     if not due:
         got.reply, got.ask, got.todos = "", None, []
-    elif due == "turn" and (got.reply or got.ask and got.ask.get("options")):
-        # nothing was asked of the person, it is only their turn: what they say is theirs
-        # to word, so a written reply or offered answers become the open question (measured
-        # on sets D+E: written turn replies 5 of 17 right, open questions 24 of 35)
+    elif due == "turn" and not got.reply and got.ask and got.ask.get("options"):
+        # nothing was asked of the person, it is only their turn: offered answers become
+        # the open question; a written reply stands (the person reviews it before it goes)
         from .autopilot_check import ASK_PLAIN
         question = str((got.ask or {}).get("question") or "").strip() or ASK_PLAIN
         got.reply, got.ask = "", {"question": question, "options": []}
@@ -221,10 +224,13 @@ def outbound_proposals(proposals: Sequence[Mapping[str, Any]], event: Mapping[st
 
 def agent_output(got: Any, event: Mapping[str, Any], owner: str, text: str,
                  material: Mapping[str, Any], addresses_of: Mapping[str, Any], checks: Any,
-                 person: str) -> tuple[Any, list[dict[str, Any]], str]:
+                 person: str, *, review: bool = False
+                 ) -> tuple[Any, list[dict[str, Any]], str]:
     """(the decision as it may stand, the messages held back, why nothing stands when it is
     empty). ``checks``: builds the store's ``Ctx`` for the outbound check (None: an outside
-    reader's text is held, fail closed)."""
+    reader's text is held, fail closed). ``review``: a draft the person reads before anything
+    goes (Assist): a reply the outbound, figure or support check flags is KEPT with
+    ``warning`` saying why; otherwise (Autopilot) it is held as the open question."""
     from . import autopilot_drafter as ad
     from .autopilot import ours_only
     from .autopilot_engine import sender_label
@@ -243,12 +249,27 @@ def agent_output(got: Any, event: Mapping[str, Any], owner: str, text: str,
     ctx = checks() if (checks is not None and readers) else None
     held_back: list[dict[str, Any]] = []
     quality = ""
+    if got.reply and review and getattr(got, "fixed", ""):
+        # the support check's repair stands in for the flagged reply (the person reads it
+        # before it goes; the outbound check below still runs on it)
+        got.reply, got.warning = got.fixed, ""
     if got.reply:
         # the outbound check first: a reply that would carry another party's business to
         # an outside reader is a card that says why, never a silent drop
         stop = ob.held(ctx, got.reply, readers, allowed, account)
         quality = "" if stop else "nothing_useful" if ad._HOLLOW.match(got.reply) else \
             (ad.check(got.reply, m) or ad._tics(got.reply) or "")
+        if review and (stop or quality == "figure_not_in_material" or getattr(got, "warning", "")):
+            # the person reads it before it goes: their draft stays, the check's finding
+            # beside it (never swapped for a card)
+            got.warning = ("Check before sending: " + ob.reason_text(stop, sender)) if stop \
+                else got.warning or WARN_FIGURE
+            stop, quality = "", ""
+        elif getattr(got, "warning", ""):
+            # the support check flagged the reply and nobody reads it first: open question
+            from .autopilot_check import ASK_PLAIN
+            got.reply, got.warning = "", ""
+            got.ask = {"question": ASK_PLAIN, "options": []}
         if stop:
             keep = got.ask["options"] if got.ask else []
             got.ask = {"question": "I held back the reply: " + ob.reason_text(stop, sender)

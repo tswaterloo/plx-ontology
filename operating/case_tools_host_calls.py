@@ -22,6 +22,49 @@ from .case_tools_host_citations import (
 )
 
 
+def _unchanged_or(host: Any, name: str, db: Any, read: Any) -> Any:
+    """``read(db)``, the one ``host`` read last of ``name`` while the very same open
+    connection has seen no commit since (``PRAGMA data_version``: any other connection's
+    commit moves it; ``total_changes``: this one's own). A request's grant stamps read the
+    capture stores' mailbox rows and drives on every access check (~30 per Home visit);
+    one row at a time, each row waited for the interpreter lock again: 0.3-1 s a check
+    on a busy API, while the stores change only when a capture commits. Unreadable
+    version: read now, as before."""
+    try:
+        version = (db.execute("PRAGMA data_version").fetchone()[0], db.total_changes)
+    except Exception:  # noqa: BLE001 - no version to judge by: read now
+        return read(db)
+    kept = host.__dict__.setdefault("_grant_stamps_kept", {})
+    held = kept.get(name)
+    if held is not None and held[0] is db and held[1] == version:
+        return held[2]
+    # the version is read before the rows: a commit between them reads again next time
+    value = read(db)
+    kept[name] = (db, version, value)   # the connection itself held: its id never reused
+    return value
+
+
+def _mailbox_stamp(db: Any) -> tuple[str, str]:
+    """The mail capture's mailbox rows (``_MAILBOX_ROWS``), hashed: every column but
+    when the identity was last checked (each capture run rewrites it; no grant reads it)."""
+    from integrations import capture_mail
+    cursor = db.execute(capture_mail._MAILBOX_ROWS)
+    names = [column[0] for column in cursor.description]
+    rows = cursor.fetchall()
+    kept = [i for i, name in enumerate(names) if name != "identity_checked_at"]
+    return ("mailboxes", hashlib.sha256(json.dumps(
+        [[row[i] for i in kept] for row in rows], default=str).encode()).hexdigest())
+
+
+def _drives_stamp(db: Any) -> tuple[str, tuple]:
+    """The SharePoint capture's drives, by the (drive_id, item_id) index, one step a drive
+    (1 ms; the DISTINCT scan of every item took 0.03-0.75 s a request)."""
+    return ("drives", tuple(row[0] for row in db.execute(
+        "WITH RECURSIVE d(x) AS (SELECT MIN(drive_id) FROM items UNION ALL "
+        "SELECT (SELECT MIN(drive_id) FROM items WHERE drive_id > d.x) "
+        "FROM d WHERE d.x IS NOT NULL) SELECT x FROM d WHERE x IS NOT NULL")))
+
+
 class _CallsMixin:
     """Methods of ``CaptureCaseHostTools`` (``case_tools_host_calls``); mixed in there, never used alone."""
 
@@ -140,15 +183,7 @@ class _CallsMixin:
                     mail = ("none",)
                 else:
                     with opened[0] as store:
-                        cursor = store.db.execute(capture_mail._MAILBOX_ROWS)
-                        names = [column[0] for column in cursor.description]
-                        rows = cursor.fetchall()
-                    # every column but when the identity was last checked (each capture
-                    # run rewrites it; no grant reads it)
-                    kept = [i for i, name in enumerate(names) if name != "identity_checked_at"]
-                    mail = ("mailboxes", hashlib.sha256(json.dumps(
-                        [[row[i] for i in kept] for row in rows], default=str).encode()
-                    ).hexdigest())
+                        mail = _unchanged_or(self, "mail", store.db, _mailbox_stamp)
             except Exception:  # noqa: BLE001 - unreadable: the file state, as before
                 pass
         if self.sharepoint_capture_dir is not None:
@@ -159,12 +194,7 @@ class _CallsMixin:
                 if store is None:   # no store: no SharePoint unit is granted
                     sharepoint = ("none",)
                 else:
-                    # by the (drive_id, item_id) index, one step a drive (1 ms; the
-                    # DISTINCT scan of every item took 0.03-0.75 s a request)
-                    sharepoint = ("drives", tuple(row[0] for row in store.db.execute(
-                        "WITH RECURSIVE d(x) AS (SELECT MIN(drive_id) FROM items UNION ALL "
-                        "SELECT (SELECT MIN(drive_id) FROM items WHERE drive_id > d.x) "
-                        "FROM d WHERE d.x IS NOT NULL) SELECT x FROM d WHERE x IS NOT NULL")))
+                    sharepoint = _unchanged_or(self, "sharepoint", store.db, _drives_stamp)
             except Exception:  # noqa: BLE001 - unreadable: the file state, as before
                 pass
         return mail, sharepoint

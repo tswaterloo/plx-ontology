@@ -477,25 +477,42 @@ DELTA_LOCK_SQL = "SELECT pg_advisory_xact_lock(hashtext('ontology_delta'))"
 # One build or update at a time (a session lock; a second one finds it held and stops).
 BUILD_LOCK_SQL = "SELECT pg_try_advisory_lock(hashtext('people_excluded_build'))"
 BUILD_UNLOCK_SQL = "SELECT pg_advisory_unlock(hashtext('people_excluded_build'))"
-WATERMARK_LOCK_TIMEOUT = "30s"   # then raises; the next timer tick tries again
+WATERMARK_LOCK_TIMEOUT = "30s"   # one try's wait for the locks
+# a delta writing longer than one try: tried again after a pause, then raises (the
+# next timer tick tries again); 5 tries stay well inside the 10-minute tick
+WATERMARK_TRIES = 5
+WATERMARK_PAUSE_SECONDS = 15.0
 
 
 def watermark(conn: Any) -> int:
     """The newest served version number below which every version is committed: read in a
     transaction of its own that holds the delta's lock (no delta is numbering or writing
     versions) and a SHARE lock on ``object_versions`` (no other writer has an insert in
-    flight), then ends at once. Waits at most ``WATERMARK_LOCK_TIMEOUT`` (then raises:
-    nothing is written)."""
+    flight), then ends at once. Each try waits at most ``WATERMARK_LOCK_TIMEOUT``; a lock
+    still held is tried again after ``WATERMARK_PAUSE_SECONDS``, up to ``WATERMARK_TRIES``
+    tries (then raises: nothing is written)."""
+    from psycopg.errors import LockNotAvailable
     from psycopg.pq import TransactionStatus
     if conn.info.transaction_status != TransactionStatus.IDLE:
         raise RuntimeError("watermark_in_transaction")
-    with conn.transaction():
-        conn.execute(f"SET LOCAL lock_timeout = '{WATERMARK_LOCK_TIMEOUT}'")
-        conn.execute(DELTA_LOCK_SQL)
-        conn.execute("LOCK TABLE ontology.object_versions IN SHARE MODE")
-        top = conn.execute("SELECT coalesce(max(ver), 0) FROM ontology.object_versions"
-                           ).fetchone()[0]
-    return int(top)
+    for attempt in range(1, WATERMARK_TRIES + 1):
+        try:
+            with conn.transaction():
+                conn.execute(f"SET LOCAL lock_timeout = '{WATERMARK_LOCK_TIMEOUT}'")
+                conn.execute(DELTA_LOCK_SQL)
+                conn.execute("LOCK TABLE ontology.object_versions IN SHARE MODE")
+                top = conn.execute("SELECT coalesce(max(ver), 0) FROM "
+                                   "ontology.object_versions").fetchone()[0]
+            return int(top)
+        except LockNotAvailable:
+            if attempt == WATERMARK_TRIES:
+                raise
+            _pause(WATERMARK_PAUSE_SECONDS)
+    raise AssertionError("unreachable")
+
+
+def _pause(seconds: float) -> None:
+    time.sleep(seconds)
 
 
 def own_unit_rows(conn: Any, guard: Any, pairs: Sequence[tuple[str, str]] | None = None

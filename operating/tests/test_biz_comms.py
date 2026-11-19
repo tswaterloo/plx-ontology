@@ -724,6 +724,101 @@ class EmailsThroughTheDoor(unittest.TestCase):
         self.assertEqual(self.found(tmp.OWNER, query="samples", since=last), after)
         self.assertEqual(self.found(tmp.OWNER, query="samples", until=last), hits - after)
 
+    def test_a_few_hit_search_widens_to_some_words_and_meaning_through_the_same_door(self):
+        """Fewer than WIDEN_BELOW rows holding every word: the rows holding some of the
+        words (most first) and the rows a meaning ranking names are added, each read
+        through the reader's own guarded views: never a row the reader's word search
+        could not show, never Freightcom, the dates still bound them."""
+        import psycopg
+        from operating.search import plug
+        relay = {_cell(r["cells"][0]) for r in self.sql(
+            tmp.OWNER, "SELECT handle FROM emails WHERE subject = 'Booking 778'")["rows"]}
+        out = self.search(tmp.OWNER, query="communicate zzqqnoword")
+        self.assertEqual({h["citation"] for h in out["documents"]}, relay)
+        self.assertEqual(out["documents"][0]["match"], "1 of 2 words")
+        self.assertIn("widened", out["searched"])
+        self.assertIsNone(out["completeness"]["next_cursor"])
+        # every word held: nothing widened, as before
+        self.assertNotIn("match", self.search(tmp.OWNER, query="communicate")["documents"][0])
+        self.assertEqual(self.found(tmp.OWNER, query="Freightcom zzqqnoword"), set())
+        with psycopg.connect(self.dsn) as pg:
+            oids = [r[0] for r in pg.execute(
+                f"SELECT object_ids[1] FROM {bv.SCHEMA}.emails ORDER BY handle")]
+        # Freightcom mail: a person's own search shows it, the AI's never (meaning or not)
+        freight = self.found(tmp.OWNER, person=True, query="Freightcom")
+        self.assertTrue(freight)
+        ranked = plug.Ranked([{"object_id": o, "handle": None} for o in oids], "hybrid:x")
+        with mock.patch.object(plug, "enabled", return_value=True), \
+                mock.patch.object(plug, "_rank", return_value=ranked), \
+                mock.patch.object(plug, "_gated", side_effect=lambda r, *a: r):
+            for actor in READERS:
+                with self.subTest(actor=sorted(actor.principals)):
+                    mine = self.handles(actor)
+                    docs = self.search(actor, query="zzqq yyxx", limit=50)["documents"]
+                    got = [h["citation"] for h in docs]
+                    self.assertTrue(got)
+                    self.assertTrue(set(got) <= mine, set(got) - mine)
+                    self.assertFalse(set(got) & freight)
+                    meant = [h["meaning_rank"] for h in docs]
+                    self.assertEqual(meant, sorted(meant))
+            self.assertLess(len(self.search(tmp.NARROW, query="zzqq yyxx", limit=50)
+                                ["documents"]),
+                            len(self.search(tmp.OWNER, query="zzqq yyxx", limit=50)
+                                ["documents"]))
+            self.assertEqual(self.search(tmp.OWNER, query="zzqq yyxx", since="2100-01-01")
+                             ["documents"], [])
+            # a page the word match fills still shows up to MEANING_EXTRA rows close in
+            # meaning, none it already listed; a later page none
+            out = self.search(tmp.OWNER, query="communicate", limit=1)
+            docs = out["documents"]
+            self.assertNotIn("match", docs[0])
+            self.assertTrue(1 < len(docs) <= 1 + ts.MEANING_EXTRA)
+            self.assertEqual(len({h["citation"] for h in docs}), len(docs))
+            self.assertTrue(all("close in meaning" in h["match"] for h in docs[1:]))
+            self.assertIn("widened", out["searched"])
+            if out["completeness"]["next_cursor"]:
+                self.assertFalse(any("match" in h for h in self.search(
+                    tmp.OWNER, query="communicate", limit=1,
+                    cursor=out["completeness"]["next_cursor"])["documents"]))
+        # the ranking failed or late: a few-hit search still widens by the words held
+        with mock.patch.object(plug, "enabled", return_value=True), \
+                mock.patch.object(plug, "_rank", side_effect=RuntimeError("down")):
+            out = self.search(tmp.OWNER, query="communicate zzqqnoword")
+            self.assertEqual({h["citation"] for h in out["documents"]}, relay)
+            self.assertEqual(out["documents"][0]["match"], "1 of 2 words")
+
+    def test_a_full_pages_meaning_rows_never_come_back_on_a_later_page(self):
+        """A meaning ranking that names rows the word match lists on later pages: a full
+        first page adds none of them (each comes on its own page), only rows the word
+        match never lists; walked page by page no hit repeats and none is lost."""
+        import psycopg
+        from operating.search import plug
+        notes = self.found(tmp.OWNER, query="note")
+        with psycopg.connect(self.dsn) as pg:
+            oid = dict(pg.execute(f"SELECT handle, object_ids[1] FROM {bv.SCHEMA}.emails"))
+        others = sorted(h for h in self.handles(tmp.OWNER) - notes if h in oid)[:3]
+        self.assertTrue(len(notes) > 4 and others)
+        # within the ranking's first MEANING_K, fewer others than MEANING_EXTRA: the
+        # rest of the room would be taken by later pages' rows
+        ranked = plug.Ranked([{"object_id": oid[h], "handle": None}
+                              for h in others + sorted(notes)], "hybrid:x")
+        with mock.patch.object(plug, "enabled", return_value=True), \
+                mock.patch.object(plug, "_rank", return_value=ranked), \
+                mock.patch.object(plug, "_gated", side_effect=lambda r, *a: r):
+            got, cursor = [], None
+            for _ in range(len(notes) + 2):
+                out = self.search(tmp.OWNER, query="note", limit=2,
+                                  **({"cursor": cursor} if cursor else {}))
+                got += [(h["citation"], "match" in h) for h in out["documents"]]
+                cursor = out["completeness"]["next_cursor"]
+                if not cursor:
+                    break
+        cites = [c for c, _ in got]
+        self.assertEqual(len(cites), len(set(cites)), "a hit came back on a later page")
+        self.assertEqual({c for c, added in got if not added}, notes)
+        self.assertTrue({c for c, added in got if added} <= set(others))
+        self.assertTrue(any(added for _, added in got))
+
     def test_header_matches_rank_first_and_pages_lose_or_repeat_nothing(self):
         """A row whose header (subject, addresses) holds every query word comes before the
         rows matched in their text only, newest first within each; walked 1, 3 or 50 at a

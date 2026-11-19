@@ -55,6 +55,24 @@
    "fast": true
   },
   {
+   "id": "colleagues_waiting",
+   "group": "Team",
+   "title": "Who colleagues are waiting on",
+   "about": "Per person: mail threads in their own mailbox from the last 30 days where they had written in the last 13 weeks, the latest message is to them (To) from a colleague in the directory, not bulk, more than a day old, and they have not answered since; how many colleagues sent those, how many threads, how many are more than 3 days old and the oldest in days, beside the person's median hours to answer colleagues over the last 28 days (messages received 1 to 28 days ago that they answered in the same thread). Many colleagues waiting and a slow answer together mark a bottleneck. Some are only 'thanks' notes, and Teams chats are not counted.",
+   "sql": "WITH st AS MATERIALIZED (SELECT person_id, name, department, email FROM staff),\nlast AS MATERIALIZED (\n  SELECT DISTINCT ON (mailbox, thread) mailbox, thread, sender, received_at, owner_role, is_bulk, owner_replied_at\n  FROM emails WHERE thread IS NOT NULL AND received_at >= now() - interval '30 days' AND mailbox IN (SELECT person_id FROM st)\n  ORDER BY mailbox, thread, received_at DESC),\ncand AS MATERIALIZED (\n  SELECT l.mailbox, l.thread, l.sender, l.received_at FROM last l\n  WHERE l.owner_role = 'to' AND NOT l.is_bulk AND l.owner_replied_at IS NULL AND l.received_at < now() - interval '1 day'\n    AND l.sender IN (SELECT email FROM st)),\nwrote AS MATERIALIZED (\n  SELECT DISTINCT mailbox, thread, sender FROM emails WHERE thread = ANY (ARRAY(SELECT thread FROM cand)) AND received_at >= now() - interval '91 days'),\nrt AS (SELECT e.mailbox, percentile_cont(0.5) WITHIN GROUP (ORDER BY extract(epoch FROM e.owner_replied_at - e.received_at) / 3600) AS hours\n       FROM emails e JOIN st s ON s.person_id = e.mailbox\n       WHERE e.received_at >= now() - interval '28 days' AND e.received_at < now() - interval '1 day' AND e.owner_role = 'to'\n         AND NOT e.is_bulk AND e.sender <> s.email AND e.sender IN (SELECT email FROM st) AND e.owner_replied_at IS NOT NULL\n       GROUP BY 1)\nSELECT s.name AS person, s.department, count(DISTINCT l.sender) AS colleagues_waiting, count(*) AS threads_waiting,\n       count(*) FILTER (WHERE l.received_at < now() - interval '3 days') AS waiting_over_3_days,\n       round((max(extract(epoch FROM now() - l.received_at)) / 86400)::numeric, 1) AS oldest_days,\n       round(max(rt.hours)::numeric, 1) AS median_reply_hours_to_colleagues, s.person_id\nFROM cand l JOIN st s ON s.person_id = l.mailbox LEFT JOIN rt ON rt.mailbox = l.mailbox\nWHERE l.sender <> s.email\n  AND (l.mailbox, l.thread, s.email) IN (SELECT mailbox, thread, sender FROM wrote)\nGROUP BY s.name, s.department, s.person_id\nORDER BY colleagues_waiting DESC, threads_waiting DESC",
+   "chart": {
+    "kind": "scatter",
+    "x": "colleagues_waiting",
+    "y": [
+     "median_reply_hours_to_colleagues"
+    ],
+    "label": "person"
+   },
+   "person": "person_id",
+   "scope": "self",
+   "fast": true
+  },
+  {
    "id": "org_span",
    "group": "Org",
    "title": "Span of control",
@@ -123,6 +141,27 @@
    "scope": "full"
   },
   {
+   "id": "leader_scorecard",
+   "group": "Org",
+   "title": "Leader scorecard: each manager's team, last 28 days",
+   "about": "Per manager in the directory (someone with direct reports): direct reports, the whole team under them at every level (the leader not counted), how many of the team sent any mail or Teams message, what they sent (distinct emails from their work address plus Teams messages), the busiest member's share of it, and for mail addressed (To) to team members in their own mailboxes from someone else, not bulk, received 1 to 28 days ago: how many, the share answered in the same thread and the median hours to the answer; then the same reply rate and median hours for the manager's own mailbox. The team is only as complete as the directory's manager links, and a member whose mailbox is not captured adds no mail.",
+   "sql": "WITH RECURSIVE st AS MATERIALIZED (SELECT person_id, name, department, email, manager_email, reports_count FROM staff),\ntree AS (\n  SELECT m.person_id AS leader, r.person_id AS member, r.email, 1 AS depth FROM st m JOIN st r ON r.manager_email = m.email\n  UNION\n  SELECT t.leader, r.person_id, r.email, t.depth + 1 FROM tree t JOIN st r ON r.manager_email = t.email WHERE t.depth < 20),\nteam AS (SELECT DISTINCT leader, member FROM tree WHERE member <> leader),\ninb AS MATERIALIZED (\n  SELECT e.mailbox, e.owner_replied_at, extract(epoch FROM e.owner_replied_at - e.received_at) / 3600 AS hours\n  FROM emails e JOIN st s ON s.person_id = e.mailbox\n  WHERE e.received_at >= now() - interval '28 days' AND e.received_at < now() - interval '1 day'\n    AND e.owner_role = 'to' AND NOT e.is_bulk AND e.sender <> s.email),\nm AS (SELECT sender, count(DISTINCT message_id) AS n FROM emails\n      WHERE received_at >= now() - interval '28 days' AND sender IN (SELECT email FROM st) GROUP BY 1),\nt AS (SELECT (sender::jsonb) ->> 'id' AS pid, count(*) AS n FROM teams_messages\n      WHERE created_at >= now() - interval '28 days' AND left(sender, 1) = '{' GROUP BY 1),\nwork AS (SELECT st.person_id, coalesce(m.n, 0) + coalesce(t.n, 0) AS n FROM st LEFT JOIN m ON m.sender = st.email LEFT JOIN t ON t.pid = st.person_id),\ntm AS (SELECT x.leader, count(*) AS messages, count(i.owner_replied_at) AS replied,\n              percentile_cont(0.5) WITHIN GROUP (ORDER BY i.hours) AS median_hours\n       FROM team x JOIN inb i ON i.mailbox = x.member GROUP BY 1),\ntw AS (SELECT x.leader, count(*) AS people, count(*) FILTER (WHERE w.n > 0) AS active, sum(w.n) AS sent, max(w.n) AS busiest\n       FROM team x JOIN work w ON w.person_id = x.member GROUP BY 1),\nown AS (SELECT mailbox, count(*) AS messages, count(owner_replied_at) AS replied,\n               percentile_cont(0.5) WITHIN GROUP (ORDER BY hours) AS median_hours FROM inb GROUP BY 1)\nSELECT l.name AS leader, l.department, l.reports_count AS direct_reports, tw.people AS team_size,\n       tw.active AS team_active, tw.sent AS team_sent,\n       round(100.0 * tw.busiest / nullif(tw.sent, 0)) AS busiest_member_share_pct,\n       tm.messages AS team_messages_to_them, round(100.0 * tm.replied / nullif(tm.messages, 0)) AS team_replied_pct,\n       round(tm.median_hours::numeric, 1) AS team_median_reply_hours,\n       round(100.0 * own.replied / nullif(own.messages, 0)) AS leader_replied_pct,\n       round(own.median_hours::numeric, 1) AS leader_median_reply_hours, l.person_id\nFROM st l JOIN tw ON tw.leader = l.person_id LEFT JOIN tm ON tm.leader = l.person_id LEFT JOIN own ON own.mailbox = l.person_id\nORDER BY tw.people DESC, l.name",
+   "chart": {
+    "kind": "combo",
+    "x": "leader",
+    "y": [
+     "team_size"
+    ],
+    "y2": [
+     "team_median_reply_hours",
+     "leader_median_reply_hours"
+    ]
+   },
+   "person": "person_id",
+   "scope": "full",
+   "fast": true
+  },
+  {
    "id": "team_responsiveness",
    "group": "Team",
    "title": "Reply time and reply rate per department, last 28 days",
@@ -137,6 +176,25 @@
    },
    "fast": true,
    "scope": "full"
+  },
+  {
+   "id": "workload_balance",
+   "group": "Team",
+   "title": "Workload balance per department, last 28 days",
+   "about": "Per department in the directory: people, how many sent any mail or Teams message in the last 28 days, what they sent (distinct emails from their work address plus Teams messages), the median per person who sent any, the busiest person's count and share, and how few people send half of it (1 means one person sends at least half). Floor, lab and phone work is not seen. People with no department are shown as (none).",
+   "sql": "WITH m AS (SELECT sender, count(DISTINCT message_id) AS n FROM emails\n           WHERE received_at >= now() - interval '28 days' AND sender IN (SELECT email FROM staff) GROUP BY 1),\n     t AS (SELECT (sender::jsonb) ->> 'id' AS pid, count(*) AS n FROM teams_messages\n           WHERE created_at >= now() - interval '28 days' AND left(sender, 1) = '{' GROUP BY 1),\n     w AS (SELECT coalesce(nullif(s.department, ''), '(none)') AS department, coalesce(m.n, 0) + coalesce(t.n, 0) AS n\n           FROM staff s LEFT JOIN m ON m.sender = s.email LEFT JOIN t ON t.pid = s.person_id),\n     r AS (SELECT department, n, row_number() OVER (PARTITION BY department ORDER BY n DESC) AS rank,\n                  sum(n) OVER (PARTITION BY department ORDER BY n DESC ROWS UNBOUNDED PRECEDING) AS running,\n                  sum(n) OVER (PARTITION BY department) AS total FROM w)\nSELECT department, count(*) AS people, count(*) FILTER (WHERE n > 0) AS active, sum(n) AS sent,\n       round((percentile_cont(0.5) WITHIN GROUP (ORDER BY n) FILTER (WHERE n > 0))::numeric, 1) AS median_per_active_person,\n       max(n) AS busiest_person, round(100.0 * max(n) / nullif(sum(n), 0)) AS busiest_share_pct,\n       min(rank) FILTER (WHERE total > 0 AND 2 * running >= total) AS people_sending_half\nFROM r GROUP BY department ORDER BY sent DESC, department",
+   "chart": {
+    "kind": "combo",
+    "x": "department",
+    "y": [
+     "sent"
+    ],
+    "y2": [
+     "busiest_share_pct"
+    ]
+   },
+   "scope": "full",
+   "fast": true
   },
   {
    "id": "team_mail_weekly",
@@ -252,6 +310,22 @@
     ]
    },
    "sql": "SELECT coalesce(s.name, r.fields->>'requested_by') AS requested_by, count(*) AS waiting, round((max(extract(epoch FROM now() - (r.fields->>'requested_at')::timestamptz)) / 86400)::numeric, 1) AS oldest_days FROM records r LEFT JOIN staff s ON s.email = lower(r.fields->>'requested_by') WHERE r.type = 'MCApproval' AND r.fields->>'status' = 'pending' AND coalesce(r.fields->>'requested_at', '') <> '' GROUP BY 1 ORDER BY 2 DESC"
+  },
+  {
+   "id": "approval_speed",
+   "group": "Decisions",
+   "title": "How fast approvals are decided, last 30 days",
+   "about": "Mission Control approval requests decided in the last 30 days, per person who decided: how many, the median minutes from the request to the decision, the hours within which nine in ten were decided, the share decided within an hour, and how many were rejected.",
+   "sql": "WITH a AS (SELECT lower(r.fields->>'decided_by') AS who, r.fields->>'status' AS status,\n                  extract(epoch FROM (r.fields->>'decided_at')::timestamptz - (r.fields->>'requested_at')::timestamptz) / 60 AS minutes\n           FROM records r WHERE r.type = 'MCApproval' AND coalesce(r.fields->>'decided_at', '') <> ''\n             AND coalesce(r.fields->>'requested_at', '') <> '' AND (r.fields->>'decided_at')::timestamptz >= now() - interval '30 days')\nSELECT coalesce(s.name, a.who) AS decided_by, count(*) AS decided,\n       round((percentile_cont(0.5) WITHIN GROUP (ORDER BY a.minutes))::numeric, 1) AS median_minutes,\n       round((percentile_cont(0.9) WITHIN GROUP (ORDER BY a.minutes) / 60)::numeric, 1) AS slowest_tenth_hours,\n       round(100.0 * count(*) FILTER (WHERE a.minutes <= 60) / count(*)) AS within_an_hour_pct,\n       count(*) FILTER (WHERE a.status = 'rejected') AS rejected\nFROM a LEFT JOIN staff s ON s.email = a.who GROUP BY 1 ORDER BY decided DESC",
+   "chart": {
+    "kind": "bar",
+    "x": "decided_by",
+    "y": [
+     "median_minutes"
+    ],
+    "horizontal": true
+   },
+   "scope": "everyone"
   },
   {
    "id": "decisions_said",

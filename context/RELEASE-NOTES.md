@@ -48,6 +48,16 @@ Changed:
 - Ask prompt carries the metrics catalogue (measures + company-wide reports) and the why-method
 - Spark to box Postgres path: many compressed tunnels plus a least-busy relay with spare connections (connect 5 s to 24 ms)
 
+## Update 2026-11-19
+Changed:
+- Search over mail, Teams and files also finds close-in-meaning hits (mouth rinse finds Oral Rinse), read only through the reader's own views
+- Spark runs can read a hot standby on s7d3d (copy, tunnel, guard, settings, box replication setup)
+- The send dialog opens on the model's kept draft with its note and warning, and refuses a draft whose blanks are still unfilled
+- Autopilot reads with the person's own access also when an outside party reads the thread
+- the outbound check holds what it flags
+- Insights reads run on the page read workers, not the access workers, so opening Insights no longer stalls every page
+- People exclusion: an update waits out a long delta (tries the lock again after a pause) instead of failing
+
 ## v0.22 (2026-11-19)
 Changed:
 - Autopilot drafts by default with question cards, looks things up as the person, learns from edits and applies saved preferences; chat drafts read the chat and the person's own replies as style.

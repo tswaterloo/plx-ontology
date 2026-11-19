@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import { confirmAction, previewAction } from "@/lib/api";
+import { DraftNote } from "@/components/draft-note";
 import { confirmBlocked, confirmLabel, EDITABLE, edits, hasPreset, newIdempotencyKey, outcomeUnknown, sameEdits, splitAddresses, withPreset, type Preset } from "@/lib/actions";
 import { plainError } from "@/lib/errors";
 import type { ActionKind, ActionPayload, ActionPreview, ActionResult, CardActionOffer } from "@/lib/types";
@@ -235,6 +236,7 @@ export default function ActionDialog({
   onDone,
   state,
   preset,
+  draftNote,
 }: {
   card: { id: string; subject: { label: string } };
   offer: CardActionOffer;
@@ -242,6 +244,8 @@ export default function ActionDialog({
   onDone: (r: ActionResult) => void;
   state?: ActionResult | null;
   preset?: Preset;
+  /** the drafter's line beside the draft (what to fill in) and why to read it first */
+  draftNote?: { note?: string | null; warning?: string | null };
 }) {
   const mustCheckSent = outcomeUnknown(state);
   const [sentChecked, setSentChecked] = useState(false);
@@ -369,6 +373,7 @@ export default function ActionDialog({
         ) : (
           <>
             <div className="space-y-2.5">
+              <DraftNote note={draftNote?.note} warning={draftNote?.warning} />
               <Fields kind={offer.kind} form={form} set={setForm} preview={preview} />
               {edited && (
                 <Button variant="secondary" size="sm" onClick={() => void review(form)} data-testid="action-review">

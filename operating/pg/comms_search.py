@@ -194,21 +194,14 @@ def search_sql(views: Sequence[str], *, guarded: str, biz: str, query: bool,
         if party_kind is not None:
             if not mail:
                 continue
-            conds.append({"address": "e.addresses @> ARRAY[%(party)s]::text[]",
-                          "domain": "e.domains @> ARRAY[%(party)s]::text[]",
-                          "record": "(e.customers && %(party)s::text[] OR e.suppliers && "
-                                    "%(party)s::text[])"}[party_kind])
+            conds.append(_PARTY[party_kind])
         # the dates (the walk's floor is read in them, never under a party's: a rare
         # party over the date index read every row)
         dates = ([f"e.{when} >= %(since)s"] if since else []) + (
             [f"e.{when} < %(until)s"] if until else []) + [f"e.{when} IS NOT NULL"]
         conds += dates
         after = f"(e.{when} < %(c_at)s OR (e.{when} = %(c_at)s AND e.handle < %(c_h)s))"
-        addresses = ("e.sender_domain, e.addresses" if mail else
-                     "NULL::text AS sender_domain, NULL::text[] AS addresses")
-        cols = (f"'{view}'::text AS view, e.handle, {_TITLE.get(view, 'e.subject')} AS "
-                f"title, {_SENDER.get(view, 'e.sender')} AS sender, e.{when} AS at, "
-                f"{addresses}")
+        cols = _cols(view)
         newest = f"ORDER BY e.{when} DESC, e.handle DESC"
 
         def part(tier: int, where: Sequence[str], source: str = f"{guarded}.{view} e",
@@ -301,14 +294,108 @@ def search_sql(views: Sequence[str], *, guarded: str, biz: str, query: bool,
                                    when=when, match=mine, keep=keep, kk=kk))
     if not parts:
         return ""
-    best = ("ORDER BY (w.words @@ %(q)s::tsquery) DESC, fd.field_id, c.start" if query
-            else "ORDER BY fd.field_id, c.start")
+    return (("WITH " + ", ".join(ctes) + " " if ctes else "")
+            + _quoted(" UNION ALL ".join(parts), views, biz, query=query))
+
+
+def tsquery_any(query: str) -> str | None:
+    """Any word of ``query`` (OR), as ``tsquery`` cuts them; None for a one-word query
+    (its every-word match is already the any-word one)."""
+    import sqlite3
+    from operating.pg import words
+    got = list(dict.fromkeys(t.casefold() for t in terms(query)))
+    if len(got) < 2:
+        return None
+    try:
+        return words.tsquery(" OR ".join('"' + t.replace('"', '""') + '"' for t in got))
+    except sqlite3.OperationalError as exc:
+        raise SearchInputError(f"the query cannot be searched: {exc}") from None
+
+
+def words_held(row: Sequence[Any], words: Sequence[str]) -> int:
+    """How many of the query ``words`` a search row holds in its title, sender and quoted
+    chunk (a word's first letters, so a plural or tense still counts): the any-word
+    match's rank."""
+    view, handle, title, sender, _at, _dom, _addr, body, *_ = row
+    text = " ".join(str(v) for v in (title, sender) if v).casefold()
+    if body is not None:
+        try:
+            text += " " + zlib.decompress(bytes(body)).decode("utf-8", "replace").casefold()
+        except zlib.error:
+            pass
+    stems = {w.casefold()[:max(4, len(w) - 2)] for w in words}
+    # at a word's start: "mouth" is not held by "amount"
+    return sum(1 for s in stems if re.search(r"(?<!\w)" + re.escape(s), text))
+
+
+def meaning_sql(views: Sequence[str], *, guarded: str, biz: str, party_kind: str | None,
+                since: bool, until: bool) -> str:
+    """The rows of ``views`` the reader's guarded views hold for the objects a meaning
+    search ranked (parameter ids: their object ids; q: the tsquery whose chunk is quoted
+    first; q_all: the word search's own every-word tsquery), each with its quoted chunk
+    and, last, whether the word search matches it (its header or its text, by
+    ``search_sql``'s rule: a later word page lists such a row) and its object id: the same
+    door as ``search_sql``, so a meaning hit is never a row the word search could not have
+    shown this reader. A file's text is matched only once read for Freightcom (``ai_ok``),
+    as in ``search_sql``."""
+    parts = []
+    for view in views:
+        kind, when, _ = VIEWS[view]
+        if party_kind is not None and view != "emails":
+            continue
+        # the ranked objects' rows by the table's object id index (an init plan), then
+        # read through the view by handle
+        ok = " AND b.ai_ok" if view in SEARCH_ONLY else ""
+        conds = [f"e.handle = ANY(ARRAY(SELECT b.handle FROM {biz}.{view} b WHERE "
+                 f"b.object_ids[1] = ANY(%(ids)s::text[]){ok}))", f"e.{when} IS NOT NULL"]
+        if party_kind is not None:
+            conds.append(_PARTY[party_kind])
+        conds += ([f"e.{when} >= %(since)s"] if since else []) + (
+            [f"e.{when} < %(until)s"] if until else [])
+        oid = f"(SELECT b.object_ids[1] FROM {biz}.{view} b WHERE b.handle = e.handle)"
+        every = (f"(EXISTS (SELECT 1 FROM {biz}.{view} b WHERE b.handle = e.handle AND "
+                 "b.words @@ %(q_all)s::tsquery) OR EXISTS (SELECT 1 FROM "
+                 "ontology.text_fields fd JOIN ontology.text_chunks c ON c.field_id = "
+                 "fd.field_id JOIN ontology.chunk_words w ON w.chunk_id = c.chunk_id JOIN "
+                 f"{biz}.{view} b ON b.handle = fd.version_handle AND b.object_ids[1] = "
+                 "fd.object_id WHERE b.handle = e.handle AND w.words @@ %(q_all)s::tsquery "
+                 f"AND fd.markings = '[]'{ok}))")
+        parts.append(f"(SELECT {_cols(view)}, 0 AS tier, {every} AS every, {oid} AS oid FROM "
+                     f"{guarded}.{view} e WHERE "
+                     + " AND ".join(conds) + ")")
+    if not parts:
+        return ""
+    return _quoted(" UNION ALL ".join(parts), views, biz, query=True, meaning=True)
+
+
+_PARTY = {"address": "e.addresses @> ARRAY[%(party)s]::text[]",
+          "domain": "e.domains @> ARRAY[%(party)s]::text[]",
+          "record": "(e.customers && %(party)s::text[] OR e.suppliers && %(party)s::text[])"}
+
+
+def _cols(view: str) -> str:
+    """A search row's columns of the guarded view's row ``e``."""
+    when = VIEWS[view][1]
+    addresses = ("e.sender_domain, e.addresses" if view == "emails" else
+                 "NULL::text AS sender_domain, NULL::text[] AS addresses")
+    return (f"'{view}'::text AS view, e.handle, {_TITLE.get(view, 'e.subject')} AS "
+            f"title, {_SENDER.get(view, 'e.sender')} AS sender, e.{when} AS at, {addresses}")
+
+
+def _quoted(union: str, views: Sequence[str], biz: str, *, query: bool,
+            meaning: bool = False) -> str:
+    """The rows of ``union`` (tier, date, handle descending; the first ``k``, or every
+    one with its object id last for ``meaning``), each with its quoted chunk: one holding
+    the query words (q) first."""
+    best = ("ORDER BY (w.words @@ %(q)s::tsquery) DESC, fd.field_id, c.start"
+            if query else "ORDER BY fd.field_id, c.start")
     return (
-        ("WITH " + ", ".join(ctes) + " " if ctes else "")
-        + "SELECT y.view, y.handle, y.title, y.sender, y.at, y.sender_domain, y.addresses, "
-        "s.body, s.start, s.sender_class, y.tier FROM (SELECT * FROM ("
-        + " UNION ALL ".join(parts)
-        + ") x ORDER BY x.tier DESC, x.at DESC, x.handle DESC LIMIT %(k)s) y LEFT JOIN LATERAL ("
+        "SELECT y.view, y.handle, y.title, y.sender, y.at, y.sender_domain, y.addresses, "
+        "s.body, s.start, s.sender_class, y.tier" + (", y.every, y.oid" if meaning else "")
+        + " FROM (SELECT * FROM ("
+        + union
+        + ") x ORDER BY x.tier DESC, x.at DESC, x.handle DESC"
+        + ("" if meaning else " LIMIT %(k)s") + ") y LEFT JOIN LATERAL ("
         "SELECT c.body, c.start, fd.sender_class FROM ontology.text_fields fd JOIN "
         "ontology.text_chunks c ON c.field_id = fd.field_id LEFT JOIN ontology.chunk_words w "
         "ON w.chunk_id = c.chunk_id WHERE fd.version_handle = y.handle AND fd.object_id IN ("
@@ -572,5 +659,6 @@ def searched(views: Sequence[str], args: Mapping[str, Any], words: Sequence[str]
 
 
 __all__ = ["Party", "SEARCH_ONLY", "SearchInputError", "VIEWS", "assemble", "cursor_of", "exists_sql",
+           "meaning_sql", "tsquery_any", "words_held",
            "hits", "instant", "open_sql", "opened", "party", "present", "read_cursor",
            "search_sql", "searched", "snippet", "terms", "tsquery"]

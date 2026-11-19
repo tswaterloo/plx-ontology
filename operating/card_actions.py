@@ -584,6 +584,11 @@ def review(card: Mapping[str, Any], kind: str, edits: Mapping[str, Any] | None,
             problems.append("The message is empty.")
         elif len(payload["body"]) > MAX_BODY:
             problems.append(f"The message is at most {MAX_BODY} characters.")
+        # a model draft's blanks left unfilled never go out as "[ship date]"
+        left = [b for b in (card.get("draft") or {}).get("blanks") or ()
+                if isinstance(b, str) and b and b in payload["body"]]
+        if left:
+            problems.append("Fill in " + ", ".join(left[:4]) + " before you send.")
         # every date, quantity, spelled-out number or relative day in the text: cited, or
         # in the drafted text (itself worded from cited values), and each figure still
         # beside the label it was drafted with; anything else the person typed is refused

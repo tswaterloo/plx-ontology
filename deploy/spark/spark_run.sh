@@ -3,10 +3,13 @@
 # Postgres, capture and the app; the job's Python, its tool hosts and its Claude sessions use the
 # Spark's 20 cores).
 #   spark_run.sh [--host s7d3d|sb4ec] [--sha <commit>] [--ship <path>]... [--out <dir>]...
-#                [--env NAME]... [--state copy|none] [--name <label>] -- <command> [args...]
+#                [--env NAME]... [--state copy|none] [--pg box|standby] [--name <label>] -- <command> [args...]
 # Postgres: every run logs in as plx_eval, a FULL reader (read-only): fine for owner-level evals
 #   and benches. Evals as a staff or restricted reader stay on the box until a scoped Spark
 #   role exists (the relay maps every Spark login to plx_eval).
+# --pg standby (or SPARK_PG=standby): read the Spark's hot standby of the box when its guard
+#   passes (standby_guard.py: in recovery, slot kept, replay within 10 min), else the box, said
+#   on stderr. Default: the box.
 # The sandbox is read-only except the --out folders, a /tmp of the run's own, the Claude
 #   homes (Claude writes its session files there) and the Spark's state copy (never copied back).
 # Inside the job the box's paths hold (deploy/spark/spark_run_remote.py builds the sandbox):
@@ -30,15 +33,17 @@
 set -uo pipefail
 here=$(dirname "$(readlink -f "$0")")
 ssh_cfg=${PLX_SPARK_SSH_CONFIG:-/data/plx-state/ts-petra/ssh_config}
-host=${SPARK_HOST:-s7d3d} sha="" state=copy name="" ships=() outs=() envs=()
+host=${SPARK_HOST:-s7d3d} sha="" state=copy pg=${SPARK_PG:-box} name="" ships=() outs=() envs=()
 while [ $# -gt 0 ]; do case "$1" in
   --host) host=$2; shift 2 ;; --sha) sha=$2; shift 2 ;; --ship) ships+=("$2"); shift 2 ;;
   --out) outs+=("$2"); shift 2 ;; --env) envs+=("$2"); shift 2 ;; --state) state=$2; shift 2 ;;
-  --name) name=$2; shift 2 ;; --) shift; break ;; -h|--help) sed -n 2,29p "$0"; exit 2 ;;
+  --pg) pg=$2; shift 2 ;;
+  --name) name=$2; shift 2 ;; --) shift; break ;; -h|--help) sed -n 2,32p "$0"; exit 2 ;;
   *) echo "spark_run: unknown option $1 (the command goes after --)" >&2; exit 2 ;; esac; done
 [ $# -gt 0 ] || { echo "usage: spark_run.sh [options] -- <command> [args...]" >&2; exit 2; }
 case "$host" in s7d3d|sb4ec) ;; *) echo "spark_run: --host is s7d3d or sb4ec" >&2; exit 2 ;; esac
 case "$state" in copy|none) ;; *) echo "spark_run: --state is copy or none" >&2; exit 2 ;; esac
+case "$pg" in box|standby) ;; *) echo "spark_run: --pg is box or standby" >&2; exit 2 ;; esac
 top=$(git rev-parse --show-toplevel 2>/dev/null || echo /data/OntologyProject)
 sha=$(git -C "$top" rev-parse --verify -q "${sha:-HEAD}^{commit}") || { echo "spark_run: unknown commit ${sha:-HEAD}" >&2; exit 2; }
 [[ "$PWD" == "$top" || "$PWD" == "$top"/* ]] && cwd=$PWD || cwd=$top
@@ -81,10 +86,11 @@ fi
 # the commit's objects only (as spark_test.sh): no data, no secrets
 GIT_SSH_COMMAND="ssh -F $ssh_cfg" git -C "$top" push -q "$host:plx-tests/repo.git" "$sha:refs/plx/$sha" \
   || { echo "spark_run: push to $host failed" >&2; exit 97; }
-rh=$(sha256sum "$here/spark_run_remote.py" | cut -c1-12)
+rh=$(cat "$here/spark_run_remote.py" "$here/standby_guard.py" | sha256sum | cut -c1-12)
 $R "test -s ~/plx-run/r-$rh/spark_run_remote.py" 2>/dev/null || {
-  $R "mkdir -p ~/plx-run/r-$rh" && scp -q -F "$ssh_cfg" "$here/spark_run_remote.py" "$host:plx-run/r-$rh/.remote.$$" \
-    && $R "mv -f ~/plx-run/r-$rh/.remote.$$ ~/plx-run/r-$rh/spark_run_remote.py"; } || { echo "spark_run: copy to $host failed" >&2; exit 97; }
+  $R "mkdir -p ~/plx-run/r-$rh" && scp -q -F "$ssh_cfg" "$here/standby_guard.py" "$host:plx-run/r-$rh/.guard.$$" \
+    && scp -q -F "$ssh_cfg" "$here/spark_run_remote.py" "$host:plx-run/r-$rh/.remote.$$" \
+    && $R "mv -f ~/plx-run/r-$rh/.guard.$$ ~/plx-run/r-$rh/standby_guard.py && mv -f ~/plx-run/r-$rh/.remote.$$ ~/plx-run/r-$rh/spark_run_remote.py"; } || { echo "spark_run: copy to $host failed" >&2; exit 97; }
 for r in "${paths[@]+"${paths[@]}"}"; do
   [ -e "$r" ] || continue
   $R "mkdir -p -m 700 ~/plx-run/files$(dirname "$r")" && \
@@ -92,7 +98,7 @@ for r in "${paths[@]+"${paths[@]}"}"; do
     || { echo "spark_run: shipping $r failed" >&2; exit 97; }
 done
 # the run description, one JSON line on stdin (variable values never on a command line)
-spec=$(SPEC_SHA=$sha SPEC_TREE=$top SPEC_CWD=$cwd SPEC_STATE=$state SPEC_NAME=${name:-$(basename "$top")} \
+spec=$(SPEC_SHA=$sha SPEC_TREE=$top SPEC_CWD=$cwd SPEC_STATE=$state SPEC_PG=$pg SPEC_NAME=${name:-$(basename "$top")} \
   python3 "$here/spark_run_spec.py" "${#ship_paths[@]}" "${ship_paths[@]+"${ship_paths[@]}"}" \
   "${#out_paths[@]}" "${out_paths[@]+"${out_paths[@]}"}" "${#envs[@]}" "${envs[@]+"${envs[@]}"}" "$@") || exit 2
 # memory guard (as spark_test.sh): the run's scope holds MemoryMax = MemAvailable - 16 GB

@@ -213,7 +213,10 @@ def result_of(rows: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
             return {"state": "ready", "kind": "your_call", "body": "",
                     "ask": str(row["ask"]), "options": list(row.get("options") or ())}
         if row.get("draft"):
-            return {"state": "ready", "kind": "reply", "body": str(row["draft"])}
+            # a reply's ``ask`` column holds its note to the person (what a blank needs),
+            # its ``why`` the outbound check's warning (a reply with an outside reader)
+            return {"state": "ready", "kind": "reply", "body": str(row["draft"]),
+                    "ask": str(row.get("note") or ""), "why": str(row.get("warning") or "")}
     why = next((str(r.get("why")) for r in rows if r.get("why")), "no_draft")
     return {"state": "none", "why": why}
 
@@ -265,6 +268,10 @@ def attach(lines: Sequence[dict[str, Any]], kept: Mapping[str, Mapping[str, Any]
                 draft["body"] = str(row["body"])
                 draft.pop("copy_check", None)
                 line["draft"] = draft
+                if row.get("ask"):
+                    line["draft_note"] = str(row["ask"])
+                if row.get("why"):
+                    line["draft_warning"] = str(row["why"])
         elif state == "drafting":
             line["draft_state"] = "drafting"
         else:
@@ -287,6 +294,66 @@ def _int_env(name: str, default: int) -> int:
         return default
 
 
+ASSISTANT = "assistant"   # the registry entry whose prepare step gives a message's material
+
+
+def line_draft(st: Any, registry: Mapping[str, Any], people: Any, maps: Sequence[Any],
+               assistant: Any, owner: str, oid: str, *,
+               now: Optional[datetime] = None) -> list[dict[str, Any]]:
+    """One open line's draft by the Assistant (``operating.autopilot_agent``), the same
+    session Autopilot runs: the line's message event, the screens a draft keeps (participants
+    cleared, nothing about pay or HR), the prepare step for its material, the session reading
+    as the person, then ``agent_output`` in review (a reply the checks flag is kept with its
+    warning, never swapped for a card). Rows as ``result_of`` reads them:
+    ``[{"draft", "note", "warning"}]``, a question card ``[{"kind": "your_call", ...}]`` or
+    ``[{"why"}]``."""
+    from . import autopilot as apm, autopilot_engine as eng, autopilot_agent_io as io
+    from .autopilot_handlers import Ctx
+    import time
+    directory, addresses_of, domains = maps
+    events, _skipped = apm.discover(st, [oid], registry, people)
+    if not events:
+        return [{"why": "no_event"}]
+    event = events[0]
+    if event.get("event_type") == "message.received" and not event.get("cleared"):
+        return [{"why": "participants_not_cleared"}]
+    if eng.pay_or_hr(event):
+        return [{"why": "pay_or_hr"}]
+    spec = next((x for x in registry.get("autopilots") or () if x.get("id") == ASSISTANT), None)
+    if spec is None:
+        return [{"why": "no_assistant"}]
+    if assistant is None:
+        return [{"why": "draft_model_off"}]
+    day = (now or _now()).date()
+    seconds = float((registry.get("limits") or {}).get("handler_seconds") or 60)
+    prepared = eng._prepare(st, spec, event, day, domains, seconds)
+    if prepared.get("skip") or prepared.get("error"):
+        return [{"why": str(prepared.get("skip") or prepared.get("error"))}]
+    material = (prepared.get("work") or {}).get("material") or {}
+    text = str(material.get("text") or event.get("text") or "")
+    mine = sorted(addresses_of.get(owner) or ())
+    sent_to = {str(a).lower() for a in [*(event.get("to") or ()), *(event.get("cc") or ())]}
+    person = next((a for a in mine if a in sent_to), mine[0] if mine else owner)
+    described, _inside = io.agent_input(event, text, material, addresses_of)
+    got, why = assistant.run(event, owner, described, str(person), people, reads=True)
+    if got is None:
+        got = io.invitation_only(event, material, why)
+    if got is None:
+        return [{"why": why or "no_draft"}]
+    got, _held, why = io.agent_output(
+        got, event, owner, text, material, addresses_of,
+        lambda: Ctx(st, day, time.monotonic() + seconds, domains), str(person), review=True)
+    if got.reply:
+        row = {"draft": got.reply, "note": got.note or ""}
+        if got.warning:
+            row["warning"] = got.warning
+        return [row]
+    if got.ask and got.ask.get("question"):
+        return [{"kind": "your_call", "ask": got.ask["question"],
+                 "options": list(got.ask.get("options") or ())}]
+    return [{"why": why or "no_draft"}]
+
+
 def cli(a: Any, registry: Mapping[str, Any]) -> int:
     """``assist-drafts``: draft this run's ``wanted`` lines (``--owner``: only those people)
     with the autopilot's dry drafter, each worker on its own store; prints the counts."""
@@ -305,12 +372,15 @@ def cli(a: Any, registry: Mapping[str, Any]) -> int:
     stores: list[Any] = []
     people = pe._people(Path(a.store))
 
+    from . import autopilot_agent as ag
+    maps = apm._people_maps(people)
+    assistant = ag.from_environ(os.environ)
+
     def draft(owner: str, oid: str) -> Sequence[Mapping[str, Any]]:
         if getattr(local, "st", None) is None:
             local.st = apm._with_captures(apm._store(a.store), a)
             stores.append(local.st)
-        return apm.dry_drafts(local.st, registry, people, [oid], Path(a.queue),
-                              owners={owner}, force=a.force or FORCE)
+        return line_draft(local.st, registry, people, maps, assistant, owner, oid)
 
     try:
         counts = run(pairs, kept, draft, parallel=_int_env(PARALLEL_ENV, PARALLEL))

@@ -40,7 +40,7 @@ class _Audience:
 
 def _runtime(guard=None, *, unrestricted=False):
     entitlement = SimpleNamespace(
-        actor=ACTOR, principal=SimpleNamespace(object_id=OWN),
+        actor=ACTOR, principal=SimpleNamespace(object_id=OWN, principal=next(iter(ACTOR.principals))),
         unrestricted=lambda: unrestricted, full_read_covers=lambda _s: False,
         full_read=None)
     gate = mock.Mock(side_effect=lambda actor: actor)
@@ -525,6 +525,35 @@ class StaffKeyMaterialTests(unittest.TestCase):
         entitlement.unrestricted = lambda: True   # a full reader's key does not move
         self.assertEqual(key("Finance"), key("AltonTax"))
 
+
+
+class LoadUnitsKept(unittest.TestCase):
+    def test_a_new_generation_with_the_same_units_keeps_the_same_object(self):
+        """A search write that changes no unit (new chunks) moves the generation: the units
+        read again are the very same object (a policy kept over them stays kept); a unit
+        changed is a new object."""
+        import threading
+        state = {"generation": 1, "rows": [("mail:a", "shared", ["x@plx.example"])]}
+
+        class _Pg:
+            def execute(self, sql, *args):
+                if "write_generation" in sql:
+                    return SimpleNamespace(fetchone=lambda: (state["generation"], True))
+                return SimpleNamespace(fetchall=lambda: list(state["rows"]))
+
+            def rollback(self):
+                pass
+        reader = SimpleNamespace(lock=threading.Lock(), conn=SimpleNamespace(
+            _lock=threading.Lock(), _pg=_Pg()))
+        self.addCleanup(staff_scope._UNITS.pop, id(reader), None)
+        first = staff_scope.load_units(reader)
+        self.assertEqual(first, {"mail:a": Unit("shared", frozenset({"x@plx.example"}))})
+        state["generation"] = 2
+        self.assertIs(staff_scope.load_units(reader), first)
+        state["generation"], state["rows"] = 3, [("mail:a", "restricted", ["x@plx.example"])]
+        changed = staff_scope.load_units(reader)
+        self.assertIsNot(changed, first)
+        self.assertEqual(changed["mail:a"].sharing, "restricted")
 
 if __name__ == "__main__":
     unittest.main()

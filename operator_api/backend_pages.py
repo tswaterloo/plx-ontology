@@ -49,18 +49,27 @@ _MARK_DIGESTS: dict[int, tuple] = {}
 
 
 _OWN_STAMPS: dict[frozenset, str] = {}
+_OWN_LAST: tuple = (None, "")   # (the set asked last (itself), its digest), swapped whole
 
 
 def _own_stamp(own: frozenset) -> str:
-    """A digest of the PLX-issued ids (one per loaded set: a page asks on every read)."""
+    """A digest of the PLX-issued ids (one per loaded set: a page asks on every read).
+    The set asked last is found by identity first: a background refresh loads an equal
+    set as a new object, and a lookup of it compared all ~38k ids with the kept key's on
+    every access check (2 s of the interpreter lock per Home visit, 11-19 profile)."""
     if not own:
         return ""
+    global _OWN_LAST
+    last = _OWN_LAST
+    if last[0] is own:
+        return last[1]
     hit = _OWN_STAMPS.get(own)
     if hit is None:
         if len(_OWN_STAMPS) >= 4:
             _OWN_STAMPS.clear()
         hit = _OWN_STAMPS[own] = hashlib.sha256(
             "\n".join(sorted(own)).encode()).hexdigest()[:16]
+    _OWN_LAST = (own, hit)
     return hit
 
 

@@ -155,6 +155,39 @@ class TheGate(unittest.TestCase):
         self.assertEqual(len(tool.base.asked), len([r for r in _rows(10)
                                                     if r[0] == "sharepoint_files"]))
 
+    def test_meaning_rows_pass_the_file_gate_one_by_one(self):
+        """The rows a meaning ranking names (``_comms_widened``): a file row the item gate
+        refuses is never added and takes no room; mail rows are never asked of it; rows
+        the word search matches are left to its own pages."""
+        from unittest import mock
+        from operating.search import plug
+        t0 = dt.datetime(2026, 11, 1, tzinfo=dt.timezone.utc)
+        near = []
+        for i in range(12):
+            view = "sharepoint_files" if i % 2 else "emails"
+            near.append((view, f"h{i:02d}", "t", None, t0 - dt.timedelta(minutes=i), None,
+                         None, None, 0, None, 0, i == 11, f"o{i:02d}"))
+        refused = {"h01", "h03", "h05"}
+        tool = _tool(refused)
+        tool.base.policy = None
+        tool._comms_scoped = lambda conn, settings, work, actor: ([], near)
+
+        class Ranking:
+            def result(self, timeout):
+                return plug.Ranked([{"object_id": r[-1], "handle": None} for r in near],
+                                   "hybrid:x")
+        with mock.patch.object(plug, "_gated", side_effect=lambda r, *a: r):
+            for room in (3, 5, 20):
+                kept, how = tool._comms_widened(
+                    None, {}, "g", "actor", ["emails", "sharepoint_files"], "oral rinse",
+                    ["oral", "rinse"], None, None, None, room, {"h00"}, Ranking(), False)
+                got = [r[1] for r in kept]
+                want = [r[1] for r in near if r[1] not in refused | {"h00", "h11"}]
+                self.assertEqual(got, want[:room], room)
+                self.assertEqual([h for h, _ in how], ["close in meaning"] * len(got))
+                self.assertFalse(set(tool.base.asked) - {r[1] for r in near
+                                                         if r[0] == "sharepoint_files"})
+
     def test_a_reader_who_is_not_full_or_a_host_without_gate_reads_no_file_rows(self):
         tool = _tool(set())
         tool._full = lambda actor: False

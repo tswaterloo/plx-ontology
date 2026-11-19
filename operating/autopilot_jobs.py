@@ -324,7 +324,11 @@ def _json(text: Any) -> Optional[dict[str, Any]]:
     try:
         got = json.loads(found.group(0))
     except ValueError:
-        return None
+        try:
+            # a model's text field with a raw line break in it (a reply written out)
+            got = json.loads(found.group(0), strict=False)
+        except ValueError:
+            return None
     return got if isinstance(got, dict) else None
 
 

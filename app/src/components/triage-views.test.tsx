@@ -21,6 +21,18 @@ describe("my replies and label changes", () => {
     expect(screen.queryByText(/Nothing is sent until you confirm it/)).toBeNull();
   });
 
+  it("draws only a model-written draft, with its note and warning", () => {
+    const line = { id: "pe-1", kind: "reply_owed", channel: "mail", days: 1, chases: 0, subject: "Order 1", draft, draft_state: "ready" as const, rank: [0, 0, 0, 1], new_inquiry: false };
+    const { rerender } = render(<ReplyList triage={{ as_of: "2026-11-05", total: 1, sent: 0, writes: 0, lines: [line] }} />);
+    expect(screen.queryByTestId("reply-draft")).toBeNull();
+    const model = { ...line, drafted_by: "model" as const, draft: { ...draft, body: "Order 1 ships [day]." }, draft_note: "Which day?", draft_warning: "Check before sending: x" };
+    rerender(<ReplyList triage={{ as_of: "2026-11-05", total: 1, sent: 0, writes: 0, lines: [model] }} />);
+    const shown = screen.getByTestId("reply-draft");
+    expect(within(shown).getByText("Order 1 ships [day].")).toBeTruthy();
+    expect(within(shown).getByText("To fill in: Which day?")).toBeTruthy();
+    expect(within(shown).getByText("Check before sending: x")).toBeTruthy();
+  });
+
   it("lists an item's label changes with stale and no-approval marks, and hides none", () => {
     const data: LabelChanges = { object_id: "Product:x", total: 2, stale: 1, no_approval: 1, by_state: {}, changes: [
       { id: "a", kind: "label_change_stale", state: "requested", requested_on: "2026-10-01", stale: true, no_approval: false },

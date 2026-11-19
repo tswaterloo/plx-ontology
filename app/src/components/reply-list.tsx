@@ -6,6 +6,7 @@ import { useReaderWords } from "@/components/view-as";
 import Link from "next/link";
 import { useState } from "react";
 import { ActionDialog } from "@/components/card-actions";
+import { DraftNote } from "@/components/draft-note";
 import { EmptyState } from "@/components/ui/empty-state";
 import { cn } from "@/lib/cn";
 import { plural } from "@/lib/format";
@@ -13,8 +14,8 @@ import type { ActionResult, CardActionOffer, ReplyLine, ReplyTriage } from "@/li
 
 // What needs my reply today: your own mail and one-to-one chats where someone asked you
 // something you have not answered, heaviest first. A reply goes out only through the
-// send dialog's preview and your confirm. No holding-reply text is drawn here: a draft
-// appears only where the Autopilot prepared a real one (Prepared items).
+// send dialog's preview and your confirm. No holding-reply text is drawn here: only a draft
+// the model wrote (with its note and warning), the same one the send dialog opens with.
 
 // the plain words for the main buttons; everything else waits under More
 const MAIN: { kind: CardActionOffer["kind"][]; label: string; primary?: boolean }[] = [
@@ -66,6 +67,7 @@ function ReplyActions({ line, state, onDone }: { line: ReplyLine; state: ActionR
         <ActionDialog
           card={card}
           offer={open}
+          draftNote={{ note: line.draft_note, warning: line.draft_warning }}
           state={state}
           onClose={() => setOpen(null)}
           onDone={(r) => {
@@ -96,6 +98,12 @@ export function ReplyCard({ line, state, onDone, className }: { line: ReplyLine;
         {line.new_inquiry && <span className="ml-2 rounded bg-hover px-1 text-[11px]">New inquiry</span>}
       </div>
       <div className="text-muted">{meta(line)}</div>
+      {line.drafted_by === "model" && line.draft?.body && (
+        <div className="space-y-1" data-testid="reply-draft">
+          <p className="whitespace-pre-line line-clamp-6">{line.draft.body}</p>
+          <DraftNote note={line.draft_note} warning={line.draft_warning} />
+        </div>
+      )}
       {line.object_id && (
         <Link className="block font-medium hover:underline" href={`/object/${encodeURIComponent(line.object_id.split(":")[0])}/${encodeURIComponent(line.object_id)}`}>
           Open the message

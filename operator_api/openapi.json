@@ -18247,6 +18247,18 @@
           "draft": {
             "$ref": "#/components/schemas/ApprovalNudge"
           },
+          "draft_note": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The drafter's one line to the person beside a ready reply: what a [bracketed blank] in it needs, or what was checked.",
+            "title": "Draft Note"
+          },
           "draft_state": {
             "default": "queued",
             "description": "The model's draft: ``ready`` (on ``draft``, or a question in ``your_call``), ``drafting`` (being written), ``queued`` (the holding reply until it is written).",
@@ -18257,6 +18269,18 @@
             ],
             "title": "Draft State",
             "type": "string"
+          },
+          "draft_warning": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The outbound check's warning on a ready reply someone outside the company reads (it names another party's order, PO, invoice, name or price, or could not be checked): shown with the draft, read before any send.",
+            "title": "Draft Warning"
           },
           "drafted_by": {
             "anyOf": [

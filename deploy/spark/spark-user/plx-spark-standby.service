@@ -1,0 +1,20 @@
+[Unit]
+Description=PLX Spark hot standby (read-only copy of the box Postgres, streamed through plx-spark-standby-tunnel)
+# Only a finished copy (standby_copy.py writes standby.signal last) is ever started.
+ConditionPathExists=%h/plx-ai/pgdata/standby.signal
+
+[Service]
+Type=notify
+Environment=LD_LIBRARY_PATH=%h/plx-ai/pg17/usr/lib/aarch64-linux-gnu
+ExecStart=%h/plx-ai/pg17/usr/lib/postgresql/17/bin/postgres -D %h/plx-ai/pgdata -c config_file=%h/plx-ai/standby/postgresql.conf -c jit=off
+ExecReload=/bin/kill -HUP $MAINPID
+KillMode=mixed
+KillSignal=SIGINT
+TimeoutStopSec=120
+TimeoutStartSec=infinity
+Restart=on-failure
+RestartSec=30
+MemoryMax=32G
+
+[Install]
+WantedBy=default.target

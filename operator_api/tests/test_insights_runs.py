@@ -67,7 +67,7 @@ class Worker:
     def __init__(self, rows, delay=0.0):
         self.rows, self.delay, self.as_who = rows, delay, []
 
-    def run(self, reader, job, timeout=0):
+    def run(self, reader, job, timeout=0, priority=0, long=False):
         view = type("V", (), {})()
         self.as_who.append(sorted(reader.session.principals))
         if self.delay:
@@ -214,7 +214,7 @@ class Runs(unittest.TestCase):
         iid = self.insight(notify="every_run")
         self.worker.rows = None
 
-        def broken(reader, job, timeout=0):
+        def broken(reader, job, timeout=0, **_how):
             view = type("V", (), {})()
             view._call = lambda tool, args: {"error": {"code": "sql_error", "message":
                                                        'invalid input syntax for type '

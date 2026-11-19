@@ -1,0 +1,17 @@
+[Unit]
+Description=PLX Spark runs: hot standby replication tunnel to %i (reverse ssh to the box Postgres socket)
+
+After=network-online.target
+[Service]
+User=@PLX_USER@
+Group=@PLX_GROUP@
+# One instance per Spark (%i = the Spark, e.g. s7d3d): it carries only the standby's one
+# replication connection (role plx_standby, standby_box_setup.sh), not the runs' reads.
+ExecStart=/data/plx-releases/current/deploy/spark/spark_pg_standby_tunnel.sh %i
+Restart=always
+RestartSec=15
+MemoryMax=128M
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target

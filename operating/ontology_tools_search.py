@@ -357,6 +357,9 @@ def _merged(results: list[dict[str, Any]]) -> dict[str, Any]:
                     if x not in sources]
     searched = dict(results[0].get("searched") or {})
     searched["sources"] = sources or ["graph_mail"]
+    widened = [w for r in results for w in [(r.get("searched") or {}).get("widened")] if w]
+    if widened:
+        searched["widened"] = "; ".join(dict.fromkeys(widened))[:300]
     cut = [r["completeness"] for r in results
            if (r.get("completeness") or {}).get("truncated")]
     out: dict[str, Any] = {

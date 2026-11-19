@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from datetime import date, timedelta
 import os
+import re
 from pathlib import Path
 from typing import Any, Iterable, Mapping, Optional
 from urllib.parse import quote
@@ -420,6 +421,9 @@ def approvals_of(view: Any, today: Optional[date] = None) -> Optional[dict[str, 
 REPLY_CARD = "reply:"
 
 
+BLANK = re.compile(r"\[[^\[\]\n]{1,60}\]")
+
+
 def reply_card(line: Mapping[str, Any]) -> Optional[dict[str, Any]]:
     """A triage line's drafted reply as a card ``ActionDesk`` accepts (sent only through its
     preview and the reader's confirm); addressed to the asker, cited by the alert."""
@@ -431,12 +435,18 @@ def reply_card(line: Mapping[str, Any]) -> Optional[dict[str, Any]]:
     card_id = REPLY_CARD + str(line["id"])
     if len(card_id) > 200:
         return None
+    body = draft.get("body")
+    # a model draft's [bracketed blanks] are the person's to fill: the send refuses while any
+    # is still in the text (``card_actions.review``)
+    blanks = (sorted(set(BLANK.findall(body))) if line.get("drafted_by") == "model"
+              and isinstance(body, str) else [])
     return {"id": card_id, "headline": str(line.get("summary") or "")[:300],
             "subject": {"label": str(line.get("subject") or "Needs your reply")[:200]},
             "action": {"text": ""},
             "draft": {"channel": "email",
                       "to": {"address": to[0], "source": cites[0]} if to and cites else None,
-                      "subject": draft.get("subject"), "body": draft.get("body"), "facts": []},
+                      "subject": draft.get("subject"), "body": body, "facts": [],
+                      "blanks": blanks},
             "teams_draft": None, "playbook": True}
 
 
@@ -579,12 +589,8 @@ class BriefsMixin:
         raw = self._brief_run(reader, lambda view: replies_of(view), priority=ENRICH_PRIORITY)
         if raw is None:
             raise alerts_not_read()
-        # the model's drafts the background job kept for these lines (``reply_drafts``):
-        # read, never waited on; the holding sentence stays until one is ready
-        from operating import reply_drafts as rd
         lines = raw["lines"]
-        rd.attach(lines, rd.kept_for(getattr(self, "state_dir", None), self._my_oids(reader),
-                                     lines))
+        self._with_drafts(reader, lines)
         for line in lines:
             card = reply_card(line)
             if card is not None:
@@ -592,10 +598,21 @@ class BriefsMixin:
                 line["offers"] = ca.offers(card)
         return m.ReplyTriage(**{k: v for k, v in raw.items() if k != "schema"})
 
+    def _with_drafts(self, reader: Reader, lines: list[dict[str, Any]]) -> None:
+        """The model's drafts the background job kept for these lines (``reply_drafts``), in
+        place: read, never waited on; the holding sentence stays until one is ready."""
+        from operating import reply_drafts as rd
+        rd.attach(lines, rd.kept_for(getattr(self, "state_dir", None), self._my_oids(reader),
+                                     lines))
+
     def reply_card_of(self, reader: Reader, card_id: str) -> Optional[dict[str, Any]]:
         """The reply card ``card_id`` rebuilt from this reader's own list (None: gone)."""
         raw = self._brief_run(reader, lambda view: replies_of(view))
-        for line in (raw or {}).get("lines") or ():
+        lines = (raw or {}).get("lines") or []
+        # the same kept model draft the list shows: the send dialog sends what the person
+        # read on the line, never the holding body
+        self._with_drafts(reader, lines)
+        for line in lines:
             card = reply_card(line)
             if card is not None and card["id"] == card_id:
                 return card

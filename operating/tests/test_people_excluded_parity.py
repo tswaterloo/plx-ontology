@@ -597,12 +597,33 @@ class PeopleExcludedFreshnessTests(_Answers, unittest.TestCase):
         import psycopg
         with psycopg.connect(self.dsn) as delta, psycopg.connect(self.dsn) as pg:
             delta.execute(people_excluded.DELTA_LOCK_SQL)   # a delta mid-write
+            pauses = []
             with mock.patch.object(people_excluded, "WATERMARK_LOCK_TIMEOUT", "200ms"), \
+                    mock.patch.object(people_excluded, "_pause", pauses.append), \
                     self.assertRaises(psycopg.errors.LockNotAvailable):
                 people_excluded.watermark(pg)
+            # every try waited, with a pause between tries and none after the last
+            self.assertEqual(len(pauses), people_excluded.WATERMARK_TRIES - 1)
             pg.rollback()
             delta.rollback()
             self.assertEqual(people_excluded.watermark(pg), self.covered + 10)
+
+    def test_the_watermark_is_read_once_a_long_delta_ends(self):
+        """A delta writing past one try's wait: the next try after the pause reads the
+        watermark (the update is not failed on a lock timeout)."""
+        import psycopg
+        with psycopg.connect(self.dsn) as delta, psycopg.connect(self.dsn) as pg:
+            delta.execute(people_excluded.DELTA_LOCK_SQL)   # a delta mid-write
+            pauses = []
+
+            def delta_ends(seconds):
+                pauses.append(seconds)
+                delta.rollback()
+
+            with mock.patch.object(people_excluded, "WATERMARK_LOCK_TIMEOUT", "200ms"), \
+                    mock.patch.object(people_excluded, "_pause", delta_ends):
+                self.assertEqual(people_excluded.watermark(pg), self.covered + 10)
+            self.assertEqual(pauses, [people_excluded.WATERMARK_PAUSE_SECONDS])
 
 
 if __name__ == "__main__":

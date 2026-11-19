@@ -53,6 +53,7 @@ WATCH_OPS = ("above", "below")
 _COLUMN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{0,62}$")
 MAX_SAVED = 60          # saved insights per person
 RUN_SECONDS = 30.0      # one insight's read, queue wait included
+AHEAD_PRIORITY = 3      # reads nobody waits on: after page reads (-1..1) and warm-ups (2)
 SAVED_ID = re.compile(r"^s([1-9][0-9]{0,17})$")
 BUILTIN_ID = re.compile(r"^[a-z][a-z0-9_]{0,60}$")
 
@@ -268,14 +269,20 @@ class Store:
 # ----------------------------------------------------------------------------- reading
 
 def read_sql(backend: Any, reader: Any, sql: str,
-             seconds: float = RUN_SECONDS) -> Mapping[str, Any]:
+             seconds: float = RUN_SECONDS, ahead: bool = False) -> Mapping[str, Any]:
     """``plx.sql``'s result of ``sql`` as ``reader`` (their door), or ``Refused`` saying in
     plain words what kept it from being read (``why_unread``); ``seconds``: its time,
     queue wait included."""
-    worker = getattr(backend, "access_worker", None) or backend.reads
+    # on the page read workers, never the access workers: those decide every request's
+    # door and search policy (2 threads), and a dashboard's dozen tiles plus the reads
+    # ahead held both, so every page waited behind them (live: tiles 11-13 s, Home 15 s).
+    # ``ahead`` (nobody waits: reads ahead, scheduled runs): after every page read and
+    # as a long read, so one read worker always stays free for the pages.
+    worker = getattr(backend, "reads", None) or getattr(backend, "access_worker", None)
     try:
         out = worker.run(reader, lambda view: view._call("plx.sql", {"sql": sql}),
-                         timeout=seconds)
+                         timeout=seconds, priority=AHEAD_PRIORITY if ahead else 0,
+                         long=ahead)
     except TimeoutError:
         raise Refused("insight_too_slow", f"{RUN_SECONDS:.0f}-second") from None
     if not isinstance(out, Mapping) or "error" in out or not isinstance(out.get("columns"),
@@ -542,10 +549,10 @@ def info(spec: Spec) -> m.InsightInfo:
 
 
 def read_now(backend: Any, reader: Any, sql: str,
-             seconds: float = RUN_SECONDS) -> dict[str, Any]:
+             seconds: float = RUN_SECONDS, ahead: bool = False) -> dict[str, Any]:
     """``read_sql`` with when it was read."""
     started = dt.datetime.now(dt.timezone.utc)
-    return {"got": read_sql(backend, reader, sql, seconds),
+    return {"got": read_sql(backend, reader, sql, seconds, ahead=ahead),
             "read_at": started.isoformat(timespec="seconds")}
 
 
@@ -667,8 +674,8 @@ class InsightsMixin:
                                lambda: self._insight_read(reader, ref(spec)), again=again)
         return result(self, reader, spec, scope, read)
 
-    def _insight_read(self, reader: Any, what: str,
-                      seconds: float = RUN_SECONDS) -> dict[str, Any]:
+    def _insight_read(self, reader: Any, what: str, seconds: float = RUN_SECONDS,
+                      ahead: bool = False) -> dict[str, Any]:
         """What ``ref`` names, read for ``reader``: a built-in they may be answered for from
         the shared copies (``insights_fast.serves``) from there; anything else (or nothing
         made there now) through ``plx.sql`` as them (``read_now``). A saved statement is
@@ -676,7 +683,7 @@ class InsightsMixin:
         from . import insights_fast as fast
         spec = next((s for s in builtin() if ref(s) == what), None)
         if spec is None:
-            return read_now(self, reader, what, seconds)
+            return read_now(self, reader, what, seconds, ahead=ahead)
         if spec.fast:
             maker = self._insight_fast()
             if maker is not None and fast.serves(spec, reader,
@@ -685,7 +692,7 @@ class InsightsMixin:
                     return maker.get(spec)
                 except fast.Unserved:
                     pass
-        return read_now(self, reader, spec.sql, seconds)
+        return read_now(self, reader, spec.sql, seconds, ahead=ahead)
 
     _insight_fast_maker: Any = None
 
@@ -739,7 +746,8 @@ class InsightsMixin:
                 disk = getattr(getattr(self, "page_cache", None), "store", None)
                 self._insight_keep = ic.Keeper(
                     ic.Kept(stamp, disk=disk, disk_code=ic.INSIGHT_FORMAT),
-                    lambda reader, sql: self._insight_read(reader, sql, ic.AHEAD_SECONDS))
+                    lambda reader, sql: self._insight_read(reader, sql, ic.AHEAD_SECONDS,
+                                                      ahead=True))
                 self._insight_keep.start()
             return self._insight_keep
 

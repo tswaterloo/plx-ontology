@@ -237,7 +237,7 @@ class Runner:
             return failed(REASONS["refused"])   # never anyone but the owner
         reader = Reader(session, getattr(self.backend, "reader_mode", "entra"), "", None)
         try:
-            got = read_sql(self.backend, reader, sql)
+            got = read_sql(self.backend, reader, sql, ahead=True)
         except UserFacing as why:
             return failed(FAILED.get(why.code, FAILED_OTHER))
         rows = [r.get("cells", []) for r in got.get("rows") or () if isinstance(r, Mapping)]

@@ -105,6 +105,24 @@ class RunEnvironment(unittest.TestCase):
                           "copy"))
 
 
+class Metering(unittest.TestCase):
+    def test_the_sparks_exporter_settings_pass_with_the_run_name_never_content(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "otel.env"
+            self.assertEqual(remote.telemetry_env("x", path), {})
+            path.write_text("# metering\nCLAUDE_CODE_ENABLE_TELEMETRY=1\n"
+                            "OTEL_EXPORTER_OTLP_ENDPOINT=http://127.0.0.1:4318\n"
+                            "OTEL_LOG_USER_PROMPTS=1\nOTEL_EXPORTER_OTLP_HEADERS=a=b\n"
+                            "PLX_WORKBENCH_API_KEY=k\n"
+                            "OTEL_RESOURCE_ATTRIBUTES=plx.source=spark-run,plx.host=s7d3d\n")
+            self.assertEqual(remote.telemetry_env("bench a", path), {
+                "CLAUDE_CODE_ENABLE_TELEMETRY": "1",
+                "OTEL_EXPORTER_OTLP_ENDPOINT": "http://127.0.0.1:4318",
+                "OTEL_RESOURCE_ATTRIBUTES": "plx.source=spark-run,plx.host=s7d3d,plx.run=bench_a"})
+            path.write_text("CLAUDE_CODE_ENABLE_TELEMETRY=0\nOTEL_LOGS_EXPORTER=otlp\n")
+            self.assertEqual(remote.telemetry_env("x", path), {})
+
+
 class Sandbox(unittest.TestCase):
     def test_every_sudo_on_the_spark_is_the_shim_whatever_path_the_job_sets(self):
         """A bench whose command sets its own PATH and calls the Workbench's
@@ -207,6 +225,40 @@ class LoginPreflight(unittest.TestCase):
             self.assertIn("Claude login", got.stderr)
         self.assertEqual(self.run_with(3600).returncode, 97)   # past the check: the push fails
         self.assertEqual(self.run_with(None, skip=True).returncode, 97)
+
+
+class StandbyChoice(unittest.TestCase):
+    """``--pg standby`` reads the Spark's hot standby only when its guard passes; else, or
+    when the guard fails, the box, as every run without it does."""
+
+    def setUp(self):
+        saved = remote.AI
+        self.addCleanup(setattr, remote, "AI", saved)
+        remote.AI = Path("/home/x/plx-ai")
+
+    def test_the_box_unless_asked_and_the_guard_passes(self):
+        box = Path("/home/x/plx-ai/run")
+        self.assertEqual(remote.database({"state": "copy"}), (box, {}))
+        self.assertEqual(remote.database({"pg": "box"}, lambda: (True, "")), (box, {}))
+        self.assertEqual(remote.database({"pg": "standby"}, lambda: (False, "lag")), (box, {}))
+
+        def broken():
+            raise OSError("no psql")
+        self.assertEqual(remote.database({"pg": "standby"}, broken), (box, {}))
+        pg, env = remote.database({"pg": "standby"}, lambda: (True, "caught up"))
+        self.assertEqual(pg, Path("/home/x/plx-ai/standby-run"))
+        self.assertEqual(env, {"PLX_PG_KEYSET_DSN": "host=/run/plx-primary dbname=plx user=plx_eval"})
+
+    def test_the_guard_reads_the_box_on_lag_a_lost_slot_or_a_promoted_standby(self):
+        import standby_guard as guard
+        box = ["0/3000000", "reserved"]
+        self.assertTrue(guard.choose(["t", "0/3000000", "900"], box, 600)[0])   # caught up
+        self.assertTrue(guard.choose(["t", "0/2000000", "30"], box, 600)[0])
+        self.assertFalse(guard.choose(["t", "0/2000000", "900"], box, 600)[0])
+        self.assertFalse(guard.choose(["t", "0/3000000", "1"], ["0/3000000", "lost"], 600)[0])
+        self.assertFalse(guard.choose(["t", "0/3000000", "1"], ["0/3000000", ""], 600)[0])
+        self.assertFalse(guard.choose(["f", "0/3000000", "1"], box, 600)[0])
+        self.assertEqual(guard.pick(psql="/nonexistent/psql")[0], False)
 
 
 if __name__ == "__main__":

@@ -9987,12 +9987,22 @@ export type components = {
             days: number;
             draft: components["schemas"]["ApprovalNudge"];
             /**
+             * Draft Note
+             * @description The drafter's one line to the person beside a ready reply: what a [bracketed blank] in it needs, or what was checked.
+             */
+            draft_note?: string | null;
+            /**
              * Draft State
              * @description The model's draft: ``ready`` (on ``draft``, or a question in ``your_call``), ``drafting`` (being written), ``queued`` (the holding reply until it is written).
              * @default queued
              * @enum {string}
              */
             draft_state: "ready" | "drafting" | "queued";
+            /**
+             * Draft Warning
+             * @description The outbound check's warning on a ready reply someone outside the company reads (it names another party's order, PO, invoice, name or price, or could not be checked): shown with the draft, read before any send.
+             */
+            draft_warning?: string | null;
             /** Drafted By */
             drafted_by?: "model" | null;
             /** Id */

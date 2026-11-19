@@ -709,6 +709,39 @@ class RecordsSearch(Fixture, unittest.TestCase):
         self.assertEqual(self.search({"query": "IN-2", "sources": ["records"]}, OPS)[
             "documents"][0]["date"], "2026-11-04")
 
+    def test_a_name_spelled_close_is_found_through_the_same_door(self):
+        """Few labels hold every word: the labels spelled close to the query are added,
+        each saying so, read through the reader's own door (never a record its word
+        search could not show)."""
+        import psycopg
+        self.assertEqual(self.titles(self.search({"query": "Acmee Ltd",
+                                                  "sources": ["records"]})), [])  # no pg_trgm
+        with psycopg.connect(self.dsn, autocommit=True) as c:
+            c.execute("CREATE EXTENSION IF NOT EXISTS pg_trgm")
+        decide(self.dsn, None)
+        self.addCleanup(decide, self.dsn, 0)
+
+        def close(query, actor=FULL):
+            return self.search({"query": query, "sources": ["records"]}, actor)
+        out = close("Acmee Ltd")
+        self.assertIn("Acme Ltd", self.titles(out))
+        self.assertTrue(all(d["match"] == "close in spelling" for d in out["documents"]))
+        self.assertIn("spelled close", out["searched"]["widened"])
+        for actor in (FULL, OPS, NOBODY):   # the rows its own word search shows, no other
+            self.assertEqual(self.titles(close("Acmee Ltd", actor)),
+                             self.titles(close("Acme Ltd", actor)), actor)
+        self.assertEqual(self.titles(close("Acmee Ltd", NOBODY)), [])
+        self.assertEqual(self.titles(close("Hiden Co")), ["Hidden Co"])   # a full reader's own
+        for actor in (OPS, NOBODY):
+            self.assertEqual(self.titles(close("Hiden Co", actor)), [], actor)
+        for actor in (FULL, OPS, NOBODY):
+            self.assertEqual(self.titles(close("Freightcomm", actor)), [], actor)
+            self.assertEqual(self.titles(close("Excluded tasks", actor)), [], actor)
+        # every word held: nothing added
+        held = close("Acme Ltd")
+        self.assertNotIn("match", held["documents"][0])
+        self.assertNotIn("widened", held["searched"])
+
     def test_cardinality_1_10_60_paged_without_loss_and_bad_input_fails_closed(self):
         for group, n in (("Task 1-0", 1), ("Task 10-", 10), ("Task 60-", 60)):
             seen, cursor = [], None

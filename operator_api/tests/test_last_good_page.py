@@ -2337,3 +2337,19 @@ class MarksStamp(unittest.TestCase):
             other = SimpleNamespace(access=SimpleNamespace(grant=lambda: (None, ["m:b"])))
             sets[frozenset({"m:b"})] = (frozenset({"Doc:3"}), frozenset())
             self.assertNotEqual(bp._marks_stamp(other), bp._marks_stamp(view))
+
+
+class OwnIssuedStamp(unittest.TestCase):
+    def test_an_equal_set_reloaded_keeps_its_digest_and_a_changed_one_moves_it(self):
+        """The PLX-issued ids' digest is the same for an equal set loaded again (a new
+        object) and moves when an id is added or removed."""
+        from operator_api import backend_pages as bp
+        first = frozenset({"Item:a", "Item:b"})
+        stamp = bp._own_stamp(first)
+        self.assertEqual(bp._own_stamp(first), stamp)
+        self.assertEqual(bp._own_stamp(frozenset(set(first))), stamp)   # reloaded
+        added = bp._own_stamp(first | {"Item:c"})
+        self.assertNotEqual(added, stamp)
+        self.assertNotEqual(bp._own_stamp(frozenset({"Item:a"})), stamp)
+        self.assertEqual(bp._own_stamp(first), stamp)
+        self.assertEqual(bp._own_stamp(frozenset()), "")

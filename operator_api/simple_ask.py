@@ -86,7 +86,8 @@ def effort(environ: Mapping[str, str] = os.environ) -> Optional[str]:
 
 
 METHOD = """Working habits:
-- Independent reads go in one turn: issue several plx.sql/plx.search calls at once when none needs another's result (they run in parallel).
+- Independent reads go in one turn: issue several plx.sql/plx.search calls at once when none needs another's result (they run in parallel). Every round of reads costs the person seconds, so plan the reads to need few rounds: a party, item or person the question names needs no lookup round of its own (filter its rows by the name in the same read: customer ILIKE '%name%', or a join to customers or suppliers), and a cross-check read goes in the same turn as the read it checks when it needs nothing from its result.
+- Date windows on mail and Teams: filter emails.received_at and teams_messages.created_at (timestamps, indexed), each day boundary in the business time zone (received_at >= '2026-11-16 00:00 America/New_York'); a filter on received_date or created_date reads every message the reader may see and is many times slower.
 - A question one query answers: run it and answer at once. Plan, check and query again only when the question takes several steps.
 - Look before you rely on a guess: plx.sql {"describe": "<view>"} shows a view's sample rows and commonest values; zero rows or odd values mean refine before you conclude. The list, library, folder or site a record belongs to may be named only in a URL or path field (web_url, path: .../Lists/<List%20Name>/...), so match the name there too.
 - "The <customer or supplier> order/PO" with no number means the one that matters now: read all of that party's open ones whatever their date (never cut them by a recent-date window or a small LIMIT first), lead with the late or at-risk one (verdict, days_late), then name the others in a line; ask back only when two are equally likely. "Latest on" means the latest news about it, not the newest-dated record.
@@ -94,6 +95,7 @@ METHOD = """Working habits:
 - A customer's or supplier's mail: emails.customers / emails.suppliers where filled; else match the party's own email domain (customers.email, suppliers.email: the part after @) in emails.domains, and say the mail was matched by domain.
 - Aggregate in SQL; group amounts by currency and never add or convert across currencies; state every amount with its currency code and the as-of date of what you read. A source's own total or summary row (no party on it, a blank currency) may add currencies together: sum the parties' own rows per currency instead.
 - A question word with more than one fair reading (regular, active, open, partly received): pick the plain business one, say in one line which you used, and keep to it.
+- When you answer a narrower question than was asked (a date window, systems, parties or items the person did not name, the top N, a sample, rows cut by a LIMIT, or only what you could read), say so in one plain line in the answer: what you covered and what you left out, so the person can ask for the rest.
 - A broad question (what is going on with a customer or supplier, a summary across systems): in your first turn send every independent read at once (its open orders, POs, invoices or balance, and its mail and Teams within a date window: the last 2-4 weeks unless the question says otherwise; never a mail or Teams search with no date), then open only the few messages that matter. Lead with what needs action (late, stuck, disputed), then the rest by system.
 - A named business figure (revenue, margin, orders, receivables, late orders, batches, stock, complaints...): use its measure (plx.sql {"measure": "<id>"}, by/days as needed) before writing your own SQL, and state the measure's name and one-line definition with the figure; write your own SQL only when no measure fits, and say so.
 - Why did X change / why is X low: measure this period and the one before (measure with "compare": true, or your own SQL); break the change down by each dimension that could carry it ("by": "<dimension>", "compare": true) and name the 2-3 parts carrying most of it with their change and share (when the net change is near zero, compare the parts' own changes, not shares); for those parts, read the rows behind them (count vs size vs rate: fewer orders, smaller orders, or a lower margin rate) and the reasons said in that period (comms_findings for the customer, item or supplier, then mail and Teams); a compare row with covered false means the source only starts on its data_from, after the earlier period began: that period was not captured, not zero, so give the current figure with data_from and say no comparison is possible (never "up from 0"); call something a cause only when its timing fits and the rows or messages show how it moved the number, else say it goes with the change; show 2-3 example rows or messages.
@@ -565,7 +567,7 @@ def cited(events: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
 # query returned (none is the model's).
 from .charts import MAX_CHART_POINTS, MAX_CHARTS, PROMPT_LINE as _CHART_LINE  # noqa: E402,F401
 from .charts import blocks as charts  # noqa: E402
-from .charts import chart_blocks, refused as refused_charts  # noqa: E402
+from .charts import chart_blocks, refused as refused_charts, why_code  # noqa: E402
 
 
 def chart_redo(ran: Any) -> Optional[str]:
@@ -768,6 +770,11 @@ def run(asker: Any, session: Any, question: str, history: Sequence[Any] = (),
         "unverified": len(unverified), "failure": failure,
         "session_start": ran.usage.get("session_start"),
         "chart_redo": ran.usage.get("chart_redo"),
+        # asked = blocks the answer wrote (a redo's too), drawn = charts shown, refused =
+        # why each other block drew nothing (``charts.why_code``): never asked vs dropped
+        "charts_asked": len(chart_blocks(agent_text)), "charts_drawn": len(drawn),
+        "charts_refused": [why_code(why) for _title, why in
+                           refused_charts(agent_text, ran.events)],
         "spare_miss": ran.usage.get("spare_miss")}))
     return SimpleRun(text=text, agent_text=agent_text, unverified=unverified,
                      events=list(ran.events), seconds=seconds, stopped=stopped,

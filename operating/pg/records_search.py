@@ -121,6 +121,44 @@ def search_sql(n_words: int, *, since: bool, until: bool, among: bool = False) -
             + " ORDER BY " + order_sql() + " LIMIT %(k)s OFFSET %(off)s")
 
 
+# A record whose label is spelled close to the whole query (``close_candidates_sql``):
+# pg_trgm similarity at least this ("Federated Coop Alberni" finds "Federated
+# Co-operatives Ltd. Alberni", 0.54); at most CLOSE_CAP candidates read.
+CLOSE_SIMILARITY = 0.4
+CLOSE_CAP = 200
+CLOSE_MIN_LETTERS = 4
+
+
+def close_candidates_sql(*, biz: str, trgm: str, since: bool, until: bool) -> str:
+    """The handles of the records whose label is spelled close to the whole query ``q``
+    (pg_trgm ``%``, its threshold set by the caller's transaction to ``CLOSE_SIMILARITY``;
+    the label's trigram index), closest first, at most ``%(cap)s``: read from the store's
+    own table like ``candidates_sql``, never shown (the hits are read through the reader's
+    guarded view by these handles, ``among_sql``). ``trgm``: the schema pg_trgm is
+    installed in."""
+    if not (re.fullmatch(r"[a-z_][a-z0-9_]*", biz) and re.fullmatch(r"[a-z_][a-z0-9_]*", trgm)):
+        raise SearchInputError("not a schema name")
+    where = [f"label OPERATOR({trgm}.%%) %(q)s", "handle IS NOT NULL"]
+    if since:
+        where.append("record_date >= %(since)s")
+    if until:
+        where.append("record_date <= %(until)s")
+    return (f"SELECT handle FROM {biz}.records WHERE " + " AND ".join(where)
+            + f" ORDER BY {trgm}.similarity(label, %(q)s) DESC, handle LIMIT %(cap)s")
+
+
+def among_sql(*, since: bool, until: bool) -> str:
+    """The reader's guarded ``records`` rows among the handles ``hs``, in their order
+    (``close_candidates_sql``), at most ``%(k)s``."""
+    where = ["handle = ANY(%(hs)s::text[])"]
+    if since:
+        where.append("record_date >= %(since)s")
+    if until:
+        where.append("record_date <= %(until)s")
+    return (f"SELECT {', '.join(COLS)} FROM records WHERE " + " AND ".join(where)
+            + " ORDER BY array_position(%(hs)s::text[], handle), handle LIMIT %(k)s")
+
+
 def params(words: Sequence[str], query: str, *, since: str | None, until: str | None,
            k: int, off: int) -> dict[str, Any]:
     out: dict[str, Any] = {f"w{i}": _like(w) for i, w in enumerate(words)}
@@ -157,5 +195,5 @@ def searched(args: Mapping[str, Any], words: Sequence[str]) -> dict[str, Any]:
     return out
 
 
-__all__ = ["KIND", "SOURCE", "SearchInputError", "candidates", "candidates_sql", "day",
-           "hits", "indexed", "params", "read_cursor", "search_sql", "searched", "terms"]
+__all__ = ["CLOSE_CAP", "CLOSE_SIMILARITY", "KIND", "SOURCE", "SearchInputError", "among_sql",
+           "candidates", "candidates_sql", "close_candidates_sql", "day", "hits", "indexed", "params", "read_cursor", "search_sql", "searched", "terms"]

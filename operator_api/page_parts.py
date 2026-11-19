@@ -70,14 +70,7 @@ def inbox_stamp(view: Any) -> Optional[tuple]:
 def inbox_state(inbox: Path, wait: bool = True) -> tuple:
     """``inbox_content`` of the inbox file as it is now (``wait`` False: never waits
     for its digest, see there)."""
-    out = []
-    for file in (inbox, inbox.with_name(inbox.name + "-wal")):
-        try:
-            found = os.stat(file)
-            out.append((found.st_mtime_ns, found.st_size))
-        except OSError:
-            out.append(None)
-    return inbox_content(inbox, tuple(out), wait=wait)
+    return inbox_content(inbox, inbox_files(inbox), wait=wait)
 
 
 # What a "seen" mark writes (``proactive_engine.record_visit``): left out of the inbox's
@@ -85,50 +78,95 @@ def inbox_state(inbox: Path, wait: bool = True) -> tuple:
 INBOX_VISIT_TABLES = frozenset({"visits"})
 _INBOX_CONTENT: dict[tuple, tuple] = {}   # (inbox, file state) -> its content stamp
 _INBOX_CONTENT_LOCK = threading.Lock()
-_INBOX_READING: dict[tuple, threading.Lock] = {}   # one digest read at a time per state
+# one digest read at a time per inbox (any state): a burst of writes made several file
+# states at once, and each was read in full on a thread of its own beside the others
+_INBOX_READING: dict[str, threading.Lock] = {}
+_INBOX_BACKGROUND: set[str] = set()   # inboxes with a background digest read under way
+
+
+def _inbox_lock(inbox: Path) -> threading.Lock:
+    with _INBOX_CONTENT_LOCK:
+        return _INBOX_READING.setdefault(str(inbox), threading.Lock())
 
 
 def inbox_content(inbox: Path, files: tuple, wait: bool = True) -> tuple:
     """A digest of every table of the inbox but the "seen" marks, read once per file
     state ``files`` (the file's and its write-ahead log's change time and size); the file
     state itself when there is no inbox or it cannot be read (a change is then a new
-    key, as any write is). Callers asking for one state at once wait for the one read.
+    key, as any write is). One digest of an inbox is read at a time: callers asking for
+    a state wait for the read under way, then find theirs or read it.
 
     ``wait`` False (a request's inputs stamp): a state not read yet answers
-    ``("pending", files)`` at once and is read in the background. Every "seen" mark
-    writes the inbox, and reading all of it (116 MB, 2.7 s, 2026-11-11) on the request
-    that next looked made every reader's next page wait; a pending state equals no
-    digest, so a page kept under the digest is served marked stale meanwhile."""
+    ``("pending", files)`` at once and is read in the background, one background read
+    per inbox at a time, which then reads the newest state if it moved meanwhile (never
+    each state of a burst of writes). Every "seen" mark writes the inbox, and reading all
+    of it (116 MB, 2.7 s, 2026-11-11) on the request that next looked made every
+    reader's next page wait; a pending state equals no digest, so a page kept under the
+    digest is served marked stale meanwhile."""
     if files[0] is None:
         return files
     key = (str(inbox), files)
     with _INBOX_CONTENT_LOCK:
         held = _INBOX_CONTENT.get(key)
-        reading = _INBOX_READING.setdefault(key, threading.Lock()) if held is None else None
     if held is not None:
         return held
     if not wait:
-        def background() -> None:
-            try:
-                inbox_content(inbox, files)
-            except Exception:  # noqa: BLE001 - the next request reads it
-                pass
-        if not reading.locked():
-            threading.Thread(target=background, name="inbox-digest", daemon=True).start()
+        with _INBOX_CONTENT_LOCK:
+            start = str(inbox) not in _INBOX_BACKGROUND
+            if start:
+                _INBOX_BACKGROUND.add(str(inbox))
+        if start:
+            threading.Thread(target=_inbox_background, args=(inbox, files),
+                             name="inbox-digest", daemon=True).start()
         return ("pending",) + files
-    with reading:
+    with _inbox_lock(inbox):
         with _INBOX_CONTENT_LOCK:
             held = _INBOX_CONTENT.get(key)
         if held is not None:
             return held
-        try:
-            return _inbox_digest(inbox, key, files)
-        finally:
+        return _inbox_digest(inbox, key, files)
+
+
+def _inbox_background(inbox: Path, files: tuple) -> None:
+    """The background read of ``inbox_content``: ``files``' digest, then the newest
+    state's while the inbox moved on during the read; the inbox's background mark is
+    cleared under the same lock that checks it, so a state asked meanwhile is read."""
+    try:
+        while True:
+            try:
+                inbox_content(inbox, files)
+            except Exception:  # noqa: BLE001 - the next request reads it
+                pass
+            now = inbox_files(inbox)
             with _INBOX_CONTENT_LOCK:
-                _INBOX_READING.pop(key, None)
+                if now == files or now[0] is None or (str(inbox), now) in _INBOX_CONTENT:
+                    _INBOX_BACKGROUND.discard(str(inbox))
+                    return
+            files = now
+    except BaseException:
+        with _INBOX_CONTENT_LOCK:
+            _INBOX_BACKGROUND.discard(str(inbox))
+        raise
+
+
+def inbox_files(inbox: Path) -> tuple:
+    """The inbox file's and its write-ahead log's (change time, size), None for one
+    missing."""
+    out = []
+    for file in (inbox, inbox.with_name(inbox.name + "-wal")):
+        try:
+            found = os.stat(file)
+            out.append((found.st_mtime_ns, found.st_size))
+        except OSError:
+            out.append(None)
+    return tuple(out)
 
 
 def _inbox_digest(inbox: Path, key: tuple, files: tuple) -> tuple:
+    """Each table's rows (but the "seen" marks) as quoted values, sorted and joined
+    inside SQLite: one statement a table, so the sort runs off the interpreter lock (a
+    row-at-a-time Python sort of 0.5 M rows held it for seconds, and every request of
+    the API waited behind it)."""
     try:
         conn = sqlite3.connect(f"file:{inbox}?mode=ro", uri=True, timeout=30)
     except sqlite3.Error:
@@ -140,11 +178,18 @@ def _inbox_digest(inbox: Path, key: tuple, files: tuple) -> tuple:
             "SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name")
             if row[0] not in INBOX_VISIT_TABLES]
         for table in tables:
+            name = table.replace('"', '""')
+            columns = [row[1] for row in conn.execute(f'PRAGMA table_info("{name}")')]
             digest.update(b"\0table\0" + table.encode())
-            rows = sorted(repr(tuple(row)) for row in conn.execute(
-                'SELECT * FROM "' + table.replace('"', '""') + '"'))
-            for row in rows:
-                digest.update(row.encode() + b"\0")
+            if not columns:
+                continue
+            row = " || char(31) || ".join(
+                'quote("' + column.replace('"', '""') + '")' for column in columns)
+            joined = conn.execute(
+                f'SELECT group_concat(r, char(30)) FROM (SELECT {row} AS r FROM "{name}" '
+                "ORDER BY r)").fetchone()[0]
+            if joined:
+                digest.update(joined.encode("utf-8", "surrogatepass"))
         stamp = ("content", digest.hexdigest())
     except sqlite3.Error:
         return files

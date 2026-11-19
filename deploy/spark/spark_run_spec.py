@@ -39,6 +39,7 @@ def build(argv: Sequence[str], environ: Mapping[str, str]) -> dict:
         raise ValueError("no command")
     return {"sha": environ["SPEC_SHA"], "tree": environ["SPEC_TREE"],
             "cwd": environ["SPEC_CWD"], "state": environ["SPEC_STATE"],
+            "pg": environ.get("SPEC_PG", "box"),
             "name": environ["SPEC_NAME"], "ship": ship, "out": out, "env": passed_env(environ, named),
             "cmd": cmd}
 

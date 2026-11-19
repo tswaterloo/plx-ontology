@@ -568,6 +568,51 @@ class ObjectWorkspaceHttpTest(unittest.TestCase):
             grant()
             self.assertEqual(policy_now.call_count, 3)   # a mailbox added
 
+    def test_the_mailbox_rows_are_read_again_only_after_a_commit(self):
+        """The grant stamps' mailbox rows are read once per state of the store: requests
+        with no commit between them reuse the last read (an access check opens a request
+        each), and any commit, a grant change or not, reads them again."""
+        from integrations.capture_mail import MailCaptureStore
+        from integrations.live_source_guard import LiveSourceAudience
+        from operating import case_tools_host_calls as calls
+        from operating.case_runtime import LiveReaders
+
+        mail_dir = self.tmp / "stamp-reuse-mail"
+        runtime = CaseRuntime(self.state, client=None,
+                              audience=self.state / case_fixtures.MIRROR_AUDIENCE_FILE,
+                              tenant="plx", mail_capture_dir=mail_dir,
+                              live=LiveReaders(LiveSourceAudience(
+                                  {"mail:*": sorted(OPS)}, tenant="plx")))
+        self.addCleanup(runtime.close)
+        store = MailCaptureStore(mail_dir)
+        self.addCleanup(store.db.close)
+        identity = {"object_id": "mbx-1", "upn": "ops@plx.example", "identities": ["mbx-1"],
+                    "resources": ["mail:mbx-1"], "source_acl": ["ops"]}
+        store.record_mailbox(identity)
+        access = objects.host_access(runtime, self.store, Actor("plx", OPS),
+                                     mail_capture_dir=mail_dir)
+        self.addCleanup(access.close)
+        session = session_identity.fixture_session("plx", OPS,
+                                                   channel=session_identity.CHANNEL_CONSOLE)
+
+        def grant():
+            access.bind(session)
+            with access.request():
+                return access.grant()[0]("api:public.app_purchase_order")
+        with mock.patch.object(calls, "_mailbox_stamp", wraps=calls._mailbox_stamp) as rows:
+            self.assertTrue(grant())
+            read = rows.call_count
+            self.assertGreaterEqual(read, 1)
+            for _ in range(3):
+                self.assertTrue(grant())
+            self.assertEqual(rows.call_count, read)   # nothing committed: not read again
+            store.save_folder("mbx-1", "inbox", status="read-1")
+            self.assertTrue(grant())
+            self.assertEqual(rows.call_count, read + 1)   # a commit: read again
+            store.record_mailbox({**identity, "source_acl": ["someone-else"]})
+            grant()
+            self.assertEqual(rows.call_count, read + 2)
+
     def test_store_status_is_shown_and_a_foreign_store_is_refused(self):
         request = self.serve(OPS)
         po = self.find_one(request, case_fixtures.PO_NUMBER, "PurchaseOrder")

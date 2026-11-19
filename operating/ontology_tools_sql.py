@@ -66,6 +66,21 @@ MAX_SQL = 8000
 # structured content, ``mcp_server._envelope_bytes``) within MAX_RESULT_BYTES (48,000):
 # past ~23,000 here a whole result was refused (result_too_large), none of it shown
 MAX_BYTES = 20_000
+# a comms search whose every-word match finds fewer rows than this (and than its limit)
+# fills its page with rows holding some of the words and rows close in meaning
+# (``_comms_widened``)
+WIDEN_BELOW = 3
+# any other first page with query words also shows up to this many rows close in meaning
+# that the word match did not list ("mouth rinse": 30 label files hold both words, the
+# "Oral Rinse" mail is close in meaning)
+MEANING_EXTRA = 5
+# the meaning ranking's best objects read for it
+MEANING_K = 40
+# the longest the search waits, past its word match, for the meaning ranking it started
+# beside it (live: the ranking 1.9-2.3 s, the word match 4-6 s)
+MEANING_WAIT_S = 5.0
+# a plx.search hit list's most (its contract's maxItems)
+HITS_MAX = 50
 MAX_CELL = 400
 STATEMENT_MS = 10_000
 # a FULL reader (no permission checks
@@ -640,6 +655,9 @@ class SqlTool:
                 "q": q, "party": who.value if who else None, "since": since, "until": until,
                 "c_at": cur[1] if cur else None, "c_h": cur[2] if cur else None,
                 "k": k, "k_own": own, "walk": cs.walk_rows(pg, q)}).fetchall()
+        # a first page's meaning ranking runs beside the word search (``_comms_widened``)
+        ranking = (self._meaning_started(args["query"], actor, wanted)
+                   if words and cur is None else None)
         try:
             views, who, rows = self._comms_scoped(conn, settings, work, actor)
         except cs.SearchInputError as exc:
@@ -648,14 +666,139 @@ class SqlTool:
             raise ToolError("not_served", "mail and Teams are not served as tables here")
         rows, nxt = self._gated_files(rows, actor, limit, k, cur)
         more = nxt is not None
-        out = {"documents": cs.hits(rows, words=words, party_=who),
-               "searched": cs.searched(views, args, words), "gaps": [],
+        documents = cs.hits(rows, words=words, party_=who)
+        searched = cs.searched(views, args, words)
+        few = not more and len(rows) < min(limit, WIDEN_BELOW)
+        room = min(max(limit - len(rows) if few else 0,
+                       MEANING_EXTRA if ranking is not None else 0), HITS_MAX - len(rows))
+        if words and cur is None and room > 0:
+            # few rows hold every word: the rows holding some of them; and, on any first
+            # page, the rows close in meaning; all through the same views
+            # (``_comms_widened``)
+            extra, how = self._comms_widened(
+                conn, settings, guarded, actor, views, args["query"], words, who,
+                since, until, room, {r[1] for r in rows}, ranking, few)
+            documents += cs.hits(extra, words=words, party_=who)
+            for hit, (held, near) in zip(documents[len(rows):], how or []):
+                hit["match"] = held
+                if near is not None:
+                    # the meaning ranking's place: kept here only (``plx.search`` shows
+                    # ``match``)
+                    hit["meaning_rank"] = near
+            if how:
+                searched["widened"] = (
+                    f"fewer than {WIDEN_BELOW} items held every word: also items holding "
+                    "some of the words or close in meaning, each with its match" if few else
+                    f"also up to {MEANING_EXTRA} items close in meaning that the word "
+                    "match did not list, each with its match")
+        out = {"documents": documents,
+               "searched": searched, "gaps": [],
                "completeness": {"complete": not more, "truncated": more, "returned": len(rows),
                                 "next_cursor": nxt if more and nxt else None}}
         if more:
             # a run of refused files longer than a cursor skips: stopped, said, no cursor
             out["completeness"]["reason"] = "page_cap" if nxt else "withheld_run"
         return out
+
+    def _meaning_started(self, query: str, actor: Any, wanted: set) -> Any:
+        """The hybrid ranking (``operating/search``) of ``query`` over the mail, Teams
+        and files chunks ``wanted`` names, started on a search thread (the database and
+        the models, never this reader's store or gate); None when search is off."""
+        from operating.search import plug
+        if not plug.enabled():
+            return None
+        kinds = [k for src, ks in (("graph_mail", ("mail",)), ("teams", ("teams",)),
+                                   ("sharepoint", ("sharepoint", "sheet_row")))
+                 if src in wanted for k in ks]
+        # not ``plug.ranked``: that records the call's ranking mode, which binds a
+        # documents cursor; this ranking is only a candidate list
+        return plug._POOL.submit(plug._rank, self.base.policy, actor, query, kinds=kinds)
+
+    def _comms_widened(self, conn: Any, settings: Any, guarded: str, actor: Any,
+                       views: Sequence[str],
+                       query: str, words: Sequence[str], who: Any, since: Any, until: Any,
+                       room: int, seen: set, ranking: Any, few: bool
+                       ) -> tuple[list[Any], Any]:
+        """Up to ``room`` more rows: the rows ``ranking`` (``_meaning_started``) ranks
+        close in meaning that the word search lists on no page, and, for a query whose every-word match found ``few``, the rows
+        holding any of its words (``comms_search.tsquery_any``) when there is no such
+        ranking (search off, failed or late: the hybrid ranking already weighs the words
+        a row holds); most words held first, then the meaning rank. Every row is read
+        through the same guarded views as the word search (``search_sql`` /
+        ``meaning_sql``) in the same scoped reader, and each file row passes the item
+        gate: the ranking only names candidates, never a row. Returns the rows and, per
+        row, how it matched ("n of m words" and/or "close in meaning") with its meaning
+        rank (None when the ranking did not name it); ``([], None)`` when neither ran."""
+        from operating.pg import comms_search as cs
+        from operating.search import plug
+        ids: list[str] = []
+        if ranking is not None:
+            try:
+                ranked = plug._gated(ranking.result(timeout=MEANING_WAIT_S),
+                                     self.base.policy, actor, self.base._item_allowed)
+                ids = [h["object_id"] for h in ranked.hits][:MEANING_K]
+            except Exception:  # noqa: BLE001 - late or failed: the words answer alone
+                ranking.cancel()
+                ids = []
+        any_q = cs.tsquery_any(query) if few and not ids else None
+        if any_q is None and not ids:
+            return [], None
+        k = 3 * room + len(seen) + 1
+
+        def work(pg: Any) -> tuple[list[Any], list[Any]]:
+            some: list[Any] = []
+            if any_q is not None:
+                sql = cs.search_sql(views, guarded=guarded, biz=bv.SCHEMA, query=True, party_kind=who.kind if who else None,
+                                    since=since is not None, until=until is not None,
+                                    cursor=False)
+                some = pg.execute(sql, {
+                    "q": any_q, "party": who.value if who else None, "since": since,
+                    "until": until, "c_at": None, "c_h": None, "k": k, "k_own": k,
+                    "walk": cs.walk_rows(pg, any_q)}).fetchall() if sql else []
+            near: list[Any] = []
+            if ids:
+                sql = cs.meaning_sql(views, guarded=guarded, biz=bv.SCHEMA, party_kind=who.kind if who else None,
+                                     since=since is not None, until=until is not None)
+                near = pg.execute(sql, {
+                    "ids": ids, "q": cs.tsquery_any(query) or cs.tsquery(query),
+                    "q_all": cs.tsquery(query),
+                    "party": who.value if who else None, "since": since,
+                    "until": until}).fetchall() if sql else []
+            return some, near
+        some, near = self._comms_scoped(conn, settings, work, actor)
+        rank = {i: n for n, i in enumerate(ids, start=1)}
+        found: dict[str, dict[str, Any]] = {}
+        for at, row in enumerate(some):
+            if row[1] not in seen:
+                found.setdefault(row[1], {"row": row, "order": at,
+                                          "held": max(1, cs.words_held(row, words))})
+        for row in near:
+            # a row the word search matches is on this page or a later one: never here
+            # too (a full page's extra came back on the next page)
+            if row[1] in seen or row[-1] not in rank or row[-2]:
+                continue
+            got = found.setdefault(row[1], {"row": row, "order": len(some),
+                                            "held": cs.words_held(row, words)})
+            got["meaning"] = min(got.get("meaning", 10 ** 6), rank[row[-1]])
+        n = len(set(w.casefold() for w in words))
+        # few: most words held first; else the word match already lists rows holding
+        # every word, so the rows that do not (a synonym, "Oral Rinse") come first
+        ordered = sorted(found.values(), key=lambda f: (
+            (-(f["held"] + (1 if "meaning" in f else 0)) if few else f["held"] >= n),
+            f.get("meaning", 10 ** 6), f["order"]))
+        kept: list[Any] = []
+        how: list[tuple[str, Any]] = []
+        for f in ordered:
+            if len(kept) >= room:
+                break
+            row = f["row"]
+            if row[0] in cs.SEARCH_ONLY and not self.base._item_allowed(actor, row[1]):
+                continue
+            kept.append(row)
+            how.append((", ".join(
+                ([f"{min(f['held'], n)} of {n} words"] if f["held"] else [])
+                + (["close in meaning"] if "meaning" in f else [])), f.get("meaning")))
+        return kept, how
 
     def _files_reader(self, actor: Any) -> bool:
         """Whether this search reads SharePoint files from their table: a full reader
@@ -817,7 +960,18 @@ class SqlTool:
             rows = read(rs.search_sql(len(words), **dated), bound)
         more = len(rows) > limit
         rows = rows[:limit]
-        out = {"documents": rs.hits(rows), "searched": rs.searched(args, words), "gaps": [],
+        documents, searched = rs.hits(rows), rs.searched(args, words)
+        if not off and not more and len(rows) < min(limit, WIDEN_BELOW):
+            # few labels hold every word: the labels spelled close to the query ("Coop"
+            # for "Co-operatives"), read through the same door
+            near = self._records_close(conn, bound, dated, {r[0] for r in rows},
+                                       min(MEANING_EXTRA, limit - len(rows)), read)
+            for hit in rs.hits(near):
+                hit["match"] = "close in spelling"
+                documents.append(hit)
+            if near:
+                searched["widened"] = "also records whose name is spelled close to the query"
+        out = {"documents": documents, "searched": searched, "gaps": [],
                "completeness": {"complete": not more, "truncated": more,
                                 "returned": len(rows),
                                 "next_cursor": f"r1:{off + limit}" if more and
@@ -825,6 +979,46 @@ class SqlTool:
         if more:
             out["completeness"]["reason"] = "page_cap"
         return out
+
+    def _records_close(self, conn: Any, bound: Mapping[str, Any], dated: Mapping[str, bool],
+                       seen: set, room: int, read: Any) -> list[Any]:
+        """Up to ``room`` rows of the reader's guarded ``records`` (``read``: the door's
+        own statement) whose label is spelled close to the query, closest first, none in
+        ``seen``: the store names the candidates by the label's trigram index
+        (``rs.close_candidates_sql``, a read-only transaction of its own, at most
+        ``CANDIDATE_MS``), the door reads the rows. None when the query is too short or the
+        candidate read failed or ran out of time, or pg_trgm is not installed."""
+        import psycopg
+        from operating.pg import records_search as rs
+        query = str(bound.get("q") or "")
+        if room <= 0 or sum(ch.isalnum() for ch in query) < rs.CLOSE_MIN_LETTERS:
+            return []
+        ms = int(min(CANDIDATE_MS, self._seconds() * 1000))
+        try:
+            with _lent(conn) as pg:
+                kept = (pg.isolation_level, pg.read_only)
+                try:
+                    pg.read_only = True
+                    with pg.transaction():
+                        pg.execute("SELECT set_config('statement_timeout', %s, true), "
+                                   "set_config('search_path', 'pg_catalog', true), "
+                                   "set_config('pg_trgm.similarity_threshold', %s, true)",
+                                   (str(ms), str(rs.CLOSE_SIMILARITY)))
+                        trgm = pg.execute("SELECT extnamespace::regnamespace::text FROM "
+                                          "pg_extension WHERE extname = 'pg_trgm'").fetchone()
+                        handles = [r[0] for r in pg.execute(rs.close_candidates_sql(
+                            biz=bv.SCHEMA, trgm=trgm[0], **dated),
+                            {**bound, "cap": rs.CLOSE_CAP})] if trgm else []
+                finally:
+                    if not pg.closed and pg.info.transaction_status == 0:
+                        pg.isolation_level, pg.read_only = kept
+        except (psycopg.Error, ToolError):
+            return []
+        handles = [h for h in handles if h not in seen]
+        if not handles:
+            return []
+        rows = read(rs.among_sql(**dated), {**bound, "hs": handles, "k": room})
+        return [r for r in rows if r[0] not in seen][:room]
 
     def _label_candidates(self, conn: Any, words: Sequence[str], bound: Mapping[str, Any],
                           cap: int, dated: Mapping[str, bool]) -> "list[str] | None":

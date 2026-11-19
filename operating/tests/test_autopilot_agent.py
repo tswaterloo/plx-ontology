@@ -64,8 +64,8 @@ class Check:
     """The second pass's ``claude -p`` stand-in: keeps every item it is shown but ``drop``;
     ``answer`` replaces its whole answer; ``fail`` raises."""
 
-    def __init__(self, drop=(), answer=None, fail=None) -> None:
-        self.drop, self.answer, self.fail = set(drop), answer, fail
+    def __init__(self, drop=(), answer=None, fail=None, fixed="") -> None:
+        self.drop, self.answer, self.fail, self.fixed = set(drop), answer, fail, fixed
         self.prompts: list[str] = []
 
     def __call__(self, argv, *, input, **_kw):
@@ -74,7 +74,8 @@ class Check:
             raise self.fail
         ids = re.findall(r"^\[([RQOPT]\d*)\]", input, re.M)
         out = self.answer if self.answer is not None else json.dumps(
-            {"items": [{"id": i, "keep": "no" if i in self.drop else "yes", "why": "-"}
+            {"items": [{"id": i, "keep": "no" if i in self.drop else "yes", "why": "-",
+                        **({"fixed": self.fixed} if i == "R" and i in self.drop else {})}
                        for i in ids]})
         return subprocess.CompletedProcess(argv, 0, stdout=json.dumps({"result": out}),
                                            stderr="")
@@ -123,12 +124,16 @@ class AssistantBoundary(unittest.TestCase):
         self.assertEqual(why, "")
         self.assertEqual(got.reply, "Yes, Nov 20 works for PO 77.")
         self.assertEqual(got.proposals, [{"tool": "plx.prepare_write", "arguments": PO_DATE}])
-        # the answer is the person's: the question stands, never a reply beside it
+        # a written reply is never swapped for a card: the question beside it is its note
         ask = {"question": "Can PO 77 take Nov 20?",
                "options": [{"label": "Yes", "reply": "Yes, Nov 20 is fine."},
                            {"label": "No", "reply": "Nov 20 is too late for us."},
                            {"label": "", "reply": "dropped: no label"}]}
-        got, _ = run(assistant(Session(answer=final(reply="Sure!", ask=ask))))
+        got, _ = run(assistant(Session(answer=final(reply="Sure! [yes or no]", ask=ask))))
+        self.assertEqual((got.reply, got.ask, got.note),
+                         ("Sure! [yes or no]", None, "Can PO 77 take Nov 20?"))
+        # a question alone is the model's own card: kept with its answers
+        got, _ = run(assistant(Session(answer=final(ask=ask))))
         self.assertEqual((got.reply, got.ask["question"]), ("", "Can PO 77 take Nov 20?"))
         self.assertEqual([o["label"] for o in got.ask["options"]], ["Yes", "No"])
         # nothing prepared, or an answer that is not the contract: no item, never a guess
@@ -204,14 +209,67 @@ class SecondCheck(unittest.TestCase):
     def test_unsupported_items_are_dropped_and_a_reply_becomes_the_persons_question(self):
         reply = Session(answer=final(reply="Yes, Nov 20 works; the trucks are booked."))
         got, why = run(assistant(reply, Check(drop={"R"})))
-        self.assertEqual((why, got.reply, got.ask), ("", "", {"question": ck.ASK_PLAIN,
-                                                              "options": []}))
-        # a turn the person's habit or the ask rules' open reading gives is theirs too
-        self.assertEqual(run(assistant(reply, Check(drop={"R"})), TURN)[0].ask,
-                         {"question": ck.ASK_PLAIN, "options": []})
+        self.assertEqual((why, got.reply, got.ask, got.warning),
+                         ("", "Yes, Nov 20 works; the trucks are booked.", None,
+                          ck.WARN_UNSUPPORTED))
+        # the output step: a reviewed draft (Assist) keeps it with the warning; unreviewed
+        # (Autopilot) it is the person's open question, as before
+        from operating import autopilot_agent_io as io
+        for review, want in ((True, ("Yes, Nov 20 works; the trucks are booked.", None,
+                                     ck.WARN_UNSUPPORTED)),
+                             (False, ("", {"question": ck.ASK_PLAIN, "options": []}, ""))):
+            with self.subTest(review=review):
+                got, _ = run(assistant(reply, Check(drop={"R"})))
+                inside = {**MAIL, "side": "internal"}
+                ours = [a for a in [inside.get("sender"), *(inside.get("to") or ()),
+                                    *(inside.get("cc") or ())] if a]
+                out, _held, _why = io.agent_output(got, inside, "employee:A", "Nov 20?", {},
+                                                   {"employee:A": ours}, None, ours[0],
+                                                   review=review)
+                self.assertEqual((out.reply, out.ask, out.warning), want)
+        # a turn keeps the written reply too (flagged)
+        self.assertEqual(run(assistant(reply, Check(drop={"R"})), TURN)[0].warning,
+                         ck.WARN_UNSUPPORTED)
         # copied: no reply due, so not the person's question either
         self.assertEqual(run(assistant(reply, Check(drop={"R"})), {**MAIL, "asks": True}),
                          (None, "nothing_to_do"))
+        # the check's repair takes out what it could not support: the reviewed draft is the
+        # repair, no warning left; a "repair" that adds a figure is no repair (warning kept);
+        # unreviewed it is still the open question
+        inside = {**MAIL, "side": "internal"}
+        ours = [a for a in [inside.get("sender"), *(inside.get("to") or ()),
+                            *(inside.get("cc") or ())] if a]
+        # a repair written with raw line breaks still parses (the verdict is not lost)
+        raw = '{"items": [{"id": "R", "keep": "no", "why": "-", "fixed": "Yes.\n[trucks]"}]}'
+        got, why = run(assistant(reply, Check(answer=raw)))
+        self.assertEqual((why, got.fixed), ("", "Yes.\n[trucks]"))
+        self.assertEqual(ck.fixed_of('{"items": [{"id": "R", "fixed": "We have shipped PO 77 yet."}]}',
+                                     "We have not shipped PO 77 yet."), "")   # a cut "not"
+        self.assertEqual(ck.fixed_of('{"items": [{"id": "R", "fixed": "We have not shipped [PO]."}]}',
+                                     "We have not shipped PO 77 yet."), "We have not shipped [PO].")
+        for fixed, review, want in (
+                ("Yes, Nov 20 works; [trucks].", True, ("Yes, Nov 20 works; [trucks].", "")),
+                ("Yes, Nov 20 works; trucks at 9.", True,
+                 ("Yes, Nov 20 works; the trucks are booked.", ck.WARN_UNSUPPORTED)),
+                # a "repair" that says something new (no figure in it) is no repair either
+                ("Yes, Nov 20 works; the credit hold is released and your order shipped.",
+                 True, ("Yes, Nov 20 works; the trucks are booked.", ck.WARN_UNSUPPORTED)),
+                ("Yes, Nov 20 works; [trucks].", False, ("", ""))):
+            with self.subTest(fixed=fixed, review=review):
+                got, _ = run(assistant(reply, Check(drop={"R"}, fixed=fixed)))
+                out, _held, _why = io.agent_output(got, inside, "employee:A", "Nov 20?", {},
+                                                   {"employee:A": ours}, None, ours[0],
+                                                   review=review)
+                self.assertEqual((out.reply, out.warning), want)
+        # an outside reader, reviewed: the outbound check's finding (here: it could not run)
+        # stays beside the kept draft, never a clean draft
+        outside = {**MAIL, "side": "external"}
+        got, _ = run(assistant(reply, Check()))
+        out, _held, _why = io.agent_output(got, outside, "employee:A", "Nov 20?", {},
+                                           {"employee:A": ["me@plx.example"]}, None,
+                                           "me@plx.example", review=True)
+        self.assertEqual(out.reply, "Yes, Nov 20 works; the trucks are booked.")
+        self.assertTrue(out.warning.startswith("Check before sending: "), out.warning)
         card = Session(answer=final(ask=self.ASK))
         three = Session(answer=final(ask={**self.ASK, "options": [
             *self.ASK["options"], {"label": "No", "reply": "Nov 20 is too late."}]}))
@@ -263,8 +321,8 @@ class SecondCheck(unittest.TestCase):
     def test_whether_a_reply_is_due_is_computed_never_the_models(self):
         """The same supported reply, change and to-do on messages that differ only in what
         is computed on them: addressing, the ask rules' reading, the person's habit. Asked:
-        the written reply stands; only their turn: the open question instead (theirs to
-        word); not due: neither (the supported change stays)."""
+        the written reply stands; only their turn: the written reply stands too (the person
+        reviews it); not due: neither (the supported change stays)."""
         from operating.autopilot_check import ASK_PLAIN
         session = Session(calls=[("plx.prepare_write", PO_DATE)],
                           answer=final(reply="Yes, Nov 20 works.",
@@ -273,13 +331,13 @@ class SecondCheck(unittest.TestCase):
         copied = {**MAIL, "to_me": False, "cc": ["me@plx.example"], "asks": True}
         for name, event, due in (
                 ("put to them, asks", ASKED, "reply"),
-                ("put to them, they answer this sender", TURN, "question"),
+                ("put to them, they answer this sender", TURN, "reply"),
                 ("put to them, ask undecided by the rules", {**TURN, "sender_history": [0, 0],
-                                                             "ask_check": "model"}, "question"),
+                                                             "ask_check": "model"}, "reply"),
                 ("copied, they wrote in the thread", {**copied, "own_posts": [30, 2]},
-                 "question"),
+                 "reply"),
                 ("in a group, they usually answer this sender there",
-                 {**copied, "answerer": [6, 4]}, "question"),
+                 {**copied, "answerer": [6, 4]}, "reply"),
                 ("put to them, rarely answer this sender", {**TURN, "sender_history": [10, 2]},
                  ""),
                 ("copied", copied, ""),
@@ -535,12 +593,13 @@ class OutsideReaders(ta.Fixture):
         return next(json.loads(i["body"])["prepared"] for i in items
                     if json.loads(i["body"])["prepared"]["kind"] == kind)
 
-    def test_an_outside_sender_gets_no_read_tools_and_only_their_own_lines(self):
+    def test_an_outside_sender_reads_as_the_person_with_only_their_own_lines_given(self):
         msg = self.message(84, "Where is my order SO-1?")
         session = Session(answer=final(reply="Your order SO-1 is open."))
         out, items = self.live([msg], assistant(session))
-        self.assertEqual(session.reads, [False])
-        self.assertIn("no record tools", session.runs[0][1])
+        self.assertEqual(session.reads, [True])
+        self.assertNotIn("no record tools", session.runs[0][1])
+        self.assertIn("never another customer or supplier", session.runs[0][1])
         self.assertIn("Their own records", session.runs[0][1])
         self.assertNotIn("SO-9931", session.runs[0][1])
         self.assertEqual(self.body(items)["draft"]["body"], "Your order SO-1 is open.")

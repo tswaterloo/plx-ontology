@@ -305,7 +305,7 @@ class DocumentChartsTest(unittest.TestCase):
         read = []
 
         class Worker:
-            def run(self, reader, job, timeout=0):
+            def run(self, reader, job, timeout=0, **_how):
                 view = type("V", (), {})()
                 view._call = lambda tool, args: (read.append((reader, args["sql"])), out)[1]
                 return job(view)
