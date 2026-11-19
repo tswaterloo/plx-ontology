@@ -347,7 +347,7 @@ class EveryFolderAndHistoryTests(ThroughputCase):
 
         def refreshed():
             return capture_refreshed("graph_mail", lambda: MailCaptures(self.state), None)
-        self.assertEqual(refreshed(), min(
+        self.assertEqual(refreshed(), max(
             instant(r["last_run_at"]) for r in self.store.db.execute(
                 "SELECT last_run_at FROM folders")))
         # One message moved to the inbox, then the custom folder (and its child) deleted.
@@ -381,7 +381,7 @@ class EveryFolderAndHistoryTests(ThroughputCase):
         # The other mailbox (its folders still listed) is untouched.
         self.assertEqual(box_b(), held_b)
         self.assertGreater(refreshed(), stale)
-        self.assertEqual(refreshed(), min(
+        self.assertEqual(refreshed(), max(
             instant(r["last_run_at"]) for r in self.store.db.execute(
                 "SELECT last_run_at FROM folders")))
 

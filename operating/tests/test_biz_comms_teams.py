@@ -170,6 +170,43 @@ class TeamsThroughTheDoor(ttp.TableTeamsParity):
         self.assertLess(len(self.found(tct.VINCE_ONLY, "quote")),
                         len(self.found(tct.COS_ONLY, "quote")))
 
+    def test_a_word_search_reads_the_word_index_once_whatever_the_reader_reads(self):
+        """The search's word match is read once per statement, never again for each row
+        the reader may read: live, a Teams search re-ran it for every one of a full
+        reader's messages (past 90 s). Checked on the plan the reader's own statement runs:
+        every word-index node ran once (a parallel worker's share counts as once)."""
+        from operating.pg import comms_search as cs
+        tool = ts.SqlTool(self.tool().base)
+        with mock.patch.object(ts, "_people_tag", return_value=self.tag):
+            conn, settings = tool._comms_reader(tct.COS_ONLY)
+            views = ["teams_messages"]
+            sql = cs.search_sql(views, guarded=sql_views.guarded_schema(), biz=bv.SCHEMA,
+                                query=True, party_kind=None, since=False, until=False,
+                                cursor=False)
+            (plan,) = tool._comms_scoped(conn, settings, lambda pg: pg.execute(
+                "EXPLAIN (ANALYZE, FORMAT JSON) " + sql,
+                {"q": cs.tsquery("note"), "party": None, "since": None, "until": None,
+                 "c_at": None, "c_h": None, "k": 26}).fetchone(), tct.COS_ONLY)
+        # every node with the relationships above it (InitPlan: run once per statement;
+        # a join's inner side: run again for each outer row when the planner chooses to)
+        nodes, stack = [], [((plan[0] if isinstance(plan, list) else plan)["Plan"], ())]
+        while stack:
+            node, above = stack.pop()
+            nodes.append((node, above))
+            stack += [(c, above + ((c.get("Parent Relationship"), c),)) for c in
+                      node.get("Plans") or []]
+        # the match on the message's own words (``b.words @@``) and on its text's words
+        words = [(n, above) for n, above in nodes if n.get("Relation Name") in (
+            "teams_messages", "chunk_words") and "words @@" in str(n.get("Index Cond") or "")
+            + str(n.get("Recheck Cond") or "") + str(n.get("Filter") or "")
+            and "SubPlan" not in [r for r, _ in above]]   # a shown hit's snippet
+        self.assertTrue(words, [n.get("Node Type") for n, _ in nodes])
+        for n, above in words:
+            once = [a for r, a in above if r == "InitPlan"]
+            self.assertTrue(once, (n.get("Relation Name"), [r for r, _ in above]))
+            self.assertEqual(once[0]["Actual Loops"], 1, n.get("Relation Name"))
+        self.assertEqual(len(self.found(tct.COS_ONLY, "note")), 60)
+
     def test_a_freightcom_message_reaches_its_readers_pages_never_the_ai(self):
         tool = ts.SqlTool(self.tool().base)
         fc = {self.messages[o] for o in self.fc()}

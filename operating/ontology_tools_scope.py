@@ -18,8 +18,9 @@ from operating.ontology_tools_identity import (_gap, _predicate_text, _schema_me
 from operating.ontology_tools_policy import (_AUDIENCE_SOURCE, _bc_company_dropped,
                                              _format_time, _HEX64, _ITEM_ACL_AUDIENCES,
                                              _ITEM_ACL_SCHEMES, _known_at, _markings,
-                                             _parse_time, _Scope, _to_ms, _type_keys, aged,
+                                             _parse_time, _Scope, _to_ms, _type_keys,
                                              capture_failures, reader_grants, run_memo_for)
+from operating.freshness_cadence import aged
 from operating.ontology_tools_results import _source_freshness_gaps
 
 if TYPE_CHECKING:

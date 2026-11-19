@@ -513,6 +513,7 @@ def build():
     ap(s, "a3", "V-PRE-3", vend, "10", "-40.00", "CAD")
     ap(s, "a4", "V-PAID-4", vend, "1", "999.00", "CAD", paid="1")
     a_gone = ap(s, "a5", "V-GONE-5", vend, "1", "888.00", "CAD")
+    ap(s, "a6", "V-PAY-6", vend, "11", "-50.00", "CAD", paid="1")   # a payment: no bill
     pi = "PurchaseInvoice:bc.purchase_invoices:pi1"
     s.obj(pi, f"bc:{ev.CO}/purchaseInvoices", ev.make_handle(
         ev.BC_KIND, ("production", ev.CO, "purchaseInvoices", "pi1"), "00000000000000b1", 1),
@@ -884,7 +885,9 @@ class BusinessViews(unittest.TestCase):
 
     def test_dictionary_states_every_column_and_how_derived_ones_are_computed(self):
         views = self.call({"describe": True})["views"]
-        self.assertEqual(sorted(views), sorted(bv.VIEWS))
+        # every view a reader's query may name; a search-only table never shows
+        self.assertEqual(sorted(views), sorted(bv.listed()))
+        self.assertNotIn("sharepoint_files", views)
         for name, view in views.items():
             # generated from the spec: the source types it reads, and every column
             self.assertTrue(view["sources"] and view["about"] and view["lineage"], name)
@@ -1493,7 +1496,17 @@ class BusinessViews(unittest.TestCase):
                                                                   "supplier"]})
         self.assertEqual(sorted(self.text(r["values"]["document_number"]["value"])
                                 for r in docs["rows"]),
-                         ["V-INV-1", "V-INV-2", "V-PAID-4", "V-PRE-3"])
+                         ["V-INV-1", "V-INV-2", "V-PAID-4", "V-PAY-6", "V-PRE-3"])
+        # Sage AP holds payments and prepayments beside the bills: the source's own type
+        # tells them apart, and the catalog says how an invoice count reads it
+        kinds = self.call({"view": "supplier_invoices", "group_by": ["document_type"],
+                           "measures": [{"fn": "count"}]})
+        self.assertEqual({self.text(g["key"]["document_type"]): g["measures"][0]["value"]
+                          for g in kinds["groups"]},
+                         {"invoice": "3", "payment": "1", "prepayment": "1"})
+        about = self.call({"describe": True})["views"]["supplier_invoices"]["columns"]
+        self.assertIn("document_type = 'invoice'", about["document_type"])
+        self.assertIn("payment", about["document_type"])
         self.assertIn("pilot_rows_left_out", [g["reason"] for g in docs["gaps"]])
         pilot = self.call({"view": "supplier_invoices", "where": [
             {"field": "pilot", "op": "=", "value": True}], "measures": [

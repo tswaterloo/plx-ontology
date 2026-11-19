@@ -1063,8 +1063,9 @@ class PgCompatConnection:
 
         # client-side binding: a parameter is a literal typed by its context, as in
         # SQLite (``? IS NULL`` with None, a text compared with a number)
-        conn = psycopg.connect(self.dsn, autocommit=True, cursor_factory=psycopg.ClientCursor,
-                               **kwargs)
+        from operating.pg.pool import when_free
+        conn = when_free(lambda: psycopg.connect(
+            self.dsn, autocommit=True, cursor_factory=psycopg.ClientCursor, **kwargs))
         try:
             self._session(conn)
         except BaseException:

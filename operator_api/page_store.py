@@ -29,10 +29,11 @@ import time
 from typing import Any, Iterator, Optional
 from operating import declared_schema as _schemas
 from operating.declared_schema import page_store as _PAGE_STORE
-from operating.file_modes import keep_private, keep_shared
+from operating.file_modes import keep_private, keep_shared, make_absent
 
 LOG = logging.getLogger("operator_api.page_store")
 FILE = "page-cache.sqlite"
+KEEP_DAMAGED = 2   # damaged files kept set aside (``PageStore._keep_damaged``)
 MAX_ROWS = 20000          # entries kept; the oldest go first
 PRUNE_EVERY = 200         # writes between prunes
 # The packages whose code reads a page: a change to any of them is a new code version.
@@ -142,20 +143,78 @@ class PageStore:
 
     def _conn(self) -> sqlite3.Connection:
         conn = getattr(self._local, "conn", None)
+        if conn is not None:
+            try:   # the file was set aside (``_set_aside``, here or by another process)
+                moved = os.stat(self.path).st_ino != self._local.ino
+            except OSError:
+                moved = True
+            if moved:
+                try:
+                    conn.close()
+                except Exception:  # noqa: BLE001 - a fresh one is opened below
+                    pass
+                conn = self._local.conn = None
         if conn is None:
             self.directory.mkdir(parents=True, exist_ok=True)
             try:
                 keep_private(self.directory, 0o700)
             except OSError:
                 pass
-            os.close(os.open(self.path, os.O_RDWR | os.O_CREAT, 0o600))
+            # never os.open/os.close on the file: that drops this process's SQLite locks
+            # held by its other threads' connections (``make_absent``)
+            make_absent(self.path, 0o600)
             keep_shared(self.path, 0o600)   # before SQLite makes -wal/-shm from its mode
             conn = sqlite3.connect(str(self.path), timeout=5, check_same_thread=False)
             conn.execute("PRAGMA journal_mode=WAL")
             conn.execute("PRAGMA synchronous=NORMAL")
             _schemas.apply(conn, _PAGE_STORE)
             self._local.conn = conn
+            self._local.ino = os.stat(self.path).st_ino
         return conn
+
+    def _damaged(self, error: BaseException) -> None:
+        """A file SQLite calls damaged (``database disk image is malformed``, ``file is not
+        a database``) is set aside whole, so the next read and write start a fresh one: a
+        damaged file made every kept page a miss and kept nothing new, so every screen
+        after each restart read cold (live: Autopilot 14 s, a PO trail 28 s on every Home
+        visit). Only the file this thread opened is moved: one another process already
+        replaced is left alone. Its pages are lost; nothing is served from it."""
+        text = str(error).lower()
+        if not isinstance(error, sqlite3.DatabaseError) or not (
+                "malformed" in text or "not a database" in text):
+            return
+        ino = getattr(self._local, "ino", None)
+        with self._lock:
+            try:
+                if ino is None or os.stat(self.path).st_ino != ino:
+                    return
+                aside = self.path.with_name(f"{FILE}.damaged-{int(time.time())}")
+                os.replace(self.path, aside)
+                for tail in ("-wal", "-shm"):
+                    try:
+                        os.replace(f"{self.path}{tail}", f"{aside}{tail}")
+                    except OSError:
+                        pass
+            except OSError:
+                return
+            self._keep_damaged(KEEP_DAMAGED)
+        LOG.warning("kept pages file damaged: set aside as %s; a fresh one is used",
+                    aside.name)
+
+    def _keep_damaged(self, keep: int) -> None:
+        """Only the ``keep`` newest files set aside stay (each with its -wal and -shm): a
+        file damaged again and again never fills the disk (the live one was 340 MB)."""
+        stamped = []
+        for path in self.directory.glob(f"{FILE}.damaged-*"):
+            tail = path.name.rsplit("-", 1)[-1]
+            if tail.isdigit():
+                stamped.append((int(tail), path))
+        for _, path in sorted(stamped, reverse=True)[keep:]:
+            for each in (path, Path(f"{path}-wal"), Path(f"{path}-shm")):
+                try:
+                    each.unlink()
+                except OSError:
+                    pass
 
     def get(self, key: Any, *, code: Optional[str] = None) -> Optional[tuple[float, Any]]:
         """(seconds left, value, when it was read: wall clock) of ``key`` while it is
@@ -172,6 +231,7 @@ class PageStore:
             value = pickle.loads(row[2])
         except Exception as error:  # noqa: BLE001 - an unreadable entry is a miss
             LOG.warning("kept page unreadable: %s", type(error).__name__)
+            self._damaged(error)
             return None
         self.hits += 1
         return row[1] - time.time(), value, row[0]
@@ -195,6 +255,7 @@ class PageStore:
                 self.prune()
         except Exception as error:  # noqa: BLE001 - not kept: read again when asked
             LOG.warning("page not kept: %s", type(error).__name__)
+            self._damaged(error)
 
     def pop(self, key: Any, *, code: Optional[str] = None) -> None:
         digest = disk_key(key, self.code if code is None else code)

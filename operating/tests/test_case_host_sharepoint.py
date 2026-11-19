@@ -1903,7 +1903,7 @@ class StoredTextLookupTests(SharePointHostCase):
             found = self.ask(EMPLOYEE, SCAN_PO)
         for answer in (empty, again):
             answer.get("meta", {}).pop("as_known_at", None)
-        self.assertEqual(again, empty)
+        self.assertEqual(_without_lag(again), _without_lag(empty))
         # The matching scan is read as plx.read serves it: from its pinned OCR text.
         self.assertEqual([d["citation"] for d in found["documents"]], [self.handle(SCAN)])
         self.assertEqual(found["documents"][0]["mentions"][0]["span"]["origin"]["citation"],
@@ -2144,6 +2144,95 @@ class StoredTextLookupTests(SharePointHostCase):
                 host._shared_lookup(store).sync(store, wait=True)
         self.assertEqual(path.stat().st_ino, held)
 
+    def test_a_read_connection_that_reads_the_file_as_broken_never_fails_the_search(self):
+        # Live: a host's own read connection to the shared lookup file read it as
+        # "database disk image is malformed" while a fresh connection (and integrity_check)
+        # read it whole; every plx.search of that host failed outright
+        # (tool_execution_failed). Now the read is made again on a fresh connection; a
+        # file no connection can read leaves every file's text unsearched, never an error.
+        from operating import case_tools_host as host
+        with self.new_process():
+            self.ask(EMPLOYEE, NOTE_PO)   # the shared file brought up
+
+        class Broken:
+            def execute(self, *args, **kwargs):
+                raise sqlite3.DatabaseError("database disk image is malformed")
+
+            def close(self):
+                pass
+        real, handed = host._SharedLookup.reader, []
+
+        def broken_first(lookup):
+            if not handed:
+                handed.append(1)
+                lookup._local.conn = (Broken(), os.stat(lookup.path).st_ino)
+                return lookup._local.conn[0]
+            return real(lookup)
+        with self.new_process(), mock.patch.object(host._SharedLookup, "reader",
+                                                   autospec=True, side_effect=broken_first):
+            answer = self.ask(EMPLOYEE, NOTE_PO)
+        self.assertEqual(handed, [1])
+        self.assertEqual([d["citation"] for d in answer["documents"]], [self.handle(NOTE)])
+        with self.new_process(), mock.patch.object(host._SharedLookup, "reader",
+                                                   autospec=True, return_value=Broken()):
+            answer = self.ask(EMPLOYEE, NOTE_PO)   # answered, not raised
+        self.assertNotIn("error", answer)
+
+    def test_a_bring_up_cut_short_keeps_what_it_read_and_the_next_reads_only_the_rest(self):
+        # Live 11-18: the first build of the whole capture (one transaction, 11-25 min)
+        # outlived the short Ask hosts holding its lock; each was rolled back with its
+        # host, so the file was never made and every new session's SharePoint search
+        # waited past its limit. Now the files, then each chunk of entries, are kept as
+        # read; what is not read yet is said not searched (never searched as empty).
+        from operating import case_tools_host as host
+        with self.new_process():
+            self.ask(EMPLOYEE, "PO999999")
+        for number in range(12):
+            self.drive.file(f"01C{number:03d}", f"c{number}.txt", "01LOTS",
+                            f"Purchase order PO3{number:05d}".encode(),
+                            mime="text/plain", acl=(RICARDO, SALES))
+        self.capture.run(scope())
+        store = SharePointCaptureStore.open_read_only(self.state)
+        self.addCleanup(store.close)
+        real, read = host._file_entry, []
+
+        def cut_after_six(*args):
+            read.append(args[1])
+            if len(read) > 6:
+                raise KeyboardInterrupt   # the host killed mid-build
+            return real(*args)
+        with mock.patch.dict(host._LOOKUPS, clear=True), \
+                mock.patch.object(host, "_ENTRY_CHUNK", 5), \
+                mock.patch.object(host, "_file_entry", side_effect=cut_after_six):
+            with self.assertRaises(KeyboardInterrupt):
+                host._shared_lookup(store).sync(store, wait=True)
+        with mock.patch.dict(host._LOOKUPS, clear=True):
+            lookup = host._shared_lookup(store)
+            self.assertNotEqual(lookup.stamp(), host._store_stamp(store))   # not current
+            items = [dict(r) for r in store.db.execute(
+                "SELECT l1_handle, content_sha256, recorded_at FROM items WHERE "
+                "superseded_at IS NULL AND l1_handle LIKE '%01C%'")]
+            stale = {items[at]["l1_handle"] for at, not_current, *_ in
+                     host._visible_exceptions(lookup, items) if not_current}
+            kept = {r[0] for r in lookup.reader().execute(
+                "SELECT f.handle FROM files f JOIN entries e ON e.key = f.key "
+                "WHERE f.handle LIKE '%01C%'")}
+        self.assertEqual(len(kept), 5)           # the first chunk's entries were kept
+        self.assertEqual(kept | stale, {i["l1_handle"] for i in items})
+        self.assertFalse(kept & stale)           # the rest: not searched yet
+        read.clear()
+
+        def counted(*args):
+            read.append(args[1])
+            return real(*args)
+        with mock.patch.dict(host._LOOKUPS, clear=True), \
+                mock.patch.object(host, "_file_entry", side_effect=counted):
+            index = self.entries(store)             # the next bring-up ends it
+        self.assertEqual(len(read), 7)             # only what was not read before
+        for number in range(12):
+            self.assertEqual(index[self.handle(f"01C{number:03d}")]["named"],
+                             [["petra_po", f"PO3{number:05d}", None]])
+
     def test_every_one_of_sixty_new_files_is_indexed_once(self):
         # Cardinality: N=1, 10 and 60 files captured since the index was kept are each
         # added once, and each identifier finds exactly its own file.
@@ -2185,7 +2274,7 @@ class StoredTextLookupTests(SharePointHostCase):
                 again = self.ask(EMPLOYEE, "PO999999")
             for answer in (first, again):
                 answer.get("meta", {}).pop("as_known_at", None)
-            self.assertEqual(again, first)
+            self.assertEqual(_without_lag(again), _without_lag(first))
             self.drive.file("01NEW", "fresh.txt", "01LOTS", b"Purchase order PO277777",
                             mime="text/plain", acl=(RICARDO, SALES))
             self.capture.run(scope())
@@ -2237,7 +2326,7 @@ class StoredTextLookupTests(SharePointHostCase):
                             {"query": "PO999999", "sources": ["sharepoint"]})
         for answer in (found, expected):
             answer.get("meta", {}).pop("as_known_at", None)
-        self.assertEqual(found, expected)
+        self.assertEqual(_without_lag(found), _without_lag(expected))
 
 
 class CapturedFilePageTests(SharePointHostCase):

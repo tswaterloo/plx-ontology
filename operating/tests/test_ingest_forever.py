@@ -1425,6 +1425,29 @@ class LiveCycleRepairTest(unittest.TestCase):
         self.assertEqual((sharepoint["status"], sharepoint["reasons"]),
                          ("partial", ["library_unclassified:not_visible"]))
 
+    def test_an_estate_run_that_planned_nothing_fails_with_its_discovery_gap(self) -> None:
+        # Live 2026-11-19 2:08-4:44 AM ET: Graph throttled the site listing, the estate run
+        # planned no root, and the ledger said only no_units_reported.
+        def judged(run):
+            return forever._judge(forever._base(forever.SOURCES["sharepoint"]),
+                                  forever.summarize_sharepoint({"runs": [run]}))
+
+        throttled = judged({"targets": [], "discovery": {
+            "complete": False, "gaps": ["library_listing:http_403",
+                                        "discovery_sites:retried.http_429"]}})
+        self.assertEqual((throttled["status"], throttled["error_code"], throttled["units"]),
+                         ("failed", "discovery_sites:retried.http_429", 0))
+        # no discovery (a named-target scope) or no gap: as before
+        for run in ({"targets": []}, {"targets": [], "discovery": {"gaps": []}},
+                    {"targets": [], "discovery": {"gaps": ["https://x.example/site"]}}):
+            self.assertEqual(judged(run)["error_code"], "no_units_reported", run)
+        # a run that planned roots is judged on them; its gaps stay reasons of the roots
+        partial = judged({"targets": [{"status": None, "complete": False, "roots": [
+            {"complete": False, "reason": "source_error:http_429"}]}],
+            "discovery": {"gaps": ["library_listing:retried.http_429"]}})
+        self.assertEqual((partial["status"], partial["error_code"], partial["reasons"]),
+                         ("partial", None, ["source_error:http_429"]))
+
     def test_mc_failures_name_their_error_and_unreadable_chats_are_no_gap(self) -> None:
         # Live 2026-10-27: MC refused the key (401 invalid_api_key) and the host said only
         # "source_error"; the reason now names the code. A chat hosted in another tenant

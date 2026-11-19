@@ -1,0 +1,19 @@
+[Unit]
+Description=PLX Spark runs: relay to Postgres as plx-sparkpg (pg_ident maps it to plx_eval only)
+Requires=plx-spark-pg-relay.socket
+After=plx-spark-pg-relay.socket postgresql.service
+
+[Service]
+User=plx-sparkpg
+Group=plx-sparkpg
+# Postgres checks the relay's own user (peer): pg_ident `plxeval plx-sparkpg plx_eval` is the
+# only mapping it has, so a Spark run reads as plx_eval (SELECT only, read-only transactions,
+# statement_timeout and temp_file_limit of that role) whatever user name it asks for.
+ExecStart=/usr/lib/systemd/systemd-socket-proxyd --connections-max=96 /var/run/postgresql/.s.PGSQL.5432
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+RestrictAddressFamilies=AF_UNIX
+MemoryMax=256M

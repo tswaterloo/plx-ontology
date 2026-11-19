@@ -326,28 +326,67 @@ class AskMixin:
             return False
         return True
 
-    def _attached(self, request: m.AskRequest) -> Optional["ask_attachments.Batch"]:
+    def _attached(self, request: m.AskRequest, reader: Optional[Reader] = None
+                  ) -> Optional["ask_attachments.Batch"]:
         """The request's attachments as read (``operating.ask_attachments``), their text
         cleaned of excluded people's addresses and ids; None without attachments. With
-        the exclusion list unavailable none is read (fail closed)."""
+        the exclusion list unavailable none is read (fail closed). With the ``reader``,
+        each Word, Excel or PowerPoint file is kept as their own file to edit
+        (``_keep_attached``); no file's bytes outlive this call otherwise."""
         if not request.attachments:
             return None
         from operating import ask_attachments
         batch = ask_attachments.decode(a.model_dump() for a in request.attachments)
+        batch.files = ask_attachments.screened(batch.files)
         try:
             guard = self.people_guard()
         except Exception:  # noqa: BLE001 - undecidable: nothing read
             guard = None
         if guard is None or getattr(guard, "unavailable", "absent"):
             batch.files = [dataclasses.replace(
-                f, text="", image=None, unread=f.unread or "Attachments can't be read right "
+                f, text="", image=None, data=None, unread=f.unread or "Attachments can't be read right "
                 "now: the list of people whose data stays out is not loaded.")
                 for f in batch.files]
             return batch
         from .feedback import clean
         batch.files = [dataclasses.replace(f, text=clean(f.text, guard, len(f.text) + 1)
                                            or "") if f.text else f for f in batch.files]
+        batch.files = [dataclasses.replace(
+            f, data=None, kept=self._keep_attached(reader, f, guard)
+            if reader is not None and f.data else None) for f in batch.files]
         return batch
+
+    def _keep_attached(self, reader: Reader, f: "ask_attachments.Attached", guard: Any
+                       ) -> Optional[str]:
+        """An attached Word, Excel or PowerPoint file kept as the reader's own file (the
+        made documents' store, ``instruct_files.UploadDesk``: theirs only, downloaded only
+        while nobody it names is excluded, the same as the copies the Ask edits), so the
+        Ask can edit it (``plx.edit_document`` with the ``file:`` citation answered) and
+        hand the edited copy back. None, and nothing kept: a session not the person's own
+        (viewing as someone, the canary), a file the assistant may not read whole
+        (Freightcom or an excluded person named anywhere in it, or its text not readable
+        whole), or no store."""
+        from operating import ask_attachments, doc_edit
+        from operating.instruct_files import file_name
+        from .feedback import _ADDRESS
+        session = getattr(reader, "session", None)
+        kind = ask_attachments.EDITABLE.get(f.media_type or "")
+        uploads = getattr(self, "_uploads", None)
+        withheld = getattr(self, "_pw_withheld", None)
+        if kind is None or not f.data or not callable(uploads) or not callable(withheld) \
+                or getattr(session, "view_as", False) or getattr(session, "canary", False):
+            return None
+        name = file_name(f.name, kind)
+        try:
+            text = doc_edit.text_of(name, f.data)
+            if withheld(" \n".join([name, text]), guard):
+                return None
+            row = uploads().prepare(reader.key, name=name, kind=kind, data=f.data,
+                                    target=None,
+                                    people=sorted({a.lower() for a in _ADDRESS.findall(text)}))
+        except Exception:  # noqa: BLE001 - not kept: the file is still read for the answer
+            return None
+        return f"file:{row['file_id']}"
 
     @staticmethod
     def _general_wait(future: Future) -> Optional["general_answer.GeneralAnswer"]:

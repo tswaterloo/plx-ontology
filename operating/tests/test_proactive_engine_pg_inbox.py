@@ -20,7 +20,8 @@ from operating.tests.test_proactive_engine import ALL_MARKINGS, Engine, admit, e
 
 class _FakePostgres:
     """The four reads the inbox's Postgres copy makes, answered from the test's SQLite
-    store (``ontology.`` dropped, ``= ANY(%s)`` read as a JSON list); counts its opens."""
+    store (``ontology.`` dropped, ``= ANY(%s)`` and the ids sent as one JSON text read as a
+    JSON list); counts its opens."""
 
     def __init__(self, store: Path) -> None:
         self.store, self.opened = store, 0
@@ -38,6 +39,8 @@ class _FakePostgres:
 
             def execute(self, sql, params=()):
                 sql = sql.replace("ontology.", "").replace(
+                    "= ANY(ARRAY(SELECT jsonb_array_elements_text(%s::jsonb)))",
+                    "IN (SELECT value FROM json_each(?))").replace(
                     "= ANY(%s)", "IN (SELECT value FROM json_each(?))")
                 return conn.execute(sql, tuple(json.dumps(p) if isinstance(p, list) else p
                                                for p in params))

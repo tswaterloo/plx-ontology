@@ -87,7 +87,7 @@ EVQ_TOPIC = "autopilot"
 # other records; events about one entity keep their order whatever their priority.
 EVENT_PRIORITY = {"approval.requested": 10, "message.received": 20, "task.assigned": 20,
                   "question.asked": 20, "qc.result": 30, "meeting.ended": 30,
-                  "record.due": 40, "record.changed": 40}
+                  "record.due": 40, "record.changed": 40, "assistant.look": 50}
 CUSTOMER_MESSAGE_PRIORITY = 10
 DEFERRED_RETRY_S = 300.0
 
@@ -700,6 +700,26 @@ def _prepare(st: Any, ap: Mapping[str, Any], event: Mapping[str, Any], as_of: da
                                 if event.get("event_type") == "message.received"
                                 else str(event.get("text") or ""),
                                 "linked": linked_handles(ctx, event)}
+        if ap.get("draft") == "agent" and isinstance(work, dict) and not work.get("skip"):
+            # the assistant's (``autopilot_agent``): the job's material, and for a reader
+            # outside the company the only records it may write from: their own records'
+            # lines and our catalog's lines for the products the message names
+            # (``autopilot_outbound``), read under this ``ctx``
+            from .autopilot_drafter import material_of
+            from .autopilot_outbound import product_lines
+            from .autopilot_work import body_text, linked_handles
+            text = body_text(ctx, event) if event.get("event_type") == "message.received" \
+                else str(event.get("text") or "")
+            work["material"] = {**material_of(ctx, event, work, text),
+                                "linked": linked_handles(ctx, event)}
+            from .autopilot_agent_io import invitation_lines
+            for key, read in (("account", lambda: product_lines(ctx, text)),
+                              ("invites", lambda: invitation_lines(ctx, event))):
+                try:
+                    work["material"][key] = list(work["material"].get(key) or ()) + read()
+                except Exception as exc:  # noqa: BLE001 - not read: the message alone
+                    if type(exc).__name__ == "HandlerTimeout" or "interrupt" in str(exc):
+                        raise
         if ap.get("draft") == "model" and isinstance(work, dict) and not work.get("skip"):
             # what the model writes the reply from (``autopilot_drafter``), read under
             # this ``ctx``: its records' audiences and markings are the item's

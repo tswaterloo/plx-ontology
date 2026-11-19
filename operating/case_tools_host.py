@@ -139,7 +139,7 @@ import functools
 import hashlib
 import json
 import os
-from operating.file_modes import keep_shared
+from operating.file_modes import keep_shared, make_absent
 from pathlib import Path
 import re
 import sqlite3
@@ -183,7 +183,9 @@ from .case_tools_host_index import (
     WARM_EVERY_SECONDS, _WARMING, _WARMING_LOCK)
 from .case_tools_host_mailboxes import (
     ATTACHMENT_MAILBOXES_SECONDS, _MAILBOXES, _MAILBOXES_LOCK, _MAILBOXES_READING,
-    _cached_mailboxes, _keep_mailboxes, _one_scan)
+    _cached_mailboxes, _keep_mailboxes, _one_scan, MAILBOXES_WAIT_SECONDS, _mailbox_list,
+    _scan_mailboxes, _read_mailboxes, _refresh_mailboxes, prime_attachment_mailboxes,
+    _attachment_mailboxes)
 from .case_tools_host_gates import _GatesMixin
 from .case_tools_host_labels import _LabelsMixin
 from .case_tools_host_documents import _DocumentsMixin
@@ -1440,7 +1442,10 @@ class _SharedLookup:
     def _make(self) -> None:
         """The file and its lock file, owner-only, made when absent."""
         for target in (self.path, self.lock_path):
-            os.close(os.open(target, os.O_RDWR | os.O_CREAT, 0o600))
+            # never opened when it exists: called before every read, and closing a
+            # descriptor of the file dropped the SQLite locks of this process's other
+            # readers and its writer (``make_absent``)
+            make_absent(target, 0o600)
             keep_shared(target, 0o600)   # before SQLite makes -wal/-shm from its mode
 
     def reader(self) -> sqlite3.Connection:
@@ -1458,12 +1463,29 @@ class _SharedLookup:
         self._local.conn = (conn, inode)
         return conn
 
+    def read(self, work: Any) -> Any:
+        """``work(conn)`` on this thread's read connection; a connection that reads the
+        file as broken ('database disk image is malformed' while a fresh connection reads
+        it whole: measured on the live capture, the thread's connection opened before the
+        file was brought up) is closed and the read made once more on a fresh one."""
+        try:
+            return work(self.reader())
+        except sqlite3.DatabaseError as exc:
+            if isinstance(exc, sqlite3.OperationalError):
+                raise
+            held = getattr(self._local, "conn", None)
+            if held is not None:
+                held[0].close()
+                self._local.conn = None
+            return work(self.reader())
+
     def stamp(self) -> str | None:
         """The store state this file was last brought up to (None: never, or not this
         code's file)."""
         try:
-            kept = dict(self.reader().execute(
-                "SELECT key, value FROM meta WHERE key IN ('format', 'code', 'stamp')"))
+            kept = dict(self.read(lambda conn: conn.execute(
+                "SELECT key, value FROM meta WHERE key IN ('format', 'code', 'stamp')"
+            ).fetchall()))
         except sqlite3.Error:
             return None
         if kept.get("format") != LOOKUP_FORMAT or kept.get("code") != (self.code or ""):
@@ -1473,8 +1495,8 @@ class _SharedLookup:
     def generation(self) -> str | None:
         """The build of the file (made anew when its tables are reset), or None."""
         try:
-            row = self.reader().execute(
-                "SELECT value FROM meta WHERE key = 'generation'").fetchone()
+            row = self.read(lambda conn: conn.execute(
+                "SELECT value FROM meta WHERE key = 'generation'").fetchone())
         except sqlite3.Error:
             return None
         return None if row is None else row[0]
@@ -1527,8 +1549,11 @@ class _SharedLookup:
             return True
 
 
-# How long a question waits for another process's first build of the lookup file.
-FIRST_BUILD_WAIT_SECONDS = 60.0
+# How long a question waits for another process's first build of the lookup file: well
+# inside a search's own time limit (the Ask's plx.search: 40 s). A first build takes
+# minutes on the live capture; past this wait the question lists what the store holds and
+# says each file's text is not searched yet (``STALE_INDEX``), never runs out its limit.
+FIRST_BUILD_WAIT_SECONDS = 5.0
 _LOOKUPS: dict[tuple[str, str | None, bool], _SharedLookup] = {}
 _PRIVATE_DIRS: list[str] = []
 
@@ -1624,7 +1649,17 @@ def _sync_lookup(store: Any, lookup: _SharedLookup) -> None:
     (``_file_entry``; from the JSON index older code of the same index code kept, when
     it holds it). One transaction: a reader sees the file as it was before or after the
     whole bring-up, never a file keyed anew without its entry. The store state recorded
-    is the one read first: one read meanwhile is a newer state the next bring-up reads."""
+    is the one read first: one read meanwhile is a newer state the next bring-up reads.
+
+    Committed in steps, so a bring-up cut short keeps what it read: the files (their
+    names, tokens and state keys), then each ``_ENTRY_CHUNK`` of entries, then the stamp.
+    A reader decides per file (``_visible_exceptions``: a file whose entry is absent or
+    kept for another state is not searched yet, ``STALE_INDEX``), so a file keyed before
+    its entry is written is said not searched, never searched as empty; the stamp (the
+    whole file current) is written last. Live 11-18: a first build of the whole capture
+    in one transaction took 11-25 min, longer than the short-lived Ask hosts that held its
+    lock lived; each was rolled back with its host and the file was never made, so every
+    new session's SharePoint search waited for it past its time limit."""
     import secrets
     stamp, inode = _store_stamp(store), _store_inode(store)
     conn = _lookup_writer(lookup)
@@ -1647,7 +1682,9 @@ def _sync_lookup(store: Any, lookup: _SharedLookup) -> None:
                     ("format", LOOKUP_FORMAT), ("code", lookup.code or ""),
                     ("inode", str(inode)), ("generation", secrets.token_hex(8))))
             _sync_files(store, conn)
-            _sync_entries(store, conn, lookup)
+            conn.execute("COMMIT")
+            _sync_entries(store, conn, lookup)   # a transaction per chunk
+            conn.execute("BEGIN IMMEDIATE")
             conn.execute("DELETE FROM entries WHERE key NOT IN (SELECT key FROM files "
                          "WHERE key IS NOT NULL)")
             conn.execute("DELETE FROM named WHERE key NOT IN (SELECT key FROM entries)")
@@ -1846,6 +1883,8 @@ def _sync_entry_chunks(store: Any, conn: sqlite3.Connection, missing: Sequence[A
             else:
                 got = (_file_entry(store.blobs, *reads[k]) for k in keys)
             made.update(zip(keys, got))
+        # each chunk its own transaction (``_sync_lookup``): kept if the bring-up is cut
+        conn.execute("BEGIN IMMEDIATE")
         # A changed state keys the file anew; its version's ``rec`` is cleared, so a
         # lookup made before the next bring-up takes it as not current.
         conn.executemany("UPDATE files SET cs = ?, csha = ?, ts = ?, tsha = ?, key = ?, "
@@ -1859,6 +1898,7 @@ def _sync_entry_chunks(store: Any, conn: sqlite3.Connection, missing: Sequence[A
             conn.executemany("INSERT INTO named VALUES (?, ?, ?, ?, ?)", [
                 (key, kind, normalized, page, at)
                 for at, (kind, normalized, page) in enumerate(entry["named"] or ())])
+        conn.execute("COMMIT")
 
 
 def _visible_exceptions(lookup: _SharedLookup, items: Sequence[Mapping[str, Any]]
@@ -1867,18 +1907,29 @@ def _visible_exceptions(lookup: _SharedLookup, items: Sequence[Mapping[str, Any]
     lookup entry is not current (absent, or kept for another content hash or capture
     time than the listing's: ``STALE_INDEX``) or whose text was not searched whole, in
     listing order; every other listed file's entry is current and searched whole."""
-    if not _made(lookup.reader()):
-        return [(at, True, None, None, False) for at in range(len(items))]
-    rows = lookup.reader().execute(
-        "SELECT CAST(j.key AS INTEGER), (f.vid IS NULL OR e.key IS NULL OR "
-        "f.csha IS NOT json_extract(j.value, '$[1]') OR "
-        "f.rec IS NOT json_extract(j.value, '$[2]')) AS stale, e.why, e.skipped, e.searched "
-        "FROM json_each(?) j LEFT JOIN files f ON f.handle = json_extract(j.value, '$[0]') "
-        "LEFT JOIN entries e ON e.key = f.key "
-        "WHERE stale OR e.why IS NOT NULL OR e.skipped IS NOT NULL OR NOT e.searched "
-        "ORDER BY 1",
-        (json.dumps([[item.get("l1_handle"), item.get("content_sha256"),
-                      item.get("recorded_at")] for item in items]),)).fetchall()
+    unread = [(at, True, None, None, False) for at in range(len(items))]
+    listed = json.dumps([[item.get("l1_handle"), item.get("content_sha256"),
+                          item.get("recorded_at")] for item in items])
+
+    def work(conn: sqlite3.Connection) -> Any:
+        if not _made(conn):
+            return None
+        return conn.execute(
+            "SELECT CAST(j.key AS INTEGER), (f.vid IS NULL OR e.key IS NULL OR "
+            "f.csha IS NOT json_extract(j.value, '$[1]') OR "
+            "f.rec IS NOT json_extract(j.value, '$[2]')) AS stale, e.why, e.skipped, "
+            "e.searched FROM json_each(?) j LEFT JOIN files f ON f.handle = "
+            "json_extract(j.value, '$[0]') LEFT JOIN entries e ON e.key = f.key "
+            "WHERE stale OR e.why IS NOT NULL OR e.skipped IS NOT NULL OR NOT e.searched "
+            "ORDER BY 1", (listed,)).fetchall()
+    try:
+        rows = lookup.read(work)
+    except sqlite3.Error:
+        # unreadable now even on a fresh connection: every file's text is not searched
+        # yet (``STALE_INDEX``), the search answers from the rest, never fails whole
+        return unread
+    if rows is None:
+        return unread
     return [(at, bool(stale), why, None if skipped is None else json.loads(skipped),
              bool(searched)) for at, stale, why, skipped, searched in rows]
 
@@ -1886,15 +1937,19 @@ def _visible_exceptions(lookup: _SharedLookup, items: Sequence[Mapping[str, Any]
 def _named_by(lookup: _SharedLookup, wanted: Iterable[tuple[str, str]]
               ) -> list[tuple[str, int | None]]:
     """(handle, page) of each current file whose stored text names one of ``wanted``."""
-    conn = lookup.reader()
-    out: list[tuple[str, int | None]] = []
-    if not _made(conn):
+    def work(conn: sqlite3.Connection) -> list[tuple[str, int | None]]:
+        out: list[tuple[str, int | None]] = []
+        if not _made(conn):
+            return out
+        for kind, normalized in sorted(wanted):
+            out.extend(conn.execute(
+                "SELECT f.handle, n.page FROM named n JOIN files f ON f.key = n.key "
+                "WHERE n.kind = ? AND n.normalized = ?", (kind, str(normalized))))
         return out
-    for kind, normalized in sorted(wanted):
-        out.extend(conn.execute(
-            "SELECT f.handle, n.page FROM named n JOIN files f ON f.key = n.key "
-            "WHERE n.kind = ? AND n.normalized = ?", (kind, str(normalized))))
-    return out
+    try:
+        return lookup.read(work)
+    except sqlite3.Error:
+        return []   # unreadable now: no file is found by what it names
 
 
 def _named_files(lookup: _SharedLookup, terms: Sequence[str]
@@ -1904,7 +1959,14 @@ def _named_files(lookup: _SharedLookup, terms: Sequence[str]
     1240306), a word as a word's start (spec: specification)."""
     if not terms:
         return []
-    conn = lookup.reader()
+    try:
+        return lookup.read(lambda conn: _named_files_in(conn, terms))
+    except sqlite3.Error:
+        return []   # unreadable now: no file is found by its name
+
+
+def _named_files_in(conn: sqlite3.Connection, terms: Sequence[str]
+                    ) -> list[tuple[str, Any, Any, Any]]:
     if not _made(conn):
         return []
     held: set[int] | None = None
@@ -1943,6 +2005,14 @@ def warm_sharepoint(capture_dir: str | Path, *, every: float | None = WARM_EVERY
         return None
 
     def run() -> None:
+        try:
+            # the document converter a question's Freightcom full-text check may need
+            # (a file without stored text is read at query time): imported here, off the
+            # question's path (live 11-18: ~19% of a cold SharePoint search's time)
+            from integrations import doc_convert
+            doc_convert.installed_backend()
+        except Exception:  # noqa: BLE001 - not installed: the question reads without it
+            pass
         try:
             store = SharePointCaptureStore.open_read_only(Path(key))
             try:
@@ -2328,129 +2398,6 @@ class CaseCaptures:
         except (sqlite3.Error, OSError, ValueError, LookupError):
             raise refused from None
         return None
-# How long a request waits for the background read of the list before reading it itself
-# (the side-by-side read takes a few seconds; the background one ran 12-60 s at a start).
-MAILBOXES_WAIT_SECONDS = 5.0
-
-
-def _mailbox_list(path: str) -> list[dict[str, Any]]:
-    """``ontology.project.attachment_mailboxes`` of the capture file ``path``, read side by
-    side: one read-only reader per core, each over a range of attachment handles (cut at
-    mailbox ids, so ranges of the handle index; the ranges cover every handle, the first
-    and last unbounded), each attachment's message found through its own handle
-    (``MailCaptures._ONE_ATTACHED``: the same latest-interval rows). The same list, about
-    a sixth of the time on the live capture's 2.3M attachments (2026-11-05: 3 s, not 19)."""
-    from concurrent.futures import ThreadPoolExecutor
-    from ontology.project import MailCaptures
-
-    select = (f"SELECT DISTINCT json_extract(m.record, '$.mailbox_upn') "
-              f"{MailCaptures._ONE_ATTACHED}")
-
-    def connect() -> sqlite3.Connection:
-        return sqlite3.connect(f"file:{path}?mode=ro", uri=True, check_same_thread=False)
-
-    def part(bounds: tuple[str | None, str | None]) -> set[Any]:
-        sql, args = select, []
-        for op, bound in ((">=", bounds[0]), ("<", bounds[1])):
-            if bound is not None:
-                sql += f" AND a.l1_handle {op} ?"
-                args.append(f"graph-mail://{bound}/")
-        conn = connect()
-        try:
-            return {row[0] for row in conn.execute(sql, args)}
-        finally:
-            conn.close()
-
-    conn = connect()
-    try:
-        ids = [row[0] for row in conn.execute("SELECT mailbox_id FROM mailboxes "
-                                              "ORDER BY mailbox_id")]
-    finally:
-        conn.close()
-    readers = max(1, min(os.cpu_count() or 1, len(ids)))
-    cuts = list(dict.fromkeys(ids[len(ids) * i // readers] for i in range(1, readers)))
-    ranges = list(zip([None, *cuts], [*cuts, None]))
-    with ThreadPoolExecutor(len(ranges), thread_name_prefix="attachment-mailboxes") as pool:
-        found = set().union(*pool.map(part, ranges))
-    return [{"mailbox_upn": upn} for upn in sorted(found, key=lambda upn: (upn is None,
-                                                                          str(upn)))]
-
-
-def _scan_mailboxes(path: str) -> tuple[float, list[dict[str, Any]]]:
-    """(the monotonic time it stands for, the list) of ``path``: the list another host
-    kept within the refresh interval, else scanned now and kept, one host at a time."""
-    with _one_scan(path):
-        kept = _cached_mailboxes(path)
-        if kept is not None:
-            return kept
-        found = _mailbox_list(path)
-        _keep_mailboxes(path, found)
-        return time.monotonic(), found
-
-
-def _read_mailboxes(path: str, done: threading.Event) -> None:
-    try:
-        got = _scan_mailboxes(path)
-        with _MAILBOXES_LOCK:
-            _MAILBOXES[path] = got
-    except sqlite3.Error:
-        pass   # read again by the next request that needs it
-    finally:
-        with _MAILBOXES_LOCK:
-            _MAILBOXES_READING.pop(path, None)
-        done.set()
-
-
-def _refresh_mailboxes(path: str) -> None:
-    with _MAILBOXES_LOCK:
-        if path in _MAILBOXES_READING:
-            return
-        done = _MAILBOXES_READING[path] = threading.Event()
-    threading.Thread(target=_read_mailboxes, args=(path, done), name="attachment-mailboxes",
-                     daemon=True).start()
-
-
-def prime_attachment_mailboxes(mail_capture_dir: Any) -> None:
-    """Read the capture's attachment mailboxes now, in the background (a server's start)."""
-    from integrations.capture_mail import DB_FILE, STORE_DIR
-    if mail_capture_dir is not None:
-        path = Path(mail_capture_dir).expanduser() / STORE_DIR / DB_FILE
-        if path.is_file():
-            _refresh_mailboxes(os.path.realpath(path))
-
-
-def _attachment_mailboxes(store: Any) -> list[dict[str, Any]]:
-    key = os.path.realpath(str(store.path))
-    with _MAILBOXES_LOCK:
-        held = _MAILBOXES.get(key)
-        running = _MAILBOXES_READING.get(key)
-    if held is None and running is not None:
-        # The start's read is running: the list another host kept (the one that read
-        # takes too), else its list once it ends, waiting at most MAILBOXES_WAIT_SECONDS
-        # (a failed or slower one: read now).
-        kept = _cached_mailboxes(key)
-        if kept is not None:
-            with _MAILBOXES_LOCK:
-                _MAILBOXES.setdefault(key, kept)
-            return kept[1]
-        running.wait(MAILBOXES_WAIT_SECONDS)
-        with _MAILBOXES_LOCK:
-            held = _MAILBOXES.get(key)
-    if held is None:   # never read in this process: another host's, else read now
-        kept = _cached_mailboxes(key)
-        if kept is not None:
-            with _MAILBOXES_LOCK:
-                _MAILBOXES[key] = kept
-            return kept[1]
-        got = _scan_mailboxes(key)
-        with _MAILBOXES_LOCK:
-            _MAILBOXES[key] = got
-        return got[1]
-    if time.monotonic() - held[0] >= ATTACHMENT_MAILBOXES_SECONDS:
-        _refresh_mailboxes(key)
-    return held[1]
-
-
 def serving_tools(runtime: Any, actor: Any, *, store_path: str | Path | None = None,
                   mail_capture_dir: str | Path | None = None,
                   sharepoint_capture_dir: str | Path | None = None,

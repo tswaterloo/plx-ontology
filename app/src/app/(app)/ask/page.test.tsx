@@ -11,6 +11,7 @@ vi.mock("@/components/ask-box", () => ({ AskBox: () => <div data-testid="ask-box
 vi.mock("next/navigation", () => ({ useSearchParams: () => new URLSearchParams(), useRouter: () => ({ replace: () => undefined, push: () => undefined }) }));
 vi.mock("@/lib/thread", () => ({
   askUrlKey: () => "",
+  conversationOf: () => undefined,
   useThread: () => ({ turns: [], run: vi.fn(), retry: vi.fn(), followUp: vi.fn(), stop: vi.fn(), reset: vi.fn(), busy: false, seed: vi.fn() }),
 }));
 

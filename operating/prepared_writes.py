@@ -1116,10 +1116,12 @@ DOC_TOOL_SPEC = {
     "name": "plx.edit_document",
     "description": (
         "Prepare an edit of a SharePoint or OneDrive document's own content for the person "
-        "to confirm in the app (nothing is written by this tool). citation: the document's "
-        "sharepoint:// handle as read. Word or text: find (the exact text, quoted enough to "
-        "occur once) and replace. Excel: sheet, cell (like B7) and value. reason: one line "
-        "why. It answers the diff (before/after) or why it was refused."),
+        "to confirm in the app (nothing is written by this tool), or edit a file the person "
+        "attached (a copy for them, nothing to confirm). citation: the document's "
+        "sharepoint:// handle as read, or the attached file's file: citation. Word, "
+        "PowerPoint or text: find (the exact text, quoted enough to occur once) and "
+        "replace. Excel: sheet, cell (like B7) and value. reason: one line why. It answers "
+        "the diff (before/after) or why it was refused."),
     "inputSchema": {
         "type": "object", "additionalProperties": False,
         "required": ["citation", "reason"],

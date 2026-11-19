@@ -91,6 +91,9 @@ class EstateDrive(DeltaDrive):
         self.personal = dict(personal or {})
         self.drive_types: dict[str, str] = {}   # a drive's driveType, by id, overriding
         self.locked: set[str] = set()   # sites whose drives listing answers HTTP 423
+        # The next this many site listing reads answer HTTP 429 with Retry-After
+        # ``throttle_wait`` (Graph throttling ``getAllSites``).
+        self.throttle_sites, self.throttle_wait = 0, "30"
         # The tenant directory (``GET /users``, one page) the people guard binds from;
         # ``users_status`` other than 200 answers that error.
         self.users = [{"id": EXCLUDED_OID, "userPrincipalName": EXCLUDED_UPN,
@@ -147,6 +150,10 @@ class EstateDrive(DeltaDrive):
                                                               self.forbidden):
                 self.calls.append((method, url))
                 assert method == "GET", method
+            if path == "/v1.0/sites/getAllSites" and self.throttle_sites:
+                self.throttle_sites -= 1
+                return (429, {"Retry-After": self.throttle_wait},
+                        json.dumps({"error": {"code": "TooManyRequests"}}).encode())
             if path == "/v1.0/sites/getAllSites":
                 return self._paged([{"id": s, "name": "x", "webUrl": SITES[s]}
                                     for s in self.sites], f"{GRAPH_BASE}/sites/getAllSites",
@@ -255,7 +262,8 @@ class EstateDiscoveryTests(EstateCase):
             "libraries_seen": 5, "libraries_not_document_library": 0,
             "libraries_excluded": 1, "libraries_covered_by_target": 0,
             "libraries_planned": 4, "libraries_personal_planned": 1,
-            "libraries_restricted_unclassified": 0})
+            "libraries_restricted_unclassified": 0, "libraries_carried": 0,
+            "libraries_carry_refused": 0, "libraries_forgotten": 0})
         # An unlistable site and a forbidden library are named gaps, never dropped.
         self.assertEqual(discovery["gaps"], ["library_listing:http_403"])
         roots = {d: (r["status"], r["reason"]) for d, r in self.roots(run).items()}
@@ -296,6 +304,107 @@ class EstateDiscoveryTests(EstateCase):
             check_request("GET", grammar.url(op, **params))
             with self.assertRaises(ReadOnlyGuardError):
                 check_request("POST", grammar.url(op, **params))
+
+    def test_a_throttled_site_listing_waits_out_retry_after_then_plans_the_estate(self):
+        # 11-19: Graph answered 429 on getAllSites; the transport's capped backoff gave up
+        # after three reads and the run planned no root. The source's own Retry-After is
+        # waited out (once here) and the listing read again.
+        slept: list[float] = []
+        self.drive.throttle_sites = 3   # one call's three reads (two transport retries)
+        capture = self.capture(sleep=slept.append, budget_seconds=3600)
+        run = capture.run(estate_scope())
+        self.assertEqual(run["discovery"]["gaps"], ["library_listing:http_403"])
+        self.assertEqual(set(self.roots(run)), {ts.DRIVE, ts.SITE_DRIVE, PERSONAL_DRIVE,
+                                                FORBIDDEN})
+        self.assertEqual((capture.retry_after_waits, capture.retry_after_seconds), (1, 30.0))
+        self.assertEqual(sum(slept), 30.0)
+        self.assertTrue(all(step <= 1.0 for step in slept))   # drain-aware steps
+        self.assertEqual(len([u for u in self.urls() if "/sites/getAllSites" in u]), 3 + 2)
+
+    def test_a_throttle_hold_spends_the_run_so_the_walk_stops_where_it_is(self):
+        # The shared Graph throttle (graph_throttle) refused a read for longer than a read
+        # may wait: the capture neither waits nor retries it, and every walk loop (which
+        # asks _spent between folders, pages and files) ends the run like a spent budget.
+        from integrations.graph_throttle import ThrottleHeld
+        capture = self.capture(sleep=lambda s: self.fail("no wait on a held throttle"),
+                               budget_seconds=3600)
+        calls = []
+
+        def held():
+            calls.append(1)
+            raise ThrottleHeld("sharepoint", 900)
+        self.assertFalse(capture._run_spent())
+        with self.assertRaises(ThrottleHeld):
+            capture._throttled(held)
+        self.assertEqual(len(calls), 1)
+        self.assertTrue(capture.throttle_hold)
+        self.assertTrue(capture._run_spent())
+        self.assertTrue(capture._spent())
+
+    def test_a_site_listing_throttled_past_its_waits_is_a_typed_gap(self):
+        self.drive.throttle_sites = 10 ** 6
+        capture = self.capture(sleep=lambda s: None, budget_seconds=3600)
+        run = capture.run(estate_scope())
+        self.assertEqual(run["discovery"]["gaps"], ["discovery_sites:retried.http_429"])
+        self.assertEqual(self.roots(run), {})
+        self.assertEqual(capture.retry_after_waits, cs.DISCOVERY_WAITS)
+        self.assertEqual(len([u for u in self.urls() if "/sites/getAllSites" in u]),
+                         3 * (1 + cs.DISCOVERY_WAITS))
+        # The host ledger names the throttled listing, not a bare no_units_reported.
+        from operating import ingest_forever as forever
+        judged = forever._judge(forever._base(forever.SOURCES["sharepoint"]),
+                                forever.summarize_sharepoint(
+                                    {"runs": [cs._report_run(1, run)]}))
+        self.assertEqual((judged["status"], judged["error_code"]),
+                         ("failed", "discovery_sites:retried.http_429"))
+        # A second run waits again (the bound is per run), never past it.
+        capture.run(estate_scope())
+        self.assertEqual(capture.retry_after_waits, 2 * cs.DISCOVERY_WAITS)
+
+    def test_a_discovery_wait_the_bounds_cannot_hold_is_not_waited(self):
+        cases = (("over the cap", str(cs.DISCOVERY_RETRY_AFTER_MAX_SECONDS + 1), 3600),
+                 ("past the deadline", "120", 60),
+                 ("no Retry-After, default past the deadline", "", 30))
+        for why, header, budget in cases:
+            with self.subTest(why):
+                self.drive = estate_drive()
+                self.drive.throttle_sites, self.drive.throttle_wait = 10 ** 6, header
+                capture = self.capture(sleep=lambda s: None, budget_seconds=budget)
+                run = capture.run(estate_scope())
+                self.assertEqual(run["discovery"]["gaps"],
+                                 ["discovery_sites:retried.http_429"])
+                self.assertEqual(capture.retry_after_waits, 0)
+                self.assertEqual(len([u for u in self.urls() if "/sites/getAllSites" in u]),
+                                 3)
+
+    def test_a_throttle_without_retry_after_waits_the_default(self):
+        for header in ("", "soon"):
+            with self.subTest(header=header):
+                self.drive = estate_drive()
+                self.drive.throttle_sites, self.drive.throttle_wait = 3, header
+                slept: list[float] = []
+                capture = self.capture(sleep=slept.append, budget_seconds=3600)
+                run = capture.run(estate_scope())
+                self.assertEqual(sum(slept), cs.DISCOVERY_DEFAULT_WAIT_SECONDS)
+                self.assertIn(ts.DRIVE, self.roots(run))
+
+    def test_a_drain_request_ends_a_discovery_wait(self):
+        from integrations import drain
+        slept: list[float] = []
+        self.drive.throttle_sites = 3
+
+        def sleep(seconds):
+            slept.append(seconds)
+            if len(slept) == 5:   # the host's SIGTERM, five seconds into a 30 s wait
+                drain.request()
+
+        self.addCleanup(drain.reset)
+        capture = self.capture(sleep=sleep, budget_seconds=3600)
+        run = capture.run(estate_scope())
+        self.assertEqual(sum(slept), 5.0)
+        self.assertEqual(run["discovery"]["gaps"], ["discovery_sites:retried.http_429"])
+        self.assertEqual(capture.retry_after_waits, 0)
+        self.assertEqual(len([u for u in self.urls() if "/sites/getAllSites" in u]), 3)
 
     def test_discovered_libraries_resume_from_their_change_feed(self):
         capture = self.capture()
@@ -909,6 +1018,169 @@ class EstateClassificationTests(EstateCase):
         self.assertFalse(cleared.file_class_allows(served()))
 
 
+class CarriedLibrariesTests(EstateCase):
+    """While Graph refuses a listing (11-19: HTTP 429 on getAllSites for hours, every run
+    planned no root), the site libraries an earlier discovery planned are carried from the
+    store, each judged again on the scope as it is now; a OneDrive never is."""
+
+    def first_run(self, capture):
+        run = capture.run(estate_scope())
+        self.assertEqual(set(self.roots(run)), {ts.DRIVE, ts.SITE_DRIVE, PERSONAL_DRIVE,
+                                                FORBIDDEN})
+        return {(r["drive_id"], r["root_path"]) for r in self.store.db.execute(
+            "SELECT drive_id, root_path FROM roots")}
+
+    def throttled(self, capture, scope):
+        self.drive.throttle_sites = 10 ** 6
+        mark = len(self.drive.calls)
+        run = capture.run(scope)
+        self.assertEqual(run["discovery"]["gaps"], ["discovery_sites:retried.http_429"])
+        self.assertFalse(run["discovery"]["complete"])
+        return run, mark
+
+    def test_a_complete_listing_forgets_the_planned_libraries_of_sites_gone_upstream(self):
+        capture = self.capture(sleep=lambda s: None, budget_seconds=3600)
+        self.first_run(capture)
+        planned = {r["drive_id"] for r in self.store.planned_libraries()}
+        self.assertIn(ts.DRIVE, planned)
+        self.store.note_planned_libraries([
+            {"drive_id": "b!deleted-site-library", "site_id": "contoso,deleted,site",
+             "site_name": "Deleted",
+             "host": self.store.planned_libraries()[0]["host"], "personal": False,
+             "library_name": "Documents"},
+            {"drive_id": "b!gone-library", "site_id": self.store.planned_libraries()[0]["site_id"],
+             "site_name": self.store.planned_libraries()[0]["site_name"],
+             "host": self.store.planned_libraries()[0]["host"], "personal": False,
+             "library_name": "Removed library"}])
+        # a failed listing forgets nothing (it could not see the site)
+        self.throttled(capture, estate_scope())
+        self.assertIn("b!deleted-site-library",
+                      {r["drive_id"] for r in self.store.planned_libraries()})
+        # a complete one drops the deleted site's row and the removed library's row only
+        self.drive.throttle_sites = 0
+        run = capture.run(estate_scope())
+        kept = {r["drive_id"] for r in self.store.planned_libraries()}
+        self.assertNotIn("b!deleted-site-library", kept)
+        self.assertNotIn("b!gone-library", kept)
+        self.assertTrue(planned <= kept)
+        self.assertEqual(run["discovery"]["counts"]["libraries_forgotten"], 2)
+
+    def test_a_throttled_site_listing_carries_the_site_libraries_planned_before(self):
+        capture = self.capture(sleep=lambda s: None, budget_seconds=3600)
+        before = self.first_run(capture)
+        # A planned row the code cannot place (a site library recorded on another host)
+        # is never carried: fail closed.
+        self.store.note_planned_libraries([{
+            "drive_id": OTHER_DRIVE, "site_id": OTHER_SITE, "site_name": "Partner",
+            "host": "contoso-other.sharepoint.com", "personal": False,
+            "library_name": "Documents"}])
+        run, mark = self.throttled(capture, estate_scope())
+        roots = self.roots(run)
+        # The site libraries are carried and walked; the OneDrive and the foreign row not.
+        self.assertEqual(set(roots), {ts.DRIVE, ts.SITE_DRIVE, FORBIDDEN})
+        self.assertEqual((roots[ts.DRIVE]["status"], roots[ts.SITE_DRIVE]["status"]),
+                         ("complete", "complete"))
+        self.assertEqual(roots[FORBIDDEN]["reason"], "source_error:http_403")
+        self.assertTrue(all(t.get("carried") for t in run["targets"] if t.get("discovered")))
+        counts = run["discovery"]["counts"]
+        self.assertEqual((counts["libraries_carried"], counts["libraries_carry_refused"],
+                          counts["libraries_planned"]), (3, 2, 0))
+        self.assertFalse([u for u in self.urls(mark)
+                          if PERSONAL_DRIVE in u or OTHER_DRIVE in u])
+        # Nothing retired: every root of the first run is still in the store.
+        after = {(r["drive_id"], r["root_path"]) for r in self.store.db.execute(
+            "SELECT drive_id, root_path FROM roots")}
+        self.assertEqual(after, before)
+        # The host ledger records the run partial with the listing's gap, never complete.
+        from operating import ingest_forever as forever
+        judged = forever._judge(forever._base(forever.SOURCES["sharepoint"]),
+                                forever.summarize_sharepoint(
+                                    {"runs": [cs._report_run(1, run)]}))
+        self.assertEqual((judged["status"], judged["reasons"]),
+                         ("partial", ["discovery_sites:retried.http_429",
+                                      "source_error:http_403"]))
+
+    def test_a_carried_library_is_judged_on_the_exclusions_as_they_are_now(self):
+        cases = (("site excluded since", ({"site": "Quality"},), {ts.SITE_DRIVE, FORBIDDEN}),
+                 ("library excluded since", ({"library": "Board"},), {ts.DRIVE, ts.SITE_DRIVE}),
+                 ("library on its site excluded since",
+                  ({"site": "AGENTS", "library": "Documents"},), {ts.DRIVE, FORBIDDEN}))
+        for why, exclude, carried in cases:
+            with self.subTest(why):
+                self.tearDown()
+                self.setUp()
+                capture = self.capture(sleep=lambda s: None, budget_seconds=3600)
+                self.first_run(capture)
+                run, mark = self.throttled(capture, estate_scope(exclude=exclude))
+                self.assertEqual(set(self.roots(run)), carried)
+                gone = ({ts.DRIVE, ts.SITE_DRIVE, FORBIDDEN} - carried).pop()
+                self.assertFalse([u for u in self.urls(mark) if f"/drives/{gone}/" in u])
+
+    def test_an_excluded_persons_onedrive_is_never_carried(self):
+        # The excluded person's OneDrive is refused at discovery and never recorded; even
+        # a recorded OneDrive row (personal, or on the OneDrive host) is never carried.
+        excluded_site = (f"{MY_HOST},77777777-0000-0000-0000-000000000001,"
+                         "77777777-0000-0000-0000-000000000002")
+        SITES[excluded_site] = f"https://{MY_HOST}/personal/{EXCLUDED_PATH}"
+        self.addCleanup(SITES.pop, excluded_site)
+        self.drive = estate_drive(sites=(*SITES,), personal={
+            PERSONAL_DRIVE: personal_drive(), "b!excluded-Drive_09": personal_drive()})
+        self.drive.libraries = {**LIBRARIES,
+                                excluded_site: [("b!excluded-Drive_09", "Documents")]}
+        capture = self.capture(sleep=lambda s: None, budget_seconds=3600)
+        run = capture.run(estate_scope())
+        self.assertEqual(run["discovery"]["counts"]["sites_people_excluded"], 1)
+        recorded = {r["drive_id"]: r for r in self.store.planned_libraries()}
+        self.assertNotIn("b!excluded-Drive_09", recorded)
+        self.assertEqual(recorded[PERSONAL_DRIVE]["personal"], 1)
+        self.store.note_planned_libraries([{
+            "drive_id": "b!excluded-Drive_09", "site_id": excluded_site, "site_name": None,
+            "host": MY_HOST, "personal": False, "library_name": "Documents"}])
+        run, mark = self.throttled(capture, estate_scope())
+        self.assertNotIn(PERSONAL_DRIVE, self.roots(run))
+        self.assertNotIn("b!excluded-Drive_09", self.roots(run))
+        self.assertFalse([u for u in self.urls(mark) if "excluded-Drive" in u
+                          or PERSONAL_DRIVE in u])
+
+    def test_a_restricted_library_the_scope_no_longer_classifies_is_not_carried(self):
+        self.drive.libraries = {**LIBRARIES, Q_SITE: [(ts.DRIVE, "PLX Finance")]}
+        classes = [{"site": "Quality", "library": "PLX Finance", "class": "FINANCE"}]
+        capture = self.capture(sleep=lambda s: None, budget_seconds=3600)
+        run = capture.run(estate_scope(library_security_classes=classes))
+        self.assertIn(ts.DRIVE, self.roots(run))
+        run, mark = self.throttled(capture, estate_scope())
+        self.assertNotIn(ts.DRIVE, self.roots(run))
+        self.assertFalse([u for u in self.urls(mark) if f"/drives/{ts.DRIVE}/" in u])
+        self.assertEqual(self.store.drive_class(ts.DRIVE), "UNRESOLVED")
+        # Classified again: carried.
+        run, _mark = self.throttled(capture, estate_scope(library_security_classes=classes))
+        self.assertIn(ts.DRIVE, self.roots(run))
+
+    def test_a_site_whose_library_listing_fails_carries_only_its_own_libraries(self):
+        capture = self.capture(sleep=lambda s: None, budget_seconds=3600)
+        self.first_run(capture)
+        self.drive.unlistable = {LEGACY_SITE, ts.SITE_ID}
+        run = capture.run(estate_scope())
+        self.assertEqual(set(self.roots(run)), {ts.DRIVE, ts.SITE_DRIVE, PERSONAL_DRIVE,
+                                                FORBIDDEN})
+        carried = {t["drive_id"] for t in run["targets"] if t.get("carried")}
+        self.assertEqual(carried, {ts.SITE_DRIVE, FORBIDDEN})
+        self.assertEqual(run["discovery"]["counts"]["libraries_carried"], 2)
+        self.assertEqual(sorted(run["discovery"]["gaps"]), ["library_listing:http_403"] * 2)
+        # A library its site no longer lists (listed whole) is not carried.
+        self.drive.unlistable = {LEGACY_SITE}
+        self.drive.libraries = {**LIBRARIES, ts.SITE_ID: [(ts.SITE_DRIVE, "Documents")]}
+        run = capture.run(estate_scope())
+        self.assertNotIn(FORBIDDEN, self.roots(run))
+        self.assertEqual(run["discovery"]["counts"]["libraries_carried"], 0)
+
+    def test_a_first_run_ever_throttled_carries_nothing(self):
+        capture = self.capture(sleep=lambda s: None, budget_seconds=3600)
+        run, _mark = self.throttled(capture, estate_scope())
+        self.assertEqual(self.roots(run), {})
+        self.assertEqual(run["discovery"]["counts"]["libraries_carried"], 0)
+
+
 class EstateReaderTests(EstateCase):
     def test_a_personal_drive_file_is_served_only_to_its_item_grantees(self):
         # Everyone granted the OneDrive library by folder sees only the files its item
@@ -1033,6 +1305,67 @@ class EstateCliTests(unittest.TestCase):
                                                         if home else ts.ENV),
                               sender=drive, sleep=lambda s: None,
                               **({"monotonic": monotonic} if monotonic else {}))
+
+    def test_a_drained_run_reports_its_walk_without_the_self_check(self):
+        # 11-19: a 2 h walk (2:10-4:08 AM ET) was drained by a host restart and killed in
+        # the store-wide self-check (minutes on the estate store, past the drain bound):
+        # nothing of it was recorded. A drain now skips the self-check and prints the runs.
+        from unittest import mock
+        from integrations import drain
+        from operating import ingest_forever as forever
+        self.addCleanup(drain.reset)
+        index = cs.SharePointCaptureStore.index
+
+        def during_walk():
+            # The host's store is kept across runs (a cut root resumes from it).
+            home = tempfile.TemporaryDirectory()
+            self.addCleanup(home.cleanup)
+            first = self.run_cli(estate_drive(sites=(Q_SITE,), libraries=SHIPPED_LIBRARIES),
+                                 home=home.name)
+            self.assertNotIn("drained", first)
+            drive = estate_drive(sites=(Q_SITE, ts.SITE_ID), libraries=SHIPPED_LIBRARIES)
+            inner = drive.__call__
+
+            class Draining:
+                def __call__(self, method, url, *rest, **kw):
+                    if f"/drives/{ts.SITE_DRIVE}/" in unquote(url):
+                        drain.request()   # the host's SIGTERM, mid-walk
+                    return inner(method, url, *rest, **kw)
+            return self.run_cli(Draining(), home=home.name)
+
+        def during_self_check():
+            calls = []
+
+            def draining_index(store, *args, **kwargs):
+                calls.append(1)
+                drain.request()
+                return index(store, *args, **kwargs)
+            with mock.patch.object(cs.SharePointCaptureStore, "index", draining_index):
+                report = self.run_cli(estate_drive(sites=(Q_SITE, ts.SITE_ID),
+                                                   libraries=SHIPPED_LIBRARIES))
+            self.assertEqual(len(calls), 1)   # nothing after the step the drain came in
+            return report
+
+        for why, invoke, complete in (("during the walk", during_walk, False),
+                                      ("during the self-check", during_self_check, True)):
+            with self.subTest(why):
+                drain.reset()
+                report = invoke()
+                self.assertTrue(drain.requested())
+                self.assertEqual((report["drained"], report["self_check"], report["ok"]),
+                                 (True, "skipped_drained", False))
+                self.assertNotIn("resolve_check", report)
+                self.assertNotIn("estate", report)
+                roots = [r for t in report["runs"][0]["targets"] for r in t["roots"]]
+                self.assertEqual(len(roots), 2)
+                self.assertEqual(all(r["complete"] for r in roots), complete)
+                self.assertGreater(report["requests_sent"], 0)
+                # The host records it like any run (units, requests), never STOPPED.
+                judged = forever._judge(forever._base(forever.SOURCES["sharepoint"]),
+                                        forever.summarize_sharepoint(report))
+                self.assertEqual(judged["units"], 2)
+                self.assertEqual(judged["status"], "complete" if complete else "partial")
+                self.assertEqual(judged["requests"], report["requests_sent"])
 
     def test_cli_reports_the_estate_by_counts_and_a_gap_fails_the_live_check(self):
         from verify import live_verify as lv

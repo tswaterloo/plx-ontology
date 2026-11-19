@@ -1,10 +1,10 @@
-import { render, screen } from "@testing-library/react";
+import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it } from "vitest";
 import { applyEvent } from "@/lib/thread";
 import type { Answer } from "@/lib/types";
 import { AnswerCard, type Turn } from "./answer-card";
-import { sourceCount, splitTables } from "./simple-answer";
+import { AnswerText, sourceCount, splitTables } from "./simple-answer";
 
 const simple: Answer = {
   answer_id: "a1",
@@ -72,7 +72,7 @@ describe("simple Ask answer", () => {
     expect(screen.queryByTestId("simple-answer")).toBeNull();
   });
 
-  it("whole tokens replace what was shown and mark the turn simple; plain tokens append", () => {
+  it("whole tokens replace what was shown and mark the turn simple; plain tokens append", async () => {
     let turn: Turn = { id: "t", question: "q", phase: "thinking", streamed: "" };
     turn = applyEvent(turn, { event: "token", data: { text: "Let me check", whole: true } });
     turn = applyEvent(turn, { event: "token", data: { text: "", whole: true } });
@@ -80,11 +80,53 @@ describe("simple Ask answer", () => {
     expect(turn.streamed).toBe("It was 9 (unverified) USD.");
     expect(turn.simple).toBe(true);
     render(<AnswerCard turn={turn} />);
-    expect(screen.getByTestId("simple-answer")).toHaveTextContent("It was 9 (unverified) USD.");
+    // written out from the top while the answer is under way (``useReveal``)
+    await waitFor(() => expect(screen.getByTestId("simple-answer")).toHaveTextContent("It was 9 (unverified) USD."));
     let old: Turn = { id: "o", question: "q", phase: "thinking", streamed: "" };
     old = applyEvent(old, { event: "token", data: { text: "PO 1 " } });
     old = applyEvent(old, { event: "token", data: { text: "is late." } });
     expect(old.streamed).toBe("PO 1 is late.");
     expect(old.simple).toBeFalsy();
+  });
+
+  it("bold the answer writes inside its table is bold, never asterisks", () => {
+    render(<AnswerText text={"| Month | POs |\n|---|---|\n| March | 91 |\n| **Total** | **108 (unverified)** |"} />);
+    const shown = screen.getByTestId("simple-answer-text");
+    expect(shown.textContent).not.toContain("**");
+    expect(screen.getByText("Total").tagName).toBe("STRONG");
+    expect(screen.getAllByTitle(/Not found in the records this answer read/).map((m) => m.textContent)).toEqual(["108 (unverified)"]);
+  });
+
+  it("an unverified figure is underlined with a tooltip, never words in the middle of the sentence", () => {
+    render(<AnswerText text={"On standard 30 (unverified)-day terms, open for 7 (unverified) weeks.\n\n| PO | Total |\n|---|---|\n| 1 | 9 (unverified) USD |"} />);
+    const shown = screen.getByTestId("simple-answer-text").cloneNode(true) as HTMLElement;
+    shown.querySelectorAll(".sr-only").forEach((n) => n.remove());
+    expect(shown.textContent).toContain("On standard 30-day terms, open for 7 weeks.");
+    expect(shown.textContent).toContain("9 USD");
+    expect(shown.textContent).not.toContain("unverified");
+    const marks = screen.getAllByTitle(/Not found in the records this answer read/);
+    expect(marks.map((m) => m.textContent)).toEqual(["30 (unverified)", "7 (unverified)", "9 (unverified)"]);
+  });
+
+  it("while it works, the steps say what it reads and what came back; narration then a read is reading, not writing", async () => {
+    let turn: Turn = { id: "t", question: "q", phase: "thinking", streamed: "" };
+    const step = (message: string) => ({ event: "status" as const, data: { step: "reading" as const, message, elapsed_ms: 1 } });
+    turn = applyEvent(turn, step("Querying purchase orders"));
+    turn = applyEvent(turn, step("2 rows from purchase orders"));
+    turn = applyEvent(turn, { event: "token", data: { text: "Let me check the suppliers.", whole: true } });
+    turn = applyEvent(turn, step("Querying suppliers"));
+    expect(turn.phase).toBe("thinking");
+    const { unmount } = render(<AnswerCard turn={turn} />);
+    const progress = screen.getByTestId("progress");
+    expect(progress).toHaveTextContent("2 rows from purchase orders");
+    expect(progress).toHaveTextContent("Querying suppliers");
+    expect(progress).not.toHaveTextContent("Writing");
+    await waitFor(() => expect(screen.getByTestId("simple-answer")).toHaveTextContent("Let me check the suppliers."));
+    unmount();
+    turn = applyEvent(turn, { event: "token", data: { text: "", whole: true } });
+    turn = applyEvent(turn, { event: "token", data: { text: "Two are open.", whole: true } });
+    expect(turn.phase).toBe("streaming");
+    render(<AnswerCard turn={turn} />);
+    expect(screen.getByTestId("progress")).toHaveTextContent("Writing");
   });
 });

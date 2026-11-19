@@ -140,5 +140,68 @@ class PoolTimeoutAcrossBorrowsTests(unittest.TestCase):
             self.assertEqual(conn.execute("SELECT 1").fetchone()[0], 1)
 
 
+FULL = ('connection failed: connection to server on socket "/run/postgresql/.s.PGSQL.5432" '
+        'failed: FATAL:  too many connections for role "plx_eval"')
+
+
+@unittest.skipIf(pg_pool is None, "psycopg not installed")
+class ConnectionLimitTests(unittest.TestCase):
+    """A connection refused at the server's or the role's connection limit (the error a
+    burst of Asks met: every tool call failed in 0.1 s) is tried again until a slot frees,
+    within the wait; any other refusal, or a limit that stays, is raised."""
+
+    def refusing(self, times, error=FULL):
+        import psycopg
+        calls = []
+
+        def connect(*args, **kwargs):
+            calls.append(kwargs)
+            if len(calls) <= times:
+                raise psycopg.OperationalError(error)
+            return Conn()
+        return calls, connect
+
+    def test_a_pool_waits_for_a_slot(self):
+        calls, connect = self.refusing(3)
+        with mock.patch.object(pg_pool.psycopg, "connect", side_effect=connect):
+            pool = pg_pool.Pool("postgresql://made-up/db", configure=lambda conn: None)
+            self.assertIsInstance(pool._new(), Conn)
+        self.assertEqual(len(calls), 4)
+
+    def test_the_store_reader_waits_for_a_slot(self):
+        from operating.pg import sqlite_compat
+        calls, connect = self.refusing(2)
+        with mock.patch.object(pg_pool.psycopg, "connect", side_effect=connect), \
+                mock.patch.object(sqlite_compat.PgCompatConnection, "_session", lambda self, c: None):
+            got = sqlite_compat.PgCompatConnection._open(mock.Mock(dsn="postgresql://made-up/db",
+                                                             _session=lambda c: None))
+        self.assertIsInstance(got, Conn)
+        self.assertEqual(len(calls), 3)
+
+    def test_other_refusals_and_a_limit_that_stays_are_raised(self):
+        import psycopg
+        import time
+        calls, connect = self.refusing(1, "FATAL:  password authentication failed")
+        with mock.patch.object(pg_pool.psycopg, "connect", side_effect=connect):
+            with self.assertRaises(psycopg.OperationalError):
+                pg_pool.connect("postgresql://made-up/db")
+        self.assertEqual(len(calls), 1)
+        calls, connect = self.refusing(10**6)
+        with mock.patch.object(pg_pool.psycopg, "connect", side_effect=connect), \
+                mock.patch.dict("os.environ", {pg_pool.FULL_WAIT_ENV: "0.4"}):
+            t0 = time.monotonic()
+            with self.assertRaises(psycopg.OperationalError) as got:
+                pg_pool.connect("postgresql://made-up/db")
+            self.assertLess(time.monotonic() - t0, 2.0)
+        self.assertTrue(pg_pool.at_limit(got.exception))
+        self.assertGreater(len(calls), 2)
+        with mock.patch.dict("os.environ", {pg_pool.FULL_WAIT_ENV: "0"}):
+            calls, connect = self.refusing(1)
+            with mock.patch.object(pg_pool.psycopg, "connect", side_effect=connect), \
+                    self.assertRaises(psycopg.OperationalError):
+                pg_pool.connect("postgresql://made-up/db")
+            self.assertEqual(len(calls), 1)
+
+
 if __name__ == "__main__":
     unittest.main()

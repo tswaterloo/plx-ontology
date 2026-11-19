@@ -86,6 +86,9 @@ def _graph():
     # of ours makes it a person's)
     put("F-PLAT0", "Range launch", sender=PERSON, to=[tmp.UPN_A], conv="CONV-F1",
         at="2026-09-21T08:00:00Z", envelope=PLATFORM)
+    # a word in older subjects and in a newer body only: the subjects rank first
+    put("F-LAB", "Lab update", sender=tmp.SUPPLIER, to=[tmp.UPN_A],
+        body="The samples left the lab today.", at="2026-09-23T09:00:00Z")
     put("F-FORM", "Weekly digest", sender=PERSON, to=[tmp.UPN_A],
         body="Shop now: 20% off everything")
     # the owner's place by every address they have 
@@ -539,6 +542,118 @@ class EmailsThroughTheDoor(unittest.TestCase):
                              len(before))
 
 
+    def test_a_moved_link_rule_decides_every_rows_links_again(self):
+        """A refresh reads only the records changed since its marks, so a row written under an
+        older link rule kept its links for good (11-19: 57 of 160,150 sampled mails held the
+        customers their stored links name). The build keeps the rule's stamp in its marks;
+        a refresh whose marks hold another stamp relinks every row, and one that holds the
+        current stamp leaves unchanged rows alone."""
+        import psycopg
+        table = f"{bv.SCHEMA}.emails"
+        with psycopg.connect(self.dsn, autocommit=True) as pg:
+            got = bc.refresh_changed(pg, "emails", {"ver": 0, "link": 0})
+            self.assertEqual(got["marks"]["links"], bc.links_rule(bc.SPECS["emails"]))
+            truth = pg.execute(f"SELECT handle, customers, suppliers, records FROM {table} "
+                               "ORDER BY handle").fetchall()
+            stale = "(customers, suppliers) = (ARRAY['ghost'], ARRAY['ghost'])"
+            victim = truth[0][0]
+            try:
+                pg.execute(f"UPDATE {table} SET {stale} WHERE handle = %s", (victim,))
+                bc.refresh_changed(pg, "emails", got["marks"])    # current stamp, nothing new
+                self.assertEqual(pg.execute(f"SELECT customers FROM {table} WHERE handle = %s",
+                                            (victim,)).fetchone()[0], ["ghost"])
+                bc.refresh_changed(pg, "emails", {**got["marks"], "links": "older-rule"})
+                self.assertEqual(pg.execute(f"SELECT handle, customers, suppliers, records "
+                                            f"FROM {table} ORDER BY handle").fetchall(), truth)
+            finally:
+                pg.execute(f"UPDATE {table} SET customers = %s, suppliers = %s, records = %s "
+                           "WHERE handle = %s", (truth[0][1], truth[0][2], truth[0][3], victim))
+
+    def test_a_name_written_by_many_sender_domains_is_a_common_word(self):
+        """``message_parties.common_names`` reads the mail table's own words and sender
+        domains: a word three rows carry from three domains is common when the bar is 3 and
+        not when it is 4; nothing else is; a table that is not built has none."""
+        import psycopg
+        from operating.pg import message_parties as mp
+        table = f"{bv.SCHEMA}.emails"
+        with psycopg.connect(self.dsn, autocommit=True) as pg:
+            rows = pg.execute(f"SELECT handle, sender_domain, words FROM {table} ORDER BY "
+                              "handle LIMIT 3").fetchall()
+            self.assertEqual(len(rows), 3)
+            try:
+                for i, (handle, _d, _w) in enumerate(rows):
+                    pg.execute(f"UPDATE {table} SET sender_domain = %s, words = "
+                               "to_tsvector('simple', 'zqxvord') WHERE handle = %s",
+                               (f"d{i}.test", handle))
+                for bar, expected in ((3, {"zqxvord"}), (4, set())):
+                    mp._SPREAD.update(at=0.0, key=None)
+                    with mock.patch.object(mp, "MAX_SPREAD", bar):
+                        self.assertEqual(set(mp.common_names(pg, ["zqxvord", "plain"])),
+                                         expected)
+            finally:
+                mp._SPREAD.update(at=0.0, key=None)
+                for handle, dom, words in rows:
+                    pg.execute(f"UPDATE {table} SET sender_domain = %s, words = %s WHERE "
+                               "handle = %s", (dom, words, handle))
+
+    def test_mail_gains_the_party_its_domain_or_subject_names_and_only_that(self):
+        """``message_parties.apply`` on the real table: a customer whose stored address holds a
+        participant domain of some mails, and a supplier whose name the subject of others
+        spells, are linked to exactly those rows (both kinds in one rewrite of a row); a
+        second apply writes nothing; an own-staff domain links nothing."""
+        import psycopg
+        from ontology import mentions
+        from operating.pg import message_parties as mp
+        table = f"{bv.SCHEMA}.emails"
+        made = ["staff", "customers", "suppliers", "sales_orders", "sales_invoices",
+                "customer_balances", "purchase_orders", "supplier_invoices",
+                "supplier_balances"]
+        with psycopg.connect(self.dsn, autocommit=True) as pg:
+            pg.execute(f"SET search_path = {bv.SCHEMA}")
+            existing = [t for t in made if pg.execute("SELECT to_regclass(%s)", (
+                f"{bv.SCHEMA}.{t}",)).fetchone()[0]]
+            self.assertEqual(existing, [], "the fixture builds only the mail table")
+            before = pg.execute(f"SELECT handle, customers, suppliers, subject FROM {table} "
+                                "ORDER BY handle").fetchall()
+            dom = pg.execute(f"SELECT d FROM {table}, unnest(domains) d WHERE cardinality("
+                             "domains) <= 3 GROUP BY d ORDER BY count(*) DESC LIMIT 1"
+                             ).fetchone()[0]
+            word = "zqxvord"
+            try:
+                pg.execute("CREATE TABLE staff (name text, email text)")
+                pg.execute("CREATE TABLE customers (handle text, name text, email text)")
+                pg.execute("CREATE TABLE suppliers (handle text, name text, email text, "
+                           "website text)")
+                for t, k in (("sales_orders", "customer"), ("sales_invoices", "customer"),
+                             ("customer_balances", "customer"), ("purchase_orders", "supplier"),
+                             ("supplier_invoices", "supplier"),
+                             ("supplier_balances", "supplier")):
+                    pg.execute(f"CREATE TABLE {t} ({k}_handle text)")
+                pg.execute("INSERT INTO customers VALUES ('c-1', 'Quorvex Holdings', %s)",
+                           (f"ap@{dom}",))
+                pg.execute("INSERT INTO sales_orders VALUES ('c-1')")
+                pg.execute("INSERT INTO suppliers VALUES ('s-1', %s, NULL, NULL)",
+                           (f"{word} Chemicals",))
+                pg.execute("INSERT INTO purchase_orders VALUES ('s-1')")
+                pg.execute(f"UPDATE {table} SET subject = %s WHERE handle = (SELECT handle "
+                           f"FROM {table} ORDER BY handle LIMIT 1)", (f"Re: {word} chemicals PO",))
+                got = mp.apply(pg, "emails", table)
+                self.assertGreater(got["rows_updated"], 0, got)
+                for handle, cust, supp, domains, subject in pg.execute(
+                        f"SELECT handle, customers, suppliers, domains, subject FROM {table}"
+                        ).fetchall():
+                    held = len(domains) <= mp.MAX_DOMAINS and any(
+                        mentions.registrable_domain(d) == mentions.registrable_domain(dom)
+                        for d in domains)
+                    self.assertEqual("c-1" in cust, held, handle)
+                    self.assertEqual("s-1" in supp, word in (subject or ""), handle)
+                self.assertEqual(mp.apply(pg, "emails", table)["rows_updated"], 0)
+            finally:
+                pg.execute("DROP TABLE IF EXISTS " + ", ".join(made))
+                for handle, cust, supp, subject in before:
+                    pg.execute(f"UPDATE {table} SET customers = %s, suppliers = %s, subject = "
+                               "%s WHERE handle = %s", (cust, supp, subject, handle))
+
     # ------------------------------------------------------------- search and open
 
     def search(self, actor, person=False, **args):
@@ -597,6 +712,54 @@ class EmailsThroughTheDoor(unittest.TestCase):
             tmp.OWNER, "SELECT handle FROM emails WHERE subject = 'Booking 778'")["rows"]}
         self.assertEqual(self.found(tmp.OWNER, query="communicate"), relay)
         self.assertEqual(self.found(tmp.OWNER, query="agreed", since="2100-01-01"), set())
+        # a dated word search (its dates bound the word match too) keeps exactly the rows
+        # on each side of an instant
+        hits = self.found(tmp.OWNER, query="samples")
+        at = {_cell(r["cells"][0]): _cell(r["cells"][1]) for r in self.sql(
+            tmp.OWNER, "SELECT handle, to_char(received_at AT TIME ZONE 'UTC', "
+            "'YYYY-MM-DD\"T\"HH24:MI:SS') FROM emails")["rows"]}
+        last = max(at[h] for h in hits)
+        after = {h for h in hits if at[h] >= last}
+        self.assertTrue(after and after < hits, (hits, at))
+        self.assertEqual(self.found(tmp.OWNER, query="samples", since=last), after)
+        self.assertEqual(self.found(tmp.OWNER, query="samples", until=last), hits - after)
+
+    def test_header_matches_rank_first_and_pages_lose_or_repeat_nothing(self):
+        """A row whose header (subject, addresses) holds every query word comes before the
+        rows matched in their text only, newest first within each; walked 1, 3 or 50 at a
+        time the hits are the same set, each once, in that order."""
+        import psycopg
+        from operating.pg import comms_search as cs
+        mixed = 0
+        for word in ("agreed", "note", "samples", "communicate", "booking", "order"):
+            with psycopg.connect(self.dsn) as pg:
+                header = {r[0] for r in pg.execute(
+                    f"SELECT handle FROM {bv.SCHEMA}.emails WHERE words @@ %s::tsquery",
+                    (cs.tsquery(word),))}
+                at = dict(pg.execute(f"SELECT handle, received_at FROM {bv.SCHEMA}.emails"))
+            every = self.found(tmp.OWNER, query=word)
+            for limit in (1, 3, 50):
+                with self.subTest(word=word, limit=limit):
+                    walk, cursor = [], None
+                    for _ in range(len(every) + 2):
+                        out = self.search(tmp.OWNER, query=word, limit=limit,
+                                          **({"cursor": cursor} if cursor else {}))
+                        walk += [h["citation"] for h in out["documents"]]
+                        cursor = out["completeness"]["next_cursor"]
+                        if not cursor:
+                            break
+                    self.assertEqual(len(walk), len(set(walk)), "a hit doubled across pages")
+                    self.assertEqual(set(walk), every)
+                    tiers = [h in header for h in walk]
+                    self.assertEqual(tiers, sorted(tiers, reverse=True), (word, walk))
+                    for tier in (True, False):
+                        dates = [at[h] for h, t in zip(walk, tiers) if t is tier]
+                        self.assertEqual(dates, sorted(dates, reverse=True))
+            first = [at[h] for h in every if h in header]
+            rest = [at[h] for h in every if h not in header]
+            mixed += bool(first and rest and min(first) < max(rest))
+        # the rank changed an order somewhere (an older header match before a newer text one)
+        self.assertTrue(mixed)
 
     def test_party_search_counts_1_10_60_exactly_and_follows_the_gate(self):
         for n in (1, 10, 60):
@@ -616,12 +779,36 @@ class EmailsThroughTheDoor(unittest.TestCase):
 
     def test_unexpected_search_input_fails_closed(self):
         for args in ({"query": "agreed", "cursor": "not-a-cursor"},
+                     # a cursor of before the rank (date|handle, no tier): refused
+                     {"query": "agreed", "cursor": "c1:2026-11-01T00:00:00+00:00|h"},
+                     {"query": "agreed", "cursor": "c1:7|2026-11-01T00:00:00+00:00|h"},
                      {"participant": "nobody"}, {"query": "!!!"},
                      {"query": "agreed", "since": "yesterday"}):
             with self.subTest(args=args):
                 with self.assertRaises(ts.ToolError) as caught:
                     self.search(tmp.OWNER, **args)
                 self.assertEqual(caught.exception.code, "invalid_input")
+
+    def test_a_full_readers_search_and_open_run_with_the_longer_limit_same_rows(self):
+        # a full reader's mail/Teams statements get SEARCH_FULL_MS (a common word over
+        # millions of mails ran past 10 s), anyone else's STATEMENT_MS; the rows are the
+        # door's either way (a NameError here once failed every search and open)
+        hit = sorted(self.found(tmp.OWNER, query="agreed"))[0]
+        seen = {}
+        for full in (False, True):
+            spy = mock.patch.object(ts, "scoped_read", wraps=ts.scoped_read)
+            as_full = mock.patch.object(people_excluded, "full_reader",
+                                        lambda base, a, full=full: "tag" if full else "")
+            with spy as read, as_full:
+                found = self.found(tmp.OWNER, query="agreed")   # every page
+                with mock.patch.object(ts, "_people_tag", return_value=self.tag):
+                    opened = self.tool().comms_open({"citation": hit}, tmp.OWNER)
+            want = (ts.SEARCH_FULL_MS if full else ts.STATEMENT_MS) / 1000.0
+            self.assertGreaterEqual(len(read.call_args_list), 2)
+            self.assertEqual({c.args[3] for c in read.call_args_list}, {want})
+            seen[full] = (found, opened["text"]["untrusted_text"])
+        self.assertEqual(seen[False], seen[True])
+        self.assertIn(hit, seen[True][0])
 
     def test_open_reads_one_item_through_the_same_door(self):
         tool = self.tool()
@@ -658,6 +845,75 @@ class EmailsThroughTheDoor(unittest.TestCase):
                              {"not_comms": True})
             self.assertEqual(tool.comms_search({"query": "agreed"}, tmp.OWNER)["documents"],
                              [])
+
+    def test_a_replay_ceiling_shows_nothing_from_after_its_moment(self):
+        """A replay of a past moment (``read_ceiling``): plx.sql, the search (every page,
+        any ``until``) and open see exactly the mail before it, the same rows the
+        unbounded view dates before it; a qualified view name, an unreadable ceiling or a
+        describe's sample rows never get past it."""
+        from operating import read_ceiling
+        allrows = self.sql(tmp.OWNER, "SELECT handle, coalesce(received_at, sent_at), "
+                                      "subject FROM emails")["rows"]
+        dated = {_cell(r["cells"][0]): (_cell(r["cells"][1]), _cell(r["cells"][2]))
+                 for r in allrows}
+        out_h = next(h for h, (_, subj) in dated.items() if subj == "RE: Quote please")
+        in_h = next(h for h, (_, subj) in dated.items() if subj == "Quote please")
+        moment = "2026-09-22T10:00:00Z"
+        cut = read_ceiling.ceiling({read_ceiling.CEILING_ENV: moment})
+        before = {h for h, (at, _) in dated.items()
+                  if at is not None and dt.datetime.fromisoformat(str(at)) < cut}
+        self.assertIn(in_h, before)
+        self.assertNotIn(out_h, before)
+        self.assertTrue(before < set(dated))
+        with mock.patch.dict(os.environ, {read_ceiling.CEILING_ENV: moment}):
+            for actor in READERS:
+                with self.subTest(actor=sorted(actor.principals)):
+                    mine = self.handles(actor)
+                    self.assertTrue(mine <= before)
+                    # the result is as of the moment, never the tables' build time
+                    self.assertEqual(self.sql(actor, "SELECT 1 FROM emails LIMIT 1")["as_of"],
+                                     cut.isoformat())
+                    # a subquery and the reader's own common table read the bounded rows
+                    nested = self.sql(actor, "WITH e AS (SELECT handle FROM emails) SELECT "
+                                             "handle FROM e WHERE handle IN (SELECT handle "
+                                             "FROM emails)")["rows"]
+                    self.assertEqual({_cell(r["cells"][0]) for r in nested}, mine)
+            owner = self.handles(tmp.OWNER)
+            self.assertEqual(owner, before)
+            # every page of a search, an until past the moment clamped to it
+            for args in ({"query": "quote"}, {"participant": tmp.SUPPLIER},
+                         {"query": "quote", "until": "2026-12-31"}):
+                with self.subTest(args=args):
+                    self.assertTrue(self.found(tmp.OWNER, **args) <= before)
+            self.assertIn(in_h, self.found(tmp.OWNER, query="quote"))
+            with mock.patch.object(ts, "_people_tag", return_value=self.tag):
+                tool = self.tool()
+                self.assertEqual(tool.comms_open({"citation": in_h}, tmp.OWNER)["citation"],
+                                 in_h)
+                for h in (out_h, "sharepoint://site/x.pdf"):
+                    with self.assertRaises(ts.ToolError) as caught:
+                        tool.comms_open({"citation": h}, tmp.OWNER)
+                    self.assertEqual(caught.exception.code, "not_found")
+                described = tool.call("plx.sql", {"describe": "emails"}, tmp.OWNER)
+                self.assertNotIn("sample", described)
+                self.assertIn("emails", described["views"])
+                qualified = tool.call("plx.sql", {"sql": "SELECT handle FROM "
+                                      f"{sql_views.guarded_schema()}.emails"}, tmp.OWNER)
+                self.assertEqual(qualified["error"]["code"], "invalid_sql")
+        for bad in ("yesterday", "2026-09-22T10:00:00"):
+            with mock.patch.dict(os.environ, {read_ceiling.CEILING_ENV: bad}), \
+                    mock.patch.object(ts, "_people_tag", return_value=self.tag):
+                tool = self.tool()
+                with self.subTest(ceiling=bad):
+                    self.assertEqual(tool.call("plx.sql", {"sql": "SELECT handle FROM emails"},
+                                               tmp.OWNER)["error"]["code"], "not_ready")
+                    for call in (lambda: tool.comms_search({"query": "quote"}, tmp.OWNER),
+                                 lambda: tool.comms_open({"citation": in_h}, tmp.OWNER)):
+                        with self.assertRaises(ts.ToolError) as caught:
+                            call()
+                        self.assertEqual(caught.exception.code, "not_ready")
+        # no ceiling: the later reply reads again
+        self.assertIn(out_h, self.handles(tmp.OWNER))
 
     # ---------------------------------------------------------------- production roles
 
@@ -936,6 +1192,67 @@ class EmailsThroughTheDoor(unittest.TestCase):
                                        (hit,)).fetchone()[0])
         self.assertIn(hit, self.handles(tmp.OWNER))
         self.assertIn(hit, self.found(tmp.OWNER, query="agreed"))
+
+    def test_a_message_the_source_says_has_no_body_is_decided_by_its_cells(self):
+        """A meeting reply or invitation with no body (Graph's preview empty, no text to
+        index) is decided by its cells: shown to the AI (refresh and the nightly recheck),
+        never left undecided for good; one whose preview has no value, or has words but no
+        text indexed yet, stays withheld."""
+        import psycopg
+        table = f"{bv.SCHEMA}.emails"
+        hit = sorted(self.found(tmp.OWNER, query="agreed"))[0]
+        cell = ("FROM ontology.value_sources s, ontology.object_versions v, "
+                "ontology.value_fields f WHERE s.src = c.src AND v.ver = s.ver AND "
+                "f.field = c.field AND f.property = 'body_preview' AND s.superseded_at IS NULL "
+                "AND v.object_id = %s")
+        with psycopg.connect(self.dsn, autocommit=True) as pg:
+            oid = pg.execute(f"SELECT object_ids[1] FROM {table} WHERE handle = %s",
+                             (hit,)).fetchone()[0]
+            preview = pg.execute("SELECT c.src, c.field, c.value "
+                                 + cell.replace("FROM ", "FROM ontology.value_cells c, ", 1),
+                                 (oid,)).fetchall()
+            self.assertEqual(len(preview), 1, preview)
+            self.assertRegex(preview[0][2] or "", r"\S")
+            fields = pg.execute("SELECT * FROM ontology.text_fields WHERE citation = %s",
+                                (hit,)).fetchall()
+            chunks = pg.execute("SELECT c.* FROM ontology.text_chunks c JOIN "
+                                "ontology.text_fields f ON f.field_id = c.field_id WHERE "
+                                "f.citation = %s", (hit,)).fetchall()
+            self.assertTrue(fields and chunks)
+
+            def set_preview(value):
+                pg.execute(f"UPDATE ontology.value_cells c SET value = %s {cell}", (value, oid))
+
+            def refreshed():
+                bc.refresh_changed(pg, "emails", {"ver": 0, "link": 0,
+                                                  "field": self.marks(pg)["field"]})
+                return pg.execute(f"SELECT ai_ok FROM {table} WHERE handle = %s",
+                                  (hit,)).fetchone()[0]
+            pg.execute("DELETE FROM ontology.text_chunks c USING ontology.text_fields f WHERE "
+                       "f.field_id = c.field_id AND f.citation = %s", (hit,))
+            pg.execute("DELETE FROM ontology.text_fields WHERE citation = %s", (hit,))
+            try:
+                self.assertIsNone(refreshed())   # words in the preview, no text yet
+                set_preview(" \r\n\t")
+                self.assertIs(refreshed(), True)  # the source says: no body
+                self.assertIn(hit, self.handles(tmp.OWNER))
+                pg.execute(f"UPDATE {table} SET ai_ok = NULL WHERE handle = %s", (hit,))
+                bc.recheck(pg, "emails")   # the nightly re-flag decides it the same way
+                self.assertIs(pg.execute(f"SELECT ai_ok FROM {table} WHERE handle = %s",
+                                         (hit,)).fetchone()[0], True)
+                set_preview(None)   # no value: nothing says the body is empty
+                pg.execute(f"UPDATE {table} SET ai_ok = NULL WHERE handle = %s", (hit,))
+                self.assertIsNone(refreshed())
+                self.assertNotIn(hit, self.handles(tmp.OWNER))
+            finally:
+                set_preview(preview[0][2])
+                for f in fields:
+                    pg.execute("INSERT INTO ontology.text_fields VALUES (" + ", ".join(
+                        ["%s"] * len(f)) + ")", f)
+                for c in chunks:
+                    pg.execute("INSERT INTO ontology.text_chunks VALUES (" + ", ".join(
+                        ["%s"] * len(c)) + ")", c)
+                self.assertIs(refreshed(), True)
 
     def test_the_text_check_pages_its_handles_and_decides_the_same(self):
         """The Freightcom text check holds a page of handles at a time (11-18: the served

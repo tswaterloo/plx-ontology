@@ -946,6 +946,73 @@ if __name__ == "__main__":
 
 
 
+class TodoItems(unittest.TestCase):
+    """Things to do by hand (the assistant's ``todos``: a system with no write path, a
+    look's question): an item holding only those is a ``todo`` card for its person alone;
+    "done" records their word and runs nothing through the write path; a reply card carries
+    its to-dos too; a to-do with no text is none (no empty card)."""
+
+    client = AutopilotArea.client
+
+    def setUp(self) -> None:
+        AutopilotArea.setUp(self)
+        todo = {"kind": "job", "jobs": [], "summary": "PO 5416 is 6 days late",
+                "todos": [{"system": "sage", "record": "PO 5416", "what": "Move the date"},
+                          {"system": "", "record": "", "what": "Ask whether it ships split"}]}
+        q = ap.Queue(self.backend.autopilot_queue)
+        with q.conn:
+            for item_id, owner, prepared in (
+                    ("ap_todo", OWNER[1], todo), ("ap_todo2", OWNER[1], todo),
+                    ("ap_todo_sam", COLLEAGUE[1], todo),
+                    ("ap_blank", OWNER[1], {**todo, "todos": [{"system": "bc", "what": " "}]})):
+                item = queued(item_id, OWNER[1] if owner == OWNER[1] else owner)
+                item["body"]["prepared"] = prepared
+                q.add_item(item)
+            card = ReplyFromLine.card("ap_card_todo", OWNER[1])
+            card["body"]["prepared"]["todos"] = [{"system": "filemaker", "record": "AO-1",
+                                                  "what": "Note the new date"}]
+            q.add_item(card)
+        q.close()
+
+    def listed(self, client) -> dict:
+        got = client.get("/api/autopilot/drafts")
+        self.assertEqual(got.status_code, 200, got.text)
+        return {i["item_id"]: i for i in got.json()["items"]}
+
+    def test_a_todo_card_is_its_persons_and_done_writes_nothing(self) -> None:
+        owner, sam = self.client(OWNER), self.client(COLLEAGUE)
+        items = self.listed(owner)
+        self.assertEqual(items["ap_todo"]["kind"], "todo")
+        self.assertEqual(items["ap_todo"]["summary"], "PO 5416 is 6 days late")
+        self.assertEqual([t["what"] for t in items["ap_todo"]["todos"]],
+                         ["Move the date", "Ask whether it ships split"])
+        self.assertEqual(items["ap_todo"]["todos"][0]["record"], "PO 5416")
+        self.assertNotIn("ap_todo_sam", items)                   # another person's
+        self.assertNotIn("ap_blank", items)                      # no text: no to-do
+        self.assertEqual(items["ap_card_todo"]["kind"], "your_call")
+        self.assertEqual(items["ap_card_todo"]["todos"][0]["what"], "Note the new date")
+        self.assertNotIn("ap_todo", self.listed(sam))
+        self.assertEqual(sam.post("/api/autopilot/items/ap_todo/decision",
+                                  json={"decision": "accept"}).status_code, 404)
+        self.assertEqual(owner.post("/api/autopilot/items/ap_todo/decision",
+                                    json={"decision": "accept", "text": "x"}).status_code, 422)
+        calls = len(self.bc.calls)
+        done = owner.post("/api/autopilot/items/ap_todo/decision", json={"decision": "accept"})
+        self.assertEqual(done.status_code, 200, done.text)
+        self.assertEqual(done.json()["decision"]["outcome"], "done")
+        self.assertIsNone(done.json().get("confirm_token"))
+        self.assertEqual(len(self.bc.calls), calls)                 # nothing written
+        rows = [json.loads(x) for x in (self.state / ws.DECISIONS_FILE).read_text().splitlines()]
+        row = next(r for r in rows if r["item_id"] == "ap_todo")
+        self.assertEqual((row["decision"], row["closed"], row["steps"]),
+                         ("accept", "person_done", []))
+        self.assertEqual(owner.post("/api/autopilot/items/ap_todo2/decision",
+                                    json={"decision": "reject"}).status_code, 200)
+        items = self.listed(owner)
+        self.assertNotIn("ap_todo", items)
+        self.assertNotIn("ap_todo2", items)
+
+
 class ReplyFromLine(unittest.TestCase):
     """``POST /api/autopilot/items/{id}/reply-from-line``: a "your call" card of the reader's
     own gets its reply written from their line (figures only from the line and the card's

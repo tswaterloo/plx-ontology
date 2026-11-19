@@ -13,7 +13,7 @@ const nav = vi.hoisted(() => ({ search: "" }));
 vi.mock("next/navigation", () => ({ useRouter: () => ({ push: vi.fn(), replace: vi.fn() }), useSearchParams: () => new URLSearchParams(nav.search), usePathname: () => "/" }));
 vi.mock("@/lib/api", async (orig) => ({
   ...(await orig<typeof import("@/lib/api")>()),
-  getBriefing: () => (ok.briefingPending ? new Promise(() => undefined) : ok.on ? Promise.resolve(ok.briefing) : fail()), getBriefingItems: () => (asked.items++, fail()), getSuggestions: () => (ok.suggestionsPending ? new Promise(() => undefined) : fail()), getActionStates: fail, markBriefingSeen: () => (asked.seen++, fail()),
+  getBriefing: () => (ok.briefingPending ? new Promise(() => undefined) : ok.on ? Promise.resolve(ok.briefing) : fail()), getBriefingItems: () => (asked.items++, fail()), getBriefingPages: () => (asked.items++, fail()), getSuggestions: () => (ok.suggestionsPending ? new Promise(() => undefined) : fail()), getActionStates: fail, markBriefingSeen: () => (asked.seen++, fail()),
   getReplies: () => (ok.on && ok.replies ? Promise.resolve(ok.replies) : fail()),
   getMyWork: () => (ok.on ? Promise.resolve({ status: "on", items: [], digest: { open: 0, due_today: 0, by_autopilot: {} } }) : fail()),
   getAutopilot: fail,
@@ -167,19 +167,22 @@ describe("Home reads a group's further items only when it can show them", () => 
     ok.on = false;
   });
 
-  it("reads the group's page when an item sent home is past the top ones", async () => {
+  it("takes the group's page from the briefing itself (no second request) and marks the visit seen at once", async () => {
     ok.on = true;
     ok.home = { needs_attention: { status: "read", late_total: 0, late_pos: [] } };
+    const item = { id: "r1", event_type: "reply_needed", object_type: "Batch", object_id: "Batch:1", subject_label: "BC-1", summary: "Reply is due to BC-1.", home: true, rank: 1 };
     ok.briefing = {
       status: "read", count: 9, home_count: 2, items: [],
       groups: [{ event_type: "reply_needed", label: "Reply", count: 9, in_top: 0, new_since_visit: 0, acknowledged: 0 }],
+      pages: [{ event_type: "reply_needed", total: 9, offset: 0, items: [item], more: true }],
     };
     ok.replies = { total: 0, items: [] };
     asked.items = 0;
     asked.seen = 0;
     render(<HomePage />);
     await waitFor(() => expect(asked.seen).toBe(1));
-    expect(asked.items).toBe(1);
+    expect(asked.items).toBe(0);
+    expect(await screen.findByText("Reply is due to BC-1.", { exact: false })).toBeInTheDocument();
     ok.on = false;
   });
 });
@@ -202,6 +205,25 @@ describe("Home stays a short list", () => {
     fireEvent.click(more);
     expect(await screen.findByText("Lot 7 is on quality hold.", { exact: false })).toBeInTheDocument();
     ok.on = false;
+  });
+});
+
+describe("The visit is marked seen after the suggestion cards have settled", () => {
+  it("sends no mark while the cards are still being read (the mark makes their kept read stale)", async () => {
+    ok.on = true;
+    ok.suggestionsPending = true;
+    ok.home = { needs_attention: { status: "read", late_total: 0, late_pos: [] } };
+    ok.briefing = { status: "read", count: 0, home_count: 0, items: [], groups: [] };
+    ok.replies = { total: 0, items: [] };
+    asked.seen = 0;
+    const { unmount } = render(<HomePage />);
+    await screen.findAllByRole("heading", { name: "Home" });
+    await new Promise((r) => setTimeout(r, 400));
+    expect(asked.seen).toBe(0);
+    // leaving before the cards settle still marks the visit seen (once)
+    unmount();
+    expect(asked.seen).toBe(1);
+    ok.suggestionsPending = false;
   });
 });
 

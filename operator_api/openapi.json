@@ -1181,6 +1181,14 @@
             "title": "Attachments",
             "type": "array"
           },
+          "charts": {
+            "description": "Charts the answer draws (any kind of operator_api.charts), each from the rows of one query result the session read (never numbers the model wrote).",
+            "items": {
+              "$ref": "#/components/schemas/AskChart"
+            },
+            "title": "Charts",
+            "type": "array"
+          },
           "cited": {
             "anyOf": [
               {
@@ -1713,7 +1721,7 @@
       },
       "AskAttachment": {
         "additionalProperties": false,
-        "description": "A file or image attached to one question (``operating.ask_attachments``): read in\nmemory for that answer only, never stored.",
+        "description": "A file or image attached to one question (``operating.ask_attachments``): read in\nmemory for that answer only; a Word, Excel or PowerPoint file is also kept as your own\nfile (yours only), so the Ask can edit it and give you the edited copy.",
         "properties": {
           "data": {
             "description": "The file's bytes, base64 (8 MB a file, 10 MB together).",
@@ -1797,6 +1805,439 @@
         "title": "AskAttachmentNote",
         "type": "object"
       },
+      "AskChart": {
+        "additionalProperties": false,
+        "description": "A chart drawn from one query result: ``labels`` are the x column's values in the\nresult's row order (a histogram's bins, a pie's slices), each series one numeric\ncolumn (or one split value) of the same rows.",
+        "properties": {
+          "as_of": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "As Of"
+          },
+          "currency": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The one currency the rows are in.",
+            "title": "Currency"
+          },
+          "edges": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "number"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "A histogram's bin edges.",
+            "title": "Edges"
+          },
+          "kind": {
+            "enum": [
+              "bar",
+              "line",
+              "area",
+              "pie",
+              "donut",
+              "scatter",
+              "histogram",
+              "heatmap",
+              "waterfall",
+              "funnel",
+              "combo",
+              "kpi",
+              "table"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
+          "labels": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Labels",
+            "type": "array"
+          },
+          "omitted": {
+            "description": "Series (split values, panels) not drawn.",
+            "title": "Omitted",
+            "type": "integer"
+          },
+          "open_period": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The label of a calendar period not over at as_of (a month, quarter, year, week or day): its figures are of part of it.",
+            "title": "Open Period"
+          },
+          "panels": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/AskChartPanel"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Panels"
+          },
+          "partial": {
+            "description": "The result held only its statement's first rows.",
+            "title": "Partial",
+            "type": "boolean"
+          },
+          "rows": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Rows of the result it was drawn from.",
+            "title": "Rows"
+          },
+          "series": {
+            "items": {
+              "$ref": "#/components/schemas/AskChartSeries"
+            },
+            "title": "Series",
+            "type": "array"
+          },
+          "shown": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Rows of those the chart shows.",
+            "title": "Shown"
+          },
+          "skipped": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "A histogram's rows with no number.",
+            "title": "Skipped"
+          },
+          "spec": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ChartSpec"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "What it was drawn as (pinning keeps it)."
+          },
+          "sql": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The statement whose rows it draws: pinned (POST /api/insights) it reads again as whoever opens it.",
+            "title": "Sql"
+          },
+          "title": {
+            "title": "Title",
+            "type": "string"
+          },
+          "trend": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/AskChartTrend"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "x": {
+            "description": "The result column the labels are from.",
+            "title": "X",
+            "type": "string"
+          },
+          "xs": {
+            "anyOf": [
+              {
+                "items": {
+                  "anyOf": [
+                    {
+                      "type": "number"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "A scatter's x values.",
+            "title": "Xs"
+          }
+        },
+        "required": [
+          "kind",
+          "title",
+          "x",
+          "labels",
+          "series"
+        ],
+        "title": "AskChart",
+        "type": "object"
+      },
+      "AskChartPanel": {
+        "additionalProperties": false,
+        "description": "One of a chart's small multiples: the rows of one facet value.",
+        "properties": {
+          "labels": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Labels",
+            "type": "array"
+          },
+          "series": {
+            "items": {
+              "$ref": "#/components/schemas/AskChartSeries"
+            },
+            "title": "Series",
+            "type": "array"
+          },
+          "title": {
+            "title": "Title",
+            "type": "string"
+          }
+        },
+        "required": [
+          "title",
+          "labels",
+          "series"
+        ],
+        "title": "AskChartPanel",
+        "type": "object"
+      },
+      "AskChartSeries": {
+        "additionalProperties": false,
+        "properties": {
+          "axis": {
+            "anyOf": [
+              {
+                "const": "right",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "right: a combo's line axis.",
+            "title": "Axis"
+          },
+          "name": {
+            "description": "The result column (or split value) the values are from.",
+            "title": "Name",
+            "type": "string"
+          },
+          "values": {
+            "description": "One per label; null: not a number.",
+            "items": {
+              "anyOf": [
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "title": "Values",
+            "type": "array"
+          }
+        },
+        "required": [
+          "name",
+          "values"
+        ],
+        "title": "AskChartSeries",
+        "type": "object"
+      },
+      "AskChartTrend": {
+        "additionalProperties": false,
+        "description": "A scatter's least-squares line y = slope * x + intercept through its n points and\ntheir correlation r (how closely they move together, never cause).",
+        "properties": {
+          "intercept": {
+            "title": "Intercept",
+            "type": "number"
+          },
+          "n": {
+            "title": "N",
+            "type": "integer"
+          },
+          "r": {
+            "title": "R",
+            "type": "number"
+          },
+          "slope": {
+            "title": "Slope",
+            "type": "number"
+          }
+        },
+        "required": [
+          "slope",
+          "intercept",
+          "r",
+          "n"
+        ],
+        "title": "AskChartTrend",
+        "type": "object"
+      },
+      "AskChat": {
+        "additionalProperties": false,
+        "description": "One of your Ask conversations in your chats list.",
+        "properties": {
+          "conversation_id": {
+            "title": "Conversation Id",
+            "type": "string"
+          },
+          "last_at": {
+            "title": "Last At",
+            "type": "string"
+          },
+          "named": {
+            "default": false,
+            "title": "Named",
+            "type": "boolean"
+          },
+          "pinned": {
+            "default": false,
+            "title": "Pinned",
+            "type": "boolean"
+          },
+          "questions": {
+            "title": "Questions",
+            "type": "integer"
+          },
+          "title": {
+            "description": "The name you gave it, else its first question.",
+            "title": "Title",
+            "type": "string"
+          }
+        },
+        "required": [
+          "conversation_id",
+          "title",
+          "questions",
+          "last_at"
+        ],
+        "title": "AskChat",
+        "type": "object"
+      },
+      "AskChatUpdate": {
+        "additionalProperties": false,
+        "description": "Rename, pin or delete one of your own Ask conversations. Deleting takes it off your\nchats list; your work log keeps the record of what was asked.",
+        "properties": {
+          "deleted": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Deleted"
+          },
+          "name": {
+            "anyOf": [
+              {
+                "maxLength": 120,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Name"
+          },
+          "pinned": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Pinned"
+          }
+        },
+        "title": "AskChatUpdate",
+        "type": "object"
+      },
+      "AskChats": {
+        "additionalProperties": false,
+        "properties": {
+          "available": {
+            "default": true,
+            "description": "False while the people exclusion cannot decide what may be listed (nothing is listed then).",
+            "title": "Available",
+            "type": "boolean"
+          },
+          "chats": {
+            "items": {
+              "$ref": "#/components/schemas/AskChat"
+            },
+            "title": "Chats",
+            "type": "array"
+          }
+        },
+        "required": [
+          "chats"
+        ],
+        "title": "AskChats",
+        "type": "object"
+      },
       "AskDocument": {
         "additionalProperties": false,
         "description": "A file the Ask made for you: its name, kind, size and download link.",
@@ -1809,7 +2250,9 @@
             "enum": [
               "docx",
               "xlsx",
-              "pdf"
+              "pdf",
+              "pptx",
+              "csv"
             ],
             "title": "Kind",
             "type": "string"
@@ -1968,7 +2411,7 @@
         "additionalProperties": false,
         "properties": {
           "attachments": {
-            "description": "Files and images the person attached (PDF, .xlsx, .csv, text, PNG, JPEG, GIF, WebP): up to five, 10 MB together.",
+            "description": "Files and images the person attached (PDF, .xlsx, .csv, .docx, .pptx, text, PNG, JPEG, GIF, WebP): up to five, 10 MB together.",
             "items": {
               "$ref": "#/components/schemas/AskAttachment"
             },
@@ -2010,6 +2453,11 @@
               }
             ],
             "title": "Conversation Id"
+          },
+          "deep": {
+            "description": "Think it through: plan the reads, cross-check the key figures a second way and answer with the evidence per part (slower).",
+            "title": "Deep",
+            "type": "boolean"
           },
           "history": {
             "items": {
@@ -3930,7 +4378,7 @@
       },
       "AutopilotPrepared": {
         "additionalProperties": false,
-        "description": "One thing prepared for you: who wrote, what they wrote, and either the reply (to\nedit, confirm, copy or open in Outlook), the question only you can answer, or the system\nchanges the event calls for (``job``: each reviewed and confirmed on its own).",
+        "description": "One thing prepared for you: who wrote, what they wrote, and either the reply (to\nedit, confirm, copy or open in Outlook), the question only you can answer, the system\nchanges the event calls for (``job``: each reviewed and confirmed on its own), or only\nthings to do by hand (``todo``: mark it done or not needed; nothing is written).",
         "properties": {
           "ask": {
             "default": "",
@@ -3990,7 +4438,8 @@
             "enum": [
               "reply",
               "your_call",
-              "job"
+              "job",
+              "todo"
             ],
             "title": "Kind",
             "type": "string"
@@ -4028,7 +4477,7 @@
           },
           "summary": {
             "default": "",
-            "description": "On a job: what the event asks to be done.",
+            "description": "On a job or a to-do: what the event asks to be done.",
             "title": "Summary",
             "type": "string"
           },
@@ -4037,6 +4486,14 @@
               "type": "string"
             },
             "title": "To",
+            "type": "array"
+          },
+          "todos": {
+            "description": "Things to do by hand, on any kind of item.",
+            "items": {
+              "$ref": "#/components/schemas/AutopilotTodo"
+            },
+            "title": "Todos",
             "type": "array"
           },
           "used_for_draft": {
@@ -4527,6 +4984,31 @@
           "id"
         ],
         "title": "AutopilotTemplateUse",
+        "type": "object"
+      },
+      "AutopilotTodo": {
+        "additionalProperties": false,
+        "description": "Something to do by hand that no prepared change reaches (a system with no write path,\nor a question an hourly look raised): which system, which record, what to do.",
+        "properties": {
+          "record": {
+            "default": "",
+            "title": "Record",
+            "type": "string"
+          },
+          "system": {
+            "default": "",
+            "title": "System",
+            "type": "string"
+          },
+          "what": {
+            "title": "What",
+            "type": "string"
+          }
+        },
+        "required": [
+          "what"
+        ],
+        "title": "AutopilotTodo",
         "type": "object"
       },
       "AutopilotWorkflowDetail": {
@@ -5712,6 +6194,14 @@
             "title": "Other Teams",
             "type": "integer"
           },
+          "pages": {
+            "description": "With ``pages=true``: the first page of each group Home lists past its top items (``/api/briefing/items``), in this answer: no second request.",
+            "items": {
+              "$ref": "#/components/schemas/BriefingItems"
+            },
+            "title": "Pages",
+            "type": "array"
+          },
           "rank_basis": {
             "title": "Rank Basis",
             "type": "string"
@@ -6709,6 +7199,21 @@
         "title": "BriefingItems",
         "type": "object"
       },
+      "BriefingPages": {
+        "additionalProperties": false,
+        "description": "The first page of several event types' items of your briefing, asked at once (Home's\ngroups): each as ``/api/briefing/items`` answers it; a type that could not be read now\nis left out (its group opens on its own).",
+        "properties": {
+          "pages": {
+            "items": {
+              "$ref": "#/components/schemas/BriefingItems"
+            },
+            "title": "Pages",
+            "type": "array"
+          }
+        },
+        "title": "BriefingPages",
+        "type": "object"
+      },
       "BriefingSeen": {
         "additionalProperties": false,
         "properties": {
@@ -6953,6 +7458,155 @@
           "outbound"
         ],
         "title": "CardActionOffer",
+        "type": "object"
+      },
+      "ChartFile": {
+        "additionalProperties": false,
+        "description": "A chart you were shown, to download as a file.",
+        "properties": {
+          "chart": {
+            "$ref": "#/components/schemas/AskChart"
+          },
+          "format": {
+            "enum": [
+              "xlsx",
+              "pptx",
+              "docx",
+              "pdf"
+            ],
+            "title": "Format",
+            "type": "string"
+          }
+        },
+        "required": [
+          "chart",
+          "format"
+        ],
+        "title": "ChartFile",
+        "type": "object"
+      },
+      "ChartSpec": {
+        "additionalProperties": false,
+        "description": "What to draw from a result's rows (``operator_api.charts``): its kind, columns and\noptions; it names columns, never numbers.",
+        "properties": {
+          "bins": {
+            "anyOf": [
+              {
+                "maximum": 40.0,
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Bins"
+          },
+          "facet": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Small multiples: one panel per value.",
+            "title": "Facet"
+          },
+          "horizontal": {
+            "title": "Horizontal",
+            "type": "boolean"
+          },
+          "kind": {
+            "enum": [
+              "bar",
+              "line",
+              "area",
+              "pie",
+              "donut",
+              "scatter",
+              "histogram",
+              "heatmap",
+              "waterfall",
+              "funnel",
+              "combo",
+              "kpi",
+              "table"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
+          "label": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "A scatter's point names.",
+            "title": "Label"
+          },
+          "split": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Long rows (x, group, value): one series (a heatmap's row) per value of this column.",
+            "title": "Split"
+          },
+          "stacked": {
+            "title": "Stacked",
+            "type": "boolean"
+          },
+          "trend": {
+            "description": "A scatter's least-squares line and correlation r.",
+            "title": "Trend",
+            "type": "boolean"
+          },
+          "x": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The label column (none: a kpi or histogram).",
+            "title": "X"
+          },
+          "y": {
+            "description": "The value columns.",
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 12,
+            "minItems": 1,
+            "title": "Y",
+            "type": "array"
+          },
+          "y2": {
+            "description": "A combo's columns drawn as lines on a right axis.",
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 6,
+            "title": "Y2",
+            "type": "array"
+          }
+        },
+        "required": [
+          "kind",
+          "y"
+        ],
+        "title": "ChartSpec",
         "type": "object"
       },
       "CitedTable": {
@@ -10577,6 +11231,557 @@
         "title": "ImpactPanel",
         "type": "object"
       },
+      "InsightDeleted": {
+        "additionalProperties": false,
+        "properties": {
+          "deleted": {
+            "title": "Deleted",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "deleted"
+        ],
+        "title": "InsightDeleted",
+        "type": "object"
+      },
+      "InsightInfo": {
+        "additionalProperties": false,
+        "description": "One insight on a dashboard: a built-in definition or one the person saved.",
+        "properties": {
+          "about": {
+            "description": "Its definition in plain words (a saved one: the question it answers).",
+            "title": "About",
+            "type": "string"
+          },
+          "chart": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ChartSpec"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "group": {
+            "title": "Group",
+            "type": "string"
+          },
+          "id": {
+            "description": "A built-in's name, or 's<n>' for one you saved.",
+            "title": "Id",
+            "type": "string"
+          },
+          "last_run": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "A scheduled one: when it last ran by itself and what it found, in plain words.",
+            "title": "Last Run"
+          },
+          "notify": {
+            "default": "never",
+            "enum": [
+              "never",
+              "rows",
+              "new_rows",
+              "every_run",
+              "crosses"
+            ],
+            "title": "Notify",
+            "type": "string"
+          },
+          "question": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Question"
+          },
+          "saved": {
+            "title": "Saved",
+            "type": "boolean"
+          },
+          "schedule": {
+            "default": "",
+            "enum": [
+              "",
+              "hourly",
+              "daily",
+              "weekly"
+            ],
+            "title": "Schedule",
+            "type": "string"
+          },
+          "title": {
+            "title": "Title",
+            "type": "string"
+          },
+          "watch": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/InsightWatch"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The number it watches (notify crosses)."
+          }
+        },
+        "required": [
+          "id",
+          "title",
+          "about",
+          "group",
+          "saved"
+        ],
+        "title": "InsightInfo",
+        "type": "object"
+      },
+      "InsightList": {
+        "additionalProperties": false,
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/InsightInfo"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "saving": {
+            "description": "Whether you can pin and save insights here.",
+            "title": "Saving",
+            "type": "boolean"
+          },
+          "scope": {
+            "description": "everyone: the people views list everyone; self: only your own row.",
+            "enum": [
+              "everyone",
+              "self"
+            ],
+            "title": "Scope",
+            "type": "string"
+          }
+        },
+        "required": [
+          "scope",
+          "items",
+          "saving"
+        ],
+        "title": "InsightList",
+        "type": "object"
+      },
+      "InsightNews": {
+        "additionalProperties": false,
+        "description": "A run of one of your saved insights that came to you: how many rows it found (open\nthe insight to read them, live, as you).",
+        "properties": {
+          "insight_id": {
+            "title": "Insight Id",
+            "type": "string"
+          },
+          "new_rows": {
+            "title": "New Rows",
+            "type": "integer"
+          },
+          "ran_at": {
+            "title": "Ran At",
+            "type": "string"
+          },
+          "row_count": {
+            "title": "Row Count",
+            "type": "integer"
+          },
+          "run_id": {
+            "title": "Run Id",
+            "type": "string"
+          },
+          "said": {
+            "description": "One plain line: what it found.",
+            "title": "Said",
+            "type": "string"
+          },
+          "title": {
+            "title": "Title",
+            "type": "string"
+          }
+        },
+        "required": [
+          "run_id",
+          "insight_id",
+          "title",
+          "ran_at",
+          "row_count",
+          "new_rows",
+          "said"
+        ],
+        "title": "InsightNews",
+        "type": "object"
+      },
+      "InsightNewsList": {
+        "additionalProperties": false,
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/InsightNews"
+            },
+            "title": "Items",
+            "type": "array"
+          }
+        },
+        "required": [
+          "items"
+        ],
+        "title": "InsightNewsList",
+        "type": "object"
+      },
+      "InsightNewsSeen": {
+        "additionalProperties": false,
+        "properties": {
+          "seen": {
+            "title": "Seen",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "seen"
+        ],
+        "title": "InsightNewsSeen",
+        "type": "object"
+      },
+      "InsightResult": {
+        "additionalProperties": false,
+        "description": "An insight read now as you: its statement, rows, chart and the people they name.",
+        "properties": {
+          "about": {
+            "description": "Its definition in plain words (a saved one: the question it answers).",
+            "title": "About",
+            "type": "string"
+          },
+          "as_of": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "As Of"
+          },
+          "chart": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ChartSpec"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "columns": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Columns",
+            "type": "array"
+          },
+          "drawn": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/AskChart"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "group": {
+            "title": "Group",
+            "type": "string"
+          },
+          "id": {
+            "description": "A built-in's name, or 's<n>' for one you saved.",
+            "title": "Id",
+            "type": "string"
+          },
+          "last_run": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "A scheduled one: when it last ran by itself and what it found, in plain words.",
+            "title": "Last Run"
+          },
+          "notify": {
+            "default": "never",
+            "enum": [
+              "never",
+              "rows",
+              "new_rows",
+              "every_run",
+              "crosses"
+            ],
+            "title": "Notify",
+            "type": "string"
+          },
+          "people": {
+            "description": "Per row: the Team key of the person it is about (open /team), or null.",
+            "items": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "title": "People",
+            "type": "array"
+          },
+          "question": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Question"
+          },
+          "read_at": {
+            "title": "Read At",
+            "type": "string"
+          },
+          "row_count": {
+            "title": "Row Count",
+            "type": "integer"
+          },
+          "rows": {
+            "items": {
+              "items": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "type": "array"
+            },
+            "title": "Rows",
+            "type": "array"
+          },
+          "saved": {
+            "title": "Saved",
+            "type": "boolean"
+          },
+          "schedule": {
+            "default": "",
+            "enum": [
+              "",
+              "hourly",
+              "daily",
+              "weekly"
+            ],
+            "title": "Schedule",
+            "type": "string"
+          },
+          "sql": {
+            "description": "The statement it reads (its definition, exactly).",
+            "title": "Sql",
+            "type": "string"
+          },
+          "title": {
+            "title": "Title",
+            "type": "string"
+          },
+          "truncated": {
+            "title": "Truncated",
+            "type": "boolean"
+          },
+          "watch": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/InsightWatch"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The number it watches (notify crosses)."
+          }
+        },
+        "required": [
+          "id",
+          "title",
+          "about",
+          "group",
+          "saved",
+          "sql",
+          "columns",
+          "rows",
+          "people",
+          "row_count",
+          "truncated",
+          "read_at"
+        ],
+        "title": "InsightResult",
+        "type": "object"
+      },
+      "InsightSave": {
+        "additionalProperties": false,
+        "properties": {
+          "chart": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ChartSpec"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "notify": {
+            "default": "never",
+            "enum": [
+              "never",
+              "rows",
+              "new_rows",
+              "every_run"
+            ],
+            "title": "Notify",
+            "type": "string"
+          },
+          "question": {
+            "default": "",
+            "maxLength": 2000,
+            "title": "Question",
+            "type": "string"
+          },
+          "schedule": {
+            "default": "",
+            "enum": [
+              "",
+              "hourly",
+              "daily",
+              "weekly"
+            ],
+            "title": "Schedule",
+            "type": "string"
+          },
+          "sql": {
+            "maxLength": 8000,
+            "minLength": 1,
+            "title": "Sql",
+            "type": "string"
+          },
+          "title": {
+            "maxLength": 160,
+            "minLength": 1,
+            "title": "Title",
+            "type": "string"
+          }
+        },
+        "required": [
+          "title",
+          "sql"
+        ],
+        "title": "InsightSave",
+        "type": "object"
+      },
+      "InsightSchedule": {
+        "additionalProperties": false,
+        "description": "When one of your saved insights runs by itself, and when what it finds comes to you\non Home (``notify``: rows = any row, new_rows = a row the last run did not have,\ncrosses = a number crossed the line in ``watch``).",
+        "properties": {
+          "notify": {
+            "enum": [
+              "never",
+              "rows",
+              "new_rows",
+              "every_run",
+              "crosses"
+            ],
+            "title": "Notify",
+            "type": "string"
+          },
+          "schedule": {
+            "enum": [
+              "",
+              "hourly",
+              "daily",
+              "weekly"
+            ],
+            "title": "Schedule",
+            "type": "string"
+          },
+          "watch": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/InsightWatch"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "schedule",
+          "notify"
+        ],
+        "title": "InsightSchedule",
+        "type": "object"
+      },
+      "InsightWatch": {
+        "additionalProperties": false,
+        "description": "A line a number of a saved insight is watched against: a run tells you when some\nrow's ``column`` is ``above`` / ``below`` ``value`` and the run before had none.",
+        "properties": {
+          "column": {
+            "maxLength": 63,
+            "minLength": 1,
+            "title": "Column",
+            "type": "string"
+          },
+          "op": {
+            "enum": [
+              "above",
+              "below"
+            ],
+            "title": "Op",
+            "type": "string"
+          },
+          "value": {
+            "title": "Value",
+            "type": "number"
+          }
+        },
+        "required": [
+          "column",
+          "op",
+          "value"
+        ],
+        "title": "InsightWatch",
+        "type": "object"
+      },
       "InstructContext": {
         "additionalProperties": false,
         "description": "The page the instruction was typed on, attached by the app: an email (its citation),\na record, a meeting, an autopilot item, or just the page.",
@@ -10700,7 +11905,9 @@
             "enum": [
               "docx",
               "xlsx",
-              "pdf"
+              "pdf",
+              "pptx",
+              "csv"
             ],
             "title": "Kind",
             "type": "string"
@@ -17192,6 +18399,74 @@
         "title": "ReplyTriage",
         "type": "object"
       },
+      "Sidebar": {
+        "additionalProperties": false,
+        "description": "The sidebar's numbers on every page, small and kept per reader (never Home's lists):\nhow many late purchase orders this reader may see and the suppliers with the most.",
+        "properties": {
+          "freshness": {
+            "$ref": "#/components/schemas/Freshness"
+          },
+          "late_suppliers": {
+            "description": "The suppliers with the most late purchase orders, most first (the first few only).",
+            "items": {
+              "$ref": "#/components/schemas/SupplierLate"
+            },
+            "title": "Late Suppliers",
+            "type": "array"
+          },
+          "late_total": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Every late purchase order this reader may see; null when it could not be read now (never 0 for unknown).",
+            "title": "Late Total"
+          },
+          "partial": {
+            "default": false,
+            "description": "The supplier counts are of the longest late orders only, not every one.",
+            "title": "Partial",
+            "type": "boolean"
+          },
+          "reading": {
+            "description": "True when this screen's first read for this reader is still going on: nothing of it is shown yet (its lists are empty and its counts zero, never a finding); ask again shortly for the page.",
+            "title": "Reading",
+            "type": "boolean"
+          },
+          "recent_questions": {
+            "items": {
+              "$ref": "#/components/schemas/RecentQuestion"
+            },
+            "title": "Recent Questions",
+            "type": "array"
+          },
+          "stale_since": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Set when the server serves the last numbers it read for this same reader: when they were read (ISO). Refreshed in the background.",
+            "title": "Stale Since"
+          },
+          "supplier_total": {
+            "default": 0,
+            "description": "How many suppliers have a late purchase order.",
+            "minimum": 0.0,
+            "title": "Supplier Total",
+            "type": "integer"
+          }
+        },
+        "title": "Sidebar",
+        "type": "object"
+      },
       "Source": {
         "additionalProperties": false,
         "properties": {
@@ -17996,6 +19271,26 @@
           "note"
         ],
         "title": "Suggestions",
+        "type": "object"
+      },
+      "SupplierLate": {
+        "additionalProperties": false,
+        "properties": {
+          "late": {
+            "minimum": 1.0,
+            "title": "Late",
+            "type": "integer"
+          },
+          "supplier": {
+            "title": "Supplier",
+            "type": "string"
+          }
+        },
+        "required": [
+          "supplier",
+          "late"
+        ],
+        "title": "SupplierLate",
         "type": "object"
       },
       "SystemCoverage": {
@@ -23177,6 +24472,152 @@
         ]
       }
     },
+    "/api/ask/chats": {
+      "get": {
+        "description": "Your Ask conversations, pinned first then the most recent: open one with\n``/ask?c=<conversation_id>`` and go on asking in it. ``q``: words in its name or\nits questions. Yours only.",
+        "operationId": "ask_chats_api_ask_chats_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "q",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 200,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Q"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 100,
+              "maximum": 500,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AskChats"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Ask Chats",
+        "tags": [
+          "ask"
+        ]
+      }
+    },
+    "/api/ask/chats/{conversation_id}": {
+      "post": {
+        "description": "Rename, pin or delete one of your own Ask conversations; your chats list after.",
+        "operationId": "ask_chat_update_api_ask_chats__conversation_id__post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "conversation_id",
+            "required": true,
+            "schema": {
+              "title": "Conversation Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AskChatUpdate"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AskChats"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Ask Chat Update",
+        "tags": [
+          "ask"
+        ]
+      }
+    },
     "/api/auth/config": {
       "get": {
         "description": "Public: how to sign in (identifiers only).",
@@ -24764,7 +26205,7 @@
     },
     "/api/briefing": {
       "get": {
-        "description": "Your briefing: the events routed to you that you may see, ranked by impact; the\ntop ones each with why, a suggested next action and how we know, every other one\ncounted in its type's group; each check's state; and a preview of the daily\ndigest (never sent). ``view=since_visit``: only what is new since your last visit.",
+        "description": "Your briefing: the events routed to you that you may see, ranked by impact; the\ntop ones each with why, a suggested next action and how we know, every other one\ncounted in its type's group; each check's state; and a preview of the daily\ndigest (never sent). ``view=since_visit``: only what is new since your last visit.\n``pages=true``: also the first page of each group Home lists past its top items\n(``pages``), so Home asks once.",
         "operationId": "briefing_api_briefing_get",
         "parameters": [
           {
@@ -24779,6 +26220,16 @@
               ],
               "title": "View",
               "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "pages",
+            "required": false,
+            "schema": {
+              "default": false,
+              "title": "Pages",
+              "type": "boolean"
             }
           }
         ],
@@ -24988,6 +26439,172 @@
           }
         },
         "summary": "Briefing Items",
+        "tags": [
+          "home"
+        ]
+      }
+    },
+    "/api/briefing/pages": {
+      "get": {
+        "description": "The first page of each of several event types' items of your briefing in one\nrequest (Home's groups, one answer for what were four): each as\n``/api/briefing/items`` answers it. A type that could not be read is left out; every\none failing is that failure.",
+        "operationId": "briefing_pages_api_briefing_pages_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "event_type",
+            "required": true,
+            "schema": {
+              "items": {
+                "enum": [
+                  "po_late",
+                  "po_due",
+                  "eta_slipped",
+                  "vendor_no_reply",
+                  "vendor_terms_unapplied",
+                  "negative_margin",
+                  "lot_near_expiry",
+                  "lot_on_hold",
+                  "quote_accepted_no_order",
+                  "quantity_mismatch",
+                  "customer_order_at_risk",
+                  "po_undated",
+                  "customer_order_late",
+                  "watcher_attention",
+                  "stock_out_risk",
+                  "overdue_receivable",
+                  "unit_cost_jump",
+                  "customer_demand_drop",
+                  "promise_date_slip",
+                  "margin_erosion",
+                  "supplier_reliability",
+                  "shipped_not_invoiced",
+                  "duplicate_customer_order",
+                  "recurring_component_damage",
+                  "customer_chasing_order",
+                  "tell_before_they_ask",
+                  "quality_hold_aging",
+                  "reject_trend",
+                  "expedite_unanswered",
+                  "supplier_shortage_open_orders",
+                  "return_unanswered",
+                  "supplier_chasing_payment",
+                  "customer_paying_slower",
+                  "early_pay_discount_missed",
+                  "duplicate_supplier_invoice",
+                  "duplicate_supplier_payment",
+                  "customer_credits_rising",
+                  "price_below_typical",
+                  "price_below_cost",
+                  "customer_price_drop",
+                  "mc_task_stuck",
+                  "mc_approval_pending",
+                  "portal_approval_pending",
+                  "planner_task_overdue",
+                  "aged_receivable_worsening",
+                  "aged_payable_worsening",
+                  "production_late",
+                  "assembly_damage_spike",
+                  "teams_unanswered_ask",
+                  "commitment_due",
+                  "commitment_missed",
+                  "needs_my_reply",
+                  "approval_waiting",
+                  "chase_escalating",
+                  "party_chase_unanswered",
+                  "internal_order_chase",
+                  "slow_moving_stock",
+                  "expiring_lot_stock",
+                  "assembly_blocked_by_component",
+                  "certificate_expiring",
+                  "freight_cost_anomaly",
+                  "stale_quote",
+                  "priority_order_unfilled",
+                  "duplicate_party_candidate",
+                  "key_field_missing",
+                  "twins_disagree",
+                  "source_stale",
+                  "sync_missing",
+                  "sync_mismatch",
+                  "reorder_soon",
+                  "inventory_adjustment",
+                  "blocked_account_activity",
+                  "gl_posting_errors",
+                  "recurring_task_missed",
+                  "label_change",
+                  "label_revision_superseded",
+                  "rd_project",
+                  "unapplied_remittance",
+                  "short_payment",
+                  "statement_difference"
+                ],
+                "type": "string"
+              },
+              "maxItems": 12,
+              "minItems": 1,
+              "title": "Event Type",
+              "type": "array"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 25,
+              "maximum": 100,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "view",
+            "required": false,
+            "schema": {
+              "default": "all",
+              "enum": [
+                "all",
+                "since_visit"
+              ],
+              "title": "View",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BriefingPages"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unprocessable Entity"
+          }
+        },
+        "summary": "Briefing Pages",
         "tags": [
           "home"
         ]
@@ -25212,6 +26829,98 @@
         "summary": "Watcher Item State",
         "tags": [
           "home"
+        ]
+      }
+    },
+    "/api/charts/file": {
+      "post": {
+        "description": "A chart you were shown as a file for you: Excel (its rows and a live chart over\nthem), PowerPoint, Word or PDF, with where its numbers come from. Nothing is read,\nkept or sent.",
+        "operationId": "chart_file_api_charts_file_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ChartFile"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              },
+              "application/pdf": {},
+              "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": {}
+            },
+            "description": "The file."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Forbidden"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unprocessable Entity"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Service Unavailable"
+          }
+        },
+        "summary": "Chart File",
+        "tags": [
+          "insights"
         ]
       }
     },
@@ -26068,6 +27777,554 @@
         "summary": "Home",
         "tags": [
           "home"
+        ]
+      }
+    },
+    "/api/insight-news": {
+      "get": {
+        "description": "What your scheduled insights found that came to you (counts only: open the\ninsight to read its rows, live, as you).",
+        "operationId": "insight_news_api_insight_news_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/InsightNewsList"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          }
+        },
+        "summary": "Insight News",
+        "tags": [
+          "insights"
+        ]
+      }
+    },
+    "/api/insight-news/{run_id}/seen": {
+      "post": {
+        "description": "Put one away: it leaves Home.",
+        "operationId": "insight_news_seen_api_insight_news__run_id__seen_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "pattern": "^r[0-9]{1,18}$",
+              "title": "Run Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/InsightNewsSeen"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Forbidden"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unprocessable Entity"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Service Unavailable"
+          }
+        },
+        "summary": "Insight News Seen",
+        "tags": [
+          "insights"
+        ]
+      }
+    },
+    "/api/insights": {
+      "get": {
+        "description": "Your dashboard: the built-in team, org and customer insights you may see, then\nthe ones you pinned or saved.",
+        "operationId": "insights_list_api_insights_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/InsightList"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          }
+        },
+        "summary": "Insights List",
+        "tags": [
+          "insights"
+        ]
+      },
+      "post": {
+        "description": "Pin a chart from an answer (or save a statement) to your dashboard: it reads\nagain as whoever opens it.",
+        "operationId": "insight_save_api_insights_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/InsightSave"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/InsightInfo"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Forbidden"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unprocessable Entity"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Service Unavailable"
+          }
+        },
+        "summary": "Insight Save",
+        "tags": [
+          "insights"
+        ]
+      }
+    },
+    "/api/insights/{insight_id}": {
+      "delete": {
+        "description": "Remove one of your saved insights.",
+        "operationId": "insight_delete_api_insights__insight_id__delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "insight_id",
+            "required": true,
+            "schema": {
+              "pattern": "^s[0-9]{1,18}$",
+              "title": "Insight Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/InsightDeleted"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Forbidden"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unprocessable Entity"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Service Unavailable"
+          }
+        },
+        "summary": "Insight Delete",
+        "tags": [
+          "insights"
+        ]
+      },
+      "get": {
+        "description": "One insight as you read it (kept from your read of the last few minutes; again:\nread now): its definition (the statement), rows, chart and the people they name.",
+        "operationId": "insight_result_api_insights__insight_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "insight_id",
+            "required": true,
+            "schema": {
+              "pattern": "^[a-z0-9_]{1,61}$",
+              "title": "Insight Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "again",
+            "required": false,
+            "schema": {
+              "default": false,
+              "title": "Again",
+              "type": "boolean"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/InsightResult"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Forbidden"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unprocessable Entity"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Service Unavailable"
+          }
+        },
+        "summary": "Insight Result",
+        "tags": [
+          "insights"
+        ]
+      }
+    },
+    "/api/insights/{insight_id}/schedule": {
+      "put": {
+        "description": "When one of your saved insights runs by itself (read as you, through your own\naccess) and when what it finds comes to you on Home.",
+        "operationId": "insight_schedule_api_insights__insight_id__schedule_put",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "insight_id",
+            "required": true,
+            "schema": {
+              "pattern": "^s[0-9]{1,18}$",
+              "title": "Insight Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/InsightSchedule"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/InsightInfo"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Forbidden"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unprocessable Entity"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Service Unavailable"
+          }
+        },
+        "summary": "Insight Schedule",
+        "tags": [
+          "insights"
         ]
       }
     },
@@ -28006,6 +30263,38 @@
         "summary": "Reply Triage",
         "tags": [
           "actions"
+        ]
+      }
+    },
+    "/api/sidebar": {
+      "get": {
+        "description": "The sidebar's numbers on every page: how many late purchase orders you may see\nand the suppliers with the most, your recent questions and the data's as-of. Small\nand kept for you (never Home's lists); null count when it could not be read.",
+        "operationId": "sidebar_api_sidebar_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Sidebar"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          }
+        },
+        "summary": "Sidebar",
+        "tags": [
+          "home"
         ]
       }
     },

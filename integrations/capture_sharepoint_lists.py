@@ -93,10 +93,12 @@ from __future__ import annotations
 
 import argparse
 from dataclasses import dataclass
+from datetime import datetime
 import json
 from pathlib import Path
 import re
 import time
+import zlib
 from typing import Any, Callable, Mapping, Sequence
 
 from ontology.types import Actor
@@ -180,7 +182,34 @@ ACL_LIST_BUDGET_SECONDS = 180.0
 # 11-16: with no budget, a pass that took 1,150-1,700 s took 2,105 s under load 50-70 and
 # was killed at the host's 2,100 s timeout, recorded failed, mid-list.
 BUDGET_REASON = "budget"
+# Graph is holding this app (an earlier 429/503, ``graph_throttle``): the run sends nothing
+# more and every list it did not read says so.
+THROTTLE_REASON = "throttle_hold"
+# A permission read is reused, not repeated, for an item whose eTag and (read) permissions
+# are the stored ones, until its refresh slot comes round: each item's slot is
+# ``ACL_REFRESH_SECONDS`` long and offset by a hash of its id (so the reads spread over the
+# window instead of landing together), and an item is read again by the first run in a slot
+# later than the one it was last seen in. A revoked grant therefore stays in a saved ACL
+# for at most one slot plus the gap between two runs (the serving side's own bound,
+# ``ITEM_ACL_MAX_AGE``, still applies on top); before this every run re-read every item
+# (11-14..11-19: 93 of 123 list runs throttled on exactly those reads). An item whose
+# permissions were not read is never reused.
+ACL_REFRESH_SECONDS = 4 * 3600
 RETRY_BUDGET_SECONDS = 240   # the run's GET retry sleep, within the host's list timeout
+
+
+def _acl_due(item_id: str, last_seen_at: Any, now: datetime) -> bool:
+    """Whether an item last seen at ``last_seen_at`` has its refresh slot come round
+    (``ACL_REFRESH_SECONDS``): a time that cannot be read is due."""
+    try:
+        seen = datetime.fromisoformat(str(last_seen_at).replace("Z", "+00:00"))
+    except ValueError:
+        return True
+    if seen.tzinfo is None:
+        return True
+    offset = zlib.crc32(item_id.encode("utf-8")) % ACL_REFRESH_SECONDS
+    return (int((now.timestamp() + offset) // ACL_REFRESH_SECONDS)
+            != int((seen.timestamp() + offset) // ACL_REFRESH_SECONDS))
 
 
 def _v1_refused(status: Any) -> bool:
@@ -354,7 +383,7 @@ def _new_counts() -> dict[str, int]:
     return {"pages": 0, "items_read": 0, "versions_new": 0, "unchanged": 0,
             "provenance_dropped": 0, "folders": 0, "acl_read": 0, "acl_read_beta": 0,
             "acl_unreadable": 0, "round_restarts": 0, "acl_transient": 0,
-            "acl_recovered": 0}
+            "acl_recovered": 0, "acl_reused": 0}
 
 
 def item_row(target: ListTarget, raw: Any) -> dict[str, Any] | str | None:
@@ -410,6 +439,9 @@ class ListCapture:
         self._deadline: float | None = None
         self._sleep = sleep
         self._clock = clock
+        # Set once Graph's throttle (the shared hold, ``graph_throttle``) refused a read: the
+        # rest of the pass sends nothing and each list it did not read says so.
+        self._throttled = False
 
     def run(self, scope: ListScope, *, discover_only: bool = False,
             deadline: float | None = None) -> dict[str, Any]:
@@ -422,6 +454,7 @@ class ListCapture:
         found, discovery = self.discover(scope, blocked)
         self.targets = scope.lists + tuple(found)
         self._deadline = deadline
+        self._throttled = False
         results = ([] if discover_only else
                    [self.capture(target, scope, blocked)
                     for target in self._stalest_first(self.targets)])
@@ -579,9 +612,14 @@ class ListCapture:
             return self._result(result, {"not_visible"})   # no I/O for a withheld list
         if self._past_deadline():
             return self._result(result, {BUDGET_REASON})   # no I/O: the next pass takes it
+        if self._throttled:
+            return self._result(result, {THROTTLE_REASON})   # no I/O while Graph holds us
         try:
             listed = self.api.get_json(target.url("graph.site_list", {"$select": "id,list"}))
         except SourceUnavailable as exc:
+            if getattr(exc, "throttle_hold", False):
+                self._throttled = True
+                return self._result(result, {THROTTLE_REASON})
             return self._result(result, {_failure("sharepoint_list.list", "graph.site_list",
                                                   exc, blocked)})
         facet = listed.get("list") if isinstance(listed, Mapping) else None
@@ -597,6 +635,8 @@ class ListCapture:
         acl_state: dict[str, Any] = {"op": ACL_V1, "blocked": None, "transient": {},
                                      "in_a_row": 0,
                                      "deadline": self._clock() + ACL_LIST_BUDGET_SECONDS}
+        prior = self.store.acl_state(LIST_KIND.name, target.unit)
+        now = datetime.fromisoformat(self.store.now().replace("Z", "+00:00"))
         url = target.items_url(scope.page_size)
         if run["resumed"] and run["cursor"]:
             url, result["resumed_from"] = run["cursor"], "cursor"
@@ -618,6 +658,11 @@ class ListCapture:
                     raise SourceUnavailable("graph listing lacks value list")
                 next_url = self._next(url, page.get("@odata.nextLink"))
             except SourceUnavailable as exc:
+                if getattr(exc, "throttle_hold", False):
+                    self._throttled = True
+                    self.store.pause_run(run_id, reason=THROTTLE_REASON)
+                    return self._result(result, reasons | self._acl_reasons(acl_state, counts)
+                                        | {THROTTLE_REASON})
                 if (getattr(exc, "http_status", None) == 410
                         or getattr(exc, "error_code", None) in _RESYNC_CODES) and not restarted:
                     restarted = True   # an expired continuation: the listing starts over once
@@ -638,7 +683,22 @@ class ListCapture:
                 if row is None:
                     dropped += 1
                     continue
-                acl = self._acl(target, row["id"], acl_state, blocked, counts)
+                acl = self._reused_acl(prior.get(row["id"]), row, now)
+                if acl is None:
+                    try:
+                        acl = self._acl(target, row["id"], acl_state, blocked, counts)
+                    except SourceUnavailable as exc:
+                        if not getattr(exc, "throttle_hold", False):
+                            raise
+                        # Graph is holding the app: stop where the last saved page ends
+                        # (the cursor); nothing of this page is saved as unreadable.
+                        self._throttled = True
+                        self.store.pause_run(run_id, reason=THROTTLE_REASON)
+                        return self._result(result, reasons | self._acl_reasons(
+                            acl_state, counts) | {THROTTLE_REASON})
+                else:
+                    counts["acl_reused"] += 1
+                    counts["acl_read"] += 1
                 records.append(CapturedRecord(
                     target.path(row["id"]),
                     {"row": row, "meta": {"source_acl": acl, "source_api": "graph.list_items"}},
@@ -667,6 +727,18 @@ class ListCapture:
                               reason=min(acl) if acl else None)
         return self._result(result, reasons | acl)
 
+    @staticmethod
+    def _reused_acl(prior: Any, row: Mapping[str, Any], now: datetime) -> dict[str, Any] | None:
+        """The stored permissions of an item whose eTag is the stored one, whose
+        permissions were read, and whose refresh slot has not come round; else None."""
+        if prior is None:
+            return None
+        version, acl, last_seen = prior
+        if (version != row["eTag"] or not isinstance(acl, dict) or acl.get("status") != "read"
+                or _acl_due(str(row["id"]), last_seen, now)):
+            return None
+        return acl
+
     def _acl(self, target: ListTarget, item_id: str, state: dict[str, str | None],
              blocked: list[dict[str, Any]], counts: dict[str, int]) -> dict[str, Any]:
         """The item's own permissions as its source ACL (v1.0, else beta once v1.0 refused
@@ -683,6 +755,8 @@ class ListCapture:
                 perms, completeness = self.api.get_pages(target.url(op, item=item_id),
                                                          max_pages=3, max_items=200)
             except SourceUnavailable as exc:
+                if getattr(exc, "throttle_hold", False):
+                    raise   # the whole run stops (``capture``), nothing saved unreadable
                 status = getattr(exc, "http_status", None)
                 if op == ACL_V1 and _v1_refused(status):
                     state["op"] = ACL_BETA   # this item and the rest of the list's run
@@ -732,7 +806,13 @@ class ListCapture:
             record = current.get(item_id)
             if record is None or state["blocked"] is not None:
                 continue
-            acl = self._acl(target, item_id, state, blocked, counts)
+            try:
+                acl = self._acl(target, item_id, state, blocked, counts)
+            except SourceUnavailable as exc:
+                if not getattr(exc, "throttle_hold", False):
+                    raise
+                self._throttled = True
+                break   # the rest stay as saved (unreadable); the next run reads them
             # the item was counted unreadable by its first read; ``_acl`` counted this one
             counts["acl_unreadable"] -= 1
             if acl.get("status") != "read":
@@ -912,6 +992,9 @@ def run_cli(args: argparse.Namespace, *, environ: Mapping[str, str] | None = Non
             "relations": {RELATION: current} if current else {},
             "requests_sent": transport.requests_sent,
             "gets_sent": transport.gets_sent,
+            # requests by Graph operation and how many Graph throttled (counts only), and
+            # what the shared throttle held back: where a run's request budget went
+            "request_mix": transport.request_mix(),
             # The Graph reads it made (grammar operations): the endpoints a pass evaluates.
             "operations_read": sorted(transport.operations_read),
         }

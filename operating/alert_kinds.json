@@ -143,7 +143,8 @@
    "roles": [
     "PROC"
    ],
-   "unmeasured": "not measurable yet: derived on read from the late list (no gap kind of its own); measure on a business day's served list (/data/scratch/alert-precision-1110.md)"
+   "unmeasured": "not measurable yet: derived on read from the late list (no gap kind of its own); measure on a business day's served list (/data/scratch/alert-precision-1110.md)",
+   "suggested": true
   },
   {
    "type": "po_undated",
@@ -160,7 +161,8 @@
    "home": false,
    "roles": [
     "PROC"
-   ]
+   ],
+   "suggested": true
   },
   {
    "type": "eta_slipped",
@@ -174,7 +176,8 @@
     "PROC",
     "OPS"
    ],
-   "unmeasured": "not measurable yet: 0 found: served run 2026-11-09 complete and a run alone on the served store 2026-11-10 complete (/data/scratch/alert-precision-1110.md)"
+   "unmeasured": "not measurable yet: 0 found: served run 2026-11-09 complete and a run alone on the served store 2026-11-10 complete (/data/scratch/alert-precision-1110.md)",
+   "suggested": true
   },
   {
    "type": "vendor_no_reply",
@@ -187,7 +190,8 @@
    "roles": [
     "PROC"
    ],
-   "unmeasured": "not measurable yet: 6 carried on the served list (5 lead, not firm), n<15; a tool-call rule: a bounded run needs the vendor pass's session, after the build (/data/scratch/alert-precision-1110.md)"
+   "unmeasured": "not measurable yet: 6 carried on the served list (5 lead, not firm), n<15; a tool-call rule: a bounded run needs the vendor pass's session, after the build (/data/scratch/alert-precision-1110.md)",
+   "suggested": true
   },
   {
    "type": "vendor_terms_unapplied",
@@ -219,7 +223,8 @@
     "FIN",
     "SALES",
     "ACCTMGMT"
-   ]
+   ],
+   "suggested": true
   },
   {
    "type": "lot_near_expiry",
@@ -306,7 +311,8 @@
     "OPS",
     "PROC"
    ],
-   "unmeasured": "not measurable yet: 0 open on the served list; a tool-call rule (orders_at_risk): a bounded run needs the vendor pass's session, after the build (/data/scratch/alert-precision-1110.md)"
+   "unmeasured": "not measurable yet: 0 open on the served list; a tool-call rule (orders_at_risk): a bounded run needs the vendor pass's session, after the build (/data/scratch/alert-precision-1110.md)",
+   "suggested": true
   },
   {
    "type": "customer_order_late",

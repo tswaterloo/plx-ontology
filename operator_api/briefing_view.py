@@ -16,6 +16,27 @@ from .serving import (object_url, open_url, record_words, system_of)
 from .answers import (aged_to_today)
 
 
+HOME_GROUP_PAGE_ROWS = 25  # a group's first page, read by Home's one request and ahead of it
+HOME_GROUP_ROWS = 3  # rows of one kind Home lists before "Show more" (app: HOME_ROWS)
+
+
+def home_group_pages(got: Any) -> list[str]:
+    """The groups of a read briefing whose next page Home can show: the kinds sent home,
+    of each only HOME_GROUP_ROWS before "Show more", so a kind whose top items already fill
+    those rows needs none (late purchase orders have their own list)."""
+    top = list(got.items or [])
+    if (got.home_count or 0) <= sum(1 for i in top if i.home):
+        return []
+    kinds = []
+    for group in got.groups or []:
+        shown = sum(1 for i in top if i.event_type == group.event_type
+                    and i.home)
+        if (group.event_type != "po_late" and group.count > (group.in_top or 0)
+                and shown < HOME_GROUP_ROWS):
+            kinds.append(group.event_type)
+    return kinds[:12]
+
+
 def _answer_kept(answer: Any) -> dict[str, Any]:
     """What feedback on an answer attaches: its words, facts (with citations) and subjects,
     as served to its reader (bounded)."""

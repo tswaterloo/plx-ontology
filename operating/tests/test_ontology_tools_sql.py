@@ -527,6 +527,39 @@ class SqlDoor(unittest.TestCase):
             self.assertLess(time.monotonic() - started, 2.0)
             self.assertEqual(fails[0], 0)
 
+    def test_a_statement_meeting_a_swap_is_asked_again(self):
+        """A refresh swapping a table under a running statement (the plan's table dropped:
+        "could not open relation with OID", or its lock held past lock_timeout) is asked
+        again inside the call and returns the rows; one that never ends is not_ready with
+        no rows; any other internal error is refused at once."""
+        import psycopg
+        real, fails = sqlt.scoped_read, [0, "could not open relation with OID 288176778"]
+
+        def flaky(pg, door_, work, *a, **k):
+            def once(conn):
+                if fails[0]:
+                    fails[0] -= 1
+                    raise (psycopg.errors.LockNotAvailable if fails[1] == "lock"
+                           else psycopg.errors.InternalError_)(fails[1])
+                return work(conn)
+            return real(pg, door_, once, *a, **k)
+        with mock.patch.object(sqlt, "BUSY_WAIT_SECONDS", 3.0), \
+                mock.patch.object(sqlt, "BUSY_POLL_SECONDS", 0.05), \
+                mock.patch.object(sqlt, "scoped_read", flaky):
+            for why in ("could not open relation with OID 288176778", "lock"):
+                fails[:] = [2, why]
+                self.assertIn("Acme Ltd", self.names(), why)
+                self.assertEqual(fails[0], 0)
+            fails[:] = [10 ** 6, "could not open relation with OID 1"]
+            out = self.sql("SELECT name FROM customers")
+            self.assertEqual(out.get("error", {}).get("code"), "not_ready", out)
+            self.assertNotIn("rows", out)
+            fails[:] = [1, "some other internal failure"]
+            started = time.monotonic()
+            out = self.sql("SELECT name FROM customers")
+            self.assertEqual(out.get("error", {}).get("code"), "query_failed", out)
+            self.assertLess(time.monotonic() - started, 1.0)
+
     def test_an_empty_door_state_is_not_ready(self):
         import psycopg
         from operating.ontology_tools_identity import ToolError
@@ -563,6 +596,75 @@ class SqlDoor(unittest.TestCase):
                     "SELECT x FROM generate_series(-2, 700) x WHERE x <@ %s::int4multirange",
                     (door.ranges(held),)).fetchall()}
                 self.assertEqual(got, held, door.ranges(held))
+
+    def test_a_full_reader_reads_as_at_a_psql_prompt_and_no_one_else_does(self):
+        # the ceiling run 11-18 (plain Claude, 60 s psql): a full reader's statement has
+        # no plan-cost cap and 60 s; every other reader keeps the cap and 10 s; the rows
+        # are the guarded views' either way (exclusion and Freightcom inside them)
+        statement = ("SELECT corr(amount_due, amount_due) c, count(*) n "
+                     "FROM customer_balances")
+        from operating.pg import people_excluded
+        as_full = mock.patch.object(people_excluded, "full_reader",
+                                    lambda base, a: "tag" if a is FULL else "")
+        with mock.patch.object(sqlt, "MAX_COST", 1.0), as_full:
+            full = self.sql(statement, FULL)
+            ops = self.sql(statement, OPS)
+        self.assertNotIn("error", full, full)
+        self.assertEqual(ops["error"]["code"], "too_costly")
+        tool = sqlt.SqlTool(self.base())
+        self.assertEqual(tool._seconds(True), sqlt.FULL_STATEMENT_MS / 1000.0)
+        self.assertEqual(tool._seconds(), sqlt.STATEMENT_MS / 1000.0)
+        self.assertEqual(tool._seconds(sqlt.SEARCH_FULL_MS), sqlt.SEARCH_FULL_MS / 1000.0)
+        # undecidable fullness is no full reader (fail closed)
+        with mock.patch.object(people_excluded, "full_reader", side_effect=RuntimeError):
+            self.assertFalse(tool._full(FULL))
+
+    def test_costly_full_reader_statements_share_a_few_box_wide_slots(self):
+        # each Ask process has its own pool: without a box-wide bound N owner sessions
+        # could run 4N uncapped statements, each spilling up to temp_file_limit
+        import psycopg
+        statement = "SELECT count(*) n FROM customer_balances"
+        from operating.pg import people_excluded
+        as_full = mock.patch.object(people_excluded, "full_reader",
+                                    lambda base, a: "tag" if a is FULL else "")
+        costly = mock.patch.object(sqlt, "MAX_COST", 1.0)
+        short = mock.patch.object(sqlt, "FULL_COSTLY_WAIT_SECONDS", 1.0)
+        holders = [psycopg.connect(self.dsn, autocommit=True)
+                   for _ in range(sqlt.FULL_COSTLY_SLOTS)]
+        try:
+            for slot, other in enumerate(holders):   # other processes' long statements
+                other.execute("SELECT pg_advisory_lock(%s, %s)",
+                              (sqlt.FULL_COSTLY_LOCK, slot))
+            with as_full, costly, short:
+                import threading
+                started, got = time.monotonic(), {}
+                ask = threading.Thread(target=lambda: got.update(busy=self.sql(statement)))
+                ask.start()
+                # while it waits for a slot it holds no connection in a transaction
+                waiting = []
+                while ask.is_alive() and len(waiting) < 8:
+                    time.sleep(0.1)
+                    waiting.append(holders[0].execute(
+                        "SELECT count(*) FROM pg_stat_activity WHERE datname = "
+                        "current_database() AND state LIKE 'idle in transaction%%'"
+                        ).fetchone()[0])
+                ask.join(10)
+                busy = got["busy"]
+                self.assertGreaterEqual(time.monotonic() - started, 0.9)
+            self.assertEqual(busy["error"]["code"], "busy", busy)
+            self.assertGreaterEqual(len(waiting), 5, waiting)
+            self.assertLessEqual(sum(1 for n in waiting if n), 1, waiting)
+            with as_full:   # under the cost every reader is held to: no slot needed
+                self.assertNotIn("error", self.sql(statement))
+            holders[0].execute("SELECT pg_advisory_unlock(%s, 0)", (sqlt.FULL_COSTLY_LOCK,))
+            with as_full, costly, short:
+                self.assertNotIn("error", self.sql(statement))
+            # the slot was the call's transaction's: free again once it ended
+            self.assertTrue(holders[0].execute("SELECT pg_try_advisory_lock(%s, 0)",
+                                               (sqlt.FULL_COSTLY_LOCK,)).fetchone()[0])
+        finally:
+            for other in holders:
+                other.close()
 
     def test_hidden_excluded_and_freightcom_rows_are_out_for_everyone(self):
         import psycopg

@@ -1535,7 +1535,8 @@ class GuardedTransport:
     def __init__(self, sender: Sender = urllib_sender, *,
                  environ: Mapping[str, str] | None = None,
                  timeout_seconds: float = 30.0,
-                 sharepoint_host: str | None = None) -> None:
+                 sharepoint_host: str | None = None,
+                 throttle: Any = None) -> None:
         if not isinstance(timeout_seconds, (int, float)) or not 0 < timeout_seconds <= 60:
             raise ValueError("timeout must be 0..60 seconds")
         if sharepoint_host is not None:
@@ -1557,6 +1558,15 @@ class GuardedTransport:
         # The grammar operations of the GETs a source answered (status < 400): what a
         # live check's result names as read (scripts/source_registry.py, Graph endpoints).
         self.operations_read: set[str] = set()
+        # Every request by operation (grammar name; token, batch, download, other):
+        # [sent, answered 429/503]. The mix a throttled run reports (``request_mix``).
+        self._mix: dict[str, list[int]] = {}
+        # The throttle every Graph reader of the host shares (``graph_throttle``): the real
+        # sender gets the file-backed one, an injected sender none unless given.
+        if throttle is None and sender is urllib_sender:
+            from .graph_throttle import ThrottleGate
+            throttle = ThrottleGate()
+        self.throttle = throttle
         # Request observers, called with (method, url) before every request is sent
         # (never a control: an observer that raises stops that request). The URL may be
         # a pre-authenticated download URL: an observer keeps nothing of it beyond the
@@ -1592,12 +1602,19 @@ class GuardedTransport:
         if budget is not None:
             budget._admit(self)
         timeout = _deadline_timeout(self._timeout)
+        label, scope = self._classify(method, url)
+        if self.throttle is not None and scope is not None:
+            from . import drain
+            lefts = [d.left() for d in _ACTIVE_DEADLINES.get()]
+            self.throttle.before(scope, budget_left=min(lefts) if lefts else None,
+                                 drain_requested=drain.requested)
         for observe in self.observers:
             observe(method, url)
         with self._count_lock:   # concurrent readers share one transport
             self.requests_sent += 1
             if method == "GET":
                 self.gets_sent += 1
+            self._mix.setdefault(label, [0, 0])[0] += 1
         try:
             status, response_headers, raw = self._sender(method, url, headers, body,
                                                          timeout, max_bytes)
@@ -1616,11 +1633,52 @@ class GuardedTransport:
                 f"{method} to {urlsplit(url).hostname} failed: {type(exc).__name__}")) from None
         if not isinstance(status, int) or not isinstance(raw, (bytes, bytearray)):
             raise SourceUnavailable("sender returned an invalid response")
+        if status in (429, 503):
+            with self._count_lock:
+                self._mix[label][1] += 1
+        if self.throttle is not None and scope is not None:
+            lowered = {str(k).lower(): v for k, v in (response_headers or {}).items()}
+            self.throttle.answered(scope, status, BoundedBackoff().retry_after(
+                lowered.get("retry-after")))
         if 300 <= status < 400 and not _content_redirect(url, status):
             raise ReadOnlyGuardError("redirect refused; credentials are never forwarded")
         if len(raw) > max_bytes:
             raise SourceUnavailable(f"response exceeds the {max_bytes}-byte bound")
         return status, dict(response_headers or {}), bytes(raw)
+
+    @staticmethod
+    def _classify(method: str, url: str) -> tuple[str, str | None]:
+        """``(operation label, throttle scope)`` of a request: the grammar operation of a
+        Graph GET (``graph.list_item_permissions`` ...), else token / batch / download /
+        other; the scope is None for a read that throttles per mailbox."""
+        from .graph_throttle import scope_of
+        try:
+            parts = urlsplit(url)
+            host = (parts.hostname or "").lower()
+            if host == "login.microsoftonline.com":
+                return "token", None
+            if method == "POST" and parts.path.endswith("/$batch"):
+                return "batch", None
+            op = grammar.match(host, parts.path) if method == "GET" else None
+            if op is None and host.endswith(".sharepoint.com"):
+                return "download", scope_of(url)
+            return (op or "other"), scope_of(url)
+        except Exception:
+            return "other", None
+
+    def request_mix(self) -> dict[str, dict[str, int]]:
+        """Requests this transport sent by operation: ``{label: {"sent", "throttled"}}``
+        (throttled = answered 429/503), and ``_gate`` when the shared throttle held or
+        refused any: counts only, never a url or id."""
+        with self._count_lock:
+            mix = {label: {"sent": sent, "throttled": throttled}
+                   for label, (sent, throttled) in sorted(self._mix.items())}
+        gate = self.throttle
+        if gate is not None and (gate.holds_seen or gate.waited_seconds or gate.refused):
+            mix["_gate"] = {"holds_seen": gate.holds_seen,
+                            "waited_seconds": round(gate.waited_seconds),
+                            "refused": gate.refused}
+        return mix
 
     def request(self, method: str, url: str, headers: Mapping[str, str], *,
                 form: Mapping[str, str] | None = None,
@@ -1769,6 +1827,10 @@ WRITE_SHAPES = (
     ("planner", "PATCH", GRAPH_HOST, re.compile(rf"/v1\.0/planner/tasks/{_W_ID}"), None),
     ("planner", "DELETE", GRAPH_HOST, re.compile(rf"/v1\.0/planner/tasks/{_W_ID}"), None),
     ("calendar", "POST", GRAPH_HOST, re.compile(rf"/v1\.0/users/{_ACTION_USER}/events"), None),
+    # an invitation's answer (``CalendarAdapter`` event_respond): Graph's three actions only
+    ("calendar", "POST", GRAPH_HOST, re.compile(
+        rf"/v1\.0/users/{_ACTION_USER}/events/{_W_EVENT}/(?:accept|decline|tentativelyAccept)"),
+     None),
     ("calendar", "PATCH", GRAPH_HOST,
      re.compile(rf"/v1\.0/users/{_ACTION_USER}/events/{_W_EVENT}"), None),
     ("calendar", "DELETE", GRAPH_HOST,

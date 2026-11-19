@@ -60,13 +60,16 @@ _ZSTD: Mapping[str, tuple[str | None, str]] = {
         "42a978e26ccf8db64257228ce7ff3d6bface52696782ea48e0930e2d9f61a426"),
 }
 
-# The store clock as a property (328f87f04b):
-# ``CaptureStore.clock`` returns the store's own clock for another connection to the same
-# file; nothing reads it while deriving, and no other line of capture_store moved.
-_CLOCK: Mapping[str, tuple[str | None, str]] = {
+# The capture store's new writer-side method (11-19):
+# ``CaptureStore.acl_state`` returns the saved source ACL of a unit's current versions, for
+# ``ListCapture``'s permission reuse. Only the captures call it
+# (``integrations.capture_sharepoint_lists``, itself not derivation code); no derivation
+# module names it (test) and no existing line of capture_store moved. ``then`` is the file
+# the served key (c5e12474) was made with (main's capture_store before this change).
+_ACL_STATE: Mapping[str, tuple[str | None, str]] = {
     "integrations/capture_store.py": (
-        "467694d274ff2907f5d96c175599dc5304dd322d1bcf240caf26992d9f67a964",
-        "0fb04b98894ddc8573345b9233f311172a9a17d60b655719f65a59d912da85b3"),
+        "18903995a90e60702e8cfa466787c3c5a0352d4bd4e54d61868f2c1614f1ea35",
+        "c522cff66c20060044534029fb3ce9c30adaaf479c2590b2d0107dada3a7a698"),
 }
 
 # The image OCR reading: ``document_understanding.local_image_text``
@@ -128,7 +131,7 @@ VALUES: Mapping[str, Mapping[str, str]] = {"document_code": {
 # paths; ``readings_code``: ``captured_text.READING_MODULES`` module names (of which only
 # captured_text moved).
 CHANGES: Mapping[str, tuple[Mapping[str, tuple[str | None, str]], ...]] = {
-    "derivation": (_ZSTD, _CLOCK, _IMAGE_OCR, _TRANSPORT_OUT),
+    "derivation": (_ZSTD, _ACL_STATE, _IMAGE_OCR, _TRANSPORT_OUT),
     "readings_code": ({"integrations.captured_text": _ZSTD["integrations/captured_text.py"]},
                       {"integrations.document_understanding":
                        _IMAGE_OCR["integrations/document_understanding.py"]}),

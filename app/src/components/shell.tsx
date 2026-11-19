@@ -1,11 +1,11 @@
 "use client";
 
 import * as Menu from "@radix-ui/react-dropdown-menu";
-import { Activity, BellRing, BookMarked, Bookmark, Bot, CalendarClock, CircleHelp, Database, FileText, History, Inbox, MessageCircle, MoreHorizontal, Pin, RefreshCw, Search, TriangleAlert, Users, type LucideIcon } from "lucide-react";
+import { Activity, BellRing, BookMarked, Bookmark, Bot, CalendarClock, ChartColumn, CircleHelp, Database, FileText, History, Inbox, MessageCircle, MoreHorizontal, Pin, RefreshCw, Search, TriangleAlert, Users, type LucideIcon } from "lucide-react";
 import Link from "next/link";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { lazy, Suspense, useEffect, useState } from "react";
-import { getHome, getLateList, getOpsAlarms, type OpsAlarms, type OpsCheck } from "@/lib/api";
+import { afterPageReads, getHome, getLateList, getOpsAlarms, getSidebar, type OpsAlarms, type OpsCheck } from "@/lib/api";
 import { DesktopBridge } from "./desktop-bridge";
 import { CommandPaletteProvider, useCommandPalette } from "./command-palette";
 import { FeedbackButton, FeedbackProvider, useFeedbackDialog } from "./feedback-dialog";
@@ -18,7 +18,7 @@ import { usePins, type PinnedPage, type PinReader } from "@/lib/pins";
 import { readAllLate } from "@/lib/late";
 import { readAheadRoute } from "@/lib/route-reads";
 import { onSessionReset } from "@/lib/session-cache";
-import type { HomeResponse, LatePo } from "@/lib/types";
+import type { HomeResponse, LatePo, SidebarResponse } from "@/lib/types";
 import { PlaceIcon, SystemCode } from "./ui/glyphs";
 import { RequireAuth, useAuth } from "./auth";
 import { ThemeToggle } from "./theme";
@@ -149,7 +149,7 @@ export interface LateRead {
   total: number;
 }
 let lateOnce: Promise<LateRead> | null = null;
-/** The late POs you may see (up to HOME_LATE_MOST, a page or three), read once per page load: Today's list and the sidebar's suppliers. `total` says when that is only part. */
+/** The late POs you may see (up to HOME_LATE_MOST, a page or three), read once per page load for Today's list (the sidebar reads its counts from /api/sidebar). `total` says when that is only part. */
 export function loadLateRead(fresh = false): Promise<LateRead> {
   if (fresh || !lateOnce) {
     lateOnce = readAllLate((offset, size) => getLateList(offset, undefined, size), 100, HOME_LATE_MOST).then((r) => ({
@@ -189,6 +189,7 @@ const homeListeners = new Set<(h: HomeResponse) => void>();
 onSessionReset(() => {
   lateOnce = null;
   homeOnce = null;
+  sidebarOnce = null;
   publishNeedsCount(null);
 });
 /** /api/home read once per page load, shared by Today, the sidebar and Ask: never tied to one
@@ -216,11 +217,13 @@ export function onHomeRead(f: (h: HomeResponse) => void): () => void {
   return () => void homeListeners.delete(f);
 }
 
-function useHome(): HomeResponse | null {
+/** Home's own read, once the Home page made one (on this page load): the sidebar shows its late
+ * count so the two agree. Never reads /api/home itself. */
+function useHomeRead(): HomeResponse | null {
   const [home, setHome] = useState<HomeResponse | null>(null);
   useEffect(() => {
     let live = true;
-    loadHome().then((h) => live && setHome(h), () => undefined);
+    homeOnce?.then((h) => live && setHome(h), () => undefined);
     const off = onHomeRead((h) => live && setHome(h));
     return () => {
       live = false;
@@ -228,6 +231,44 @@ function useHome(): HomeResponse | null {
     };
   }, []);
   return home;
+}
+
+let sidebarOnce: Promise<SidebarResponse> | null = null;
+/** The sidebar's numbers (/api/sidebar: the late count, the suppliers with the most late
+ * orders, recent questions, the data's as-of), read once per page load and shared by the
+ * sidebar and the tab bar. Small and kept per reader on the server: never Home's lists. */
+export function loadSidebar(fresh = false): Promise<SidebarResponse> {
+  if (fresh || !sidebarOnce) {
+    const read = getSidebar();
+    sidebarOnce = read;
+    read.catch(() => {
+      if (sidebarOnce === read) sidebarOnce = null;
+    });
+  }
+  return sidebarOnce;
+}
+
+/** How long the sidebar yields to the page's own reads (it follows them, never waits on a slow one). */
+const SIDEBAR_YIELD_MS = 300;
+
+/** The sidebar's numbers once the person is known and the page's own reads are answered
+ * or SIDEBAR_YIELD_MS have passed (`afterPageReads`, Home's too). */
+function useSidebar(): SidebarResponse | null {
+  const [side, setSide] = useState<SidebarResponse | null>(null);
+  const signedIn = useAuth().state.status === "signed-in";
+  useEffect(() => {
+    // wait until the person is known, so the page's own reads are under way (between the
+    // sign-in check's two requests nothing is in flight yet)
+    if (!signedIn) return;
+    let live = true;
+    afterPageReads(SIDEBAR_YIELD_MS)
+      .then(() => (live ? loadSidebar() : Promise.reject(new Error("left"))))
+      .then((s) => live && setSide(s), () => undefined);
+    return () => {
+      live = false;
+    };
+  }, [signedIn]);
+  return side;
 }
 
 /** True from 1024 px (the sidebar shows); false before mount. */
@@ -243,9 +284,10 @@ function useDesktopShell(): boolean | null {
   return on;
 }
 
-function lateOf(home: HomeResponse | null): number | null {
+function lateOf(home: HomeResponse | null, side: SidebarResponse | null = null): number | null {
   const na = home?.needs_attention;
-  return na?.status === "read" ? (na.late_total ?? (na.late_pos ?? []).length) : null;
+  if (na?.status === "read") return na.late_total ?? (na.late_pos ?? []).length;
+  return side?.late_total ?? null;
 }
 
 /** One place in the nav. `ops`: an ops reader only; `admin`: the owner or a feedback admin. */
@@ -298,6 +340,7 @@ export const NAV_SECTIONS: NavSection[] = [
     ],
   },
   { key: "ask", href: "/ask", label: "Ask", place: "/ask", icon: MessageCircle, holds: [], group: "main", children: [] },
+  { key: "insights", href: "/insights", label: "Insights", place: "/insights", icon: ChartColumn, holds: [], group: "main", children: [] },
   {
     key: "records", href: "/records", label: "Records", place: "/records", icon: Database, group: "main",
     holds: ["/customer", "/supplier", "/po", "/ao", "/object", "/source", "/account", "/order"],
@@ -458,7 +501,7 @@ const sourceName = (s: string) => (s === "File" ? "Files" : s === "Email" ? "Mai
 /** The one quiet line under the sidebar: "Data as of 10:42 AM ET"; amber, naming them, only when
  * a source the open page reads is more than an hour behind. Each system's time on click; every
  * reliability detail is on the Admin page. */
-export function DataAsOf({ home }: { home: HomeResponse | null }) {
+export function DataAsOf({ home }: { home: { freshness?: HomeResponse["freshness"] } | null }) {
   const path = usePathname() ?? "/";
   const f = home?.freshness;
   if (!f?.as_of) return null;
@@ -870,32 +913,23 @@ function PinnedNav({ me }: { me: (PinReader & NonNullable<NavReader>) | null }) 
 
 /** The suppliers with late POs, most first: each opens Today showing only that supplier's. */
 export function LateBySupplier() {
-  const [read, setRead] = useState<LateRead | null>(null);
-  const late = read?.items ?? null;
-  const partial = !!read && read.total > read.items.length;
+  const side = useSidebar();
   const path = usePathname();
   const params = useSearchParams();
-  useEffect(() => {
-    let live = true;
-    loadLateRead().then((l) => live && setRead(l), () => undefined);
-    return () => {
-      live = false;
-    };
-  }, []);
-  if (!late?.length) return null;
-  const counts = new Map<string, number>();
-  for (const p of late) if (p.supplier) counts.set(p.supplier, (counts.get(p.supplier) ?? 0) + 1);
-  const rows = [...counts.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]));
+  const rows = side?.late_suppliers ?? [];
+  if (!rows.length) return null;
+  const shown = rows.slice(0, 7);
+  const more = Math.max(0, (side?.supplier_total ?? rows.length) - shown.length);
   const current = path === "/" && !params.get("show") ? params.get("supplier") : null;
   return (
     <SidebarSection title="Late by supplier">
       <div className="space-y-px" data-testid="late-by-supplier">
-        {partial && read && (
+        {side?.partial && (
           <Link href={LATE_HREF} className="block px-2 pb-1 text-[12px] leading-4 text-muted hover:text-fg" data-testid="late-by-supplier-partial">
-            Counts from the first {read.items.length} of {read.total} late orders; all are on Late orders
+            Counts from the longest late orders only; all are on Late orders
           </Link>
         )}
-        {rows.slice(0, 7).map(([name, n]) => {
+        {shown.map(({ supplier: name, late: n }) => {
           const on = current === name;
           return (
             <Link
@@ -909,9 +943,9 @@ export function LateBySupplier() {
             </Link>
           );
         })}
-        {rows.length > 7 && (
+        {more > 0 && (
           <Link href={LATE_HREF} className="flex h-7 items-center rounded-md px-2 pl-[40px] text-[12px] text-muted hover:text-fg">
-            {rows.length - 7} more
+            {more} more
           </Link>
         )}
       </div>
@@ -941,16 +975,17 @@ function SidebarSection({ title, children }: { title: string; children: React.Re
 }
 
 function Sidebar() {
-  const home = useHome();
+  const home = useHomeRead();
+  const side = useSidebar();
   const saved = useSaved();
   const router = useRouter();
   const { open } = useCommandPalette();
   const { shortcut } = useShortcut();
-  const late = lateOf(home);
+  const late = lateOf(home, side);
   const { state } = useAuth();
   const signedIn = state.status === "signed-in" ? state.me : null;
   const savedOnly = saved.filter((s) => s.kind !== "page");
-  const recent = (home?.recent_questions ?? []).filter(
+  const recent = (side?.recent_questions ?? home?.recent_questions ?? []).filter(
     (r, i, all) => all.findIndex((x) => x.question.trim().toLowerCase() === r.question.trim().toLowerCase()) === i,
   );
   return (
@@ -1021,7 +1056,7 @@ function Sidebar() {
       <div className="shrink-0 space-y-0.5 border-t border-border px-3 py-2.5">
         <FeedbackButton />
         <HelpLink />
-        <DataAsOf home={home} />
+        <DataAsOf home={side ?? home} />
         <UserMenu />
       </div>
     </aside>
@@ -1155,8 +1190,8 @@ function UserMenu() {
 /** Phone: the tab bar along the bottom, as an iPhone app has it. */
 export function TabBar() {
   const path = usePathname();
-  const home = useHome();
-  const late = lateOf(home);
+  const home = useHomeRead();
+  const late = lateOf(home, useSidebar());
   const { state } = useAuth();
   const reader = state.status === "signed-in" ? state.me : null;
   const sections = navSectionsFor(reader);
@@ -1255,7 +1290,7 @@ function MobileTitleBar() {
 }
 
 /** Pages that draw their own Toolbar; the shell adds no phone title bar over them.*/
-export const TOOLBAR_PAGES: string[] = ["/meetings", "/team", "/ask", "/po", "/ao", "/customer", "/supplier", "/object", "/source", "/activity", "/feedback", "/autopilot", "/autopilot-log", "/ops", "/trust", "/work-log", "/templates", "/memory", "/help", "/records", "/account", "/order"];
+export const TOOLBAR_PAGES: string[] = ["/meetings", "/team", "/ask", "/po", "/ao", "/customer", "/supplier", "/object", "/source", "/activity", "/feedback", "/autopilot", "/autopilot-log", "/ops", "/trust", "/work-log", "/templates", "/memory", "/help", "/records", "/account", "/order", "/insights"];
 
 /** What the content area holds until the sign-in is read: drawn in the server's HTML too, so a
  * slow first load never shows an empty page (it fades in after 600 ms, so a fast one never flickers). */

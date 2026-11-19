@@ -13,6 +13,22 @@ Changed:
 - Mission Control questions are picked up on the fast poll
 - deploys keep the newest 8 releases
 
+## Update 2026-11-19
+Changed:
+- Recurring briefs and posts are found for every person again, and mail and Teams search runs in about a second instead of timing out
+- Ask has a chats list you can pin, rename, search and hide
+- answers stream word by word with what it is reading
+- all four Ask workers start reliably
+- unchecked figures get a quiet underline
+- Insights: live dashboards of team, org and customer views and charts pinned from Ask answers, each read again as the person opening it
+- the Ask's charts under answers
+- Ask: broad questions read everything they need at once and double-check the key figure
+- mail and Teams search stays within the asked dates and answers in seconds
+- a mail or Teams search that times out no longer loses the file and record hits
+- Pages stay fast after restarts: a damaged page cache is set aside and rebuilt
+- the sidebar waits for the page
+- Templates opens instantly
+
 ## v0.22 (2026-11-19)
 Changed:
 - Autopilot drafts by default with question cards, looks things up as the person, learns from edits and applies saved preferences; chat drafts read the chat and the person's own replies as style.

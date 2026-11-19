@@ -9,6 +9,7 @@ import json
 from pathlib import Path
 import time
 import unittest
+from unittest import mock
 from datetime import date
 
 from fastapi.testclient import TestClient
@@ -803,6 +804,65 @@ class CredentialsMasked(unittest.TestCase):
         self.assertIn("password: [secret]", sent[0]["body"])
         self.assertEqual(sent[0]["body"], preview["payload"]["body"])
 
+    def test_a_whole_token_stream_is_sent_as_written_and_masked(self):
+        """The simple Ask streams the answer so far in full (whole tokens): each goes out
+        at once as one whole token (live, before: they were joined and split into words,
+        'ByBy supplier ...', and held until the answer came), never a credential's first
+        half, and the last one sent in full before the next event."""
+        from operating.session_identity import CHANNEL_CONSOLE, fixture_session
+        key = self.KEY
+        written = ["By", "By supplier", "By supplier spend the MC key is MC_MCP_API_KEY="
+                   + key[:12], f"By supplier spend the MC key is MC_MCP_API_KEY={key}",
+                   f"By supplier spend the MC key is MC_MCP_API_KEY={key} so far.\n"]
+        final = written[-1].strip()
+
+        class Streaming(MockBackend):
+            def ask(self, reader, request):
+                for event, payload in super().ask(reader, request):
+                    if event == "token":
+                        continue
+                    if event == "answer":
+                        for text in written[:2]:
+                            yield "token", m.TokenEvent(text=text, whole=True)
+                        yield "status", m.StatusEvent(step="reading", message="Reading",
+                                                      elapsed_ms=1)
+                        for text in written[2:]:
+                            yield "token", m.TokenEvent(text=text, whole=True)
+                        yield "status", m.StatusEvent(step="answering", message="Writing",
+                                                      elapsed_ms=2)
+                        yield "token", m.TokenEvent(text=final, whole=True)
+                        payload = payload.model_copy(update={"direct_answer": final})
+                    yield event, payload
+
+        session = fixture_session("plx", ["staff:demo"], channel=CHANNEL_CONSOLE,
+                                  subject_email="vince@plx.example",
+                                  subject_oid="11111111-1111-4111-8111-111111111111")
+        client = TestClient(create_app(Streaming(), DevAuth(lambda: session, mode="mock"),
+                                       secure_cookie=False), base_url="http://testserver")
+        self.assertEqual(client.post("/api/auth/dev-login", json={}).status_code, 200)
+        streamed = client.post("/api/ask", json={"question": "top suppliers"}).text
+        self.assertNotIn(key[:12], streamed)
+        got = events(streamed)
+        names = [name for name, _ in got]
+        tokens = [data for name, data in got if name == "token"]
+        self.assertTrue(all(t.get("whole") for t in tokens), tokens)
+        # sent as written: the first words before the next step, not held for the answer
+        self.assertLess(names.index("token"), names.index("status", names.index("token")))
+        before = [d["text"] for n, d in got[:names.index("status", names.index("token"))]
+                  if n == "token"]
+        self.assertEqual(before[-1], "By supplier")
+        self.assertEqual([t["text"] for t in tokens][-1].strip(),
+                         final.replace(key, "[secret]"))
+        self.assertEqual(got[-1][0], "answer")
+        for t in tokens:
+            self.assertNotIn("ByBy", t["text"])
+        # each whole text once, and never shorter than one already sent in full
+        texts = [t["text"] for t in tokens]
+        self.assertEqual(len(texts), len(set(texts)))
+        for a, b in zip(texts, texts[1:]):
+            self.assertFalse(a.startswith(b) and len(b) < len(a), (a, b))
+
+
 class CardNumbersNeverServed(unittest.TestCase):
     """A payment card number in captured text (a filled authorisation form in a mail or its
     OCR reading) is served as its last four digits, its CVV and expiry masked: in a page,
@@ -1021,10 +1081,85 @@ class ReaderWrites(unittest.TestCase):
         self.assertEqual(len(wrote), 2)                # before it ran and after
         self.assertEqual(len(set(wrote)), 1)
         # marking the briefing seen changes the briefing and Home only, not My work
-        self.assertEqual(wrote[0][1], frozenset({"briefing", "home", "suggestions"}))
+        self.assertEqual(wrote[0][1], frozenset({"briefing", "briefing_items", "home", "suggestions"}))
         wrote.clear()
         client.post("/api/feedback/note", json={"note": "x"})
         self.assertEqual({w[1] for w in wrote}, {None})   # any other write: every screen
+
+
+class BriefingPagesAtOnce(unittest.TestCase):
+    """Home's groups' first pages in one request (they were one request per group)."""
+
+    def setUp(self) -> None:
+        self.backend = MockBackend()
+        app = create_app(self.backend, DevAuth(fixture_identity("plx", ["staff:demo"]),
+                                               mode="mock"), secure_cookie=False)
+        self.client = TestClient(app, base_url="http://testserver")
+        self.assertEqual(self.client.post("/api/auth/dev-login", json={}).status_code, 200)
+
+    def test_each_type_is_what_the_items_route_answers_in_the_order_asked(self):
+        types = ["price_below_cost", "po_due", "price_below_cost", "po_late"]
+        got = self.client.get("/api/briefing/pages", params=[("event_type", t) for t in types])
+        self.assertEqual(got.status_code, 200, got.text)
+        pages = got.json()["pages"]
+        self.assertEqual([p["event_type"] for p in pages],
+                         ["price_below_cost", "po_due", "po_late"])   # a repeat once
+        for page in pages:
+            alone = self.client.get("/api/briefing/items", params={
+                "event_type": page["event_type"], "offset": 0, "limit": 25}).json()
+            self.assertEqual(page, alone)
+
+    def test_a_type_that_fails_is_left_out_and_all_failing_is_that_failure(self):
+        real = self.backend.briefing_items
+
+        def items(reader, event_type, **kw):
+            if event_type == "po_due":
+                raise TimeoutError("workbench_busy")
+            return real(reader, event_type, **kw)
+
+        with mock.patch.object(self.backend, "briefing_items", items):
+            got = self.client.get("/api/briefing/pages", params=[
+                ("event_type", "po_due"), ("event_type", "po_late")])
+            self.assertEqual([p["event_type"] for p in got.json()["pages"]], ["po_late"])
+            every = self.client.get("/api/briefing/pages", params=[("event_type", "po_due")])
+            self.assertEqual((every.status_code, every.json()["error"]["code"]), (503, "busy"))
+
+    def test_the_briefing_carries_the_pages_home_can_show_when_asked(self):
+        plain = self.client.get("/api/briefing").json()
+        self.assertEqual(plain.get("pages", []), [])
+        got = self.client.get("/api/briefing", params={"pages": "true"}).json()
+        top = got["items"]
+        wanted = [g["event_type"] for g in got["groups"]
+                  if g["event_type"] != "po_late" and g["count"] > g["in_top"]
+                  and sum(1 for i in top if i["event_type"] == g["event_type"] and i.get("home")) < 3]
+        if (got.get("home_count") or 0) <= sum(1 for i in top if i.get("home")):
+            wanted = []
+        self.assertEqual([p["event_type"] for p in got.get("pages", [])], wanted)
+        for page in got.get("pages", []):
+            alone = self.client.get("/api/briefing/items", params={
+                "event_type": page["event_type"], "offset": 0, "limit": 25}).json()
+            self.assertEqual(page, alone)
+
+    def test_a_group_needs_a_page_only_when_home_can_show_more_of_it(self):
+        from types import SimpleNamespace as N
+        from operator_api.app import _home_group_pages
+        item = lambda kind, home=True: N(event_type=kind, home=home)
+        group = lambda kind, count, in_top: N(event_type=kind, count=count, in_top=in_top)
+        got = N(home_count=9, items=[item("po_due"), item("po_due"), item("price_below_cost", False)],
+                groups=[group("po_due", 5, 2), group("po_late", 40, 0), group("price_below_cost", 7, 1),
+                        group("po_unconfirmed", 4, 4), group("no_owner", 3, 0)])
+        # po_due shows 2 of 3 rows; po_late has its own list; the price group's one top item
+        # is not sent home (shown 0); a group wholly in the top needs none
+        self.assertEqual(_home_group_pages(got), ["po_due", "price_below_cost", "no_owner"])
+        got.home_count = 2   # the top items already fill what Home lists
+        self.assertEqual(_home_group_pages(got), [])
+
+    def test_no_type_or_an_unknown_one_is_refused(self):
+        self.assertEqual(self.client.get("/api/briefing/pages").status_code, 422)
+        self.assertEqual(self.client.get("/api/briefing/pages", params={
+            "event_type": "nonsense"}).status_code, 422)
+        self.assertEqual(self.client.get("/api/briefing/pages", params=[
+            ("event_type", "po_late")] * 13).status_code, 422)   # at most 12 asked
 
 
 class HealthShowsThePolicyInForce(unittest.TestCase):

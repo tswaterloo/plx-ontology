@@ -13,9 +13,15 @@ Postgres in bounded batches (no record is loaded into Python) and refreshed in p
     other than ``api``/``bc``/``mc``: SharePoint lists, Planner, records read out of mail)
     also carries ``FULL_KEY`` (a full reader's only, as plx.table shows such records to no
     staff reader);
-  * a field whose first-ranked cell is marked beyond the record's own markings joins the
-    record's markings in its class: a reader lacking that marking reads no row of the
-    record (``col_class`` stays 0); the label and record date are read from unmarked cells;
+  * a field whose first-ranked cell is marked beyond the record's own markings is withheld
+    from a reader lacking that marking, never the record: ``fields`` holds every field,
+    ``fields_open`` only the fields marked no more than the record, and ``col_class`` marks
+    ``fields`` with the union of those cells' markings (``door.view_ddl``: a reader not
+    holding it reads ``fields_open`` in its place, with ``fields`` in ``withheld``). Owner
+    rule 2026-11-17: staff read every business record, finance and pii values withheld (a
+    Sage vendor's balances are finance-marked cells: the vendor was hidden whole, 6.58M of
+    the 8.03M Sage records, 2026-11-19); the label and record date are read from unmarked
+    cells;
   * ``ver`` / ``biz``: the record's newest current version and whether its system is a
     business system. The people exclusion decides versions only up to its ``covered_ver``:
     the views serve a record of any other system only once ``ver`` is at or below it (the
@@ -26,7 +32,8 @@ Postgres in bounded batches (no record is loaded into Python) and refreshed in p
   Never in the table: records whose source no longer holds them, the excluded people's own
   records (``ontology.people_excluded_objects``: no set built for the store = no record of
   a non-business system at all), PLX's own issued documents (``own_issued_documents``) and
-  the types ``LEFT_OUT`` (mail, attachments, files, Teams, meetings: the comms tables').
+  the types ``LEFT_OUT`` (mail, chat messages, calendar events, transcripts: the comms
+  tables'; attachments and files: the documents').
 
 ``record_links``: (from_rid, link_type, to_rid, tier) for live links at a shown tier between
 two records of ``records`` (no never-authority end); its ``access_class`` is the union of
@@ -62,18 +69,37 @@ BATCH = 50_000           # store rows (objects.row_no / link_rows.row_no) per st
 MIN_FREE_GB_DEFAULT = 35.0
 BATCH_GB = 3.0           # one worker's temp tables at BATCH rows, with headroom
 ROOM_WAIT_SECONDS = 600.0
-# The comms tables own these (operating.pg.business_comms and its successors).
-LEFT_OUT = ("Email", "Attachment", "SharePointFile", "ContainerMember", "CalendarEvent",
-            "Meeting", "MeetingTranscript", "TeamsChat", "TeamsChannel",
-            "TeamsChannelMessage", "TeamsChatMessage")
+# The comms tables own these (operating.pg.business_comms and its successors), and the
+# attachments and files are the documents' (search reads their text). Every other type is a
+# record here: Teams chats and channels, channel messages, meeting objects and container
+# members (no table of their own) are not a business system's, so a full reader's only
+# (``FULL_KEY``) and served once the people exclusion decided their version.
+LEFT_OUT = ("Email", "Attachment", "SharePointFile", "CalendarEvent", "MeetingTranscript",
+            "TeamsChatMessage")
 UNMARKED = "[]"
+# ``records.fields``'s column class (``col_classes.marks``): the union of the markings of the
+# record's cells marked beyond it, as one marking set (``ontology.store_ddl.MARKING_SETS``'
+# spelling: sorted, quoted, no spaces), or nothing marked
+COL_MARKS_SQL = (
+    "CASE WHEN cardinality(COALESCE(f.col_marks, '{}'::text[])) = 0 THEN '{}'::jsonb ELSE "
+    "jsonb_build_object('fields', (SELECT '[' || string_agg('\"' || m || '\"', ',' ORDER BY m) "
+    "|| ']' FROM (SELECT DISTINCT jsonb_array_elements_text(x::jsonb) AS m FROM "
+    "unnest(f.col_marks) x) q)) END")
+# every link type of ``record_links`` by its index, one step per type (a loose scan)
+LINK_TYPES_SQL = ("WITH RECURSIVE t(x) AS ((SELECT link_type FROM {s}.record_links ORDER BY 1 "
+                  "LIMIT 1) UNION ALL SELECT (SELECT l.link_type FROM {s}.record_links l WHERE "
+                  "l.link_type > t.x ORDER BY 1 LIMIT 1) FROM t WHERE t.x IS NOT NULL) "
+                  "SELECT x FROM t WHERE x IS NOT NULL")
+# the column a reader not holding a masked column's marking reads in its place
+FALLBACK = {"fields": "fields_open"}
 
 RECORDS_DDL = """CREATE TABLE {s}.{t} (
     rid bigint PRIMARY KEY, record_id text NOT NULL, type text NOT NULL, system text NOT NULL,
     source text NOT NULL, handle text NOT NULL, label text, record_date text,
     first_seen text, changed_at text, access_class integer NOT NULL,
     col_class integer NOT NULL DEFAULT 0, ai_ok boolean NOT NULL, link_ok boolean NOT NULL,
-    fields jsonb NOT NULL, ver bigint NOT NULL, biz boolean NOT NULL)"""
+    fields jsonb NOT NULL, ver bigint NOT NULL, biz boolean NOT NULL,
+    fields_open jsonb NOT NULL DEFAULT '{{}}')"""
 LINKS_DDL = """CREATE TABLE {s}.{t} (
     from_rid bigint NOT NULL, link_type text NOT NULL, to_rid bigint NOT NULL,
     tier text NOT NULL, from_id text NOT NULL, from_type text NOT NULL, from_handle text,
@@ -164,6 +190,13 @@ def _stage(pg: Any, where: str, excluded_ready: bool) -> None:
         "|| COALESCE(jsonb_object_agg(property || '_currency', currency) FILTER (WHERE "
         "currency IS NOT NULL), '{}') || COALESCE(jsonb_object_agg(property || '_unit', "
         "unit) FILTER (WHERE unit IS NOT NULL), '{}') AS fields, "
+        # the fields a reader of the record reads whatever else it holds (``fields_open``)
+        "COALESCE(jsonb_object_agg(property, CASE WHEN value_type = ANY(" + nums + ") AND "
+        "value_num IS NOT NULL THEN to_jsonb(value_num) ELSE to_jsonb(value) END) FILTER "
+        "(WHERE free), '{}') || COALESCE(jsonb_object_agg(property || '_currency', currency) "
+        "FILTER (WHERE free AND currency IS NOT NULL), '{}') || COALESCE(jsonb_object_agg("
+        "property || '_unit', unit) FILTER (WHERE free AND unit IS NOT NULL), '{}') "
+        "AS fields_open, "
         "jsonb_object_agg(property, markings) FILTER (WHERE NOT free) AS field_marks, "
         "ARRAY(SELECT DISTINCT m FROM unnest(array_agg(markings) FILTER (WHERE NOT free)) m "
         "ORDER BY 1) AS col_marks FROM gr_c GROUP BY rid")
@@ -188,28 +221,30 @@ def _first_unmarked(col: str, expr: str, cond: str) -> str:
 
 def _insert(pg: Any, schema: str, table: str) -> int:
     """Classes for the staged patterns, then the staged rows into ``<schema>.<table>``."""
-    # a field marked beyond the record joins the record's own markings: a reader lacking
-    # it reads no row of the record (the comms tables' rule: a marked cell hides the row)
+    # the record's class is its own markings; a field marked beyond them marks the column
+    # (``fields``: the union of those cells' markings, one marking set), so a reader lacking
+    # it reads the record with ``fields_open`` in its place
     pg.execute("DROP TABLE IF EXISTS pg_temp.gr_k")
     pg.execute("CREATE TEMP TABLE gr_k AS SELECT b.rid, b.keys, ARRAY(SELECT DISTINCT m FROM "
-               "unnest(b.marks || COALESCE(f.col_marks, '{}'::text[]) || "
-               f"ARRAY[{_lit(UNMARKED)}]) m ORDER BY 1) AS marks FROM gr_b b LEFT JOIN gr_f f "
-               "ON f.rid = b.rid")
+               f"unnest(b.marks || ARRAY[{_lit(UNMARKED)}]) m ORDER BY 1) AS marks, "
+               f"{COL_MARKS_SQL} AS cms FROM gr_b b LEFT JOIN gr_f f ON f.rid = b.rid")
     with pg.transaction():   # short: a build's parallel batches only wait on the ids
         ac.assign(pg, schema, "SELECT keys, marks FROM gr_k")
+        ac.assign_cols(pg, schema, "SELECT DISTINCT cms FROM gr_k")
     label = _first_unmarked("label_fields", "c.value", "true")
     record_date = _first_unmarked("date_fields", DAY, f"({DAY}) IS NOT NULL")
     cur = pg.execute(
         f"INSERT INTO {schema}.{table} (rid, record_id, type, system, source, handle, label, "
         "record_date, first_seen, changed_at, access_class, col_class, ai_ok, link_ok, "
-        "fields, ver, biz) SELECT b.rid, b.object_id, b.object_type, "
+        "fields, fields_open, ver, biz) SELECT b.rid, b.object_id, b.object_type, "
         f"{gv.system_sql('b.binding_id')}, b.binding_id, b.l1_handle, {label}, "
-        f"{record_date}, b.first_recorded_at, b.recorded_at, k.id, 0, "
+        f"{record_date}, b.first_recorded_at, b.recorded_at, k.id, cc.id, "
         "b.ai_ok AND NOT COALESCE(f.fc, false), b.link_ok, COALESCE(f.fields, '{}'), "
-        "b.ver, b.biz "
+        "COALESCE(f.fields_open, '{}'), b.ver, b.biz "
         f"FROM gr_b b JOIN gr_k gk ON gk.rid = b.rid JOIN {schema}.access_classes k ON "
         "k.audience_keys = gk.keys AND k.rec_marks = gk.marks AND k.doc_marks = '{}' AND "
-        f"NOT k.blocked LEFT JOIN gr_f f ON f.rid = b.rid "
+        f"NOT k.blocked JOIN {schema}.col_classes cc ON cc.marks = gk.cms AND "
+        "cc.needs = '{}'::jsonb LEFT JOIN gr_f f ON f.rid = b.rid "
         f"LEFT JOIN {schema}.record_types rt ON rt.type = b.object_type")
     return cur.rowcount
 
@@ -373,15 +408,26 @@ def covered_types() -> list[str]:
                    if v.reads and getattr(v, "covers", True)})
 
 
+def comms_types() -> list[str]:
+    """The types a communications table holds one row per record of (``View.fill``)."""
+    return sorted({v.reads[0] for v in bv.VIEWS.values()
+                   if v.reads and getattr(v, "fill", None) and getattr(v, "covers", True)})
+
+
 def type_choice(uncovered: bool, mirrors: bool,
-                skip_prefixes: Sequence[str] = ()) -> dict[str, Any]:
+                skip_prefixes: Sequence[str] = (), business: bool = False) -> dict[str, Any]:
     """A build's type choice (kept in its notes: the refresh follows the same types).
     ``skip_prefixes``: type name prefixes left out besides (``RelSage``: Sage's 7.5M mirror
-    records, too many for the disk free on 11-18). A prefix is letters and digits only."""
+    records, too many for the disk free at the time). A prefix is letters and digits only.
+    ``business`` with ``uncovered``: the curated tables' own types too (each system's copy
+    its own record, with that system's own words: a curated row folds the copies into one
+    status by rule, so "open in BC" by BC's own word was read nowhere), only the
+    communications tables' types left out."""
     bad = [p for p in skip_prefixes if not (isinstance(p, str) and p.isalnum())]
     if bad:
         raise ValueError(f"a type prefix is letters and digits only: {bad!r}")
-    return {"skip_types": covered_types() if uncovered else [],
+    skip = (comms_types() if business else covered_types()) if uncovered else []
+    return {"skip_types": skip,
             "skip_mirrors": bool(uncovered) and not mirrors,
             "skip_prefixes": sorted(set(skip_prefixes))}
 
@@ -426,16 +472,17 @@ def door_side(pg: Any, s: str, touched: Mapping[str, str] | None = None) -> None
 
 def build(dsn: str, schema: str | None = None, workers: int = 4, *,
           uncovered: bool = False, mirrors: bool = False,
-          skip_prefixes: Sequence[str] = ()) -> dict[str, Any]:
+          skip_prefixes: Sequence[str] = (), business: bool = False) -> dict[str, Any]:
     """Build ``records`` and ``record_links`` beside the live ones, index them, then swap
     them in with the guarded views re-made (one transaction: readers see old or new).
     ``uncovered``: the types no curated table holds; ``mirrors`` with it: the raw relational
     mirrors (``Rel...``, 184 types and 7.8M records on 11-18, Sage's history among them)
-    too, else they are left out (a first build that must stay small)."""
+    too, else they are left out (a first build that must stay small); ``business`` with it:
+    the curated tables' own types too (``type_choice``)."""
     import psycopg
     s = schema or bv.SCHEMA
     started = time.monotonic()
-    choice = type_choice(uncovered, mirrors, skip_prefixes)
+    choice = type_choice(uncovered, mirrors, skip_prefixes, business)
     which = types_sql(choice)
     with psycopg.connect(dsn, autocommit=True) as pg:
         ac.ensure(pg, s)
@@ -544,6 +591,7 @@ def refresh(dsn: str, schema: str | None = None, *, sweep: bool = False) -> dict
         (notes,) = pg.execute(f"SELECT notes FROM {s}.state WHERE view = 'records'").fetchone()
         since = (notes or {}).get("marks") or {}
         room(pg, 1)   # before the transaction: never waits holding its locks
+        _open_column(pg, s)
         with pg.transaction():
             got = _marks(pg)
             lo_ver, lo_link = int(since.get("ver") or 0), int(since.get("link") or 0)
@@ -579,11 +627,18 @@ def refresh(dsn: str, schema: str | None = None, *, sweep: bool = False) -> dict
                        (lo_link, got["link"]))
             # a link the store no longer holds live at its tier (deleted or superseded with
             # no new row): dropped, and read again from whatever live rows it has left
-            pg.execute(
-                "INSERT INTO gr_lt SELECT l.from_id, l.link_type, l.to_id FROM "
-                f"{s}.record_links l WHERE NOT EXISTS (SELECT 1 FROM {ONT}.link_rows r WHERE "
-                "r.from_object = l.from_id AND r.link_type = l.link_type AND r.to_object = "
-                "l.to_id AND r.superseded_at IS NULL AND r.tier = l.tier)")
+            # one link type at a time: the store's links are partitioned by type, so each
+            # check is an index probe per link in that type's partition. Over the whole
+            # table the planner hashed all 17M links against all live link rows and spilled
+            # past temp_file_limit (10 GB) on every refresh once Sage's links were served
+            # (2026-11-19 12:37 AM ET on: the records step failed each run)
+            for (link_type,) in pg.execute(LINK_TYPES_SQL.format(s=s)).fetchall():
+                pg.execute(
+                    "INSERT INTO gr_lt SELECT l.from_id, l.link_type, l.to_id FROM "
+                    f"{s}.record_links l WHERE l.link_type = %(t)s AND NOT EXISTS (SELECT 1 "
+                    f"FROM {ONT}.link_rows r WHERE r.link_type = %(t)s AND r.from_object = "
+                    "l.from_id AND r.link_type = l.link_type AND r.to_object = l.to_id AND "
+                    "r.superseded_at IS NULL AND r.tier = l.tier)", {"t": link_type})
             pg.execute("DROP TABLE IF EXISTS pg_temp.gr_ldel")
             pg.execute(
                 "CREATE TEMP TABLE gr_ldel AS WITH d AS ("
@@ -612,10 +667,40 @@ def refresh(dsn: str, schema: str | None = None, *, sweep: bool = False) -> dict
                                 "from_rid || '/' || link_type || '/' || to_rid FROM gr_l"})
             gv.mark_tables(pg, s)
             from operating.pg import door
+            _views_follow_masks(pg, s)
             door.follow(pg, s, "records")
             door.follow(pg, s, "record_links")
             door._bump(pg, s)
     return {"dropped": gone, "read": added, "links_read": linked, "marks": got}
+
+
+def _open_column(pg: Any, s: str) -> None:
+    """``records.fields_open`` on a table built before it (empty: such a row's class holds
+    its marked fields' markings, as built then); its DDL only when missing (ALTER TABLE
+    locks the table even when the column exists)."""
+    if pg.execute("SELECT 1 FROM information_schema.columns WHERE table_schema = %s AND "
+                  "table_name = 'records' AND column_name = 'fields_open'", (s,)).fetchone():
+        return
+    pg.execute(f"ALTER TABLE {s}.records ADD COLUMN IF NOT EXISTS fields_open jsonb NOT NULL "
+               "DEFAULT '{}'")
+
+
+def _views_follow_masks(pg: Any, s: str) -> None:
+    """The guarded views made again when the rows' column classes now mark a column their
+    view does not mask (a refresh read the first record with a marked field): until then
+    ``door.reader_scope`` refuses the view for every reader (``refused``), never shows the
+    column unmasked. In the caller's transaction."""
+    from operating.pg import door
+    for view in ("records", "record_links"):
+        recorded = pg.execute(f"SELECT masked FROM {s}.{door.VIEWS_TABLE} WHERE view = %s",
+                              (view,)).fetchone()
+        if recorded is not None and set(door.masked_columns(pg, s, view)) <= set(
+                recorded[0] or ()):
+            continue
+        dst = gv.sql_views.guarded_schema(s)
+        if pg.execute("SELECT to_regnamespace(%s)", (dst,)).fetchone()[0] is not None:
+            gv.make_views(pg, s)
+        return
 
 
 def follow(dsn: str, day: dt.date, schema: str | None = None) -> dict[str, Any]:
@@ -652,6 +737,9 @@ def main(argv: Sequence[str] | None = None) -> int:
                     help="build: only the types no curated table reads, no Rel* mirrors")
     ap.add_argument("--mirrors", action="store_true",
                     help="build --uncovered: the Rel* raw relational mirrors too")
+    ap.add_argument("--business", action="store_true",
+                    help="build --uncovered: the curated tables' types too, each system's "
+                         "copy its own record (only the comms tables' types left out)")
     ap.add_argument("--skip-prefix", action="append", default=[],
                     help="build: leave out the types whose name starts so (e.g. RelSage)")
     args = ap.parse_args(argv)
@@ -662,7 +750,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         from operating.ontology_tools_identity import SchemaView
         gv.build_catalog(dsn, SchemaView.from_compiled(load_schema()), args.schema)
         out = build(dsn, args.schema, args.workers, uncovered=args.uncovered,
-                    mirrors=args.mirrors, skip_prefixes=args.skip_prefix)
+                    mirrors=args.mirrors, skip_prefixes=args.skip_prefix,
+                    business=args.business)
     else:
         out = refresh(dsn, args.schema)
     print(json.dumps(out, default=str))

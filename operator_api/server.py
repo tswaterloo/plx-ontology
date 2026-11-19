@@ -60,6 +60,18 @@ def held(name: str, now: Optional[float] = None) -> bool:
     return age <= HOLD_MAX_AGE_SECONDS
 
 
+def _insight_copies(backend: Any) -> None:
+    """Insights' shared copies made at start (``insights_fast``), before the port opens when
+    it is held."""
+    make = getattr(backend, "prewarm_insight_copies", None)
+    if callable(make):
+        try:
+            made = make()
+            logging.getLogger("operator_api").info("insights copies made at start: %s", made)
+        except Exception:  # noqa: BLE001 - the first visit makes them
+            logging.getLogger("operator_api").exception("insights copies failed")
+
+
 def hold_until_ready(backend: Any, stop: Any = None, poll: float = HOLD_POLL_SECONDS,
                      limit: float = HOLD_MAX_SECONDS) -> bool:
     """Start the warm-up now and wait until the backend is ready (``WorkspaceBackend.ready``:
@@ -198,9 +210,24 @@ def main(argv: list[str] | None = None, *, ready: Any = None, fixtures: Any = No
             return 0
         if owner_loop is not None:   # a real backend: the code fingerprint before a first read
             from . import preload
-            preload.start()
+            preloading = preload.start(getattr(backend, "state_dir", None))
+        else:
+            preloading = None
         if held(hold_name(args.port, args.unix_socket)):
-            hold_until_ready(backend)
+            if hold_until_ready(backend):
+                if preloading is not None:   # the first request finds the status read
+                    preloading.join(preload.HOLD_JOIN_SECONDS)
+                # the first visit's own checks, run once more over the pages just kept
+                after = getattr(backend, "prewarm_checks_after_warm", None)
+                if callable(after):
+                    try:
+                        after()
+                    except Exception:  # noqa: BLE001 - the port opens; each visit decides
+                        logging.getLogger("operator_api").exception("kept checks failed")
+                _insight_copies(backend)
+        else:
+            threading.Thread(target=_insight_copies, args=(backend,), daemon=True,
+                             name="insights-prewarm").start()
         served = (f"unix:{args.unix_socket}" if args.unix_socket
                   else f"http://{args.bind}:{args.port}")
         print(f'{{"operator_api": "{served}", "mode": "{mode}"}}', file=sys.stderr, flush=True)

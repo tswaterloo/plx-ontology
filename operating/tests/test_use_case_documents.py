@@ -799,6 +799,36 @@ class TextlessCopyTests(UseCaseCase):
         return self.ok(server, "plx.documents", {"query": "pricing disposition map",
                                                  "sources": ["original"]})
 
+    def test_an_originals_only_search_reads_no_stored_document_links(self):
+        """Originals alone (plx.search's documents leg once mail, Teams and files went to
+        their own tables): no stored family is searched, so no link or word scan of the
+        store runs (a common PO number took 120 s there live) and the originals found
+        are the same."""
+        from operating import ontology_tools_evidence as ote
+        self.sp_text("unsupported")
+        _runtime, server = self.runtime_server(QUALITY)
+        reads = []
+
+        def counting(name):
+            real = getattr(ote.EvidenceTools, name)
+
+            def run(tools, *args, **kwargs):
+                reads.append(name)
+                return real(tools, *args, **kwargs)
+            return run
+        with mock.patch.object(ote.EvidenceTools, "_text_hits", counting("_text_hits")), \
+                mock.patch.object(ote.EvidenceTools, "_visible_links",
+                                  counting("_visible_links")):
+            only = self.originals_found(server)
+            self.assertEqual(reads, [])
+            both = self.ok(server, "plx.documents", {"query": "pricing disposition map",
+                                                     "sources": ["original", "sharepoint"]})
+            self.assertIn("_text_hits", reads)   # the stored files are scanned as before
+        self.assertEqual(sorted(d["citation"] for d in only["documents"]),
+                         [f"original://{ZIP_MAP}", f"original://{ZIP_MEMBER}"])
+        self.assertLessEqual({d["citation"] for d in only["documents"]},
+                             {d["citation"] for d in both["documents"]})
+
     def test_a_textless_copy_keeps_the_original_and_members_for_a_reader_of_the_item(self):
         for status in ("unsupported", "failed", "ocr_unavailable", "exceeds_bound"):
             with self.subTest(status=status):

@@ -337,12 +337,22 @@ def _pg_quantity_rows(st: _Store) -> list[Any]:
         for object_type in sorted({t.split(".", 1)[0] for t in _identity_link_types()}):
             found.extend(st.conn.execute(sql, {"fields": fields, "type": object_type}))
         return found
-    sql = (base + "FROM value_kinds k JOIN value_cells c ON c.kind = k.kind "
-           "JOIN value_sources s ON s.src = c.src JOIN object_versions v ON v.rowid = s.ver "
-           "JOIN objects o ON o.object_id = v.object_id JOIN value_fields f ON f.field = c.field "
-           "WHERE k.value_type = 'quantity' AND s.superseded_at IS NULL AND NOT "
-           + ostore.removed_at_sql("o.object_id")
-           + " AND v.object_id IN (SELECT value FROM json_each(:chunk))")
+    # The scope's versions first (a materialized set), then their sources and cells by key.
+    # One flat join of the nine relations (kinds, cells, sources, versions, records, fields,
+    # the removal check's two, the scope's key set) passed the planner's join_collapse_limit
+    # (8): it joined every quantity cell of the store first and the scope last (a parallel
+    # hash join of 494M cells: 60-107 s and ~10 GB of temp files a chunk, 42 statements in
+    # two days; the proactive pass's ~34 GB temp swing on /data).
+    sql = ("WITH sv AS MATERIALIZED (SELECT v.rowid AS ver, v.object_id, v.l1_handle, "
+           "o.object_type FROM object_versions v JOIN objects o ON o.object_id = v.object_id "
+           "WHERE v.object_id IN (SELECT value FROM json_each(:chunk)) AND NOT "
+           + ostore.removed_at_sql("o.object_id") + ") "
+           "SELECT s.src, c.field AS cell_field, 0 AS pos, sv.object_id, sv.object_type, "
+           "f.property, c.value, k.unit, k.quantity_role, sv.l1_handle, k.markings "
+           "FROM sv JOIN value_sources s ON s.ver = sv.ver AND s.superseded_at IS NULL "
+           "JOIN value_cells c ON c.src = s.src "
+           "JOIN value_kinds k ON k.kind = c.kind AND k.value_type = 'quantity' "
+           "JOIN value_fields f ON f.field = c.field")
     found: list[Any] = []
     ids = st._scope_ids
     for start in range(0, len(ids), SCOPE_CHUNK):

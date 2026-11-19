@@ -7,7 +7,7 @@ export const MAX_BYTES = 8 * 1024 * 1024;
 export const MAX_IMAGE_BYTES = 5 * 1024 * 1024;
 export const MAX_TOTAL = 10 * 1024 * 1024;
 
-export const ACCEPT = ".pdf,.xlsx,.docx,.csv,.txt,.md,.png,.jpg,.jpeg,.gif,.webp,application/pdf,text/csv,text/plain,image/png,image/jpeg,image/gif,image/webp,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.openxmlformats-officedocument.wordprocessingml.document";
+export const ACCEPT = ".pdf,.xlsx,.docx,.pptx,.csv,.txt,.md,.png,.jpg,.jpeg,.gif,.webp,application/pdf,text/csv,text/plain,image/png,image/jpeg,image/gif,image/webp,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/vnd.openxmlformats-officedocument.presentationml.presentation";
 
 export interface Attachment {
   id: string;

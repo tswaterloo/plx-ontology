@@ -156,5 +156,21 @@ CREATE TABLE IF NOT EXISTS walk_positions (
 );
 """
 
+# Step 2: each library estate discovery planned, with the site it was planned under
+# (``SharePointCapture._discover``): a run whose site listing fails or is cut carries the
+# site libraries it planned before, re-judged on the current exclusions; a OneDrive
+# (``personal`` 1) is never carried (its owner's exclusion needs the live site).
+_PLANNED_LIBRARIES = """
+CREATE TABLE IF NOT EXISTS planned_libraries (
+    drive_id TEXT PRIMARY KEY,
+    site_id TEXT NOT NULL,
+    site_name TEXT,
+    host TEXT NOT NULL,
+    personal INTEGER NOT NULL CHECK (personal IN (0, 1)),
+    library_name TEXT,
+    planned_at TEXT NOT NULL
+);
+"""
+
 STORE = "capture_sharepoint"
-STEPS = ((1, "initial", (_DDL,)),)
+STEPS = ((1, "initial", (_DDL,)), (2, "planned_libraries", (_PLANNED_LIBRARIES,)))

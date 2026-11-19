@@ -172,6 +172,27 @@ class DocStyleApi(ti.InstructApi):
         (root / "templates.json").write_text("{}")
         self.assertEqual(self.ana.get("/api/templates/learned").json()["status"], "none")
 
+    def test_the_learned_file_is_parsed_once_per_version(self):
+        """The learned templates file (tens of MB live) is parsed once per version, not on
+        every Templates visit; a re-learned file (``save`` replaces it) is read anew."""
+        from unittest import mock
+        root = self.backend.style_store()
+        own = template_of([MAIL, FILE_H], SENT[:2], author=ANA[0])
+        ds.save(root / "templates.json", [own], "2026-11-14T06:00:00Z")
+        parse = mock.patch.object(ds, "_read", wraps=ds._read)
+        with parse as parsed:
+            for _ in range(3):
+                body = self.ana.get("/api/templates/learned").json()
+                self.assertEqual(len(body["templates"]), 1)
+            self.assertEqual(parsed.call_count, 1)
+            ds.save(root / "templates.json", [own, {**own, "id": own["id"] + "-i",
+                                                     "kind": "invoice"}],
+                    "2026-11-15T06:00:00Z")
+            body = self.ana.get("/api/templates/learned").json()
+            self.assertEqual((len(body["templates"]), body["learned_at"]),
+                             (2, "2026-11-15T06:00:00Z"))
+            self.assertEqual(parsed.call_count, 2)
+
 
 def load_tests(loader, tests, pattern):
     """This module's own tests (the instruct harness's run in its module)."""

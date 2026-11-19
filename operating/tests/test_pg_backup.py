@@ -370,6 +370,28 @@ class GuardAndAgeTest(unittest.TestCase):
                 self.assertEqual((out["error"], out["min_free_bytes"]),
                                  ("disk_guard", 2 * size + 10_000_000_000))
 
+    def test_the_restore_guard_needs_the_dump_plus_40_gb_and_skips_with_a_problem(self) -> None:
+        from unittest import mock
+        dump = self.tmp / "daily" / f"plx-{self.stamp}.dump"
+        size = dump.stat().st_size
+        for free, refused in ((size + 40_000_000_000, False), (size + 40_000_000_000 - 1, True),
+                              (13_000_000_000, True)):
+            with mock.patch.object(plx_backup.shutil, "disk_usage",
+                                   return_value=mock.Mock(free=free)):
+                out = plx_backup.restore_disk_guard(dump)
+            self.assertEqual(out is not None, refused, free)
+        # a too-full disk: the throwaway database is never created, and the run is a failure
+        manifest = self.tmp / "daily" / f"manifest-{self.stamp}.json"
+        manifest.write_text(json.dumps({"files": {dump.name: {"sha256": plx_backup._sha256(dump)}},
+                                        "state_files": {}, "table_counts": {}}))
+        with mock.patch.object(plx_backup.shutil, "disk_usage",
+                               return_value=mock.Mock(free=13_000_000_000)), \
+                mock.patch.object(plx_backup.psycopg, "connect",
+                                  side_effect=AssertionError("no database touched")):
+            code, out = plx_backup.restore_test(now=plx_backup._stamp_time(self.stamp))
+        self.assertEqual(code, 1)
+        self.assertTrue(any(p.startswith("restore_skipped:disk_guard") for p in out["problems"]), out)
+
     def test_the_restore_test_fails_a_set_older_than_36_hours(self) -> None:
         made = plx_backup._stamp_time(self.stamp)
         for hours, old in ((1, False), (36, False), (37, True), (150, True)):

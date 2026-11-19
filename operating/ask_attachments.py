@@ -2,8 +2,10 @@
 
 **What is read.** The kind is decided from the bytes, never from the name or the browser's
 type: a PDF (its text, ``pypdf``), a spreadsheet (an ``.xlsx`` workbook's cells, read with
-``zipfile`` and ``xml.etree``; a ``.csv``), plain text, or an image (PNG, JPEG, GIF, WebP:
-shown to the model as an image). Anything else, an old ``.xls``, an encrypted PDF, a PDF
+``zipfile`` and ``xml.etree``; a ``.csv``), plain text, a Word document or a PowerPoint deck
+(a ``.docx``'s paragraphs and tables, a ``.pptx``'s slides in order: read as text, kind
+``text``, the same way), or an image (PNG, JPEG, GIF, WebP: shown to the model as an
+image). Anything else, an old ``.xls``, an encrypted PDF, a PDF
 with no text layer, or a file over its limit is not read, and the answer says which and
 why (``Unread``). Fail closed: an error while reading is an unread file, never a guess.
 
@@ -13,9 +15,13 @@ why (``Unread``). Fail closed: an error while reading is an unread file, never a
 each, its parts unpacked only up to ``MAX_UNZIPPED`` (no zip bomb); ``MAX_TEXT``
 characters of text per file and ``MAX_TEXT_TOTAL`` together.
 
-**Nothing is kept.** The bytes and the text live only for the question's own answer: no
-file, cache or log holds them. What the saved Ask keeps is ``Attached.meta`` (name, kind,
-size, a digest, whether it was read), never the content.
+**What is kept.** The text lives only for the question's own answer: no cache or log
+holds it, and the saved Ask keeps ``Attached.meta`` (name, kind, size, a digest, whether it
+was read), never the content. A Word, Excel or PowerPoint file the person attached is the
+one exception: its bytes (``Attached.data``, in memory) are kept by the caller as the
+person's own file, theirs only, like the copies the Ask edits for them
+(``operator_api.backend_ask._keep_attached``), so the Ask can edit it and hand the edited
+copy back (``Attached.kept``: the ``file:`` citation ``plx.edit_document`` takes).
 
 The people exclusion is applied by the caller (``operator_api.backend``): the text read
 here is cleaned of excluded people's addresses and ids before a model sees it, and with
@@ -55,6 +61,14 @@ KINDS = ("pdf", "spreadsheet", "text", "image")
 _SPREADSHEET_NS = "{http://schemas.openxmlformats.org/spreadsheetml/2006/main}"
 _REL_NS = "{http://schemas.openxmlformats.org/officeDocument/2006/relationships}"
 _PKG_REL_NS = "{http://schemas.openxmlformats.org/package/2006/relationships}"
+_WORD_NS = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}"
+_DRAWING_NS = "{http://schemas.openxmlformats.org/drawingml/2006/main}"
+_PRESENTATION_NS = "{http://schemas.openxmlformats.org/presentationml/2006/main}"
+_DOCX = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+_PPTX = "application/vnd.openxmlformats-officedocument.presentationml.presentation"
+_XLSX = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+# the kinds an attached file is kept to be edited as (media type -> the file's extension)
+EDITABLE = {_DOCX: "docx", _XLSX: "xlsx", _PPTX: "pptx"}
 
 
 @dataclass(frozen=True)
@@ -70,6 +84,10 @@ class Attached:
     media_type: Optional[str] = None
     unread: Optional[str] = None
     cut: bool = False
+    # a .docx/.xlsx/.pptx's own bytes, for the caller to keep as the person's file (never
+    # in ``meta``, never shown); ``kept``: that file's ``file:`` citation once kept
+    data: Optional[bytes] = field(default=None, repr=False, compare=False)
+    kept: Optional[str] = None
 
     @property
     def meta(self) -> dict[str, Any]:
@@ -112,7 +130,18 @@ def kind_of(data: bytes) -> tuple[Optional[str], Optional[str]]:
     if data[:4] == b"RIFF" and data[8:12] == b"WEBP":
         return "image", "image/webp"
     if data.startswith(b"PK\x03\x04"):
-        return "spreadsheet", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        # an Office package: what it is, by the part its package names (never the name);
+        # a zip none of them names is read as a workbook and refused as one
+        try:
+            with zipfile.ZipFile(io.BytesIO(data)) as archive:
+                names = set(archive.namelist())
+        except (zipfile.BadZipFile, ValueError, OSError):
+            names = set()
+        if "word/document.xml" in names and "xl/workbook.xml" not in names:
+            return "text", _DOCX
+        if "ppt/presentation.xml" in names and "xl/workbook.xml" not in names:
+            return "text", _PPTX
+        return "spreadsheet", _XLSX
     if data.startswith(CFB_MAGIC[:4]):
         return None, None     # an old binary Office file (.xls, .doc): not read
     try:
@@ -162,9 +191,9 @@ def _xml(archive: zipfile.ZipFile, name: str, budget: list[int]) -> Optional[Ele
     with archive.open(info) as handle:
         raw = handle.read(info.file_size + 1)
     if len(raw) > info.file_size:
-        raise _Unread("It could not be read as a workbook.")
+        raise _Unread("It could not be read: it is damaged.")
     if b"<!DOCTYPE" in raw[:2048] or b"<!ENTITY" in raw:
-        raise _Unread("It could not be read as a workbook.")
+        raise _Unread("It could not be read: it is damaged.")
     return ElementTree.fromstring(raw)
 
 
@@ -185,7 +214,8 @@ def _xlsx_text(data: bytes) -> tuple[str, bool]:
     with archive:
         names = set(archive.namelist())
         if "xl/workbook.xml" not in names:
-            raise _Unread("It is not a spreadsheet: attach a PDF, a spreadsheet, text or an "
+            raise _Unread("It is not a spreadsheet, Word or PowerPoint file: attach a PDF, a "
+                          "spreadsheet, a .docx, a .pptx, text or an "
                           "image.")
         shared: list[str] = []
         strings = _xml(archive, "xl/sharedStrings.xml", budget)
@@ -230,6 +260,71 @@ def _xlsx_text(data: bytes) -> tuple[str, bool]:
     return text, cut or clipped
 
 
+def _package(data: bytes) -> zipfile.ZipFile:
+    try:
+        return zipfile.ZipFile(io.BytesIO(data))
+    except zipfile.BadZipFile:
+        raise _Unread("It could not be read: it is damaged.") from None
+
+
+def _paragraphs(root: ElementTree.Element, para: str, run_text: str) -> list[str]:
+    """Each paragraph's text (its runs' text joined), empty ones left out."""
+    out = []
+    for p in root.iter(para):
+        text = "".join(t.text or "" for t in p.iter(run_text)).strip()
+        if text:
+            out.append(text)
+    return out
+
+
+def _docx_text(data: bytes) -> tuple[str, bool]:
+    """A Word document's body in order: paragraphs as lines, a table's rows as tab-joined
+    cells (headers, footers, comments and tracked deletions are not read)."""
+    budget = [MAX_UNZIPPED]
+    with _package(data) as archive:
+        root = _xml(archive, "word/document.xml", budget)
+    body = root.find(f"{_WORD_NS}body") if root is not None else None
+    lines: list[str] = []
+    for block in (list(body) if body is not None else ()):
+        if block.tag == f"{_WORD_NS}tbl":
+            for row in block.iter(f"{_WORD_NS}tr"):
+                cells = [" ".join(_paragraphs(c, f"{_WORD_NS}p", f"{_WORD_NS}t"))
+                         for c in row.iter(f"{_WORD_NS}tc")]
+                if any(cells):
+                    lines.append("\t".join(cells))
+        elif block.tag == f"{_WORD_NS}p":
+            lines.extend(_paragraphs(block, f"{_WORD_NS}p", f"{_WORD_NS}t"))
+    text = "\n".join(lines)
+    if not re.search(r"\w", text):
+        raise _Unread("It has no text to read.")
+    return _clip(text)
+
+
+def _pptx_text(data: bytes) -> tuple[str, bool]:
+    """A deck's slides in the deck's order, each ``[slide N]`` and its paragraphs (shapes
+    and tables; speaker notes are not read)."""
+    budget = [MAX_UNZIPPED]
+    parts: list[str] = []
+    with _package(data) as archive:
+        deck = _xml(archive, "ppt/presentation.xml", budget)
+        rels = _xml(archive, "ppt/_rels/presentation.xml.rels", budget)
+        target = {r.get("Id"): r.get("Target") for r in
+                  (rels.iter(f"{_PKG_REL_NS}Relationship") if rels is not None else ())}
+        ids = list(deck.iter(f"{_PRESENTATION_NS}sldId")) if deck is not None else []
+        for number, slide in enumerate(ids, 1):
+            path = str(target.get(slide.get(f"{_REL_NS}id")) or "").lstrip("/")
+            path = path if path.startswith("ppt/") else "ppt/" + path
+            root = _xml(archive, path, budget)
+            if root is None:
+                continue
+            lines = _paragraphs(root, f"{_DRAWING_NS}p", f"{_DRAWING_NS}t")
+            parts.append("\n".join([f"[slide {number}]", *lines]))
+    text = "\n\n".join(parts)
+    if not re.search(r"\w", re.sub(r"\[slide \d+\]", "", text)):
+        raise _Unread("Its slides have no text to read.")
+    return _clip(text)
+
+
 def _plain_text(data: bytes) -> tuple[str, bool]:
     text = data.decode("utf-8-sig")
     if not text.strip():
@@ -270,9 +365,9 @@ def decode(items: Iterable[Mapping[str, Any]]) -> Batch:
             continue
         kind, media = kind_of(data)
         if kind is None:
-            batch.files.append(unread("The Ask reads PDFs, spreadsheets (.xlsx, .csv), text "
-                                      "and images (PNG, JPEG, GIF, WebP); save it as one of "
-                                      "those."))
+            batch.files.append(unread("The Ask reads PDFs, spreadsheets (.xlsx, .csv), Word "
+                                      "(.docx) and PowerPoint (.pptx) files, text and images "
+                                      "(PNG, JPEG, GIF, WebP); save it as one of those."))
             continue
         limit = MAX_IMAGE_BYTES if kind == "image" else MAX_BYTES
         if len(data) > limit:
@@ -288,14 +383,15 @@ def decode(items: Iterable[Mapping[str, Any]]) -> Batch:
                                         image=base64.b64encode(data).decode("ascii")))
             continue
         try:
-            text, cut = {"pdf": _pdf_text, "spreadsheet": _xlsx_text,
-                         "text": _plain_text}[kind](data)
+            read = {"pdf": _pdf_text, "spreadsheet": _xlsx_text, "text": _plain_text}[kind]
+            read = {_DOCX: _docx_text, _PPTX: _pptx_text}.get(media or "", read)
+            text, cut = read(data)
         except _Unread as why:
             batch.files.append(unread(str(why), kind))
             continue
         except Exception:  # noqa: BLE001 - a damaged or unusual file: not read, never a guess
             batch.files.append(unread("It could not be read: attach it again, or save it "
-                                      "as a PDF or a spreadsheet.", kind))
+                                      "as a PDF.", kind))
             continue
         room = MAX_TEXT_TOTAL - text_total
         if room <= 0:
@@ -306,8 +402,61 @@ def decode(items: Iterable[Mapping[str, Any]]) -> Batch:
             text, cut = text[:room], True
         text_total += len(text)
         batch.files.append(Attached(name, kind, len(data), digest, text=text, cut=cut,
-                                    media_type=media))
+                                    media_type=media,
+                                    data=data if media in EDITABLE else None))
     return batch
+
+
+WITHHELD = ("Its text is not given to the assistant: it names a party whose material the "
+            "assistant may not read.")
+
+
+def image_words(image: Optional[str]) -> str:
+    """The words an image file carries beside its pixels, for the Freightcom screen: every
+    run of 4+ printable ASCII or UTF-16LE characters in its bytes (EXIF, XMP, PNG text,
+    comments, an embedded file name) and the text of PNG's compressed text chunks. Pixel
+    data's chance runs are noise the rule never matches by accident ("freight" + "com")."""
+    import zlib
+    raw = base64.b64decode(image or "", validate=False)
+    words = [m.decode("ascii") for m in re.findall(rb"[\x20-\x7e]{4,}", raw)]
+    words += [m.decode("utf-16-le") for m in re.findall(rb"(?:[\x20-\x7e]\x00){4,}", raw)]
+    at = 8 if raw.startswith(b"\x89PNG\r\n\x1a\n") else len(raw)
+    while at + 8 <= len(raw):
+        size = int.from_bytes(raw[at:at + 4], "big")
+        kind, body = raw[at + 4:at + 8], raw[at + 8:at + 8 + size]
+        at += 12 + size
+        packed = None
+        if kind == b"zTXt" and b"\x00" in body:
+            packed = body.split(b"\x00", 1)[1][1:]
+        elif kind == b"iTXt" and body.count(b"\x00") >= 1:
+            key, rest = body.split(b"\x00", 1)
+            if rest[:1] == b"\x01":
+                packed = rest[2:].split(b"\x00", 2)[-1]
+        if packed is not None:
+            words.append(zlib.decompressobj().decompress(packed, 1 << 20)
+                         .decode("utf-8", "replace"))
+    return "\n".join(words)
+
+
+def screened(files: Sequence[Attached]) -> list[Attached]:
+    """``files`` with the owner's no-AI rule applied: a read file whose name or text, or
+    an image whose name or carried words (``image_words``), names Freightcom
+    (``image_ocr_gpu.touches_freightcom``, the detection every read uses; over-matching
+    withholds) keeps no text, image or bytes and says why (``WITHHELD``); an error while
+    deciding withholds too. What an image SHOWS is not read here (no OCR before the model
+    sees it): a photo of a Freightcom label passes as the person's own upload."""
+    import dataclasses
+    from integrations.image_ocr_gpu import touches_freightcom
+    out = []
+    for f in files:
+        try:
+            named = touches_freightcom(f.name or "", f.text or "",
+                                       image_words(f.image) if f.image else "")
+        except Exception:  # noqa: BLE001 - undecidable: withheld
+            named = True
+        out.append(dataclasses.replace(f, text="", image=None, data=None, unread=WITHHELD)
+                   if named else f)
+    return out
 
 
 def prompt_block(files: Sequence[Attached]) -> str:
@@ -322,5 +471,5 @@ def prompt_block(files: Sequence[Attached]) -> str:
     return "\n\n".join(out)
 
 
-__all__ = ["Attached", "Batch", "KINDS", "MAX_BYTES", "MAX_FILES", "MAX_IMAGE_BYTES",
-           "MAX_TOTAL", "decode", "kind_of", "prompt_block"]
+__all__ = ["Attached", "Batch", "EDITABLE", "KINDS", "WITHHELD", "MAX_BYTES", "MAX_FILES", "MAX_IMAGE_BYTES",
+           "MAX_TOTAL", "decode", "kind_of", "prompt_block", "screened"]

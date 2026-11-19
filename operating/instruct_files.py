@@ -1,9 +1,12 @@
 """Documents an instruction drafts (a letter, a summary, a spec, a report, a filled table)
 made into real files, and their upload to SharePoint as a draft a person approves.
 
-* **Files** (``make``): ``docx`` (WordprocessingML) and ``xlsx`` (SpreadsheetML) are
-  written with the standard library alone; ``pdf`` needs the optional ``reportlab``
-  (absent: refused, the caller offers a .docx). A file's bytes are the same for the same
+* **Files** (``make``): ``docx`` (WordprocessingML), ``xlsx`` (SpreadsheetML) and ``pptx``
+  (PresentationML: a slide per "#" heading) are written with the standard library alone;
+  ``pdf`` needs the optional ``reportlab`` (absent: refused, the caller offers a .docx).
+  Charts drawn from query rows (``operator_api.charts``) go where a "[chart N]" line
+  stands, the rest at the end: native Office charts over their rows (``chart_ooxml``,
+  ``chart_docs``), drawn in a PDF (``chart_pdf``). A file's bytes are the same for the same
   content (fixed zip timestamps), so its digest names it.
 * **Uploads** (``UploadDesk``): an upload is prepared for one reader, one file and one
   target (a SharePoint drive and folder the reader opened through a file there: the
@@ -36,16 +39,20 @@ from pathlib import Path
 import re
 import secrets
 import threading
-from typing import Any, Callable, Mapping, Optional
+from typing import Any, Callable, Mapping, Optional, Sequence
 from xml.sax.saxutils import escape
 import zipfile
 from operating.card_text import mask_served
 from operating.file_modes import keep_private
 
-KINDS = ("docx", "xlsx", "pdf")
+KINDS = ("docx", "xlsx", "pdf", "pptx", "csv")
 MEDIA = {"docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
          "xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-         "pdf": "application/pdf"}
+         "pdf": "application/pdf",
+         "pptx": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+         "csv": "text/csv; charset=utf-8"}
+MAX_DOC_CHARTS = 8
+_CHART_AT = re.compile(r"^\s*\[chart\s+([1-9][0-9]?)\]\s*$", re.I)
 MAX_CONTENT = 60_000
 MAX_ROWS, MAX_COLS = 2000, 40
 # SharePoint grant roles that let a person add a file to a folder
@@ -75,7 +82,7 @@ class FileRefused(ValueError):
 def file_name(raw: Any, kind: str) -> str:
     """A safe file name with the kind's extension."""
     base = _NAME.sub(" ", str(raw or "")).strip(" .")
-    base = re.sub(r"\.(docx|xlsx|pdf)$", "", base, flags=re.I)[:80].strip() or "Document"
+    base = re.sub(r"\.(docx|xlsx|pdf|pptx|csv)$", "", base, flags=re.I)[:80].strip() or "Document"
     return f"{base}.{kind}"
 
 
@@ -131,11 +138,61 @@ def _table(rows: list[list[str]]) -> str:
             f"</w:tblBorders></w:tblPr>{body}</w:tbl>")
 
 
-def _docx(content: str) -> bytes:
+def _table_rows(lines: Sequence[str]) -> set[int]:
+    """Which lines are rows of a Markdown table: a line starting with "|", or a run of
+    lines with a "|" between cells whose header is followed by its rule row ("--- | ---")."""
+    out = {i for i, line in enumerate(lines) if line.lstrip().startswith("|")}
+    for i in range(len(lines) - 1):
+        if "|" in lines[i] and _RULE_ROW.match(lines[i + 1].strip()) \
+                and "|" in lines[i + 1]:
+            j = i
+            while j < len(lines) and "|" in lines[j] and lines[j].strip():
+                out.add(j)
+                j += 1
+    return out
+
+
+def _placed(content: str, charts: Sequence[Mapping[str, Any]]
+            ) -> list[tuple[str, Optional[Mapping[str, Any]]]]:
+    """The content's lines in order with each chart where its "[chart N]" line stands (a
+    line naming no chart is dropped); the charts no line names follow at the end."""
+    out: list[tuple[str, Optional[Mapping[str, Any]]]] = []
+    used: set[int] = set()
+    for line in content.split("\n"):
+        at = _CHART_AT.match(line)
+        if at:
+            n = int(at.group(1)) - 1
+            if n < len(charts) and n not in used:
+                used.add(n)
+                out.append(("", charts[n]))
+            continue
+        out.append((line, None))
+    out += [("", c) for n, c in enumerate(charts) if n not in used]
+    return out
+
+
+def _docx(content: str, charts: Sequence[Mapping[str, Any]] = ()) -> bytes:
+    from operating import chart_docs
     parts: list[str] = []
     table: list[list[str]] = []
-    for line in content.split("\n") + [""]:
-        if line.lstrip().startswith("|"):
+    extra: dict[str, Any] = {}
+    relations: list[tuple[str, str, str]] = []
+    overrides: dict[str, str] = {}
+    lines = _placed(content, charts) + [("", None)]
+    rows = _table_rows([line for line, _ in lines])
+    for at, (line, chart) in enumerate(lines):
+        if chart is not None:
+            if table:
+                parts.append(_table(table))
+                table = []
+            body, chart_parts, chart_rels, chart_types = chart_docs.docx_chart(
+                chart, len(relations) + 1)
+            parts.append(body)
+            extra.update(chart_parts)
+            relations += chart_rels
+            overrides.update(chart_types)
+            continue
+        if at in rows:
             if not _RULE_ROW.match(line.strip()):
                 table.append(_cells(line))
             continue
@@ -154,17 +211,26 @@ def _docx(content: str) -> bytes:
     while parts and parts[-1] == "<w:p></w:p>":
         parts.pop()
     body = ('<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
-            '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/'
-            'main"><w:body>' + "".join(parts) + "</w:body></w:document>")
-    types = ('<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
-             '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">'
-             '<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.'
-             'relationships+xml"/><Default Extension="xml" ContentType="application/xml"/>'
-             '<Override PartName="/word/document.xml" ContentType="application/vnd.'
-             'openxmlformats-officedocument.wordprocessingml.document.main+xml"/></Types>')
-    return _zip({"[Content_Types].xml": types,
-                 "_rels/.rels": _RELS.format(target="word/document.xml"),
-                 "word/document.xml": body})
+            f'<w:document {chart_docs.DOC_NS}><w:body>' + "".join(parts)
+            + "</w:body></w:document>")
+    if not relations:
+        types = ('<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+                 '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">'
+                 '<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.'
+                 'relationships+xml"/><Default Extension="xml" ContentType="application/xml"/>'
+                 '<Override PartName="/word/document.xml" ContentType="application/vnd.'
+                 'openxmlformats-officedocument.wordprocessingml.document.main+xml"/></Types>')
+        return _zip({"[Content_Types].xml": types,
+                     "_rels/.rels": _RELS.format(target="word/document.xml"),
+                     "word/document.xml": body})
+    from operating import chart_ooxml as ox
+    types = ox.content_types({**ox.BASE_TYPES, "xlsx": ox.CT_XLSX}, {
+        "/word/document.xml": "application/vnd.openxmlformats-officedocument."
+        "wordprocessingml.document.main+xml", **overrides})
+    return ox.zip_parts({"[Content_Types].xml": types,
+                         "_rels/.rels": _RELS.format(target="word/document.xml"),
+                         "word/document.xml": body,
+                         "word/_rels/document.xml.rels": ox.rels(relations), **extra})
 
 
 def _column(n: int) -> str:
@@ -177,9 +243,10 @@ def _column(n: int) -> str:
         n -= 1
 
 
-def _xlsx(content: str) -> bytes:
+def _xlsx(content: str, charts: Sequence[Mapping[str, Any]] = ()) -> bytes:
     rows = []
-    for r, line in enumerate([ln for ln in content.split("\n") if ln.strip()][:MAX_ROWS], 1):
+    lines = [ln for ln in content.split("\n") if ln.strip() and not _CHART_AT.match(ln)]
+    for r, line in enumerate(lines[:MAX_ROWS], 1):
         cells = [c.strip() for c in line.split("|")][:MAX_COLS]
         xml = []
         for c, value in enumerate(cells):
@@ -193,6 +260,17 @@ def _xlsx(content: str) -> bytes:
     ns = 'xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"'
     sheet = (f'<?xml version="1.0" encoding="UTF-8" standalone="yes"?><worksheet {ns}>'
              "<sheetData>" + "".join(rows) + "</sheetData></worksheet>")
+    if charts:   # the text on the first sheet, each chart's rows and chart on its own
+        from operating import chart_ooxml as ox
+        sheets = [("Sheet1", {"xl/worksheets/sheet1.xml": sheet},
+                   {"/xl/worksheets/sheet1.xml": ox.SHEET_CT})]
+        first = 1
+        for n, chart in enumerate(charts, 2):
+            name = f"Chart {n - 1}"
+            parts, types, made = ox.sheet_parts(chart, n, first, name)
+            sheets.append((name, parts, types))
+            first += made
+        return ox.workbook(sheets)
     book = (f'<?xml version="1.0" encoding="UTF-8" standalone="yes"?><workbook {ns} '
             'xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">'
             '<sheets><sheet name="Sheet1" sheetId="1" r:id="rId1"/></sheets></workbook>')
@@ -214,35 +292,136 @@ def _xlsx(content: str) -> bytes:
         "xl/_rels/workbook.xml.rels": book_rels, "xl/worksheets/sheet1.xml": sheet})
 
 
-def _pdf(content: str) -> bytes:
+def _pdf(content: str, charts: Sequence[Mapping[str, Any]] = ()) -> bytes:
     try:
         from reportlab.lib.pagesizes import letter
         from reportlab.pdfgen import canvas
     except ImportError:
         raise FileRefused("pdf_unavailable") from None
+    from operating import chart_pdf
     out = io.BytesIO()
     pdf = canvas.Canvas(out, pagesize=letter, invariant=1)
     y = 750
-    for line in content.split("\n"):
+    for line, chart in _placed(content, charts):
+        if chart is not None:
+            # the chart and the start of its notes on one page (long notes go on over)
+            height = chart_pdf.HEIGHT + chart_pdf.NOTE_LEAD * min(
+                len(chart_pdf.notes(chart, 512)), 6) + 50
+            if y - height < 50:
+                pdf.showPage()
+                y = 750
+            y = chart_pdf.draw(pdf, chart, 50, y, 512)
+            continue
+        heading = _HEADING.match(line)
+        if heading:
+            line = heading.group(2)
+        pdf.setFont("Helvetica-Bold" if heading else "Helvetica",
+                    {1: 15, 2: 13, 3: 12}[len(heading.group(1))] if heading else 10)
+        pdf.setFillColor("#000000")
         for start in range(0, max(len(line), 1), 95):
             if y < 50:
                 pdf.showPage()
                 y = 750
-            pdf.drawString(50, y, line[start:start + 95])
-            y -= 14
+            pdf.drawString(50, y, line[start:start + 95].replace("**", ""))
+            y -= 18 if heading else 14
     pdf.save()
     return out.getvalue()
 
 
-def make(kind: str, content: str) -> bytes:
+def _pptx(content: str, charts: Sequence[Mapping[str, Any]] = ()) -> bytes:
+    """A deck: a slide per "#" heading (its lines below it; the first lines before any
+    heading a slide of their own), and a slide per chart where it is placed."""
+    from operating import chart_docs
+    slides: list[dict[str, Any]] = []
+    current: Optional[dict[str, Any]] = None
+    for line, chart in _placed(content, charts):
+        if chart is not None:
+            if current is not None and current.get("chart") is None \
+                    and len(current["lines"]) <= chart_docs.CHART_SLIDE_LINES:
+                # placed under a heading with a few lines: the chart goes on that slide
+                current["chart"] = chart
+                current["title"] = current["title"] or str(chart.get("title") or "")
+            else:
+                current = {"title": str(chart.get("title") or ""), "lines": [],
+                           "chart": chart}
+                slides.append(current)
+            continue   # the lines after it (until a heading) are that slide's too
+        heading = _HEADING.match(line)
+        if heading or current is None:
+            if not heading and not line.strip():
+                continue
+            current = {"title": heading.group(2).replace("**", "") if heading else "",
+                       "lines": []}
+            slides.append(current)
+            if heading:
+                continue
+        bullet = _BULLET.match(line)
+        if line.strip() and not _RULE_ROW.match(line.strip()):
+            current["lines"].append(("- " + bullet.group(1) if bullet else line.strip())
+                                    .replace("**", ""))
+    return chart_docs.pptx(slides)
+
+
+def make(kind: str, content: str, charts: Sequence[Mapping[str, Any]] = ()) -> bytes:
     """The file of ``kind`` holding ``content`` (lines; a docx reads its Markdown headings,
-    bullets, bold and tables; an xlsx row's cells split on "|")."""
+    bullets, bold and tables; an xlsx row's cells split on "|"; a pptx a slide per
+    heading) and ``charts`` (drawn charts, ``models.AskChart`` dicts, at most
+    ``MAX_DOC_CHARTS``) where "[chart N]" lines place them."""
     if kind not in KINDS:
         raise FileRefused("kind_unknown")
-    if not content.strip() or len(content) > MAX_CONTENT:
+    if len(content) > MAX_CONTENT or not (content.strip() or charts):
         raise FileRefused("content_size")
+    if kind == "csv" and charts:
+        raise FileRefused("charts_not_held")   # a CSV is rows only: never a dropped chart
     content = mask_served(content)   # an exported file never holds a card or a secret
-    return {"docx": _docx, "xlsx": _xlsx, "pdf": _pdf}[kind](content)
+    charts = [_masked(c) for c in list(charts)[:MAX_DOC_CHARTS]]
+    return {"docx": _docx, "xlsx": _xlsx, "pdf": _pdf, "pptx": _pptx,
+            "csv": _csv}[kind](content, charts)
+
+
+# a table row's rule line ("|---|:--:|"): a Markdown table's, never data
+_RULE_ROW = re.compile(r"^\s*\|?\s*:?-{2,}:?\s*(\|\s*:?-{2,}:?\s*)*\|?\s*$")
+# a cell a spreadsheet would run as a formula when the CSV is opened (=, +, -, @, tab, CR)
+_FORMULA_START = ("=", "+", "-", "@", "\t", "\r")
+_NUMBER = re.compile(r"[+-]?\d+(?:[.,]\d+)*(?:\.\d+)?%?")
+
+
+def _csv(content: str, charts: Sequence[Mapping[str, Any]] = ()) -> bytes:
+    """One CSV row per line, cells split on "|" as an xlsx's (a Markdown table's outer
+    pipes and rule row dropped), quoted as the csv module does, UTF-8 with a byte-order
+    mark (Excel then reads accents right) and CRLF rows. A cell that a spreadsheet would
+    run as a formula (=, +, -, @ first, not a plain number) is kept as text with a leading
+    apostrophe, so opening the file never runs anything written into it."""
+    import csv
+    out = io.StringIO()
+    writer = csv.writer(out, lineterminator="\r\n")
+    lines = [ln for ln in content.split("\n") if ln.strip() and not _CHART_AT.match(ln)
+             and not _RULE_ROW.match(ln)]
+    for line in lines[:MAX_ROWS]:
+        row = line.strip()
+        if row.startswith("|") and row.endswith("|") and len(row) > 1:
+            row = row[1:-1]
+        cells = [c.strip() for c in row.split("|")][:MAX_COLS]
+        writer.writerow([f"'{c}" if c.startswith(_FORMULA_START) and not _NUMBER.fullmatch(c)
+                         else c for c in cells])
+    return ("\ufeff" + out.getvalue()).encode("utf-8")
+
+
+def _masked(chart: Mapping[str, Any]) -> dict[str, Any]:
+    """A chart's words as a file holds them: no card or secret in its title, labels,
+    series names or statement."""
+    out = dict(chart)
+    for key in ("title", "x", "sql"):
+        if isinstance(out.get(key), str):
+            out[key] = mask_served(out[key])
+    out["labels"] = [mask_served(str(v)) for v in out.get("labels") or ()]
+    out["series"] = [{**s, "name": mask_served(str(s.get("name") or ""))}
+                     for s in out.get("series") or ()]
+    if out.get("panels"):
+        out["panels"] = [{**p, "title": mask_served(str(p.get("title") or "")),
+                          "labels": [mask_served(str(v)) for v in p.get("labels") or ()]}
+                         for p in out["panels"]]
+    return out
 
 
 # ---- the upload desk --------------------------------------------------------------------

@@ -19,7 +19,10 @@ export function applyEvent(turn: Turn, ev: AskEvent): Turn {
       // each plain-words step once, in the order the work did them
       const said = typeof ev.data?.message === "string" ? ev.data.message : "";
       const steps = turn.steps ?? [];
-      return { ...turn, status: said || turn.status, steps: said && steps[steps.length - 1] !== said ? [...steps, said].slice(-MAX_STEPS) : steps };
+      // a read after words streamed: those words were the work's own narration, and the
+      // work is reading again (not writing) until the next words come
+      const reading = turn.phase === "streaming" && (ev.data?.step === "reading" || ev.data?.step === "searching");
+      return { ...turn, phase: reading ? "thinking" : turn.phase, status: said || turn.status, steps: said && steps[steps.length - 1] !== said ? [...steps, said].slice(-MAX_STEPS) : steps };
     }
     case "verdict":
       return typeof ev.data?.text === "string" && ev.data.text.trim() ? { ...turn, verdict: ev.data.text.trim() } : turn;
@@ -52,7 +55,7 @@ export interface TurnRequest {
   objectId?: string;
   source?: string;
   files: Attachment[];
-  extra: Pick<AskRequest, "context" | "mode" | "instruction" | "clarified">;
+  extra: Pick<AskRequest, "context" | "mode" | "instruction" | "clarified" | "deep">;
 }
 
 /** API limits (operator_api AskRequest): at most 12 history turns of 4,000 characters. */
@@ -116,7 +119,7 @@ export function useThread() {
    *  `source` to one document (a mail, attachment or file the reader has open); `extra`
    *  carries the page's context and an instruction's continuation (the one box's "do"). */
   const run = useCallback(
-    async (question: string, objectId?: string, source?: string, files: Attachment[] = [], extra: Pick<AskRequest, "context" | "mode" | "instruction" | "clarified"> = {}) => {
+    async (question: string, objectId?: string, source?: string, files: Attachment[] = [], extra: Pick<AskRequest, "context" | "mode" | "instruction" | "clarified" | "deep"> = {}) => {
       ctrl.current?.abort();
       const c = new AbortController();
       ctrl.current = c;
@@ -168,6 +171,12 @@ export function useThread() {
     [run],
   );
 
+  /** The same question again, thought through (AskRequest.deep): its scope, page context and files as it was asked. */
+  const deeper = useCallback(
+    (t: Turn) => run(t.question, t.request?.objectId, t.request?.source, t.request?.files ?? [], { ...(t.request?.extra ?? {}), deep: true }),
+    [run],
+  );
+
   /** A suggested follow-up: asked in the same scope as the turn it follows (not its files). */
   const followUp = useCallback(
     (next: string, from: Turn) => {
@@ -200,5 +209,5 @@ export function useThread() {
     setTurns(restored);
   }, []);
 
-  return { turns, run, retry, followUp, stop, reset, busy, seed };
+  return { turns, run, retry, deeper, followUp, stop, reset, busy, seed };
 }

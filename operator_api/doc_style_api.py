@@ -23,7 +23,7 @@ from __future__ import annotations
 
 import datetime as dt
 import hashlib
-import json
+import copy
 from pathlib import Path
 import re
 import secrets
@@ -156,7 +156,7 @@ class DocStyleMixin:
         if root is None:
             raise _refuse("no_templates")
         try:
-            templates = ds.load(root / "templates.json")
+            templates, _learned = ds.load_kept(root / "templates.json")
         except ds.StyleRefused as refused:
             raise _refuse(refused.code) from None
         of_kind = [t for t in templates if t["kind"] == kind]
@@ -180,7 +180,7 @@ class DocStyleMixin:
             raise _refuse("two_authors")
         if not usable:
             raise _refuse("no_author")
-        return next(iter(usable.values()))
+        return copy.deepcopy(next(iter(usable.values())))   # the kept one stays as read
 
     def learned_templates(self, reader: Reader) -> m.LearnedTemplates:
         """The kinds of document learned from this reader's own sent documents
@@ -196,9 +196,8 @@ class DocStyleMixin:
         if self._instruct_guard() is None:  # type: ignore[attr-defined]
             return m.LearnedTemplates(status="unavailable")
         try:
-            raw = json.loads((root / "templates.json").read_text(encoding="utf-8"))
-            templates = ds.load(root / "templates.json")
-        except (ds.StyleRefused, OSError, ValueError):
+            templates, learned = ds.load_kept(root / "templates.json")
+        except ds.StyleRefused:
             return m.LearnedTemplates(status="none")
         me = me.lower()
         out = []
@@ -219,9 +218,7 @@ class DocStyleMixin:
                         ask=f"make a {words} in my usual template for "))
                     break
                 mine = [t for t in mine if t is not best]
-        learned = raw.get("learned_at") if isinstance(raw, dict) else None
-        return m.LearnedTemplates(status="read", templates=out,
-                                  learned_at=learned if isinstance(learned, str) else None)
+        return m.LearnedTemplates(status="read", templates=out, learned_at=learned)
 
     def style_make(self, reader: Reader, text: str, *, as_of: Optional[dt.date] = None
                    ) -> m.InstructFill:

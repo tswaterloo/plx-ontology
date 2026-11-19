@@ -146,7 +146,7 @@ class SystemReader:
         payload = action.get("payload") if isinstance(action.get("payload"), Mapping) else {}
         step = {("bc_write", True): self._bc_record,
                 ("planner_write", operation == "task_update"): self._planner,
-                ("calendar_write", operation == "event_update"): self._event,
+                ("calendar_write", operation in ("event_update", "event_respond")): self._event,
                 ("sharepoint_write", operation == "list_item_update"): self._list_item,
                 ("mc_approval", operation == "approval_decide"): self._gate,
                 ("portal_write", True): self._portal_record}.get((kind, True))

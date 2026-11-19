@@ -1043,11 +1043,12 @@ def discover(mirror: Path, state_dir: Path, base: Base, state: State, plan: "Pla
     when it would have (:func:`cycle_reads`)."""
     read_from = report.setdefault("read_from", {})
     refreshed = report.setdefault("refreshed_at", {})
+    overdue = report.setdefault("refresh_overdue", {})
     from ontology import project
 
     def began(source: str, opener: Callable[[], Any]) -> None:
         # the capture's own last refresh from its system, read before its scan begins
-        refreshed[source] = capture_refreshed(source, opener, base.bound)
+        refreshed[source], overdue[source] = capture_refresh_state(source, opener, base.bound)
         read_from[source] = _now()
     began("portal_api", lambda: project.MirrorCaptures(mirror))
     added = {"portal_api": portal_changes(mirror, base, state, plan)}
@@ -1067,23 +1068,21 @@ def discover(mirror: Path, state_dir: Path, base: Base, state: State, plan: "Pla
     return added
 
 
-def capture_refreshed(source: str, opener: Callable[[], Any],
-                      bound: Mapping[str, Any] | None) -> str | None:
-    """When ``source``'s capture last refreshed from its source system, as a full build
-    states it (``Projector.freshness``: the stalest last refresh of the relations the
-    generation judged, ``bound``; every described one when it records none), read from
-    the live capture store (``describe``; mail without its whole-capture listing check,
-    which scans every message). A delta cycle's read reaches no further than this into
-    what the source holds: a capture that stopped refreshing (mail's 10 h outage, 11-12)
-    keeps its own old time however recently the cycle read the store. None when the store
-    cannot be opened or states no refresh time (the served freshness then does not move)."""
+# How old a unit's last refresh may be before it is OVERDUE against its own cadence, by source
+# (seconds; others ``DEFAULT_CADENCE_SECONDS``): a mail folder is read every cycle; a Teams
+# conversation with no message in the last ``active_days`` is read again only once its last
+# read is ``refresh_hours`` old (at most 24 h: ``capture_teams`` scope bound), so a dormant
+# chat read twice a day is current, not late, until 24 h plus a 2 h grace have passed.
+CADENCE_SECONDS = {"graph_mail": 6 * 3600.0, "teams": 26 * 3600.0}
+DEFAULT_CADENCE_SECONDS = 36 * 3600.0
+
+
+def _refresh_times(source: str, described: Any, bound: Mapping[str, Any] | None
+                   ) -> list[Any] | None:
+    """Every unit's last refresh the capture states (``unit_times`` of a relation, else its
+    ``last_refresh_at``) over the relations the generation judged; None when one is
+    unreadable."""
     from ontology.store import instant
-    try:
-        with contextlib.closing(opener()) as captures:
-            described = (_mail_refreshes(captures) if source == "graph_mail"
-                         else captures.describe())
-    except Exception:  # noqa: BLE001 - not readable: no capture time
-        return None
     relations = described.get("relations") if isinstance(described, Mapping) else None
     if not isinstance(relations, Mapping):
         return None
@@ -1092,14 +1091,68 @@ def capture_refreshed(source: str, opener: Callable[[], Any],
     for relation, state in relations.items():
         if judged is not None and relation not in judged:
             continue
-        at = state.get("last_refresh_at") if isinstance(state, Mapping) else None
-        if not at:
+        if not isinstance(state, Mapping):
             continue
-        try:
-            times.append(instant(at))
-        except Exception:  # noqa: BLE001 - an unreadable time: no capture time
-            return None
-    return min(times) if times else None
+        many = state.get("unit_times")
+        for at in (many if isinstance(many, (list, tuple)) else [state.get("last_refresh_at")]):
+            if not at:
+                continue
+            try:
+                times.append(instant(at))
+            except Exception:  # noqa: BLE001 - an unreadable time: no capture time
+                return None
+    return times
+
+
+def _described(source: str, opener: Callable[[], Any]) -> Any:
+    try:
+        with contextlib.closing(opener()) as captures:
+            return (_mail_refreshes(captures) if source == "graph_mail"
+                    else _teams_refreshes(captures) if source == "teams"
+                    else captures.describe())
+    except Exception:  # noqa: BLE001 - not readable: no capture time
+        return None
+
+
+def capture_refreshed(source: str, opener: Callable[[], Any],
+                      bound: Mapping[str, Any] | None) -> str | None:
+    """The ``refreshed_at`` of :func:`capture_refresh_state` (None when unknown)."""
+    return capture_refresh_state(source, opener, bound)[0]
+
+
+def judge_refreshes(source: str, times: Sequence[str]) -> tuple[str | None, bool]:
+    """``(newest, overdue)`` of units' last refresh times (``capture_refresh_state``)."""
+    limit = CADENCE_SECONDS.get(source, DEFAULT_CADENCE_SECONDS)
+    now = dt.datetime.now(dt.timezone.utc)
+
+    def age(at: str) -> float:
+        parsed = dt.datetime.fromisoformat(at.replace("Z", "+00:00"))
+        return (now - (parsed if parsed.tzinfo else parsed.replace(
+            tzinfo=dt.timezone.utc))).total_seconds()
+    try:
+        overdue = any(age(at) > limit for at in times)
+    except ValueError:   # an unreadable time: nothing is claimed current
+        return None, False
+    return max(times), overdue
+
+
+def capture_refresh_state(source: str, opener: Callable[[], Any],
+                          bound: Mapping[str, Any] | None) -> tuple[str | None, bool]:
+    """``(refreshed_at, overdue)`` of ``source``'s capture, read from the live capture store
+    (``describe``; mail without its whole-capture listing check, which scans every message).
+
+    ``refreshed_at``: the NEWEST last refresh of any unit of the relations the generation
+    judged: a unit is counted by its own cadence, so a dormant chat read every 12 h does not
+    hold the source's time 12 h back. A delta cycle's read reaches no further than this into
+    what the source holds. ``overdue``: some unit's last refresh is older than the source's
+    cadence (``CADENCE_SECONDS``): the capture stopped, or a unit stopped being read (mail's
+    10 h outage, a chat no longer tried); the served freshness is stale then whatever the
+    newest time says. (None, False) when the store cannot be opened or states no refresh
+    time (the served freshness then does not move)."""
+    times = _refresh_times(source, _described(source, opener), bound)
+    if not times:
+        return None, False
+    return judge_refreshes(source, times)
 
 
 def _mail_refreshes(captures: Any) -> dict[str, Any]:
@@ -1112,9 +1165,38 @@ def _mail_refreshes(captures: Any) -> dict[str, Any]:
         "SELECT reason, last_run_at FROM folders").fetchall()
         if row["last_run_at"] and not terminal_reason(row["reason"])]
     from ontology.project import NOTICE_REFERENCES, NOTICE_RELATION
-    state = {"last_refresh_at": min(runs) if runs else None}
+    state = {"last_refresh_at": min(runs) if runs else None, "unit_times": list(runs)}
     return {"relations": {name: dict(state) for name in (
         "messages", "attachments", "people", NOTICE_RELATION, NOTICE_REFERENCES)}}
+
+
+def _teams_refreshes(captures: Any) -> dict[str, Any]:
+    """The Teams capture's refresh time as ``TeamsCaptures.describe`` states it (the
+    stalest latest run of a captured channel or chat), less the units whose latest run
+    is settled not readable (``capture_teams.NOT_READABLE``: a chat hosted in another
+    tenant; nothing of its content is claimed captured, and a chat no listing names any
+    more is never tried again, so its run is the capture's last word on it: one such chat
+    held served Teams freshness days old while every other unit read within hours). A
+    unit read again starts a new run and counts as before. Read from the capture's own
+    snapshot connection, so the derivation's code is not touched."""
+    from integrations.capture_teams import NOT_READABLE
+    described = captures.describe()
+    relations = described.get("relations")
+    if not isinstance(relations, dict):
+        return described
+    for relation, kind in captures.kinds.items():
+        if relation not in relations:
+            continue
+        settled = {row[0] for row in captures._conn.execute(
+            "SELECT r.unit FROM runs r JOIN (SELECT unit, MAX(run_id) AS run_id FROM runs "
+            "WHERE kind = ? GROUP BY unit) l ON l.run_id = r.run_id WHERE r.reason = ? "
+            "OR r.reason LIKE ?", (kind.name, NOT_READABLE, NOT_READABLE + ":%"))}
+        times = [state["refreshed_at"] for unit, state in captures._units[relation].items()
+                 if unit not in settled]
+        relations[relation] = {**relations[relation],
+                               "last_refresh_at": min(times) if times else None,
+                               "unit_times": list(times)}
+    return described
 
 
 # What a cycle read of each source, kept in its layer's ``store_meta`` (``READS_KEY``)
@@ -1150,6 +1232,7 @@ def cycle_reads(report: Mapping[str, Any], left_open: Mapping[str, int]
         # the capture's own last refresh, read before the scan (``capture_refreshed``)
         stamp = (report.get("refreshed_at") or {}).get(source)
         entry["refreshed_at"] = stamp if isinstance(stamp, str) else None
+        entry["refresh_overdue"] = (report.get("refresh_overdue") or {}).get(source) is True
     return out
 
 

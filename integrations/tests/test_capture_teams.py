@@ -1909,6 +1909,70 @@ class ChatsReconcileTests(CaptureCase):
             db.execute("UPDATE runs SET updated_at = ? WHERE run_id = ?", (old, back["run_id"]))
         self.assertEqual(freshness(), old)
 
+    def test_a_chat_settled_not_readable_leaves_the_served_freshness(self):
+        """Live: a chat hosted in another tenant, refused on its one read days ago and
+        never listed again, held served Teams freshness that old while every other unit
+        read within hours. The cycle's capture time (``ontology.delta.capture_refreshed``)
+        leaves out units whose latest run is settled not readable (nothing of them is
+        claimed captured); a stale unit of any other kind still holds it back, and a
+        settled one read again counts again."""
+        from ontology.delta import capture_refresh_state
+        from ontology.store import instant
+        self.capture.run(scope())
+        old = "2026-09-01T00:00:00.000000Z"
+        live = Conversation("chat", CHAT).unit
+        acl = self.store.unit_acl("teams_chat", live)
+        elsewhere = [Conversation("chat", f"19:meeting_x{i:02d}@thread.v2").unit
+                     for i in range(3)]
+        for n, unit in enumerate(elsewhere):
+            run = self.store.begin_run("teams_chat", unit, [unit])
+            self.store.set_unit_acl(run["run_id"], acl)
+            self.store.pause_run(run["run_id"], reason=capture_teams.OTHER_TENANT
+                                 if n else capture_teams.NOT_READABLE)
+        with sqlite3.connect(self.store.path) as db:
+            db.execute("UPDATE runs SET updated_at = ? WHERE unit IN (%s)"
+                       % ",".join("?" * len(elsewhere)), (old, *elsewhere))
+
+        def served():
+            return capture_refresh_state("teams", lambda: TeamsCaptures(self.store.path), None)
+
+        def described():
+            with TeamsCaptures(self.store.path) as captured:
+                return min(r["last_refresh_at"] for r in captured.describe()["relations"]
+                           .values() if r.get("last_refresh_at"))
+        self.assertEqual(described(), old)              # the derivation's own word
+        # the served time is the newest unit's; nothing is overdue without the settled ones
+        self.assertGreater(served()[0], instant(old))
+        self.assertEqual(served(), (instant(max(
+            self.store.run(k, u)["updated_at"] for k, u in self._latest()
+            if u not in elsewhere)), False))
+        # a stale unit of any other kind makes the source overdue (stale), the time stays
+        cut = Conversation("chat", "19:cut_01@thread.v2").unit
+        run = self.store.begin_run("teams_chat", cut, [cut])
+        self.store.set_unit_acl(run["run_id"], acl)
+        self.store.pause_run(run["run_id"], reason="time_budget")
+        with sqlite3.connect(self.store.path) as db:
+            db.execute("UPDATE runs SET updated_at = ? WHERE run_id = ?", (old, run["run_id"]))
+        self.assertGreater(served()[0], instant(old))
+        self.assertTrue(served()[1])
+        with sqlite3.connect(self.store.path) as db:
+            db.execute("DELETE FROM runs WHERE unit = ?", (cut,))
+            db.execute("DELETE FROM unit_acl WHERE unit = ?", (cut,))
+        # read again (a new run, not finished yet): back in the freshness
+        again = self.store.begin_run("teams_chat", elsewhere[0], [elsewhere[0]])
+        self.store.pause_run(again["run_id"], reason="time_budget")
+        with sqlite3.connect(self.store.path) as db:
+            db.execute("UPDATE runs SET updated_at = ? WHERE run_id = ?",
+                       (old, again["run_id"]))
+        self.assertTrue(served()[1])
+        self.assertFalse(capture_refresh_state(      # and a stopped unit with the rest fresh
+            "teams", lambda: TeamsCaptures(self.store.path), {"teams": []})[1])
+
+    def _latest(self) -> list[tuple[str, str]]:
+        """(kind, unit) of every unit with a captured membership."""
+        return [tuple(r) for r in self.store._db.execute(
+            "SELECT kind, unit FROM unit_acl")]
+
     def test_every_listed_chat_is_accounted_for_at_cardinality(self):
         self.capture.run(scope())   # the fixture's one chat, captured
         for n in (1, 10, 60):

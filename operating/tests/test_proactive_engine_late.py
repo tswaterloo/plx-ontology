@@ -1183,6 +1183,61 @@ class PostgresStoreTest(_pe.Engine):
                     # the listing, the fields, then the whole type in one statement
                     self.assertEqual(len(statements), 3, statements)
 
+    def test_a_scoped_quantity_read_on_postgres_reads_the_scope_by_key(self):
+        """An incremental pass's quantity read on Postgres returns the rows the SQLite
+        generation's scoped read gives (the scope's current quantity cells, an unknown id
+        none) and reaches the value cells by key from the scope: one flat join of its nine
+        relations passed join_collapse_limit and the planner joined every quantity cell of
+        the store first (60-107 s, ~10 GB of temp per worker on the live store). With
+        sequential scans priced out, that plan still scans value_cells (it has no index
+        by kind); the keyed read takes it by its primary key."""
+        import psycopg
+        from operating.pg.sqlite_compat import PgCompatConnection
+        world, ids = seeded()
+        world.build(self.store)
+        dsn = self.postgres(world)
+        scope = sorted(v for v in ids.values() if isinstance(v, str)) + ["PurchaseOrder:no.such:{}"]
+        lite = pe._Store(self.store, threads=1, scope=scope)
+        self.addCleanup(lite.close)
+        with mock.patch.object(pe, "_connect",
+                               lambda _path, _file_only=False: PgCompatConnection(dsn)):
+            pg = pe._Store(self.store, threads=1, scope=scope)
+        self.addCleanup(pg.close)
+        self.assertTrue(pg.pg and pg.scoped)
+        want = proactive_engine_quantities._quantity_rows(lite)
+        self.assertTrue(want)
+        self.assertIn(ids["conflict_a"], {row["object_id"] for row in want})
+        from operating.pg import sqlite_compat
+        ran: list = []   # (connection, Postgres text, its parameters)
+        real = PgCompatConnection._run
+
+        def run(conn, cur, text, params):
+            ran.append((conn, text, params))
+            return real(conn, cur, text, params)
+        # a scope as long as a live pass's (500 ids): read through the session's key set
+        with mock.patch.object(PgCompatConnection, "_run", run), \
+                mock.patch.object(sqlite_compat, "LONG_LIST_CHARS", 1):
+            got = proactive_engine_quantities._quantity_rows(pg)
+        self.assertEqual(got, want)
+        reads = [r for r in ran if "value_cells" in r[1]]
+        self.assertTrue(reads)
+        self.assertTrue(any("sq_keys" in text for _c, text, _p in reads), reads)
+        for conn, text, params in reads:
+            with conn._conn.cursor() as cur:
+                cur.execute("SET enable_seqscan = off")
+                cur.execute("EXPLAIN (FORMAT JSON) " + text, params)
+                plan = cur.fetchone()[0]
+                cur.execute("RESET enable_seqscan")
+            cells, stack = [], [plan[0]["Plan"]]
+            while stack:
+                node = stack.pop()
+                stack.extend(node.get("Plans", ()))
+                if node.get("Relation Name") == "value_cells":
+                    cells.append(node)
+            self.assertTrue(cells, plan)
+            for node in cells:   # each cell read by the scope's value sources, never whole
+                self.assertIn("src", node.get("Index Cond", ""), node)
+
     def test_every_detector_finds_on_postgres_what_it_finds_on_sqlite(self):
         from operating.pg.sqlite_compat import PgCompatConnection
         world, ids = seeded()

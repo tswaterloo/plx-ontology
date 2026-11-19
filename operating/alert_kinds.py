@@ -56,6 +56,14 @@ def home(event_type: str) -> bool:
     return bool(found and found["default"] == "on" and found["home"])
 
 
+def suggested(event_type: str) -> bool:
+    """Shown on the suggestion cards to every reader the type is routed to, switched on or
+    not: the kinds the old engine's suggestions always showed (no regression while their
+    precision is measured). Watching and My work still follow ``default``/``home``."""
+    found = entry(event_type)
+    return bool(found and found.get("suggested") is True)
+
+
 def shown(event_type: str, reader_on: Iterable[str] = ()) -> bool:
     """Listed in Watching for this reader: on by default, or switched on by them."""
     return default_on(event_type) or event_type in set(reader_on)

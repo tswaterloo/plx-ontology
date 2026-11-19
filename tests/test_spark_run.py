@@ -1,0 +1,213 @@
+"""The Spark launcher's boundaries (deploy/spark): what of the box's state may go to a Spark,
+what of the caller's environment goes with a run, and what spark_run.sh refuses to ship,
+checked without a Spark (every refusal happens before any connection)."""
+from __future__ import annotations
+
+import os
+import sqlite3
+import subprocess
+import sys
+import tempfile
+import unittest
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "deploy" / "spark"))
+import spark_run_remote as remote  # noqa: E402
+import spark_run_spec as spec  # noqa: E402
+import spark_state_sync as sync  # noqa: E402
+
+
+def _db(path: Path, wal: bool) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    c = sqlite3.connect(path)
+    if wal:
+        c.execute("PRAGMA journal_mode=WAL")
+    c.execute("CREATE TABLE t (a)")
+    c.commit()
+    c.close()
+
+
+class StatePlan(unittest.TestCase):
+    def setUp(self):
+        self.root = Path(tempfile.mkdtemp())
+        self.addCleanup(lambda: subprocess.run(["rm", "-rf", str(self.root)]))
+
+    def put(self, rel: str, text: str = "x") -> None:
+        p = self.root / rel
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(text)
+
+    def test_only_allowed_stores_go_never_sessions_keys_heldout_or_blobs(self):
+        _db(self.root / "mail-capture" / "capture.db", wal=True)
+        _db(self.root / "session-replay.sqlite", wal=False)
+        _db(self.root / "projection" / "delta" / "delta-20261119T010508869306.sqlite", False)
+        for rel in ("app-sessions.json", "console-ticket-audit.jsonl", "eval-heldout/items.json",
+                    "ts-petra/ssh_config", "ts-petra/id_ed25519", "ops-alarms/status.json",
+                    "jobq/q.json", "view-as/audit.jsonl", "host/workbench.env",
+                    "host/api-token.json", "mail-capture/blobs/ab/abcd",
+                    "mail-capture/capture.db-wal", "mail-capture/capture.db.new",
+                    "app-data/known-readers.json", "projection/delta/work-20261119T0552/x",
+                    "sharepoint-capture/.lookup.sqlite.lock", "autopilot/queue.json",
+                    "answer-bank/bank.json", "host/logs/a.log", "case-runtime/cases.sqlite"):
+            self.put(rel)
+        got = {r["rel"]: r["kind"] for r in sync.plan(self.root)}
+        self.assertEqual(got, {"mail-capture/capture.db": "wal",
+                               "session-replay.sqlite": "rollback",
+                               "autopilot/queue.json": "file",
+                               "answer-bank/bank.json": "file",
+                               "case-runtime/cases.sqlite": "file"})
+        with_blobs = {r["rel"] for r in sync.plan(self.root, blobs=True)}
+        self.assertEqual(with_blobs - set(got), {"mail-capture/blobs/ab/abcd"})
+        self.assertEqual({r["rel"] for r in sync.plan(self.root, only=("mail-capture",))},
+                         {"mail-capture/capture.db"})
+
+    def test_a_folder_outside_the_list_never_goes_whatever_it_holds(self):
+        _db(self.root / "spark" / "x.sqlite", wal=True)
+        self.put("unknown-new-dir/data.json")
+        self.put("windows/holds/x")
+        self.assertEqual(sync.plan(self.root), [])
+
+    def test_a_bad_destination_refuses(self):
+        for dest in ("../x", "/home/x", "a b", "x;rm"):
+            with self.assertRaises(SystemExit):
+                sync.main(["--host", "s7d3d", "--dest", dest, "--dry-run",
+                           "--state", str(self.root)])
+
+
+class RunEnvironment(unittest.TestCase):
+    ENV = {"PLX_ONTOLOGY_PG": "only", "PLX_WORKBENCH_SESSION_SECRET": "s3",
+           "PLX_EVAL_READER": '{"email": "x"}', "PLX_API_KEY": "k", "PLX_PG_DSN": "dsn",
+           "PLX_AGENT_SESSION_TICKET": "t", "PLX_SPARK_SSH_CONFIG": "/c", "HOME": "/h",
+           "AZURE_CLIENT_SECRET": "a", "TZ": "America/New_York", "OTHER": "o",
+           "SPEC_SHA": "a" * 40, "SPEC_TREE": "/t", "SPEC_CWD": "/t", "SPEC_STATE": "copy",
+           "SPEC_NAME": "n"}
+
+    def test_secrets_go_only_by_name_and_nothing_outside_plx(self):
+        self.assertEqual(spec.passed_env(self.ENV, []),
+                         {"PLX_ONTOLOGY_PG": "only", "PLX_EVAL_READER": '{"email": "x"}',
+                          "TZ": "America/New_York"})
+        got = spec.passed_env(self.ENV, ["PLX_WORKBENCH_SESSION_SECRET", "ABSENT"])
+        self.assertEqual(got["PLX_WORKBENCH_SESSION_SECRET"], "s3")
+        self.assertNotIn("ABSENT", got)
+        self.assertNotIn("PLX_API_KEY", got)
+
+    def test_a_bad_name_or_no_command_refuses(self):
+        for named in (["A B"], ["X=1"], ["$(id)"]):
+            with self.assertRaises(ValueError):
+                spec.passed_env(self.ENV, named)
+        with self.assertRaises(ValueError):
+            spec.build(["0", "0", "0"], self.ENV)
+        got = spec.build(["1", "/data/scratch/x", "1", "/data/scratch/o", "0", "python3", "-c",
+                          "1"], self.ENV)
+        self.assertEqual((got["ship"], got["out"], got["cmd"], got["state"]),
+                         (["/data/scratch/x"], ["/data/scratch/o"], ["python3", "-c", "1"],
+                          "copy"))
+
+
+class Sandbox(unittest.TestCase):
+    def test_every_sudo_on_the_spark_is_the_shim_whatever_path_the_job_sets(self):
+        """A bench whose command sets its own PATH and calls the Workbench's
+        ``sudo -n -u plx-workbench ... claude`` wrapper must reach the shim: the real sudo
+        cannot run in the sandbox, so each Claude session exited 1 before its first turn."""
+        home = Path(tempfile.mkdtemp())
+        self.addCleanup(lambda: subprocess.run(["rm", "-rf", str(home)]))
+        fake = home / "fs"
+        for real in ("/usr/bin/sudo", "/usr/local/sbin/sudo"):
+            (fake / real.lstrip("/")).parent.mkdir(parents=True, exist_ok=True)
+            (fake / real.lstrip("/")).write_text("real")
+        (home / "plx-state-copy").mkdir()
+        saved = {k: getattr(remote, k) for k in ("HOME", "RUN", "TESTS", "AI", "STATE_COPY",
+                                                  "SUDO_PATHS")}
+        self.addCleanup(lambda: [setattr(remote, k, v) for k, v in saved.items()])
+        remote.HOME, remote.RUN, remote.TESTS = home, home / "plx-run", home / "plx-tests"
+        remote.AI, remote.STATE_COPY = home / "plx-ai", home / "plx-state-copy"
+        remote.SUDO_PATHS = tuple(str(fake) + p for p in saved["SUDO_PATHS"])
+        for p in ("/data/scratch/in", "/data/scratch/out"):
+            (home / "plx-run" / "files" / p.lstrip("/")).mkdir(parents=True)
+        binds = remote.mounts({"state": "copy", "ship": ["/data/scratch/in"],
+                               "out": ["/data/scratch/out"], "name": "t"}, home / "wt")
+        # only the out folder, the run's own /tmp, the Claude homes and the state copy (the
+        # Spark's replica) are writable; never the checkout or a shipped path
+        self.assertEqual(sorted(dst for _, dst, ro in binds if not ro),
+                         ["/data/plx-state", "/data/scratch/out", "/tmp",
+                          "/var/lib/plx-autopilot/claude-home", "/var/lib/plx-workbench"])
+        tmp = next(src for src, dst, _ in binds if dst == "/tmp")
+        self.assertTrue(tmp.startswith(str(home / "plx-run" / "tmp" / "t-")))
+        # the Spark's own folders go in read-only
+        args = remote.bwrap_args([(str(home), "/nonexistent-x/y", False)], root=str(fake))
+        self.assertIn(["--ro-bind", str(fake / "usr"), str(fake / "usr")],
+                      [args[i:i + 3] for i in range(len(args))])
+        self.assertNotIn("--bind", args[:-4])
+        shim = str(home / "plx-ai" / "shim" / "sudo")
+        over = {dst for src, dst, ro in binds if src == shim and ro}
+        self.assertEqual(over, {str(fake) + "/usr/bin/sudo", str(fake) + "/usr/local/sbin/sudo"})
+        # the shim drops sudo's options and runs the command as the sandbox's own user
+        got = subprocess.run(["sh", shim, "-n", "-u", "plx-workbench", "-g", "plx-workbench",
+                              "env", "-i", "HOME=/x", "sh", "-c", "echo $HOME; id -u"],
+                             capture_output=True, text=True, timeout=30)
+        self.assertEqual(got.stdout.split(), ["/x", str(os.getuid())])
+
+
+class ShipRefusals(unittest.TestCase):
+    def test_state_secrets_and_code_are_never_shipped(self):
+        env = {k: v for k, v in os.environ.items() if not spec.SECRET.search(k)}
+        env["PLX_SPARK_SSH_CONFIG"] = "/nonexistent"
+        home = "/home/" + "operator"   # a fixture user's home: any /home/<user> path is refused
+        for path in ("/data/plx-state/app-sessions.json", "/data/plx-state", "/etc/plx",
+                     f"{home}/.ssh", f"{home}/.claude/.credentials.json",
+                     f"{home}/.config/plx/workbench-session.env", "/root/x",
+                     "/data/OntologyProject/operating", "/var/lib/plx-workbench",
+                     "/data/scratch/../plx-state/x"):
+            got = subprocess.run(["bash", str(ROOT / "deploy/spark/spark_run.sh"), "--ship",
+                                  path, "--", "true"], cwd=ROOT, env=env,
+                                 capture_output=True, text=True, timeout=60)
+            self.assertEqual(got.returncode, 2, (path, got.stderr))
+            self.assertIn("refused", got.stderr, path)
+        got = subprocess.run(["bash", str(ROOT / "deploy/spark/spark_run.sh"), "--state",
+                              "all", "--", "true"], cwd=ROOT, env=env, capture_output=True,
+                             text=True, timeout=60)
+        self.assertEqual(got.returncode, 2)
+
+
+class LoginPreflight(unittest.TestCase):
+    """A Spark whose Claude login is missing or expired stops the run at its start (exit 95)
+    with the reason, instead of every Claude call answering "Not logged in"."""
+
+    def run_with(self, expires_in, skip=False):
+        import json
+        import time
+        home = Path(tempfile.mkdtemp())
+        self.addCleanup(lambda: subprocess.run(["rm", "-rf", str(home)]))
+        for d in ("plx-workbench", "autopilot"):
+            cred = home / "plx-ai/home" / d / ".claude/.credentials.json"
+            cred.parent.mkdir(parents=True)
+            if expires_in is not None:
+                cred.write_text(json.dumps({"claudeAiOauth": {
+                    "accessToken": "x", "expiresAt": (time.time() + expires_in) * 1000}}))
+        # a stand-in ssh that runs the remote python here (HOME = the fake Spark home) and
+        # fails everything else (the push after the check)
+        bin_ = home / "bin"
+        bin_.mkdir()
+        (bin_ / "ssh").write_text(
+            '#!/bin/sh\nfor a in "$@"; do case "$a" in true) exit 0;; python3) exec python3 -;; esac; '
+            'done\nexit 1\n')
+        (bin_ / "ssh").chmod(0o755)
+        env = {k: v for k, v in os.environ.items() if not spec.SECRET.search(k)}
+        env.update(PATH=f"{bin_}:{env['PATH']}", HOME=str(home), PLX_SPARK_SSH_CONFIG="/dev/null")
+        if skip:
+            env["SPARK_SKIP_LOGIN_CHECK"] = "1"
+        return subprocess.run(["bash", str(ROOT / "deploy/spark/spark_run.sh"), "--", "true"],
+                              cwd=ROOT, env=env, capture_output=True, text=True, timeout=60)
+
+    def test_missing_or_expired_login_stops_the_run_a_valid_one_goes_on(self):
+        for left in (None, -50, 30):
+            got = self.run_with(left)
+            self.assertEqual(got.returncode, 95, (left, got.stderr))
+            self.assertIn("Claude login", got.stderr)
+        self.assertEqual(self.run_with(3600).returncode, 97)   # past the check: the push fails
+        self.assertEqual(self.run_with(None, skip=True).returncode, 97)
+
+
+if __name__ == "__main__":
+    unittest.main()

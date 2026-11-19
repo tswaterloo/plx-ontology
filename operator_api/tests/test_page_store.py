@@ -72,6 +72,89 @@ class KeptPages(unittest.TestCase):
         self.page(self.backend(), closed)
         self.assertEqual(len(built), 2)                    # never served stale
 
+    def test_a_damaged_file_is_set_aside_once_and_a_fresh_one_keeps_pages(self):
+        """A file SQLite calls malformed made every kept page a miss and kept nothing new
+        (live: every screen read cold after each restart). It is set aside once, by the
+        process that opened it; another process's old handle reopens the fresh file and
+        never moves it; pages are kept again."""
+        one = page_store.PageStore(self.dir, code="c")
+        other = page_store.PageStore(self.dir, code="c")   # another process, same file
+        one.put(("home", "r1"), {"n": 1}, 600)
+        self.assertEqual(other.get(("home", "r1"))[1], {"n": 1})
+        conn = one._conn()
+        conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+        conn.close()
+        one._local.conn = None
+        size = one.path.stat().st_size
+        with open(one.path, "r+b") as raw:          # every page past the header overwritten
+            raw.seek(100)
+            raw.write(b"\xff" * (size - 100))
+        with self.assertLogs("operator_api.page_store", "WARNING"):
+            self.assertIsNone(one.get(("home", "r1")))
+        aside = sorted(p.name for p in self.dir.iterdir() if ".damaged-" in p.name)
+        self.assertEqual(len([n for n in aside if not n.endswith(("-wal", "-shm"))]), 1)
+        one.put(("home", "r1"), {"n": 2}, 600)      # kept in the fresh file
+        self.assertEqual(one.get(("home", "r1"))[1], {"n": 2})
+        self.assertEqual(other.get(("home", "r1"))[1], {"n": 2})   # reopened, not moved
+        self.assertEqual(sorted(p.name for p in self.dir.iterdir()
+                                if ".damaged-" in p.name), aside)
+        # only the newest damaged files stay set aside, each with its -wal and -shm
+        for stamp in (1, 2, 3):
+            for tail in ("", "-wal", "-shm"):
+                (self.dir / f"{page_store.FILE}.damaged-{stamp}{tail}").write_bytes(b"x")
+        one._keep_damaged(page_store.KEEP_DAMAGED)
+        left = sorted(p.name for p in self.dir.iterdir() if ".damaged-" in p.name)
+        self.assertEqual([n for n in left if not n.endswith(("-wal", "-shm"))],
+                         sorted([aside[0], f"{page_store.FILE}.damaged-3"]))
+        self.assertNotIn(f"{page_store.FILE}.damaged-1-wal", left)
+        # a failure that is not damage (a locked file) never moves it
+        one._damaged(page_store.sqlite3.OperationalError("database is locked"))
+        self.assertTrue(one.path.exists())
+        self.assertEqual(one.get(("home", "r1"))[1], {"n": 2})
+
+    def test_a_thread_opening_the_file_keeps_the_process_locks_on_it(self):
+        """Every thread opens its own connection. Opening the file with ``os.open`` and
+        closing it again dropped every SQLite lock this process held on it (POSIX locks
+        are per process), so another process closing its last connection took the file
+        for itself, checkpointed and deleted the write-ahead log under the open ones: the
+        live file read 'malformed' after a restart beside the standby. Now the log
+        survives, and every page with it."""
+        import subprocess
+        import sys
+        import threading
+        store = page_store.PageStore(self.dir, code="c")
+        store.put(("home", "r1"), {"n": 1}, 600)            # this thread's connection
+        got = []
+        thread = threading.Thread(target=lambda: got.append(store.get(("home", "r1"))))
+        thread.start()
+        thread.join()                                       # a second thread's connection
+        self.assertEqual(got[0][1], {"n": 1})
+        subprocess.run([sys.executable, "-c", (
+            "import sqlite3, sys; c = sqlite3.connect(sys.argv[1]); "
+            "c.execute('SELECT count(*) FROM pages').fetchone(); c.close()"),
+            str(store.path)], check=True, timeout=60)       # another process, in and out
+        self.assertTrue(Path(f"{store.path}-wal").exists())   # not taken from under us
+        store.put(("home", "r2"), {"n": 2}, 600)
+        self.assertEqual(store.get(("home", "r1"))[1], {"n": 1})
+        self.assertEqual(store._conn().execute("PRAGMA integrity_check").fetchone()[0], "ok")
+
+    def test_an_api_never_writes_the_pages_of_a_directory_another_user_keeps(self):
+        """The live API's directory (its known-readers file, which only the API serving
+        from it replaces, is its user's): a private server of another user pointed at it
+        keeps no pages and writes no known readers there; its own directory, as before."""
+        from operator_api import serving
+        (self.dir / serving.KNOWN_READERS_FILE).write_text("{}")
+        mine = (self.dir / serving.KNOWN_READERS_FILE).stat().st_uid
+        with mock.patch.object(serving.os, "geteuid", lambda: mine + 1):
+            other = self.backend()
+        self.assertIsNone(other.page_cache.store)
+        self.assertIsNone(other._known_path())
+        self.assertEqual(sorted(p.name for p in self.dir.iterdir()),
+                         [serving.KNOWN_READERS_FILE])
+        own = self.backend()
+        self.assertIsNotNone(own.page_cache.store)
+        self.assertEqual(own._known_path(), self.dir / serving.KNOWN_READERS_FILE)
+
     def test_another_generation_reader_or_code_is_another_page(self):
         built = []
         self.page(self.backend(), view_of(built))

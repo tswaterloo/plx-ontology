@@ -599,6 +599,22 @@ def disk_guard(root: Path) -> dict[str, Any] | None:
     return None
 
 
+def restore_disk_guard(dump: Path, pg_dir: Path | str | None = None) -> dict[str, Any] | None:
+    """None when the throwaway restore may run; else why not. The restored database is far
+    larger than its compressed dump (it once took /data from 51 to 13 GB), so the volume
+    holding the Postgres data needs the dump's size plus ``PLX_RESTORE_MIN_FREE_GB``
+    (default 40) free."""
+    floor = int(float(_env("PLX_RESTORE_MIN_FREE_GB", "40")) * 1e9)
+    where = Path(pg_dir or _env("PLX_RESTORE_DISK_PATH", "/data"))
+    if not where.exists():
+        where = dump.parent
+    free = shutil.disk_usage(where).free
+    need = dump.stat().st_size + floor
+    if free < need:
+        return {"error": "disk_guard", "free_bytes": free, "min_free_bytes": need}
+    return None
+
+
 def backup(now: dt.datetime | None = None) -> tuple[int, dict[str, Any]]:
     dsn = _env("PLX_PG_DSN", "postgresql:///plx")
     root = Path(_env("PLX_BACKUP_DIR", "/data/backups"))
@@ -734,7 +750,12 @@ def restore_test(now: dt.datetime | None = None) -> tuple[int, dict[str, Any]]:
     # restores, but it is not whole
     problems += [str(p) for p in manifest.get("state_problems") or ()]
     restored: dict[str, int | None] = {}
-    if dump.name in manifest["files"] and dump.is_file():
+    skipped = restore_disk_guard(dump) if dump.is_file() else None
+    if skipped:
+        # an alarm, not a pass: the throwaway restore is skipped, never run into a full disk
+        problems.append("restore_skipped:disk_guard:"
+                        f"free={skipped['free_bytes'] // 10**9}GB<{skipped['min_free_bytes'] // 10**9}GB")
+    elif dump.name in manifest["files"] and dump.is_file():
         db = f"plx_restore_test_{os.getpid()}"
         base = _env("PLX_RESTORE_ADMIN_DSN", "postgresql:///postgres")
         with psycopg.connect(base, autocommit=True) as admin:

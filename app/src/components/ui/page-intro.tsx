@@ -15,12 +15,13 @@ export const PAGE_INTROS = {
   "/autopilot-log": "What the autopilot did and what each person did with it, with undo.",
   "/meetings": "Your upcoming meetings, the weekly review and the follow-ups you owe from recorded meetings.",
   "/team": "What people are working on and what waits on whom, as far as your access allows.",
+  "/insights": "Charts that stay live: the team, org and customer views, and every chart you pin from an answer. Open any one for its definition and rows.",
   "/records": "Find any customer, order, supplier or product by its name or number.",
   "/work-log": "Everything you did in the Workbench, newest first, and the time it saved.",
   "/activity": "Each message and task you started here, and whether it went out.",
   "/help": "How the Workbench helps in your role, and what to try in your first week.",
   "/ops": "What is broken in the Workbench now, what to do about it, and what is paused on purpose.",
-  "/trust": "Whether the data keeps up with the systems it reads, and how accurate answers measured.",
+  "/trust": "Whether the data keeps up with the systems it reads, how accurate the answers measured, and what is switched on.",
   "/feedback": "Feedback sent with Give feedback, and what became of it.",
 } as const satisfies Record<string, string>;
 

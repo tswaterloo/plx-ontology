@@ -236,6 +236,10 @@ def order_class(time_basis: str, lineage: str | None) -> int:
 
 DEFAULT_LIMIT = 10
 HOP_SCAN_CAP = 5000
+# A hop's links are read a page of HOP_SCAN_CAP + 1 link ids at a time before any object
+# or reader check (``TraverseTools._link_pages``); past this many pages holding fewer than
+# HOP_SCAN_CAP + 1 links the reader may see, the hop is refused as past the cap.
+HOP_RAW_PAGES = 10
 # plx.around: removal gaps listed one by one for at most this many objects of a page
 REMOVED_GAPS = 5
 # The SQL item gate under which every item is open: only to tell whether the owner-open
@@ -1474,27 +1478,99 @@ class TraverseTools:
         handles = (f""", (SELECT json_group_array(v3.l1_handle) FROM object_versions v3
                      WHERE v3.object_id = x.object_id AND {_from_t('v3')}) AS x_handles"""
                    if _open else "")
-        rows = list(self.store.conn.execute(
+        # inside ``call_limits.facts_cut`` (a briefing's involvement checks, 4 s) the hop
+        # ends at the SQL deadline like a fact read: one cold walk of a root set held a
+        # suggestions read 33-38 s with nothing checked
+        rows = self._cut_read(lambda: self._link_pages(
+            scope,
+            f"""l.link_type = :lt AND l.{anchor} IN (SELECT value FROM json_each(:frontier))
+                AND {_live('l')} AND l.markings IN (SELECT value FROM json_each(:marks))""",
             f"""SELECT l.*{handles},
                   (SELECT v.lineage FROM object_versions v WHERE v.object_id = l.from_object
                      AND {_live('v')}) AS from_lineage,
                   (SELECT v.lineage FROM object_versions v WHERE v.object_id = l.to_object
                      AND {_live('v')}) AS to_lineage
                 FROM links l JOIN objects x ON x.object_id = l.{other}
-                WHERE l.link_type = :lt AND l.{anchor} IN (SELECT value FROM json_each(:frontier))
+                WHERE l.link_id IN (SELECT value FROM json_each(:link_ids))
+                AND x.object_id IN (SELECT value FROM json_each(:{other.split('_')[0]}_ids))
                 AND {_live('l')} AND l.markings IN (SELECT value FROM json_each(:marks))
                 {evidence}
                 AND {_visible_object('x', None if _open else gate)}
-                ORDER BY l.link_id LIMIT :cap""",
-            scope.params(lt=link_type, frontier=json.dumps(list(frontier)),
-                         cap=HOP_SCAN_CAP + 1)))
-        if len(rows) > HOP_SCAN_CAP:
+                ORDER BY l.link_id""",
+            {"lt": link_type, "frontier": json.dumps(list(frontier))}, HOP_SCAN_CAP,
+            HOP_RAW_PAGES))
+        if rows is None or len(rows) > HOP_SCAN_CAP:
             if _open:
                 return None
             raise ToolError("fan_out_refused",
                             f"{link_type} {direction} reaches more than {HOP_SCAN_CAP} links "
-                            "from this root", "narrow the root set, add filters or raise "
-                            "tier_floor")
+                            "from this root" + ("" if rows is not None else
+                                                " (read up to "
+                                                f"{HOP_RAW_PAGES * (HOP_SCAN_CAP + 1)} "
+                                                "links before this reader's checks)"),
+                            "narrow the root set, add filters or raise tier_floor")
+        return rows
+
+    def _link_pages(self, scope: _Scope, reach: str, keep: str, params: Mapping[str, Any],
+                    cap: int, pages: int | None) -> list[sqlite3.Row] | None:
+        """The rows of ``keep`` (one statement over the link ids ``:link_ids`` and their
+        ends ``:from_ids`` and ``:to_ids``, ``ORDER BY l.link_id``) for the links ``reach``
+        names (terms on the link row ``l`` alone): every one when at most ``cap`` are kept,
+        in ``keep``'s order, else ``cap + 1`` of them (the caller's "past the cap"). The
+        same answer as one statement joining ``reach`` to ``keep``'s objects and gates under
+        ``ORDER BY link_id LIMIT cap + 1`` whenever at most ``cap`` are kept; past the cap
+        which ``cap + 1`` rows is not the lowest ids.
+
+        The reach is read first, link ids and ends only, never joined to the objects:
+        ``cap + 1`` of them (a reach that size or smaller is whole), and only when those
+        keep at most ``cap`` rows, up to ``pages`` times ``cap + 1`` (None: all of it);
+        ``keep`` reads them ``cap + 1`` links a statement and stops once past the cap.
+        Joined in one statement, a reach the planner thought large (182,671 loose name
+        mentions of the customers under ``Email.mentions_customer``) was hash-joined to
+        every readable object (8 M) and sorted: 2-4 GB of temp files a call, 221 GB in one
+        evening live. None: the reach holds more than ``pages`` times ``cap + 1`` links and
+        those read keep at most ``cap`` (not read further: the caller refuses the hop,
+        never answers in part)."""
+        conn = self.store.conn
+
+        def reached(limit: int | None) -> list[tuple[str, str, str]]:
+            return [(r[0], r[1], r[2]) for r in conn.execute(
+                f"SELECT l.link_id, l.from_object, l.to_object FROM links l WHERE {reach}"
+                + ("" if limit is None else " LIMIT :reach_cap"),
+                scope.params(**params, **({} if limit is None else {"reach_cap": limit})))]
+
+        def read(links: Sequence[tuple[str, str, str]]) -> list[sqlite3.Row]:
+            # the ends bound too: with the link ids alone the planner, guessing a few
+            # thousand links per partition, merge-joined them to every object (10 s live)
+            return conn.execute(keep, scope.params(
+                **params, link_ids=json.dumps([x[0] for x in links]),
+                from_ids=json.dumps(sorted({x[1] for x in links})),
+                to_ids=json.dumps(sorted({x[2] for x in links})))).fetchall()
+
+        def kept(links: Sequence[tuple[str, str, str]], rows: list[sqlite3.Row]) -> int:
+            reads = 0
+            for at in range(0, len(links), cap + 1):
+                if len(rows) > cap:
+                    break
+                rows += read(links[at:at + cap + 1])
+                reads += 1
+            return reads
+
+        first = reached(cap + 1)
+        rows: list[sqlite3.Row] = []
+        reads = kept(first, rows)
+        if len(first) > cap and len(rows) <= cap:
+            bound = None if pages is None else pages * (cap + 1)
+            more = reached(None if bound is None else bound + 1)
+            seen = {x[0] for x in first}
+            reads += kept([x for x in more if x[0] not in seen], rows)
+            if bound is not None and len(more) > bound and len(rows) <= cap:
+                return None
+        if len(rows) > cap:
+            return sorted(rows, key=lambda r: r["link_id"])[:cap + 1]
+        if reads > 1 and rows:
+            # read in several statements: once more as one, in the store's own order
+            rows = read([(r["link_id"], r["from_object"], r["to_object"]) for r in rows])
         return rows
 
     def _twin_route(self, hops: Sequence[tuple], empty_at: int | None, filtered: bool
@@ -2160,7 +2236,8 @@ class TraverseTools:
 
         return self._store_cached(("cell_span", family), read)
 
-    def chunk_span(self, family: str) -> tuple[tuple[int, int], ...] | None:
+    def chunk_span(self, family: str, *, patient: bool = False
+                   ) -> tuple[tuple[int, int], ...] | None:
         """The document-text chunk id runs ((lowest, highest), ascending) of the objects
         whose audience family is ``family``, every version, when the document word index
         is read on Postgres (``PgStoreReader.family_chunk_span``): ``()`` when they hold
@@ -2170,10 +2247,16 @@ class TraverseTools:
         chunk of the family lies outside its runs, so narrowing to them reads the same
         rows of it; a run may hold another family's chunks (the audience term drops them).
         One read per store state, for every reader; kept and folded per delta layer with
-        the other facts (``_merged_facts``)."""
+        the other facts (``_merged_facts``). ``patient``: off the request path (the
+        follower's facts read), the exact read's limit is ``CHUNK_SPAN_PATIENT_MS``."""
         def read() -> tuple[tuple[int, int], ...] | None:
             bounded = getattr(self.store, "family_chunk_span", None)
-            return None if bounded is None else bounded(family)
+            if bounded is None:
+                return None
+            if not patient:
+                return bounded(family)
+            from operating.pg.ontology_reader import CHUNK_SPAN_PATIENT_MS
+            return bounded(family, limit_ms=CHUNK_SPAN_PATIENT_MS)
 
         return self._store_cached(("chunk_span", family), read)
 
@@ -3849,10 +3932,13 @@ def _merged_facts(old: Mapping[Any, Any], new: Mapping[Any, Any]) -> dict[Any, A
             runs = [run for part in (value, more) if part is not None for run in part]
             out[key] = merge_runs(runs) if runs else None
         elif isinstance(key, tuple) and key[0] == "chunk_span":
-            # not known on either side stays not known (every match read); else every
-            # run of either joined, as the cells'
+            # the family's runs read whole by the fold (``_layer_spans``: the version
+            # before had them not known) are the new version's; else not known on either
+            # side stays not known (every match read); else every run of either joined,
+            # as the cells'
             from operating.pg.ontology_reader import merge_runs
-            out[key] = None if value is None or more is None \
+            out[key] = tuple(more) if isinstance(more, _WholeRuns) \
+                else None if value is None or more is None \
                 else merge_runs([*value, *more])
         else:
             return None
@@ -3917,7 +4003,7 @@ def fold_layer_facts(dsn: str, layer: str | Path, owned: Sequence[str], before: 
             if not old:
                 return False
             families = _span_families(old)
-            spans = _layer_spans(cur, families, owned)
+            spans = _layer_spans(cur, families, owned, _not_known_chunks(old, families))
         merged = _merged_facts(old, _layer_facts(layer, families, spans))
         if merged is None:
             return False
@@ -3942,13 +4028,27 @@ def _span_facts(families: Sequence[str], spans: Mapping[Any, Any]) -> dict[Any, 
     return out
 
 
-def _layer_spans(cur: Any, families: Sequence[str], owned: Sequence[str]
-                 ) -> dict[Any, tuple[tuple[int, int], ...] | None]:
+class _WholeRuns(tuple):
+    """A family's chunk runs read over the whole family by a fold (``_layer_spans``
+    ``whole``), not over a layer's objects: the merge takes them as they are."""
+
+
+def _not_known_chunks(facts: Mapping[Any, Any], families: Sequence[str]) -> list[str]:
+    """The families whose chunk runs ``facts`` hold as not known (None)."""
+    return [f for f in families
+            if ("chunk_span", f) in facts and facts[("chunk_span", f)] is None]
+
+
+def _layer_spans(cur: Any, families: Sequence[str], owned: Sequence[str],
+                 whole: Collection[str] = ()) -> dict[Any, tuple[tuple[int, int], ...] | None]:
     """Each family's value-cell runs over the ``owned`` objects as Postgres numbered them
     (``cell_runs_sql`` over them alone; key: the family) and their chunk runs
     (``chunk_runs_sql``; key: ("chunk_span", family)); neither read without its word index
     in Postgres (a host's runs are then of its SQLite generation's word index, which no
-    layer changes: cell runs are kept as they are, chunk runs stay not known)."""
+    layer changes: cell runs are kept as they are, chunk runs stay not known). A family
+    of ``whole`` (its runs not known in the version before) has its chunk runs read over
+    the whole family instead (``_WholeRuns``), within ``CHUNK_SPAN_PATIENT_MS``; past it
+    they stay not known."""
     spans: dict[Any, tuple[tuple[int, int], ...] | None] = {}
     from operating.pg.ontology_reader import (
         _WORDS_SQL, CELL_RUNS, cell_runs, cell_runs_sql, chunk_runs_sql)
@@ -3960,12 +4060,36 @@ def _layer_spans(cur: Any, families: Sequence[str], owned: Sequence[str]
         if values:
             cur.execute(cell_runs_sql("ontology.", owned=True), params)
             spans[family] = cell_runs(cur.fetchall())
-        if chunks:
+        if chunks and family in whole:
+            whole_runs = _whole_chunk_runs(cur, params)
+            if whole_runs is not None:
+                spans[("chunk_span", family)] = whole_runs
+        elif chunks:
             # the owned objects' chunk runs (every version: a layer's new ones and any
             # moved into the family), joined to the version before's by the fold
             cur.execute(chunk_runs_sql("ontology.", owned=True), params)
             spans[("chunk_span", family)] = cell_runs(cur.fetchall(), 0) or ()
     return spans
+
+
+def _whole_chunk_runs(cur: Any, params: Mapping[str, Any]) -> "_WholeRuns | None":
+    """The family's chunk runs over all its objects (``chunk_runs_sql``), within
+    ``CHUNK_SPAN_PATIENT_MS``; None past it (the transaction goes on: a savepoint)."""
+    import psycopg
+    from operating.pg.ontology_reader import CHUNK_SPAN_PATIENT_MS, cell_runs, chunk_runs_sql
+    cur.execute("SHOW statement_timeout")
+    (before,) = cur.fetchone()
+    cur.execute("SAVEPOINT plx_whole_chunks")
+    cur.execute(f"SET LOCAL statement_timeout = {CHUNK_SPAN_PATIENT_MS}")
+    try:
+        cur.execute(chunk_runs_sql("ontology."), params)
+        rows = cur.fetchall()
+    except psycopg.errors.QueryCanceled:
+        cur.execute("ROLLBACK TO SAVEPOINT plx_whole_chunks")   # its SET LOCAL too
+        return None
+    cur.execute("RELEASE SAVEPOINT plx_whole_chunks")
+    cur.execute("SELECT set_config('statement_timeout', %s, true)", (before,))
+    return _WholeRuns(cell_runs(rows, 0) or ())
 
 
 def _layer_owned(cur: Any, layer: Path) -> list[str]:
@@ -4068,7 +4192,8 @@ def catch_up_pg_facts(dsn: str, layers: str | Path | None = None, *,
                 if not old:
                     return False
                 families = _span_families(old)
-                spans = _layer_spans(cur, families, sorted(owned))
+                spans = _layer_spans(cur, families, sorted(owned),
+                                     _not_known_chunks(old, families))
             tools = TraverseTools(ontology_tools.OntologyTools(
                 reader, ontology_tools.ReadPolicy("facts", {})))
             merged = _merged_facts(old, _owned_facts(tools, sorted(owned), families, spans))
@@ -4220,7 +4345,7 @@ def _fact_value(tools: "TraverseTools", key: Any) -> Any:
     if key[0] == "slices":
         return tools._slices(key[1])
     if key[0] == "chunk_span":
-        return tools.chunk_span(key[1])
+        return tools.chunk_span(key[1], patient=True)
     return tools.cell_span(key[1])
 
 

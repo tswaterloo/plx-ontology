@@ -138,6 +138,78 @@ class ReadyEndpoint(unittest.TestCase):
             self.assertEqual(client.get("/api/ready").status_code, 503)
 
 
+class ScreensAgain(unittest.TestCase):
+    def test_a_screen_still_reading_is_read_again_until_kept(self):
+        """The Templates answer bank answers "still reading" while the company's documents
+        are read, and such an answer is never kept: read ahead once, the first visit read
+        it cold (8-14 s live). It is read again later until a real page comes back; the
+        other screens are read once; a screen still reading at the limit is left."""
+        backend = be.WorkspaceBackend(lambda session: mock.MagicMock(), data_label="t")
+        self.addCleanup(backend.stop)
+        calls: list[str] = []
+        done = threading.Event()
+
+        def bank(reader, question=None):
+            calls.append("bank")
+            if len(calls) >= 3:
+                done.set()
+            return mock.Mock(reading=len(calls) < 3)
+
+        def team(reader):
+            calls.append("team")
+            return mock.Mock(reading=False)
+        backend.answer_bank = bank
+        backend.team_view = team
+        with mock.patch.object(be, "SCREENS_AGAIN_SECONDS", 0.05):
+            backend._screens_ahead(mock.Mock(), ("team_view", ("answer_bank", None)))
+            self.assertTrue(done.wait(10))
+        self.assertEqual(calls, ["team", "bank", "bank", "bank"][:len(calls)])
+        self.assertEqual(calls.count("team"), 1)
+        calls.clear()
+        with mock.patch.object(be, "SCREENS_AGAIN_SECONDS", 0.05):
+            backend._screens_ahead(mock.Mock(), (("answer_bank", None),),
+                                   until=be.time.monotonic())
+        self.assertEqual(calls, ["bank"])   # past the limit: not read again
+
+
+class ScreensSideBySide(unittest.TestCase):
+    """The warm-up process reads a reader's screens side by side on its workers, most
+    visited first, and the first pass waits for every one of them."""
+
+    def test_screens_run_on_every_worker_in_order_and_one_future_waits_for_all(self):
+        backend = be.WorkspaceBackend(lambda session: mock.MagicMock(), data_label="t")
+        self.addCleanup(backend.stop)
+        backend.screens_workers = 3
+        lock, started, running, most = threading.Lock(), [], [0], [0]
+        release = threading.Event()
+
+        def screen(name):
+            def read(reader, *a, **k):
+                with lock:
+                    started.append(name)
+                    running[0] += 1
+                    most[0] = max(most[0], running[0])
+                release.wait(10)
+                with lock:
+                    running[0] -= 1
+                return mock.Mock(reading=False)
+            return read
+        names = [(k if isinstance(k, str) else k[0]) for k in be.SCREENS_AHEAD]
+        for name in names:
+            setattr(backend, name, screen(name))
+        with mock.patch("operator_api.page_sql.alerts_on", return_value=False):
+            done = backend._screens_all(mock.Mock(key="r"))
+            self.assertTrue(until(lambda: len(started) == 3))
+            time.sleep(0.2)
+            self.assertEqual(started, names[:3])        # the three most visited, at once
+            self.assertFalse(done.done())
+            release.set()
+            self.assertEqual(done.result(10), len(names))
+        self.assertEqual(sorted(started), sorted(names))   # every one, once
+        self.assertEqual(started[0], "_home_served")
+        self.assertEqual(most[0], 3)
+
+
 class FirstPass(unittest.TestCase):
     """The warm-up child marks itself warmed only after every known reader's Today reads
     and main screens ran, on the real ``WorkspaceBackend.warm`` queue."""
@@ -156,7 +228,7 @@ class FirstPass(unittest.TestCase):
         backend._upcoming_cached = done
         backend._briefing_ahead = lambda reader: done
         backend._weekly_ahead = lambda reader: done
-        backend._screens_ahead = lambda reader: gate.wait(10)
+        backend._screens_ahead = lambda reader, screens=(), until=None: gate.wait(10)
         readers = []
         for key in ("r1", "r2"):
             reader = mock.Mock(key=key)

@@ -1394,7 +1394,10 @@ class CalendarAdapter(Adapter):
     system, kind = "calendar", "calendar_write"
     documented = "Microsoft Graph v1.0 POST /users/{owner}/events | PATCH /users/{owner}/events/{id}"
     operations = {"event_create": "new event in the owner's calendar; undo: DELETE",
-                  "event_update": "subject/time/location/body; undo: PATCH back"}
+                  "event_update": "subject/time/location/body; undo: PATCH back",
+                  "event_respond": "accept, decline or tentatively accept an invitation in "
+                                   "the owner's calendar (the organizer gets the answer); "
+                                   "no undo: answer again"}
     structural = ("the calendar is not opened to approved writes (PLX_WRITES_LIVE_SYSTEMS), "
                   "and the approved-action app holds Calendars.Read only")
     needs = ("Calendars.ReadWrite (application) admin-consented on the AZURE_* app (it holds "
@@ -1403,6 +1406,9 @@ class CalendarAdapter(Adapter):
              "the calendar opened to approved writes (PLX_WRITES_LIVE_SYSTEMS=calendar)")
     FIELDS = ("subject", "body", "start", "end", "location", "attendees")
     TARGET_KEYS = frozenset({"user", "event_id"})
+    # an invitation's answer: Graph's own action per response, with the comment it carries
+    RESPONSES = {"accept": "accept", "decline": "decline", "tentative": "tentativelyAccept"}
+    RESPOND_FIELDS = ("response", "comment")
 
     def _graph(self, payload: Mapping[str, Any]) -> dict[str, Any]:
         out: dict[str, Any] = {}
@@ -1446,6 +1452,21 @@ class CalendarAdapter(Adapter):
         if "@" not in owner:
             raise AdapterRefused(["calendar: the owner's mailbox is not known"])
         user = quote(owner, safe="@+'")
+        if operation == "event_respond":
+            _only(payload, self.RESPOND_FIELDS, "calendar", operation)
+            verb = self.RESPONSES.get(str(payload.get("response") or "").strip().lower())
+            if verb is None:
+                raise AdapterRefused(["calendar: response is accept, decline or tentative"])
+            comment = payload.get("comment", "")
+            if not isinstance(comment, str) or len(comment) > 2000:
+                raise AdapterRefused(["calendar: comment must be text up to 2000"])
+            event = str((action.get("target") or {}).get("event_id") or "")
+            if not _GRAPH_ID.fullmatch(event):
+                raise AdapterRefused(["calendar: event_id missing or malformed"])
+            return {"method": "POST",
+                    "url": f"{GRAPH}/users/{user}/events/{quote(event, safe='=-_')}/{verb}",
+                    "headers": {"Content-Type": "application/json"},
+                    "body": {"comment": comment.strip(), "sendResponse": True}}
         if operation == "event_create":
             _only(payload, self.FIELDS, "calendar", operation)
             if not all(k in payload for k in ("subject", "start", "end")):
@@ -1465,6 +1486,8 @@ class CalendarAdapter(Adapter):
 
     def undo_request(self, action: Mapping[str, Any], request: Mapping[str, Any]
                      ) -> dict[str, Any] | None:
+        if request["method"] == "POST" and self._operation(action) == "event_respond":
+            return None                    # an answer sent is answered again, never undone
         if request["method"] == "POST":
             return {"method": "DELETE", "url": f"{request['url']}/{{response:id}}", "body": None}
         payload = action.get("payload") or {}

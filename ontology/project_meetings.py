@@ -171,6 +171,7 @@ class MeetingsCaptures(Reopenable):
                                       (kind.name,)).fetchone()[0]
             relations[relation] = {
                 "last_refresh_at": min(u["refreshed_at"] for u in units.values()),
+                "unit_times": [u["refreshed_at"] for u in units.values()],
                 "last_capture_id": last,
                 "last_full_traversal_at": (min(u["full_at"] for u in units.values())
                                            if self.capture_gap(relation) is None else None)}

@@ -51,6 +51,7 @@ from typing import Any, Callable, Iterable, Mapping, Sequence
 from operating.pg import business_views as bv
 
 CLASSES, COL_CLASSES, LINEAGE, COUNTS = "access_classes", "col_classes", "lineage", "class_counts"
+_SAFE = re.compile(r"^[a-z_][a-z0-9_]{0,62}$")   # a column name written into view DDL
 STATE, VIEWS_TABLE = "door_state", "door_views"
 UNREADABLE = "*search-store-unreadable*"
 PERMISSION_COLS = (("access_class", "integer"), ("col_class", "integer"),
@@ -523,7 +524,18 @@ def view_ddl(write: Any, v: bv.View, src: str, dst: str, *, ai_only: bool = True
     def hides(c: str) -> str:
         return (f"NOT COALESCE({_in('t.col_class', range_setting_for(c), setting_for(c))}, "
                 "false)")
-    shown = [f'CASE WHEN {hides(c.name)} THEN NULL ELSE t."{c.name}" END AS "{c.name}"'
+    # a masked column with an open counterpart (``v.fallback``: e.g. ``records.fields`` ->
+    # ``fields_open``, the cells marked no more than the row) shows that in its place; one
+    # the table does not have: NULL, as any masked column (fail closed)
+    fallback = dict(getattr(v, "fallback", None) or {})
+    if fallback:
+        have = {r[0] for r in write.execute(
+            "SELECT column_name FROM information_schema.columns WHERE table_schema = %s AND "
+            "table_name = %s", (src, v.name)).fetchall()}
+        fallback = {c: f for c, f in fallback.items() if f in have and _SAFE.match(f)}
+    shown = [f'CASE WHEN {hides(c.name)} THEN '
+             f'{("t." + chr(34) + fallback[c.name] + chr(34)) if c.name in fallback else "NULL"} '
+             f'ELSE t."{c.name}" END AS "{c.name}"'
              if c.name in masked else f't."{c.name}"' for c in v.cols]
     withheld = ("array_remove(ARRAY[" + ", ".join(
         f"CASE WHEN {hides(c)} THEN '{c}' END" for c in masked) + "]::text[], NULL)"
@@ -625,10 +637,15 @@ def reader_scope(pg: Any, schema: str, *, audience_keys: Iterable[str],
     tokens = sorted({h for h in held if isinstance(h, str)})
     classes, dclasses = [], []
     asked = callable(hidden_docs)
-    for cid, dms in pg.execute(
-            f"SELECT id, doc_marks FROM {schema}.{CLASSES} WHERE NOT blocked AND "
-            "audience_keys <@ %s::text[] AND rec_marks <@ %s::text[] ORDER BY 1",
-            (keys, sets)).fetchall():
+    # The containment is decided here over sets, not by ``audience_keys <@ %s`` in the
+    # statement: Postgres compares each element against the whole array linearly, and a
+    # full reader's ~6,400 keys over ~9,300 classes took 1.3 s, paid by every new session's
+    # first business read. Same rule: every key and every marking set of a class held.
+    key_held, set_held = set(keys), set(sets)
+    for cid, dms in ((cid, dms) for cid, aks, rms, dms in pg.execute(
+            f"SELECT id, audience_keys, rec_marks, doc_marks FROM {schema}.{CLASSES} "
+            "WHERE NOT blocked ORDER BY 1").fetchall()
+            if set(aks or ()) <= key_held and set(rms or ()) <= set_held):
         dms = set(dms or ())
         if UNREADABLE in dms and callable(hidden_docs):
             hidden_docs, docs_known = hidden_docs()

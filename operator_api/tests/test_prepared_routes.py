@@ -232,6 +232,46 @@ class PreparedRoutes(unittest.TestCase):
         journal = "".join(p.read_text() for p in self.root.rglob("*.jsonl"))
         self.assertNotIn("UEsDB", journal)
 
+    def test_a_csv_the_ask_makes_holds_the_rows_and_never_runs_a_formula(self):
+        """``plx.make_document`` kind csv: the rows the Ask wrote (a Markdown table's outer
+        pipes and rule row dropped, a comma kept inside its cell), downloaded as text/csv
+        with a byte-order mark; a cell a spreadsheet would run as a formula is text, a
+        negative number stays a number; charts are refused (a CSV never drops one
+        silently), so is the carrier never written about."""
+        import csv
+        import io
+        b = self.backend
+        b.people_guard = lambda: b.autopilot_guard
+        b.instruct_uploads = None
+        b.state_dir = self.root
+        mine = fixture_session("plx", ["staff:ana"], channel=CHANNEL_CONSOLE,
+                               subject_email=OWNER[0], subject_oid=OWNER[1])
+        reader = Reader(session=mine, mode="mock", display_name=OWNER[0], email=OWNER[0])
+        make = {t.spec["name"]: t for t in b.assistant_tools(reader)}["plx.make_document"]
+        self.assertIn("csv", make.spec["inputSchema"]["properties"]["kind"]["enum"])
+        made = make.call({"name": "Open orders.csv", "kind": "csv", "content":
+                          "| Order | Customer | Balance | Note |\n|---|:--|--:|---|\n"
+                          "| SO-1 | Acme, Inc. | -12.5 | =HYPERLINK(\"http://x\") |\n"
+                          "SO-2 | Beta | 1,200.00 | @SUM(A1)\n\n"})
+        self.assertEqual((made["name"], made["kind"]), ("Open orders.csv", "csv"))
+        client = TestClient(create_app(b, DevAuth(lambda: mine, mode="mock"),
+                                       secure_cookie=False), base_url="http://testserver")
+        client.post("/api/auth/dev-login", json={})
+        got = client.get(made["download_url"])
+        self.assertEqual(got.status_code, 200)
+        self.assertTrue(got.headers["content-type"].startswith("text/csv"))
+        self.assertTrue(got.content.startswith(b"\xef\xbb\xbf"))
+        rows = list(csv.reader(io.StringIO(got.content.decode("utf-8-sig"))))
+        self.assertEqual(rows, [["Order", "Customer", "Balance", "Note"],
+                                ["SO-1", "Acme, Inc.", "-12.5", "'=HYPERLINK(\"http://x\")"],
+                                ["SO-2", "Beta", "1,200.00", "'@SUM(A1)"]])
+        self.assertIn("refused", make.call({"name": "C", "kind": "csv", "content": "a | b",
+                                            "charts": [{"sql": "SELECT 1", "type": "bar",
+                                                        "y": ["x"]}]}))
+        self.assertIn("refused", make.call({"name": "C", "kind": "csv",
+                                            "content": "Carrier | Freightcom"}))
+        self.assertEqual(len(b._uploads()._rows()), 1)   # nothing made for a refusal
+
     def test_staff_may_only_what_their_own_grants_allow(self):
         refused = self.tool(STAFF).call(TASK)["refused"]
         self.assertIn("cannot read your planner membership", " ".join(refused))
@@ -382,6 +422,252 @@ class PreparedRoutes(unittest.TestCase):
             "plx.edit_document"]
         self.assertIn("not loaded", " ".join(edit.call(
             {"citation": cite, "find": "Unit 4", "replace": "Dock 9", "reason": "r"})["refused"]))
+
+    def test_a_word_edit_gives_the_edited_copy_now_and_writes_back_only_on_confirm(self):
+        """The prepared edit of a .docx also keeps the edited file for the reader: the
+        answer lists it to download at once (``assistant_tools.documents``), it holds the
+        change and nothing else, no one else can fetch it, and SharePoint is written only
+        by the confirm. A text file's edit keeps no copy (not one of the answer's kinds)."""
+        import io
+        import zipfile
+        from operating import doc_edit
+        from operator_api import assistant_tools
+        b = self.backend
+        b.people_guard = lambda: b.autopilot_guard
+        b.instruct_uploads = None
+        b.state_dir = self.root
+        out = io.BytesIO()
+        with zipfile.ZipFile(out, "w") as z:
+            z.writestr("word/document.xml", "<w:document><w:body><w:p><w:r><w:t>The report "
+                       "must be prepared by the client.</w:t></w:r></w:p><w:p><w:r><w:t>Notes"
+                       "</w:t></w:r></w:p></w:body></w:document>")
+        before = out.getvalue()
+        b.autopilot_adapters = {
+            "sharepoint_write": wa.SharePointAdapter(self.fake, environ=self.env)}
+
+        def reader_of(who):
+            return Reader(session=fixture_session("plx", [f"staff:{who[0].split('@')[0]}"],
+                                                  channel=CHANNEL_CONSOLE,
+                                                  subject_email=who[0], subject_oid=who[1]),
+                          mode="mock", display_name=who[0], email=who[0])
+        ana, sam = reader_of(OWNER), reader_of(STAFF)
+        calls = len(self.fake.calls)
+
+        def edit(name, data, find, replace):
+            b.prepared_doc_read = lambda r, c: (name, data, '"e,1"')
+            tool = {t.spec["name"]: t for t in b.prepared_tools(ana)}["plx.edit_document"]
+            return tool.call({"citation": "sharepoint://b!d1/01ITEM@v3", "find": find,
+                              "replace": replace, "reason": "You asked."})
+        got = edit("Report May.docx", before, "prepared by the client.",
+                   "prepared by the client and reviewed by the lead.")
+        self.assertTrue(got["prepared_id"])
+        copy = got["edited_copy"]
+        self.assertEqual((copy["name"], copy["kind"]), ("Report May (edited).docx", "docx"))
+        file_id = copy["download_url"].rsplit("/", 1)[-1]
+        data = b._uploads().file(ana.key, file_id)
+        self.assertEqual(doc_edit.text_of("x.docx", data).split(), (
+            "The report must be prepared by the client and reviewed by the lead. Notes"
+        ).split())
+        self.assertEqual(copy["size"], len(data))
+        self.assertIsNone(b._uploads().file(sam.key, file_id))
+        self.assertEqual(len(self.fake.calls), calls)   # nothing written to SharePoint
+        listed = assistant_tools.documents([
+            {"type": "tool_call", "name": "mcp__plx__plx.edit_document",
+             "result": json.dumps(got)},
+            {"type": "tool_call", "name": "mcp__plx__plx.edit_document", "is_error": True,
+             "result": json.dumps(got)}])
+        self.assertEqual(listed, [{"name": "Report May (edited).docx", "kind": "docx",
+                                   "size": len(data), "download_url": copy["download_url"]}])
+        plain = edit("notes.txt", b"Ship to Unit 4\n", "Unit 4", "Dock 9")
+        self.assertTrue(plain["prepared_id"])
+        self.assertNotIn("edited_copy", plain)
+
+    def test_an_attached_file_is_kept_as_the_persons_own_and_edited_into_a_copy(self):
+        """An attached Word/PowerPoint file is kept for the person who attached it (the
+        made documents' store) and the Ask's ``plx.edit_document`` edits it by the
+        ``file:`` citation it is given: each edit is a copy for them only, a second edit
+        goes on the copy and the answer lists the last copy once; nothing is prepared or
+        written. Another reader, a session not the person's own, a file naming an
+        excluded person or Freightcom, or no exclusion list: nothing kept, nothing
+        edited."""
+        import base64
+        import io
+        import zipfile
+        from operating import ask_attachments, doc_edit
+        from operator_api import assistant_tools
+        from operator_api import models as m
+        import types
+        from operator_api.backend_ask import AskMixin
+        b = self.backend
+        # the Ask's own reading of attachments (the real backend's), on this backend
+        b._attached = types.MethodType(AskMixin._attached, b)
+        b._keep_attached = types.MethodType(AskMixin._keep_attached, b)
+        b.people_guard = lambda: b.autopilot_guard
+        b.instruct_uploads = None
+        b.state_dir = self.root
+
+        office = "http://schemas.openxmlformats.org/"
+        W = office + "wordprocessingml/2006/main"
+        P, A = office + "presentationml/2006/main", office + "drawingml/2006/main"
+        R = office + "officeDocument/2006/relationships"
+        PR = office + "package/2006/relationships"
+
+        def docx(*paras):
+            out = io.BytesIO()
+            with zipfile.ZipFile(out, "w") as z:
+                z.writestr("word/document.xml", f'<w:document xmlns:w="{W}"><w:body>' + "".join(
+                    f"<w:p><w:r><w:t>{p}</w:t></w:r></w:p>" for p in paras)
+                    + "</w:body></w:document>")
+            return out.getvalue()
+
+        def pptx(*lines):
+            out = io.BytesIO()
+            with zipfile.ZipFile(out, "w") as z:
+                z.writestr("ppt/presentation.xml", f'<p:presentation xmlns:p="{P}" '
+                           f'xmlns:r="{R}">'
+                           '<p:sldIdLst><p:sldId id="256" r:id="rId2"/></p:sldIdLst>'
+                           "</p:presentation>")
+                z.writestr("ppt/_rels/presentation.xml.rels", f'<Relationships xmlns="{PR}">'
+                           '<Relationship Id="rId2" Target="slides/slide1.xml"/>'
+                           '</Relationships>')
+                z.writestr("ppt/slides/slide1.xml", f'<p:sld xmlns:p="{P}" xmlns:a="{A}">'
+                           "<p:cSld><p:spTree>" + "".join(
+                    f"<a:p><a:r><a:t>{t}</a:t></a:r></a:p>" for t in lines)
+                    + "</p:spTree></p:cSld></p:sld>")
+            return out.getvalue()
+
+        contract = docx("1. Parties. PLX and Acme agree.",
+                        "2. Payment terms. Invoices are payable Net 30 from the invoice date.",
+                        "3. Delivery. FOB origin.")
+        deck = pptx("Orders placed: 31", "On-time delivery: 97%")
+        named = docx("Ask " + HIDDEN[0] + " about Net 30.")
+        freight = docx("Freightcom quote: Net 30.")
+
+        def request(*files):
+            return m.AskRequest(question="change it", attachments=[
+                {"name": n, "data": base64.b64encode(d).decode()} for n, d in files])
+
+        def reader_of(who, **extra):
+            return Reader(session=fixture_session("plx", [f"staff:{who[0].split('@')[0]}"],
+                                                  channel=CHANNEL_CONSOLE,
+                                                  subject_email=who[0], subject_oid=who[1],
+                                                  **extra),
+                          mode="mock", display_name=who[0], email=who[0])
+        ana, sam = reader_of(OWNER), reader_of(STAFF)
+        calls = len(self.fake.calls)
+        batch = b._attached(request(("Supply agreement.docx", contract),
+                                    ("review.pptx", deck), ("notes.txt", b"Net 30 here"),
+                                    ("names.docx", named), ("fc.docx", freight)), ana)
+        kept = [f.kept for f in batch.files]
+        self.assertTrue(all(f.data is None for f in batch.files), "bytes outlived the read")
+        self.assertTrue(kept[0] and kept[0].startswith("file:f_"))
+        self.assertTrue(kept[1] and kept[1].startswith("file:f_"))
+        # text is not an edited kind; an excluded person's or Freightcom's file is not kept
+        self.assertEqual(kept[2:], [None, None, None])
+        self.assertEqual(batch.files[4].unread, ask_attachments.WITHHELD)
+        self.assertEqual(batch.files[4].text, "")
+        lines = "\n".join(simple_ask.attached(batch.files)[0])
+        self.assertIn(json.dumps(kept[0]), lines)
+        self.assertNotIn("Freightcom", lines)
+        # the meta the saved Ask keeps holds no handle to the file
+        self.assertNotIn("f_", json.dumps([f.meta for f in batch.files]))
+
+        def tool(who):
+            return {t.spec["name"]: t for t in b.prepared_tools(who)}["plx.edit_document"]
+        first = tool(ana).call({"citation": kept[0], "find": "Net 30", "replace": "Net 45",
+                                "reason": "You asked."})
+        self.assertNotIn("prepared_id", first)
+        self.assertEqual(first["diff"][0]["after"],
+                         "2. Payment terms. Invoices are payable Net 45 from the invoice date.")
+        self.assertEqual(first["edited_copy"]["name"], "Supply agreement (edited).docx")
+        second = tool(ana).call({"citation": first["citation"], "find": "FOB origin",
+                                 "replace": "FOB destination", "reason": "You asked."})
+        self.assertEqual(second["edited_copy"]["name"], "Supply agreement (edited).docx")
+        last = b._uploads().file(ana.key, second["citation"][len("file:"):])
+        self.assertEqual(doc_edit.text_of("x.docx", last).split(), (
+            "1. Parties. PLX and Acme agree. 2. Payment terms. Invoices are payable Net 45 "
+            "from the invoice date. 3. Delivery. FOB destination.").split())
+        listed = assistant_tools.documents([
+            {"type": "tool_call", "name": "mcp__plx__plx.edit_document",
+             "result": json.dumps(r)} for r in (first, second)])
+        self.assertEqual([d["download_url"] for d in listed],
+                         [second["edited_copy"]["download_url"]])
+        slide = tool(ana).call({"citation": kept[1], "find": "97%", "replace": "91%",
+                                "reason": "You asked."})
+        self.assertEqual(slide["diff"], [{"field": "slide 1", "before": "On-time delivery: 97%",
+                                          "after": "On-time delivery: 91%"}])
+        self.assertEqual(slide["edited_copy"]["kind"], "pptx")
+        self.assertEqual(len(self.fake.calls), calls)        # nothing written anywhere
+        # someone else's file, a made-up id, an unknown form: refused, nothing made
+        for who, citation in ((sam, kept[0]), (ana, "file:f_" + "0" * 24), (ana, "file:x")):
+            with self.subTest(citation=citation):
+                got = tool(who).call({"citation": citation, "find": "Net 30",
+                                      "replace": "Net 45", "reason": "You asked."})
+                self.assertIn("refused", got)
+                self.assertNotIn("edited_copy", got)
+        # a change that would put an excluded person into the copy: refused
+        got = tool(ana).call({"citation": kept[0], "find": "Net 30",
+                              "replace": "Net 30, ask " + HIDDEN[0], "reason": "You asked."})
+        self.assertIn("refused", got)
+        # a session not the person's own keeps nothing
+        from unittest import mock
+        with mock.patch.object(type(ana.session), "view_as", new_callable=mock.PropertyMock,
+                               return_value=True):
+            self.assertIsNone(b._attached(request(("a.docx", contract)), ana).files[0].kept)
+        # no exclusion list: nothing read, nothing kept
+        b.people_guard = lambda: None
+        off = b._attached(request(("a.docx", contract)), ana).files[0]
+        self.assertIsNone(off.kept)
+        self.assertIsNone(off.data)
+        self.assertEqual(off.text, "")
+
+    def test_a_word_file_whose_body_is_not_word_document_xml_is_read_and_edited_whole(self):
+        """Live 11-18: a .docx keeps its body in word/document2.xml (its [Content_Types].xml
+        names it): every edit of it was refused as "not in the document" and its text read
+        as empty. The parts are taken from the package's own content types, for the edit
+        and for the filters alike; a package with no main part is refused."""
+        import io
+        import zipfile
+        wp = "application/vnd.openxmlformats-officedocument.wordprocessingml."
+
+        def package(body, header="", main=True):
+            out = io.BytesIO()
+            types = ('<Types><Override PartName="/word/document2.xml" ContentType="'
+                     + wp + ('document.main+xml' if main else 'styles+xml') + '"/>'
+                     '<Override PartName="/word/header3.xml" ContentType="' + wp
+                     + 'header+xml"/></Types>')
+            with zipfile.ZipFile(out, "w") as z:
+                z.writestr("[Content_Types].xml", types)
+                z.writestr("word/document2.xml", "<w:document><w:body>" + "".join(
+                    f"<w:p><w:r><w:t>{t}</w:t></w:r></w:p>" for t in body)
+                    + "</w:body></w:document>")
+                z.writestr("word/header3.xml",
+                           f"<w:hdr><w:p><w:r><w:t>{header}</w:t></w:r></w:p></w:hdr>")
+            return out.getvalue()
+        cite = "sharepoint://b!d1/01ITEM@v3"
+        self.backend.autopilot_adapters = {
+            "sharepoint_write": wa.SharePointAdapter(self.fake, environ=self.env)}
+        reader = Reader(session=session(OWNER), mode="mock", display_name="a", email=OWNER[0])
+
+        def edit(data, find="would constitute", replace="would count as"):
+            self.backend.prepared_doc_read = lambda r, c: ("report.docx", data, '"e,1"')
+            tool = {t.spec["name"]: t for t in self.backend.prepared_tools(reader)}[
+                "plx.edit_document"]
+            return tool.call({"citation": cite, "find": find, "replace": replace,
+                              "reason": "r"})
+        got = edit(package(["A Firm must declare it, which would constitute Stacking."]))
+        self.assertEqual(got["diff"], [{
+            "field": "paragraph",
+            "before": "A Firm must declare it, which would constitute Stacking.",
+            "after": "A Firm must declare it, which would count as Stacking."}])
+        # the renamed header is read by the filters too: Freightcom there refuses it all
+        refused = json.dumps(edit(package(["which would constitute it"],
+                                          header="Freightcom account 77")))
+        self.assertIn("refused", refused)
+        self.assertNotIn("account 77", refused)
+        # no main document part named: refused, never read as an empty document
+        self.assertIn("could not be found", " ".join(
+            edit(package(["which would constitute it"], main=False))["refused"]))
 
     def test_a_grant_revoked_after_prepare_is_refused_at_confirm_and_retry(self):
         grants = self.root / "grants.json"

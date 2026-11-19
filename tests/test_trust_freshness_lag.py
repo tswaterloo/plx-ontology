@@ -61,3 +61,14 @@ class TrustLag(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TrustOverdueUnits(unittest.TestCase):
+    def test_a_late_unit_is_behind_though_the_newest_read_is_recent(self):
+        from operator_api import trust
+        now = datetime(2026, 11, 19, 12, 0, tzinfo=timezone.utc)
+        read = {"state": "complete", "served_through": now.isoformat(), "left": 0}
+        _at, ok = trust._source_served("graph_mail", now, dict(read), now)
+        self.assertIsNone(ok)
+        _at, late = trust._source_served("graph_mail", now, dict(read, refresh_overdue=True), now)
+        self.assertIn("not read within their usual interval", late)

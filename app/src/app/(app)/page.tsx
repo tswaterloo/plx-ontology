@@ -19,6 +19,7 @@ import { NeedsMe } from "@/components/needs-me";
 import { HomeAsk } from "@/components/home-start";
 import { PreparedList } from "@/components/my-work";
 import { YourCommitments } from "@/components/your-commitments";
+import { InsightNewsList } from "@/components/insights/news";
 import { YourTurn } from "@/components/memory-people";
 import { SignedInFirstWeek } from "@/components/first-week";
 import { isPutAway } from "@/lib/actions";
@@ -31,6 +32,7 @@ import { formatDate, formatMoney, objectHref, readable, recordLabel, safeHref } 
 import { headline, keyOwner, refreshingLine } from "@/lib/home";
 import type { MyWork, ReplyTriage, ActionResult, Briefing, BriefingItem, HomeResponse, LatePo, ProactiveSuggestion } from "@/lib/types";
 
+const SEEN_AFTER_MS = 6000; // the visit is marked seen after this at the latest, cards settled or not
 const TZ = "America/Toronto";
 
 /** "Couldn't load {thing}." with the incident kept for the Reference line (the notice carries the retry). */
@@ -261,35 +263,55 @@ function Today() {
   const reloadHome = useCallback(() => void load(true), [load]);
   useStaleRefresh(home?.stale_since, reloadHome);
 
+  // The visit is marked seen once the briefing is read AND the suggestion cards have settled
+  // (or SEEN_AFTER_MS passed): the mark makes the kept briefing and suggestions stale, so a
+  // mark sent first sent the cards' own read back to the server to be made again behind a poll
+  // the page then waited on.
+  const briefingRead = useRef(false);
+  const suggestionsSettled = useRef(false);
+  const seenSent = useRef(false);
+  const markSeen = useCallback(() => {
+    if (!briefingRead.current || !suggestionsSettled.current || seenSent.current) return;
+    seenSent.current = true;
+    void markBriefingSeen().catch(() => undefined);
+  }, []);
+  useEffect(() => {
+    const t = setTimeout(() => {
+      suggestionsSettled.current = true;
+      markSeen();
+    }, SEEN_AFTER_MS);
+    return () => {
+      clearTimeout(t);
+      // leaving before the cards settled still counts as the visit: the briefing was read
+      suggestionsSettled.current = true;
+      markSeen();
+    };
+  }, [markSeen]);
+
   const loadBriefing = useCallback(() => {
     const c = new AbortController();
     setBriefingError(null);
-    getBriefing(c.signal)
+    getBriefing(c.signal, "all", true)
       .then((b) => {
         setBriefing(b);
-        // each group's next page (the briefing carries only its top items), read only when
-        // Home can show some of it: Home lists only the kinds sent home, and of each kind
-        // only HOME_ROWS before "Show more", so a kind whose top items already fill those
-        // rows needs no page (each page is cut from the briefing the server kept, so the
-        // visit is marked seen only after them)
-        const top = b.items ?? [];
-        const homeOnly = typeof b.home_count === "number";
-        const needed = b.status === "read" && (!homeOnly || (b.home_count ?? 0) > top.filter((i) => i.home).length);
-        const shown = (type: string) => top.filter((i) => i.event_type === type && (!homeOnly || i.home)).length;
-        const reads = needed
-          ? (b.groups ?? [])
-              .filter((g) => g.event_type !== "po_late" && g.count > (g.in_top ?? 0) && shown(g.event_type) < HOME_ROWS)
-              .map((g) =>
-                getBriefingItems(g.event_type, 0, "all", c.signal)
-                  .then((p) => setPages((cur) => ({ ...cur, [g.event_type]: { items: p.items ?? [], more: !!p.more, total: p.total ?? 0 } })))
-                  .catch(() => undefined),
-              )
-          : [];
-        if (b.status === "read") void Promise.all(reads).then(() => markBriefingSeen().catch(() => undefined));
+        // each group's next page comes with the briefing (the server picks the kinds Home
+        // can show: only the kinds sent home, of each only HOME_ROWS before "Show more"):
+        // no second request, so the visit is marked seen at once (pages are cut from the
+        // briefing the server kept, and the mark makes that stale)
+        if (b.pages?.length)
+          setPages((cur) => {
+            const next = { ...cur };
+            for (const p of b.pages ?? []) next[p.event_type] = { items: p.items ?? [], more: !!p.more, total: p.total ?? 0 };
+            return next;
+          });
+        if (b.status === "read") {
+          briefingRead.current = true;
+          markSeen();
+        }
       })
       .catch((e) => !c.signal.aborted && setBriefingError(didntLoad("the briefing", e)));
     return () => c.abort();
-  }, []);
+  }, [markSeen]);
   useEffect(() => loadBriefing(), [loadBriefing]);
 
   useEffect(() => {
@@ -304,10 +326,15 @@ function Today() {
     );
     // the suggestion cards only add to rows already listed ("ETA confirmed?", a draft): the
     // list never waits for them (their first read can take a minute on a cold server)
-    getSuggestions(c.signal).then((s) => !c.signal.aborted && setSuggestions(s.status === "read" ? (s.items ?? []) : []), () => undefined);
+    getSuggestions(c.signal)
+      .then((s) => !c.signal.aborted && setSuggestions(s.status === "read" ? (s.items ?? []) : []), () => undefined)
+      .finally(() => {
+        suggestionsSettled.current = true;
+        markSeen();
+      });
     getActionStates(c.signal).then((r) => setStates(r.cards ?? {}), () => undefined);
     return () => c.abort();
-  }, []);
+  }, [markSeen]);
 
   const more = useCallback((eventType: string) => {
     const cur = pages[eventType];
@@ -504,6 +531,7 @@ function Today() {
         <SignedInFirstWeek />
         <NeedsMe />
         <YourCommitments />
+        <InsightNewsList />
         <YourTurn />
         {error ? (
           <div className="p-4">

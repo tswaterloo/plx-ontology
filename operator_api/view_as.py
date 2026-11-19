@@ -45,7 +45,8 @@ PEOPLE_SECONDS = 5 * 60
 # action states, the late list), alerts (watching, approvals, the alert registry) and drafts
 # (the autopilot's prepared items, My work's items).
 ROUTES = frozenset({
-    "/api/home", "/api/late", "/api/briefing", "/api/briefing/items", "/api/briefing/unjudged",
+    "/api/home", "/api/late", "/api/briefing", "/api/briefing/items", "/api/briefing/pages",
+    "/api/briefing/unjudged",
     "/api/suggestions",
     "/api/replies", "/api/actions/state", "/api/my-work", "/api/autopilot", "/api/approvals",
     "/api/watch", "/api/alert-kinds"})

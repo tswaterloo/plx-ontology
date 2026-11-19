@@ -84,6 +84,28 @@ def shown_message(text: Any) -> str:
     return core if len(core) <= MESSAGE_CHARS else core[:MESSAGE_CHARS].rstrip() + "..."
 
 
+def todos_of(prepared: Mapping[str, Any]) -> list[m.AutopilotTodo]:
+    """The item's things to do by hand (``autopilot_agent``: a system with no write path,
+    a look's question), as the person sees them; one without a ``what`` is no to-do."""
+    out = []
+    for t in prepared.get("todos") or ():
+        if isinstance(t, Mapping) and str(t.get("what") or "").strip():
+            out.append(m.AutopilotTodo(system=str(t.get("system") or "")[:60],
+                                       record=str(t.get("record") or "")[:300],
+                                       what=str(t["what"]).strip()[:600]))
+    return out[:20]
+
+
+def todo_only(prepared: Mapping[str, Any]) -> bool:
+    """Whether the item holds only things to do by hand: no reply, question, brief or
+    proposed change (its accept is the person's "done", never a write)."""
+    from operating import autopilot_jobs as aj
+    return bool(todos_of(prepared)) and not (
+        prepared.get("draft") or prepared.get("teams_draft") or prepared.get("your_call")
+        or prepared.get("brief") or aj.kept(prepared.get("jobs") or ())
+        or prepared.get("also_jobs"))
+
+
 def decision_sent(dec: Mapping[str, Any], item: Mapping[str, Any]) -> bool:
     """Whether an accepted item's reply went out: the decision's own ``sent`` (only the
     email's or Teams message's own result counts: ``SENDS``); a decision recorded before
@@ -670,7 +692,11 @@ class AutopilotAreaMixin:
         if text:
             row["text"] = text
         offer = None
-        if body.decision == "accept":
+        if body.decision == "accept" and todo_only(found["body"].get("prepared") or {}):
+            # a to-do card: "done" is the person's word that they did it by hand; nothing
+            # goes through the write path
+            row.update({"outcome": "done", "closed": "person_done", "steps": []})
+        elif body.decision == "accept":
             if self._apa_off(env, state)[0]:
                 raise UserFacing("action_refused", "The autopilot is switched off.", 409)
             item = found
@@ -789,7 +815,7 @@ class AutopilotAreaMixin:
                     used_for_draft=self._apa_used(reader, item, used_cache),
                     learned=learning.describe_edit(str(envelope.get("body") or ""), body)
                     if again and dec.get("text") else [],
-                    created_at=str(item["created_at"])))
+                    todos=todos_of(prepared), created_at=str(item["created_at"])))
         finally:
             if queue is not None:
                 queue.close()
@@ -882,8 +908,20 @@ class AutopilotAreaMixin:
         prepared = body.get("prepared") or {}
         happened = body.get("happened") or {}
         proposals = aj.kept(prepared.get("jobs") or ())
+        todos = todos_of(prepared)
         if not proposals and not prepared.get("brief"):
-            return None
+            if not todos:
+                return None
+            # only things to do by hand: a to-do card (done or not needed; nothing written)
+            channel = str(happened.get("channel") or "")
+            return m.AutopilotPrepared(
+                item_id=item["item_id"], sender=str(happened.get("sender") or ""),
+                channel=channel if channel in ("mail", "teams") else "system",
+                subject=str(happened.get("subject") or (happened.get("fields") or {}
+                                                        ).get("title") or ""),
+                message=shown_message(happened.get("snippet")), kind="todo",
+                summary=str(prepared.get("summary") or "")[:300], todos=todos,
+                created_at=str(item["created_at"]))
         if "desk" not in cache:
             try:
                 cache["desk"] = (self._pw_desk(reader), self._pw_person(reader))  # type: ignore[attr-defined]
@@ -927,7 +965,7 @@ class AutopilotAreaMixin:
             # a brief (meeting prep) is the item's own text: what the person reads
             message=brief[:3000] if brief else shown_message(happened.get("snippet")),
             kind="job",
-            summary=str(prepared.get("summary") or "")[:300], jobs=jobs,
+            summary=str(prepared.get("summary") or "")[:300], jobs=jobs, todos=todos,
             created_at=str(item["created_at"]))
 
     def autopilot_job_prepare(self, reader: Reader, item_id: str, index: int

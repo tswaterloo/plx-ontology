@@ -35,6 +35,14 @@ class GradeTest(unittest.TestCase):
         names = item(names=[["ACME-1", "Widget Blue"], "OR100"], min_names=1)
         self.assertTrue(grade(names, {"text": "It holds the widget blue item."})[0])
         self.assertFalse(grade(names, {"text": "It holds a red gadget."})[0])
+        # a file named only inside its link; a "CODE = Name" truth said by either side
+        doc = item(names=["Inv 82012 - 82208.pdf"], min_names=1)
+        self.assertTrue(grade(doc, {"text": "In MACYS > INVOICES: https://x.sharepoint.com/"
+                                            "Operations/MACYS/INVOICES/Inv%2082012%20-%2082208.pdf"})[0])
+        self.assertFalse(grade(doc, {"text": "https://x.sharepoint.com/INVOICES/Inv%2082013.pdf"})[0])
+        port = item(names=["USSFB = Sanford, United States"], min_names=1)
+        self.assertTrue(grade(port, {"text": "It loaded at Sanford, United States (port code USSFB)."})[0])
+        self.assertFalse(grade(port, {"text": "It loaded at Toronto (CAYYZ)."})[0])
         dates = item(dates=["2026-11-03"], date_tol_days=1)
         for said in ("It was on 2026-11-03.", "Placed November 4, 2026.", "3 Nov 2026", "on 11/03/2026"):
             self.assertTrue(grade(dates, {"text": said})[0], said)

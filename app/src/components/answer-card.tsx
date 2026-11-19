@@ -216,7 +216,7 @@ function Progress({ turn }: { turn: Turn }) {
   const understood = (turn.understanding?.entities ?? []).filter((e) => e.resolved && !e.ambiguous).map((e) => recordLabel(e.resolved!.type, e.resolved!.label));
   // the work's own steps, in plain words, each once; the latest is the one in progress
   const work = (turn.steps ?? []).filter((t) => t !== "Reading your question" && t !== "Writing the answer").map((t) => readable(t).replace(/…$/, ""));
-  const writing = turn.phase === "streaming" || !!turn.verdict;
+  const writing = (turn.phase === "streaming" && !!turn.streamed) || !!turn.verdict;
   const found = turn.sourcesFound ? plural(turn.sourcesFound, "source") : null;
   const steps: { label: string; state: "done" | "active"; tiles?: boolean }[] = [
     ...(understood.length && !work.length ? [{ label: `Found ${understood.slice(0, 2).join(", ")}`, state: "done" as const }] : []),
@@ -657,7 +657,7 @@ function whoToAsk(a: Answer): string | null {
 /** Words of a read that failed, as an answer or its not-found list says them. */
 const READ_FAILED = /could(?:n['\u2019]t| not) be read|\b(?:execution|lookup|read|search|query) failed\b|\btimed out\b/i;
 
-type CardProps = { turn: Turn; onPick?: (p: Pick) => void; onRetry?: () => void; onAsk?: (q: string) => void; onInstruct?: (q: string, extra: InstructAsk) => void; onClarify?: (words: string, reply: ClarifyReply) => void };
+type CardProps = { turn: Turn; onPick?: (p: Pick) => void; onRetry?: () => void; onAsk?: (q: string) => void; onInstruct?: (q: string, extra: InstructAsk) => void; onClarify?: (words: string, reply: ClarifyReply) => void; onDeeper?: () => void };
 
 /** Pure: the turn is the simple Ask's (its answer carries ``cited``, or its words streamed whole). */
 export function isSimple(turn: Turn): boolean {
@@ -666,13 +666,23 @@ export function isSimple(turn: Turn): boolean {
 
 /** The simple Ask's turn shows the answer and its Sources line alone; every other turn the full card. */
 export function AnswerCard(props: CardProps) {
-  const { turn, onRetry } = props;
+  const { turn, onRetry, onDeeper } = props;
   if (!isSimple(turn)) return <FullAnswerCard {...props} />;
   const busy = turn.phase === "thinking" || turn.phase === "streaming";
   return (
     <>
-      <SimpleAnswer answer={turn.answer} streamed={turn.streamed} busy={busy} status={turn.status} />
+      <SimpleAnswer answer={turn.answer} streamed={turn.streamed} busy={busy} status={turn.status} progress={busy ? <Progress turn={turn} /> : undefined} />
       {turn.phase === "error" && <ErrorNotice message={turn.error ?? "This answer didn't finish. Try again."} tone={turn.notice ? "notice" : "error"} onRetry={turn.notice === "off" ? undefined : onRetry} />}
+      {turn.phase === "done" && onDeeper && !turn.request?.extra?.deep && (
+        <button
+          type="button"
+          onClick={onDeeper}
+          className="mt-3 text-[13px] font-medium text-accent hover:underline"
+          title="Asks again: plans the reads, checks the key figures a second way and shows the evidence for each part. Takes a few minutes."
+        >
+          Think it through
+        </button>
+      )}
     </>
   );
 }

@@ -155,8 +155,12 @@ shows, a date, a document, a confirmation, a how-to, a plain yes or no on someth
 or it is a courtesy that needs a short answer. Write the reply {reader_said_lower} would \
 send, in {their} own voice. Use only what the message, the thread, the notes{and_reads} hold \
 for any figure: never invent a date, quantity, price, order number, tracking number or \
-promise. When one fact the reply needs is not there, still write it: answer what you can and \
-say plainly that {they} are checking on that one point (name it). Never agree to something \
+promise. Say nothing about what {reader_said_lower} did, is doing, will do, knows or feels \
+that the message, the thread, the notes{and_reads} do not show (whether something was sent, \
+shipped, checked, fixed or decided; a plan; a reason; their health or opinion): that is \
+{their} own to say, so the message is a "your_call". When one fact the reply needs is not \
+there, still write it: answer what you can and say plainly that {they} are checking on that \
+one point (name it). Never agree to something \
 just to have a reply, and never only thank or say {they} will check and get back. Keep it as \
 short as the message deserves and as {their} own replies are, and add no offer or promise the \
 message does not call for and {their} own replies do not make ("send it over and I'll take a \
@@ -172,7 +176,9 @@ guess those in a reply. Give "ask": one short question to {reader} that says who
 lines from the thread{or_reads} that bear on it (never a line saying nothing was found); and \
 "options": the two or three likeliest answers, each {{"label": "<the answer as {they} would \
 tap it, a few words: Yes / No, Monday>", "reply": "<the full reply {they} would send with \
-that answer, ready to send, in {their} voice, same rules as a reply>"}}.
+that answer, ready to send, in {their} voice, same rules as a reply: it says that answer and \
+nothing more, with no name, number, date, reason, apology, plan or promise the message, the \
+thread, the notes{or_reads} do not hold>"}}.
 - "none": no reply would help (a thank-you, a note for their records, a message answered \
 further down the thread, mail meant for someone else).
 

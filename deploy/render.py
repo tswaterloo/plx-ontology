@@ -50,7 +50,7 @@ def sources(user: bool, api_user: bool = False) -> list[tuple[Path, str]]:
         for pattern in UNIT:
             found += [(p, p.name) for p in sorted((DEPLOY / "user").glob(pattern))]
         return found
-    for folder in (DEPLOY / "systemd", DEPLOY / "backup"):
+    for folder in (DEPLOY / "systemd", DEPLOY / "backup", DEPLOY / "spark" / "systemd"):
         for pattern in UNIT:
             found += [(p, p.name) for p in sorted(folder.glob(pattern))]
     folders = [DEPLOY / "systemd" / "host"] + ([DEPLOY / "systemd" / "api-user"] if api_user else [])

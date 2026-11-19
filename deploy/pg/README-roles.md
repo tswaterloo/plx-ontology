@@ -37,6 +37,7 @@ Each OS user maps to the role in `pg_ident.conf`, and a `pg_hba.conf` line above
 ```
 # served cluster /etc/postgresql/17/main
 pg_ident.conf:  plxeval    <host user>         plx_eval
+                plxeval    plx-sparkpg    plx_eval
                 plxapi     plx-workbench  plx_api
                 plxapi     <host user>         plx_api
                 plxloader  <host user>         plx_loader
@@ -51,7 +52,13 @@ pg_hba.conf:    local  all  plx_eval    peer map=plxeval
                 local  all  plx_test    peer map=plxtest
                 local  all  plx_loader  peer map=plxloader
 ```
-Backups of the files before each change: `*.bak-s13` (API), `*.bak-t7` (loader, tests), `*.bak-eval` (eval role, 11-17).
+`plx-sparkpg` is the Spark runs' relay (`deploy/spark/systemd/plx-spark-pg-relay.*`, a
+system user with no login): the Sparks reach the served cluster only through it, and its one
+mapping is `plx_eval`, so a Spark run is a full reader that can only read (owner-level evals);
+it is refused every other role (`plx_api`, `plx_loader`, `postgres`: no map, and the generic
+`peer` line needs the OS user's own name). An eval as a staff or restricted reader stays on
+the box until a scoped Spark role exists. Undo: drop the line, `SELECT pg_reload_conf()`.
+Backups of the files before each change: `*.bak-s13` (API), `*.bak-t7` (loader, tests), `*.bak-eval` (eval role, 11-17), `pg_ident.conf.bak-sparkpg` (Spark relay).
 `sudo pg_ctlcluster 17 <main|test> reload` applies them; nothing restarts.
 
 ## Tests

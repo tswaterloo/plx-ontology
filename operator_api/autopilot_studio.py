@@ -41,6 +41,7 @@ TRIGGER_WORDS = {
     "meeting.ended": "A meeting ends",
     "qc.result": "A QC result is recorded",
     "question.asked": "Someone asks a question",
+    "assistant.look": "At the day's start and each working hour",
     "schedule": "On a schedule",
 }
 CONDITION_WORDS = {
@@ -63,6 +64,7 @@ CONDITION_WORDS = {
 # conditions whose words run straight into their value ("The record is a purchase order")
 PLAIN_JOIN = frozenset({"object_type_in", "status_in", "quality_in"})
 ACTION_WORDS = {
+    "job": "Prepare the changes, messages and answers it calls for",
     "order_entry": "Draft the sales order and a reply", "po_followup": "Draft a chase to the "
     "supplier", "invoice_send": "Draft the invoice email", "routine_update": "Draft the "
     "recurring update", "invoice_entry": "Prepare the invoice entry", "shipment_posting":

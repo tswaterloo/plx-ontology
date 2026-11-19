@@ -4,8 +4,9 @@ after its layers in every cycle failed.
 The delta's Postgres apply (``operating.pg.ontology_delta.apply_listed``) runs, after the
 layers of a cycle, steps of the whole store whose failure leaves the layers applied and the
 cycle green: the whole-store link steps (``whole_steps``), the person links
-(``person_links``, ``operating.pg.people_scope``) and the people directory
-(``people_directory``, ``operating.pg.people_directory_scope``). Each reports
+(``person_links``, ``operating.pg.people_scope``), the people directory
+(``people_directory``, ``operating.pg.people_directory_scope``) and the sender-party links
+(``sender_links``, ``operating.pg.sender_scope``). Each reports
 ``{"error": ...}`` and keeps its mark, so the next cycle tries again; until one succeeds,
 new mail gets no person links (or no Person) and nothing else shows it. The cycle record
 (``projection/delta/cycles.jsonl``, ``postgres``) carries each report.
@@ -21,7 +22,7 @@ from typing import Any, Mapping, Optional, Sequence
 
 from .ops_health import Check, _check
 
-STEPS = ("whole_steps", "person_links", "people_directory")
+STEPS = ("whole_steps", "person_links", "people_directory", "sender_links")
 PREFIX = "delta_step_failed:"
 LABEL = "Data refresh step failed"
 

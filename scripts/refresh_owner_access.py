@@ -13,10 +13,14 @@ For each row this re-checks, at run time, what can change under a declared grant
 * Portal: when the row's id is a Portal user (``public.app_user``, live through the GET-only
   reporting client, else the host's source mirror), that user is still active. The role and
   access level are the owner's declaration, so they are not compared.
-Only when every row passes is the file rewritten (atomic, 0600, checked by the hosts' own
-parser) with ``read_at`` = now and the re-check named in ``source``; any failed row refuses that snapshot
-(left as it is, so it ages out and the credential expiry list shows it). Never prints a claim,
-an email or an id: counts and codes only.
+A row that definitely fails (``LEFT``: the Entra account disabled or gone, the Portal user
+inactive, declared inactive) is dropped from the file, so that person loses access at once,
+and the rows that pass are rewritten (atomic, 0600, checked by the hosts' own parser) with
+``read_at`` = now and the re-check named in ``source``: one leaver never locks the others out.
+A row that cannot be decided (Graph unreadable, a mismatched or invalid id), the Portal users
+unread, or no row passing leaves the snapshot as it is (a lookup outage never removes anyone;
+it ages out and the credential expiry list shows it). Never prints a claim, an email or an
+id: counts and codes only.
 
     python3 -m scripts.refresh_owner_access --snapshot DIR/portal_access.json [--snapshot ...]
         [--mirror source-mirror.sqlite] [--no-live] [--dry-run]
@@ -89,6 +93,29 @@ DECLARED_SOURCE = "scripts/eval_owner_host.py"
 RECHECK_MARK = "; re-checked by scripts/refresh_owner_access.py at "
 
 
+# the re-check codes that mean the person left (or was switched off): the row is dropped
+LEFT = frozenset({"entra_account_disabled", "entra_user_not_found", "portal_inactive",
+                  "declared_inactive"})
+
+
+def row_problems(user: Mapping[str, Any], by_id: Mapping[str, Mapping[str, Any]],
+                 enabled: Callable[[str], tuple[bool, str]]) -> list[str]:
+    """Why one row fails its re-check ([] when it passes): an enabled Entra account and, if
+    a Portal user, still active there; declared active. An Entra check that raises fails the
+    row (undecidable: never kept on trust)."""
+    try:
+        ok, reason = enabled(str(user.get("entraObjectId") or ""))
+    except Exception:  # noqa: BLE001 - a lookup that failed confirms nothing
+        ok, reason = False, "unreadable"
+    problems = [] if ok else [f"entra_{reason or 'not_enabled'}"]
+    match = by_id.get(user.get("id"))
+    if match is not None and match.get("isActive") is not True:
+        problems.append("portal_inactive")
+    if user.get("isActive") is not True:
+        problems.append("declared_inactive")
+    return problems
+
+
 def confirm(users: Sequence[Mapping[str, Any]], portal: Sequence[Mapping[str, Any]] | None,
             enabled: Callable[[str], tuple[bool, str]]) -> list[str]:
     """Problem codes (``row<i>:<code>``) for the rows that fail a re-check; empty when every
@@ -99,17 +126,8 @@ def confirm(users: Sequence[Mapping[str, Any]], portal: Sequence[Mapping[str, An
     if portal is None:
         return ["portal_unread"]
     by_id = {p["id"]: p for p in portal}
-    problems = []
-    for i, user in enumerate(users):
-        ok, reason = enabled(str(user.get("entraObjectId") or ""))
-        if not ok:
-            problems.append(f"row{i}:entra_{reason or 'not_enabled'}")
-        match = by_id.get(user.get("id"))
-        if match is not None and match.get("isActive") is not True:
-            problems.append(f"row{i}:portal_inactive")
-        if user.get("isActive") is not True:
-            problems.append(f"row{i}:declared_inactive")
-    return problems
+    return [f"row{i}:{code}" for i, user in enumerate(users)
+            for code in row_problems(user, by_id, enabled)]
 
 
 def refresh(path: Path, portal: Sequence[Mapping[str, Any]] | None,
@@ -129,14 +147,23 @@ def refresh(path: Path, portal: Sequence[Mapping[str, Any]] | None,
     problems = confirm(users, portal, enabled)
     new_at = _instant(now or _now())
     if new_at is None:
-        problems.append("time_invalid")
-    if problems:
+        return {**out, "problems": problems + ["time_invalid"]}
+    rows = [p.partition(":") for p in problems]
+    if any(not row.startswith("row") or code not in LEFT for row, _sep, code in rows):
+        # nobody could be confirmed, or a row is undecidable: nothing is removed or stamped
         return {**out, "problems": problems}
+    failed = {int(row[3:]) for row, _sep, _code in rows}
+    kept = [u for i, u in enumerate(users) if i not in failed]
+    if not kept:
+        return {**out, "problems": problems}       # every row failed: it ages out
+    doc["users"] = kept
     doc["read_at"] = new_at.strftime("%Y-%m-%dT%H:%M:%SZ")
     base = str(doc["source"]).split(RECHECK_MARK, 1)[0].rstrip("; ")
     doc["source"] = (f"{base}{RECHECK_MARK}{doc['read_at']} (Entra account enabled, "
                      f"Portal user active: {basis.get('basis') or 'unread'}, "
-                     f"{len(users)} rows)")
+                     f"{len(kept)} rows)")
+    if failed:
+        out.update(dropped=len(failed), problems=problems)
     if dry_run:
         return {**out, "would_refresh": True}
     from operating import employee_permissions as ep
@@ -151,7 +178,7 @@ def refresh(path: Path, portal: Sequence[Mapping[str, Any]] | None,
     except BaseException:
         Path(tmp).unlink(missing_ok=True)
         raise
-    return {**out, "refreshed": True, "read_at": doc["read_at"]}
+    return {**out, "refreshed": True, "read_at": doc["read_at"], "rows": len(kept)}
 
 
 def main(argv: Sequence[str] | None = None, environ: Mapping[str, str] | None = None,

@@ -273,6 +273,11 @@ CHUNK_SPAN_SQL = chunk_runs_sql()
 # ``PgStoreReader.family_chunk_span``: the exact chunk runs' time limit (11-18 live, read
 # only: SharePoint 3.9 s, Teams 2.2 s; mail past 40 s, read as not known)
 CHUNK_SPAN_EXACT_MS = 8000
+# the same read off the request path (the follower's facts read, a fold that finds the
+# family's runs not known): under load the exact read ran past 8 s and "not known" was
+# kept and folded on through every later version, so each search of the family read
+# every family's matches (SharePoint 75-110 s a search, 11-18)
+CHUNK_SPAN_PATIENT_MS = 300_000
 _NOT_KNOWN = object()
 
 
@@ -514,6 +519,9 @@ _CANDIDATE_CHUNKS = (
 WINDOW_MATCHES = 600       # the matches a window is sized to hold
 WHOLE_MATCHES = 20_000     # a word estimated to match no more is read in one window
 WHOLE_VALUE_MATCHES = 100_000   # the same for the value cells (above)
+# a word split over several runs is read whole once when estimated to match no more than
+# this many times WHOLE_MATCHES (``windows``: its rows are only ids)
+SPLIT_WHOLE_FACTOR = 4
 KEPT_MATCHES = 20_000      # a window of no more matches is kept for the next page
 KEPT_WINDOWS = 8           # windows read kept per data version (the next page's)
 # a window is walked when walking it costs less than the index's postings (per row,
@@ -722,6 +730,45 @@ class WordWindows:
         rank, indexed = facts["rank"], facts["indexed"]
         allowed = None if kinds is None else frozenset(kinds)
         field_list = None if fields is None else sorted(fields)
+
+        def shaped(got: list[tuple]) -> list[tuple[int, int]]:
+            if value:
+                return sorted(((src << 20) | rank[field], (src << 20) | field)
+                              for src, field, kind in got
+                              if kind in indexed and (allowed is None or kind in allowed))
+            return sorted((chunk, chunk) for (chunk,) in got)
+
+        def keep(key: tuple, got: list[tuple[int, int]]) -> None:
+            kept = facts["kept"]
+            if len(got) <= KEPT_MATCHES:
+                try:
+                    while len(kept) >= KEPT_WINDOWS:
+                        kept.pop(next(iter(kept)))
+                except (KeyError, RuntimeError, StopIteration):
+                    kept.clear()   # another thread's: start again
+                kept[key] = got
+
+        if one and len(ranges) > 1 and self.estimate(table, query) <= (
+                WHOLE_VALUE_MATCHES if value else WHOLE_MATCHES * SPLIT_WHOLE_FACTOR):
+            # Several runs (a family's chunks, a source's cells): each bounded read pays
+            # the words' whole postings again (0.4-0.8 s a run live, 32 runs for the files'
+            # chunks: 20-28 s a search), while the store's whole match is read once in about
+            # one run's time. So the whole match is read once and kept to the runs here;
+            # the same rows, ascending, as the runs read one by one.
+            key = (table, query, low, high, False, None if field_list is None
+                   else tuple(field_list), allowed)
+            got = facts["kept"].get(key)
+            if got is None:
+                got = shaped(self._read(table, query, low, high, low, high, False, plain,
+                                        field_list))
+                keep(key, got)
+            lows = [a for a, _b in ranges]
+
+            def inside(row: int) -> bool:
+                at = bisect.bisect_right(lows, row >> shift) - 1
+                return at >= 0 and (row >> shift) <= ranges[at][1]
+            yield [pair for pair in got if inside(pair[0]) and pair[0] > after]
+            return
         for a, b in ranges:
             lo = a
             while lo <= b:
@@ -735,20 +782,8 @@ class WordWindows:
                 got = facts["kept"].get(key)
                 if got is None:
                     got = self._read(table, query, lo, hi, low, high, walk, plain, field_list)
-                    if value:
-                        got = sorted(((src << 20) | rank[field], (src << 20) | field)
-                                     for src, field, kind in got
-                                     if kind in indexed and (allowed is None or kind in allowed))
-                    else:
-                        got = sorted((chunk, chunk) for (chunk,) in got)
-                    kept = facts["kept"]
-                    if len(got) <= KEPT_MATCHES:
-                        try:
-                            while len(kept) >= KEPT_WINDOWS:
-                                kept.pop(next(iter(kept)))
-                        except (KeyError, RuntimeError, StopIteration):
-                            kept.clear()   # another thread's: start again
-                        kept[key] = got
+                    got = shaped(got)
+                    keep(key, got)
                 lo = hi + 1
                 yield [pair for pair in got if pair[0] > after] if after > 0 else got
 
@@ -1052,18 +1087,20 @@ class PgStoreReader(StoreReader):
             return None if row is None or row[0] is None else ((int(row[0]), int(row[1])),)
         return self._bounded_runs(CELL_SPAN_SQL, params, CELL_SPAN_EXACT_MS, 20, whole)
 
-    def family_chunk_span(self, family: str) -> tuple[tuple[int, int], ...] | None:
+    def family_chunk_span(self, family: str, *, limit_ms: int | None = None
+                          ) -> tuple[tuple[int, int], ...] | None:
         """``TraverseTools.chunk_span`` of ``family`` on Postgres: its chunk id runs
         (``CHUNK_SPAN_SQL``, ``cell_runs`` with shift 0), ``()`` when it holds no chunk;
-        None (not known: a search of it reads every match) past ``CHUNK_SPAN_EXACT_MS``
-        or the thread's SQL deadline (the bulk family, mail: past 40 s live), or while
+        None (not known: a search of it reads every match) past ``limit_ms``
+        (``CHUNK_SPAN_EXACT_MS`` on a request) or the thread's SQL deadline (the bulk family, mail: past 40 s live), or while
         the document word index is not read here (the SQLite generation's chunk ids are
         not these: ``ontology.chunk_families`` narrows those)."""
         if not self.chunk_words_loaded():
             return None
         params = {"family": family, "low": family + ":", "high": family + chr(ord(":") + 1),
                   "runs": CELL_RUNS}
-        runs = self._bounded_runs(CHUNK_SPAN_SQL, params, CHUNK_SPAN_EXACT_MS, 0,
+        runs = self._bounded_runs(CHUNK_SPAN_SQL, params,
+                                  CHUNK_SPAN_EXACT_MS if limit_ms is None else limit_ms, 0,
                                   lambda pg: _NOT_KNOWN)
         return None if runs is _NOT_KNOWN else (runs or ())
 

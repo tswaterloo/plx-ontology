@@ -250,7 +250,8 @@ def merge_reads(held: Any, incoming: Any, *, settled: bool) -> dict[str, dict[st
                        "left": left if isinstance(left, int) and left > 0 else 0,
                        "reason": reason if isinstance(reason, str) else None,
                        "served_through": through if isinstance(through, str) else None,
-                       "captured_through": captured if isinstance(captured, str) else None}
+                       "captured_through": captured if isinstance(captured, str) else None,
+                       "refresh_overdue": entry.get("refresh_overdue") is True}
     return out
 
 
@@ -309,6 +310,17 @@ def advance_freshness(held: Any, reads: Mapping[str, Any],
             lag = max(0, int((now - through).total_seconds()))
             new.update(captured_at=read["captured_through"], lag_seconds=lag,
                        stale=lag > STALE_AFTER_SECONDS)
+        overdue = read.get("refresh_overdue") is True
+        # some unit is late against its own cadence (a stopped capture: every one): its
+        # own field, which the served rule (``freshness_cadence.aged``) and the trust
+        # page honour; cleared by the next read that finds none late
+        if overdue:
+            new.update(refresh_overdue=True, stale=True)
+        elif entry.get("refresh_overdue") is True:
+            new["refresh_overdue"] = False
+            held_through = _instant(new.get("captured_at"))
+            new["stale"] = (held_through is None or
+                            (now - held_through).total_seconds() > STALE_AFTER_SECONDS)
         if read.get("state") != "complete":
             new["completeness"] = "partial"
         elif read.get("served_through") == read.get("read_from"):
@@ -1449,6 +1461,7 @@ def apply_listed(stores: Sequence[str | Path], dsn: str, *, log: Any = None,
         out["people_directory"] = recompute_people_directory(dsn, state_dir, log=log,
                                                              environ=environ)
     out["person_links"] = recompute_person_links(dsn, log=log, environ=environ)
+    out["sender_links"] = recompute_sender_links(dsn, log=log, environ=environ)
     stalled = [r for r in results if r.get("reason") in STALLS]
     if stalled:
         out["stalled"] = stall(stalled[0])
@@ -1584,6 +1597,28 @@ def recompute_person_links(dsn: str, *, log: Any = None,
         report["mention_repeats"] = refresh_repeats(dsn, ends)
     if log is not None and report != {"pending": False}:
         print(json.dumps({"person_links": report}, sort_keys=True), file=log, flush=True)
+    return report
+
+
+def recompute_sender_links(dsn: str, *, log: Any = None,
+                           environ: Mapping[str, str] | None = None) -> dict[str, Any]:
+    """The sender-party links of the messages the layers replaced since the last run (and
+    of those linked to a party record they replaced) judged again over the whole party
+    directory (``operating.pg.sender_scope``): its report, ``{"pending": False}`` when
+    nothing is to be done, or ``{"error": ...}`` (nothing changed, the mark stays and the
+    next cycle tries again). The mention repeats of the objects whose links changed are
+    marked again."""
+    from operating.pg import sender_scope
+    try:
+        report = sender_scope.recompute(dsn, environ=environ)
+    except Exception as exc:   # the layers are committed: report, keep the mark, go on
+        report = {"error": f"{type(exc).__name__}: {str(exc)[:300]}"}
+        print(f"ONTOLOGY SENDER LINKS FAILED: {report['error']}", file=sys.stderr, flush=True)
+    ends = report.pop("ends", None) if isinstance(report, dict) else None
+    if ends:
+        report["mention_repeats"] = refresh_repeats(dsn, ends)
+    if log is not None and report != {"pending": False}:
+        print(json.dumps({"sender_links": report}, sort_keys=True), file=log, flush=True)
     return report
 
 

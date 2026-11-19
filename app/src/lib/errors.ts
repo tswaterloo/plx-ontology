@@ -47,6 +47,15 @@ const BY_CODE: Record<string, string> = {
   microsoft_sign_in_misconfigured: "Microsoft sign-in isn't set up correctly on this server. Tell the Workbench team.",
 };
 
+/** Insights refusals whose sentence the server writes (operator_api/insights.py REFUSED): each
+ * names what is missing (a column the business tables don't have yet, a read past its time limit),
+ * so a tile nobody here wrote is never answered with "try rephrasing it". */
+export const INSIGHT_CODES: ReadonlySet<string> = new Set([
+  "insight_not_built", "insight_gone", "insight_not_ready", "insight_too_slow", "insight_withheld",
+  "insight_unreadable", "insight_invalid_sql", "insight_chart", "insight_too_many", "insight_not_saved",
+  "insight_watch",
+]);
+
 /** Errors a second try cannot change (the record is missing, or the reader may not see it). */
 export const FINAL_ERRORS: ReadonlySet<string> = new Set([BY_CODE.not_found, BY_CODE.forbidden, BY_CODE.alerts_not_read, BY_CODE.view_as_refused]);
 /** Not a failure: a note on what this view covers (viewing as someone), said calmly, never in red. */
@@ -90,6 +99,7 @@ export function plainError(err: unknown): string {
   if (err instanceof ApiError) {
     // a check not current says itself when it last ran ("... unavailable since Nov 18, 3:07 PM ET")
     if (err.code === "alerts_stale" && err.detail) return err.detail;
+    if (INSIGHT_CODES.has(err.code) && err.detail) return err.detail;
     return BY_CODE[err.code] ?? (err.code === "internal" ? generic(err.incident) : BY_STATUS[err.status]) ?? generic(err.incident);
   }
   if (err instanceof TypeError) return BY_CODE.network; // fetch network failure
@@ -99,6 +109,14 @@ export function plainError(err: unknown): string {
     if (code === "internal") return generic(incidentOf(message));
   }
   return GENERIC_ERROR;
+}
+
+/** One plain sentence for a dashboard tile that could not be read: what the server said was
+ * missing, else the plain sentence for its code, never the "rephrase it" one (a tile is a
+ * statement the reader did not type). */
+export function tileError(err: unknown): string {
+  const said = plainError(err);
+  return said === BY_CODE.invalid_request ? "This view could not be read just now. Refresh to try again; if it keeps failing, tell the Workbench team." : said;
 }
 
 /** Read the error code (and incident) from a failed response; never throws. */

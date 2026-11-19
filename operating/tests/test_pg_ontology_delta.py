@@ -502,6 +502,78 @@ class DeltaToPostgresTests(unittest.TestCase):
         self.assertFalse(tt.fold_layer_facts(self.dsn, layer, [], before - 1,
                                              (f"delta:{Path(layer).name}", "delta_layers")))
 
+    def test_a_not_known_chunk_span_is_read_whole_by_the_next_fold(self):
+        """A family's chunk runs kept as not known (the exact read ran past its limit under
+        load) are not folded on as not known: the next layer's fold reads the family's
+        runs whole, so a search of it is narrowed to its runs again (live 11-18: SharePoint
+        not known since some version, every search read every family's matches, 75-110 s);
+        a fold whose whole read runs past its own limit keeps them not known."""
+        from unittest import mock
+        from ontology.tests.test_delta import DeltaEquivalenceTests
+        from ontology.tests.test_projection import T1, T2
+        from operating import ontology_tools as ot, ontology_tools_evidence as ev
+        from operating import ontology_tools_traverse as tt
+        from operating.pg import ontology_delta, ontology_load, ontology_reader
+        from operating.pg.ontology_reader import PgStoreReader
+
+        facts_dir = tempfile.mkdtemp()
+        self.addCleanup(__import__("shutil").rmtree, facts_dir, True)
+        self.enterContext(mock.patch.dict(os.environ, {"PLX_PG_FACTS_DIR": facts_dir}))
+        tt._LOADED.clear()
+        self.addCleanup(tt._LOADED.clear)
+        fixture = DeltaEquivalenceTests("test_changed_records_equal_a_full_build_and_nothing_"
+                                        "else_is_owned")
+        fixture.setUp()
+        self.addCleanup(fixture.doCleanups)
+        fixture.capture(T1)
+        base = fixture.full("gen1.sqlite")
+        ontology_load.load(base, self.dsn, workers=1, replace=True, log=io.StringIO())
+        families = ev.STORE_DOCUMENT_FAMILIES
+        slow = ("SELECT pg_sleep(2)::text::bigint, NULL::bigint, %(family)s || %(low)s "
+                "|| %(high)s || %(runs)s::text")
+        # the follower's read past even its patient limit: kept as not known
+        with mock.patch.object(ontology_reader, "CHUNK_SPAN_SQL", slow), \
+                mock.patch.object(ontology_reader, "CHUNK_SPAN_PATIENT_MS", 200):
+            self.assertTrue(tt.prime_pg_facts(self.dsn))
+
+        def kept_now():
+            tt._LOADED.clear()   # a later process
+            reader = PgStoreReader.open(self.dsn, only=False)
+            self.addCleanup(reader.close)
+            later = tt.TraverseTools(ot.OntologyTools(reader, ot.ReadPolicy("plx", {})))
+            self.assertTrue(later.prime_lazily(families))
+            return dict(later.store.facts[1]), later
+
+        kept, _ = kept_now()
+        self.assertTrue(all(kept[("chunk_span", f)] is None for f in families), kept)
+        fixture.fake.set("public.app_purchase_order", "po-a", status="RECEIVED")
+        fixture.capture(T2)
+        # a fold whose whole read runs past its limit: still not known, nothing else lost
+        runs_sql = ontology_reader.chunk_runs_sql
+        with mock.patch.object(ontology_reader, "CHUNK_SPAN_PATIENT_MS", 1), \
+                mock.patch.object(ontology_reader, "chunk_runs_sql",
+                                  lambda schema="", owned=False:
+                                  runs_sql(schema, owned=True) if owned else slow):
+            layer = fixture.cycle(base)["store"]
+            applied = ontology_delta.apply_layer(layer, self.dsn)
+        self.assertTrue(applied["applied"] and applied["facts_kept"], applied)
+        kept, _ = kept_now()
+        self.assertTrue(all(kept[("chunk_span", f)] is None for f in families), kept)
+        # the next layer's fold reads them whole: known, and they hold every run a full
+        # read finds
+        fixture.fake.set("public.app_purchase_order", "po-a", status="CLOSED")
+        fixture.capture(T2)
+        layer = fixture.cycle(Path(layer))["store"]
+        applied = ontology_delta.apply_layer(layer, self.dsn)
+        self.assertTrue(applied["applied"] and applied["facts_kept"], applied)
+        kept, later = kept_now()
+        full = PgStoreReader.open(self.dsn, only=False)
+        self.addCleanup(full.close)
+        for family in families:
+            held, read = kept[("chunk_span", family)], full.family_chunk_span(family)
+            self.assertIsNotNone(held, family)
+            self.assertEqual(held, read, family)
+
     def test_a_cycle_keeps_the_facts_of_its_version_when_no_earlier_ones_fold(self):
         """A delta cycle over the Postgres base keeps the traverse facts of the version it
         made even when no earlier version's facts were kept for this fact code (a deploy
@@ -1900,7 +1972,8 @@ class ServedReadsTests(unittest.TestCase):
         for bad in ("not json", "[1]", json.dumps({"portal_api": "x"})):
             self.assertEqual(merge_reads(bad, {"teams": read("t3")}, settled=True),
                              {"teams": {**read("t3"), "reason": None,
-                                        "served_through": "t3", "captured_through": None}})
+                                        "served_through": "t3", "captured_through": None,
+                                       "refresh_overdue": False}})
         # captured_through: the earlier of the read's start and the capture's own refresh
         stamps = lambda at, refreshed: {"read_from": at, "state": "complete", "left": 0,
                                         "refreshed_at": refreshed}
@@ -2074,6 +2147,125 @@ class ServedReadsTests(unittest.TestCase):
             ontology_delta.apply_listed(["b", "c"], "dsn")
             # one below already applied: settled
             self.assertEqual(calls, [("c", True), ("b", True)])
+
+
+class ServedFreshnessByCadenceTests(unittest.TestCase):
+    """A unit is counted by its own cadence: the served time of a source is its newest unit
+    read, and the source is stale only when some unit is overdue against its cadence (a
+    stopped capture: all of them), for every source."""
+
+    @staticmethod
+    def stub(relations):
+        class Captures:
+            def describe(self):
+                return {"relations": relations}
+
+            def close(self):
+                pass
+        return lambda: Captures()
+
+    @staticmethod
+    def ago(hours):
+        import datetime as dt
+        return (dt.datetime.now(dt.timezone.utc) - dt.timedelta(hours=hours)).strftime(
+            "%Y-%m-%dT%H:%M:%S.%fZ")
+
+    def state(self, source, times=None, one=None):
+        from ontology import delta
+        if source in ("teams", "graph_mail"):   # their stores are read by their own readers
+            return delta.judge_refreshes(source, times or [one])
+        rel = {"last_refresh_at": one if one else min(times)}
+        if times is not None:
+            rel["unit_times"] = times
+        return delta.capture_refresh_state(source, self.stub({"rel": rel}), None)
+
+    def test_dormant_units_on_their_cadence_are_not_overdue_a_stopped_capture_is(self):
+        for source in ("bc", "mission_control", "meetings", "sharepoint", "teams", "graph_mail"):
+            with self.subTest(source=source):
+                fresh = [self.ago(0.1), self.ago(3), self.ago(5)]
+                self.assertEqual(self.state(source, fresh), (max(fresh), False))
+                stopped = [self.ago(h) for h in (40, 50, 60)]   # every unit aged: all overdue
+                self.assertEqual(self.state(source, stopped), (max(stopped), True))
+                self.assertTrue(self.state(source, one=self.ago(60))[1])   # one time only
+                self.assertFalse(self.state(source, one=self.ago(1))[1])
+        # teams: a dormant chat read every 12-24 h is current at 20 h, late at 30 h
+        self.assertFalse(self.state("teams", [self.ago(0.1), self.ago(20)])[1])
+        self.assertTrue(self.state("teams", [self.ago(0.1), self.ago(30)])[1])
+        # mail: a folder read every cycle is late at 8 h
+        self.assertTrue(self.state("graph_mail", [self.ago(0.1), self.ago(8)])[1])
+
+    def test_unreadable_or_unstated_times_claim_nothing(self):
+        from ontology import delta
+        self.assertEqual(delta.capture_refresh_state(
+            "bc", self.stub({"r": {"last_refresh_at": None, "unit_times": []}}), None),
+            (None, False))
+        self.assertEqual(delta.capture_refresh_state("bc", self.stub({"r": {
+            "last_refresh_at": "not a time"}}), None), (None, False))
+        self.assertEqual(delta.capture_refresh_state("bc", lambda: 1 / 0, None), (None, False))
+
+    def test_the_served_entry_is_stale_only_when_a_unit_is_overdue(self):
+        import datetime as dt
+        import json
+        from operating.pg import ontology_delta as od
+        now = dt.datetime(2026, 11, 19, 12, 0, tzinfo=dt.timezone.utc)
+        newest = (now - dt.timedelta(minutes=5)).isoformat()
+        held = json.dumps([{"source": "teams", "captured_at": (now - dt.timedelta(
+            hours=13)).isoformat(), "lag_seconds": 46800, "stale": False,
+            "completeness": "complete"}])
+        base = {"state": "complete", "read_from": newest, "served_through": newest,
+                "captured_through": newest}
+        got = json.loads(od.advance_freshness(
+            held, {"teams": {**base, "refresh_overdue": False}}, now=now))[0]
+        self.assertEqual((got["captured_at"], got["stale"]), (newest, False))
+        late = json.loads(od.advance_freshness(
+            held, {"teams": {**base, "refresh_overdue": True}}, now=now))[0]
+        self.assertTrue(late["stale"])
+        kept = od.merge_reads("{}", {"teams": {"read_from": newest, "state": "complete",
+                                               "refresh_overdue": True,
+                                               "refreshed_at": newest}}, settled=True)
+        self.assertTrue(kept["teams"]["refresh_overdue"])
+        kept = od.merge_reads(json.dumps(kept), {"teams": {
+            "read_from": (now + dt.timedelta(minutes=1)).isoformat(), "state": "complete", "refreshed_at": newest}},
+            settled=True)
+        self.assertFalse(kept["teams"]["refresh_overdue"])
+
+    def test_the_overdue_flag_survives_the_served_rule(self):
+        """advance_freshness output goes through ``aged`` (answers and Home): a stopped
+        capture, most units dead with one fresh, and all-dormant Teams chats."""
+        import datetime as dt
+        import json
+        from operating.freshness_cadence import aged
+        from operating.pg import ontology_delta as od
+        now = dt.datetime(2026, 11, 19, 12, 0, tzinfo=dt.timezone.utc)
+        bounds = {"graph_mail": 36 * 3600.0, "teams": 36 * 3600.0}
+
+        def served(source, newest_age_h, overdue, held_age_h=1):
+            newest = (now - dt.timedelta(hours=newest_age_h)).isoformat()
+            held = json.dumps([{"source": source, "captured_at": (now - dt.timedelta(
+                hours=held_age_h)).isoformat(), "lag_seconds": 100, "stale": False}])
+            read = {"state": "complete", "read_from": newest, "served_through": newest,
+                    "captured_through": newest, "refresh_overdue": overdue}
+            moved = od.advance_freshness(held, {source: read}, now=now)
+            entry = json.loads(moved or held)[0]     # None: nothing moves, the entry stands
+            return aged(entry, bounds, now)
+
+        # a mail capture that stopped 10 h ago: the newest unit is 10 h old, inside 36 h
+        stopped = served("graph_mail", 10, True, held_age_h=10)
+        self.assertTrue(stopped["stale"])
+        self.assertTrue(stopped["label"])
+        # most units dead, one fresh: the headline is minutes old and still overdue
+        mixed = served("graph_mail", 0.1, True)
+        self.assertTrue(mixed["stale"])
+        # every unit read inside its own interval (dormant Teams chats: 12 h): fresh
+        dormant = served("teams", 13, False, held_age_h=13)
+        self.assertFalse(dormant["stale"])
+        # recovered: the next read that finds none late clears the flag
+        held = json.dumps([dict(mixed, served_from=None)])
+        newest = now.isoformat()
+        back = json.loads(od.advance_freshness(held, {"graph_mail": {
+            "state": "complete", "read_from": newest, "served_through": newest,
+            "captured_through": newest, "refresh_overdue": False}}, now=now))[0]
+        self.assertFalse(aged(back, bounds, now)["stale"])
 
 
 class LayerFreshnessTests(unittest.TestCase):

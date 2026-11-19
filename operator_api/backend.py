@@ -38,6 +38,7 @@ from __future__ import annotations
 
 import copy
 import argparse
+import contextlib
 import contextvars
 import dataclasses
 import hashlib
@@ -87,6 +88,7 @@ from operating.file_modes import keep_shared
 from operating import general_answer
 from operating import humanize
 from .team_view import TeamViewMixin
+from .insights import InsightsMixin
 from operating import labour_hours
 from .watch import WatchMixin
 from .auth import Reader, sign_in_kind
@@ -96,7 +98,7 @@ from .test_records import hidden_words
 from .serving import (  # noqa: F401 - re-exported
     MAX_WORKSPACES, MAX_FACTS, LATE_LIST_LIMIT, LATE_COUNT_LIMIT,
     SAME_NAME_ROWS, LATE_LABEL_LIMIT, MAX_SOURCES_PER_FACT, MAX_ANSWERS_KEPT,
-    ACCESS_WORKERS, ASK_TIMEOUT_SECONDS, ASK_WORKERS, ASK_WORKER_GB, ASK_MEMORY_FLOOR_GB,
+    ACCESS_WORKERS, CHECK_WORKERS, ASK_TIMEOUT_SECONDS, ASK_WORKERS, ASK_WORKER_GB, ASK_MEMORY_FLOOR_GB,
     ASK_WORKERS_MOST,
     WARM_HOSTS, ask_worker_count, ASK_TOP_UP_SECONDS, top_up_ask_workers, looked_up,
     ASK_SESSION_GB, ASK_SESSION_FLOOR_GB, ASK_SESSION_RAMP_SECONDS, ASK_SESSIONS_MOST,
@@ -181,8 +183,9 @@ from .cli import (  # noqa: F401 - re-exported
     default_search)
 
 from .backend_common import (
-    _clean_text, _iso, GRANT_SCREENS, REWARM_FLOOR_SECONDS, SCREENS_AHEAD, SHAPE_SECONDS,
-    SHAPE_WAIT_FACTOR, STOP_JOIN_SECONDS)
+    _clean_text, _iso, GRANT_SCREENS, REWARM_FLOOR_SECONDS, SCREENS_AGAIN_MOST,
+    SCREENS_AGAIN_SECONDS, SCREENS_AHEAD, SHAPE_SECONDS, SHAPE_WAIT_FACTOR, STOP_JOIN_SECONDS,
+    FRESHNESS_SECONDS)
 from .backend_warm import WarmMixin  # noqa: F401 - re-export
 from .backend_ask import AskMixin  # noqa: F401 - re-export
 from .backend_serving import ServingMixin  # noqa: F401 - re-export
@@ -191,7 +194,8 @@ from .backend_trails import (
     _batched_words, _person, answer_trail, customer_names, fast_off, quicker_answer,
     why_answer_trail)
 from .backend_pages import (
-    _count, _marks_stamp, PAGE_SPREAD, PAGE_SPREAD_PRIORITY, plan_families, SPREAD_SECTIONS)
+    _count, _marks_stamp, PAGE_SPREAD, PAGE_SPREAD_PRIORITY, plan_families, _ReadByOtherCode,
+    SPREAD_SECTIONS)
 from .page_core import CorePageMixin
 from .backend_run import (
     directory_oids, view_as_for)
@@ -211,8 +215,24 @@ def warm_timed(name: str, job: Callable[[Any], Any]) -> Callable[[Any], Any]:
     return run
 
 
+# the parts of a full reader's policy (``policy_parts``) left out of a kept page's access
+# state (``_access_job``): they grow with the data's source keys, never with what that
+# reader may read; a staff reader's stay whole (a new specific grant can narrow a family)
+FULL_READER_MOVING_PARTS = ("audiences", "units")
+
+
+def shared_key(reader: Any) -> Any:
+    """Who a decision may be shared with (their checks only), None: with nobody."""
+    from .insights_cache import reader_key
+    return reader_key(reader)
+
+
+ACCESS_LOG_SECONDS = float(os.environ.get("PLX_ACCESS_LOG_SECONDS", "1.0"))
+
+
 class WorkspaceBackend(WarmMixin, AskMixin, ServingMixin, ScreensMixin,
-                       TemplatesMixin, BriefsMixin, TeamViewMixin, ActionsMixin, WriteIntentsMixin,
+                       TemplatesMixin, BriefsMixin, TeamViewMixin, InsightsMixin, ActionsMixin,
+                       WriteIntentsMixin,
                        AutopilotMixin,
                        AutopilotAreaMixin, AutopilotStudioMixin, InstructMixin, DocFillMixin,
                        PreparedWritesMixin, AssistantToolsMixin, DocStyleMixin, EntryCreateMixin,
@@ -413,6 +433,46 @@ class WorkspaceBackend(WarmMixin, AskMixin, ServingMixin, ScreensMixin,
         logging.getLogger("operator_api").info("policies prewarmed: %s", done)
         return done
 
+    def prewarm_checks_after_warm(self, seconds: float = 25.0) -> int:
+        """Run each known reader's kept pages' access checks (``_prewarm_kept_checks``) once
+        more, on the check workers, now that the warm-up has kept this code version's
+        pages: the checks run at start went over the previous version's pages, and the
+        first visit after the port opens then paid its own cold ones (a record decision
+        and a visibility read, 1-5 s). Waited for, at most ``seconds`` in all, before the
+        port opens; nothing is served, kept or remembered from them. Only readers resolved
+        again as a sign-in is and not revoked. How many readers' checks ran."""
+        try:   # the footer line of Home and the sidebar: read now, not by the first visit
+            self.freshness()
+        except Exception:  # noqa: BLE001 - read by the first visit as before
+            pass
+        worker = getattr(self, "check_worker", None) or getattr(self, "access_worker", None)
+        if self.identity_for is None or worker is None or worker.stopped.is_set():
+            return 0
+        until = time.monotonic() + seconds
+        futures: list[Future] = []
+        for oid, held in self.known_readers().items():
+            try:
+                if self.revoked(str(held["ref"])):
+                    continue
+                reader = Reader(self.identity_for(oid, int(held["exp"])),
+                                self.reader_mode, "", None)
+                futures.append(worker.submit(
+                    reader, lambda view, r=reader: self._prewarm_kept_checks(view, r, until),
+                    priority=-1, deadline=until))
+            except Exception as error:  # noqa: BLE001 - checked on their first visit
+                logging.getLogger("operator_api").info("kept checks not queued: %s",
+                                                       type(error).__name__)
+        done = 0
+        for future in futures:
+            try:
+                future.result(timeout=max(0.1, until - time.monotonic()))
+                done += 1
+            except Exception:  # noqa: BLE001 - checked on their first visit
+                continue
+        logging.getLogger("operator_api").info("kept page checks prewarmed for %d of %d readers",
+                                               done, len(futures))
+        return done
+
     def watch_generation(self, stop: threading.Event,
                          rewarm_seconds: float = REWARM_SECONDS) -> None:
         """Warm the known readers again whenever a new projection generation is served, a
@@ -491,7 +551,9 @@ class WorkspaceBackend(WarmMixin, AskMixin, ServingMixin, ScreensMixin,
                           ("suggestions", self._suggestions_cached),
                           ("late list", self._late_held),
                           ("meetings", lambda view: self._upcoming_cached(view, reader))):
-            if sql_alerts and name in ("home", "briefing", "late list"):
+            # (the suggestions too: made from the SQL alerts, read ahead as the screen,
+            # ``SCREENS_AHEAD``, never from the old engine's inbox)
+            if sql_alerts and name in ("home", "briefing", "late list", "suggestions"):
                 continue
             if today:
                 future = self.reads.submit(reader, warm_timed(name, job),
@@ -504,9 +566,8 @@ class WorkspaceBackend(WarmMixin, AskMixin, ServingMixin, ScreensMixin,
             # the QC pack) read through ``_serving`` after Today, so each is kept on disk
             # for this reader and their first visit after a restart opens at once (served
             # as kept, re-checked, and read again)
-            future = self.reads.submit(reader, warm_timed("screens", lambda view: (
-                self._screens_pool().submit(self._screens_ahead, reader))),
-                priority=WARM_PRIORITY)
+            future = self.reads.submit(reader, warm_timed(
+                "screens", lambda view: self._screens_all(reader)), priority=WARM_PRIORITY)
             if pending is not None:
                 future.plx_warm = "screens"
                 pending.append(future)
@@ -524,21 +585,38 @@ class WorkspaceBackend(WarmMixin, AskMixin, ServingMixin, ScreensMixin,
                     priority=WARM_PRIORITY + 1 if warmer is self.reads else 0)
         return True
 
-    def _screens_ahead(self, reader: Reader) -> int:
-        """Each of ``SCREENS_AHEAD`` read for ``reader`` as their request would (one at a
-        time; one refused or failing is read when opened). How many were read."""
+    def _screens_all(self, reader: Reader) -> Future:
+        """Each of ``SCREENS_AHEAD`` read ahead for ``reader`` as its own job on the
+        screens pool, most visited first: with several workers (the warm-up process's) they
+        are read side by side, never one reader's slow screen holding the rest. A future
+        done when every one is (the first pass waits on it)."""
+        pool = self._screens_pool()
+        return _all_done([pool.submit(self._screens_ahead, reader, (screen,))
+                          for screen in SCREENS_AHEAD])
+
+    def _screens_ahead(self, reader: Reader, screens: Sequence[Any] = SCREENS_AHEAD,
+                       until: Optional[float] = None) -> int:
+        """Each of ``screens`` (``SCREENS_AHEAD``) read for ``reader`` as their request
+        would (one at a time; one refused or failing is read when opened). How many were
+        read. One answered "still reading" (the Templates answer bank while the company's
+        documents are read: never kept, so the first visit read it cold, 8-14 s live) is
+        read again ``SCREENS_AGAIN_SECONDS`` later, off this worker, until it is kept or
+        ``SCREENS_AGAIN_MOST`` seconds have passed."""
         from . import page_sql
         done = 0
         log = logging.getLogger("operator_api.warm")
-        for screen in SCREENS_AHEAD:
+        again: list[Any] = []
+        for screen in screens:
             name, *args = (screen,) if isinstance(screen, str) else screen
             if name == "_home_served" and page_sql.alerts_on():
                 name = "home"   # the SQL alerts' Home, not the old engine's
             named = args.pop() if args and isinstance(args[-1], dict) else {}
             began = time.monotonic()
             try:
-                getattr(self, name)(reader, *args, **named)
+                got = getattr(self, name)(reader, *args, **named)
                 done += 1
+                if getattr(got, "reading", False) is True:
+                    again.append(screen)
             except Exception as error:  # noqa: BLE001 - read when opened
                 log.info("warm screen %s not read: %s", name.lstrip("_"),
                          type(error).__name__)
@@ -547,6 +625,12 @@ class WorkspaceBackend(WarmMixin, AskMixin, ServingMixin, ScreensMixin,
                 log.info("warm screen %s read in %.1f s (%.0f s after start)",
                          name.lstrip("_"), time.monotonic() - began,
                          time.monotonic() - STARTED)
+        until = time.monotonic() + SCREENS_AGAIN_MOST if until is None else until
+        if again and time.monotonic() + SCREENS_AGAIN_SECONDS < until:
+            timer = threading.Timer(SCREENS_AGAIN_SECONDS, lambda: self._screens_pool().submit(
+                self._screens_ahead, reader, tuple(again), until))
+            timer.daemon = True
+            timer.start()
         return done
 
     def warm_briefing(self, reader: Reader) -> bool:
@@ -677,16 +761,16 @@ class WorkspaceBackend(WarmMixin, AskMixin, ServingMixin, ScreensMixin,
         yield "status", m.StatusEvent(step="understanding", message="Reading your question",
                                       elapsed_ms=ms())
         from . import simple_ask
-        files = self._attached(request) if simple_ask.enabled() else None
+        files = self._attached(request, reader) if simple_ask.enabled() else None
         if simple_ask.enabled() and self.agent_ask is not None \
-                and self.agent_ask.serves(reader.session) and simple_ask.takes(files):
+                and self.agent_ask.serves(reader.session) and simple_ask.takes(files, request):
             # the simple Ask: the model with plx.sql and plx.search, its figures bound to
             # what they returned (``operator_api.simple_ask``), with the page, record or
             # email asked on, a reply to a question asked back and the person's attached
             # files; a line asking for something done never reaches it (the app routes it
-            # to the instruction engine first), an attached image goes on to the path
-            # below (which reads images), and that path is the rollback (PLX_ASK_SIMPLE
-            # unset or 0)
+            # to the instruction engine first), an attached image is shown to its kept
+            # session (a deeper look with an image goes on to the path below, which reads
+            # images), and that path is the rollback (PLX_ASK_SIMPLE unset or 0)
             answer = yield from simple_ask.ask(self, reader, request, conversation, ms,
                                                files=files)
             yield from simple_ask.finish(self, reader, request, answer, conversation, ms,
@@ -747,7 +831,7 @@ class WorkspaceBackend(WarmMixin, AskMixin, ServingMixin, ScreensMixin,
         earlier = [turn.text.strip() for turn in request.history if turn.role == "user"
                    and turn.text.strip()]
         # the person's own files (``operating.ask_attachments``), read for this question
-        files = self._attached(request)
+        files = self._attached(request, reader)
         if files is not None and files.read:
             yield "status", m.StatusEvent(step="reading", message="Reading your attachment"
                                           + ("s" if len(files.read) > 1 else ""),
@@ -1708,6 +1792,7 @@ class WorkspaceBackend(WarmMixin, AskMixin, ServingMixin, ScreensMixin,
         one is served the kept page. A first read that failed is read on the next request
         itself (its refusal stands)."""
         key = (reader.key, reader.mode, name)
+        read = self._dropping_stale(key, read)
         wait_first = getattr(self, "first_wait", None)
         first = reading if reading is not None and wait_first and FIRST_PARTIAL.get() \
             else None
@@ -1802,6 +1887,29 @@ class WorkspaceBackend(WarmMixin, AskMixin, ServingMixin, ScreensMixin,
                 key, kept, self._state_of(self._access_result(before, ACCESS_WAIT_SECONDS)),
                 self._access_now(reader, key[2]), inputs))
         return value
+
+    def _dropping_stale(self, key: tuple, read: Callable[[], Any]) -> Callable[[], Any]:
+        """``read`` that, when it says the alert rules are not current (``alerts_stale``),
+        first drops the screen's last good page (memory and disk): a page kept from before
+        the rules stopped must not be served, marked stale, for the 12 hours it is held;
+        the screen says unavailable until a read succeeds."""
+        def guarded() -> Any:
+            try:
+                return read()
+            except errors.UserFacing as error:
+                if error.code == "alerts_stale":
+                    self._drop_good(key)
+                raise
+        return guarded
+
+    def _drop_good(self, key: tuple) -> None:
+        with self._lock:
+            self._good.pop(key, None)
+            self._snap_inputs().pop(key, None)
+        store = getattr(getattr(self, "page_cache", None), "store", None)
+        if store is not None:
+            from .page_store import kept_code
+            store.pop(("last-good",) + key, code=kept_code())
 
     def _first_handed(self, reader: Reader, key: tuple, inputs: Any) -> Any:
         """The page a first read off the request read for this same reader and screen
@@ -1902,6 +2010,20 @@ class WorkspaceBackend(WarmMixin, AskMixin, ServingMixin, ScreensMixin,
             return None
         now = self._access_result(before, ACCESS_WAIT_SECONDS)
         if now is None or now[0] != held[2] or now[1] is not True:
+            # why a kept page was not served (the reader then waits the whole read): the
+            # screen and which check said no, never the reader or a value
+            logging.getLogger("operator_api.kept").info(json.dumps({
+                "kept_page_not_served": str(key[2][0]) if isinstance(key[2], tuple)
+                and key[2] else str(key[2]),
+                "why": "access_not_decided" if now is None
+                else "access_state_changed" if now[0] != held[2] else "source_closed",
+                "other_code": isinstance(held, _ReadByOtherCode),
+                "parts_changed": None if now is None or not isinstance(now[0], tuple)
+                or not isinstance(held[2], tuple) or len(now[0]) != len(held[2])
+                else [i for i, (a, b) in enumerate(zip(now[0], held[2])) if a != b],
+                # which parts of the reader's policy changed (``policy_parts``: names only)
+                "policy_parts": _parts_changed(now[0] if now is not None else None,
+                                               held[2])}))
             return None
         return held[1].model_copy(deep=True, update={"stale_since": _iso(held[0])})
 
@@ -1971,11 +2093,19 @@ class WorkspaceBackend(WarmMixin, AskMixin, ServingMixin, ScreensMixin,
         read decides them (``visible_objects``: the reader's audiences with the people
         exclusion, markings, the time and every item permission, in one batched read); an
         access without that decision opens none."""
-        job = self._access_job(handles, screen, objects)
-        worker = getattr(self, "access_worker", None)
+        handles = tuple(handles)
+        objects = None if objects is None else tuple(objects)
+        job = self._access_job(handles, screen, objects, who=shared_key(reader))
+        worker = getattr(self, "check_worker", None)
+        if worker is None or worker.stopped.is_set():
+            worker = getattr(self, "access_worker", None)   # no check worker up yet
         if worker is None or worker.stopped.is_set():
             worker = self.reads   # none started (tests, fixtures): ahead of the reads
         try:
+            if not handles and not objects:   # a check naming records is a job of its own
+                batched = self._check_with_others(worker, reader, job)
+                if batched is not None:
+                    return batched
             return worker.submit(reader, job, priority=-1,
                                  deadline=time.monotonic() + read_budget(ACCESS_WAIT_SECONDS))
         except Exception:  # noqa: BLE001 - an unreadable state is no state
@@ -1983,32 +2113,158 @@ class WorkspaceBackend(WarmMixin, AskMixin, ServingMixin, ScreensMixin,
             failed.set_exception(LookupError("access_unread"))
             return failed
 
+    def _check_with_others(self, worker: Any, reader: Reader, job: Callable[[Any], tuple]
+                           ) -> Optional[Future]:
+        """``job``, a check that names no record (the reader's state alone), queued with the
+        other such checks of this reader still waiting on ``worker``: one job decides them
+        all in one request scope, so the reader's grant and policy are read once for the
+        whole page set (a Home visit asked ~30 of them, each queued behind the others).
+        Checks that name records stay jobs of their own: batched, one slow decision (3-4 s
+        cold) held every check behind it (queued 5-27 s in a cold round).
+        Each check is still decided after it was asked (only one not yet started is
+        joined) and by its own job; None when the reader has no session to key on."""
+        principals = getattr(getattr(reader, "session", None), "principals", None)
+        if principals is None or getattr(worker, "jobs", None) is None:
+            return None
+        key = (id(worker.jobs), ",".join(sorted(principals)), getattr(reader, "mode", None))
+        own: Future = Future()
+        now = time.monotonic()
+        deadline = now + read_budget(ACCESS_WAIT_SECONDS)
+        batch: dict[str, Any] = {"items": [(job, own)], "started": False,
+                                 "deadline": deadline, "queued": None}
+        with self._lock:
+            batches = self.__dict__.setdefault("_check_batches", {})
+            held = batches.get(key)
+            if held is not None and not held["started"] and held["deadline"] - now > 1.0:
+                held["items"].append((job, own))
+                held["deadline"] = deadline
+                held["queued"].plx_deadline = deadline
+                return own
+            batches[key] = batch
+
+        def run(view: Any) -> None:
+            with self._lock:
+                batch["started"] = True
+                if batches.get(key) is batch:
+                    del batches[key]
+                items = [i for i in batch["items"] if not i[1].cancelled()]
+            if not items:
+                return
+            scope = getattr(view, "_request", None)
+            with (scope() if callable(scope) else contextlib.nullcontext()):
+                for item, future in items:
+                    if not future.set_running_or_notify_cancel():
+                        continue
+                    try:
+                        future.set_result(item(view))
+                    except BaseException as error:  # noqa: BLE001 - this check's own
+                        future.set_exception(error)
+
+        def finished(queued: Future) -> None:
+            # the job never ran (stopped, dropped): every check it carried is undecided
+            for _item, future in list(batch["items"]):
+                if not future.done():
+                    try:
+                        future.set_exception(queued.exception() if not queued.cancelled()
+                                             and queued.exception() is not None
+                                             else LookupError("access_unread"))
+                    except Exception:  # noqa: BLE001 - settled meanwhile
+                        pass
+
+        with self._lock:   # a check asked now finds ``queued`` set
+            queued = worker.submit(reader, run, priority=-1, deadline=deadline)
+            batch["queued"] = queued
+        queued.add_done_callback(finished)
+        return own
+
     def _access_job(self, handles: Iterable[str] = (), screen: Any = None,
-                    objects: Optional[Iterable[str]] = None) -> Callable[[Any], tuple]:
+                    objects: Optional[Iterable[str]] = None, who: Any = None
+                    ) -> Callable[[Any], tuple]:
         """The job ``_access_later`` runs on a view of the reader (its answer: (access
         state, everything shown opens))."""
-        from operating.pg.permissions import _fingerprint, exclusion_stamp
+        from operating.pg.permissions import exclusion_stamp, policy_parts
         listed = sorted(set(handles))
         records = None if objects is None else sorted(set(objects))
         screen_state = self._screen_access(screen)
 
+        queued = time.monotonic()
+
         def job(view: Any) -> tuple:
+            started = time.monotonic()
+            try:
+                return judged(view)
+            finally:
+                done = time.monotonic()
+                if done - queued > ACCESS_LOG_SECONDS:   # a check that held a page back: said
+                    logging.getLogger("operator_api.access").info(
+                        "access check of %s queued %.2f s, ran %.2f s (%d handles)",
+                        screen[0] if screen else "-", started - queued, done - started,
+                        len(listed))
+
+        def judged(view: Any) -> tuple:
             with view._request():
                 gated, policy = view.access.reader_policy()
-                state = (_fingerprint(policy, gated),
-                         bool(getattr(policy, "unrestricted", False)), exclusion_stamp(),
+                full = getattr(policy, "unrestricted", False) is True
+                parts = policy_parts(policy, gated)
+                if full:
+                    # a full reader's audiences and units list every source key the data
+                    # names (a new mailbox or meeting key moved them on each delta, so every
+                    # kept page was refused after a restart: live log 11-19); what they may
+                    # read is decided by the wildcard grants, the markings, the exclusion
+                    # (its own part below) and each source again before a kept page serves
+                    parts = tuple(p for p in parts if p[0] not in FULL_READER_MOVING_PARTS)
+                state = (parts, full, exclusion_stamp(),
                          _marks_stamp(view),
                          # unreadable: raises, no state, nothing kept is served
                          screen_state())
-                decided = view.access.decide(listed) if listed else {}
+                if listed and who is not None:
+                    # the checks of one page load name the same records: each is decided once
+                    # for this reader under this access state, the rest reuse or wait for it
+                    # (``decision_memo``)
+                    memo_key = (who, state[:4])
+                    try:
+                        hash(memo_key)
+                    except TypeError:
+                        memo_key = None
+                    decided = self._decisions.decide(memo_key, listed, view.access.decide)
+                else:
+                    decided = view.access.decide(listed) if listed else {}
                 opens = isinstance(decided, dict) and all(
                     h in decided and decided[h] is None for h in listed)
                 if opens and records is not None:
                     visible = getattr(view.access, "visible_objects", None)
-                    seen = visible(records) if callable(visible) else None
-                    opens = isinstance(seen, (set, frozenset)) and seen >= set(records)
+                    if not callable(visible):
+                        opens = False
+                    else:
+                        # the same records as seen by the page's other checks of this reader
+                        # are decided once (``decision_memo``); a record not readable is a
+                        # decision too (False)
+                        def readable(ids: list[str]) -> dict[str, bool]:
+                            got = visible(ids)
+                            if not isinstance(got, (set, frozenset)):
+                                raise LookupError("objects_unread")
+                            return {i: i in got for i in ids}
+                        object_key = None if who is None else (who, "objects", state[:4])
+                        try:
+                            hash(object_key)
+                        except TypeError:
+                            object_key = None
+                        try:
+                            seen = self._decisions.decide(object_key, records, readable)
+                            opens = all(seen.get(i) is True for i in records)
+                        except LookupError:
+                            opens = False
                 return state, opens
         return job
+
+    @property
+    def _decisions(self) -> Any:
+        """One reader's record decisions shared between their checks (``decision_memo``)."""
+        memo = self.__dict__.get("_decision_memo")
+        if memo is None:
+            from .decision_memo import Memo
+            memo = self.__dict__.setdefault("_decision_memo", Memo())
+        return memo
 
     def _screen_access(self, screen: Any) -> Callable[[], Any]:
         """What decides who and what ``screen`` shows beyond the reader's policy, read as it
@@ -2105,12 +2361,14 @@ class WorkspaceBackend(WarmMixin, AskMixin, ServingMixin, ScreensMixin,
     # ---- the other screens, served as the main screens are (``_serving``) ---------------
 
     def _screen_inputs(self, *, files: Iterable[Any] = (), extra: Any = None,
-                       autopilot: bool = False) -> Callable[[], Any]:
+                       autopilot: bool = False, alerts: bool = False) -> Callable[[], Any]:
         """What a screen reads beyond the store (``_serving``'s ``inputs_of``): the hour
         (lists that start now, the day's items, due dates), each of ``files`` as it stands
         (``files_stamp``: a directory whole), ``extra()`` and, with ``autopilot``, the
         autopilot queue's and write state's directories and every ``PLX_AUTOPILOT*``
-        setting (a path one names, as it stands)."""
+        setting (a path one names, as it stands); with ``alerts`` (a screen read from the alert
+        rules) which rules are current (``page_sql.runs_fresh``), so a kept page stops being
+        served as current when they stop."""
         def stamp() -> Any:
             paths = [f() if callable(f) else f for f in files]
             named: list = []
@@ -2124,6 +2382,9 @@ class WorkspaceBackend(WarmMixin, AskMixin, ServingMixin, ScreensMixin,
             own = extra() if extra is not None else None
             if own == "unreadable":   # a store that cannot be listed: nothing is current
                 raise OSError("screen inputs unreadable")
+            if alerts:
+                from . import page_sql
+                own = (own, page_sql.runs_fresh(self))
             return (datetime.now(timezone.utc).strftime("%Y-%m-%dT%H"), files_stamp(paths),
                     tuple(named), own)
         return stamp
@@ -2329,22 +2590,34 @@ class WorkspaceBackend(WarmMixin, AskMixin, ServingMixin, ScreensMixin,
                                items=[briefing_item(i, labels, None) for i in page],
                                more=offset + len(page) < len(members))
 
-    def _suggestions_cached(self, view: Any) -> m.Suggestions:
+    def _suggestions_cached(self, view: Any, alerts: Optional[Mapping[str, Any]] = None
+                            ) -> m.Suggestions:
         """The reader's suggestion cards as read last for them (``reader_key``), when every
-        source they show still opens for them; else read now and kept."""
+        source they show still opens for them; else read now and kept. ``alerts``: the
+        SQL alerts' items they are made from (``page_sql.alert_suggestion_items``), part
+        of the key (alerts opened or closed are new cards, never the copy kept before)."""
+        made_of = None if alerts is None else hashlib.sha256(json.dumps(
+            [alerts.get("status"), alerts.get("complete"),
+             [(i.get("id"), i.get("summary")) for i in alerts.get("items") or ()]],
+            sort_keys=True, default=str).encode()).hexdigest()
         with view._request():
-            key = reader_key(view, ("suggestions", tuple(sorted(self.test_named()))))
-        return self.page_cache.kept(view, key, lambda: self._suggestions(view),
+            key = reader_key(view, ("suggestions", tuple(sorted(self.test_named())),
+                                    made_of))
+        return self.page_cache.kept(view, key, lambda: self._suggestions(view, alerts),
                                     page_handles,
                                     copy=lambda model: model.model_copy(deep=True))
 
-    def _suggestions(self, view: Any) -> m.Suggestions:
+    def _suggestions(self, view: Any, alerts: Optional[Mapping[str, Any]] = None
+                     ) -> m.Suggestions:
+        """``alerts`` (PLX_ALERTS_SQL): the cards are made from the reader's open SQL
+        alerts of the suggestion types, the rows Home lists; the old engine's inbox is
+        not read (no briefing, no late-order drafts: a PO card's facts come from its
+        trail). Else from the old engine's briefing, shared with the briefing screen."""
         from operating import briefing as bf
         from operating import proactive_suggestions as ps
 
-        from . import page_sql
-        if page_sql.alerts_on():   # Home's briefing is the SQL alerts': none to share
-            found = briefing_aged(view.briefing(), self.today() if self.today else None)
+        if alerts is not None:
+            found = copy.deepcopy(dict(alerts))
             shared = None
         else:
             # the briefing screen's own read (``_briefing_kept``, the same key): one read
@@ -2385,7 +2658,7 @@ class WorkspaceBackend(WarmMixin, AskMixin, ServingMixin, ScreensMixin,
                                               cards=self.cards)}
         pos = [h["object_id"] for h in heads if h.get("object_type") == "PurchaseOrder"]
         drafts: dict[str, Any] = {}
-        if pos:
+        if pos and alerts is None:
             late = view.gap_inbox(kinds=["late_order"], limit=SUGGESTION_DRAFTS_READ)
             for gap in late.get("gaps") or ():
                 draft = (gap.get("follow_up") or {}).get("draft")
@@ -3065,6 +3338,36 @@ def one_trail(backend: "WorkspaceBackend", view: Any, request: m.AskRequest,
         return answer_trail(backend, view, request, found, late_pos, claims)
     return why_answer_trail(backend, view, request.question, why_roots, facts) \
         or answer_trail(backend, view, request, found, late_pos, claims)
+
+
+def _all_done(futures: Sequence[Future]) -> Future:
+    """A future done (with how many) once every one of ``futures`` is, failed or not."""
+    out: Future = Future()
+    left = [len(futures)]
+    lock = threading.Lock()
+    if not futures:
+        out.set_result(0)
+        return out
+
+    def one(_done: Future) -> None:
+        with lock:
+            left[0] -= 1
+            last = left[0] == 0
+        if last:
+            out.set_result(len(futures))
+    for future in futures:
+        future.add_done_callback(one)
+    return out
+
+
+def _parts_changed(now: Any, held: Any) -> Optional[list[str]]:
+    """The policy parts (``policy_parts``) that differ between two access states; None
+    when either holds no parts (a state kept by older code: a single fingerprint)."""
+    try:
+        a, b = dict(now[0]), dict(held[0])
+    except (TypeError, ValueError, IndexError):
+        return None
+    return sorted(k for k in set(a) | set(b) if a.get(k) != b.get(k))
 
 
 def page_key(view: Any, oid: str) -> Optional[tuple]:
@@ -3868,6 +4171,7 @@ def run(parser: argparse.ArgumentParser, args: argparse.Namespace, mode: str,
         backend.reader_mode = mode
         if live:   # Today's lists answer "reading" rather than hold the app on a first read
             backend.first_wait = FIRST_WAIT_SECONDS
+            backend.freshness_seconds = FRESHNESS_SECONDS
         # the recorded SharePoint grants an instruction's upload checks the reader's
         # write access to its folder against (``InstructMixin._writes``), the bytes a
         # document edit starts from and a file's folder (``prepared_area``): the capture
@@ -3901,6 +4205,10 @@ def run(parser: argparse.ArgumentParser, args: argparse.Namespace, mode: str,
                                           f"access-{n}", access=True)
                         for n in range(max(1, getattr(args, "access_workers",
                                                       ACCESS_WORKERS)))]
+            threads += [start_read_worker(backend, argv, "check" if n == 0 else f"check-{n}",
+                                          access=True, checks=True)
+                        for n in range(max(1, getattr(args, "check_workers",
+                                                      CHECK_WORKERS)))]
         settings = {"data_label": str(label), "state_dir": Path(ctx["state_dir"]),
                     "store_path": ctx.get("ontology_path"),
                     "freshness_bounds": ctx.get("freshness_bounds"),
@@ -3934,6 +4242,9 @@ def run(parser: argparse.ArgumentParser, args: argparse.Namespace, mode: str,
             facts.start()
         else:
             facts = None
+        if live and hasattr(backend, "start_insight_runs"):
+            # saved insights on a schedule run by themselves as their owners
+            backend.start_insight_runs()
         # the known readers' permission setup decided here (the thread that serves their
         # reads) while the pool comes up, so their first Home or briefing does not pay it
         backend.prewarm_policies()
@@ -3982,16 +4293,20 @@ def start_ask_worker(backend: WorkspaceBackend, argv: list[str], fixtures: Any, 
 
 
 def start_read_worker(backend: WorkspaceBackend, argv: list[str],
-                      number: Any, access: bool = False) -> threading.Thread:
+                      number: Any, access: bool = False,
+                      checks: bool = False) -> threading.Thread:
     """One more read worker: the console's builder run again on its own thread (its own
     case runtime and stores, every check again), serving reads from the read queue once
     it is up; until then the owner thread serves them all. ``access``: the access worker
-    instead (``add_access_worker``: the kept pages' access checks only)."""
+    instead (``add_access_worker``: the door's reads and the kept pages' access checks);
+    ``checks``: with ``access``, the check worker (the access checks alone)."""
     from operator_api.workspace import case_console
 
     def serve_reads(ctx: Mapping[str, Any]) -> int:
-        add = backend.add_access_worker if access else backend.add_read_worker
-        add(ctx["objects_for"]).loop()
+        if access:
+            backend.add_access_worker(ctx["objects_for"], checks=checks).loop()
+        else:
+            backend.add_read_worker(ctx["objects_for"]).loop()
         return 0
 
     def run_stack() -> None:

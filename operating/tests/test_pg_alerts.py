@@ -19,7 +19,7 @@ from operating.tests import pg_testdb
 S = "biz_alert_t"
 DAY = "2026-11-17"
 TABLES = ("purchase_orders", "sales_orders", "batches", "sales_invoice_lines", "customers",
-          "sales_invoices", "sales_order_lines")
+          "sales_invoices", "sales_order_lines", "purchase_order_lines")
 # the emails table as the comms build makes it (operating.pg.business_comms: one row per
 # mailbox copy, door v2 ``unit``/``ai_ok``/``excluded``) with the reply flags its build adds
 # (is_bulk, owner_role over all the person's addresses, owner_replied_at per thread); which
@@ -27,7 +27,7 @@ TABLES = ("purchase_orders", "sales_orders", "batches", "sales_invoice_lines", "
 EMAIL_COLS = ("handle text, unit integer, ai_ok boolean, excluded boolean, mailbox text, "
               "mailbox_shared boolean, bulk_sender boolean, is_bulk boolean, "
               "owner_role text, owner_replied_at timestamptz, sender text, sender_domain text, "
-              "subject text, "
+              "subject text, records text[], object_ids text[], "
               "to_addresses text[], cc_addresses text[], thread text, message_id text, "
               "received_at timestamptz, sent_at timestamptz")
 ME = "ann@ours.example"
@@ -62,7 +62,11 @@ class AlertRules(unittest.TestCase):
         self.conn.execute("CREATE SCHEMA IF NOT EXISTS ontology")
         self.conn.execute("DROP TABLE IF EXISTS ontology.object_values")
         self.conn.execute("CREATE TABLE ontology.object_values (object_id text, property text, "
-                          "value text, recorded_at text, superseded_at text)")
+                          "value text, recorded_at text, superseded_at text, binding_id text, "
+                          "field_path text)")
+        self.conn.execute("DROP TABLE IF EXISTS ontology.links")
+        self.conn.execute("CREATE TABLE ontology.links (link_type text, from_object text, "
+                          "to_object text, tier text, superseded_at text)")
 
     # ------------------------------------------------------------------ helpers
     def put(self, table, handle, cls=1, ai=True, col=0, **values):
@@ -169,6 +173,210 @@ class AlertRules(unittest.TestCase):
         back = self.rows("po_late")["p1"]
         self.assertEqual(back["state"], "open")
         self.assertGreater(back["first_seen"], first["first_seen"])
+
+    def test_po_due_today_unconfirmed_and_po_undated_only_while_recent(self):
+        self.put("purchase_orders", "due", po_number="D1", supplier="S", status="open",
+                 verdict="neither", requested_date=dt.date(2026, 11, 17))
+        self.put("purchase_orders", "promised", po_number="D2", supplier="S", status="open",
+                 verdict="neither", requested_date=dt.date(2026, 11, 17),
+                 promised_date=dt.date(2026, 11, 20))
+        self.put("purchase_orders", "draft", po_number="D3", supplier="S", status="draft",
+                 verdict="neither", requested_date=dt.date(2026, 11, 17))
+        self.put("purchase_orders", "tomorrow", po_number="D4", supplier="S", status="open",
+                 verdict="neither", requested_date=dt.date(2026, 11, 18))
+        for h, day, status, verdict, why in (
+                ("new", dt.date(2026, 10, 1), "open", "unknown", "no_requested_date"),
+                ("old", dt.date(2025, 1, 1), "open", "unknown", "no_requested_date"),
+                ("nodate", None, "open", "unknown", "no_requested_date"),
+                ("unknownstatus", dt.date(2026, 10, 1), "unknown", "unknown", "status_unknown"),
+                ("draftund", dt.date(2026, 10, 1), "draft", "neither", None)):
+            self.put("purchase_orders", h, po_number=h.upper(), supplier="S", status=status,
+                     verdict=verdict, verdict_reason=why, order_date=day)
+        got = self.fire("po_due", "po_undated")
+        self.assertEqual(set(self.rows("po_due")), {"due"})
+        self.assertIn("due today", self.rows("po_due")["due"]["why"])
+        self.assertEqual(set(self.rows("po_undated")), {"new"})
+        self.assertEqual(self.rows("po_undated")["new"]["since"].date(), dt.date(2026, 10, 1))
+        self.assertEqual(got["po_undated"]["open"], 1)
+        # the next day the due PO is no longer "due today"
+        self.assertEqual(self.fire("po_due", day="2026-11-18")["po_due"]["resolved"], 1)
+        self.assertEqual(set(r for r, v in self.rows("po_due").items() if v["state"] == "open"),
+                         {"tomorrow"})
+
+    def test_negative_margin_item_lines_priced_one_currency_decided(self):
+        def order(h, lines, inv_day=dt.date(2026, 11, 10), src="sage"):
+            self.put("sales_orders", h, order_number=h.upper(), customer="C " + h,
+                     status="open", of_record=True)
+            self.put("sales_invoices", "i" + h, order_number=h.upper(), invoice_date=inv_day,
+                     source_systems=src, pilot=False)
+            for n, (rev, mar, basis, cur, kind) in enumerate(lines):
+                self.put("sales_invoice_lines", f"{h}l{n}", invoice_handle="i" + h,
+                         line_type=kind, revenue=Decimal(rev), margin=None if mar is None
+                         else Decimal(mar), margin_basis=basis, margin_currency=cur,
+                         pilot=False)
+        ok = "same_currency"
+        order("loss", [("100", "-30", ok, "CAD", "item"), ("50", "10", ok, "CAD", "item"),
+                       ("0", "-5", ok, "CAD", "item"),      # free goods left out
+                       ("20", "20", ok, "CAD", "misc")])    # freight is not item cost
+        order("gain", [("100", "30", ok, "CAD", "item")])
+        order("freeonly", [("0", "-5", ok, "CAD", "item")])
+        order("unknown", [("100", None, "cost_unknown", "CAD", "item"),
+                          ("10", "-50", ok, "CAD", "item")])   # not decided: not judged
+        order("twocur", [("100", "-30", ok, "CAD", "item"), ("100", "-30", ok, "USD", "item")])
+        order("stale", [("100", "-30", ok, "CAD", "item")], inv_day=dt.date(2026, 9, 1))
+        # one order, two invoices: judged on both (loss only over the sum)
+        order("split", [("100", "-60", ok, "CAD", "item")])
+        self.put("sales_invoices", "isplit2", order_number="SPLIT", invoice_date=dt.date(2026, 11, 12),
+                 source_systems="sage", pilot=False)
+        self.put("sales_invoice_lines", "split_b", invoice_handle="isplit2", line_type="item",
+                 revenue=Decimal(100), margin=Decimal(80), margin_basis=ok,
+                 margin_currency="CAD", pilot=False)
+        # another system's newest invoice sets its own window
+        order("bc_loss", [("100", "-1", ok, "CAD", "item")], inv_day=dt.date(2026, 9, 1), src="bc")
+        self.put("sales_invoices", "ibcnew", order_number="OTHER", invoice_date=dt.date(2026, 9, 5),
+                 source_systems="bc", pilot=False)
+        got = self.fire("negative_margin")
+        self.assertEqual(set(self.rows("negative_margin")), {"loss", "bc_loss"})
+        self.assertIn("lost 20.00 CAD", self.rows("negative_margin")["loss"]["why"])
+        self.assertEqual(got["negative_margin"]["open"], 2)
+        self.assertEqual(got["negative_margin"]["skipped"].get("margin_not_decided"), 1)
+
+    def test_eta_slipped_only_a_later_date_on_an_open_po_not_a_bulk_default(self):
+        def po(h, status="open", order_day=dt.date(2026, 10, 1)):
+            self.put("purchase_orders", h, po_number=h.upper(), supplier="S", status=status,
+                     order_date=order_day)
+            return self.lineage("purchase_orders", h, ["bc"], [f"PO:{h}"])[0]
+        def slip(oid, was, now, when="2026-11-12T10:00:00Z"):
+            self.value(oid, "expected_date", was, "2026-10-01T00:00:00Z", when)
+            self.value(oid, "expected_date", now, when, None)
+        slip(po("later"), "2026-11-20", "2026-11-27")
+        slip(po("earlier"), "2026-11-27", "2026-11-20")
+        slip(po("closed", status="closed"), "2026-11-20", "2026-11-27")
+        slip(po("ownday", order_day=dt.date(2026, 11, 27)), "2026-11-20", "2026-11-27")
+        slip(po("old"), "2026-11-20", "2026-11-27", when="2026-10-12T10:00:00Z")
+        # a line's later receipt date moves its order
+        self.put("purchase_orders", "withline", po_number="WL", supplier="S", status="open",
+                 order_date=dt.date(2026, 10, 1))
+        self.lineage("purchase_orders", "withline", ["bc"], ["PO:withline"])
+        self.put("purchase_order_lines", "wl1", col=7, po_handle="withline")
+        line = self.lineage("purchase_order_lines", "wl1", ["bc"], ["POL:wl1"])[0]
+        self.value(line, "bc_expected_receipt_date", "2026-11-18", "2026-10-01T00:00:00Z",
+                   "2026-11-12T10:00:00Z")
+        self.value(line, "bc_expected_receipt_date", "2026-11-25", "2026-11-12T10:00:00Z", None)
+        # an object with no current value (re-keyed) is no slip
+        self.value(po("gone"), "expected_date", "2026-11-20", "2026-10-01T00:00:00Z",
+                   "2026-11-12T10:00:00Z")
+        self.conn.execute(f"INSERT INTO {S}.col_classes (id, marks) VALUES (7, %s)",
+                          ('{"expected_date": ["finance"]}',))
+        self.fire("eta_slipped")
+        got = self.rows("eta_slipped")
+        self.assertEqual(set(got), {"later", "withline"})
+        # the line's own column marking is a need of the card that shows the line's date
+        needs = dict(self.conn.execute(f"SELECT handle, col_needs FROM {S}.alerts WHERE "
+                                       "rule = 'eta_slipped'").fetchall())
+        self.assertEqual((needs["withline"], needs["later"]), ([7], []))
+        self.assertIn("7 days", got["later"]["why"])
+        self.assertIn("Nov 20, 2026 to Nov 27, 2026", got["later"]["why"])
+        # a day most current values share is a default, not a promise
+        for n in range(12):
+            slip(po(f"bulk{n}"), "2026-12-30", "2026-12-31")
+        for n in range(12):
+            self.value(f"PO:bulk{n}", "expected_date", "2026-12-31", "x", None)
+        self.fire("eta_slipped")
+        self.assertFalse([h for h, v in self.rows("eta_slipped").items()
+                          if h.startswith("bulk") and v["state"] == "open"])
+
+    def test_vendor_no_reply_waiting_request_without_an_outside_answer(self):
+        def thread(h, msgs, status="open"):
+            self.put("purchase_orders", h, po_number=h.upper(), supplier="V " + h, status=status)
+            for n, (days_ago, who, subject, preview, kw) in enumerate(msgs):
+                sender = "us@petrasoap.com" if who == "us" else "v@vendor.example"
+                told = ["v@vendor.example"] if who == "us" else ["us@petrasoap.com"]
+                oid = f"m-{h}-{n}"
+                self._insert(dict(handle=oid, unit=5 + n, ai_ok=True, excluded=False,
+                                  mailbox=ME, mailbox_shared=False, sender=sender,
+                                  subject=subject, to_addresses=kw.get("told", told),
+                                  cc_addresses=[], thread="t-" + h, records=[h],
+                                  object_ids=[oid],
+                                  received_at=dt.datetime(2026, 11, 17, 12, tzinfo=dt.timezone.utc)
+                                  - dt.timedelta(days=days_ago),
+                                  sent_at=dt.datetime(2026, 11, 17, 12, tzinfo=dt.timezone.utc)
+                                  - dt.timedelta(days=days_ago)))
+                self.value(oid, "body_preview", preview, "x")
+        ask = "Please confirm the delivery date for this order."
+        thread("waits", [(20, "them", "Re: PO", "Shipping soon.", {}), (10, "us", "PO", ask, {})])
+        thread("answered", [(10, "us", "PO", ask, {}), (3, "them", "Re: PO", "Friday.", {})])
+        thread("fresh", [(3, "us", "PO", ask, {})])
+        thread("ancient", [(120, "us", "PO", ask, {})])
+        thread("noask", [(10, "us", "PO", "Thanks for the update.", {})])
+        thread("closed", [(10, "us", "PO", ask, {})], status="closed")
+        thread("internal", [(10, "us", "PO", ask, {"told": ["boss@petrasoap.com"]})])
+        self.conn.execute(f"UPDATE {S}.emails SET records = records || ARRAY['a','b','c','d']"
+                          " WHERE handle = 'm-noask-0'")
+        got = self.fire("vendor_no_reply")
+        self.assertEqual(set(self.rows("vendor_no_reply")), {"waits"})
+        self.assertIn("no reply for 10 days", self.rows("vendor_no_reply")["waits"]["why"])
+        self.assertEqual(got["vendor_no_reply"]["status"], "ok")
+        # the unit ids of every message in the thread are the reader's requirement
+        units = self.conn.execute(f"SELECT units FROM {S}.alerts WHERE rule = 'vendor_no_reply'"
+                                  ).fetchone()[0]
+        self.assertEqual(sorted(units), [5, 6])
+        # the vendor writes: it resolves
+        self._insert(dict(handle="late", unit=9, ai_ok=True, excluded=False, mailbox=ME,
+                          sender="v@vendor.example", subject="Re: PO", to_addresses=[ME],
+                          cc_addresses=[], thread="t-waits", records=["waits"],
+                          object_ids=["late"], received_at=dt.datetime(
+                              2026, 11, 16, tzinfo=dt.timezone.utc),
+                          sent_at=dt.datetime(2026, 11, 16, tzinfo=dt.timezone.utc)))
+        self.assertEqual(self.fire("vendor_no_reply")["vendor_no_reply"]["resolved"], 1)
+
+    def test_customer_order_at_risk_firm_chain_from_a_late_po_only(self):
+        def link(kind, a, b, tier="verified"):
+            self.conn.execute("INSERT INTO ontology.links VALUES (%s, %s, %s, %s, NULL)",
+                              (kind, a, b, tier))
+        def chain(n, tier="verified", required=dt.date(2026, 11, 10), verdict="late",
+                  status="open"):
+            po, so = f"po{n}", f"so{n}"
+            self.put("purchase_orders", po, po_number=po.upper(), supplier="S", status="open",
+                     verdict=verdict, promised_date=dt.date(2026, 11, 25))
+            self.lineage("purchase_orders", po, ["bc"], [f"PO:{po}"])
+            self.put("sales_orders", so, order_number=so.upper(), customer="C", status=status,
+                     required_date=required, of_record=True)
+            self.lineage("sales_orders", so, ["sage"], [f"SO:{so}"])
+            link("PurchaseOrderLine.line_of", f"L:{n}", f"PO:{po}")
+            link("PurchaseOrderLine.for_item", f"L:{n}", f"I:{n}")
+            link("AssemblyOrderComponent.uses_item", f"C:{n}", f"I:{n}", tier)
+            link("AssemblyOrderComponent.component_of", f"C:{n}", f"AO:{n}")
+            link("AssemblyOrderAllocation.allocates", f"AL:{n}", f"AO:{n}")
+            link("AssemblyOrderAllocation.for_order_line", f"AL:{n}", f"OL:{n}")
+            link("SalesOrderLine.line_of", f"OL:{n}", f"SO:{so}")
+        chain(1)                                   # firm chain, late PO: 15 days at risk
+        chain(2, tier="lead")                      # a lead link makes no firm chain
+        chain(3, required=dt.date(2026, 12, 1))    # required after the material date
+        chain(4, verdict="unknown")                # the PO is not late
+        chain(5, status="closed")                  # the order is closed
+        self.fire("customer_order_at_risk")
+        got = self.rows("customer_order_at_risk")
+        self.assertEqual(set(got), {"so1"})
+        self.assertIn("at least 15 days at risk", got["so1"]["why"])
+        # the alert is a row of sales_orders (the page door's own-source check) and records
+        # the late PO's lineage objects too (the people exclusion)
+        src, objs = self.conn.execute(f"SELECT sources, objects FROM {S}.alerts WHERE rule = "
+                                      "'customer_order_at_risk' AND handle = 'so1'").fetchone()
+        self.assertEqual(src, ["so1"])
+        self.assertTrue({"SO:so1", "PO:po1"} <= set(objs), objs)
+        # a second late PO feeding the same order: still one card, the worst days
+        self.put("purchase_orders", "po1b", po_number="PO1B", supplier="S", status="open",
+                 verdict="late", promised_date=dt.date(2026, 12, 5))
+        self.lineage("purchase_orders", "po1b", ["bc"], ["PO:po1b"])
+        for kind, a, b in (("PurchaseOrderLine.line_of", "L:1b", "PO:po1b"),
+                           ("PurchaseOrderLine.for_item", "L:1b", "I:1")):
+            self.conn.execute("INSERT INTO ontology.links VALUES (%s, %s, %s, 'verified', NULL)",
+                              (kind, a, b))
+        self.fire("customer_order_at_risk")
+        got = self.rows("customer_order_at_risk")
+        self.assertEqual(len(got), 1)
+        self.assertIn("25 days at risk from 2 late purchase orders", got["so1"]["why"])
 
     def test_cardinality_1_10_60_each_record_once(self):
         for n in (1, 10, 60):
@@ -511,6 +719,9 @@ class AlertRules(unittest.TestCase):
             for col in rule.shows:
                 self.assertIn(col, {c.name for c in bv.VIEWS[rule.cols_of or rule.table].cols},
                               rule.name)
+            for table, col in rule.also_shows:
+                self.assertIn(table, rule.reads, rule.name)
+                self.assertIn(col, {c.name for c in bv.VIEWS[table].cols}, rule.name)
 
     # ------------------------------------------------------------------ restricted readers
     def test_restricted_reader_sees_only_what_every_source_row_allows(self):

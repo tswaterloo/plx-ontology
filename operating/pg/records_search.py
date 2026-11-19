@@ -58,20 +58,67 @@ def day(value: Any) -> str | None:
     return value[:10]
 
 
-def search_sql(n_words: int, *, since: bool, until: bool) -> str:
+# A word the label's trigram index can find (``records.label`` gin_trgm_ops): 3 letters
+# or more; a shorter one is only checked on the rows the others found.
+INDEXED_LETTERS = 3
+# The labels read for candidates (``candidates_sql``): at least this many, and PER_ROW per
+# row a page needs, so a reader shown a quarter of the matches still fills it from them.
+CANDIDATES = 1000
+PER_ROW = 4
+
+
+def indexed(words: Sequence[str]) -> list[int]:
+    """The positions of ``words`` the label index finds (``INDEXED_LETTERS``)."""
+    return [i for i, w in enumerate(words) if len(w) >= INDEXED_LETTERS]
+
+
+def order_sql() -> str:
+    """The one order of every hit: the label that is exactly the query first, then the
+    newest record date, then the handle (the candidates' and the hits' own)."""
+    return ("lower(label) = lower(%(q)s) DESC, record_date DESC NULLS LAST, handle")
+
+
+def candidates(off: int, k: int) -> int:
+    return max(CANDIDATES, PER_ROW * (off + k))
+
+
+def candidates_sql(positions: Sequence[int], *, biz: str, since: bool, until: bool) -> str:
+    """The handles of the records whose label holds the words at ``positions`` (each found
+    by the label index), in the hits' order, at most ``%(cap)s``: read from the store's own
+    table, never shown (``SqlTool.records_search`` reads the hits through the reader's
+    guarded view by these handles). Why: the guarded view is a security barrier and ILIKE
+    is not leakproof, so a label match through it was never pushed to the index: every
+    search planned a scan of all records and was refused as too broad (live: "Azelis",
+    "Univar" found nothing)."""
+    if not positions:
+        raise SearchInputError("no word the label index finds")
+    if not re.fullmatch(r"[a-z_][a-z0-9_]*", biz):
+        raise SearchInputError("not a schema name")
+    where = [f"label ILIKE %(w{i})s ESCAPE '\\'" for i in positions]
+    if since:
+        where.append("record_date >= %(since)s")
+    if until:
+        where.append("record_date <= %(until)s")
+    return (f"SELECT handle FROM {biz}.records WHERE " + " AND ".join(where)
+            + " AND handle IS NOT NULL ORDER BY " + order_sql() + " LIMIT %(cap)s")
+
+
+def search_sql(n_words: int, *, since: bool, until: bool, among: bool = False) -> str:
     """The statement (``records`` resolves to the reader's guarded view through the
     session's search path); parameters ``w0..``, ``q``, ``since``, ``until``, ``k``,
-    ``off``."""
+    ``off`` and, ``among``: ``hs``, the candidates' handles (``candidates_sql``; equality
+    on the handle is leakproof, so the view reads them by its handle index)."""
     if n_words < 1:
         raise SearchInputError("the query has no word to search for")
     where = [f"label ILIKE %(w{i})s ESCAPE '\\'" for i in range(n_words)]
+    if among:
+        where.insert(0, "handle = ANY(%(hs)s::text[])")
     if since:
         where.append("record_date >= %(since)s")
     if until:
         where.append("record_date <= %(until)s")
     return (f"SELECT {', '.join(COLS)} FROM records WHERE " + " AND ".join(where)
-            + " ORDER BY lower(label) = lower(%(q)s) DESC, record_date DESC NULLS LAST,"
-            " handle LIMIT %(k)s OFFSET %(off)s")
+            + " ORDER BY " + order_sql() + " LIMIT %(k)s OFFSET %(off)s")
 
 
 def params(words: Sequence[str], query: str, *, since: str | None, until: str | None,
@@ -110,5 +157,5 @@ def searched(args: Mapping[str, Any], words: Sequence[str]) -> dict[str, Any]:
     return out
 
 
-__all__ = ["KIND", "SOURCE", "SearchInputError", "day", "hits", "params", "read_cursor",
-           "search_sql", "searched", "terms"]
+__all__ = ["KIND", "SOURCE", "SearchInputError", "candidates", "candidates_sql", "day",
+           "hits", "indexed", "params", "read_cursor", "search_sql", "searched", "terms"]

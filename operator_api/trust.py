@@ -189,6 +189,8 @@ def _source_served(source: str, captured: Optional[datetime],
                         "one to reach the app's data.")
     if state != "complete" or through is None:
         return served, f"Behind: the app's data cannot say how far it holds {part}."
+    if entry.get("refresh_overdue") is True:
+        return served, (f"Behind: some of {part} were not read within their usual interval.")
     if captured is not None and captured > through and \
             (now - through).total_seconds() > SERVED_BEHIND_SECONDS:
         return served, (f"Behind: records of {part} read since {_clock(through, now)} are "
@@ -404,10 +406,11 @@ def lines(fresh: list[m.TrustFreshness], sets: list[m.TrustAnswerSet],
         out.append(m.TrustLine(state="live", words=f"{s.system}: {s.words}"))
     drafted = sorted({r.workflow for r in rows if r.draft})
     if drafted:
-        out.append(m.TrustLine(state="live", words="Draft: the autopilot prepares "
-                               + ", ".join(w.replace("_", " ") for w in drafted)
-                               + " for approval. Nothing goes out until its owner accepts "
-                               "and confirms."))
+        n = len(drafted)
+        out.append(m.TrustLine(state="live", words=f"Draft: {n} autopilot workflow"
+                               f"{'s prepare' if n != 1 else ' prepares'} drafts for approval "
+                               "(marked Draft under Autopilot workflows below). Nothing goes "
+                               "out until its owner accepts and confirms."))
     if any(r.state == "live" for r in rows):
         n = sum(1 for r in rows if r.state == "live")
         out.append(m.TrustLine(state="live", words=f"{n} autopilot workflow"
@@ -420,7 +423,7 @@ def lines(fresh: list[m.TrustFreshness], sets: list[m.TrustAnswerSet],
                                f"acts only after {g.need_judged} judged held-out items at "
                                f"{_pct_words(g.need_percent)} or better, and only for a person "
                                "who switched it on for themselves"
-                               + (", or for " + ", ".join(sorted(k.replace("_", " ")
+                               + (", or for " + ", ".join(sorted(_write_words(k)
                                                                  for k in approved))
                                   + " when a person approves and confirms the item"
                                   if approved else "") + "."))
@@ -431,12 +434,12 @@ def lines(fresh: list[m.TrustFreshness], sets: list[m.TrustAnswerSet],
     unmeasured = sum(1 for k in kinds if k.judged is None)
     if unmeasured:
         out.append(m.TrustLine(state="pending", words=f"{unmeasured} alert types not "
-                               "measured yet: they show under Watching only."))
+                               "measured yet: they show on Home's Alerts tab only, never "
+                               "under Needs you."))
     if not sets or not any(s.held_out for s in sets):
         out.append(m.TrustLine(state="pending", words="Held-out answer scores: not measured "
-                               "yet. The measure of answers to questions never used for "
-                               "tuning runs after the served data's rebuild; its score "
-                               "shows here once it has run."))
+                               "yet on this server. Its score on questions never used for "
+                               "tuning shows here once a held-out run records it."))
     if rows and not any(r.countdown for r in rows):
         out.append(m.TrustLine(state="pending", words="Autopilot gate counts: no held-out "
                                "item judged yet; the count starts once a replay scores a "
@@ -491,3 +494,13 @@ def build(backend: Any, reader: Any, environ: Optional[Mapping[str, str]] = None
                        autopilot_note=note, autopilot_gate=g,
                        lines=lines(fresh, sets, kinds, rows, sw, g,
                                    frozenset(aw.approved_kinds(env))), switches=sw)
+
+
+# person-approved write kinds (``autopilot_write`` approved kinds) in plain words
+_WRITE_WORDS = {"bc_write": "Business Central changes", "send_mail": "mail",
+                "sharepoint_write": "SharePoint files", "planner_write": "Planner tasks",
+                "calendar_write": "calendar entries"}
+
+
+def _write_words(kind: str) -> str:
+    return _WRITE_WORDS.get(kind, kind.replace("_", " "))

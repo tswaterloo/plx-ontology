@@ -67,7 +67,7 @@ LIMITS = {
     "plx.query": 60.0,
     "plx.table": 25.0,
     "plx.business": 25.0,
-    "plx.sql": 40.0,      # 10 s statements; a swap's refusal is asked again for 20 s
+    "plx.sql": 65.0,      # 10 s statements (a full reader's 60 s); a swap's refusal is asked again for 20 s
     "plx.open": 30.0,     # plx.read under it (operating/ontology_tools_search.py)
     "plx.search": 40.0,   # plx.documents under it (operating/ontology_tools_search.py)
 }

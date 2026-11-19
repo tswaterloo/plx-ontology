@@ -1,0 +1,9 @@
+[Unit]
+Description=PLX Spark runs: copy the Workbench AI access token to the Sparks (no refresh token)
+
+[Service]
+Type=oneshot
+User=@PLX_USER@
+Group=@PLX_GROUP@
+ExecStart=/data/plx-releases/current/deploy/spark/spark_cred_sync.sh
+NoNewPrivileges=true

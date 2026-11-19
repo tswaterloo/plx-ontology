@@ -546,6 +546,25 @@ class DraftLookups(unittest.TestCase):
         self.assertEqual(got, ('{"kind": "reply", "reply": "ok"}', ["row 1"]))
         self.assertEqual((seen["claims"], seen["agent"], seen.get("closed")),
                          (self.claims, "plx.agent.ask", True))
+        # a conversation with an outside reader: the session's gate allows none of the
+        # host's own tools (only the local ones the caller gives), the host stays the same
+        hosts = []
+
+        class Gate(Agent):
+            def run(self, prompt, host):
+                hosts.append(host)
+                return super().run(prompt, host)
+
+        Host.tools = lambda self: [{"name": "plx.sql", "read_only": True},
+                                   {"name": "plx.open", "read_only": True}]
+        with mock.patch.object(agent_session, "ReaderHost", Host), \
+                mock.patch.object(agent_session, "ClaudeCodeAgent", Gate):
+            ac.Lookup(env).run(self.OID, "draft this", agent=True, reads=False)
+            ac.Lookup(env).run(self.OID, "draft this", agent=True)
+        self.assertEqual(agent_session.allowed_tools(hosts[0].tools()),
+                         ([], ["plx.sql", "plx.open"]))
+        self.assertEqual(agent_session.allowed_tools(hosts[1].tools()),
+                         (["plx.sql", "plx.open"], []))
         # the model process runs on the autopilot's home, never the user's login
         ran = []
         homed = ac._homed(lambda argv, cwd, env, timeout, **kw: ran.append(env), "/srv/h")

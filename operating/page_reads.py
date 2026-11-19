@@ -168,6 +168,13 @@ QUERIES: dict[str, Query] = {
         "total_currency, purchaser, line_count, handle, withheld FROM purchase_orders "
         "WHERE verdict = 'late' ORDER BY days_late DESC NULLS LAST, po_number, handle "
         "LIMIT %(limit)s OFFSET %(offset)s", ("limit", "offset"), MAX_ROWS),
+    # the sidebar's late POs by supplier: each supplier's count, most first, and how many
+    # suppliers there are (a hidden supplier cell is no supplier: never named or counted)
+    "late_po_suppliers": Query(
+        "SELECT supplier, late, count(*) OVER () AS suppliers FROM (SELECT supplier, "
+        "count(*) AS late FROM purchase_orders WHERE verdict = 'late' AND supplier IS NOT "
+        "NULL GROUP BY supplier) s ORDER BY late DESC, supplier LIMIT %(limit)s",
+        ("limit",), MAX_ROWS),
     # customer orders past their required date (open only, the order view's days_late)
     "late_order_count": Query(
         "SELECT count(*) AS late FROM sales_orders WHERE status = 'open' AND days_late > 0"),
@@ -207,6 +214,12 @@ QUERIES: dict[str, Query] = {
         "WHERE a.rule = 'po_late' AND a.state = 'open' AND " + _FRESH.replace("rule", "a.rule", 1)
         + " ORDER BY p.days_late DESC NULLS LAST, p.po_number, p.handle "
         "LIMIT %(limit)s OFFSET %(offset)s", ("limit", "offset"), MAX_ROWS),
+    "alerts_late_po_suppliers": Query(
+        "SELECT supplier, late, count(*) OVER () AS suppliers FROM (SELECT p.supplier, "
+        "count(*) AS late FROM alerts a JOIN purchase_orders p ON p.handle = a.handle "
+        "WHERE a.rule = 'po_late' AND a.state = 'open' AND p.supplier IS NOT NULL AND "
+        + _FRESH.replace("rule", "a.rule", 1) + " GROUP BY p.supplier) s "
+        "ORDER BY late DESC, supplier LIMIT %(limit)s", ("limit",), MAX_ROWS),
     "views_as_of": Query("SELECT view, built_at FROM view_state ORDER BY view", (), 64),
     # ---- the one search box: every kind of business record by name or number --------
     "find": Query(FIND_SQL, ("q", "limit"), 50),

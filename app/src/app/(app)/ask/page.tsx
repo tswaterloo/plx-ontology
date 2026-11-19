@@ -1,19 +1,21 @@
 "use client";
 
-import { SquarePen } from "lucide-react";
+import { MessagesSquare, SquarePen } from "lucide-react";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { Suspense, useEffect, useRef, useState } from "react";
 import { AnswerCard } from "@/components/answer-card";
 import { AskBox } from "@/components/ask-box";
+import { AskChatList } from "@/components/ask-chats";
 import { loadHome } from "@/components/shell";
 import { ErrorNotice } from "@/components/ui/notice";
+import { Sheet } from "@/components/ui/sheet";
 import { Toolbar, ToolbarButton } from "@/components/ui/toolbar";
 import { PageIntro } from "@/components/ui/page-intro";
 import { cn } from "@/lib/cn";
 import { ago, formatDateTime } from "@/lib/format";
 import { takePending } from "@/lib/pending";
-import { askUrlKey, useThread } from "@/lib/thread";
+import { askUrlKey, conversationOf, useThread } from "@/lib/thread";
 import { getWorkThread } from "@/lib/api";
 import type { Answer, RecentQuestion } from "@/lib/types";
 
@@ -76,7 +78,7 @@ function RecentQuestions({ onAsk }: { onAsk: (q: string, objectId?: string) => v
 function Ask() {
   const params = useSearchParams();
   const router = useRouter();
-  const { turns, run, retry, followUp, stop, reset, busy, seed } = useThread();
+  const { turns, run, retry, deeper, followUp, stop, reset, busy, seed } = useThread();
   const started = useRef<string | null>(null);
   const scroller = useRef<HTMLDivElement>(null);
   const lastTurn = useRef<HTMLElement>(null);
@@ -142,6 +144,17 @@ function Ask() {
   }, [turns.length]);
 
   const empty = turns.length === 0;
+  const newChat = () => {
+    reset();
+    started.current = null;
+    setChatsOpen(false);
+    router.replace("/ask");
+  };
+  // the chat open now: the one reopened, else the one this page's answers belong to
+  const current = conversationOf(turns) ?? resumeId;
+  // the list is read again as each answer lands (a new chat appears, its time moves)
+  const answered = turns.filter((t) => t.phase === "done").length;
+  const [chatsOpen, setChatsOpen] = useState(false);
   const composer = (
     <AskBox
       size={empty ? "lg" : "md"}
@@ -160,74 +173,81 @@ function Ask() {
       <Toolbar
         title="Ask"
         actions={
-          !empty && (
-            <ToolbarButton
-              onClick={() => {
-                reset();
-                started.current = null;
-                router.replace("/ask");
-              }}
-              title="New question"
-              aria-label="New question"
-            >
-              <SquarePen strokeWidth={2} aria-hidden />
-              <span className="max-sm:hidden">New question</span>
+          <>
+            <ToolbarButton onClick={() => setChatsOpen(true)} title="Chats" aria-label="Chats" className="md:hidden">
+              <MessagesSquare strokeWidth={2} aria-hidden />
             </ToolbarButton>
-          )
+            {!empty && (
+              <ToolbarButton onClick={newChat} title="New chat" aria-label="New chat" className="md:hidden">
+                <SquarePen strokeWidth={2} aria-hidden />
+              </ToolbarButton>
+            )}
+          </>
         }
       />
-      {/* relative: the thread's screen-reader lines (absolute) belong to this scroller, so they
-          never stretch the page under it and make it scroll as a whole on a phone */}
-      <div ref={scroller} className="relative min-h-0 flex-1 overflow-y-auto">
-        {empty ? (
-          <div className={cn(FRAME, "flex min-h-full max-w-[920px] flex-col justify-center pt-6 pb-[max(48px,8vh)]")}>
-            <h1 className="sr-only">Ask</h1>
-            {resumeFailed && resumeId && !q && (
-              <ErrorNotice className="mb-6" message="This conversation couldn't be opened just now." onRetry={() => setResumeTry((n) => n + 1)} />
+      <Sheet open={chatsOpen} onOpenChange={setChatsOpen} title="Chats" bodyClassName="p-0">
+        <AskChatList current={current} refreshKey={`${current}#${answered}`} onNew={newChat} className="h-full" />
+      </Sheet>
+      <div className="flex min-h-0 flex-1">
+        <aside className="hidden w-[248px] shrink-0 border-r border-border md:flex" data-testid="ask-chats-rail">
+          <AskChatList current={current} refreshKey={`${current}#${answered}`} onNew={newChat} className="w-full" />
+        </aside>
+        <div className="flex min-h-0 min-w-0 flex-1 flex-col">
+          {/* relative: the thread's screen-reader lines (absolute) belong to this scroller, so they
+              never stretch the page under it and make it scroll as a whole on a phone */}
+          <div ref={scroller} className="relative min-h-0 flex-1 overflow-y-auto">
+            {empty ? (
+              <div className={cn(FRAME, "flex min-h-full max-w-[920px] flex-col justify-center pt-6 pb-[max(48px,8vh)]")}>
+                <h1 className="sr-only">Ask</h1>
+                {resumeFailed && resumeId && !q && (
+                  <ErrorNotice className="mb-6" message="This conversation couldn't be opened just now." onRetry={() => setResumeTry((n) => n + 1)} />
+                )}
+                <PageIntro path="/ask" className="mb-3 px-0 pt-0 lg:px-0" />
+                {composer}
+                <div className="mt-10 md:hidden">
+                  <RecentQuestions onAsk={(question, objectId) => run(question, objectId)} />
+                </div>
+              </div>
+            ) : (
+              <div className={cn(FRAME, "pt-7 pb-10")} aria-live="off">
+                <h1 className="sr-only">Ask</h1>
+                {turns.map((t, i) => (
+                  <section
+                    key={t.id}
+                    ref={i === turns.length - 1 ? lastTurn : undefined}
+                    className={cn("scroll-mt-6", i > 0 && "mt-14", i === turns.length - 1 && turns.length > 1 && "min-h-[calc(100dvh-260px)]")}
+                  >
+                    <h2 className={cn("mb-4 text-[19px] leading-[26px] font-semibold tracking-[-0.02em] break-words", COLUMN)} data-testid="user-question">
+                      {t.question}
+                    </h2>
+                    <AnswerCard
+                      turn={t}
+                      onRetry={() => retry(t)}
+                      onPick={busy ? undefined : (c) => run(`I mean ${c.label}`, c.object_id)}
+                      onAsk={busy ? undefined : (next) => followUp(next, t)}
+                      onInstruct={busy ? undefined : (next, extra) => run(next, extra.object_id ?? undefined, extra.source ?? undefined, [], { context: extra.context, mode: extra.mode, instruction: extra.instruction })}
+                      onClarify={busy ? undefined : (words, reply) => run(words, undefined, undefined, [], { clarified: reply })}
+                      onDeeper={busy ? undefined : () => deeper(t)}
+                    />
+                  </section>
+                ))}
+                {turns[turns.length - 1]?.phase === "done" && (
+                  <p className="sr-only" role="status">
+                    Answer ready.
+                  </p>
+                )}
+              </div>
             )}
-            <PageIntro path="/ask" className="mb-3 px-0 pt-0 lg:px-0" />
-            {composer}
-            <div className="mt-10">
-              <RecentQuestions onAsk={(question, objectId) => run(question, objectId)} />
+          </div>
+          {!empty && (
+            <div className="relative shrink-0 border-t border-border bg-bg pt-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] sm:pb-4" data-testid="composer-dock">
+              <div className={FRAME}>
+                <div className={COLUMN}>{composer}</div>
+              </div>
             </div>
-          </div>
-        ) : (
-          <div className={cn(FRAME, "pt-7 pb-10")} aria-live="off">
-            <h1 className="sr-only">Ask</h1>
-            {turns.map((t, i) => (
-              <section
-                key={t.id}
-                ref={i === turns.length - 1 ? lastTurn : undefined}
-                className={cn("scroll-mt-6", i > 0 && "mt-14", i === turns.length - 1 && turns.length > 1 && "min-h-[calc(100dvh-260px)]")}
-              >
-                <h2 className={cn("mb-4 text-[19px] leading-[26px] font-semibold tracking-[-0.02em] break-words", COLUMN)} data-testid="user-question">
-                  {t.question}
-                </h2>
-                <AnswerCard
-                  turn={t}
-                  onRetry={() => retry(t)}
-                  onPick={busy ? undefined : (c) => run(`I mean ${c.label}`, c.object_id)}
-                  onAsk={busy ? undefined : (next) => followUp(next, t)}
-                  onInstruct={busy ? undefined : (next, extra) => run(next, extra.object_id ?? undefined, extra.source ?? undefined, [], { context: extra.context, mode: extra.mode, instruction: extra.instruction })}
-                  onClarify={busy ? undefined : (words, reply) => run(words, undefined, undefined, [], { clarified: reply })}
-                />
-              </section>
-            ))}
-            {turns[turns.length - 1]?.phase === "done" && (
-              <p className="sr-only" role="status">
-                Answer ready.
-              </p>
-            )}
-          </div>
-        )}
-      </div>
-      {!empty && (
-        <div className="relative shrink-0 border-t border-border bg-bg pt-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] sm:pb-4" data-testid="composer-dock">
-          <div className={FRAME}>
-            <div className={COLUMN}>{composer}</div>
-          </div>
+          )}
         </div>
-      )}
+      </div>
     </div>
   );
 }

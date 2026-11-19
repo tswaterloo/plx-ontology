@@ -1,0 +1,292 @@
+{
+ "about": "The Workbench's built-in insights: declared definitions run through plx.sql as the reader (operator_api/insights.py). No case, person or customer is named here.",
+ "insights": [
+  {
+   "id": "team_output",
+   "group": "Team",
+   "title": "Work sent per person, last 28 days",
+   "about": "Per person: distinct emails sent from their work address (counted once, whichever mailboxes hold it), Teams messages they posted and meetings they organised (not cancelled), over the last 28 days. Sorted by mail plus Teams; the long tail on the right is the L-curve. Floor, lab and phone work is not seen, and mail sent from another address of theirs is not counted.",
+   "sql": "WITH m AS (SELECT sender, count(DISTINCT message_id) AS n FROM emails\n           WHERE received_at >= now() - interval '28 days' AND sender IN (SELECT email FROM staff) GROUP BY 1),\n     t AS (SELECT (sender::jsonb) ->> 'id' AS pid, count(*) AS n FROM teams_messages\n           WHERE created_at >= now() - interval '28 days' AND left(sender, 1) = '{' GROUP BY 1),\n     g AS (SELECT organizer, count(DISTINCT ical_uid) AS n FROM meetings\n           WHERE start_at >= now() - interval '28 days' AND NOT is_cancelled GROUP BY 1)\nSELECT s.name AS person, s.department, coalesce(m.n, 0) AS mail_sent, coalesce(t.n, 0) AS teams_sent,\n       coalesce(g.n, 0) AS meetings_organised, s.person_id\nFROM staff s LEFT JOIN m ON m.sender = s.email LEFT JOIN t ON t.pid = s.person_id LEFT JOIN g ON g.organizer = s.email\nWHERE coalesce(m.n, 0) + coalesce(t.n, 0) + coalesce(g.n, 0) > 0\nORDER BY coalesce(m.n, 0) + coalesce(t.n, 0) DESC",
+   "chart": {
+    "kind": "bar",
+    "x": "person",
+    "y": [
+     "mail_sent",
+     "teams_sent"
+    ]
+   },
+   "person": "person_id",
+   "scope": "self",
+   "fast": true
+  },
+  {
+   "id": "team_reply_time",
+   "group": "Team",
+   "title": "Reply time per person, last 28 days",
+   "about": "Messages in each person's own mailbox addressed to them (To), from someone else, not bulk, received 1 to 28 days ago: how many, how many they answered in the same thread, and the median hours to their answer (over the ones answered). People with fewer than 5 answers are left out. Fastest first.",
+   "sql": "SELECT s.name AS person, s.department, count(*) AS messages_to_them,\n       count(e.owner_replied_at) AS replied,\n       round(100.0 * count(e.owner_replied_at) / count(*)) AS replied_pct,\n       round((percentile_cont(0.5) WITHIN GROUP (ORDER BY extract(epoch FROM e.owner_replied_at - e.received_at) / 3600))::numeric, 1) AS median_reply_hours,\n       s.person_id\nFROM emails e JOIN staff s ON s.person_id = e.mailbox\nWHERE e.received_at >= now() - interval '28 days' AND e.received_at < now() - interval '1 day'\n  AND e.owner_role = 'to' AND NOT e.is_bulk AND e.sender <> s.email\nGROUP BY s.name, s.department, s.person_id\nHAVING count(e.owner_replied_at) >= 5\nORDER BY median_reply_hours NULLS LAST",
+   "chart": {
+    "kind": "bar",
+    "x": "person",
+    "y": [
+     "median_reply_hours"
+    ]
+   },
+   "person": "person_id",
+   "scope": "self",
+   "fast": true
+  },
+  {
+   "id": "team_waiting",
+   "group": "Team",
+   "title": "Threads waiting on each person",
+   "about": "Mail threads in each person's own mailbox from the last 30 days where they had written in the last 13 weeks, the latest message is to them (To) from someone else, not bulk, more than a day old, and they have not answered since. A blocker list: some are only 'thanks' notes, so open the person to see the threads.",
+   "sql": "WITH st AS MATERIALIZED (SELECT person_id, name, department, email FROM staff),\nlast AS MATERIALIZED (\n  SELECT DISTINCT ON (mailbox, thread) mailbox, thread, sender, received_at, owner_role, is_bulk, owner_replied_at\n  FROM emails WHERE thread IS NOT NULL AND received_at >= now() - interval '30 days' AND mailbox IN (SELECT person_id FROM st)\n  ORDER BY mailbox, thread, received_at DESC),\ncand AS MATERIALIZED (\n  SELECT l.mailbox, l.thread, l.sender, l.received_at FROM last l\n  WHERE l.owner_role = 'to' AND NOT l.is_bulk AND l.owner_replied_at IS NULL AND l.received_at < now() - interval '1 day'),\nwrote AS MATERIALIZED (\n  SELECT DISTINCT mailbox, thread, sender FROM emails WHERE thread = ANY (ARRAY(SELECT thread FROM cand)) AND received_at >= now() - interval '91 days')\nSELECT s.name AS person, s.department, count(*) AS threads_waiting,\n       count(*) FILTER (WHERE l.received_at < now() - interval '3 days') AS waiting_over_3_days,\n       round((max(extract(epoch FROM now() - l.received_at)) / 86400)::numeric, 1) AS oldest_days,\n       count(*) FILTER (WHERE split_part(l.sender, '@', 2) <> split_part(s.email, '@', 2)) AS from_outside, s.person_id\nFROM cand l JOIN st s ON s.person_id = l.mailbox\nWHERE l.sender <> s.email\n  AND (l.mailbox, l.thread, s.email) IN (SELECT mailbox, thread, sender FROM wrote)\nGROUP BY s.name, s.department, s.person_id\nORDER BY threads_waiting DESC",
+   "chart": {
+    "kind": "bar",
+    "x": "person",
+    "y": [
+     "threads_waiting",
+     "waiting_over_3_days"
+    ]
+   },
+   "person": "person_id",
+   "scope": "self",
+   "fast": true
+  },
+  {
+   "id": "org_span",
+   "group": "Org",
+   "title": "Span of control",
+   "about": "Each manager in the directory and how many people report directly to them (the org chart as the directory states it; people with no manager on record are not under anyone; a person not shown on the Team page is not counted).",
+   "sql": "SELECT m.name AS manager, m.department, m.person_id, r.person_id AS report_id FROM staff r JOIN staff m ON r.manager_email = m.email ORDER BY m.name",
+   "chart": {
+    "kind": "bar",
+    "x": "manager",
+    "y": [
+     "direct_reports"
+    ]
+   },
+   "person": "person_id",
+   "scope": "org",
+   "rollup": {
+    "by": [
+     "manager",
+     "department",
+     "person_id"
+    ],
+    "count": "direct_reports",
+    "counted": "report_id",
+    "order": "count_desc"
+   },
+   "fast": true
+  },
+  {
+   "id": "org_depth",
+   "group": "Org",
+   "title": "Levels in the org chart",
+   "about": "How many people sit at each level below the top of each reporting chain (level 1: a manager with no manager on record), from the directory's manager links; a person not shown on the Team page is not counted.",
+   "sql": "WITH RECURSIVE chain AS (\n  SELECT name, email, person_id, 1 AS level FROM staff WHERE manager_email IS NULL AND reports_count > 0\n  UNION ALL\n  SELECT s.name, s.email, s.person_id, c.level + 1 FROM staff s JOIN chain c ON s.manager_email = c.email WHERE c.level < 20)\nSELECT level, person_id FROM chain ORDER BY level",
+   "chart": {
+    "kind": "bar",
+    "x": "level",
+    "y": [
+     "people"
+    ]
+   },
+   "scope": "org",
+   "rollup": {
+    "by": [
+     "level"
+    ],
+    "count": "people",
+    "counted": "person_id",
+    "order": "as_read"
+   },
+   "fast": true
+  },
+  {
+   "id": "team_mail_weekly",
+   "group": "Team",
+   "title": "Mail sent by our people per week",
+   "about": "Distinct emails sent from a staff work address per week (Monday start, business time zone), the last 12 weeks: the company's outgoing mail pulse.",
+   "sql": "SELECT to_char(date_trunc('week', e.received_at AT TIME ZONE '{business_tz}'), 'YYYY-MM-DD') AS week, count(DISTINCT e.message_id) AS mail_sent FROM emails e JOIN staff s ON s.email = e.sender WHERE e.received_at >= (date_trunc('week', now() AT TIME ZONE '{business_tz}') - interval '12 weeks') AT TIME ZONE '{business_tz}' GROUP BY 1 ORDER BY 1",
+   "chart": {
+    "kind": "line",
+    "x": "week",
+    "y": [
+     "mail_sent"
+    ]
+   },
+   "scope": "full",
+   "fast": true
+  },
+  {
+   "id": "customer_mail",
+   "group": "Customers",
+   "title": "Customers by mail, last 28 days",
+   "about": "Customers by the number of distinct non-bulk emails about them or from them in the mail you can read over the last 28 days, with the threads and how many came from outside our domain. A customer is linked to a message by the mail's customer links.",
+   "sql": "SELECT c.name AS customer, count(DISTINCT e.message_id) AS messages, count(DISTINCT e.thread) AS threads, count(DISTINCT e.message_id) FILTER (WHERE e.sender_domain IS DISTINCT FROM split_part(s.email, '@', 2)) AS from_them FROM emails e JOIN customers c ON c.handle = ANY(e.customers) LEFT JOIN staff s ON s.person_id = e.mailbox WHERE e.received_at >= now() - interval '28 days' AND NOT e.is_bulk GROUP BY c.name ORDER BY messages DESC LIMIT 25",
+   "chart": {
+    "kind": "bar",
+    "x": "customer",
+    "y": [
+     "messages"
+    ]
+   },
+   "scope": "everyone",
+   "fast": true
+  },
+  {
+   "id": "customers_waiting",
+   "group": "Waiting",
+   "title": "Customers waiting on us",
+   "about": "Customers whose latest message in a thread to one of our people (in that person's own mailbox, addressed to them, not bulk) has had no answer from that person for more than a day, over the last 30 days: how many threads, how many of our people they wait on, and the oldest wait in days. A colleague's answer from another mailbox is not seen unless that person was copied.",
+   "scope": "everyone",
+   "fast": true,
+   "chart": {
+    "kind": "bar",
+    "x": "customer",
+    "y": [
+     "threads_waiting"
+    ],
+    "horizontal": true
+   },
+   "sql": "WITH last AS (SELECT DISTINCT ON (e.mailbox, e.thread) e.mailbox, e.thread, e.sender, e.sender_domain, e.received_at, e.owner_role, e.is_bulk, e.owner_replied_at, e.customers FROM emails e WHERE e.thread IS NOT NULL AND e.received_at >= now() - interval '30 days' AND e.mailbox IN (SELECT person_id FROM staff) ORDER BY e.mailbox, e.thread, e.received_at DESC) SELECT c.name AS customer, count(*) AS threads_waiting, count(DISTINCT l.mailbox) AS people_waited_on, round((max(extract(epoch FROM now() - l.received_at)) / 86400)::numeric, 1) AS oldest_days FROM last l JOIN staff s ON s.person_id = l.mailbox JOIN customers c ON c.handle = ANY(l.customers) WHERE l.owner_role = 'to' AND NOT l.is_bulk AND l.owner_replied_at IS NULL AND l.sender <> s.email AND l.sender_domain IS DISTINCT FROM split_part(s.email, '@', 2) AND l.received_at < now() - interval '1 day' GROUP BY c.name ORDER BY threads_waiting DESC, oldest_days DESC LIMIT 25"
+  },
+  {
+   "id": "waiting_on_others",
+   "group": "Waiting",
+   "title": "Waiting on someone outside, per person",
+   "about": "Threads in each person's own mailbox from the last 30 days where they wrote the latest message, to at least one address outside our domain, more than 3 days ago, and nobody has written in the thread since: what they are waiting on others for, and the oldest in days. Some are closing notes that need no answer.",
+   "scope": "self",
+   "person": "person_id",
+   "fast": true,
+   "chart": {
+    "kind": "bar",
+    "x": "person",
+    "y": [
+     "threads_waiting"
+    ]
+   },
+   "sql": "WITH last AS (SELECT DISTINCT ON (e.mailbox, e.thread) e.mailbox, e.thread, e.sender, e.received_at, e.to_addresses FROM emails e WHERE e.thread IS NOT NULL AND e.received_at >= now() - interval '30 days' AND e.mailbox IN (SELECT person_id FROM staff) ORDER BY e.mailbox, e.thread, e.received_at DESC) SELECT s.name AS person, s.department, count(*) AS threads_waiting, round((max(extract(epoch FROM now() - l.received_at)) / 86400)::numeric, 1) AS oldest_days, s.person_id FROM last l JOIN staff s ON s.person_id = l.mailbox AND l.sender = s.email WHERE l.received_at < now() - interval '3 days' AND EXISTS (SELECT 1 FROM unnest(l.to_addresses) a WHERE split_part(a, '@', 2) <> split_part(s.email, '@', 2)) GROUP BY s.name, s.department, s.person_id ORDER BY threads_waiting DESC"
+  },
+  {
+   "id": "planner_open",
+   "group": "Waiting",
+   "title": "Open Planner tasks per person",
+   "about": "Microsoft Planner tasks not completed, per person they are assigned to (a task with two assignees counts for each): how many are open, how many are past their due date, and how many of those are more than 90 days past it (often tasks nobody closed).",
+   "scope": "self",
+   "person": "person_id",
+   "chart": {
+    "kind": "bar",
+    "x": "person",
+    "y": [
+     "open_tasks",
+     "overdue"
+    ]
+   },
+   "sql": "SELECT s.name AS person, s.department, count(*) AS open_tasks, count(*) FILTER (WHERE coalesce(r.fields->>'due_at', '') <> '' AND (r.fields->>'due_at')::timestamptz < now()) AS overdue, count(*) FILTER (WHERE coalesce(r.fields->>'due_at', '') <> '' AND (r.fields->>'due_at')::timestamptz < now() - interval '90 days') AS overdue_90_days, s.person_id FROM records r CROSS JOIN LATERAL jsonb_array_elements_text(CASE WHEN jsonb_typeof(r.fields->'assignees') = 'string' THEN (r.fields->>'assignees')::jsonb ELSE r.fields->'assignees' END) a(pid) JOIN staff s ON s.person_id = a.pid WHERE r.type = 'PlannerTask' AND coalesce(r.fields->>'completed_at', '') = '' GROUP BY s.name, s.department, s.person_id ORDER BY open_tasks DESC"
+  },
+  {
+   "id": "approvals_decided",
+   "group": "Decisions",
+   "title": "Approvals decided in Mission Control, last 30 days",
+   "about": "Mission Control approval requests decided in the last 30 days, per person who decided: how many approved and how many rejected. Who asked and what for is on each request (Ask: 'which approvals did <name> reject this month?').",
+   "scope": "everyone",
+   "chart": {
+    "kind": "bar",
+    "x": "decided_by",
+    "y": [
+     "approved",
+     "rejected"
+    ],
+    "stacked": true
+   },
+   "sql": "SELECT coalesce(s.name, r.fields->>'decided_by') AS decided_by, count(*) FILTER (WHERE r.fields->>'status' = 'approved') AS approved, count(*) FILTER (WHERE r.fields->>'status' = 'rejected') AS rejected FROM records r LEFT JOIN staff s ON s.email = lower(r.fields->>'decided_by') WHERE r.type = 'MCApproval' AND coalesce(r.fields->>'decided_at', '') <> '' AND (r.fields->>'decided_at')::timestamptz >= now() - interval '30 days' GROUP BY 1 ORDER BY 2 DESC"
+  },
+  {
+   "id": "approvals_waiting",
+   "group": "Decisions",
+   "title": "Approvals still waiting for a decision",
+   "about": "Mission Control approval requests with no decision yet, per person who asked: how many are waiting and the oldest in days.",
+   "scope": "everyone",
+   "chart": {
+    "kind": "bar",
+    "x": "requested_by",
+    "y": [
+     "waiting"
+    ]
+   },
+   "sql": "SELECT coalesce(s.name, r.fields->>'requested_by') AS requested_by, count(*) AS waiting, round((max(extract(epoch FROM now() - (r.fields->>'requested_at')::timestamptz)) / 86400)::numeric, 1) AS oldest_days FROM records r LEFT JOIN staff s ON s.email = lower(r.fields->>'requested_by') WHERE r.type = 'MCApproval' AND r.fields->>'status' = 'pending' AND coalesce(r.fields->>'requested_at', '') <> '' GROUP BY 1 ORDER BY 2 DESC"
+  },
+  {
+   "id": "decisions_said",
+   "group": "Decisions",
+   "title": "Decisions in mail and Teams, last 14 days",
+   "about": "Decisions, agreements and confirmations stated in the mail and Teams messages you can read over the last 14 days, newest first: who decided and what, and how many days ago. Each is a model's one-line reading of one message (Ask to see the message itself).",
+   "scope": "everyone",
+   "chart": {
+    "kind": "table",
+    "x": "decision",
+    "y": [
+     "days_ago"
+    ]
+   },
+   "sql": "SELECT coalesce(nullif(f.who, ''), f.sender) || ': ' || f.summary AS decision, round((extract(epoch FROM now() - f.said_at) / 86400)::numeric, 1) AS days_ago, f.topic, f.source, f.handle FROM comms_findings f WHERE f.kind = 'decision' AND f.said_at >= now() - interval '14 days' ORDER BY f.said_at DESC LIMIT 100",
+   "fast": true
+  },
+  {
+   "id": "feedback_topics",
+   "group": "Customers",
+   "title": "Complaints and praise from outside, by topic, last 90 days",
+   "about": "Complaints and praise from customers, suppliers and other outside parties in the mail and Teams messages you can read over the last 90 days, counted per topic (delivery, quality, pricing ...). Read by a model from each message; our own staff's messages are left out.",
+   "scope": "everyone",
+   "chart": {
+    "kind": "bar",
+    "x": "topic",
+    "y": [
+     "complaints",
+     "praise"
+    ],
+    "stacked": true,
+    "horizontal": true
+   },
+   "sql": "SELECT f.topic, count(*) FILTER (WHERE f.kind = 'complaint') AS complaints, count(*) FILTER (WHERE f.kind = 'praise') AS praise FROM comms_findings f WHERE f.kind IN ('complaint', 'praise') AND f.from_side IN ('customer', 'outside') AND f.said_at >= now() - interval '90 days' GROUP BY f.topic ORDER BY complaints DESC, praise DESC",
+   "fast": true
+  },
+  {
+   "id": "complaints_latest",
+   "group": "Customers",
+   "title": "Latest complaints from outside, last 30 days",
+   "about": "The complaints customers, suppliers and other outside parties made in the mail and Teams messages you can read over the last 30 days, newest first: who (the customer when the message is linked to one) and what, and how many days ago.",
+   "scope": "everyone",
+   "chart": {
+    "kind": "table",
+    "x": "complaint",
+    "y": [
+     "days_ago"
+    ]
+   },
+   "sql": "SELECT coalesce((SELECT c.name FROM customers c WHERE c.handle = ANY(f.customers) ORDER BY c.name LIMIT 1), nullif(f.who, ''), f.sender) || ': ' || f.summary AS complaint, round((extract(epoch FROM now() - f.said_at) / 86400)::numeric, 1) AS days_ago, f.topic, f.handle FROM comms_findings f WHERE f.kind = 'complaint' AND f.from_side IN ('customer', 'outside') AND f.said_at >= now() - interval '30 days' ORDER BY f.said_at DESC LIMIT 100",
+   "fast": true
+  },
+  {
+   "id": "requests_topics",
+   "group": "Customers",
+   "title": "What customers and suppliers asked us for, last 30 days",
+   "about": "Requests customers, suppliers and other outside parties made in the mail and Teams messages you can read over the last 30 days, counted per topic, with the last 7 days beside. Read by a model from each message; our own staff's requests to each other are left out.",
+   "scope": "everyone",
+   "chart": {
+    "kind": "bar",
+    "x": "topic",
+    "y": [
+     "requests"
+    ],
+    "horizontal": true
+   },
+   "sql": "SELECT f.topic, count(*) AS requests, count(*) FILTER (WHERE f.said_at >= now() - interval '7 days') AS last_7_days FROM comms_findings f WHERE f.kind = 'request' AND f.from_side IN ('customer', 'outside') AND f.said_at >= now() - interval '30 days' GROUP BY f.topic ORDER BY requests DESC",
+   "fast": true
+  }
+ ]
+}

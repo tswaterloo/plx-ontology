@@ -92,7 +92,7 @@ describe("Trust page", () => {
     const lines = within(summary).getAllByRole("listitem").map((li) => li.textContent);
     expect(lines).toEqual([
       "The app is behind on Teams; the other 3 systems are up to date, though the last read of File failed (see below).",
-      "Answer accuracy on questions never used for tuning has not been measured yet; the measure runs after the served data's rebuild.",
+      "Answer accuracy on questions never used for tuning has not been measured on this server yet.",
       "1 of the 3 alert types is switched on; the rest stay off (1 was checked by hand but has not passed yet, 1 has not been checked yet).",
       "The autopilot prepares drafts for a person to approve in 2 of its 2 workflows.",
     ]);
@@ -136,10 +136,12 @@ describe("Trust page", () => {
     expect(held).toHaveTextContent("9 of 10 right · 12 questions, 12 runs · 10 Nov");
   });
 
-  it("a reader the server refuses sees page not found, nothing of the page", async () => {
+  it("a reader the server refuses is told they have no access, nothing of the page", async () => {
     api.trust.mockRejectedValue(new ApiError(404, "not_found"));
     render(<TrustRoute />);
-    expect(await screen.findByText("Page not found")).toBeInTheDocument();
-    expect(screen.queryByTestId("trust-page")).not.toBeInTheDocument();
+    expect(await screen.findByTestId("trust-refused")).toHaveTextContent("You don't have access to this.");
+    expect(screen.queryByText("Page not found")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("trust-summary")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /try again/i })).not.toBeInTheDocument();
   });
 });

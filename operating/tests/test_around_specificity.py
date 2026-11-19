@@ -55,6 +55,52 @@ class Specificity(unittest.TestCase):
                       "direction": "reverse"}]}, **args), base.STAFF))
         return [o["object_id"].rsplit(":", 1)[1] for o in with_leads(out)["objects"]]
 
+    def test_a_hop_inside_a_cut_budget_ends_at_its_deadline(self):
+        """Inside ``call_limits.facts_cut`` (a briefing's involvement checks) the hop's
+        link read runs under the store's SQL deadline (``deadline_bounded``, Postgres's
+        statement_timeout) like a fact read: past it the walk answers store_unavailable
+        (the record is not checked, never "not yours") instead of running a cold walk to
+        its end; outside it the hop is read as before."""
+        import sqlite3
+        import time
+        from contextlib import contextmanager
+        from operating import call_limits
+        s = self.store(self.FILES)
+        real, inside, hops = s.conn, [False], []
+
+        class Bounded:
+            def __getattr__(self, name):
+                return getattr(real, name)
+
+            def __setattr__(self, name, value):
+                setattr(real, name, value)
+
+            @contextmanager
+            def deadline_bounded(self):
+                inside[0] = True
+                try:
+                    yield
+                finally:
+                    inside[0] = False
+
+            def execute(self, sql, *args):
+                if "FROM links l" in sql:
+                    hops.append(inside[0])
+                    left = call_limits.seconds_left()
+                    if inside[0] and left is not None and left <= 0:
+                        raise sqlite3.OperationalError("interrupted")
+                return real.execute(sql, *args)
+        s.conn = Bounded()
+        tools = base.Tools(self, s)
+        args = {"from": ORDER, "tier_floor": "lead", "path": [
+            {"link_type": "Attachment.mentions_sales_order", "direction": "reverse"}]}
+        with call_limits.facts_cut(time.monotonic() - 1):
+            out = tools.around_tools.call("plx.around", dict(args), base.STAFF)
+        self.assertEqual(hops, [True])
+        self.assertEqual(out.get("error", {}).get("code"), "store_unavailable")
+        s.conn = real   # outside the cut: the whole walk, as before
+        self.assertEqual(len(self.around(s)), len(self.FILES))
+
     # keys sort the opposite way to specificity, so an object-id order fails the test
     FILES = [("a-tracker", "row.content_text", 40, 300),
              ("b-statement", "row.content_text", 9000, 12),

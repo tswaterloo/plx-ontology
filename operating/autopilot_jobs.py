@@ -20,7 +20,8 @@ safety around it.
   permission door, plus the two write tools bound to a *proposal* list
   (``proposal_tools``): a call is checked here the way the write path will check its shape
   (a system and operation a write adapter knows, the adapter's own field and target
-  checks, never mail or Teams: replies are the drafts' work, never FileMaker or Sage, never
+  checks; a mail or Teams message only to someone other than the event's sender
+  (``not_a_reply``: the reply to the sender is the drafts' item), never FileMaker or Sage, never
   Freightcom) and kept; nothing is prepared, written or sent. The model is told the
   operations and fields each system takes (``catalogue``, read from the adapters).
 * **What the item holds** (``Job``): one line of what the event asks for and up to ``MOST``
@@ -62,6 +63,10 @@ SYSTEMS = ("bc", "portal", "mc", "planner", "calendar", "sharepoint")
 # never proposed by a job: a delete (no event of a business system asks the autopilot to
 # remove a record: a person does that), a file's bytes (``plx.edit_document`` edits one)
 NOT_PROPOSED = frozenset({"file_upload", "file_replace"})
+# a message the event calls for to someone other than its sender (ask a colleague to do
+# their part, a supplier for a quote or a document, tell a customer, pass it on to who
+# handles it): the write path's message shapes, the operation the catalogue names
+MESSAGES = {"mail": "send_email", "teams": "chat_message"}
 DOC_TOOL_NAME = "plx.edit_document"
 
 
@@ -87,7 +92,8 @@ def described(event: Mapping[str, Any], text: str, linked: Sequence[str] = ()) -
             "A Mission Control approval was requested", "qc.result": "A QC result",
             "task.assigned": "A task was assigned", "record.changed": "A record changed",
             "question.asked": "A question was asked in Mission Control",
-            "record.due": "Recurring work of the person's is due"}.get(kind, kind)
+            "record.due": "Recurring work of the person's is due",
+            "assistant.look": "The person's hourly look"}.get(kind, kind)
     lines = [f"Event: {what} ({event.get('object_type') or 'record'})"]
     for label, key in (("When", "at"), ("From", "sender_name"), ("From address", "sender"),
                        ("Subject", "subject"), ("Side", "side"), ("Status", "status"),
@@ -160,7 +166,8 @@ def catalogue() -> list[str]:
                 fields = ("planId", "bucketId", "title", "dueDateTime", "assignees") \
                     if operation == "task_create" else tuple(getattr(adapter, "UPDATE_FIELDS", ()))
             if system == "calendar":
-                fields = tuple(getattr(adapter, "FIELDS", ()))
+                fields = ("response (accept, decline or tentative)", "comment") \
+                    if operation == "event_respond" else tuple(getattr(adapter, "FIELDS", ()))
             if system == "mc":
                 # the gate's scope is read from Mission Control when the change is
                 # prepared (``prepared_read``), never proposed
@@ -175,7 +182,20 @@ def catalogue() -> list[str]:
             out.append(line)
     out.append("sharepoint document text or cells: plx.edit_document (citation, find/replace "
                "or sheet/cell/value)")
+    # a message to someone other than the event's sender (the write path's own draft
+    # shapes, ``prepared_writes.DRAFT_FIELDS``); a reply to the sender is the drafts' work
+    for system, operation in MESSAGES.items():
+        fields = pw_draft_fields(system)
+        out.append(f"{system} {operation}: target {', '.join(fields['target']) or '-'}; "
+                   f"change {', '.join(fields['change'])} (a new message to someone other "
+                   f"than the event's sender)")
     return out
+
+
+def pw_draft_fields(system: str) -> dict[str, list[str]]:
+    from . import prepared_writes as pw
+    spec = pw.DRAFT_FIELDS[system]
+    return {"target": sorted(spec["target"]), "change": sorted(spec["change"])}
 
 
 TASK = """You prepare the system work an event calls for, for {person} at PLX, the way a careful \
@@ -191,7 +211,13 @@ customer's purchase order: their sales order; an approval asked of {person}: the
 (approve) when the request and the records show it is complete and its stated checks pass, \
 saying what you checked in the reason ({person} still decides: confirming is their approval); \
 a meeting's agreed actions: tasks; a QC result: the batch or QC record; a requested change to \
-a document: the edit. Never a reply to the message (replies are prepared separately), never a \
+a document: the edit; a meeting invitation to {person}: the answer in their calendar \
+(calendar event_respond: accept, or decline or tentative when their calendar holds another \
+meeting then; the event's id as their calendar holds it); a message {person} would send to someone else because of it (asking a \
+colleague to do their part, a supplier for a quote, a sample or a document, telling a customer \
+or a carrier, passing the message on to whoever handles it): mail send_email or teams \
+chat_message, in {person}'s own voice, with the addresses as the records or the thread hold \
+them. Never a reply to the message's sender (replies are prepared separately), never a \
 change the event does not state or clearly imply, never a value you did not read or were not \
 given in the event (a date, quantity, price or id). When the record cannot be found, or the \
 change is already in the system, propose nothing for it. Most events need nothing: then call no \
@@ -213,8 +239,10 @@ event? Yes when it states or asks for a change to an order, purchase order, ship
 record, task, approval, meeting action or document: for example a supplier confirming, moving or \
 missing a ship, delivery or pickup date, quantity or price on a PO; a customer sending, changing \
 or cancelling an order; tracking or a BOL for a shipment; a QC result or hold; an approval asked \
-for; actions agreed in a meeting; a correction asked to a document or record. No when it is only \
-chat, thanks, a question to answer, a meeting invite, marketing, a newsletter or an automatic \
+for; actions agreed in a meeting; a correction asked to a document or record; or when the \
+reader must pass it on or get someone else to act: ask a colleague to do their part, ask a \
+supplier for a quote, sample or document, tell a customer or carrier; a meeting invitation \
+to answer. No when it is only chat, thanks, a question to answer, marketing, a newsletter or an automatic \
 notification about something already in the system. When unsure, answer yes. Answer with one \
 JSON object only: {{"work": true or false, "what": "<the change, a few words, or empty>"}}
 
@@ -329,7 +357,7 @@ def check(tool: str, arguments: Any) -> list[str]:
     if system in pw.NEVER:
         return [pw.NEVER[system]]
     if system in pw.DRAFT_SYSTEMS:
-        return ["Replies and messages are prepared separately: propose only system changes."]
+        return _message_problems(system, arguments)
     if system not in SYSTEMS:
         return [f"No write path for {system or 'that system'}: one of {', '.join(SYSTEMS)}."]
     operation = str(arguments.get("operation") or "")
@@ -363,6 +391,68 @@ def check(tool: str, arguments: Any) -> list[str]:
     except Exception as exc:  # noqa: BLE001 - a shape the adapter cannot build
         return [f"{system}: {type(exc).__name__}"]
     return []
+
+
+def _message_problems(system: str, arguments: Mapping[str, Any]) -> list[str]:
+    """A proposed message's own faults: its shape as the write path builds it (recipients,
+    a body, nothing the card would not show)."""
+    from . import autopilot_write as aw
+    from . import prepared_writes as pw
+    change = arguments.get("change")
+    target = arguments.get("target") if arguments.get("target") is not None else {}
+    if not isinstance(change, Mapping) or not isinstance(target, Mapping):
+        return ["target and change must be objects."]
+    if not str(arguments.get("reason") or "").strip():
+        return ["Say why in one line (reason)."]
+    if not str(change.get("body") or "").strip():
+        return [f"{system}: the message needs a body."]
+    if system == "mail" and not _addresses(change.get("to")):
+        return ["mail: say who it goes to (to: addresses)."]
+    if system == "teams" and not (_addresses(change.get("members")) or target.get("chat_id")):
+        return ["teams: say who it goes to (members: addresses) or the chat (target chat_id)."]
+    request = {k: v for k, v in arguments.items() if k != "citations"}
+    try:
+        item = pw.item_of(request, "proposal@local", "job_probe", "job")
+    except pw.Refused as refused:
+        return refused.problems
+    if len(aw.actions_of(item)) != 1:
+        return [f"No write path for that {system} message."]
+    return []
+
+
+def _addresses(value: Any) -> list[str]:
+    found = value if isinstance(value, (list, tuple)) else [value] if value else []
+    return [str(a).strip().lower() for a in found if isinstance(a, str) and "@" in a]
+
+
+def addressed(proposal: Mapping[str, Any]) -> set[str]:
+    """Who a proposed message is addressed to (to, a chat's members; never its cc); empty
+    for a system change."""
+    args = proposal.get("arguments") if isinstance(proposal.get("arguments"), Mapping) else {}
+    change = args.get("change") if isinstance(args.get("change"), Mapping) else {}
+    if str(args.get("system") or "").lower() not in MESSAGES:
+        return set()
+    return {a for k in ("to", "members") for a in _addresses(change.get(k))}
+
+
+def not_a_reply(proposals: Sequence[Mapping[str, Any]], event: Mapping[str, Any]
+                ) -> list[dict[str, Any]]:
+    """The proposals without a message addressed to the event's sender or posted into the
+    event's own chat: that is a reply, the drafts' item, never a second one here. A message
+    to someone else that copies the sender (asking a supplier for what the colleague asked
+    about) stays."""
+    who = str(event.get("sender") or "").strip().lower()
+    chat = str(event.get("conversation_id") or event.get("chat_id") or "")
+    out = []
+    for p in proposals:
+        args = p.get("arguments") if isinstance(p.get("arguments"), Mapping) else {}
+        target = args.get("target") if isinstance(args.get("target"), Mapping) else {}
+        if (who and who in addressed(p)) or (
+                chat and str(args.get("system") or "").lower() == "teams"
+                and str(target.get("chat_id") or "") == chat):
+            continue
+        out.append(dict(p))
+    return out
 
 
 def proposal_tools(into: list[dict[str, Any]]) -> list[Any]:
@@ -524,8 +614,10 @@ class Jobber:
         return got["work"]
 
     def _session(self, owner: str, event_text: str, person: str, message: bool = True,
-                 as_of: str = "", brief_ok: bool = False
+                 as_of: str = "", brief_ok: bool = False, reads: bool = True
                  ) -> tuple[Optional[Job], str, list[str]]:
+        # ``reads``: the assistant's (``autopilot_agent``); a job always reads (what it
+        # proposes to an outside reader is held by ``autopilot_outbound`` instead)
         # only a message is sorted first: an approval asked or a meeting held is itself
         # work to look at (and far fewer)
         if message and self._triaged(event_text) is False:
@@ -548,7 +640,7 @@ class Jobber:
             [str(t) for t in looked]
 
     def run(self, event: Mapping[str, Any], owner: str, event_text: str, person: str,
-            people: Any, *, key: Optional[str] = None, as_of: str = ""
+            people: Any, *, key: Optional[str] = None, as_of: str = "", reads: bool = True
             ) -> tuple[Optional[Job], str]:
         """(``Job``, "") or (None, why): ``no_system_work``, a screen (the drafter's),
         ``job_failed`` (tried again), ``job_no_session``, or with a ``key``
@@ -563,7 +655,7 @@ class Jobber:
                 got, why, looked = running.result()
             except Exception:  # noqa: BLE001 - a failed session is tried again
                 return None, "job_failed"
-            return self._finish(got, why, looked, people)
+            return self._finish(got, why, looked, people, event, person)
         from .card_text import mask_served
         from . import chat_ask_model as cm
         prompt = mask_served(job_prompt(event_text, person))
@@ -580,16 +672,17 @@ class Jobber:
         brief_ok = not message and fields.get("brief") is True
         if key is None:
             return self._finish(*self._session(owner, event_text, person, message, as_of,
-                                               brief_ok), people)
+                                               brief_ok, reads), people, event, person)
         if self._pool is None:
             from concurrent.futures import ThreadPoolExecutor
             self._pool = ThreadPoolExecutor(self.parallel, thread_name_prefix="job")
         self._running[key] = self._pool.submit(self._session, owner, event_text, person,
-                                               message, as_of, brief_ok)
+                                               message, as_of, brief_ok, reads)
         return None, "job_pending"
 
     @staticmethod
-    def _finish(got: Optional[Job], why: str, looked: Sequence[str], people: Any
+    def _finish(got: Optional[Job], why: str, looked: Sequence[str], people: Any,
+                event: Optional[Mapping[str, Any]] = None, person: str = ""
                 ) -> tuple[Optional[Job], str]:
         if got is None:
             return None, why
@@ -603,6 +696,8 @@ class Jobber:
         if touches_freightcom(seen):
             return None, "freightcom"
         proposals = kept(got.proposals)
+        if event is not None and event.get("event_type") == "message.received":
+            proposals = not_a_reply(proposals, event)
         if not proposals and not got.brief:
             return None, "no_system_work"
         return Job(got.summary, proposals, got.brief), ""

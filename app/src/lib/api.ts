@@ -7,8 +7,8 @@ import { ApiError, apiErrorFrom } from "./errors";
 import { onSessionReset } from "./session-cache";
 import { SseParser } from "./sse";
 import { ownPath, setViewingAs, VIEW_AS_HEADER, viewingAs } from "./view-as";
-import type { DocList, Explore, LabourPage, LateList, RecordAsOf, RecordHistory,
-  MemoryItem, MemoryItems, MemoryPeople, MemorySave, Template, TemplateDocType, TemplateFilled, TemplateList, TemplateProposal, TemplateSave, TemplateSuggestions,
+import type { AskChatUpdate, AskChats, DocList, Explore, LabourPage, LateList, RecordAsOf, RecordHistory,
+  InsightInfo, InsightList, InsightNewsList, InsightResult, InsightSave, InsightSchedule, MemoryItem, MemoryItems, MemoryPeople, MemorySave, Template, TemplateDocType, TemplateFilled, TemplateList, TemplateProposal, TemplateSave, TemplateSuggestions,
   WriteApprove, WriteExecute, WriteIntentList, WriteIntentView, WritePreview,
   ActionConfirm,
   ActionPreview,
@@ -22,6 +22,7 @@ import type { DocList, Explore, LabourPage, LateList, RecordAsOf, RecordHistory,
   AuthConfig,
   Briefing,
   BriefingItems,
+  BriefingPages,
   BriefingUnjudged,
   BriefingSeen,
   BriefingView,
@@ -71,6 +72,7 @@ import type { DocList, Explore, LabourPage, LateList, RecordAsOf, RecordHistory,
   ItemFeedbackRequest,
   NoteFeedbackRequest,
   HomeResponse,
+  SidebarResponse,
   Me,
   ObjectPage,
   ObjectSection,
@@ -140,12 +142,42 @@ function readSignal(method: string, signal?: AbortSignal | null): { signal?: Abo
   return { signal: AbortSignal.any([signal, timeout]), timeout };
 }
 
+// Requests in flight (each `call` until its answer's headers): a read the page does not wait
+// on (the sidebar's late counts and recent questions) starts once they are done, so it never
+// queues beside the page's own reads on the server (measured on the private API: a page's
+// read alone 0.50 s median, with the sidebar's Home and late reads beside it 0.94 s).
+let callsOpen = 0;
+const quietWaiters = new Set<() => void>();
+function callEnded() {
+  callsOpen = Math.max(0, callsOpen - 1);
+  if (callsOpen === 0) for (const f of [...quietWaiters]) f();
+}
+
+/** Resolves once no request is in flight (looked at after the current render's effects have
+ * sent theirs), or after `most` ms at the latest: for a read nobody on the page waits for. */
+export function afterPageReads(most = 2500): Promise<void> {
+  return new Promise<void>((done) => {
+    let t: ReturnType<typeof setTimeout> | undefined;
+    const finish = () => {
+      quietWaiters.delete(finish);
+      if (t !== undefined) clearTimeout(t);
+      done();
+    };
+    setTimeout(() => {
+      if (callsOpen === 0) return finish();
+      quietWaiters.add(finish);
+      t = setTimeout(finish, most);
+    }, 0);
+  });
+}
+
 async function call(path: string, init: RequestInit & { json?: unknown } = {}): Promise<Response> {
   const { json, ...rest } = init;
   const method = (rest.method ?? "GET").toUpperCase();
   const as = viewAsHeader(path, method);
   const limited = readSignal(method, rest.signal);
   let res: Response;
+  callsOpen += 1;
   try {
     res = await fetch(path, {
       credentials: "same-origin",
@@ -162,6 +194,8 @@ async function call(path: string, init: RequestInit & { json?: unknown } = {}): 
     // our own timeout, not the caller's cancel: an honest "took too long", never a hang
     if (limited.timeout?.aborted && !rest.signal?.aborted) throw new ApiError(504, "read_timeout");
     throw e;
+  } finally {
+    callEnded();
   }
   if (!res.ok) throw await apiErrorFrom(res);
   return res;
@@ -428,9 +462,16 @@ export function getHome(signal?: AbortSignal): Promise<HomeResponse> {
   return getRead<HomeResponse>("/api/home", signal);
 }
 
+/** The sidebar's numbers (late count, the suppliers with the most, recent questions, as-of): small and kept per reader. */
+export function getSidebar(signal?: AbortSignal): Promise<SidebarResponse> {
+  return getRead<SidebarResponse>("/api/sidebar", signal);
+}
+
 /** Your briefing: the top events routed to you, every other one counted by type, with the digest preview. */
-export function getBriefing(signal?: AbortSignal, view: BriefingView = "all"): Promise<Briefing> {
-  return getRead<Briefing>(view === "all" ? "/api/briefing" : `/api/briefing?view=${view}`, signal);
+export function getBriefing(signal?: AbortSignal, view: BriefingView = "all", withPages = false): Promise<Briefing> {
+  // withPages: the first page of each group Home lists past its top items comes in the same answer
+  const q = [view === "all" ? "" : `view=${view}`, withPages ? "pages=true" : ""].filter(Boolean).join("&");
+  return getRead<Briefing>(q ? `/api/briefing?${q}` : "/api/briefing", signal);
 }
 
 /** One event type's items of your briefing, a page at a time (a group's "+N more"). */
@@ -442,6 +483,13 @@ export function getBriefingItems(
 ): Promise<BriefingItems> {
   const q = new URLSearchParams({ event_type: eventType, offset: String(offset), limit: "25", view });
   return getJson<BriefingItems>(`/api/briefing/items?${q}`, signal);
+}
+
+/** The first page of several event types' items of your briefing in one request (Home's groups). */
+export function getBriefingPages(eventTypes: string[], view: BriefingView = "all", signal?: AbortSignal): Promise<BriefingPages> {
+  const q = new URLSearchParams({ limit: "25", view });
+  for (const t of eventTypes) q.append("event_type", t);
+  return getJson<BriefingPages>(`/api/briefing/pages?${q}`, signal);
 }
 
 /** The records one check could not judge that you may read (a data note's list), a page at a time. */
@@ -617,15 +665,20 @@ export function getAutopilot(signal?: AbortSignal): Promise<AutopilotArea> {
 /** One thing prepared for you: who wrote, what they wrote, and the reply or the question. */
 export type PreparedItem = {
   item_id: string; sender: string; channel: "mail" | "teams" | "system"; subject: string; message: string;
-  kind: "reply" | "your_call" | "job"; to: string[]; cc: string[]; body: string; edited: boolean;
-  /** On a job: what the event asks to be done, and each system change proposed for it. */
+  kind: "reply" | "your_call" | "job" | "todo"; to: string[]; cc: string[]; body: string; edited: boolean;
+  /** On a job or a to-do: what the event asks to be done, and each system change proposed for it. */
   summary?: string; jobs?: ProposedJob[];
+  /** Things to do by hand that no prepared change reaches, on any kind of item. */
+  todos?: TodoStep[];
   ask: string; facts: string[]; options?: { label: string; reply: string }[]; created_at: string;
   /** On a draft you edited: what the edit changed, as it is learned for your next drafts. */
   learned?: string[];
   /** Your preferences and memory the draft applied (DraftUse). */
   used_for_draft?: { memory?: { id: number; kind?: string | null; text?: string | null }[]; related?: { id: number; kind?: string | null; text?: string | null }[]; template?: { id: number; name?: string | null; doc_type?: string | null } | null } | null;
 };
+
+/** Something to do by hand: which system, which record, what to do (nothing is written). */
+export type TodoStep = { system: string; record: string; what: string };
 
 /** One system change an autopilot proposed (nothing prepared or written until you review it). */
 export type ProposedJob = {
@@ -1113,6 +1166,16 @@ export function getWorkThread(thread: string, signal?: AbortSignal): Promise<Wor
   return getJson<WorkLogThread>(threadPath(thread), signal);
 }
 
+/** Your Ask conversations, pinned first then the most recent; ``q`` searches their names and questions. */
+export function getAskChats(q?: string, signal?: AbortSignal): Promise<AskChats> {
+  return getJson<AskChats>(`/api/ask/chats${q && q.trim() ? `?q=${encodeURIComponent(q.trim())}` : ""}`, signal);
+}
+
+/** Rename, pin or delete one of your Ask conversations; your chats list after. */
+export async function updateAskChat(conversationId: string, body: AskChatUpdate): Promise<AskChats> {
+  return (await (await call(`/api/ask/chats/${encodeURIComponent(conversationId)}`, { method: "POST", json: body })).json()) as AskChats;
+}
+
 /** Name, pin, attach to a case or close one of your threads. */
 export async function organiseWorkThread(thread: string, body: WorkLogOrganise): Promise<WorkLogThread> {
   return (await (await call(threadPath(thread), { method: "POST", json: body })).json()) as WorkLogThread;
@@ -1151,6 +1214,52 @@ export async function doneMemory(id: number): Promise<void> {
 /** Forget one of your items: it is not used again, and not learned again unseen. */
 export async function forgetMemory(id: number): Promise<void> {
   await call(`/api/memory/${id}`, { method: "DELETE" });
+}
+
+// ---- insights: your dashboard (built-in team, org and customer views, and what you pinned) ----
+
+/** The insights you may see: the built-ins, then the ones you pinned or saved. */
+export function getInsights(signal?: AbortSignal): Promise<InsightList> {
+  return getJson<InsightList>("/api/insights", signal);
+}
+
+/** One insight as you read it (kept from your read of the last few minutes; `again`: read
+ * now): its statement, rows, chart and the people they name. */
+export function getInsight(id: string, signal?: AbortSignal, again = false): Promise<InsightResult> {
+  return getJson<InsightResult>(`/api/insights/${encodeURIComponent(id)}${again ? "?again=true" : ""}`, signal);
+}
+
+/** Pin a chart (or save a statement) to your dashboard; it reads again when opened. */
+export async function saveInsight(body: InsightSave): Promise<InsightInfo> {
+  const res = await call("/api/insights", { method: "POST", json: body });
+  return (await res.json()) as InsightInfo;
+}
+
+/** A chart you were shown as a file (Excel with a live chart over its rows, PowerPoint, Word or PDF). */
+export async function chartFile(chart: unknown, format: "xlsx" | "pptx" | "docx" | "pdf"): Promise<Blob> {
+  const res = await call("/api/charts/file", { method: "POST", json: { chart, format } });
+  return res.blob();
+}
+
+/** Remove one of your saved insights. */
+export async function deleteInsight(id: string): Promise<void> {
+  await call(`/api/insights/${encodeURIComponent(id)}`, { method: "DELETE" });
+}
+
+/** When one of your saved insights runs by itself (as you) and when what it finds comes to you on Home. */
+export async function setInsightSchedule(id: string, body: InsightSchedule): Promise<InsightInfo> {
+  const res = await call(`/api/insights/${encodeURIComponent(id)}/schedule`, { method: "PUT", json: body });
+  return (await res.json()) as InsightInfo;
+}
+
+/** What your scheduled insights found that came to you (counts only; open one to read it live). */
+export function getInsightNews(signal?: AbortSignal): Promise<InsightNewsList> {
+  return getJson<InsightNewsList>("/api/insight-news", signal);
+}
+
+/** Put one away: it leaves Home. */
+export async function putAwayInsightNews(runId: string): Promise<void> {
+  await call(`/api/insight-news/${encodeURIComponent(runId)}/seen`, { method: "POST" });
 }
 
 // ---- templates: your own saved templates, and those shared with you ----

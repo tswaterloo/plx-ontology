@@ -33,10 +33,12 @@ GRANT_SCREENS = frozenset({"my_work", "autopilot", "workload"})
 
 # The screens the warm-up process reads ahead through ``_serving`` after Today's inner
 # reads (a reader's first visit after a restart then opens from the copy it kept on disk),
-# one at a time on ``SCREENS_AHEAD_WORKERS`` worker: Today's own screens first, under the
-# keys the app asks for (Home, the briefing, the suggestions, the late list's pages of 100
-# that Home and "show all" read), then the others. An entry: a method name, or a tuple of
-# it, its positional arguments and, last, a dict of its keyword arguments.
+# each its own job on the ``SCREENS_AHEAD_WORKERS`` workers, most visited first (the live
+# API's requests per screen over ten days: Home 535, the late list 499, the briefing and
+# its items 499, the sidebar on every page, Autopilot 155, suggestions 129, approvals 115,
+# replies 89, Meetings 61, the answer bank 54, My work 41, action items 24, Team and
+# workload 20 each), under the keys the app asks for. An entry: a method name, or a tuple
+# of it, its positional arguments and, last, a dict of its keyword arguments.
 DIRECTORY_WARM_SECONDS = 900   # a directory read-ahead identity's life
 
 
@@ -49,21 +51,32 @@ KEPT_LATE_PAGE = 100           # the late list's first page as the app's shell a
 CAPTURE_ALARM_SECONDS = 30   # the stale-capture alarm read at most this often a process
 
 
+# The served data's freshness with no record's own sources (Home, the sidebar's Home read, the
+# late list, Trust) is the same for every reader: read at most this often a process. It was
+# most of a kept Home's CPU (each visit parsed the capture ledger's failures again), and every
+# page's sidebar asks Home.
+FRESHNESS_SECONDS = 10
+
+
 SERVED_STORE_SECONDS = 5     # Postgres's store meta read at most this often a process
 
 
 PG_META_KEYS = ("built_at", "freshness", "content_digest")
 
 
-SCREENS_AHEAD_WORKERS = 1
+SCREENS_AHEAD_WORKERS = 1   # the API's own; the warm-up process runs WARM_READ_WORKERS
 
 
-SCREENS_AHEAD = ("_home_served", ("briefing", {"since_visit": False}), "suggestions",
-                 ("late_list", {"offset": 0, "limit": 100}),
-                 "my_work", "autopilot_area", "approvals_queue", "workload", "team_view",
-                 "upcoming_meetings", "reply_triage", ("my_action_items", None),
-                 ("weekly_review", None),
-                 ("answer_bank", None))   # last: a whole-company document read
+SCREENS_AHEAD = ("_home_served", ("late_list", {"offset": 0, "limit": 100}),
+                 ("briefing", {"since_visit": False}), "_briefing_pages_ahead", "_sidebar_served", "_late_trails_ahead",
+                 "autopilot_area",
+                 "suggestions", "approvals_queue", "reply_triage", "upcoming_meetings",
+                 ("answer_bank", None), "my_work", "_insights_ahead", ("my_action_items", None),
+                 ("weekly_review", None), "workload", "team_view")
+# a screen read ahead that answered "still reading" is read again this often, for at most
+# this long (``WorkspaceBackend._screens_ahead``)
+SCREENS_AGAIN_SECONDS = 10.0
+SCREENS_AGAIN_MOST = 600.0
 
 
 STYLE_ANSWER_MARGIN = 15.0   # seconds a document gather leaves for making the draft
@@ -85,9 +98,10 @@ MEMORY_DECIDE_SECONDS = 3.0   # one ask of the read policy for memory (backgroun
 SHAPE_WAIT_FACTOR = 3   # past that, the bare shaping or the slow one waited for this many times as long
 
 
-PREWARM_SCREENS = (("home",), ("briefing", False), ("suggestions",), ("late", 0, 100),
-                   ("my_work",), ("autopilot",), ("approvals",), ("workload",), ("team",),
-                   ("meetings",), ("replies",))
+PREWARM_SCREENS = (("home",), ("home", "alerts"), ("late", 0, 100), ("briefing", False),
+                   ("sidebar",),
+                   ("autopilot",), ("suggestions",), ("approvals",), ("replies",),
+                   ("meetings",), ("my_work",), ("workload",), ("team",))
 
 
 def _people_exclusion() -> Any:

@@ -821,6 +821,69 @@ class AroundTests(unittest.TestCase):
                 self.assertEqual(answer, serial[name])
 
 
+class HopReachTests(unittest.TestCase):
+    """A hop's links are read by id before their objects and gates (``_link_pages``): the
+    answer is the one statement's whenever at most ``HOP_SCAN_CAP`` are kept, a hop past
+    the cap is refused, and one whose reach is past ``HOP_RAW_PAGES`` pages with fewer
+    kept is refused too (never answered in part). Cap 10, 3 pages (33 links read)."""
+
+    def setUp(self):
+        self.enterContext(mock.patch.object(tt, "HOP_SCAN_CAP", 10))
+        self.enterContext(mock.patch.object(tt, "HOP_RAW_PAGES", 3))
+
+    ARGS = {"from": O2, "path": [{"link_type": "Shipment.ships_order",
+                                  "direction": "reverse"}]}
+
+    def walk(self, shown, hidden, actor, *, shown_last=True):
+        """plx.around from O2 with ``shown`` shipments every reader sees and ``hidden``
+        finance-marked ones (OPS lacks finance), the shown ones last in link id order or
+        spread among the hidden; (reached reach ids, error code or None)."""
+        order = ([False] * hidden + [True] * shown if shown_last else
+                 [k % max(1, (shown + hidden) // max(shown, 1)) == 0 and k // max(
+                     1, (shown + hidden) // max(shown, 1)) < shown
+                  for k in range(shown + hidden)])
+        if not shown_last:
+            self.assertEqual(sum(order), shown)
+
+        def many(s):
+            for k, visible in enumerate(order):
+                oid = f"Shipment:portal.shipment:reach-{k:04d}"
+                s.obj(oid, "api:public.shipment", api("shipment", f"reach-{k}"), "fm_bronze",
+                      markings="[]" if visible else '["finance"]')
+                s.link(f"l-reach-{k:04d}", "Shipment.ships_order", oid, O2)
+        t, _ = tools(build(extra=many))
+        out = t.call("plx.around", {**self.ARGS, "limit": 50}, actor)
+        if "error" in out:
+            return None, out["error"]["code"], out["error"]["message"]
+        ok(self, "plx.around", out)
+        reached = sorted(o for o in ids(out) if "reach-" in o)
+        expected = sorted(f"Shipment:portal.shipment:reach-{k:04d}"
+                          for k, visible in enumerate(order) if visible or actor == FULL)
+        self.assertEqual(reached, expected)
+        return reached, None, None
+
+    def test_reach_sizes_around_the_cap(self):
+        for shown, hidden, actor, refused in (
+                (1, 0, FULL, False), (9, 0, FULL, False),     # with O2's own S3: 10 links
+                (10, 0, FULL, True), (0, 9, OPS, False), (2, 30, OPS, False),
+                (2, 30, FULL, True), (9, 23, OPS, False), (10, 22, OPS, True)):
+            for shown_last in (True, False):
+                with self.subTest(shown=shown, hidden=hidden, actor=str(actor),
+                                  shown_last=shown_last):
+                    reached, code, _ = self.walk(shown, hidden, actor, shown_last=shown_last)
+                    self.assertEqual(code, "fan_out_refused" if refused else None)
+
+    def test_a_reach_past_the_pages_with_few_kept_is_refused_never_partial(self):
+        # 3 pages of 11 = 33 links read; 40 hidden + 1 shown + S3: OPS keeps 2 of 42
+        reached, code, message = self.walk(1, 40, OPS)
+        self.assertEqual(code, "fan_out_refused")
+        self.assertIn("before this reader's checks", message)
+        # 31 hidden + 1 shown + S3 = 33: whole within the pages, answered
+        reached, code, _ = self.walk(1, 31, OPS)
+        self.assertIsNone(code)
+        self.assertEqual(len(reached), 1)
+
+
 class MentionCollapseTests(unittest.TestCase):
     """CC-C-04 read side: a mail that names an order three times (three stored mention
     rows of one document version and one order) is one link to every reader."""
@@ -2459,3 +2522,86 @@ class PostgresKeptFactsTests(KeptFactsTests):
         primed = tt._fact_keys(("api", "mail"))
         self.assertEqual({k: later.store.facts[1][k] for k in primed},
                          {k: first.store.facts[1][k] for k in primed})
+
+
+class PostgresHopReachTests(unittest.TestCase):
+    """On Postgres a hop reads its links by id first and its reached objects only by the
+    ids those links name (``_link_pages``): every scan of ``objects`` in a hop statement
+    is an index read bounded by the reach's own ends (``= ANY``), never one driven by the
+    planner's guess at the links (live: 182,671 loose name mentions hash-joined to 8 M
+    objects, 2-4 GB of temp files a call), and the answers are SQLite's."""
+
+    def setUp(self):
+        import psycopg
+        from operating.pg import ontology_load
+        from operating.pg.migrate import MIGRATIONS_DIR
+        from operating.tests import pg_testdb
+        self.enterContext(mock.patch.object(tt, "HOP_SCAN_CAP", 10))
+        self.enterContext(mock.patch.object(tt, "HOP_RAW_PAGES", 3))
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        path = Path(tmp.name) / "ontology.sqlite"
+
+        def many(s):
+            for k in range(32):
+                oid = f"Shipment:portal.shipment:reach-{k:04d}"
+                s.obj(oid, "api:public.shipment", api("shipment", f"reach-{k}"), "fm_bronze",
+                      markings="[]" if k % 16 == 15 else '["finance"]')
+                s.link(f"l-reach-{k:04d}", "Shipment.ships_order", oid, O2)
+        self.store = build(extra=many)
+        source = self.store.conn
+        with contextlib.closing(sqlite3.connect(path)) as target:
+            source.backup(target)
+        name, self.dsn = pg_testdb.create_db()
+        self.addCleanup(pg_testdb.drop_db, name)
+        with psycopg.connect(self.dsn, autocommit=True) as pg:
+            for migration in sorted(MIGRATIONS_DIR.glob("00*.sql")):
+                if migration.name >= "0006":
+                    pg.execute(migration.read_text(encoding="utf-8"))
+        ontology_load.load(str(path), self.dsn, workers=1, log=io.StringIO())
+
+    def test_hop_statements_read_objects_only_by_the_reach_ends(self):
+        from operating.pg import sqlite_compat
+        from operating.pg.ontology_reader import PgStoreReader
+        reader = PgStoreReader.open(self.dsn, only=True)
+        self.addCleanup(reader.conn.close)
+        base = ot.OntologyTools(reader, POLICY, item_gate=item_gate, schema=SCHEMA,
+                                grammar=None, contracts=CONTRACTS, clock=lambda: NOW,
+                                monotonic=Clock().monotonic)
+        pg_tools = tt.TraverseTools(base)
+        plans: list[tuple[str, dict]] = []
+        run = sqlite_compat.PgCompatConnection._run
+
+        def explained(conn, cur, text, params):
+            # the hop's statements joining its links to the objects they reach
+            if "JOIN objects" in text and isinstance(params, dict) \
+                    and params.get("lt") == "Shipment.ships_order":
+                import psycopg
+                with psycopg.ClientCursor(conn._conn) as c:
+                    # a few dozen rows read whole are cheaper than any index: off, so the
+                    # plan shows which keys the statement can drive the objects read by
+                    c.execute("SET enable_seqscan = off")
+                    c.execute("EXPLAIN (FORMAT JSON) " + text, params)
+                    plans.append((text, c.fetchone()[0][0]["Plan"]))
+                    c.execute("RESET enable_seqscan")
+            return run(conn, cur, text, params)
+        args = {**HopReachTests.ARGS, "limit": 50}
+        sqlite_tools, _ = tools(self.store)
+        with mock.patch.object(sqlite_compat.PgCompatConnection, "_run", explained):
+            for actor in (FULL, OPS):
+                got = pg_tools.call("plx.around", args, actor)
+                want = sqlite_tools.call("plx.around", args, actor)
+                self.assertEqual(strip(got) if "error" not in got else got,
+                                 strip(want) if "error" not in want else want, str(actor))
+        self.assertTrue(plans)
+        for text, plan in plans:
+            nodes, stack = [], [plan]
+            while stack:
+                node = stack.pop()
+                nodes.append(node)
+                stack += node.get("Plans") or []
+            for node in nodes:
+                if node.get("Relation Name") != "objects":
+                    continue
+                self.assertIn("ANY", str(node.get("Index Cond") or ""),
+                              f"objects read without the reach's ends: {node}\n{text[:600]}")

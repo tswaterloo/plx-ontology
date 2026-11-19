@@ -71,8 +71,10 @@ class StaffRows(unittest.TestCase):
         org[oid(902)] = org_row(902, None, "withheld")
         for o in org:
             if o != oid(900):
-                persons[o] = (f"Person:{o}", f"h://{o}", "[]")
+                persons[o] = (f"Person:{o}", f"h://{o}", '["pii"]')   # a mail contact's
         rows = list(bs.staff_rows(org, persons))
+        # the org chart's values carry no record marking of the Person's
+        self.assertEqual({m for r in rows for m in r.marks}, {"[]"})
         names = [r.values["name"] for r in rows]
         self.assertEqual(len(names), len(set(names)))
         self.assertEqual(len(rows), len(org) - 1)
@@ -89,6 +91,9 @@ class StaffRows(unittest.TestCase):
         flat = json.dumps([r.values for r in rows])
         self.assertNotIn("P 900", flat)
         self.assertNotIn("p900@", flat)
+        self.assertNotIn(oid(900).lower(), flat.lower())   # never the excluded one's id
+        # the join key to their own mailbox, calendar and Teams sender id
+        self.assertEqual(by["P 002"].values["person_id"], oid(2).lower())
         self.assertIsNone(by["P 901"].values["manager"])
         self.assertEqual(by["P 901"].values["manager_state"], "not_known")
         self.assertEqual(by["P 902"].values["manager_state"], "not_known")
@@ -231,9 +236,11 @@ class StaffThroughTheDoor(unittest.TestCase):
             people_excluded.build(pg, cls.state, environ=tmp.EXCLUDED_B, workers=2)
         bv.build(cls.dsn, ["staff"], schema=cls.compiled)
         sql_views.install(cls.dsn)
-        # the staff Person's marking (pii) is held by staff readers, as served
+        # as served: a staff reader holds the org chart key and no pii marking (only
+        # STAFF_MARKINGS); the guest holds pii and not the key
         cls.policy = ot.ReadPolicy(tenant="plx", audiences={"org:chart": {"staff:orders"}},
-                                   markings={"pii": {"staff:orders", "guest:visitor"}})
+                                   markings={"pii": {"guest:visitor"},
+                                             "quality_controlled": {"staff:orders"}})
 
     @classmethod
     def tearDownClass(cls):
@@ -264,11 +271,14 @@ class StaffThroughTheDoor(unittest.TestCase):
         guest = Actor("plx", frozenset({"guest:visitor"}), "restricted")
         self.assertEqual(self.rows(guest), [])
 
-    def test_the_marking_is_still_needed(self):
+    def test_a_staff_reader_without_pii_reads_the_org_chart(self):
+        # the staff Person versions are pii-marked mail contacts; the org chart's own
+        # values carry no marking, so a reader holding no marking at all still reads it
         policy = self.policy
         self.policy = ot.ReadPolicy(tenant="plx", audiences={"org:chart": {"staff:orders"}})
         try:
-            self.assertEqual(self.rows(self.tmp_mod.NARROW), [])
+            self.assertEqual([r[0] for r in self.rows(self.tmp_mod.NARROW)],
+                             ["Ann Orders", "Cal Sales"])
         finally:
             self.policy = policy
 

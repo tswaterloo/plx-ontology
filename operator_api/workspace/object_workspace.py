@@ -2426,8 +2426,9 @@ class WorkspaceActions:
 
 # ---- host wiring -----------------------------------------------------------
 
-# plx.page: a page endpoint's named reads through the plx.sql door (``operating.page_reads``)
-SERVED_TOOLS = TOOLS + (DOCUMENTS_TOOL, INVESTIGATE_TOOL, AGGREGATE_TOOL, "plx.page")
+# plx.page: a page endpoint's named reads through the plx.sql door (``operating.page_reads``);
+# plx.sql: a statement read through that door as the reader (Insights tiles, document charts)
+SERVED_TOOLS = TOOLS + (DOCUMENTS_TOOL, INVESTIGATE_TOOL, AGGREGATE_TOOL, "plx.page", "plx.sql")
 
 
 def _version_holders(host: Any

@@ -724,6 +724,10 @@ class View:
     # type is then left out of ``records``); False for a view of a few of them (``staff``:
     # 165 of 45,882 Person records)
     covers: bool = True
+    # False: a table only a search reads (``business_comms.FILES``: its rows are each
+    # re-gated by the item gate after the statement), never offered to a reader's queries:
+    # left out of the dictionary, ``describe`` and the catalog (``listed``)
+    listed: bool = True
 
     def col(self, name: str) -> Col | None:
         return next((c for c in self.cols if c.name == name), None)
@@ -874,13 +878,22 @@ SAGE_AR_DOC = {"1": "invoice", "2": "debit note", "3": "credit note", "4": "inte
                "5": "unapplied cash", "10": "prepayment", "11": "receipt"}
 
 
+def doc_type_doc(kinds: Mapping[str, str], money: str) -> str:
+    """The ``document_type`` column's description: every kind the source's own type field
+    (Sage ``txttrxtype``) names, and how a count of bills reads it."""
+    return (f"the document's kind by Sage's own type (txttrxtype): {', '.join(kinds.values())}"
+            f"; other: a type Sage names that is none of these. A count or total of invoices "
+            f"(bills) is document_type = 'invoice'; {money} are not invoices")
+
+
 @view("customer_balances", "What customers owe now: every open (unpaid) Sage AR document "
       "with its remaining balance, aged by due date, in its own currency. BC aged "
       "receivables are pilot data and are not used.",
       [("customer", "text", "customer name (the linked customer)"),
        ("customer_code", "text", "Sage customer code"),
        ("document_number", "text", "invoice / credit note / receipt number"),
-       ("document_type", "text", "invoice, credit note, debit note, receipt, prepayment, ..."),
+       ("document_type", "text", doc_type_doc(SAGE_AR_DOC, "receipts, prepayments, "
+                                              "unapplied cash and credit notes")),
        ("document_date", "date", "document date"),
        ("due_date", "date", "due date"),
        ("amount_due", "money", "remaining balance, Sage amtduetc in codecurn (negative for "
@@ -2055,7 +2068,12 @@ def dictionary() -> dict[str, Any]:
     computed and from which raw fields)."""
     return {name: {"about": v.doc, "sources": list(v.reads), "lineage": LINEAGE_DOC,
                    "columns": {c.name: f"{c.kind}: {c.doc}" for c in v.cols}}
-            for name, v in VIEWS.items()}
+            for name, v in listed().items()}
+
+
+def listed() -> dict[str, View]:
+    """The views a reader's queries may name (``View.listed``)."""
+    return {name: v for name, v in VIEWS.items() if v.listed}
 
 
 def main(argv: Sequence[str] | None = None) -> int:

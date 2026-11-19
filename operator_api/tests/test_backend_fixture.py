@@ -197,6 +197,7 @@ class FixtureBackend(unittest.TestCase):
             with backend._lock:
                 backend._good.clear()
                 backend._snap_inputs().clear()
+                backend.__dict__.pop("_decision_memo", None)   # decisions shared for seconds
 
         path = f"/api/object/PurchaseOrder/{case_fixtures.PO_NUMBER}"
         new_process()
@@ -736,6 +737,46 @@ class FixtureBackend(unittest.TestCase):
         out = self.outsider.client.get("/api/suggestions").json()
         self.assertEqual((out["total"], out["items"], out["collapsed"]), (0, [], {}))
 
+    def test_with_the_sql_alerts_the_cards_are_their_items_and_never_the_old_inbox(self):
+        """PLX_ALERTS_SQL=1: the cards are made from the reader's SQL alert items
+        (``page_sql.alert_suggestion_items``, the rows Home lists), one card per record,
+        with the old engine's inbox never read (no briefing, no late-order drafts); the
+        items' read unavailable is the cards' unavailable, never an empty, complete list."""
+        from operating import proactive_suggestions as sug
+        from operator_api import page_sql
+        from operator_api.workspace.object_workspace import ObjectWorkspace
+        # the reader's own findings of the suggestion types, as briefing items (the shape
+        # ``page_sql.alert_item`` gives each alert)
+        briefing = self.ops.client.get("/api/briefing").json()
+        items = [i for i in briefing["items"] if i["event_type"] in sug.KIND_OF_TYPE]
+        self.assertTrue(items, briefing["groups"])
+        given = {"status": "read", "items": items, "complete": True, "as_of": None}
+
+        def engine(*a, **k):
+            raise AssertionError("the old engine's inbox was read")
+
+        # each read itself (``_serving`` would serve a page kept before, stale)
+        backend = self.ops.app.state.backend
+        with mock.patch.dict("os.environ", {"PLX_ALERTS_SQL": "1"}), \
+                mock.patch.object(ObjectWorkspace, "gap_inbox", engine), \
+                mock.patch.object(ObjectWorkspace, "briefing", engine), \
+                mock.patch.object(backend, "_serving", lambda reader, name, read, **k: read()):
+            with mock.patch.object(page_sql, "alert_suggestion_items",
+                                   lambda backend, reader, types: given):
+                got = self.ops.client.get("/api/suggestions").json()
+            self.assertEqual((got["status"], got["complete"], got["sent"]),
+                             ("read", True, False), got)
+            self.assertEqual(got["total"], len({i["object_id"] for i in items}))
+            self.assertTrue({c["subject"]["object_id"] for c in got["items"]}
+                            <= {i["object_id"] for i in items})
+            with mock.patch.object(page_sql, "alert_suggestion_items",
+                                   lambda backend, reader, types: {
+                                       "status": "unavailable", "items": [],
+                                       "complete": False}):
+                got = self.ops.client.get("/api/suggestions").json()
+            self.assertEqual((got["status"], got["total"], got["items"]),
+                             ("unavailable", 0, []))
+
     def test_show_all_pages_every_late_order_and_never_another_readers(self):
         home = self.ops.client.get("/api/home").json()
         total = home["needs_attention"]["late_total"]
@@ -877,6 +918,10 @@ class _View:
 
     def _can_open(self, handle):
         return True
+
+    def _call(self, name, args):
+        """No process or record reads here: a page's trail finds nothing (built, empty)."""
+        return {}
 
 
 OID_OK = "11111111-1111-4111-8111-111111111111"
@@ -1221,6 +1266,57 @@ class HomeFreshnessTest(unittest.TestCase):
     the one staleness rule answers apply (``ontology_tools.aged``), never from the host
     ledger's capture of a cycle still running (demo rehearsal 2026-10-31: Home said fresh
     while every answer said stale)."""
+
+    def test_a_serving_api_reads_the_readers_shared_freshness_once_per_window(self):
+        """11-19: every page's sidebar asks Home, and Home's freshness (the same for every
+        reader) parsed the capture ledger again on each visit: most of a kept Home's CPU.
+        A serving API reads it once per ``freshness_seconds`` of its clock; a record's own
+        freshness (its handles or base) is read each time, and so is every freshness of
+        an API not serving (tests, fixtures). Each caller gets its own copy."""
+        from datetime import datetime, timedelta, timezone
+        now = [datetime(2026, 11, 19, 7, 0, 5, tzinfo=timezone.utc)]
+        backend = be.WorkspaceBackend(lambda session: None, data_label="t",
+                                      clock=lambda: now[0])
+        self.addCleanup(backend.stop)
+        reads = []
+
+        def read(base=None, *, handles=()):
+            reads.append((base, tuple(handles)))
+            return m.Freshness(label=f"read {len(reads)}")
+        backend._freshness = read
+        backend.freshness()
+        backend.freshness()
+        self.assertEqual(len(reads), 2)   # not serving: read each time
+        backend.freshness_seconds = 10
+        reads.clear()
+        first = backend.freshness()
+        first.label = "changed by a caller"
+        self.assertEqual(backend.freshness().label, "read 1")
+        self.assertEqual(len(reads), 1)
+        backend.freshness(handles=["mail:x"])
+        backend.freshness({"store": {}})
+        self.assertEqual(len(reads), 3)   # a record's own: read each time
+        now[0] += timedelta(seconds=10)
+        # the next window: the last reading at once, the next one made behind it (a cold
+        # process's first read took ~1.5 s and held Home and the sidebar)
+        self.assertEqual(backend.freshness().label, "read 1")
+        for _ in range(100):
+            if not backend.__dict__.get("_freshness_reading"):
+                break
+            time.sleep(0.02)
+        self.assertEqual(len(reads), 4)
+        self.assertEqual(backend.freshness().label, "read 4")
+        # a reading older than the stale bound is never served: read at once
+        with self._lock_held(backend):
+            backend.__dict__["_freshness_held"] = (
+                backend.__dict__["_freshness_held"][0],
+                time.monotonic() - __import__("operator_api.backend_warm", fromlist=["x"]).FRESHNESS_STALE_SECONDS - 1, m.Freshness(label="old"))
+        now[0] += timedelta(seconds=10)
+        self.assertEqual(backend.freshness().label, "read 5")
+
+    @staticmethod
+    def _lock_held(backend):
+        return backend._lock
 
     def test_a_source_the_delta_serves_is_as_fresh_as_its_newest_layer(self):
         import sqlite3
@@ -2346,6 +2442,33 @@ class KnownReaderWarmTests(unittest.TestCase):
         backend._warmed.clear()
         self.assertEqual(backend.warm_known(), 1)
         self.assertEqual([oid for oid, _ in made], [seen])
+
+    def test_who_used_the_app_this_week_is_read_ahead_first_and_the_rest_rotate(self):
+        """The directory's window never leaves out someone who used the app in the last
+        7 days (their first Home then opens a kept page and trail); one past 7 days or who
+        signed out takes a turn in the window like anyone else."""
+        tmp = Path(tempfile.mkdtemp(prefix="app-recent-"))
+        self.addCleanup(shutil.rmtree, tmp, True)
+        backend = be.WorkspaceBackend(lambda s: None, data_label="test", data_dir=tmp)
+        backend.warmer = be.Worker(lambda s: None)
+        now = time.time()
+        ids = [f"00000000-0000-4000-8000-{n:012d}" for n in range(1, 91)]
+        recent, old = ids[85], ids[86]
+        (tmp / be.KNOWN_READERS_FILE).write_text(json.dumps({
+            recent: {"seen": now - 3 * 86400, "ref": "a" * 64, "exp": int(now) - 100, "pages": []},
+            old: {"seen": now - 9 * 86400, "ref": "b" * 64, "exp": int(now) - 100, "pages": []}}))
+        self.assertEqual(backend.recent_users(), [recent])
+        made = []
+        backend.identity_for = lambda oid, exp: (made.append(oid), SimpleNamespace(
+            principals=frozenset({f"employee:{oid}"}), email=None))[1]
+        backend.directory_for = lambda: list(ids)
+        backend._warm_directory(set())
+        self.assertEqual(made[0], recent)
+        self.assertEqual(len(made), backend_common.DIRECTORY_WARM_MOST)
+        self.assertNotIn(old, made[:1])
+        # kept past the session: a write does not drop an entry seen this week
+        backend._write_known({})
+        self.assertEqual(backend.recent_users(), [recent])
 
     def test_a_read_ahead_identity_serves_and_audits_nothing(self):
         from operating import session_identity as si

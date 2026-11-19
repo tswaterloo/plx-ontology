@@ -23,7 +23,7 @@ from .auth import Reader
 from .test_records import hidden_words
 from .serving import (
     _iso_now, access_label, HOST_READ_SCHEMES, LATE_LIST_LIMIT, object_url, READ_TIMEOUT_SECONDS,
-    SAME_NAME_ROWS
+    SAME_NAME_ROWS, WARM_LATE_PAGES
 )
 from .answers import (LATE_RULE, aged_to_today, attention_items, late_rule_behind, normalize,
                       without_tests)
@@ -32,6 +32,9 @@ from .briefing_view import alert_playbook_of
 from .page_parts import source_payload, source_records, source_view
 
 from .backend_common import HOME_EXAMPLES, STYLE_ANSWER_MARGIN
+
+
+SIDEBAR_SUPPLIERS = 8   # the sidebar names the suppliers with the most late POs, then "N more"
 
 
 class _Unread(errors.UserFacing):
@@ -176,29 +179,47 @@ class ScreensMixin:
         """Home from the SQL alerts (``page_sql``, switch ``PLX_ALERTS_SQL``): the po_late
         alerts as the late POs (count and the longest late), the other on-by-default
         My work types as at risk, all read as the reader through the door. A failed read
-        says unavailable, never "nothing needs attention"."""
+        says unavailable, never "nothing needs attention".
+        Kept per reader as a screen is (``_serving``, as the sidebar: served at once after
+        a restart while the reader's access and the screen's inputs are the same, read again
+        behind it): the door's Home read took 2.3 s on every visit, Home's and Ask's."""
         from . import page_sql
+        from .errors import UserFacing
         with self._lock:
             recent = list(self._recent.get(reader.key, []))
-        from .errors import UserFacing
         try:
-            total, late, as_of, risk, stale = page_sql.alert_home(self, reader,
-                                                                  limit=LATE_LIST_LIMIT)
-            # a home type whose check is not current: left out, said (refreshing, since)
-            attention = m.NeedsAttention(status="read", late_pos=late, at_risk=risk,
-                                         late_total=total, as_of=as_of,
-                                         refreshing=bool(stale),
-                                         checked_on=page_sql._oldest(stale))
-        except (page_sql.PageDoorUnavailable, UserFacing):
-            # unreadable, or the late POs' check not current (``alerts_stale``): never
-            # "none late" from old or missing numbers
-            attention = m.NeedsAttention(status="unavailable")
+            got = self._serving(reader, ("home", "alerts"),
+                                lambda: self._home_alerts_read(reader),
+                                self._screen_inputs(alerts=True),
+                                reading=lambda: self._home_reading(reader))
+        except (page_sql.PageDoorUnavailable, UserFacing, TimeoutError):
+            # unreadable, or the late POs' check not current (``alerts_stale``), and nothing
+            # kept: never "none late" from old or missing numbers
+            got = m.Home(greeting_name=reader.display_name.split(" ")[0],
+                         examples=list(HOME_EXAMPLES),
+                         needs_attention=m.NeedsAttention(status="unavailable"),
+                         recent_questions=recent, freshness=self.freshness())
+        return got.model_copy(update={"recent_questions": recent,
+                                      "freshness": self.freshness()})
+
+    def _home_alerts_read(self, reader: Reader) -> m.Home:
+        """``_home_alerts``' read through the door (raises when unreadable: never kept)."""
+        from . import page_sql
+        total, late, as_of, risk, stale = page_sql.alert_home(self, reader,
+                                                              limit=LATE_LIST_LIMIT)
+        # a home type whose check is not current: left out, said (refreshing, since)
+        attention = m.NeedsAttention(status="read", late_pos=late, at_risk=risk,
+                                     late_total=total, as_of=as_of, refreshing=bool(stale),
+                                     checked_on=page_sql._oldest(stale))
         return m.Home(greeting_name=reader.display_name.split(" ")[0],
                       examples=list(HOME_EXAMPLES), needs_attention=attention,
-                      recent_questions=recent, freshness=self.freshness())
+                      recent_questions=[], freshness=self.freshness())
 
     def _home_served(self, reader: Reader) -> m.Home:
         """Home through ``_serving`` with no read ahead started (the warm-up's own read)."""
+        from . import page_sql
+        if page_sql.alerts_on():
+            return self._home_alerts(reader)   # the screen ``home`` serves under the alerts
         return self._serving(reader, ("home",), lambda: self._home(reader),
                              reading=lambda: self._home_reading(reader))
 
@@ -250,17 +271,109 @@ class ScreensMixin:
             # the read door (``page_sql``): count and page in one transaction (the po_late
             # alerts under PLX_ALERTS_SQL); a failed read is an error, never an empty list
             pos = page_sql.alert_late_pos if page_sql.alerts_on() else page_sql.late_pos
-            try:
-                total, items, as_of = pos(self, reader, offset=offset, limit=limit)
-            except page_sql.PageDoorUnavailable:
-                from .briefs import alerts_not_read
-                raise alerts_not_read() from None
-            after = offset + len(items)
-            return m.LateList(total=total, offset=offset, items=items, more=after < total,
-                              next_offset=after, as_of=self.freshness().as_of or as_of)
+
+            def read_door() -> m.LateList:
+                try:
+                    total, items, as_of = pos(self, reader, offset=offset, limit=limit)
+                except page_sql.PageDoorUnavailable:
+                    from .briefs import alerts_not_read
+                    raise alerts_not_read() from None
+                after = offset + len(items)
+                return m.LateList(total=total, offset=offset, items=items, more=after < total,
+                                  next_offset=after, as_of=self.freshness().as_of or as_of)
+            # kept per reader as Home and the sidebar are (``_serving``): served at once after
+            # a restart or a visit while the reader's access and the alert rules are the same,
+            # read again behind it (the door's read took 1.8-4.6 s on every visit)
+            return self._serving(reader, ("late", offset, limit), read_door,
+                                 self._screen_inputs(alerts=page_sql.alerts_on()),
+                                 reading=lambda: m.LateList(total=0, offset=offset,
+                                                            next_offset=offset, reading=True))
         return self._serving(reader, ("late", offset, limit), lambda: self._late_list(
             reader, offset=offset, limit=limit), reading=lambda: m.LateList(
                 total=0, offset=offset, next_offset=offset, reading=True))
+
+    def sidebar(self, reader: Reader) -> m.Sidebar:
+        """The sidebar's numbers on every page (``m.Sidebar``): the late POs' count and the
+        suppliers with the most of them, kept per reader as a screen is (``_serving``:
+        a kept page served at once after a restart while the reader's access is the same),
+        never Home's lists. With the read door (``page_sql``) one grouped read; with the
+        old engine they come from Home's own kept page (only its longest late: ``partial``).
+        Not read: no count (null), never 0. Reads ahead for the reader as Home does (the
+        sidebar is on every page; it asked Home for these before)."""
+        from . import simple_ask
+        self.warm(reader)
+        simple_ask.ready(self, reader)
+        return self._sidebar_served(reader)
+
+    def _sidebar_served(self, reader: Reader) -> m.Sidebar:
+        """``sidebar`` with no read ahead started (the warm-up's own read)."""
+        from . import page_sql
+        with self._lock:
+            recent = list(self._recent.get(reader.key, []))
+        if not (page_sql.alerts_on() or page_sql.on("purchase_order")):
+            home = self._home_served(reader)
+            na = home.needs_attention
+            if na.status != "read" or home.reading:
+                return m.Sidebar(recent_questions=recent, freshness=home.freshness,
+                                 reading=home.reading, stale_since=home.stale_since)
+            counts: dict[str, int] = {}
+            for po in na.late_pos:
+                if po.supplier:
+                    counts[po.supplier] = counts.get(po.supplier, 0) + 1
+            ranked = sorted(counts.items(), key=lambda kv: (-kv[1], kv[0]))
+            total = na.late_total if na.late_total is not None else len(na.late_pos)
+            return m.Sidebar(
+                late_total=total, late_suppliers=[
+                    m.SupplierLate(supplier=k, late=v) for k, v in ranked[:SIDEBAR_SUPPLIERS]],
+                supplier_total=len(ranked), partial=total > len(na.late_pos),
+                recent_questions=recent, freshness=home.freshness,
+                stale_since=home.stale_since)
+        try:
+            got = self._serving(reader, ("sidebar",), lambda: self._sidebar_door(reader),
+                                self._screen_inputs(alerts=True),
+                                reading=lambda: m.Sidebar(reading=True))
+        except (page_sql.PageDoorUnavailable, errors.UserFacing, TimeoutError):
+            # not read now and nothing kept: no count, never "none late"
+            got = m.Sidebar()
+        return got.model_copy(update={"recent_questions": recent,
+                                      "freshness": self.freshness()})
+
+    def _late_trails_ahead(self, reader: Reader) -> int:
+        """Read ahead (the warm-up) the evidence trail of the longest late purchase orders
+        Home lists first through the read door (``WARM_LATE_PAGES``): Home's detail pane
+        opens the first of them and reads its trail from the old engine (15-50 s cold);
+        kept per reader, it opens at once after a restart. Without the door the late
+        orders' whole pages are read ahead instead (``warm``). How many were read."""
+        from . import page_sql
+        if not (page_sql.alerts_on() or page_sql.on("purchase_order")):
+            return 0
+        pos = page_sql.alert_late_pos if page_sql.alerts_on() else page_sql.late_pos
+        _total, late, _as_of = pos(self, reader, offset=0, limit=WARM_LATE_PAGES)
+        read = 0
+        for po in late:
+            otype = po.object_id.split(":", 1)[0]
+            if otype != "PurchaseOrder":
+                continue   # not a record the old engine has a trail for (a bare handle)
+            try:
+                self.object_section(reader, otype, po.object_id, "trail")
+                read += 1
+            except Exception:  # noqa: BLE001 - read when opened
+                continue
+            try:   # the order's page Home's detail pane opens (kept: ``biz_page``)
+                from urllib.parse import parse_qs, urlparse
+                handle = (parse_qs(urlparse(po.open_url).query).get("h") or [""])[0]
+                if handle:
+                    self.biz_page(reader, "purchase_order", handle)
+            except Exception:  # noqa: BLE001 - read when opened
+                continue
+        return read
+
+    def _sidebar_door(self, reader: Reader) -> m.Sidebar:
+        """The sidebar's late POs through the read door (one transaction)."""
+        from . import page_sql
+        total, top, suppliers = page_sql.late_suppliers(self, reader, limit=SIDEBAR_SUPPLIERS)
+        return m.Sidebar(late_total=total, supplier_total=suppliers, late_suppliers=[
+            m.SupplierLate(supplier=name, late=n) for name, n in top])
 
     def _late_list(self, reader: Reader, *, offset: int = 0, limit: int = 25) -> m.LateList:
         """Every late purchase order the reader may see, a page at a time, in Home's order
@@ -308,8 +421,17 @@ class ScreensMixin:
         from . import page_sql
         if page_sql.alerts_on():
             from operating import briefing as bf
-            return page_sql.alert_briefing(self, reader, since_visit=since_visit,
-                                           top=bf.TOP_ITEMS)
+            # kept per reader as every screen is: the door's briefing read took 4-5 s on
+            # every visit; the visit mark (``/api/briefing/seen``) makes the kept one stale
+            return self._serving(reader, ("briefing", since_visit),
+                                 lambda: page_sql.alert_briefing(
+                                     self, reader, since_visit=since_visit, top=bf.TOP_ITEMS),
+                                 self._screen_inputs(alerts=True),
+                                 reading=lambda: m.Briefing(
+                                     status="unavailable", count=0, new_since_visit=0,
+                                     since_visit=since_visit, other_teams=0, rank_basis="",
+                                     routing_basis="", complete=False, digest_preview="",
+                                     reading=True))
         from .page_core import ENRICH_PRIORITY
         # the old engine's briefing is a long read (90-110 s cold, 11-18): it runs on all
         # but one read worker, after the short page reads queued (``serving._LongSlots``)
@@ -322,6 +444,24 @@ class ScreensMixin:
                 other_teams=0, rank_basis="", routing_basis="", complete=False,
                 digest_preview="", reading=True))
 
+    def _briefing_pages_ahead(self, reader: Reader) -> int:
+        """Read ahead (the warm-up) the first page of each group Home lists past its top
+        items (``/api/briefing?pages=true``: ``home_group_pages``), kept per reader: Home's
+        one request then finds them and is not held by their cold reads. How many were read."""
+        from .briefing_view import HOME_GROUP_PAGE_ROWS, home_group_pages
+        got = self.briefing(reader, since_visit=False)
+        if getattr(got, "status", None) != "read":
+            return 0
+        read = 0
+        for kind in home_group_pages(got):
+            try:
+                self.briefing_items(reader, kind, offset=0, limit=HOME_GROUP_PAGE_ROWS,
+                                    since_visit=False)
+                read += 1
+            except Exception:  # noqa: BLE001 - read when Home opens it
+                continue
+        return read
+
     def briefing_items(self, reader: Reader, event_type: str, *, offset: int = 0,
                        limit: int = 25, since_visit: bool = False) -> m.BriefingItems:
         """One event type's items of this reader's briefing, a page at a time (a group's
@@ -329,8 +469,10 @@ class ScreensMixin:
         (the item's page has it)."""
         from . import page_sql
         if page_sql.alerts_on():
-            return page_sql.alert_briefing_items(self, reader, event_type, offset=offset,
-                                                 limit=limit)
+            return self._serving(reader, ("briefing_items", event_type, offset, limit),
+                                 lambda: page_sql.alert_briefing_items(
+                                     self, reader, event_type, offset=offset, limit=limit),
+                                 self._screen_inputs(alerts=True))
         return self.reads.run(reader, lambda view: self._briefing_items_cached(
             view, event_type, offset=offset, limit=limit, since_visit=since_visit),
             timeout=READ_TIMEOUT_SECONDS)
@@ -350,12 +492,23 @@ class ScreensMixin:
         cited values only (never sent), confidence and what is missing. Purchase order
         trails are read as the reader within ``SUGGESTION_TRAIL_SECONDS``; a card whose
         trail did not fit says so (low confidence), never guesses."""
+        from operating import proactive_suggestions as ps
+
+        from . import page_sql
         from .page_core import ENRICH_PRIORITY
-        return self._serving(reader, ("suggestions",), lambda: self.reads.run(
-            reader, self._suggestions_cached, timeout=READ_TIMEOUT_SECONDS,
-            priority=ENRICH_PRIORITY, long=True),
-            reading=lambda: m.Suggestions(status="unavailable", total=0, note="",
-                                          reading=True))
+
+        def read() -> m.Suggestions:
+            # PLX_ALERTS_SQL: made from the SQL alerts Home lists, read first (their own
+            # door, one transaction), never from the old engine's inbox
+            alerts = page_sql.alert_suggestion_items(self, reader, ps.KIND_OF_TYPE) \
+                if page_sql.alerts_on() else None
+            return self.reads.run(
+                reader, lambda view: self._suggestions_cached(view, alerts),
+                timeout=READ_TIMEOUT_SECONDS, priority=ENRICH_PRIORITY,
+                long=True)
+
+        return self._serving(reader, ("suggestions",), read, reading=lambda: m.Suggestions(
+            status="unavailable", total=0, note="", reading=True))
 
     def alert_playbook_dict(self, reader: Reader, alert_id: str) -> Optional[dict[str, Any]]:
         """One alert's playbook (``operating.alert_playbooks``) built from the alert as this
@@ -366,11 +519,16 @@ class ScreensMixin:
 
     def briefing_seen(self, reader: Reader) -> m.BriefingSeen:
         try:
-            # a write a reader waits on: ahead of every queued read, on the access workers
-            # (short jobs only) when they serve: on the read workers it waited behind
-            # 2-minute reads (11-18 staff walk: 17 s)
-            worker = getattr(self, "access_worker", None)
-            if worker is None or worker.stopped.is_set():
+            # a write a reader waits on: on the check worker (short jobs only: the door's
+            # reads on the access workers held it 1 s on Home), else the access workers,
+            # else the read workers, where it waited behind 2-minute reads
+            worker = None
+            for name in ("check_worker", "access_worker"):
+                worker = getattr(self, name, None)
+                if worker is not None and not worker.stopped.is_set():
+                    break
+                worker = None
+            if worker is None:
                 worker = self.reads
             at = worker.run(reader, lambda view: view.briefing_seen(),
                             timeout=READ_TIMEOUT_SECONDS, priority=-1)

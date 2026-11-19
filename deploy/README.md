@@ -253,7 +253,7 @@ files and drop-ins.
 and enables, after a build: system timers run as the Workbench user with its groups
 (user timers until 11-15; the installer removes the old ones) `plx-sheet-readings` (daily 02:40 ET),
 `plx-system-activity` (daily 02:50 ET, 13 weekly aggregates and the last 35 days),
-`plx-team-activity` (daily 03:30 ET, the Team view's snapshot: `PLX_TEAM_ACTIVITY_FILE`; who
+`plx-team-activity` (hourly at :25 ET, the Team view's snapshot: `PLX_TEAM_ACTIVITY_FILE`; who
 sees everyone, `PLX_TEAM_VIEW_READERS`; who is in no people view, `PLX_TEAM_HIDDEN_PEOPLE`, object ids or e-mail addresses; with it unset the server hides the owner by the object ids their own sessions showed it, and names no one in a drill-down until it knows them; written 0640, group plx-state, so the API
 user reads it, as `plx-system-activity`'s file), `plx-work-graph` (Sunday
 03:30 ET, role owners from the last 13 weeks, written to a candidate roles file the autopilot

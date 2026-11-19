@@ -85,7 +85,7 @@ from .autopilot_engine import (
     item_roles, load_draft, pay_or_hr, settle, with_draft, SwitchGate)
 from .autopilot_reading import (
     _plain, _store, digest)
-from . import autopilot_engine, autopilot_handlers
+from . import autopilot_agent_io, autopilot_engine, autopilot_handlers
 
 REGISTRY_FILE = Path(__file__).with_name("autopilot_registry.json")
 REPLAY_CONFIG_FILE = Path(__file__).with_name("autopilot_replay.json")
@@ -192,9 +192,9 @@ def validate_registry(raw: Any) -> dict[str, Any]:
                 raise RegistryInvalid(f"registry_{flag}:{ap['id']}")
         if "draft" in ap and not (
                 (ap["draft"] == "model" and ap["on"] == "message.received")
-                or (ap["draft"] == "job" and ap["handler"] == "job")):
+                or (ap["draft"] in ("job", "agent") and ap["handler"] == "job")):
             raise RegistryInvalid(f"registry_draft:{ap['id']}")
-        if ap["handler"] == "job" and ap.get("draft") != "job":
+        if ap["handler"] == "job" and ap.get("draft") not in ("job", "agent"):
             raise RegistryInvalid(f"registry_draft:{ap['id']}")
         if ap["on"] == "record.due" and not isinstance(ap.get("params") or {}, Mapping):
             raise RegistryInvalid(f"registry_params:{ap['id']}")
@@ -458,6 +458,52 @@ def owners_of(rule: str, event: Mapping[str, Any], *, directory: Mapping[str, st
     return [], "owner_rule_unknown"
 
 
+LOOK_HABITS = "look_habits"     # the queue's meta: whose step each stage is, kept for a day
+
+
+def _looks(lookers: Sequence[str], now: datetime, people: Any, skipped: Any,
+           queue: Optional[Queue] = None) -> list:
+    """The assistant's looks due now (``autopilot_agent_io.look_events``), each carrying its
+    computed change list (``autopilot_changes``) read on a Postgres connection of its own,
+    closed before returning. A look the queue already holds is not computed again; whose
+    step each stage is is read once a day and kept in the queue (``LOOK_HABITS``), so a
+    cycle reads only the window's records. Postgres not reachable: the looks carry no list,
+    so none runs a session (``look_changes_unreadable``); a stage that fails lists nothing."""
+    from . import autopilot_agent_io as _io
+    due = _io.look_events(lookers, now)
+    if queue is not None:
+        held = {r[0] for r in queue.conn.execute(
+            "SELECT event_id FROM events WHERE event_type = ? AND at = ?",
+            (_io.LOOK_EVENT, due[0]["at"]))} if due else set()
+        due = [e for e in due if e["event_id"] not in held]
+    if not due:
+        return []
+    lookers = [e["owner_hint"] for e in due]
+    try:
+        import psycopg
+        from operating.pg import config as pg_config
+        pg = psycopg.connect(pg_config.dsn(), autocommit=True)
+    except Exception:  # noqa: BLE001 - no list: the looks run no session
+        skipped["look_changes_unreadable"] += 1
+        return due
+    try:
+        from . import autopilot_changes as _ch
+        directory, _addresses, domains = _people_maps(people)
+        kept = queue.meta(LOOK_HABITS) if queue is not None else None
+        made = _ch.Changes(pg, directory, domains, _io.previous_look,
+                           first_hour=_io.LOOK_HOURS[0], habits=kept)
+        got = _io.look_events(lookers, now, changes=made)
+        for stage, n in made.failed.items():
+            skipped[f"look_changes_failed_{stage}"] += n
+        fresh = made.habits_made()
+        if queue is not None and fresh is not None:
+            with queue.conn:
+                queue.set_meta(LOOK_HABITS, fresh)
+        return got
+    finally:
+        pg.close()
+
+
 def run_cycle(st: Any, queue: Queue, ids: Iterable[str], *, people: Any,
               registry: Mapping[str, Any] | None = None, as_of: date | None = None,
               environ: Mapping[str, str] | None = None, now: datetime | None = None,
@@ -574,10 +620,22 @@ def run_cycle(st: Any, queue: Queue, ids: Iterable[str], *, people: Any,
                 try:
                     events += rw.due_events(queue.path.parent.parent, st,
                                             [o for o, f in gate.passed.items() if flow in f],
-                                            now)
+                                            now, failed=summary["skipped"])
                 except Exception:  # noqa: BLE001 - one source's failure never stops the cycle
                     summary["skipped"]["recurring_unreadable"] += 1
                 summary["recurring_seconds"] = round(time.monotonic() - began, 2)
+            # the assistant's time-driven look (``autopilot_agent_io.look_events``): switch
+            # on, live only, for the people the prepare gate passes its workflow for
+            look = next((a for a in registry["autopilots"] if a["id"] == "assistant_look"
+                         and a.get("enabled") is not False), None)
+            if look is not None and agent_mode() and isinstance(gate, SwitchGate) and \
+                    queue.path.parent.name == "autopilot":
+                from . import autopilot_agent_io as _io
+                from . import workflows as _wf
+                flow = _wf.of_item("assistant_look", {})
+                events += _looks([o for o, f in gate.passed.items() if flow in f
+                                  and agent_for(o, addresses_of)], now,
+                                 people, summary["skipped"], queue)
             # the customers' books and payment mail are read once a day (the slowest read
             # here after the R&D one); a customer's reminder is due at most once a week
             from . import autopilot_collections as ac
@@ -745,14 +803,18 @@ def _ask_wanted(queue: Queue, event: Mapping[str, Any], asking: Sequence[Mapping
     (``ask_check``), to its reader, that a rule needing an ask (``asking``) would otherwise
     take, with no item for it yet and (live) not answered already. A verdict already cached
     is put on the event (``asks``) and None returned: no call."""
-    if event.get("ask_check") != "model" or not event.get("asks") or \
+    # a chat message the cheap rules kept comes as asking (the model may say no); a mail
+    # they found no ask in comes as asking nothing (the model may say yes)
+    mail = event.get("channel") == "mail"
+    if event.get("ask_check") != "model" or not (event.get("asks") or mail) or \
             not (event.get("to_me") or event.get("unaddressed")) or not event.get("cleared"):
         return None
     reader = str(event.get("mailbox") or "")
     message = str(event.get("message_id") or event.get("object_id") or "")
     # only a rule the verdict decides (it takes the event as asking, not as asking nothing)
     rules = [a for a in asking if a.get("enabled") is not False and
-             a.get("on") == event.get("event_type") and matches(a.get("when") or {}, event)
+             a.get("on") == event.get("event_type")
+             and matches(a.get("when") or {}, {**event, "asks": True})
              and not matches(a.get("when") or {}, {**event, "asks": False})]
     if not reader or not message or not rules:
         return None
@@ -773,7 +835,9 @@ def _judge_asks(judge: Any, queue: Queue, waiting: Sequence[tuple[dict[str, Any]
                 tuple[str, str, str]]], people: Any, stamp: str,
                 summary: dict[str, Any]) -> None:
     """The model's verdicts on the waiting events, put on each (``asks``; any failure:
-    True, kept); counts in ``summary["chat_ask"]``."""
+    ``chat_ask_model.kept``: a chat message stays asking, a mail keeps the phrase rules'
+    answer); counts in ``summary["chat_ask"]``."""
+    from .chat_ask_model import kept as kept_answer
     before = dict(judge.stats)
     try:
         got = judge.ask(queue, [(key, event, reader, name)
@@ -782,7 +846,7 @@ def _judge_asks(judge: Any, queue: Queue, waiting: Sequence[tuple[dict[str, Any]
         got = {}
         summary["skipped"]["chat_ask_judge_failed"] += len(waiting)
     for event, (key, _reader, _name) in waiting:
-        event["asks"] = got.get(key, True)
+        event["asks"] = got.get(key, kept_answer(event))
         if not event["asks"]:
             summary["skipped"]["chat_ask_no"] += 1
     counts = summary.setdefault("chat_ask", {})
@@ -975,18 +1039,30 @@ def _process(st: Any, queue: Queue, event: dict[str, Any], registry: Mapping[str
     deferred = pending = False
     reasons = []
     failed: list[str] = []     # handler failures and timeouts: the event is tried again
+    general = agent_mode()
+    everyone = general and agent_people() is None
     for ap in registry["autopilots"]:
         if ap["on"] != event["event_type"] or not matches(ap.get("when") or {}, event):
             continue
         if ap.get("enabled") is False:
             continue                       # switched off in the registry (``off_reason``)
-        if ap.get("draft") == "job" and queue.path.parent.name != "autopilot":
+        mine = ap.get("draft") == "agent"
+        if mine and not (general and ap["on"] in AGENT_EVENTS) or not mine and ap["on"] in \
+                AGENT_EVENTS and everyone:
+            # the assistant decides an event of its kinds (``AGENT_ENV`` on) in place of
+            # every rule-matched autopilot of that kind; off: only the rules; on for listed
+            # people only (``AGENT_PEOPLE_ENV``): each owner gets one or the other below
+            continue
+        if ap.get("draft") in ("job", "agent") and queue.path.parent.name != "autopilot":
             continue                       # a replay never starts a job session
         when = ap.get("when") or {}
         if event.get("unaddressed") and not {"after_own_post", "usual_answerer"} & \
-                conditions_of(when):
+                conditions_of(when) and not (ap.get("draft") == "agent"
+                                             and autopilot_agent_io.in_exchange(event)):
             # a group message not addressed to the owner: only a turn rule answers it (their
-            # own turn in the exchange, or the sender's question they usually answer)
+            # own turn in the exchange, or the sender's question they usually answer); the
+            # assistant decides it when the owner is in that exchange (wrote there lately,
+            # or is the one who answers this sender there)
             continue
         box = str(event.get("mailbox") or "")
         role = when.get("mailbox_role")
@@ -1013,6 +1089,10 @@ def _process(st: Any, queue: Queue, event: dict[str, Any], registry: Mapping[str
         if not owners:
             summary["skipped"][f"{ap['id']}:owner_not_cleared"] += 1
             continue
+        if general and not everyone and ap["on"] in AGENT_EVENTS:
+            owners = [o for o in owners if agent_for(o, addresses_of) == mine]
+            if not owners:
+                continue                       # the assistant's people / the rules' people
         if only_owners is not None:
             owners = [o for o in owners if o in only_owners]
             if not owners:
@@ -1075,7 +1155,7 @@ def _process(st: Any, queue: Queue, event: dict[str, Any], registry: Mapping[str
             # a job takes its own count once it proposed something (most events propose
             # nothing: they never spend the person's hourly budget of drafts)
             waited = (ap.get("draft") == "model" and _draft_running(drafting, event, owner)) \
-                or ap.get("draft") == "job"
+                or ap.get("draft") in ("job", "agent")
             if not waited and not queue.rate_take(owner, hour,
                                                   int(limits["per_owner_per_hour"])):
                 summary["skipped"][f"{ap['id']}:rate_limited"] += 1
@@ -1123,11 +1203,14 @@ def _process(st: Any, queue: Queue, event: dict[str, Any], registry: Mapping[str
                     summary["skipped"][f"{ap['id']}:{why}"] += 1
                     reasons.append(why)
                     continue
-            elif ap.get("draft") == "job":
+            elif ap.get("draft") in ("job", "agent"):
                 # the system work the model proposes (``autopilot_jobs``; live queue only);
-                # no change proposed, no item
-                work, why = _model_job(queue, drafting, summary, event, owner, work, people,
-                                       addresses_of)
+                # no change proposed, no item. The assistant (``autopilot_agent``): the
+                # reply, the question or the changes, all from one session
+                work, why = (_model_agent if ap["draft"] == "agent" else _model_job)(
+                    queue, drafting, summary, event, owner, work, people, addresses_of,
+                    checks=lambda: autopilot_handlers.Ctx(st, as_of, time.monotonic() + 30,
+                                                          domains))
                 if why == "job_model_off":
                     summary["skipped"][f"{ap['id']}:job_model_off"] += 1
                     continue
@@ -1165,8 +1248,30 @@ def _process(st: Any, queue: Queue, event: dict[str, Any], registry: Mapping[str
                                            work, event)
             # the preferences the model said it followed are recorded only as ``used``
             work = {k: v for k, v in work.items() if k != "memory_followed"}
+            # the assistant's changes beside its reply or question: their own job item
+            # (one card per kind of work: the queue shows a job's proposals on a job card)
+            also = work.pop("also_jobs", None)
             due = now + timedelta(minutes=int(ap["due_minutes"]))
             landed = _instant(event.get("seen_at") or event.get("landed_at") or event.get("at"))
+            if also:
+                with queue.conn:
+                    queue.add_item({
+                        "item_id": "ap_" + _digest(ap["id"] + ":job", event["event_id"],
+                                                   owner)[:24],
+                        "event_id": event["event_id"], "autopilot": ap["id"], "owner": owner,
+                        "title": f"{ap['label']}: " + str(work.get("summary") or "")[
+                            :SUMMARY_CHARS],
+                        "body": {"happened": _happened(event),
+                                 "prepared": {"kind": "job", "summary": work.get("summary"),
+                                              "jobs": also, "drafted_by": "model"},
+                                 "done_when": ap["done_when"], "label": ap["label"]},
+                        "audiences": prepared["audiences"],
+                        "markings": sorted(set(ap.get("markings") or ())
+                                           | prepared["markings"]),
+                        "citations": prepared["citations"], "due_at": _iso(due),
+                        "created_at": _iso(now), "prepare_ms": prepared["ms"],
+                        "latency_s": round((now - landed).total_seconds(), 1)
+                        if landed else None})
             with queue.conn:
                 queue.add_item({
                     "item_id": item_id, "event_id": event["event_id"], "autopilot": ap["id"],
@@ -1210,7 +1315,8 @@ def _drafts_done(drafting: Mapping[str, Any], waiting: list[dict[str, Any]],
     """Hand back the events whose drafts the pool writes as each is done, until the cycle's
     time is spent; an event whose draft is still running then is deferred (``defer``,
     ``draft_busy``): its call goes on, and the cycle that takes it again uses the result."""
-    pools = [p for p in (drafting.get("writer"), drafting.get("jobber")) if p is not None]
+    pools = [p for p in (drafting.get("writer"), drafting.get("jobber"),
+                         drafting.get("assistant")) if p is not None]
     while waiting and pools:
         left = budget - (time.monotonic() - started)
         if left <= 0:
@@ -1256,12 +1362,15 @@ def _job_running(held: Mapping[str, Any], event: Mapping[str, Any], owner: str) 
 
 def _model_job(queue: Queue, held: dict[str, Any], summary: Mapping[str, Any],
                event: Mapping[str, Any], owner: str, work: Mapping[str, Any], people: Any,
-               addresses_of: Mapping[str, Any]) -> tuple[dict[str, Any], Optional[str]]:
+               addresses_of: Mapping[str, Any], checks: Any = None
+               ) -> tuple[dict[str, Any], Optional[str]]:
     """(``work`` with the proposed changes, None) or (work, why there is no item):
     ``job_model_off``, ``job_busy`` (this cycle's sessions are spent), ``job_pending`` (on
     the pool), ``job_failed`` (tried again), ``no_system_work`` or a screen. The session
     reads the records as ``owner`` whoever else is on the message: what it proposes is
-    shown to ``owner`` only and written only on their confirm (``autopilot_jobs``)."""
+    shown to ``owner`` only and written only on their confirm (``autopilot_jobs``); a
+    proposed message to a reader outside the company is held back when it carries another
+    party's business (``autopilot_outbound``: ``checks`` builds the store's ``Ctx``)."""
     from . import autopilot_jobs as aj
     material = work.get("material") if isinstance(work.get("material"), Mapping) else {}
     out = {k: v for k, v in work.items() if k != "material"}
@@ -1300,11 +1409,151 @@ def _model_job(queue: Queue, held: dict[str, Any], summary: Mapping[str, Any],
                                     "reply_to": None, "body": got.brief, "post": False},
                     "drafted_by": "model"})
         return out, None
-    out.update({"kind": "job", "summary": got.summary, "jobs": got.proposals,
+    from . import autopilot_agent_io as io
+    proposals, back = io.outbound_proposals(got.proposals, event, addresses_of, owner, text,
+                                            [], checks)
+    if not proposals and not got.brief:
+        return out, "outbound_held"
+    if back:
+        out["held_back"] = back
+    out.update({"kind": "job", "summary": io.held_note(got.summary, back), "jobs": proposals,
                 "drafted_by": "model"})
     if got.brief:
         out["brief"] = got.brief
     return out, None
+
+
+# The assistant as the decision step (``operating.autopilot_agent``): "1" turns it on for
+# the events of ``AGENT_EVENTS`` (the registry's ``draft: agent`` autopilot in place of the
+# rule-matched ones of those kinds); anything else: the rules, as before.
+# ``AGENT_PEOPLE_ENV`` (person ids or mail addresses, comma or space separated) narrows it to
+# those people, whatever ``AGENT_ENV`` says: everyone else keeps the rules.
+AGENT_ENV = "PLX_AUTOPILOT_AGENT"
+AGENT_PEOPLE_ENV = "PLX_AUTOPILOT_AGENT_PEOPLE"
+AGENT_EVENTS = ("message.received", "assistant.look")
+
+
+def agent_people(environ: Optional[Mapping[str, str]] = None) -> Optional[frozenset[str]]:
+    """Who the assistant decides for: None = everyone (``AGENT_ENV`` "1" and no list), else
+    the listed ids and addresses, lower-cased (empty: no one)."""
+    env = os.environ if environ is None else environ
+    listed = frozenset(p.lower() for p in re.split(r"[\s,;]+", str(env.get(AGENT_PEOPLE_ENV)
+                                                                 or "")) if p)
+    if listed:
+        return listed
+    return None if str(env.get(AGENT_ENV) or "").strip() == "1" else frozenset()
+
+
+def agent_mode(environ: Optional[Mapping[str, str]] = None) -> bool:
+    """Whether the assistant decides for anyone (``agent_people``)."""
+    return agent_people(environ) != frozenset()
+
+
+def agent_for(owner: str, addresses_of: Mapping[str, Any],
+              environ: Optional[Mapping[str, str]] = None) -> bool:
+    """Whether the assistant decides ``owner``'s events: everyone's on, or the list names
+    their id (whole, or the object id after the tenant prefix) or one of their addresses."""
+    people = agent_people(environ)
+    if people is None:
+        return True
+    own = str(owner or "").lower()
+    names = {own, own.rsplit(":", 1)[-1], *(str(a).lower() for a in addresses_of.get(owner, ()))}
+    return bool(people & (names - {""}))
+
+
+def _model_agent(queue: Queue, held: dict[str, Any], summary: Mapping[str, Any],
+                 event: Mapping[str, Any], owner: str, work: Mapping[str, Any], people: Any,
+                 addresses_of: Mapping[str, Any], checks: Any = None
+                 ) -> tuple[dict[str, Any], Optional[str]]:
+    """(``work`` with what the assistant prepared, None) or (work, why there is no item):
+    the jobber's reasons (``job_model_off``, ``job_busy``, ``job_pending``, ``job_failed``,
+    a screen) or ``nothing_to_do``. A question to the person is a ``your_call`` card (its
+    options' replies on the usual reply path), a reply the item's draft, changes a job
+    (``also_jobs`` beside a reply or question: their own job item); to-dos for a system with
+    no write path ride on the item (``todos``).
+
+    A conversation with a reader outside the company (not ``ours_only``): the session has no
+    record read tool and writes from the message and that party's own records' lines
+    (``autopilot_outbound``); every reply, option and proposed message to an outside reader
+    is checked there (``checks`` builds the store's ``Ctx``): a held reply becomes a
+    question card saying why, a held message is dropped and named in ``held_back``. The
+    drafter's reply checks hold too: a figure in no material, a hollow thanks, a copy tic."""
+    from . import autopilot_agent as ag
+    from . import autopilot_drafter as ad
+    material = work.get("material") if isinstance(work.get("material"), Mapping) else {}
+    out = {k: v for k, v in work.items() if k != "material"}
+    if held.get("agent_cycle") is not summary:
+        held["agent_cycle"] = summary
+        if "assistant" not in held:
+            held["assistant"] = ag.from_environ(os.environ)
+        if held["assistant"] is not None:
+            held["assistant"].new_cycle()
+    assistant = held.get("assistant")
+    if assistant is None:
+        return out, "job_model_off"
+    key = _digest("agent", event.get("event_id"), owner) if held.get("parallel") else None
+    if assistant.busy and not (key and key in assistant.pending()):
+        return out, "job_busy"
+    text = str(material.get("text") or event.get("text") or "")
+    if not text.strip() and event.get("channel") == "teams":
+        from . import autopilot_chat as _chat_text
+        text = _chat_text.message_text(queue.path.parent.parent, event)
+    mine = sorted(addresses_of.get(owner) or ())
+    sent_to = {str(a).lower() for a in [*(event.get("to") or ()), *(event.get("cc") or ())]}
+    person = next((a for a in mine if a in sent_to), mine[0] if mine else owner)
+    from . import autopilot_agent_io as io
+    described, inside = io.agent_input(event, text, material, addresses_of)
+    got, why = assistant.run(event, owner, described, str(person), people, key=key,
+                             reads=inside)
+    if got is None:
+        # an invitation the session left nothing on: its answer is still a to-do
+        got = io.invitation_only(event, material, why)
+    if got is None:
+        return out, why
+    teams = event.get("channel") == "teams"
+    got, held_back, why = io.agent_output(got, event, owner, text, material, addresses_of,
+                                          checks, str(person))
+    if held_back:
+        out["held_back"] = held_back
+    if got.empty:
+        return out, why
+    out.update({"summary": got.summary, "drafted_by": "model"})
+    if got.todos:
+        out["todos"] = got.todos
+    if got.ask or got.reply:
+        if teams:
+            out.pop("draft", None)
+            out["teams_draft"] = {"channel": "teams",
+                                  "conversation": event.get("conversation_id"),
+                                  "reply_to": event.get("object_id"), "body": got.reply,
+                                  "post": False}
+        else:
+            out.pop("teams_draft", None)
+            base = autopilot_handlers._reply(event, [])
+            out["draft"] = {**{k: v for k, v in base.items() if k != "copy_check"},
+                            "body": got.reply}
+        out["kind"] = "reply"
+        if got.ask:
+            m = ad.Material(reader="", channel="teams" if teams else "mail",
+                            sender=autopilot_engine.sender_label(event.get("sender"),
+                                                                 event.get("sender_name")),
+                            subject=str(event.get("subject") or ""),
+                            text=text[:ad.MESSAGE_CHARS], address=str(person),
+                            relation=ad.relation_of(event))
+            out["your_call"] = {"ask": got.ask["question"], "facts": [],
+                                "options": got.ask["options"], "material": m.kept(),
+                                "event": {k: event[k] for k in CARD_EVENT if k in event}}
+        out["message"] = {"text": text[:ad.MESSAGE_CHARS]}
+        if got.proposals:
+            out["also_jobs"] = got.proposals
+        return out, None
+    out.update({"kind": "job", "jobs": got.proposals})
+    return out, None
+
+
+def aj_described(event: Mapping[str, Any], text: str, linked: Sequence[str]) -> str:
+    from . import autopilot_jobs as aj
+    return aj.described(event, text, linked)
 
 
 def ours_only(event: Mapping[str, Any], addresses_of: Mapping[str, Any]) -> bool:
@@ -1429,19 +1678,22 @@ class _DryQueue:
 
 def dry_drafts(st: Any, registry: Mapping[str, Any], people: Any, ids: Sequence[str],
                queue_path: Path, *, owners: set[str] | None = None, force: str = "",
-               environ: Mapping[str, str] | None = None) -> list[dict[str, Any]]:
+               environ: Mapping[str, str] | None = None,
+               now: Optional[datetime] = None) -> list[dict[str, Any]]:
     """The model's reply drafts for the records ``ids`` as the live cycle would write them
     (same events, owners, screens, handler, material, style and writer), for a person to
     grade: nothing is written to any queue, nothing is sent, no gate is consulted (a grade
     asks what the draft would be, not who switched it on). ``owners``: only these people
     (mailbox ids or addresses); ``force``: the autopilot that drafts an event no live rule
-    matched (``matched: false``). One row per (event, owner): the draft or why not."""
+    matched (``matched: false``). ``now``: the moment the drafts are written at (a
+    replay of a past event: its arrival; default now). One row per (event, owner): the
+    draft or why not."""
     import tempfile
     with tempfile.TemporaryDirectory(prefix="plx-drafts-dry-") as tmp:
         history = _history_copy(Path(queue_path), Path(tmp))
         try:
             return _dry_drafts(st, registry, people, ids, queue_path, history, owners=owners,
-                               force=force, environ=environ)
+                               force=force, environ=environ, now=now)
         finally:
             if history is not None:
                 history.close()
@@ -1449,7 +1701,8 @@ def dry_drafts(st: Any, registry: Mapping[str, Any], people: Any, ids: Sequence[
 
 def _dry_drafts(st: Any, registry: Mapping[str, Any], people: Any, ids: Sequence[str],
                 queue_path: Path, history: Optional[Queue], *, owners: set[str] | None,
-                force: str, environ: Mapping[str, str] | None) -> list[dict[str, Any]]:
+                force: str, environ: Mapping[str, str] | None,
+                now: Optional[datetime] = None) -> list[dict[str, Any]]:
     """``dry_drafts`` over ``history``, a private copy of the live queue: each event gets
     what a live cycle puts on it before the rules match (``_engage``; the chat-ask model's
     verdict, ``_ask_wanted``/``_judge_asks``, cached only in the copy)."""
@@ -1460,7 +1713,7 @@ def _dry_drafts(st: Any, registry: Mapping[str, Any], people: Any, ids: Sequence
     roles = _roles(environ, Path(queue_path).parent)
     queue: Any = _DryQueue(Path(queue_path))
     held: dict[str, Any] = {"learned": _lessons(queue)}
-    now = _utcnow()
+    now = now or _utcnow()
     seen = {str(e.get("object_id")) for e in events}
     out: list[dict[str, Any]] = [
         {"object_id": oid, "why": "no_event", "skipped": dict(skipped)}

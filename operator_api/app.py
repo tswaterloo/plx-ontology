@@ -14,7 +14,9 @@ milliseconds are logged (``operator_api.latency``), never its query or body.
 
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
+import contextvars
 from datetime import date, datetime, timezone
 import itertools
 import json
@@ -40,6 +42,7 @@ from .ask_drafts import cited_handles
 from operating.instruct import route as route_of
 from operating.card_text import mask_served, mask_served_in
 from . import models as m
+from .briefing_view import HOME_GROUP_PAGE_ROWS, home_group_pages
 from .auth import SESSION_COOKIE, AuthRequired, DevAuth, Reader
 from .errors import BUSY, RecordNotFound, UserFacing, source_refused
 
@@ -210,7 +213,9 @@ READ_POSTS = frozenset({"/api/ask"})
 # ``WorkspaceBackend._serving``); every other write leaves none of them current. Home marks
 # the briefing seen on each visit: My work, Autopilot and the rest stay current.
 WRITE_SCREENS: dict[str, frozenset[str]] = {
-    "/api/briefing/seen": frozenset({"briefing", "home", "suggestions"})}
+    "/api/briefing/seen": frozenset({"briefing", "briefing_items", "home", "suggestions"})}
+# Renaming, pinning or deleting an Ask conversation changes none of the reader's screens.
+CHAT_WRITES = "/api/ask/chats/"
 # Who besides the owner reads the reliability alarms: the Team view's readers (object ids or
 # addresses), one list for both (operator_api.team_view, 2026-11-11).
 OPS_READERS_ENV = "PLX_TEAM_VIEW_READERS"
@@ -367,6 +372,33 @@ def _route_threads() -> None:
     limiter = to_thread.current_default_thread_limiter()
     if limiter.total_tokens < ROUTE_THREADS:
         limiter.total_tokens = ROUTE_THREADS
+
+
+_home_group_pages = home_group_pages   # (the name the tests and the route use)
+
+
+def _briefing_pages(backend: Any, who: Reader, types: list[str], limit: int,
+                    since_visit: bool, must_one: bool = False) -> list[Any]:
+    """The first page of each of several event types, read at once; one that could not be
+    read is left out (its group opens on its own). ``must_one``: every one failing is that
+    failure."""
+    got: dict[str, Any] = {}
+
+    def one(kind: str) -> None:
+        try:
+            got[kind] = backend.briefing_items(who, kind, offset=0, limit=limit,
+                                               since_visit=since_visit)
+        except (UserFacing, TimeoutError) as error:
+            got[kind] = error
+
+    with ThreadPoolExecutor(max_workers=min(len(types), 4)) as pool:
+        for future in [pool.submit(contextvars.copy_context().run, one, kind)
+                       for kind in types]:
+            future.result()
+    pages = [got[t] for t in types if isinstance(got.get(t), m.BriefingItems)]
+    if not pages and must_one:
+        raise next(e for e in (got[t] for t in types) if isinstance(e, Exception))
+    return pages
 
 
 def create_app(backend: Any, auth: Any, *, allowed_origins: frozenset[str] = frozenset(),
@@ -560,7 +592,8 @@ def create_app(backend: Any, auth: Any, *, allowed_origins: frozenset[str] = fro
             # other screens wait for a read
             wrote = getattr(backend, "reader_wrote", None)
             if wrote is not None:
-                screens = WRITE_SCREENS.get(request.url.path)
+                screens = WRITE_SCREENS.get(request.url.path, frozenset() if request.url.path
+                                            .startswith(CHAT_WRITES) else None)
                 wrote(who, screens)
                 request.state.plx_wrote = (who, screens)
         return who
@@ -775,13 +808,35 @@ def create_app(backend: Any, auth: Any, *, allowed_origins: frozenset[str] = fro
                           else backend.ask(who, body) if route == "ask"
                           else backend.instruct_ask(who, body))
                 # the answer's words are held until the next event and masked as one text:
-                # a credential split over two words is still masked (``sse`` masks each)
+                # a credential split over two words is still masked (``sse`` masks each).
+                # A whole token (the answer so far in full, ``simple_ask.Streamed``) is
+                # masked whole and sent at once, its last word held back until a later
+                # token or the next event ends it, so the reply streams as it is written
                 held: list[str] = []
+                whole: Optional[str] = None   # the last whole text, not yet sent in full
+                sent: Optional[str] = None    # the last whole text sent (masked)
                 for event, payload in itertools.chain(events, [("", None)]):
                     if held and event != "token":
                         for word in re.findall(r"^\s+|\S+\s*", mask_served("".join(held))):
                             yield sse("token", m.TokenEvent(text=word))
                         held = []
+                    if whole is not None and event != "token":
+                        full = mask_served(whole)
+                        if full.rstrip() != (sent or "").rstrip():   # a new text, not a trim
+                            sent = full
+                            yield sse("token", m.TokenEvent(text=sent, whole=True))
+                        whole = None
+                    if event == "token" and getattr(payload, "whole", False):
+                        held, whole = [], payload.text
+                        ended = re.match(r"(?s).*\s", whole)
+                        part = mask_served(ended.group(0)) if ended is not None else ""
+                        # never the same text again, nor a cut of what was already sent
+                        if part.strip() and not (sent or "").startswith(part):
+                            sent = part
+                            yield sse("token", m.TokenEvent(text=part, whole=True))
+                        if ended is not None and ended.group(0) == whole:
+                            whole = None
+                        continue
                     if event == "token":
                         held.append(payload.text)
                         continue
@@ -883,6 +938,15 @@ def create_app(backend: Any, auth: Any, *, allowed_origins: frozenset[str] = fro
         with first_partial():
             return backend.home(who)
 
+    @app.get("/api/sidebar", response_model=m.Sidebar, tags=["home"],
+             responses={401: {"model": m.ErrorResponse}})
+    def sidebar(who: Reader = Depends(reader)) -> m.Sidebar:
+        """The sidebar's numbers on every page: how many late purchase orders you may see
+        and the suppliers with the most, your recent questions and the data's as-of. Small
+        and kept for you (never Home's lists); null count when it could not be read."""
+        with first_partial():
+            return backend.sidebar(who)
+
     @app.get("/api/late", response_model=m.LateList, tags=["home"],
              responses={401: {"model": m.ErrorResponse}, 422: {"model": m.ErrorResponse}})
     def late_list(offset: int = Query(0, ge=0, le=20000), limit: int = Query(25, ge=1, le=100),
@@ -894,14 +958,23 @@ def create_app(backend: Any, auth: Any, *, allowed_origins: frozenset[str] = fro
 
     @app.get("/api/briefing", response_model=m.Briefing, tags=["home"],
              responses={401: {"model": m.ErrorResponse}})
-    def briefing(view: Literal["all", "since_visit"] = "all",
+    def briefing(view: Literal["all", "since_visit"] = "all", pages: bool = False,
                  who: Reader = Depends(reader)) -> m.Briefing:
         """Your briefing: the events routed to you that you may see, ranked by impact; the
         top ones each with why, a suggested next action and how we know, every other one
         counted in its type's group; each check's state; and a preview of the daily
-        digest (never sent). ``view=since_visit``: only what is new since your last visit."""
+        digest (never sent). ``view=since_visit``: only what is new since your last visit.
+        ``pages=true``: also the first page of each group Home lists past its top items
+        (``pages``), so Home asks once."""
         with first_partial():
-            return backend.briefing(who, since_visit=view == "since_visit")
+            got = backend.briefing(who, since_visit=view == "since_visit")
+        if not pages or got.status != "read":
+            return got
+        kinds = _home_group_pages(got)
+        if not kinds:
+            return got
+        return got.model_copy(update={"pages": _briefing_pages(
+            backend, who, kinds, HOME_GROUP_PAGE_ROWS, view == "since_visit")})
 
     @app.get("/api/briefing/items", response_model=m.BriefingItems, tags=["home"],
              responses={401: {"model": m.ErrorResponse}, 422: {"model": m.ErrorResponse}})
@@ -912,6 +985,20 @@ def create_app(backend: Any, auth: Any, *, allowed_origins: frozenset[str] = fro
         """One event type's items of your briefing, a page at a time (a group's "+N more")."""
         return backend.briefing_items(who, event_type, offset=offset, limit=limit,
                                       since_visit=view == "since_visit")
+
+    @app.get("/api/briefing/pages", response_model=m.BriefingPages, tags=["home"],
+             responses={401: {"model": m.ErrorResponse}, 422: {"model": m.ErrorResponse}})
+    def briefing_pages(event_type: list[m.EventType] = Query(min_length=1, max_length=12),
+                       limit: int = Query(25, ge=1, le=100),
+                       view: Literal["all", "since_visit"] = "all",
+                       who: Reader = Depends(reader)) -> m.BriefingPages:
+        """The first page of each of several event types' items of your briefing in one
+        request (Home's groups, one answer for what were four): each as
+        ``/api/briefing/items`` answers it. A type that could not be read is left out; every
+        one failing is that failure."""
+        pages = _briefing_pages(backend, who, list(dict.fromkeys(event_type)), limit,
+                                view == "since_visit", must_one=True)
+        return m.BriefingPages(pages=pages)
 
     @app.get("/api/briefing/unjudged", response_model=m.BriefingUnjudged, tags=["home"],
              responses={401: {"model": m.ErrorResponse}, 404: {"model": m.ErrorResponse},
@@ -1165,6 +1252,92 @@ def create_app(backend: Any, auth: Any, *, allowed_origins: frozenset[str] = fro
     errs = {401: {"model": m.ErrorResponse}, 403: {"model": m.ErrorResponse},
             404: {"model": m.ErrorResponse}, 409: {"model": m.ErrorResponse},
             422: {"model": m.ErrorResponse}, 503: {"model": m.ErrorResponse}}
+
+    def _insights() -> Any:
+        if not hasattr(backend, "insights_list"):
+            raise UserFacing("insights_not_served", "Insights aren't served here.", 503)
+        return backend
+
+    @app.get("/api/insights", response_model=m.InsightList, tags=["insights"],
+             responses={401: {"model": m.ErrorResponse}})
+    def insights_list(who: Reader = Depends(reader)) -> Response:
+        """Your dashboard: the built-in team, org and customer insights you may see, then
+        the ones you pinned or saved."""
+        out = _insights().insights_list(who)
+        return JSONResponse(out.model_dump(mode="json"), headers={"Cache-Control": "no-store"})
+
+    @app.get("/api/insights/{insight_id}", response_model=m.InsightResult, tags=["insights"],
+             responses=errs)
+    def insight_result(insight_id: str = PathParam(pattern=r"^[a-z0-9_]{1,61}$"),
+                       again: bool = False, who: Reader = Depends(reader)) -> Response:
+        """One insight as you read it (kept from your read of the last few minutes; again:
+        read now): its definition (the statement), rows, chart and the people they name."""
+        out = _insights().insight_result(who, insight_id, again)
+        return JSONResponse(out.model_dump(mode="json"), headers={"Cache-Control": "no-store"})
+
+    @app.post("/api/insights", response_model=m.InsightInfo, tags=["insights"],
+              responses=errs)
+    def insight_save(body: m.InsightSave, who: Reader = Depends(reader)) -> Response:
+        """Pin a chart from an answer (or save a statement) to your dashboard: it reads
+        again as whoever opens it."""
+        out = _insights().insight_save(who, body)
+        return JSONResponse(out.model_dump(mode="json"))
+
+    @app.delete("/api/insights/{insight_id}", response_model=m.InsightDeleted,
+                tags=["insights"], responses=errs)
+    def insight_delete(insight_id: str = PathParam(pattern=r"^s[0-9]{1,18}$"),
+                       who: Reader = Depends(reader)) -> Response:
+        """Remove one of your saved insights."""
+        if not _insights().insight_delete(who, insight_id):
+            return problem("not_found", 404)
+        return JSONResponse(m.InsightDeleted(deleted=True).model_dump(mode="json"))
+
+    @app.put("/api/insights/{insight_id}/schedule", response_model=m.InsightInfo,
+              tags=["insights"], responses=errs)
+    def insight_schedule(body: m.InsightSchedule,
+                         insight_id: str = PathParam(pattern=r"^s[0-9]{1,18}$"),
+                         who: Reader = Depends(reader)) -> Response:
+        """When one of your saved insights runs by itself (read as you, through your own
+        access) and when what it finds comes to you on Home."""
+        out = _insights().insight_schedule(who, insight_id, body)
+        return JSONResponse(out.model_dump(mode="json"))
+
+    @app.get("/api/insight-news", response_model=m.InsightNewsList, tags=["insights"],
+             responses={401: {"model": m.ErrorResponse}})
+    def insight_news(who: Reader = Depends(reader)) -> Response:
+        """What your scheduled insights found that came to you (counts only: open the
+        insight to read its rows, live, as you)."""
+        out = _insights().insight_news(who)
+        return JSONResponse(out.model_dump(mode="json"), headers={"Cache-Control": "no-store"})
+
+    @app.post("/api/insight-news/{run_id}/seen", response_model=m.InsightNewsSeen,
+              tags=["insights"], responses=errs)
+    def insight_news_seen(run_id: str = PathParam(pattern=r"^r[0-9]{1,18}$"),
+                          who: Reader = Depends(reader)) -> Response:
+        """Put one away: it leaves Home."""
+        if not _insights().insight_news_seen(who, run_id):
+            return problem("not_found", 404)
+        return JSONResponse(m.InsightNewsSeen(seen=True).model_dump(mode="json"))
+
+    @app.post("/api/charts/file", tags=["insights"], responses={
+        **errs, 200: {"content": {media: {} for media in (
+            "application/pdf", "application/vnd.openxmlformats-officedocument."
+            "spreadsheetml.sheet")}, "description": "The file."}})
+    def chart_file(body: m.ChartFile, who: Reader = Depends(reader)) -> Response:
+        """A chart you were shown as a file for you: Excel (its rows and a live chart over
+        them), PowerPoint, Word or PDF, with where its numbers come from. Nothing is read,
+        kept or sent."""
+        from operator_api.charts import NotDrawn, as_file
+        from operating.instruct_files import MEDIA, file_name
+        try:
+            data = as_file(body.chart.model_dump(mode="json"), body.format)
+        except NotDrawn as why:
+            raise UserFacing("chart_file", str(why), 422) from None
+        name = file_name(body.chart.title or "Chart", body.format)
+        plain = re.sub(r'[^A-Za-z0-9 ._()-]', "_", name).strip() or f"chart.{body.format}"
+        return Response(data, media_type=MEDIA[body.format],
+                        headers={"Cache-Control": "no-store",
+                                 "Content-Disposition": f'attachment; filename="{plain}"'})
 
     @app.get("/api/templates", response_model=m.TemplateList, tags=["templates"],
              responses={401: {"model": m.ErrorResponse}})
@@ -2230,6 +2403,36 @@ def create_app(backend: Any, auth: Any, *, allowed_origins: frozenset[str] = fro
         except (KeyError, ValueError):
             return problem("not_found", 404)
         return work_log_thread(thread, who)
+
+    @app.get("/api/ask/chats", response_model=m.AskChats, tags=["ask"],
+             responses={401: {"model": m.ErrorResponse}})
+    def ask_chats(q: Optional[str] = Query(None, max_length=200),
+                  limit: int = Query(100, ge=1, le=500),
+                  who: Reader = Depends(reader)) -> Response:
+        """Your Ask conversations, pinned first then the most recent: open one with
+        ``/ask?c=<conversation_id>`` and go on asking in it. ``q``: words in its name or
+        its questions. Yours only."""
+        from . import simple_ask
+        simple_ask.ready(backend, who)   # the next question starts on a ready session
+        found = work.chats(who.key, q=q, limit=limit)
+        out = m.AskChats(available=found is not None,
+                         chats=[m.AskChat(**c) for c in found or ()])
+        return JSONResponse(out.model_dump(mode="json"), headers={"Cache-Control": "no-store"})
+
+    @app.post("/api/ask/chats/{conversation_id}", response_model=m.AskChats, tags=["ask"],
+              responses={401: {"model": m.ErrorResponse}, 404: {"model": m.ErrorResponse}})
+    def ask_chat_update(conversation_id: str, body: m.AskChatUpdate,
+                        who: Reader = Depends(reader)) -> Response:
+        """Rename, pin or delete one of your own Ask conversations; your chats list after."""
+        thread = f"ask:{conversation_id}"
+        try:
+            if body.deleted:
+                work.hide(who.key, thread)
+            elif body.name is not None or body.pinned is not None:
+                work.organise(who.key, thread, name=body.name, pinned=body.pinned)
+        except (KeyError, ValueError):
+            return problem("not_found", 404)
+        return ask_chats(None, 100, who)
 
     @app.post("/api/work-log/saved", response_model=m.WorkLogPage, tags=["work-log"],
               responses={401: {"model": m.ErrorResponse}})

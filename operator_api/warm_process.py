@@ -4,7 +4,8 @@ The API process serves requests; reading ahead there (Today's lists, the briefin
 pages a reader opened last) took its read workers and its one interpreter lock from the
 readers it was meant to serve. Here the console's builder runs again in a separate
 process (``case_console.main``: its own case runtime, stores and read-only connections,
-every check again), niced to the lowest priority, and reads ahead for:
+every check again) and reads ahead, each read once the API serves no live request
+(``_after_live``), on ``WARM_READ_WORKERS`` read workers, for:
 
 * each known reader (an employee whose last real session is unexpired and not revoked,
   resolved again as a sign-in is: ``WorkspaceBackend.warm_known``) at start, on each new
@@ -48,6 +49,17 @@ YIELD_SECONDS = 120        # the longest one read-ahead waits for live requests
 # (``server.HOLD_MAX_SECONDS``) and the deploy's 660 s wait, with the API's own start-up
 # (its runtime, the section pool, the readers' policies: ~10-30 s) before it.
 FIRST_PASS_SECONDS = 420
+# read workers of the warm-up process (``PLX_WARM_READ_WORKERS``): each is a runtime of its
+# own (~0.3-0.5 GB), so a few, not one per core
+WARM_READ_WORKERS = 3
+
+
+def read_workers() -> int:
+    try:
+        return max(1, min(8, int(os.environ.get("PLX_WARM_READ_WORKERS", "")
+                                 or WARM_READ_WORKERS)))
+    except ValueError:
+        return WARM_READ_WORKERS
 
 
 class WarmProcess:
@@ -266,10 +278,6 @@ def child(conn: Any, argv: list[str], settings: dict[str, Any], mode: str,
     from operating import parent_watch
     # ends with the API (stopped without its exit handlers it never sends None)
     parent_watch.die_with(parent_watch.spawned_parent())
-    try:   # the lowest CPU priority: the API's requests always go first
-        os.nice(19 - os.nice(0))
-    except (AttributeError, OSError):
-        pass
     from operator_api.workspace import case_console
     from . import backend as be
     from .auth import Reader
@@ -286,7 +294,14 @@ def child(conn: Any, argv: list[str], settings: dict[str, Any], mode: str,
         backend.warm_enabled = True
         backend.yield_to_live = False
         backend.reader_mode = mode
-        backend.warmer = backend.reads   # one worker: Today, then the pages
+        backend.warmer = backend.reads   # Today, then the pages
+        workers = read_workers()
+        backend.screens_workers = workers
+        if fixtures is None:
+            # more read workers (each its own runtime, as the API's): the readers' screens
+            # read side by side, most visited first (``_screens_all``)
+            for number in range(1, workers):
+                be.start_read_worker(backend, argv, f"warm-{number}")
         if live is not None:
             # each read-ahead starts only while the API serves no request
             backend.reads.scope = lambda: _after_live(live, stop_event=backend.reads.stopped)

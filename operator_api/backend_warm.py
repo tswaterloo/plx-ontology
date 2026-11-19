@@ -13,6 +13,7 @@ import sqlite3
 import sys
 import threading
 import time
+import traceback
 from contextlib import contextmanager
 from datetime import date, datetime, timezone
 from pathlib import Path
@@ -24,7 +25,8 @@ from . import models as m
 from .auth import Reader, sign_in_kind
 from .serving import (
     access_label, ASK_WORKERS, CAPTURE_RANK, CARD_WORDS_KEPT, derived_code_status, eastern_words,
-    KNOWN_READERS, KNOWN_READERS_FILE, LEDGER_SYSTEMS, ORIGINAL_READS, PAGE_DIR, page_scope,
+    KNOWN_READERS, KNOWN_READERS_FILE, RECENT_USER_SECONDS, LEDGER_SYSTEMS, ORIGINAL_READS, others_app_data,
+    PAGE_DIR, page_scope,
     ReaderCache, REWARM_SECONDS, SessionSlots, STORE_SYSTEMS, truth_flag, WARM_IDLE_SECONDS,
     WARM_RECENT_PAGES, Worker
 )
@@ -34,6 +36,10 @@ from .freshness import (
 )
 from .briefing_view import BRIEFING_ITEMS_PAGE
 from .page_parts import inbox_state, shown_handles
+
+# a freshness reading older than the 10 s ttl but younger than this is served at once while the
+# next is read behind it
+FRESHNESS_STALE_SECONDS = 90.0
 
 from .backend_common import (
     _people_exclusion, ACCESS_TOUCH_SECONDS, CAPTURE_ALARM_SECONDS, DIRECTORY_WARM_MOST,
@@ -121,6 +127,13 @@ class WarmMixin:
         self.access_worker: Optional[Worker] = None
         # the access workers' one queue (``add_access_worker``: ``ACCESS_WORKERS`` of them)
         self.access_jobs: "queue.PriorityQueue" = queue.PriorityQueue()
+        # the kept pages' access checks alone (``add_access_worker(checks=True)``): a check
+        # queued behind the door's reads on the access workers (Home, the late list and the
+        # briefing groups at once: 0.6-11 s each cold) was not decided within
+        # ACCESS_WAIT_SECONDS, so the kept page was refused and the reader waited the
+        # whole read (Autopilot, My work, suggestions 14 s after a restart, 11-19)
+        self.check_jobs: "queue.PriorityQueue" = queue.PriorityQueue()
+        self.check_worker: Optional[Worker] = None
         self._access_started = False
         self.ask_jobs: "queue.PriorityQueue" = queue.PriorityQueue()
         self.ask_stopped = threading.Event()
@@ -148,7 +161,14 @@ class WarmMixin:
         self._lock = threading.Lock()
         self._pool: Any = None
         store = None
-        if keep_pages and self.data_dir is not None:
+        # a directory another user's API keeps (``others_app_data``) is never written here
+        self.others_data = others_app_data(self.data_dir)
+        if self.others_data is not None:
+            logging.getLogger("operator_api").warning(
+                "app data directory %s is kept by user %s, not this process's: no pages "
+                "kept there and no known readers written (give this API its own "
+                "--app-data-dir)", self.data_dir, self.others_data)
+        if keep_pages and self.data_dir is not None and self.others_data is None:
             from .page_store import PageStore
             from integrations.page_counts import keep_page_counts
             store = PageStore(self.data_dir / PAGE_DIR)
@@ -183,17 +203,21 @@ class WarmMixin:
         the thread that runs its ``loop``); it stops with the owner thread's."""
         worker = Worker(objects_for, self.reads.jobs)
         worker.stopped = self.reads.stopped
-        worker.scope = page_scope
+        # the owner worker's scope (the warm-up process: each read once the API is idle)
+        worker.scope = getattr(self.reads, "scope", None) or page_scope
         self.read_helpers.append(worker)
         return worker
 
-    def add_access_worker(self, objects_for: Callable[[Any], Any]) -> Worker:
+    def add_access_worker(self, objects_for: Callable[[Any], Any],
+                          checks: bool = False) -> Worker:
         """An access worker (its own runtime, built by the caller on the thread that runs
         its ``loop``), on the access workers' one queue (``access_jobs``): the known
         readers' policies decided on it first (``prewarm_policies``), then it takes the
         kept pages' access checks and the door's reads with the others; it stops with the
-        owner thread's. The first one up serves alone until the next is."""
-        worker = Worker(objects_for, self.access_jobs)
+        owner thread's. The first one up serves alone until the next is. ``checks``: the
+        check worker instead, on its own queue (``check_jobs``): the kept pages' access
+        checks only, never a door read."""
+        worker = Worker(objects_for, self.check_jobs if checks else self.access_jobs)
         worker.stopped = self.reads.stopped
         worker.scope = page_scope
         with self._lock:
@@ -203,6 +227,11 @@ class WarmMixin:
             threading.Thread(target=prewarm_shared_reads, name="shared-reads-warm",
                              daemon=True).start()
         self.prewarm_policies(worker=worker)
+        if checks:
+            with self._lock:
+                if self.check_worker is None:
+                    self.check_worker = worker
+            return worker
         with self._lock:
             opened = self.access_worker is None
             if opened:
@@ -280,7 +309,9 @@ class WarmMixin:
         return self.warmer
 
     def _known_path(self) -> Optional[Path]:
-        return self.data_dir / KNOWN_READERS_FILE if self.data_dir else None
+        if not self.data_dir or getattr(self, "others_data", None) is not None:
+            return None   # another user's API keeps it (``others_app_data``)
+        return self.data_dir / KNOWN_READERS_FILE
 
     @contextmanager
     def _known_locked(self) -> Iterator[None]:
@@ -332,6 +363,23 @@ class WarmMixin:
                 and re.fullmatch(r"[0-9a-f-]{36}", str(oid))
                 and re.fullmatch(r"[0-9a-f]{64}", str(v.get("ref") or ""))}
 
+    def recent_users(self) -> list[str]:
+        """Employees who used the app within ``RECENT_USER_SECONDS`` whose session has since
+        ended (the unexpired ones are ``known_readers``), most recent first; never one who
+        signed out. Object ids only."""
+        path = self._known_path()
+        try:
+            held = json.loads(path.read_text(encoding="utf-8")) if path else {}
+        except (OSError, ValueError):
+            return []
+        now = time.time()
+        rows = [(float(v.get("seen") or 0), oid) for oid, v in
+                (held.items() if isinstance(held, dict) else ())
+                if isinstance(v, Mapping) and v.get("signed_out") is not True
+                and re.fullmatch(r"[0-9a-f-]{36}", str(oid))
+                and now - float(v.get("seen") or 0) < RECENT_USER_SECONDS]
+        return [oid for _seen, oid in sorted(rows, reverse=True)]
+
     def _write_known(self, known: Mapping[str, Any]) -> None:
         path = self._known_path()
         if path is None:
@@ -342,10 +390,15 @@ class WarmMixin:
         except (OSError, ValueError):
             held = {}
         out = {oid: v for oid, v in (held.items() if isinstance(held, dict) else ())
-               if isinstance(v, Mapping) and v.get("signed_out") is True and oid not in known
-               and isinstance(v.get("seen"), (int, float))}
-        kept = dict(sorted({**out, **known}.items(),
+               if isinstance(v, Mapping) and oid not in known
+               and isinstance(v.get("seen"), (int, float))
+               and (v.get("signed_out") is True
+                    or time.time() - v["seen"] < RECENT_USER_SECONDS)}
+        # (an entry stays for ``RECENT_USER_SECONDS`` past its session: ``recent_users``)
+        cut = time.time() - RECENT_USER_SECONDS
+        kept = dict(sorted(({**out, **known}).items(),
                            key=lambda kv: -kv[1]["seen"])[:KNOWN_READERS])
+        kept = {oid: v for oid, v in kept.items() if v["seen"] >= cut or v.get("signed_out") is True}
         try:
             path.parent.mkdir(parents=True, exist_ok=True)
             tmp = path.with_name(f".{path.name}.{secrets.token_hex(4)}")
@@ -454,9 +507,17 @@ class WarmMixin:
         done = {str(o).lower() for o in known} | self.signed_out()
         people = [str(o or "").strip().lower() for o in people]
         people = [o for o in people if o and o not in done]
-        if len(people) > DIRECTORY_WARM_MOST:   # a different window each re-warm round
-            start = (int(time.time() // REWARM_SECONDS) * DIRECTORY_WARM_MOST) % len(people)
+        # who used the app this week comes first, every round (their first Home after a
+        # restart opens a kept page and a kept trail); the rest follow in a window
+        listed = set(people)
+        recent = [o for o in self.recent_users() if o in listed]
+        chosen = set(recent)
+        people = [o for o in people if o not in chosen]
+        room = max(DIRECTORY_WARM_MOST - len(recent), 0)
+        if len(people) > room and people:   # a different window each re-warm round
+            start = (int(time.time() // REWARM_SECONDS) * max(room, 1)) % len(people)
             people = (people[start:] + people[:start])
+        people = recent + people[:room]
         expires = int(time.time()) + DIRECTORY_WARM_SECONDS
         warmed = 0
         for oid in people[:DIRECTORY_WARM_MOST]:
@@ -482,7 +543,16 @@ class WarmMixin:
         worker, which then serves no kept page and the reader waits the full read). One
         that fails is skipped; at most until ``deadline``. How many ran."""
         ran = 0
-        for name in PREWARM_SCREENS:
+        names = list(PREWARM_SCREENS)
+        try:   # the groups' first pages Home asks for with the briefing (kept as it is)
+            from .briefing_view import HOME_GROUP_PAGE_ROWS, home_group_pages
+            held = self._held_good((reader.key, reader.mode, ("briefing", False)))
+            if held is not None and getattr(held[1], "status", None) == "read":
+                names += [("briefing_items", kind, 0, HOME_GROUP_PAGE_ROWS)
+                          for kind in home_group_pages(held[1])]
+        except Exception:  # noqa: BLE001 - those are checked on the visit
+            pass
+        for name in names:
             if time.monotonic() >= deadline:
                 break
             try:
@@ -495,8 +565,11 @@ class WarmMixin:
                     job(view)
                 ran += 1
             except Exception as error:  # noqa: BLE001 - checked on the visit as before
-                logging.getLogger("operator_api").info("kept page check not prewarmed: %s",
-                                                       type(error).__name__)
+                where = traceback.extract_tb(error.__traceback__)[-1:]
+                logging.getLogger("operator_api").info(
+                    "kept page check of %s not prewarmed: %s (%s)", name[0],
+                    type(error).__name__,
+                    f"{where[0].filename.rsplit('/', 1)[-1]}:{where[0].lineno}" if where else "-")
         return ran
 
     def _warm_state(self) -> tuple:
@@ -527,14 +600,17 @@ class WarmMixin:
                 ai_watcher.stamp(Path(self.store_path)))
 
     def _screens_pool(self) -> Any:
-        """The one worker the screens read ahead run on (``SCREENS_AHEAD_WORKERS``): every
-        known reader's queue behind it, never a thread each."""
+        """The workers the screens read ahead run on (``screens_workers``, else
+        ``SCREENS_AHEAD_WORKERS``): every known reader's screens queued on them in order,
+        never a thread each."""
         with self._lock:
             pool = self.__dict__.get("_screens_executor")
             if pool is None:
                 from concurrent.futures import ThreadPoolExecutor
                 pool = self.__dict__["_screens_executor"] = ThreadPoolExecutor(
-                    max_workers=SCREENS_AHEAD_WORKERS, thread_name_prefix="warm-screens")
+                    max_workers=max(1, int(getattr(self, "screens_workers", 0)
+                                           or SCREENS_AHEAD_WORKERS)),
+                    thread_name_prefix="warm-screens")
             return pool
 
     def _briefing_ahead(self, reader: Reader) -> Callable[[Any], Any]:
@@ -640,6 +716,11 @@ class WarmMixin:
             with view._request():
                 page_key(view, ("policy",))
         worker.submit(reader, decide, priority=ACCESS_WARM_PRIORITY)
+        checks = getattr(self, "check_worker", None)
+        if checks is not None and not checks.stopped.is_set():
+            # the check worker's own runtime too: the reader's first kept page is checked
+            # there (``_access_later``)
+            checks.submit(reader, decide, priority=ACCESS_WARM_PRIORITY)
         return True
 
     def me(self, reader: Reader) -> m.Me:
@@ -770,6 +851,55 @@ class WarmMixin:
 
     def freshness(self, base: Mapping[str, Any] | None = None, *,
                   handles: Iterable[str] = ()) -> m.Freshness:
+        """``_freshness``; with neither ``base`` nor ``handles`` (reader-independent: the
+        same for every reader) on a serving API (``freshness_seconds``, set by ``serve``)
+        the one read within that long of this process's clock and of ``clock`` (a copy
+        each call)."""
+        handles = tuple(handles)
+        ttl = getattr(self, "freshness_seconds", 0)
+        if base is not None or handles or not ttl:
+            return self._freshness(base, handles=handles)
+        bucket = (str(self.state_dir), int(self.clock().timestamp() // ttl))
+        with self._lock:
+            held = self.__dict__.get("_freshness_held")
+        now = time.monotonic()
+        if held is not None and held[0] == bucket and now - held[1] < ttl:
+            return held[2].model_copy(deep=True)
+        if (held is not None and held[0][0] == bucket[0]
+                and now - held[1] < FRESHNESS_STALE_SECONDS):
+            # the last reading, at once, while the next is made behind it (one at a time):
+            # the first read of a cold process took ~1.5 s and held Home and the sidebar
+            self._freshness_again()
+            return held[2].model_copy(deep=True)
+        return self._freshness_now(bucket).model_copy(deep=True)
+
+    def _freshness_now(self, bucket: tuple) -> m.Freshness:
+        fresh = self._freshness()
+        with self._lock:
+            self.__dict__["_freshness_held"] = (bucket, time.monotonic(), fresh)
+        return fresh
+
+    def _freshness_again(self) -> None:
+        with self._lock:
+            if self.__dict__.get("_freshness_reading"):
+                return
+            self.__dict__["_freshness_reading"] = True
+        ttl = getattr(self, "freshness_seconds", 0)
+
+        def run() -> None:
+            try:
+                self._freshness_now((str(self.state_dir),
+                                     int(self.clock().timestamp() // ttl)))
+            except Exception:  # noqa: BLE001 - the last reading stands until it is read
+                pass
+            finally:
+                with self._lock:
+                    self.__dict__["_freshness_reading"] = False
+
+        threading.Thread(target=run, name="freshness-again", daemon=True).start()
+
+    def _freshness(self, base: Mapping[str, Any] | None = None, *,
+                   handles: Iterable[str] = ()) -> m.Freshness:
         """Each source's age as the data served states it: the served projection's own
         per-source capture time, judged by the host's capture bound with the one rule
         answers apply (``ontology_tools.aged``), so Home never says fresh where an answer
@@ -788,7 +918,8 @@ class WarmMixin:
         ledger = self.state_dir / "host" / "host.sqlite" if self.state_dir else None
         entries = self._store_freshness()
         if entries is not None:
-            from operating.ontology_tools_policy import aged, capture_failures
+            from operating.freshness_cadence import aged
+            from operating.ontology_tools_policy import capture_failures
             now = self.clock()
             failed = capture_failures(ledger, self._store_built_at())
             seen: dict[str, m.FreshnessSource] = {}

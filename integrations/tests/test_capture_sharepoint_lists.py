@@ -301,6 +301,14 @@ class AudienceTests(CaptureCase):
         self.capture.run(scope())
         self.assertEqual(self.store.resolve(old, READER)["status"], "superseded")
         self.graph.perms["1"] = self.graph.perms["2"]
+        # The sharing changed without the item's eTag changing: its permissions are read
+        # again when its refresh slot comes round (``ACL_REFRESH_SECONDS``), not every run.
+        self.capture.run(scope())
+        self.assertIn("1", {r["key"]["id"] for r in self.visible(READER)})
+        real = self.store._clock
+        start = real()
+        self.addCleanup(setattr, self.store, "_clock", real)
+        self.store._clock = lambda: start + dt.timedelta(seconds=csl.ACL_REFRESH_SECONDS)
         self.capture.run(scope())
         self.assertEqual(self.store.resolve(old, READER)["error"], "not_visible")
         self.assertNotIn("1", {r["key"]["id"] for r in self.visible(READER)})

@@ -403,6 +403,12 @@ JOB_SECONDS = 240
 JOB_BUDGET = 180
 JOB_STEPS = 18
 JOB_TURNS = 30
+# the assistant's one session per moment (``operating.autopilot_agent``): it reads the
+# conversation and the records, then prepares the reply, the question or the changes
+AGENT_SECONDS = 360
+AGENT_BUDGET = 300
+AGENT_STEPS = 24
+AGENT_TURNS = 40
 
 
 def readers(path: Any) -> dict[str, dict[str, str]]:
@@ -443,62 +449,92 @@ class Lookup:
         self.secret = session_secret(environ)
         self.config = Path(str(environ.get(HOST_CONFIG_ENV) or ""))
         self.state = Path(str(environ.get(HOST_STATE_ENV) or ""))
-        self.readers = readers(environ.get(READERS_ENV) or "")
+        # read again on every session (``run``): a person added to the readers file
+        # (``scripts/autopilot_staff_access.py``) or taken out of it counts at once
+        self.readers_path = str(environ.get(READERS_ENV) or "")
         self.model = str(environ.get(ad.MODEL_ENV) or "").strip()
         self.binary = environ.get(cm.BINARY_ENV) or cm.BINARY
         self.home = environ.get(cm.HOME_ENV) or cm.CLAUDE_HOME
         self.graph = {n: environ[n] for n in _graph_env() if environ.get(n)}
 
     def run(self, owner: str, prompt: str, *, tools: Sequence[Any] = (),
-            job: bool = False) -> Optional[tuple[str, list[str]]]:
+            job: bool = False, agent: bool = False,
+            reads: bool = True) -> Optional[tuple[str, list[str]]]:
         """(the session's final text, the texts the tools returned) or None: no session
         for ``owner`` (not in the readers file, no secret, no host, an unsafe home).
         ``tools``: local tools the session gets beside the read tools (an autopilot job's
         proposal tools, ``operating.autopilot_jobs``); ``job``: the job's system prompt
-        and its longer limits (``JOB_*``)."""
+        and its longer limits (``JOB_*``); ``agent``: the assistant's (``AGENT_*``,
+        ``operating.autopilot_agent``); ``reads`` False: no record read tool is allowed
+        (a conversation with an outside reader: ``operating.autopilot_outbound``), only
+        ``tools``."""
         import json
         from operating import agent_session, chat_ask_model as cm, model_ledger
         from operating.card_text import masked_spawn
         from operating.ontology_tools_traverse import FACTS_KEEPER_ENV
         from . import simple_ask
-        claims = self.readers.get(str(owner or "").lower())
+        claims = readers(self.readers_path).get(str(owner or "").lower())
         if not (claims and self.secret and self.model and self.config.is_file()
                 and self.state.is_dir() and cm.credential_path_safe(self.binary, self.home)):
             return None
         config = json.loads(self.config.read_text(encoding="utf-8"))
         extra = dict(self.graph) if config.get("entra_directory") else {}
         extra[FACTS_KEEPER_ENV] = "0"
+        from operating.read_ceiling import CEILING_ENV
+        if os.environ.get(CEILING_ENV):
+            # a replay of a past moment (its harness set it): the tools read as then
+            extra[CEILING_ENV] = os.environ[CEILING_ENV]
         host = agent_session.ReaderHost(self.state, self.config, claims, self.secret,
                                         tenant=str(config.get("tenant") or "plx"),
                                         extra_env=extra, agent=simple_ask.AGENT)
-        agent = agent_session.ClaudeCodeAgent(
-            binary=self.binary, model=self.model,
-            timeout=JOB_SECONDS if job else LOOKUP_SECONDS,
-            max_turns=JOB_TURNS if job else LOOKUP_TURNS,
+        if not reads:
+            host = NoReads(host)
+        seconds, budget, steps, turns, said = (
+            (AGENT_SECONDS, AGENT_BUDGET, AGENT_STEPS, AGENT_TURNS, agent_system_prompt())
+            if agent else (JOB_SECONDS, JOB_BUDGET, JOB_STEPS, JOB_TURNS, job_system_prompt())
+            if job else (LOOKUP_SECONDS, LOOKUP_BUDGET, LOOKUP_STEPS, LOOKUP_TURNS,
+                         system_prompt()))
+        session = agent_session.ClaudeCodeAgent(
+            binary=self.binary, model=self.model, timeout=seconds, max_turns=turns,
             spawn=masked_spawn(_homed(agent_session._spawn, self.home)),
-            budget_seconds=JOB_BUDGET if job else LOOKUP_BUDGET,
-            max_steps=JOB_STEPS if job else LOOKUP_STEPS, aliases=False,
+            budget_seconds=budget, max_steps=steps, aliases=False,
             end_at_gate=False, prefetch=False, helpers=0,
-            extra_args=["--system-prompt", job_system_prompt() if job else system_prompt()])
+            extra_args=["--system-prompt", said])
         if tools:
-            agent.local_tools = {**agent.local_tools, **{t.spec["name"]: t for t in tools}}
+            session.local_tools = {**session.local_tools, **{t.spec["name"]: t for t in tools}}
         import time
         started = time.monotonic()
         try:
-            ran = agent.run(prompt, host)
+            ran = session.run(prompt, host)
         finally:
             close = getattr(host, "close", None)
             if close is not None:
                 close()
         turns, tokens = model_ledger.usage_of({"num_turns": ran.usage.get("num_turns"),
                                                "usage": ran.usage})
-        model_ledger.record("autopilot_job" if job else "autopilot_draft", prompt=prompt,
+        model_ledger.record("autopilot_agent" if agent else "autopilot_job" if job
+                            else "autopilot_draft", prompt=prompt,
                             ok=bool(ran.final_text),
                             turns=turns, tokens=tokens, seconds=time.monotonic() - started)
         looked = [str(e.get("result")) for e in ran.events
                   if e.get("type") == "tool_call" and e.get("name") in simple_ask.TOOLS
                   and not e.get("is_error") and e.get("result") is not None]
         return str(ran.final_text or ""), looked
+
+
+class NoReads:
+    """A reader host whose own tools are all refused (none is offered as read-only, so the
+    session's gate allows none of them: ``agent_session.allowed_tools``); everything else
+    is the host's."""
+
+    def __init__(self, host: Any) -> None:
+        self._host = host
+
+    def tools(self) -> list[dict[str, Any]]:
+        return [{**t, "read_only": False} for t in self._host.tools()]
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._host, name)
 
 
 def _graph_env() -> tuple[str, ...]:
@@ -524,6 +560,18 @@ def job_system_prompt() -> str:
                         "You look up PLX's own business records to prepare, for a PLX "
                         "employee, the system changes an event calls for; the task says "
                         "how. Each change is only proposed: the person confirms it.", 1)
+
+
+def agent_system_prompt() -> str:
+    """The Simple Ask's data dictionary and method, for the assistant's session that
+    prepares what a person would do at a moment (``operating.autopilot_agent``)."""
+    from . import simple_ask
+    text = simple_ask.system_prompt()
+    return text.replace("You answer PLX employees' questions about PLX's own business records.",
+                        "You are a PLX employee's assistant: you look up PLX's own business "
+                        "records and prepare what the employee would do next; the task says "
+                        "for whom and when. Each reply, change or message is only proposed: "
+                        "the employee confirms it.", 1)
 
 
 def lookup_factory(environ: Optional[Mapping[str, str]] = None

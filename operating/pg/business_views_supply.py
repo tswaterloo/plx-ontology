@@ -15,7 +15,7 @@ from decimal import Decimal
 from typing import Any, Iterable, Iterator, Mapping, Sequence
 
 from operating.pg.business_views import (
-    Cell, MERGE_RULES_DOC, PARTY_MERGE, PILOT_DOC, Reader, Rec, Row, Thing, _text,
+    Cell, MERGE_RULES_DOC, doc_type_doc, PARTY_MERGE, PILOT_DOC, Reader, Rec, Row, Thing, _text,
     aging_bucket, binding_rank, cents, fill, handle_col, money, money_of, name_linked,
     party_codes, party_handle, pick, pilot_binding, to_currency, to_date, to_decimal,
     unique_things, view)
@@ -800,6 +800,8 @@ AP_PROPS = ("idinvc", "idvend", "txttrxtype", "dateinvc", "datedue", "amtduetc",
             "codecurn", "swpaid", "idponbr", "descinvc")
 SAGE_AP_DOC = {"1": "invoice", "2": "debit note", "3": "credit note", "4": "interest",
                "5": "unapplied cash", "10": "prepayment", "11": "payment"}
+AP_DOC_TYPE_DOC = doc_type_doc(SAGE_AP_DOC, "payments, prepayments, unapplied cash and "
+                               "credit notes") + "; a BC pilot purchase invoice is an invoice"
 PURCHASE_INVOICE_PROPS = ("bc_number", "vendor_invoice_number", "order_number",
                           "vendor_number", "invoice_date", "due_date", "status", "currency",
                           "subtotal", "total_amount", "remaining_amount")
@@ -865,12 +867,14 @@ def one_party(row: Row, ends: Sequence[tuple[str, str]], things: Mapping[str, Th
     return thing
 
 
-@view("supplier_invoices", "Every supplier document once: Sage AP documents (invoices, "
-      "credit notes, prepayments; paid or not) and BC's pilot purchase invoices (pilot = "
-      "true, left out unless asked for). Amounts in the document's own currency.",
+@view("supplier_invoices", "Every supplier document once: Sage AP documents of every kind "
+      "(invoices, debit and credit notes, interest, prepayments, payments; paid or not: "
+      "document_type tells them apart, an invoice count is document_type = 'invoice') and "
+      "BC's pilot purchase invoices (pilot = true, left out unless asked for). Amounts in "
+      "the document's own currency.",
       [("supplier", "text", "supplier name"), ("supplier_code", "text", "vendor code"),
        ("document_number", "text", "the supplier's document number"),
-       ("document_type", "text", "invoice, credit note, debit note, prepayment, payment"),
+       ("document_type", "text", AP_DOC_TYPE_DOC),
        ("document_date", "date", "document date"), ("due_date", "date", "due date"),
        ("original_amount", "money", "document amount"),
        ("amount_due", "money", "still to pay (0 once paid)"),
@@ -925,7 +929,7 @@ def _supplier_invoices(rd: Reader, as_of: dt.date) -> Iterator[Row]:
       "(prepayments and credit notes negative). BC aged payables are pilot data, not used.",
       [("supplier", "text", "supplier name"), ("supplier_code", "text", "vendor code"),
        ("document_number", "text", "the supplier's document number"),
-       ("document_type", "text", "invoice, credit note, debit note, prepayment, payment"),
+       ("document_type", "text", AP_DOC_TYPE_DOC),
        ("document_date", "date", "document date"), ("due_date", "date", "due date"),
        ("amount_due", "money", "remaining balance, Sage AP amtduetc in codecurn; only documents "
         "Sage marks unpaid (swpaid 0)"),

@@ -32,5 +32,13 @@ CREATE INDEX IF NOT EXISTS event_awaiting ON event (kind, at, awaiting)
   WHERE awaiting IS NOT NULL;
 """
 
+# An Ask conversation the person deleted from their chats list: gone from the list, its
+# events kept (the log is append-only and stays the record of what was asked).
+_HIDDEN = """
+CREATE TABLE IF NOT EXISTS thread_hidden (reader TEXT NOT NULL, thread TEXT NOT NULL,
+  at TEXT NOT NULL, PRIMARY KEY (reader, thread));
+"""
+
 STEPS = ((1, "initial", (_DDL,)),
-         (2, "covering_indexes", (_COVERING,)))
+         (2, "covering_indexes", (_COVERING,)),
+         (3, "hidden_threads", (_HIDDEN,)))

@@ -12,7 +12,7 @@ from pathlib import Path
 import re
 from typing import Any, Callable, Mapping, Optional
 
-from .serving import (ACCESS_WORKERS, ASK_WORKERS, ASK_WORKERS_MOST, DEFAULT_DATA_DIR,
+from .serving import (ACCESS_WORKERS, CHECK_WORKERS, ASK_WORKERS, ASK_WORKERS_MOST, DEFAULT_DATA_DIR,
     READ_WORKERS, SECTION_WORKERS, WARM_HOSTS)
 
 
@@ -61,6 +61,9 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
                        help="access checks and door reads (Home, alerts, record pages) "
                             "served at once (each its own runtime and thread on one queue, "
                             "~0.5 GB each); at least 1")
+    group.add_argument("--check-workers", type=int, default=CHECK_WORKERS,
+                       help="the kept pages' access checks alone, on their own queue (each "
+                            "its own runtime and thread, ~0.5 GB each); at least 1")
     group.add_argument("--section-workers", type=int, default=SECTION_WORKERS,
                        help="page sections read at once (each its own process and "
                             "runtime); 0: the read worker reads them")

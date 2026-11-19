@@ -42,9 +42,28 @@ def access_inputs(state_dir: Any = None) -> None:
     load_exclusion()
 
 
+def served_status(state_dir: Any = None) -> None:
+    """The derived-code status every Home, sidebar and page-footer freshness line shows
+    (``operating.derived_status.served``): parsing the derivation code for it took ~2 s on
+    the first request after a start, held back Home and the sidebar, so it is read here and
+    served from memory (read again behind the page, never waited for)."""
+    if state_dir is None:
+        return
+    from operating import derived_status
+    deadline = time.monotonic() + SERVED_STATUS_SECONDS
+    while time.monotonic() < deadline:
+        found = derived_status.served(state_dir) or {}
+        if not ({"status_computing", "versions_computing"} & set(found.get("unknown") or ())):
+            return
+        time.sleep(0.2)
+
+
+SERVED_STATUS_SECONDS = 60.0
+HOLD_JOIN_SECONDS = 45.0   # a held port waits for the preload no longer than this
+
 STEPS: tuple[tuple[str, Callable[..., None]], ...] = (
     ("schema", schema), ("access inputs", access_inputs),
-    ("code fingerprint", code_fingerprint))
+    ("code fingerprint", code_fingerprint), ("served status", served_status))
 
 
 def run(state_dir: Any = None) -> None:

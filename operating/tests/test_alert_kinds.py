@@ -64,6 +64,21 @@ class Registry(unittest.TestCase):
         self.assertTrue(ak.shown("chase_escalating", reader_on=["chase_escalating"]))
         self.assertFalse(ak.home("chase_escalating"))
 
+    def test_suggestion_cards_keep_the_kinds_the_old_engine_always_showed(self):
+        """Six kinds stay on the suggestion cards for every routed reader though they are off
+        by default (no regression); Watching and My work still follow default and home."""
+        from operator_api import page_sql
+        six = {"po_undated", "po_due", "eta_slipped", "vendor_no_reply", "negative_margin",
+               "customer_order_at_risk"}
+        self.assertEqual({t["type"] for t in ak.registry()["types"] if ak.suggested(t["type"])},
+                         six)
+        self.assertFalse(ak.suggested("no_such_type"))
+        plain, cards = page_sql.alert_types(), page_sql.alert_types(suggestions=True)
+        self.assertFalse(six & set(plain))
+        self.assertEqual(six & set(cards), six)
+        for name in six:
+            self.assertFalse(ak.default_on(name) or ak.home(name), name)
+
     def test_the_design_decisions_hold(self):
         for name in ("needs_my_reply", "po_late", "lot_on_hold"):
             self.assertTrue(ak.home(name), name)

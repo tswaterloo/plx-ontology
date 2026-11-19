@@ -981,6 +981,33 @@ def _age_check(name: str, now: datetime, stamp: Any, bound: float, missing: str)
     return _check(name, age, bound, age is None or age > bound, "min")
 
 
+def alerts_pass_check(state: Path, now: datetime, t: Mapping[str, float],
+                      environ: Mapping[str, str], dsn: Optional[str]) -> Check:
+    """``proactive_last_pass``: minutes since the alerts the app shows last ran. With the
+    SQL alerts on (``PLX_ALERTS_SQL=1``, what Home, the briefing and the late list read) that
+    is the newest finished rule in the business schema's ``alert_runs``; else the old
+    engine's inbox. (The SQL runner never writes the inbox, so reading it there called
+    current alerts stale on every page.)"""
+    bound = t["proactive_last_pass_minutes"]
+    if str(environ.get("PLX_ALERTS_SQL", "")).strip() != "1":
+        return _age_check("proactive_last_pass", now,
+                          _scalar(state / "projection" / "ontology.sqlite.gap-inbox.sqlite",
+                                  "SELECT max(run_at) FROM runs"), bound, "no run recorded")
+    if not dsn:
+        return _check("proactive_last_pass", None, bound, None, "min", "no DSN configured")
+    try:
+        import psycopg  # optional
+        from operating.pg import business_views as bv
+        with psycopg.connect(dsn, connect_timeout=5,
+                             options="-c statement_timeout=5000") as conn:
+            stamp = conn.execute(f"SELECT max(ok_at) FROM {bv.SCHEMA}.alert_runs").fetchone()[0]
+            stamp = stamp.isoformat() if isinstance(stamp, datetime) else stamp
+    except Exception as exc:  # noqa: BLE001 - any database failure is "unknown"
+        return _check("proactive_last_pass", None, bound, None, "min",
+                      f"unreadable ({type(exc).__name__})")
+    return _age_check("proactive_last_pass", now, stamp, bound, "no run recorded")
+
+
 def _layer_store(layer: Any) -> Optional[str]:
     store = layer.get("store") if isinstance(layer, dict) else layer
     return store if isinstance(store, str) and store else None
@@ -1011,12 +1038,19 @@ def search_follow_lag_check(state: Path, now: datetime, t: Mapping[str, float]) 
                   "min", f"{len(missing)} of {len(served)} delta layers not in the search index")
 
 
-def detectors_check(state: Path, now: datetime, t: Mapping[str, float]) -> Optional[Check]:
+def detectors_check(state: Path, now: datetime, t: Mapping[str, float],
+                    environ: Optional[Mapping[str, str]] = None,
+                    dsn: Optional[str] = None) -> Optional[Check]:
     """Proactive detectors with no complete run within ``detector_complete_hours`` (audit
     C-serving 2: 14 of 16 detectors ended truncated for days while the engine's own last
-    pass looked fresh). None where the engine never ran."""
-    inbox = state / "projection" / "ontology.sqlite.gap-inbox.sqlite"
+    pass looked fresh). None where the engine never ran. With the SQL alerts on
+    (``PLX_ALERTS_SQL=1``) the rules the app shows are the SQL runner's, judged from the
+    business schema's ``alert_runs`` (the old engine's detectors no longer feed any page:
+    judging them put 'Alerts show the last check's findings' on every page)."""
     bound = t["detector_complete_hours"]
+    if str((environ or {}).get("PLX_ALERTS_SQL", "")).strip() == "1":
+        return _sql_rules_check(now, bound, dsn)
+    inbox = state / "projection" / "ontology.sqlite.gap-inbox.sqlite"
     if not inbox.is_file():
         return None
     try:
@@ -1055,6 +1089,38 @@ def detectors_check(state: Path, now: datetime, t: Mapping[str, float]) -> Optio
         f"{len(ran)} detectors complete within {bound:g} h"
     if blocked:
         detail += "; blocked on unserved data (not paged): " + ", ".join(blocked[:8])
+    return _check("proactive_detectors", len(stale), 0, bool(stale), "detectors", detail)
+
+
+def _sql_rules_check(now: datetime, bound: float, dsn: Optional[str]) -> Check:
+    """``proactive_detectors`` from the SQL alert rules: each rule in ``alert_runs`` whose
+    last good run (``ok_at``) is older than ``bound`` hours, or that never ran well, is
+    named; unreadable (no DSN, a database failure): unknown, never fine."""
+    if not dsn:
+        return _check("proactive_detectors", None, 0, None, "detectors", "no DSN configured")
+    try:
+        import psycopg  # optional
+        from operating.pg import business_views as bv
+        with psycopg.connect(dsn, connect_timeout=5,
+                             options="-c statement_timeout=5000") as conn:
+            rows = list(conn.execute(f"SELECT rule, ok_at FROM {bv.SCHEMA}.alert_runs "
+                                     "ORDER BY rule").fetchall())
+    except Exception as exc:  # noqa: BLE001 - any database failure is "unknown"
+        return _check("proactive_detectors", None, 0, None, "detectors",
+                      f"alert runs unreadable ({type(exc).__name__})")
+    if not rows:
+        # no rule has run: nothing says the alerts are current (never "0 of 0 behind")
+        return _check("proactive_detectors", None, 0, None, "detectors",
+                      "no alert rule has run")
+    stale = []
+    for rule, ok_at in rows:
+        age = _minutes(now, ok_at if isinstance(ok_at, datetime) else _parse(ok_at))
+        if age is None or age > bound * 60:
+            stale.append(f"{rule} " + ("never completed" if age is None
+                                       else f"{round(age / 60)} h"))
+    detail = (f"{len(stale)} of {len(rows)} alert rules not complete within {bound:g} h: "
+              + ", ".join(stale[:8]) + (", ..." if len(stale) > 8 else "")) if stale else \
+        f"{len(rows)} alert rules complete within {bound:g} h"
     return _check("proactive_detectors", len(stale), 0, bool(stale), "detectors", detail)
 
 
@@ -1103,14 +1169,10 @@ def collect(state_dir: Any, *, now: Optional[datetime] = None,
             checks.append(extra)
     checks.append(pg_check(state, now, t, pg_dsn))
     checks.append(change_feed_check(now, t, pg_dsn))
-    checks.append(_age_check(
-        "proactive_last_pass", now,
-        _scalar(state / "projection" / "ontology.sqlite.gap-inbox.sqlite",
-                "SELECT max(run_at) FROM runs"),
-        t["proactive_last_pass_minutes"], "no run recorded"))
+    checks.append(alerts_pass_check(state, now, t, environ, pg_dsn))
     checks.append(search_follow_check(state, now, t))
     checks.append(search_follow_lag_check(state, now, t))
-    detectors = detectors_check(state, now, t)
+    detectors = detectors_check(state, now, t, environ, pg_dsn)
     if detectors is not None:
         checks.append(detectors)
     checks.append(truth_check(state, t))

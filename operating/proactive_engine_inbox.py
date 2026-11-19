@@ -729,14 +729,18 @@ def _st_fill(conn: sqlite3.Connection, schema: str | None, *, source: str = "mai
     """Copy the store rows the inbox (``source``) names from Postgres into ``schema`` of
     ``conn`` (None: a new in-memory ``st`` attached to this open alone)."""
     from operating.pg import ontology_reader
-    named: set[str] = set()
-    for table in ("gaps", "gap_cites", "unjudged_causes"):
-        try:
-            named.update(r[0] for r in conn.execute(
-                f"SELECT DISTINCT object_id FROM {source}.{table} "
-                "WHERE object_id IS NOT NULL"))
-        except sqlite3.OperationalError:   # an inbox written before the table
-            continue
+    # the named ids in ONE step of SQLite (a row at a time, 285k rows took 1-4 s: each row
+    # waits for the interpreter lock while other reads run); an inbox written before a
+    # table has none of it
+    present = {r[0] for r in conn.execute(
+        f"SELECT name FROM {source}.sqlite_master WHERE type = 'table'")}
+    parts = [f"SELECT object_id FROM {source}.{table}"
+             for table in ("gaps", "gap_cites", "unjudged_causes") if table in present]
+    listed = "[]"
+    if parts:
+        listed = conn.execute("SELECT json_group_array(object_id) FROM (" +
+                              " UNION ".join(parts) + ") WHERE object_id IS NOT NULL"
+                              ).fetchone()[0] or "[]"
     import psycopg
     with psycopg.connect(ontology_reader.dsn(), connect_timeout=5) as pg:
         meta = dict(pg.execute("SELECT key, value FROM ontology.store_meta WHERE key IN "
@@ -754,12 +758,14 @@ def _st_fill(conn: sqlite3.Connection, schema: str | None, *, source: str = "mai
             "UNION ALL SELECT (SELECT min(audience_key) FROM ontology.objects "
             "WHERE audience_key > k.key) FROM k WHERE k.key IS NOT NULL) "
             "SELECT key FROM k WHERE key IS NOT NULL ORDER BY key")]
-        ids = sorted(named)
+        # the ids go to Postgres as one JSON text, not a 200k-element array parameter
+        # (psycopg dumped that in Python, ~1 s each, holding the interpreter lock)
+        ids = "ANY(ARRAY(SELECT jsonb_array_elements_text(%s::jsonb)))"
         objects = pg.execute("SELECT object_id, audience_key FROM ontology.objects "
-                             "WHERE object_id = ANY(%s)", (ids,)).fetchall()
+                             f"WHERE object_id = {ids}", (listed,)).fetchall()
         versions = pg.execute("SELECT object_id, superseded_at, markings FROM "
-                              "ontology.object_versions WHERE object_id = ANY(%s) "
-                              "AND superseded_at IS NULL", (ids,)).fetchall()
+                              f"ontology.object_versions WHERE object_id = {ids} "
+                              "AND superseded_at IS NULL", (listed,)).fetchall()
     query_only = conn.execute("PRAGMA query_only").fetchone()[0]
     conn.execute("PRAGMA query_only = OFF")   # the copy in memory only; restored below
     if schema is None:

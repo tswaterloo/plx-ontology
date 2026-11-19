@@ -55,7 +55,7 @@
     "po_followup": "purchase_order_to_supplier",
     "invoice_send": "ar_invoice_send",
     "routine_update": "routine_update",
-    "job_recurring": "routine_update",
+    "job_recurring": "routine_update", "assistant_look": "routine_update",
     "rd_status_update": "rnd_status_update",
     "invoice_entry": "ar_invoice_entry",
     "shipment_posting": "shipment_posting",

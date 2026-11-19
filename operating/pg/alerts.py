@@ -44,6 +44,7 @@ from pathlib import Path
 from typing import Any, Mapping, Sequence
 
 from operating.pg import business_views as bv
+from operating.pg.people_excluded import internal_domains
 
 KINDS_FILE = Path(__file__).resolve().parents[1] / "alert_kinds.json"
 RULE_STATEMENT_MS = 120_000       # one rule's statement; a rule over it fails, never resolves
@@ -78,6 +79,17 @@ class Rule:
     # relations outside the business tables the SELECT reads ({s} = the schema): the
     # lineage side table, the ontology's current values (a copy's own change time)
     side: tuple[str, ...] = ()
+    # SELECT (handle, object id) of lineage objects of rows OTHER than ``sources`` that the
+    # alert rests on (a chain's purchase orders): recorded into ``objects`` too, so the
+    # people exclusion hides the alert when one of them is excluded
+    also_objects: str = ""
+    # (table, column) the sentence also shows from a table other than ``cols_of`` (a line's
+    # date on a header's card): tested against that column's markings like ``shows``
+    also_shows: tuple[tuple[str, str], ...] = ()
+
+    @property
+    def shown_cols(self) -> tuple[str, ...]:
+        return tuple(self.shows) + tuple(c for _, c in self.also_shows)
 
 
 # --------------------------------------------------------------------------- thresholds
@@ -137,6 +149,24 @@ STATE_SHARE = "0.95"                   # source_defaults.STATE_SHARE
 STATE_MINIMUM = 10                     # source_defaults.MINIMUM
 REPLY_DAYS = 30                        # proactive_commitments.REPLY_DAYS
 MAX_TO = 5                             # inbox_triage.MAX_TO
+MARGIN_DAYS = 30                       # proactive_events.MARGIN_DAYS
+REVISION_DAYS = 14                     # proactive_events.REVISION_DAYS
+REVISED_DATES = ("expected_date", "bc_expected_receipt_date")   # proactive_events.REVISED_DATES
+BULK_DATE_SHARE = "0.10"               # source_defaults.DATE_SHARE
+FIRM_TIERS = ("verified", "reviewed", "corroborated")   # impact_chain's firm links
+NO_REPLY_DAYS = 7                      # proactive_events.NO_REPLY_DAYS
+NO_REPLY_WINDOW_DAYS = 90              # proactive_events.NO_REPLY_WINDOW_DAYS
+MAX_NAMED_RECORDS = 4                  # proactive_events.MAX_NAMED_RECORDS
+# vendor_terms._ASKS / _REQUEST_WORDS and proactive_events._ETA_WORDS, as Postgres regexes
+_TERM_RE = (r"\m(quot(e|es|ation|ations)|rfq|pric(e|es|ing)|confirm(ation)?|"
+            r"lead[ \t-]*time|moq|availability|proforma)\M")
+_REQUEST_RE = (r"\?|\m(please|kindly|could you|can you|would you|let us know|let me know|"
+               r"send (us|me)|share|advise|provide|confirm)\M")
+_ETA_RE = (r"\m(eta|etas|delivery|deliver(ed|ing)?|ship(s|ping|ment|ped)?|dispatch(ed)?|"
+           r"arriv(e|al|ing)|tracking|status|update)\M")
+_FORWARD_RE = r"^\s*(\[[^\]]{1,30}\]|[A-Za-z]{2,4}(\[[0-9]+\])?\s*:\s*)*(FW|FWD|WG|TR|RV)\s*:"
+_REPLY_RE = r"^\s*((\[[^\]]{1,30}\]|[A-Za-z]{2,4}(\[[0-9]+\])?\s*:\s*)*)?(RE|AW|SV|VS|R|RIF|ANTW)\s*:"
+MARGIN_BASES = ("same_currency", "cost_converted_at_invoice_rate")   # a decided line margin
 
 
 # --------------------------------------------------------------------------- the rules
@@ -159,6 +189,298 @@ LATE_PO = Rule(
     "proactive_purchasing late_or_unconfirmed_po (po_late)",
     shows=("po_number", "supplier", "days_late", "requested_date"),
     params={"grace": LATE_GRACE_DAYS})
+
+# Due today, not confirmed (the old late list's ``po_due``: a late-rule PO with no days late
+# yet): an open PO whose requested-by date is the day judged, no supplier-promised date on
+# it, and not already late by the model's verdict.
+DUE_PO = Rule(
+    "po_due", "late_po",
+    "An open purchase order whose requested-by date is today, with no date the supplier "
+    "promised on record: not late yet, worth a confirmation.",
+    "purchase_orders", ("purchase_orders",),
+    "SELECT r.handle, '', coalesce(r.purchaser, ''), false, NULL::text, "
+    "concat_ws(' ', 'PO', r.po_number, 'from', coalesce(r.supplier, 'an unnamed supplier'), "
+    "'is due today and the supplier has not confirmed a date.'), "
+    "r.requested_date::timestamptz, " + ONE + " "
+    "FROM {s}.purchase_orders r WHERE r.status = 'open' AND r.verdict IS DISTINCT FROM 'late' "
+    "AND r.requested_date = {p[day]}::date AND r.promised_date IS NULL",
+    "the day passes (late, if still open: po_late), the supplier confirms a date, or the PO is "
+    "received, closed or cancelled",
+    "proactive_purchasing late_or_unconfirmed_po, not late yet (briefing po_due)",
+    shows=("po_number", "supplier", "requested_date"))
+
+# Open, no due date recorded (the old engine's ``undated_po``): the model's own verdict
+# (``unknown`` for ``no_requested_date``: no requested-by date, supplier date or lead time on
+# any copy); a draft is never open. Only a PO ordered within ACTIVE_DAYS: an older one is a
+# stale legacy back-order (precision sample 11-08: 7 of 15 were), counted in ``skips``.
+UNDATED_PO = Rule(
+    "po_undated", "late_po",
+    "An open purchase order ordered within the last 180 days with no requested-by date, "
+    "supplier-confirmed date or lead time recorded on any copy of it, so it can never be "
+    "counted late.",
+    "purchase_orders", ("purchase_orders",),
+    "SELECT r.handle, '', coalesce(r.purchaser, ''), false, NULL::text, "
+    "concat_ws(' ', 'PO', r.po_number, 'from', coalesce(r.supplier, 'an unnamed supplier'), "
+    "'ordered', to_char(r.order_date, 'Mon DD, YYYY'), "
+    "'is open with no due date recorded, so it is never counted late.'), "
+    "r.order_date::timestamptz, " + ONE + " "
+    "FROM {s}.purchase_orders r WHERE r.status = 'open' AND r.verdict = 'unknown' "
+    "AND r.verdict_reason = 'no_requested_date' "
+    "AND r.order_date >= {p[day]}::date - {p[active]}",
+    "a requested-by, promised or lead-time date is recorded, or the PO is received, closed "
+    "or cancelled",
+    "proactive_engine_purchasing undated_po (po_undated)",
+    shows=("po_number", "supplier", "order_date"),
+    params={"active": ACTIVE_DAYS},
+    skips="SELECT CASE WHEN r.order_date IS NULL THEN 'no_order_date' ELSE 'historic' END, "
+    "count(*) FROM {s}.purchase_orders r WHERE r.status = 'open' AND r.verdict = 'unknown' "
+    "AND r.verdict_reason = 'no_requested_date' AND (r.order_date IS NULL OR "
+    "r.order_date < {p[day]}::date - {p[active]}) GROUP BY 1")
+
+# An order whose item lines lost money (the old engine's ``negative_margin``): orders whose
+# latest invoice is within MARGIN_DAYS before the newest invoice its own source system holds,
+# judged on the invoices' priced item lines alone (the margin on item cost: freight and other
+# misc lines are not in it; zero-price lines cost their items but lose no sale, so they are
+# left out; an order with nothing priced is a no-charge order, no loss). Every priced line
+# must carry a decided margin (cost known) in one currency, else the order is not judged
+# (counted in ``skips``). Credit memos are not in the business tables yet.
+NEGATIVE_MARGIN = Rule(
+    "negative_margin", "margin_loss",
+    "A customer order invoiced in the last 30 days (before its system's newest invoice) whose "
+    "priced item lines cost more than they were billed: the sum of the lines' margins on "
+    "item cost is below zero, in one currency.",
+    "sales_orders", ("sales_orders", "sales_invoices", "sales_invoice_lines"),
+    "WITH newest AS (SELECT source_systems AS sys, max(invoice_date) AS d "
+    "FROM {s}.sales_invoices WHERE invoice_date <= {p[day]}::date GROUP BY 1), "
+    "roots AS (SELECT i.order_number, max(i.invoice_date) AS last_invoice "
+    "FROM {s}.sales_invoices i JOIN newest n ON n.sys = i.source_systems "
+    "WHERE i.order_number IS NOT NULL AND i.pilot IS NOT TRUE "
+    "AND i.invoice_date <= {p[day]}::date GROUP BY i.order_number "
+    "HAVING bool_or(i.invoice_date > n.d - {p[days]})), "
+    "m AS (SELECT o.order_number, max(o.last_invoice) AS last_invoice, "
+    "count(DISTINCT l.margin_currency) AS curs, max(l.margin_currency) AS cur, "
+    "sum(l.margin) AS mar, sum(l.revenue) AS rev, "
+    "count(*) FILTER (WHERE l.margin IS NULL OR l.margin_basis <> ALL({p[bases]})) AS unknown, "
+    "array_agg(DISTINCT l.access_class) || array_agg(DISTINCT i.access_class) AS classes, "
+    "bool_and(l.ai_ok AND i.ai_ok) AS ai_ok, array_agg(DISTINCT l.col_class) AS cols, "
+    "array_agg(DISTINCT l.handle) AS srcs FROM roots o "
+    "JOIN {s}.sales_invoices i ON i.order_number = o.order_number AND i.pilot IS NOT TRUE "
+    "AND i.invoice_date <= {p[day]}::date "
+    "JOIN {s}.sales_invoice_lines l ON l.invoice_handle = i.handle AND l.pilot IS NOT TRUE "
+    "AND l.line_type = 'item' AND l.revenue > 0 GROUP BY o.order_number), "
+    "so AS (SELECT DISTINCT ON (r.order_number) r.* FROM {s}.sales_orders r "
+    "WHERE r.of_record IS NOT FALSE ORDER BY r.order_number, r.handle) "
+    "SELECT so.handle, '', coalesce(so.salesperson, ''), false, NULL::text, "
+    "concat_ws(' ', 'Order', so.order_number, 'for', coalesce(so.customer, 'an unnamed customer'), "
+    "'lost', round(-m.mar, 2)::text, m.cur, 'on item cost: its priced invoice lines cost "
+    "more than they billed.'), m.last_invoice::timestamptz, so.access_class, "
+    "ARRAY(SELECT DISTINCT c FROM unnest(m.classes || so.access_class) c WHERE c IS NOT NULL), "
+    "so.ai_ok AND m.ai_ok, m.cols, m.srcs "
+    "FROM m JOIN so ON so.order_number = m.order_number "
+    "WHERE m.mar < 0 AND m.rev > 0 AND m.curs = 1 AND m.unknown = 0",
+    "the order's priced item lines no longer lose money (a late invoice or credit), or its "
+    "latest invoice leaves the window",
+    "proactive_events negative_margin (margin loss on item cost)",
+    shows=("margin", "margin_currency", "margin_basis", "revenue", "line_type"),
+    cols_of="sales_invoice_lines", record_shows=("order_number", "customer", "salesperson"),
+    params={"days": MARGIN_DAYS, "bases": list(MARGIN_BASES)},
+    skips="WITH newest AS (SELECT source_systems AS sys, max(invoice_date) AS d "
+    "FROM {s}.sales_invoices WHERE invoice_date <= {p[day]}::date GROUP BY 1), "
+    "roots AS (SELECT i.order_number FROM {s}.sales_invoices i JOIN newest n "
+    "ON n.sys = i.source_systems WHERE i.order_number IS NOT NULL AND i.pilot IS NOT TRUE "
+    "AND i.invoice_date <= {p[day]}::date GROUP BY i.order_number "
+    "HAVING bool_or(i.invoice_date > n.d - {p[days]})) "
+    "SELECT 'margin_not_decided', count(*) FROM roots o WHERE EXISTS (SELECT 1 FROM "
+    "{s}.sales_invoices i JOIN {s}.sales_invoice_lines l ON l.invoice_handle = i.handle "
+    "WHERE i.order_number = o.order_number AND l.line_type = 'item' AND l.revenue > 0 "
+    "AND (l.margin IS NULL OR l.margin_basis <> ALL({p[bases]})))")
+
+# A date moved later (the old engine's ``eta_slipped``, the source-field half): an open PO's
+# requested-by date (or a line's expected receipt date) whose current value is later than the
+# value this copy held before, superseded within REVISION_DAYS, read from the ontology's own
+# value history. Not a slip: a closed or draft order, a day that is the order's own day, or a
+# day a bulk share (BULK_DATE_SHARE) of that property's current values carry (a default, not a
+# promise). The supplier-confirmation half (two confirmations promising later) has no business
+# table yet and is not judged here.
+ETA_SLIPPED = Rule(
+    "eta_slipped", "late_po",
+    "An open purchase order whose requested-by date (or a line's expected receipt date) was "
+    "changed to a later day within the last 14 days, on the source's own value history.",
+    "purchase_orders", ("purchase_orders", "purchase_order_lines"),
+    "WITH v AS (SELECT lg.view, lg.handle AS rec, v.object_id, v.property, v.binding_id, "
+    "v.field_path, v.value, v.superseded_at FROM {s}.lineage lg "
+    "CROSS JOIN LATERAL unnest(lg.object_ids) x(oid) JOIN ontology.object_values v "
+    "ON v.object_id = x.oid AND v.property = ANY({p[props]}) "
+    "AND (v.superseded_at IS NULL OR v.superseded_at >= ({p[day]}::date - {p[days]})::text) "
+    "AND v.value ~ '^[0-9]{{4}}-[0-9]{{2}}-[0-9]{{2}}' "
+    "WHERE lg.view IN ('purchase_orders', 'purchase_order_lines')), "
+    "k AS (SELECT view, rec, object_id, property, binding_id, field_path, "
+    "count(*) FILTER (WHERE superseded_at IS NULL) AS n_cur, "
+    "max(left(value, 10)) FILTER (WHERE superseded_at IS NULL) AS now_day, "
+    "(array_agg(left(value, 10) ORDER BY superseded_at DESC) "
+    "FILTER (WHERE superseded_at IS NOT NULL))[1] AS was_day "
+    "FROM v GROUP BY 1, 2, 3, 4, 5, 6), "
+    "bulk AS (SELECT property, left(value, 10) AS day, count(*) AS n, "
+    "sum(count(*)) OVER (PARTITION BY property) AS tot FROM ontology.object_values "
+    "WHERE superseded_at IS NULL AND property = ANY({p[props]}) GROUP BY 1, 2), "
+    "s AS (SELECT k.rec, k.view, k.property, k.was_day::date AS was, k.now_day::date AS now, "
+    "CASE WHEN k.view = 'purchase_orders' THEN k.rec ELSE (SELECT l.po_handle "
+    "FROM {s}.purchase_order_lines l WHERE l.handle = k.rec) END AS po, k.rec AS src, "
+    "CASE WHEN k.view = 'purchase_order_lines' THEN (SELECT l.col_class "
+    "FROM {s}.purchase_order_lines l WHERE l.handle = k.rec) END AS lcc "
+    "FROM k WHERE k.n_cur = 1 AND k.was_day IS NOT NULL AND k.now_day > k.was_day "
+    "AND NOT EXISTS (SELECT 1 FROM bulk b WHERE b.property = k.property AND b.tot >= 10 "
+    "AND b.day IN (k.now_day, k.was_day) AND b.n >= b.tot * {p[bulk]}::numeric)) "
+    "SELECT r.handle, max(s.property), coalesce(r.purchaser, ''), false, NULL::text, "
+    "concat_ws(' ', 'PO', r.po_number, 'from', coalesce(r.supplier, 'an unnamed supplier'), "
+    "'has its', CASE WHEN max(s.property) = 'expected_date' THEN 'requested-by date' "
+    "ELSE 'expected receipt date' END, 'moved later by', max(s.now - s.was)::text, 'days, from', "
+    "to_char(min(s.was), 'Mon DD, YYYY'), 'to', to_char(max(s.now), 'Mon DD, YYYY') || '.'), "
+    "NULL::timestamptz, r.access_class, ARRAY[r.access_class]::smallint[], r.ai_ok, "
+    "ARRAY[r.col_class]::smallint[] || coalesce(array_agg(DISTINCT s.lcc::smallint) "
+    "FILTER (WHERE s.lcc IS NOT NULL), '{{}}'::smallint[]), ARRAY[r.handle]::text[] "
+    "FROM s JOIN {s}.purchase_orders r ON r.handle = s.po "
+    "WHERE r.status = 'open' AND (r.order_date IS NULL OR (r.order_date <> s.was "
+    "AND r.order_date <> s.now)) GROUP BY r.handle, s.property, r.po_number, r.supplier, "
+    "r.purchaser, r.access_class, r.ai_ok, r.col_class",
+    "the PO is received, closed or cancelled, or the change leaves the 14-day window",
+    "proactive_events eta_slipped (source field revisions)",
+    shows=("po_number", "supplier", "requested_date", "order_date"),
+    also_shows=(("purchase_order_lines", "expected_date"),),
+    params={"props": list(REVISED_DATES), "days": REVISION_DAYS, "bulk": BULK_DATE_SHARE},
+    side=("{s}.lineage", "ontology.object_values"))
+
+# Our request to a vendor with no answer (the old engine's ``vendor_no_reply``): the mail
+# thread naming an open PO (a message naming more than MAX_NAMED_RECORDS records is a report,
+# naming none in particular), our last message in it to an outside address (a sender in one of
+# our domains; recipients when projected, else when the outside wrote before it), sent
+# NO_REPLY_DAYS to NO_REPLY_WINDOW_DAYS before the day judged, asking (a term or ETA word and a
+# request word in one sentence of its preview or, if it is no reply, its subject), with no
+# later message from the outside in the thread. A forward with no recipients projected is no
+# request. One alert per PO (its longest wait). A reader must hold every message unit of the
+# thread. Not ported: the resolver that picks which order a reused PO number is about (such a
+# mention is simply not read: ``skips``).
+def _asks(text: str) -> str:
+    return ("EXISTS (SELECT 1 FROM regexp_split_to_table(coalesce(" + text + ", ''), "
+            "'(?<=[.!?])|\\n') q WHERE (q ~* {p[term]} OR q ~* {p[eta]}) AND q ~* {p[request]})")
+
+
+VENDOR_NO_REPLY = Rule(
+    "vendor_no_reply", "waiting_on_them",
+    "An open purchase order whose mail thread shows our last message to the outside asking a "
+    "vendor for terms or a date, sent 7 to 90 days ago, with no later message from the outside.",
+    "purchase_orders", ("purchase_orders", "emails"),
+    "WITH named AS (SELECT DISTINCT p.handle AS po, e.thread FROM {s}.emails e "
+    "JOIN {s}.purchase_orders p ON p.handle = ANY(e.records) "
+    "WHERE p.status = 'open' AND e.thread IS NOT NULL AND cardinality(e.records) <= {p[named]} "
+    "AND e.excluded IS NOT TRUE), "
+    "m AS (SELECT n.po, e.handle, e.unit, e.ai_ok, e.object_ids, e.subject, e.thread, "
+    "coalesce(e.sent_at, e.received_at) AS t, "
+    "split_part(lower(e.sender), '@', 2) = ANY({p[domains]}) AS ours, "
+    "coalesce(e.to_addresses, '{{}}') || coalesce(e.cc_addresses, '{{}}') AS told "
+    "FROM named n JOIN {s}.emails e ON e.thread = n.thread "
+    "WHERE coalesce(e.sent_at, e.received_at) IS NOT NULL), "
+    "r AS (SELECT m.*, (cardinality(m.told) > 0 AND EXISTS (SELECT 1 FROM unnest(m.told) a "
+    "WHERE split_part(lower(a), '@', 2) <> ALL({p[domains]}))) OR (cardinality(m.told) = 0 "
+    "AND EXISTS (SELECT 1 FROM m o WHERE o.po = m.po AND o.thread = m.thread AND NOT o.ours "
+    "AND o.t < m.t)) AS to_outside FROM m), "
+    "last AS (SELECT DISTINCT ON (po, thread) po, thread, handle, object_ids, subject, t, "
+    "cardinality(told) AS n_told FROM r WHERE ours AND to_outside ORDER BY po, thread, t DESC, "
+    "handle), "
+    "w AS (SELECT l.*, ({p[day]}::date - l.t::date) AS waited, "
+    "(SELECT value FROM ontology.object_values v WHERE v.object_id = ANY(l.object_ids) "
+    "AND v.property = 'body_preview' AND v.superseded_at IS NULL LIMIT 1) AS preview "
+    "FROM last l WHERE l.t::date <= {p[day]}::date - {p[wait]} "
+    "AND l.t::date >= {p[day]}::date - {p[window]} AND NOT EXISTS (SELECT 1 FROM r o "
+    "WHERE o.po = l.po AND o.thread = l.thread AND NOT o.ours AND o.t > l.t)), "
+    "k AS (SELECT w.* FROM w WHERE NOT (w.n_told = 0 AND (w.subject ~* {p[forward]} "
+    "OR coalesce(w.preview, '') ~* 'forwarded message')) AND (" + _asks("w.preview") + " OR "
+    "(w.subject !~* {p[reply]} AND " + _asks("w.subject") + "))), "
+    "best AS (SELECT DISTINCT ON (po) k.* FROM k ORDER BY po, waited DESC, thread), "
+    "u AS (SELECT b.po, array_agg(DISTINCT x.unit) AS units, bool_and(x.ai_ok) AS ai_ok "
+    "FROM best b JOIN {s}.emails x ON x.thread = b.thread GROUP BY 1) "
+    "SELECT p.handle, '', coalesce(p.purchaser, ''), false, NULL::text, "
+    "concat_ws(' ', 'Our last request about PO', p.po_number, 'to', coalesce(p.supplier, "
+    "'its vendor'), 'was sent', to_char(b.t AT TIME ZONE '" + bv.BUSINESS_TZ + "', "
+    "'Mon DD, YYYY'), 'and has had no reply for', b.waited::text, 'days.'), b.t, "
+    "p.access_class, ARRAY[p.access_class]::smallint[], p.ai_ok AND u.ai_ok, "
+    "ARRAY[p.col_class]::smallint[], ARRAY[p.handle]::text[], u.units "
+    "FROM best b JOIN {s}.purchase_orders p ON p.handle = b.po JOIN u ON u.po = b.po",
+    "a message from the outside arrives in the thread, or the PO closes, or the request "
+    "leaves the 90-day window",
+    "proactive_events vendor_no_reply (F28)",
+    shows=("po_number", "supplier"), comms=True,
+    params={"named": MAX_NAMED_RECORDS, "wait": NO_REPLY_DAYS, "window": NO_REPLY_WINDOW_DAYS,
+            "domains": list(internal_domains()), "term": _TERM_RE, "eta": _ETA_RE,
+            "request": _REQUEST_RE, "forward": _FORWARD_RE, "reply": _REPLY_RE})
+
+# A customer order a late purchase order puts at risk (the old engine's
+# ``customer_order_at_risk``, ``impact_chain`` firm chains only): from each open PO the model
+# judges late, over recorded links at a firm tier: PO <- PurchaseOrderLine.line_of - line -
+# PurchaseOrderLine.for_item -> item <- AssemblyOrderComponent.uses_item - component -
+# AssemblyOrderComponent.component_of -> assembly order <- AssemblyOrderAllocation.allocates -
+# allocation - AssemblyOrderAllocation.for_order_line -> order line - SalesOrderLine.line_of ->
+# customer order. The material date is the later of the day judged and the supplier's promise;
+# days at risk = material date - the order's required date, the worst over the POs feeding it
+# (no assembly lead time is recorded, so a lower bound). Lead-tier chains (a lead link, an item
+# inference, a packet mention) are not walked: the old engine labelled them "lead, not firm"
+# and they are left out of the card.
+def _link(kind: str, alias: str) -> str:
+    return (f"{alias} AS (SELECT from_object, to_object FROM ontology.links WHERE link_type = "
+            f"'{kind}' AND tier = ANY({{p[firm]}}) AND superseded_at IS NULL)")
+
+
+_AT_RISK_WITH = ("WITH " + ", ".join((
+        "lp AS (SELECT p.handle AS po, p.po_number, p.supplier, p.access_class AS pc, p.ai_ok AS pai, "
+        "p.col_class AS pcol, greatest({p[day]}::date, p.promised_date) AS material, o AS pobj "
+        "FROM {s}.purchase_orders p JOIN {s}.lineage g ON g.view = 'purchase_orders' "
+        "AND g.handle = p.handle CROSS JOIN LATERAL unnest(g.object_ids) o "
+        "WHERE p.status = 'open' AND p.verdict = 'late')",
+        _link("PurchaseOrderLine.line_of", "l1"), _link("PurchaseOrderLine.for_item", "l2"),
+        _link("AssemblyOrderComponent.uses_item", "l3"),
+        _link("AssemblyOrderComponent.component_of", "l4"),
+        _link("AssemblyOrderAllocation.allocates", "l5"),
+        _link("AssemblyOrderAllocation.for_order_line", "l6"),
+        _link("SalesOrderLine.line_of", "l7"),
+        "ch AS (SELECT lp.po, lp.po_number, lp.supplier, lp.pc, lp.pai, lp.pcol, lp.material, "
+        "l7.to_object AS oobj FROM lp JOIN l1 ON l1.to_object = lp.pobj "
+        "JOIN l2 ON l2.from_object = l1.from_object JOIN l3 ON l3.to_object = l2.to_object "
+        "JOIN l4 ON l4.from_object = l3.from_object JOIN l5 ON l5.to_object = l4.to_object "
+        "JOIN l6 ON l6.from_object = l5.from_object JOIN l7 ON l7.from_object = l6.to_object)",
+        "hit AS (SELECT g.handle AS ord, ch.po, ch.po_number, ch.supplier, ch.pc, ch.pai, "
+        "ch.pcol, ch.material FROM ch JOIN {s}.lineage g ON g.view = 'sales_orders' "
+        "AND ch.oobj = ANY(g.object_ids)), "
+        "risk AS (SELECT r.handle, r.order_number, r.customer, r.salesperson, r.access_class, "
+        "r.ai_ok, r.col_class, r.required_date, max(h.material - r.required_date) AS days, "
+        "count(DISTINCT h.po) AS pos, (array_agg(h.po_number ORDER BY h.material DESC))[1] AS po_number, "
+        "array_agg(DISTINCT h.pc) AS pcs, bool_and(h.pai) AS pai, array_agg(DISTINCT h.po) AS srcs "
+        "FROM hit h JOIN {s}.sales_orders r ON r.handle = h.ord "
+        "WHERE r.status = 'open' AND r.required_date IS NOT NULL AND h.material > r.required_date "
+        "GROUP BY r.handle, r.order_number, r.customer, r.salesperson, r.access_class, r.ai_ok, "
+        "r.col_class, r.required_date)")) + " ")
+
+AT_RISK = Rule(
+    "customer_order_at_risk", "customer_order_late",
+    "An open customer order that a late purchase order puts at risk through recorded links: "
+    "the PO's item is consumed by an assembly order allocated to one of the order's lines, "
+    "and the material is expected after the order's required date.",
+    "sales_orders", ("sales_orders", "purchase_orders"),
+    _AT_RISK_WITH +
+    "SELECT x.handle, '', coalesce(x.salesperson, ''), false, NULL::text, "
+    "concat_ws(' ', 'Order', x.order_number, 'for', coalesce(x.customer, 'an unnamed customer'), "
+    "'is at least', x.days::text, 'days at risk from', x.pos::text, 'late purchase', "
+    "CASE WHEN x.pos = 1 THEN 'order' ELSE 'orders' END, '(PO ' || x.po_number || "
+    "CASE WHEN x.pos > 1 THEN ' and others' ELSE '' END || ') against its required date of', "
+    "to_char(x.required_date, 'Mon DD, YYYY') || '.'), x.required_date::timestamptz, "
+    "x.access_class, ARRAY(SELECT DISTINCT c FROM unnest(x.pcs || x.access_class) c), "
+    "x.ai_ok AND x.pai, ARRAY[x.col_class]::smallint[], ARRAY[x.handle] FROM risk x",
+    "the late PO is received or no longer late, or the order ships or its required date moves",
+    "impact_chain (customer_order_at_risk, firm chains)",
+    shows=("order_number", "customer", "required_date"), params={"firm": list(FIRM_TIERS)},
+    side=("{s}.lineage", "ontology.links"),
+    also_objects=_AT_RISK_WITH + "SELECT DISTINCT h.ord, o FROM hit h JOIN risk x ON x.handle = h.ord "
+    "JOIN {s}.lineage lg ON lg.view = 'purchase_orders' AND lg.handle = h.po "
+    "CROSS JOIN LATERAL unnest(lg.object_ids || lg.read_ids) o WHERE o IS NOT NULL")
 
 # A late customer order is current work only while the order is live (the old engine's
 # active population, ``active_population``): a business date of it (its order day, its
@@ -661,7 +983,8 @@ NEEDS_MY_REPLY = Rule(
     params={"days": REPLY_DAYS, "max_to": MAX_TO}, comms=True)
 
 RULES: dict[str, Rule] = {r.name: r for r in (
-    LATE_PO, LATE_ORDER, OPEN_LONG, LOT_ON_HOLD, PRICE_BELOW_COST, PRICE_BELOW_TYPICAL,
+    LATE_PO, DUE_PO, UNDATED_PO, NEGATIVE_MARGIN, ETA_SLIPPED, VENDOR_NO_REPLY, AT_RISK, LATE_ORDER, OPEN_LONG, LOT_ON_HOLD, PRICE_BELOW_COST,
+    PRICE_BELOW_TYPICAL,
     CUSTOMER_PRICE_DROP, DEMAND_DROP, NEEDS_MY_REPLY)}
 
 
@@ -884,11 +1207,17 @@ def run_rule(conn: Any, rule: Rule, s: str, day: str) -> dict[str, Any]:
                     "|| l.read_ids || ARRAY(SELECT jsonb_array_elements_text(e.v) FROM "
                     "jsonb_each(l.col_objects) e(k, v) WHERE jsonb_typeof(e.v) = 'array')) o "
                     "WHERE o IS NOT NULL)", (rule.table, src_table))
+                if rule.also_objects:
+                    conn.execute(
+                        "UPDATE al_now n SET objects = ARRAY(SELECT DISTINCT o FROM unnest("
+                        "n.objects || ARRAY(SELECT x.o FROM (" +
+                        rule_sql(rule, s, day, rule.also_objects) +
+                        ") AS x(h, o) WHERE x.h = n.handle)) o)")
             conn.execute(
                 "UPDATE al_now n SET col_needs = ARRAY(SELECT DISTINCT cc.id FROM "
                 f"{s}.col_classes cc WHERE cc.id = ANY(n.col_classes) AND (cc.marks ?| "
                 "%s::text[] OR cc.needs ?| %s::text[]))",
-                (list(rule.shows) or [""], list(rule.shows) or [""]))
+                (list(rule.shown_cols) or [""], list(rule.shown_cols) or [""]))
             opened = conn.execute(
                 f"INSERT INTO {s}.alerts AS a (rule, kind, record_table, handle, topic, concerns, "
                 "private, mailbox, why, since, first_seen, last_seen, state, resolved_at, "
@@ -911,7 +1240,7 @@ def run_rule(conn: Any, rule: Rule, s: str, day: str) -> dict[str, Any]:
                 "source_table = EXCLUDED.source_table, sources = EXCLUDED.sources, "
                 "objects = EXCLUDED.objects "
                 "RETURNING (xmax = 0) OR a.first_seen = now()",
-                (rule.name, rule.kind, rule.table, list(rule.shows),
+                (rule.name, rule.kind, rule.table, list(rule.shown_cols),
                  list(rule.record_shows if rule.cols_of and rule.cols_of != rule.table
                       else rule.shows), src_table)).fetchall()
             resolved = conn.execute(

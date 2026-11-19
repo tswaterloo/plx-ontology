@@ -40,7 +40,7 @@ import datetime as dt
 import json
 import re
 import sys
-from typing import Any, Iterable, Mapping, Sequence
+from typing import Any, Callable, Iterable, Mapping, Sequence
 
 from operating.pg import business_views as bv
 from operating.pg import sql_views
@@ -105,11 +105,130 @@ CATALOG_DDL = """CREATE TABLE IF NOT EXISTS {s}.record_types (
     label_fields text[] NOT NULL, date_fields text[] NOT NULL, identity_links text[] NOT NULL,
     fields jsonb NOT NULL, links_out jsonb NOT NULL, links_in jsonb NOT NULL,
     built_at text NOT NULL);
-ALTER TABLE {s}.record_types ADD COLUMN IF NOT EXISTS tables text[] NOT NULL DEFAULT '{{}}'"""
+ALTER TABLE {s}.record_types ADD COLUMN IF NOT EXISTS tables text[] NOT NULL DEFAULT '{{}}';
+ALTER TABLE {s}.record_types ADD COLUMN IF NOT EXISTS kinds jsonb NOT NULL DEFAULT '{{}}'"""
+
+
+# Kinds: the values a type's category-like text fields take (``kinds_of``).
+KIND_MAX_VALUES = 30       # a field with more distinct values is not category-like
+KIND_MIN_RECORDS = 5       # a value named needs this many records ...
+KIND_MIN_CLASSES = 3       # ... in this many different access classes (never one audience's)
+KIND_MAX_LEN = 60
+KIND_SAMPLE = 100_000
+_KIND_FIELD_TYPES = ("text", "enum")
+
+
+# a field that names who did or owns something holds people, whatever its values look like
+_PERSON_FIELD = re.compile(
+    r"(^|_)(by|rep|name|names)(_|$)|owner|assign|user|author|creator|created|modified|updated|"
+    r"account|person|people|manager|buyer|purchaser|contact|operator|worker|employee|staff|"
+    r"member|sender|recipient|approver|reviewer|requester|address|street|city|phone|email|"
+    r"driver|technician|attendee|organi[sz]er|participant|agent|postal|zip", re.I)
+
+
+def kind_fields(spec: Mapping[str, Any]) -> list[str]:
+    """The fields of a type whose values may be listed: text or enum, never marked."""
+    return [p["name"] for p in (spec.get("properties") or ())
+            if isinstance(p, Mapping) and p.get("name") and not p.get("markings")
+            and (p.get("value_type") or "text") in _KIND_FIELD_TYPES
+            and not _PERSON_FIELD.search(p["name"])]
+
+
+def _name_words(pg: Any, s: str) -> set[str]:
+    out: set[str] = set()
+    try:
+        rows = pg.execute(f"SELECT name, email FROM {s}.staff").fetchall()
+    except Exception:   # no staff table: nothing to compare with
+        pg.rollback() if hasattr(pg, "rollback") else None
+        return out
+    for name, email in rows:
+        for v in (name, email):
+            if v and str(v).strip():
+                out.add(str(v).strip().lower())
+        # a first name, a surname and a mail user name stand for the person as much as the
+        # whole name (a field like created_by_account holds "Jesse" or "oleg")
+        out.update(w for w in re.split(r"[^a-z0-9]+", f"{name or ''} "
+                                       f"{str(email or '').split('@')[0]}".lower())
+                   if len(w) >= 3)
+    return out
+
+
+def nameable(value: Any, people: set[str]) -> bool:
+    """Whether a field value may sit in the catalog beside the row: short plain text that is
+    no address, no person's name (a staff name, whole), and that no word of names
+    Freightcom (``listed_sql``'s rule)."""
+    from integrations.image_ocr_gpu import FREIGHTCOM
+    v = str(value or "").strip()
+    return bool(v) and len(v) <= KIND_MAX_LEN and "@" not in v and "\n" not in v \
+        and v.lower() not in people and not FREIGHTCOM.search(v) \
+        and not re.fullmatch(r"[\d\W_]+", v) \
+        and not re.fullmatch(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}", v, re.I)
+
+
+def kinds_of(pg: Any, s: str, types: Mapping[str, Mapping[str, Any]],
+             held: Iterable[str]) -> dict[str, dict[str, list[str]]]:
+    """type -> {field: values, most records first} for each text field of the type whose
+    distinct values over its records are at most ``KIND_MAX_VALUES`` (family, kind, status,
+    category like): so the model knows what a type's records can say before it searches.
+    Read only from ``records`` of the record rows anyone holding the record may read
+    (unmarked, no marked column, the AI's), a value kept only when ``KIND_MIN_RECORDS``
+    business-system records carry it (or it is in ``KIND_MIN_CLASSES`` different mailbox or private
+    classes) and ``nameable``; no counts are
+    kept (the catalog never shows how many records a type holds)."""
+    if pg.execute("SELECT to_regclass(%s)", (f"{s}.records",)).fetchone()[0] is None:
+        return {}
+    # unmarked classes; the "broad" ones are the business systems' (every audience key an
+    # ``api:`` source, held by staff as a whole), the rest one mailbox's or the full reader's
+    open_ids, broad_ids = [], []
+    for cid, keys in pg.execute(
+            f"SELECT id, audience_keys FROM {s}.access_classes WHERE NOT blocked AND rec_marks "
+            "= ARRAY['[]']::text[]").fetchall():
+        open_ids.append(cid)
+        if keys and all(str(k).startswith("api:") for k in keys):
+            broad_ids.append(cid)
+    if not open_ids:
+        return {}
+    people = _name_words(pg, s)
+    where = "r.type = %s AND r.col_class = 0 AND r.ai_ok AND r.access_class = ANY(%s)"
+    out: dict[str, dict[str, list[str]]] = {}
+    for t in sorted(held):
+        want = kind_fields(types.get(t) or {})
+        if not want:
+            continue
+        cands = [r[0] for r in pg.execute(
+            "SELECT k FROM (SELECT e.key k, btrim(e.value) v FROM (SELECT r.fields FROM "
+            f"{s}.records r WHERE {where} LIMIT {KIND_SAMPLE}) r, "
+            "jsonb_each_text(r.fields) e WHERE e.key = ANY(%s) AND btrim(e.value) <> '') q "
+            f"GROUP BY k HAVING count(DISTINCT v) <= {KIND_MAX_VALUES}",
+            (t, open_ids, want)).fetchall()]
+        if not cands:
+            continue
+        got: dict[str, list[tuple[int, str]]] = {}
+        for k, v, total, n, classes in pg.execute(
+                "SELECT e.key, btrim(e.value), count(*), count(*) FILTER (WHERE r.access_class = ANY(%s)), "
+                "count(DISTINCT r.access_class) FILTER (WHERE NOT r.access_class = ANY(%s)) "
+                "FROM "
+                f"{s}.records r, jsonb_each_text(r.fields) e WHERE {where} "
+                "AND e.key = ANY(%s) AND btrim(e.value) <> '' GROUP BY 1, 2",
+                (broad_ids, broad_ids, t, open_ids, cands)).fetchall():
+            got.setdefault(k, []).append((total, v, classes, n))
+        fields = {}
+        for k, vals in got.items():
+            if len(vals) > KIND_MAX_VALUES:      # the whole type says more than the sample
+                continue
+            keep = [v for total, v, c, n in sorted(vals, key=lambda x: (-x[0], x[1]))
+                    if (n >= KIND_MIN_RECORDS or c >= KIND_MIN_CLASSES) and nameable(v, people)]
+            if keep:
+                fields[k] = keep
+        if fields:
+            out[t] = dict(sorted(fields.items()))
+    return out
 
 
 def catalog_rows(schema: Any, counts: Mapping[str, tuple[int, str | None, Sequence[str]]],
-                 built_at: str) -> list[dict[str, Any]]:
+                 built_at: str,
+                 kinds: Mapping[str, Mapping[str, Sequence[str]]] | None = None
+                 ) -> list[dict[str, Any]]:
     """One catalog row per type with records (``counts``: type -> (records held, newest
     first-seen time, source bindings)), described by the compiled ``schema``."""
     types: Mapping[str, Mapping[str, Any]] = schema.object_types
@@ -140,6 +259,7 @@ def catalog_rows(schema: Any, counts: Mapping[str, tuple[int, str | None, Sequen
                           for lid, lk in sorted(links.items()) if lk.get("from") == tid],
             "links_in": [{"link_type": lid, "from": lk.get("from")}
                          for lid, lk in sorted(links.items()) if lk.get("to") == tid],
+            "kinds": {k: list(v) for k, v in (kinds or {}).get(tid, {}).items()},
             "built_at": built_at})
     return out
 
@@ -160,7 +280,7 @@ def served_tables(pg: Any, biz: str | None = None) -> dict[str, list[str]]:
     table or a communications table), and ``records`` for each type it holds now."""
     s = biz or bv.SCHEMA
     out: dict[str, list[str]] = {}
-    for name, v in sorted(bv.VIEWS.items()):
+    for name, v in sorted(bv.listed().items()):
         if v.reads and pg.execute("SELECT to_regclass(%s)", (f"{s}.{name}",)
                                   ).fetchone()[0] is not None:
             out.setdefault(v.reads[0], []).append(name)
@@ -196,7 +316,8 @@ def build_catalog(dsn: str, schema: Any, biz: str | None = None,
         read.execute("SET TRANSACTION READ ONLY")
         counts = {t: (n, newest, [b for b in (bindings or []) if b])
                   for t, n, newest, bindings in read.execute(counts_sql(ont)).fetchall()}
-    rows = catalog_rows(schema, counts, built_at)
+        kinds = kinds_of(read, s, getattr(schema, "object_types", {}), counts)
+    rows = catalog_rows(schema, counts, built_at, kinds)
     cols = list(rows[0]) if rows else []
     with psycopg.connect(dsn, autocommit=True) as write:
         with write.transaction():
@@ -207,7 +328,7 @@ def build_catalog(dsn: str, schema: Any, biz: str | None = None,
                 write.execute(
                     f"INSERT INTO {s}.record_types ({', '.join(cols)}) VALUES "
                     f"({', '.join(['%s'] * len(cols))})",
-                    [Jsonb(row[c]) if c in ("fields", "links_out", "links_in") else row[c]
+                    [Jsonb(row[c]) if c in ("fields", "links_out", "links_in", "kinds") else row[c]
                      for c in cols])
             write.execute(f"CREATE TABLE IF NOT EXISTS {s}.state (view text PRIMARY KEY, "
                           "built_at text NOT NULL, digest text, rows bigint NOT NULL, "
@@ -251,59 +372,87 @@ def record_types_ddl(biz: str | None = None, dst: str | None = None) -> str:
     return (f"CREATE VIEW {dst}.record_types WITH (security_barrier) AS SELECT t.type, "
             "t.name, t.description, t.systems, t.sources, t.declared, t.label_fields, "
             "t.date_fields, t.identity_links, t.fields, t.links_out, t.links_in, t.tables, "
-            "t.built_at "
+            "t.kinds, t.built_at "
             f"FROM {src}.record_types t WHERE {listed_sql('t')}")
 
 
 class _Generic:
     """What ``door.view_ddl`` reads of a view (its name and columns)."""
 
-    def __init__(self, name: str, cols: Sequence[str]) -> None:
+    def __init__(self, name: str, cols: Sequence[str],
+                 fallback: Mapping[str, str] | None = None) -> None:
         self.name = name
         self.cols = [bv.Col(c, "text", "") for c in cols]
+        self.fallback = dict(fallback or {})
 
 
 def generic_views() -> list[_Generic]:
     from operating.pg import generic_records as gr
-    return [_Generic("records", gr.RECORD_COLS), _Generic("record_links", gr.LINK_COLS)]
+    return [_Generic("records", gr.RECORD_COLS, gr.FALLBACK),
+            _Generic("record_links", gr.LINK_COLS)]
 
 
-def make_views(write: Any, biz: str | None = None) -> list[str]:
+def make_views(write: Any, biz: str | None = None, *,
+               step: Callable[[Callable[[Any], Any], str], Any] | None = None) -> list[str]:
     """(Re)make the generic guarded views: ``record_types`` (the catalog) and, once
     ``generic_records`` built their tables, ``records`` and ``record_links`` as DOOR v2
     views (``door.view_ddl``: the reader's held classes, ``ai_ok`` for the AI's schema),
-    in the AI's schema and the person pages' schema, granted to each schema's role."""
+    in the AI's schema and the person pages' schema, granted to each schema's role.
+    ``step(f, what)`` runs each part (``f(write)``): ``sql_views.install`` gives each its
+    own short transaction (``sql_views.short``); none: all in the caller's transaction. A
+    view whose DDL and tables are unchanged is not touched (``sql_views.put``)."""
     from operating.pg import access_classes, door
+    run = step or (lambda f, what: f(write))
     s = biz or bv.SCHEMA
-    access_classes.ensure(write, s)
-    write.execute(CATALOG_DDL.format(s=s))
+
+    def catalog(w: Any) -> None:
+        access_classes.ensure(w, s)
+        # DDL only when missing: ALTER TABLE takes an ACCESS EXCLUSIVE lock even when the
+        # column exists, and every reader of the catalog would queue behind it
+        have = {r[0] for r in w.execute(
+            "SELECT column_name FROM information_schema.columns WHERE table_schema = %s "
+            "AND table_name = 'record_types'", (s,))}
+        if "tables" not in have:
+            w.execute(CATALOG_DDL.format(s=s))
+    run(catalog, f"{s}.record_types")
+    # the exclusion follow-up first (rows only, no view lock): a view made below reads
+    # rows already decided against the set
+    for v in generic_views():
+        if write.execute("SELECT to_regclass(%s)", (f"{s}.{v.name}",)).fetchone()[0]:
+            run(lambda w, v=v: door.follow(w, s, v.name), f"{s}.{v.name} follow")
     made = []
     targets = [(sql_views.guarded_schema(biz), sql_views.ROLE, True),
                (sql_views.page_schema(biz), sql_views.PAGE_ROLE, False)]
     for dst, role, ai in targets:
         if write.execute("SELECT to_regnamespace(%s)", (dst,)).fetchone()[0] is None:
             continue
-        write.execute(f"DROP VIEW IF EXISTS {dst}.record_types")
-        write.execute(record_types_ddl(biz, dst))
-        names = ["record_types"]
+
+        def types(w: Any, dst: str = dst, role: str = role) -> bool:
+            sql_views.put(w, f"{dst}.record_types", record_types_ddl(biz, dst))
+            _grant(w, role, f"{dst}.record_types")
+            return True
+        run(types, f"{dst}.record_types")
+        made.append(f"{dst}.record_types")
         for v in generic_views():
-            write.execute(f"DROP VIEW IF EXISTS {dst}.{v.name}")
-            if write.execute("SELECT to_regclass(%s)", (f"{s}.{v.name}",)).fetchone()[0] \
-                    is None or not door.is_v2(write, s, v.name) or not _bounded(write, s,
-                                                                             v.name):
-                continue   # not built (or an old shape): no view, fail closed
-            write.execute(door.view_ddl(write, v, s, dst, ai_only=ai, also=[UNDECIDED]))
-            names.append(v.name)
-        for name in names:
-            write.execute("DO $$ BEGIN IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = "
-                          f"'{role}') THEN EXECUTE 'GRANT SELECT ON {dst}.{name} "
-                          f"TO {role}'; END IF; END $$")
-            made.append(f"{dst}.{name}")
-    for v in generic_views():
-        if write.execute("SELECT to_regclass(%s)", (f"{s}.{v.name}",)).fetchone()[0]:
-            door.follow(write, s, v.name)
-    door._bump(write, s)
+            def one(w: Any, v: _Generic = v, dst: str = dst, role: str = role,
+                    ai: bool = ai) -> bool:
+                if w.execute("SELECT to_regclass(%s)", (f"{s}.{v.name}",)).fetchone()[0] \
+                        is None or not door.is_v2(w, s, v.name) or not _bounded(w, s, v.name):
+                    w.execute(f"DROP VIEW IF EXISTS {dst}.{v.name}")
+                    return False   # not built (or an old shape): no view, fail closed
+                sql_views.put(w, f"{dst}.{v.name}",
+                              door.view_ddl(w, v, s, dst, ai_only=ai, also=[UNDECIDED]))
+                _grant(w, role, f"{dst}.{v.name}")
+                return True
+            if run(one, f"{dst}.{v.name}"):
+                made.append(f"{dst}.{v.name}")
+    run(lambda w: door._bump(w, s), f"{s} door stamp")
     return made
+
+
+def _grant(write: Any, role: str, name: str) -> None:
+    write.execute("DO $$ BEGIN IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = "
+                  f"'{role}') THEN EXECUTE 'GRANT SELECT ON {name} TO {role}'; END IF; END $$")
 
 
 def _bounded(pg: Any, s: str, name: str) -> bool:

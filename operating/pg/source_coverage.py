@@ -34,6 +34,7 @@ import argparse
 import datetime as dt
 import json
 import sys
+import time
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
@@ -41,6 +42,7 @@ from operating.pg import business_views as bv
 from operating.pg import sql_views
 
 PROBE_MS = 120_000
+RETRY_WAIT_S = 90
 DROP_SHARE = 0.02
 STATUS_DIR = "source-coverage"
 STATUS_SCHEMA = "plx-source-coverage/v1"
@@ -147,6 +149,16 @@ def check(dsn: str, biz: str | None = None, *, now: dt.datetime | None = None
         owner = _owner_counts(pg, s, held)
         views = ["records", *sorted(n for n, o in owner.items() if o["rows"] is not None)]
         door_got = _door_counts(pg, s, settings, views)
+        for _ in range(2):
+            if door_got["views"].get("records") is not None:
+                break
+            # the records read failed (timeout, a repack or build holding locks): try again
+            time.sleep(RETRY_WAIT_S)
+            door_got = _door_counts(pg, s, settings, views)
+        if door_got["views"].get("records") is None:
+            # never report every records-only type unreachable (and never keep that as the
+            # baseline) because the one read through the door failed: the run did not run
+            raise RuntimeError("the records view could not be read through the door")
     findings: list[dict[str, Any]] = []
     for name, o in owner.items():
         seen = door_got["views"].get(name)

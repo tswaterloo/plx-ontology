@@ -190,6 +190,21 @@ class AskWorkerCountTests(unittest.TestCase):
             (slice_ / "memory.current").write_text(str(38 * gb))
             (scope / "memory.max").write_text("max")
             self.assertAlmostEqual(memory_available_gb(meminfo, scope), 2.0)
+            # page cache the cgroup's reads left is reclaimed before it runs out, so it is
+            # headroom (live API: 20 GB cap, 8.6 GB current of which 7.3 GB cache: 4 Ask
+            # workers, not 3); shmem, dirty and writeback pages are held
+            (slice_ / "memory.current").write_text(str(10 * gb))
+            (scope / "memory.max").write_text(str(20 * gb))
+            (scope / "memory.current").write_text(str(int(8.6 * gb)))
+            (scope / "memory.stat").write_text(
+                f"anon {int(3.8 * gb)}\nfile {int(7.3 * gb)}\nshmem {int(0.3 * gb)}\n"
+                f"file_dirty {int(0.2 * gb)}\nfile_writeback 0\n"
+                f"slab_reclaimable {int(0.1 * gb)}\n")
+            self.assertAlmostEqual(memory_available_gb(meminfo, scope), 20 - 8.6 + 6.9)
+            self.assertEqual(ask_worker_count(4, memory_available_gb(meminfo, scope)), 4)
+            (scope / "memory.stat").write_text("anon garbage\n")   # unreadable: all held
+            self.assertAlmostEqual(memory_available_gb(meminfo, scope), 20 - 8.6)
+            (scope / "memory.max").write_text("max")
             # a limit that cannot be read is no limit; unreadable MemAvailable is unknown
             (slice_ / "memory.current").write_text("garbage")
             self.assertAlmostEqual(memory_available_gb(meminfo, scope), 37.0)

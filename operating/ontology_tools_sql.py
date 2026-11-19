@@ -47,9 +47,10 @@ import time
 from collections import OrderedDict
 from decimal import Decimal
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, Mapping, Optional, Sequence
 
 from operating.ontology_tools_identity import ToolError
+from operating import read_ceiling
 from operating.pg import business_views as bv
 from operating.pg import sql_views
 
@@ -67,6 +68,25 @@ MAX_SQL = 8000
 MAX_BYTES = 20_000
 MAX_CELL = 400
 STATEMENT_MS = 10_000
+# a FULL reader (no permission checks
+# but the people exclusion and Freightcom, both inside the views) reads as an analyst at a
+# psql prompt does: statements up to FULL_STATEMENT_MS, no plan-cost cap and no records
+# scan guard (the ceiling run 11-18: plain Claude with 60 s psql scored 82/87 where the
+# Ask, held to 10 s and a cost cap, scored 58)
+FULL_STATEMENT_MS = 60_000
+# plx.search's own legs (mail/Teams text, records) for a full reader: inside plx.search's
+# 40 s call, leaving the documents leg its time (a common word over 3M mails took >10 s)
+SEARCH_FULL_MS = 25_000
+# plx.search's records leg: the label index read for its candidates (``_label_candidates``;
+# a word the index finds: ~0.2 s live over 17M records). Past it, every label is read
+# through the door as before.
+CANDIDATE_MS = 3_000
+# A third waits up to FULL_COSTLY_WAIT_SECONDS for a slot (holding no connection), then is
+# told to narrow it
+FULL_COSTLY_SLOTS = 2
+FULL_COSTLY_LOCK = 0x706C7873
+FULL_COSTLY_WAIT_SECONDS = 20.0
+FULL_COSTLY_POLL_SECONDS = 0.5
 MAX_COST = 5e7
 SAMPLE_VALUES = 6
 RESULTS_KEPT = 512
@@ -97,6 +117,7 @@ first_value last_value nth_value to_tsvector to_tsquery plainto_tsquery phraseto
 websearch_to_tsquery ts_rank ts_rank_cd ts_headline
 jsonb_each_text jsonb_object_keys jsonb_array_elements_text jsonb_typeof jsonb_array_length
 jsonb_extract_path_text
+corr covar_pop covar_samp regr_slope regr_intercept regr_r2 regr_count regr_avgx regr_avgy
 """.split())
 # words a "(" may follow that are SQL syntax, never a call
 SYNTAX = frozenset("""
@@ -114,6 +135,14 @@ returning checkpoint security reassign abort start transaction
 """.split())
 _WORD = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 _LOCKING = re.compile(r"\bfor\s+(update|share|no\s+key|key\s+share)\b")
+
+
+def _ceiling() -> "dt.datetime | None":
+    """The replay's read ceiling (``read_ceiling``); unreadable: every read refused."""
+    try:
+        return read_ceiling.ceiling()
+    except read_ceiling.CeilingInvalid as exc:
+        raise ToolError("not_ready", str(exc)) from None
 
 
 class Busy(ToolError):
@@ -399,10 +428,17 @@ class SqlTool:
             raise ToolError("invalid_request", "send {\"sql\": \"SELECT ...\"} or "
                             "{\"describe\": true | \"<view>\"}")
         if "describe" in args:
+            if _ceiling() is not None:
+                return self._described_only(args["describe"])
             return self._describe(args["describe"], actor)
         conn, scope = self._reader(actor)
+        moment = _ceiling()
+        guarded = sql_views.guarded_schema()
         sql = check(args["sql"], schemas=self._schema_names(conn),
-                    allowed_schema=sql_views.guarded_schema())
+                    allowed_schema="" if moment is not None else guarded)
+        if moment is not None:
+            # a replay of a past moment (``read_ceiling``): the views read as then
+            sql = read_ceiling.bounded_sql(sql, moment, guarded)
         return self._query(conn, scope, sql, actor)
 
     # ------------------------------------------------------------------ reader
@@ -453,16 +489,22 @@ class SqlTool:
             self._schemas = frozenset(r[0].lower() for r in rows) | {"pg_catalog", "public"}
         return self._schemas
 
-    def _seconds(self) -> float:
+    def _seconds(self, full: "bool | int" = False) -> float:
+        """A statement's time: ``full`` True: FULL_STATEMENT_MS; a number: that many ms;
+        else STATEMENT_MS; never past what is left of the call."""
         from operating import call_limits
         left = call_limits.seconds_left()
         if left is not None and left <= 0.5:
             raise ToolError("timeout", "no time is left in this call for plx.sql")
-        top = STATEMENT_MS / 1000.0
+        ms = FULL_STATEMENT_MS if full is True else (
+            full if isinstance(full, int) and not isinstance(full, bool) and full > 0
+            else STATEMENT_MS)
+        top = ms / 1000.0
         return top if left is None else max(0.5, min(top, left - 0.5))
 
     def _scoped(self, conn: Any, door: "Door | None", work: Any, *, role: bool = True,
-                extra: Mapping[str, str] | None = None, after: Any = None) -> Any:
+                extra: Mapping[str, str] | None = None, after: Any = None,
+                full: "bool | int" = False) -> Any:
         """``scoped_read`` on ONE connection of plx.sql's own pool for the whole call (the
         door decided, the query, its lineage). ``role`` False: this module's own fixed
         statements (``comms_search``), which read the text index beside the guarded views
@@ -472,7 +514,7 @@ class SqlTool:
         from operating import call_limits
         waited_until = time.monotonic() + BUSY_WAIT_SECONDS
         while True:
-            seconds = self._seconds()
+            seconds = self._seconds(full)
             try:
                 with _lent(conn) as pg:
                     return scoped_read(pg, door, work, seconds, as_role=role, extra=extra,
@@ -519,10 +561,16 @@ class SqlTool:
 
     def _comms_search(self, args: dict[str, Any], actor: Any, guarded: str
                       ) -> dict[str, Any]:
-        """One ranked top-k read of mail and Teams the reader may read (``comms_search``):
-        ``query`` words and/or ``participant``, ``since``/``until``, ``sources``
-        (graph_mail, teams), ``limit``, ``cursor``. One statement through the views of
-        ``guarded``; None of it is read when they are not served (``not_served``)."""
+        """One ranked top-k read of mail, Teams and (a full reader's) SharePoint files the
+        reader may read (``comms_search``): ``query`` words and/or ``participant``,
+        ``since``/``until``, ``sources`` (graph_mail, teams, sharepoint), ``limit``,
+        ``cursor``. One statement through the views of ``guarded``; None of it is read when
+        they are not served (``not_served``). ``searched.sources`` names what was searched:
+        files only for a full reader on a host with an item gate (the caller searches them
+        the old way otherwise), each file row then passed through that gate before it is
+        returned (``business_comms.FILES``); a refused row is left out unannounced, as the
+        old search leaves it out, and the next page starts after the last row read."""
+        from operating.pg import business_comms as bc
         from operating.pg import comms_search as cs
         conn, settings = self._comms_reader(actor)
         biz = bv.SCHEMA
@@ -531,39 +579,96 @@ class SqlTool:
             words = cs.terms(args["query"]) if args.get("query") else []
             q = cs.tsquery(args["query"]) if words else None
             since = cs.instant(args.get("since"))
-            until = cs.instant(args.get("until"), end=True)
+            moment = _ceiling()
+            until = cs.instant(args.get("until") if moment is None else
+                               read_ceiling.clamp_until(args.get("until"), moment), end=True)
             cur = cs.read_cursor(args["cursor"]) if args.get("cursor") else None
         except cs.SearchInputError as exc:
             raise ToolError("invalid_input", str(exc)) from None
         wanted = set(args.get("sources") or [s for _, _, s in cs.VIEWS.values()])
+        files = "sharepoint" in wanted and self._files_reader(actor)
+        settings = {**settings, bc.FILES_SETTING: bc.FILES_SEARCH if files else ""}
+        # room for the file rows the item gate may refuse, and the refused rows the
+        # cursor skips (read again past its returned row, refused again)
+        skip = cur[3] if cur else 0
+        k = (2 * limit + 1 if files else limit + 1) + skip
 
         def work(pg: Any) -> Any:
-            views = [v for v in cs.present(pg, guarded) if cs.VIEWS[v][2] in wanted]
+            views = [v for v in cs.present(pg, guarded) if cs.VIEWS[v][2] in wanted
+                     and (files or v not in cs.SEARCH_ONLY)]
             who = cs.party(args["participant"], pg, biz) if args.get("participant") else None
             sql = cs.search_sql(views, guarded=guarded, biz=biz, query=q is not None,
                                 party_kind=who.kind if who else None, since=since is not None,
-                                until=until is not None, cursor=cur is not None)
+                                until=until is not None,
+                                cursor=cur is not None and cur[2] is not None,
+                                cursor_tier=cur[0] if cur and cur[0] is not None else 0)
             if not sql:
                 return views, who, []
             return views, who, pg.execute(sql, {
                 "q": q, "party": who.value if who else None, "since": since, "until": until,
-                "c_at": cur[0] if cur else None, "c_h": cur[1] if cur else None,
-                "k": limit + 1}).fetchall()
+                "c_at": cur[1] if cur else None, "c_h": cur[2] if cur else None,
+                "k": k}).fetchall()
         try:
-            views, who, rows = self._comms_scoped(conn, settings, work)
+            views, who, rows = self._comms_scoped(conn, settings, work, actor)
         except cs.SearchInputError as exc:
             raise ToolError("invalid_input", str(exc)) from None
         if not views:
             raise ToolError("not_served", "mail and Teams are not served as tables here")
-        more = len(rows) > limit
-        rows = rows[:limit]
+        rows, nxt = self._gated_files(rows, actor, limit, k, cur)
+        more = nxt is not None
         out = {"documents": cs.hits(rows, words=words, party_=who),
                "searched": cs.searched(views, args, words), "gaps": [],
                "completeness": {"complete": not more, "truncated": more, "returned": len(rows),
-                                "next_cursor": cs.cursor_of(rows[-1]) if more else None}}
+                                "next_cursor": nxt if more and nxt else None}}
         if more:
-            out["completeness"]["reason"] = "page_cap"
+            # a run of refused files longer than a cursor skips: stopped, said, no cursor
+            out["completeness"]["reason"] = "page_cap" if nxt else "withheld_run"
         return out
+
+    def _files_reader(self, actor: Any) -> bool:
+        """Whether this search reads SharePoint files from their table: a full reader
+        (``_full``) on a host whose item gate decides each file (none: the old way)."""
+        return getattr(self.base, "item_gate", None) is not None and self._full(actor)
+
+    def _gated_files(self, rows: Sequence[Any], actor: Any, limit: int, k: int,
+                     cur: Optional[Sequence[Any]] = None) -> tuple[list[Any], Optional[str]]:
+        """``rows`` (newest first, as read, at most ``k``) with every SharePoint file row
+        the item gate refuses this reader left out, cut to ``limit``; and the next page's
+        cursor (None: nothing follows; "": more follows past what a cursor may skip). The
+        cursor is built from the last row RETURNED (or, none returned, the cursor this page
+        started from) and the count of refused rows read after it, never from a refused
+        row: its handle and date stay out, and the next page reads those rows again,
+        refuses them again and goes on past them (``comms_search.cursor_of``)."""
+        from operating.pg import comms_search as cs
+        handles = [r[1] for r in rows if r[0] in cs.SEARCH_ONLY]
+        ahead = getattr(getattr(self.base, "item_gate", None), "prefetch", None)
+        if handles and callable(ahead):
+            try:
+                ahead(actor, handles)
+            except Exception:  # noqa: BLE001 - a read ahead decides nothing
+                pass
+        kept: list[Any] = []
+        after = 0     # rows read since the last one kept (all refused)
+        for row in rows:
+            if row[0] in cs.SEARCH_ONLY and not self.base._item_allowed(actor, row[1]):
+                after += 1
+                continue
+            if len(kept) == limit:
+                return kept, cs.cursor_of(kept[-1])          # one more row exists
+            kept.append(row)
+            after = 0
+        if not rows or len(rows) < k:
+            return kept, None
+        # every row read was taken or refused: a full read may have more after its last
+        # (this page read from its cursor's returned row on, so ``after`` already counts
+        # the rows that cursor skipped)
+        if after > cs.MAX_SKIP:
+            return kept, ""
+        if kept:
+            return kept, cs.cursor_of(kept[-1], after)
+        if cur is None or cur[2] is None:   # none returned: from the start, past them all
+            return kept, cs.cursor_at(None, None, None, after)
+        return kept, cs.cursor_at(cur[0], cur[1], cur[2], after)
 
     def _comms_open(self, args: dict[str, Any], actor: Any, guarded: str) -> dict[str, Any]:
         """One mail or Teams item's text by its handle through the views of ``guarded``
@@ -581,7 +686,7 @@ class SqlTool:
         most = int(args.get("max_chars") or 20000)
 
         def work(pg: Any) -> Any:
-            views = cs.present(pg, guarded)
+            views = cs.present(pg, guarded, opening=True)
             if not views:
                 return None
             rows = pg.execute(cs.open_sql(views, guarded=guarded, biz=biz),
@@ -590,25 +695,33 @@ class SqlTool:
                 return rows
             person = sql_views.person_schema()
             if guarded != person:   # the reader may read it, the AI may not
-                mine = cs.present(pg, person)
+                mine = cs.present(pg, person, opening=True)
                 if mine and pg.execute(cs.exists_sql(mine, biz=person), {"h": handle}
                                        ).fetchone()[0]:
                     return []
             return None
-        rows = self._comms_scoped(conn, settings, work)
+        moment = _ceiling()
+        rows = self._comms_scoped(conn, settings, work, actor)
         if rows is None:
+            if moment is not None:
+                # under a ceiling no other path opens it (the old read is not bounded)
+                raise ToolError("not_found", "no such message")
             return {"not_comms": True}
         if not rows:
             raise ToolError("egress_withheld", "this item is never shown to the assistant")
+        if moment is not None and read_ceiling.after(rows[0][4], moment):
+            raise ToolError("not_found", "no such message")   # it had not happened yet
         return cs.opened(rows, offset=offset, most=most)
 
-    def _comms_scoped(self, conn: Any, settings: Mapping[str, str], work: Any) -> Any:
+    def _comms_scoped(self, conn: Any, settings: Mapping[str, str], work: Any,
+                      actor: Any) -> Any:
         """``_scoped`` for the comms statements (as the store's own role: ``_scoped``). The
         store's role refused (its grants on the comms views missing: ``sql_views``
         install not run since the role was made): not ready, so the caller reads the old
         way instead of failing every search and open."""
         try:
-            return self._scoped(conn, None, work, role=False, extra=settings)
+            return self._scoped(conn, None, work, role=False, extra=settings,
+                                full=SEARCH_FULL_MS if self._full(actor) else False)
         except ToolError as exc:
             if exc.code != "not_readable":
                 raise
@@ -628,25 +741,48 @@ class SqlTool:
         limit = int(args.get("limit") or 20)
         try:
             words = rs.terms(args.get("query"))
-            since, until = rs.day(args.get("since")), rs.day(args.get("until"))
+            moment = _ceiling()
+            since = rs.day(args.get("since"))
+            until = rs.day(args.get("until"))
+            if moment is not None:
+                # the day before the ceiling's (a record date says only its day)
+                last = (read_ceiling.day_of(moment) - dt.timedelta(days=1)).isoformat()
+                until = last if until is None or until > last else until
             off = rs.read_cursor(args["cursor"]) if args.get("cursor") else 0
         except rs.SearchInputError as exc:
             raise ToolError("invalid_input", str(exc)) from None
-        sql = rs.search_sql(len(words), since=since is not None, until=until is not None)
+        dated = {"since": since is not None, "until": until is not None}
         bound = rs.params(words, str(args.get("query")), since=since, until=until,
                           k=limit + 1, off=off)
         door = Door(reader_grant(scope, full=self._full(actor)))
 
-        def work(pg: Any) -> Any:
-            if pg.execute("SELECT to_regclass('records')").fetchone()[0] is None:
-                raise ToolError("not_served", "records are not served as a table here")
-            if "records" in door.decided["refused"]:
-                raise ToolError("not_ready", "records is being rebuilt")
-            (plan,) = pg.execute("EXPLAIN (FORMAT JSON) " + sql, bound).fetchone()
-            plan = plan if isinstance(plan, list) else json.loads(plan)
-            generic_views.guard(plan, sql, generic_views.table_sizes(pg))
-            return pg.execute(sql, bound).fetchall()
-        rows = self._scoped(conn, door, work)
+        def read(sql: str, bound: dict[str, Any]) -> Any:
+            def work(pg: Any) -> Any:
+                if pg.execute("SELECT to_regclass('records')").fetchone()[0] is None:
+                    raise ToolError("not_served", "records are not served as a table here")
+                if "records" in door.decided["refused"]:
+                    raise ToolError("not_ready", "records is being rebuilt")
+                (plan,) = pg.execute("EXPLAIN (FORMAT JSON) " + sql, bound).fetchone()
+                plan = plan if isinstance(plan, list) else json.loads(plan)
+                generic_views.guard(plan, sql, generic_views.table_sizes(pg))
+                return pg.execute(sql, bound).fetchall()
+            return self._scoped(conn, door, work,
+                                full=SEARCH_FULL_MS if self._full(actor) else False)
+        # the labels holding the words, by the label index, as handles in the hits' order
+        # (``rs.candidates_sql``); the hits are read through the reader's door among them.
+        # Every match was a candidate, or the page filled from the first ones (any later
+        # match orders after them): the same hits as reading every label through the door;
+        # else that whole read (the cost guard may refuse it: a gap, as before)
+        cap = rs.candidates(off, limit + 1)
+        handles = self._label_candidates(conn, words, bound, cap, dated)
+        rows = None
+        if handles is not None:
+            rows = read(rs.search_sql(len(words), among=True, **dated),
+                        {**bound, "hs": handles})
+            if len(handles) >= cap and len(rows) <= limit:
+                rows = None
+        if rows is None:
+            rows = read(rs.search_sql(len(words), **dated), bound)
         more = len(rows) > limit
         rows = rows[:limit]
         out = {"documents": rs.hits(rows), "searched": rs.searched(args, words), "gaps": [],
@@ -658,19 +794,51 @@ class SqlTool:
             out["completeness"]["reason"] = "page_cap"
         return out
 
+    def _label_candidates(self, conn: Any, words: Sequence[str], bound: Mapping[str, Any],
+                          cap: int, dated: Mapping[str, bool]) -> "list[str] | None":
+        """``records_search``'s candidates (``rs.candidates_sql``): the store's own read of
+        its records table (as the comms search reads its text index), in a read-only
+        transaction of its own, at most ``CANDIDATE_MS``; never returned to the caller.
+        None: no word the label index finds, or the read failed or ran out of time (the
+        search then reads every label through the door, as before)."""
+        import psycopg
+        from operating.pg import records_search as rs
+        positions = rs.indexed(words)
+        if not positions:
+            return None
+        sql = rs.candidates_sql(positions, biz=bv.SCHEMA, **dated)
+        ms = int(min(CANDIDATE_MS, self._seconds() * 1000))
+        try:
+            with _lent(conn) as pg:
+                kept = (pg.isolation_level, pg.read_only)
+                try:
+                    pg.read_only = True
+                    with pg.transaction():
+                        pg.execute("SELECT set_config('statement_timeout', %s, true), "
+                                   "set_config('search_path', 'pg_catalog', true)", (str(ms),))
+                        return [r[0] for r in pg.execute(sql, {**bound, "cap": cap})]
+                finally:
+                    if not pg.closed and pg.info.transaction_status == 0:
+                        pg.isolation_level, pg.read_only = kept
+        except (psycopg.Error, ToolError):
+            return None
+
     # ------------------------------------------------------------------ query
 
     def _query(self, conn: Any, scope: Any, sql: str, actor: Any) -> dict[str, Any]:
         wrapped = f"SELECT * FROM (\n{sql}\n) AS plx_q"
         views = sorted(v for v in bv.VIEWS if re.search(rf"\b{v}\b", sql, re.I))
+        derived = [v for v in COMMS_DERIVED if re.search(rf"\b{v}\b", sql, re.I)]
         # the communications views read their own settings beside the door's: only when
-        # the statement names one (unset, they show nothing: fail closed)
+        # the statement names one or a view over them (unset, they show nothing: fail
+        # closed)
         extra = self._comms_settings(scope, actor) \
-            if any(bv.VIEWS[v].fill for v in views) else None
+            if derived or any(bv.VIEWS[v].fill for v in views) else None
         # the generic door tables (``generic_views``): refused while rebuilt, withheld
         # counts and build time as a curated view's
         views += [v for v in GENERIC if re.search(rf"\b{v}\b", sql, re.I)]
-        door = Door(reader_grant(scope, full=self._full(actor)))
+        full = self._full(actor)
+        door = Door(reader_grant(scope, full=full))
         started = time.monotonic()
 
         def work(pg: Any) -> Any:
@@ -682,6 +850,13 @@ class SqlTool:
             (plan,) = pg.execute("EXPLAIN (FORMAT JSON) " + wrapped).fetchone()
             plan = plan if isinstance(plan, list) else json.loads(plan)
             cost = float(plan[0]["Plan"]["Total Cost"])
+            if full:
+                # a full reader: the statement's own time limit bounds it (FULL_STATEMENT_MS);
+                # a costly one waits for one of the box's few slots for those (``_costly_slot``)
+                if cost > MAX_COST:
+                    _costly_slot(pg)
+                cols, rows, stopped = _fetch(pg, sql)
+                return cols, rows, stopped, _built(pg, views), _visible(pg, views, cols, rows)
             if cost > MAX_COST:
                 raise ToolError("too_costly", f"the plan's cost ({cost:.3g}) is past "
                                 f"{MAX_COST:.3g}: it would read too much",
@@ -697,8 +872,21 @@ class SqlTool:
         def lineage(pg: Any, got: Any) -> list[dict[str, Any]]:
             return _sources(pg, got[4])
 
-        (cols, rows, stopped, built, _seen), sources = self._scoped(
-            conn, door, work, extra=extra, after=lineage)
+        until = None
+        while True:
+            try:
+                (cols, rows, stopped, built, _seen), sources = self._scoped(
+                    conn, door, work, extra=extra, after=lineage, full=full)
+                break
+            except _NoSlot:
+                # the slot wait holds no pooled connection: the try's transaction ended
+                until = _costly_until() if until is None else until
+                now = time.monotonic()
+                if now >= until:
+                    raise ToolError("busy", f"{FULL_COSTLY_SLOTS} long queries are already "
+                                    "running", "filter (where on a date or key) or aggregate "
+                                    "so it reads less, or send it again shortly") from None
+                time.sleep(min(FULL_COSTLY_POLL_SECONDS, until - now))
         # per view read, per column, how many rows the reader may read hold a value it
         # may not (they read NULL there), from ``class_counts`` when its door was decided
         withheld = {v: dict(door.decided["withheld"][v]) for v in views
@@ -731,7 +919,10 @@ class SqlTool:
         out: dict[str, Any] = {
             "result": result, "columns": cols, "rows": shown, "row_count": len(shown),
             "truncated": truncated, "views": views,
-            "as_of": _cell(built)[0] if built is not None else None,
+            # under a replay's ceiling the data are as of the replayed moment, never the
+            # tables' build time (it would tell the model the real date)
+            "as_of": (_ceiling().isoformat() if _ceiling() is not None else
+                      _cell(built)[0] if built is not None else None),
             "seconds": round(time.monotonic() - started, 2),
             "partial": bool(withheld), "withheld": withheld}
         if sources:
@@ -754,6 +945,19 @@ class SqlTool:
         except Exception:  # noqa: BLE001 - undecidable: not a full reader (fail closed)
             return False
 
+    def _described_only(self, what: Any) -> dict[str, Any]:
+        """``describe`` under a read ceiling: the views' meanings, never a sample row or
+        commonest value (they are today's)."""
+        doc = {"rules": RULES, "views": _dictionary()}
+        if what is True:
+            return {"rules": RULES, "views": {
+                name: f"{entry['about']} Columns: {', '.join(entry['columns'])}"
+                for name, entry in doc["views"].items()}}
+        if isinstance(what, str) and what in doc["views"]:
+            return {**doc, "views": {what: doc["views"][what]}}
+        return {**doc, "views": {"records": doc["views"]["records"]},
+                "note": "SELECT type, name FROM record_types lists the record types"}
+
     def _describe(self, what: Any, actor: Any) -> dict[str, Any]:
         doc = {"rules": RULES, "views": _dictionary()}
         if what is True:
@@ -765,14 +969,14 @@ class SqlTool:
                 for name, entry in doc["views"].items()},
                 "more": "plx.sql {\"describe\": \"<view>\"}: a view's column meanings, "
                         "sample rows and commonest values"}
-        if isinstance(what, str) and what in GENERIC:
+        if isinstance(what, str) and (what in GENERIC or what in COMMS_DERIVED):
             return {**doc, "views": {what: doc["views"][what]}}
-        if isinstance(what, str) and what not in bv.VIEWS and \
+        if isinstance(what, str) and what not in bv.listed() and \
                 re.fullmatch(r"[A-Za-z][A-Za-z0-9_]{0,63}", what):
             return self._describe_type(what, actor, doc)
-        if not isinstance(what, str) or what not in bv.VIEWS:
+        if not isinstance(what, str) or what not in bv.listed():
             raise ToolError("unknown_view", f"no view {str(what)[:64]!r}",
-                            "views: " + ", ".join(sorted(bv.VIEWS)) + "; or a record "
+                            "views: " + ", ".join(sorted(bv.listed())) + "; or a record "
                             "type record_types lists")
         conn, scope = self._reader(actor)
         v = bv.VIEWS[what]
@@ -1060,14 +1264,49 @@ def _decide(pg: Any, grant: Grant) -> dict[str, Any]:
 
 def _ranges_only(pg: Any) -> bool:
     """Whether every guarded business view (the AI's and the person's pages') reads the
-    held classes as ranges (``door.view_ddl`` now), none an older int4[] list."""
-    from operating.pg import door
+    held classes as ranges (``door.view_ddl`` now: its rule coerces the setting to
+    int4multirange), none an older int4[] list. Read from the catalog's stored rules, never
+    through ``pg_views``: its ``pg_get_viewdef`` locks each view, so one view held by a
+    refresh's swap (dropped and made again, then minutes of lineage in that transaction)
+    made every reader's door wait for the swap (11-19 sampler: plx.sql stalled 2-4 s and
+    retried). A rule that does not show the coercion counts as the older form: the int4[]
+    lists are then sent too, which every view reads correctly."""
     names = [n for n, v in bv.VIEWS.items() if not v.fill]
     (old,) = pg.execute(
-        "SELECT count(*) FROM pg_catalog.pg_views WHERE schemaname = ANY(%s) AND "
-        "viewname = ANY(%s) AND position(%s in definition) = 0",
-        ([sql_views.guarded_schema(), sql_views.page_schema()], names, door.HELD)).fetchone()
+        "SELECT count(*) FROM pg_catalog.pg_class c JOIN pg_catalog.pg_namespace n ON "
+        "n.oid = c.relnamespace JOIN pg_catalog.pg_rewrite r ON r.ev_class = c.oid WHERE "
+        "c.relkind = 'v' AND n.nspname = ANY(%s) AND c.relname = ANY(%s) AND position("
+        "(':resulttype ' || 'pg_catalog.int4multirange'::regtype::oid || ' ') in "
+        "r.ev_action::text) = 0",
+        ([sql_views.guarded_schema(), sql_views.page_schema()], names)).fetchone()
     return old == 0
+
+
+class _NoSlot(Exception):
+    """No costly slot was free in this try (``_costly_slot``): the call's transaction ends,
+    its connection goes back, and ``_query`` tries again after FULL_COSTLY_POLL_SECONDS."""
+
+
+def _costly_slot(pg: Any) -> None:
+    """Hold one of FULL_COSTLY_SLOTS box-wide slots for the rest of ``pg``'s transaction
+    (``pg_try_advisory_xact_lock``: released at its end, whatever happens); none free:
+    ``_NoSlot`` (the wait is ``_query``'s, holding no connection)."""
+    for slot in range(FULL_COSTLY_SLOTS):
+        if pg.execute("SELECT pg_try_advisory_xact_lock(%s, %s)",
+                      (FULL_COSTLY_LOCK, slot)).fetchone()[0]:
+            return
+    raise _NoSlot()
+
+
+def _costly_until() -> float:
+    """When a costly statement stops waiting for a slot: FULL_COSTLY_WAIT_SECONDS from now,
+    never past the call's own time less a quarter statement."""
+    from operating import call_limits
+    wait = FULL_COSTLY_WAIT_SECONDS
+    left = call_limits.seconds_left()
+    if left is not None:
+        wait = min(wait, max(0.0, left - FULL_STATEMENT_MS / 1000.0 / 4))
+    return time.monotonic() + wait
 
 
 def scoped_read(pg: Any, door: Door | None, work: Any, seconds: float, *,
@@ -1147,12 +1386,24 @@ def scoped_read(pg: Any, door: Door | None, work: Any, seconds: float, *,
                         "fix the statement and send it again") from None
     except psycopg.errors.ReadOnlySqlTransaction:
         raise _bad("plx.sql only reads") from None
+    except (psycopg.errors.LockNotAvailable, psycopg.errors.InternalError_) as exc:
+        # a refresh swapping the tables under the statement (its lock held past
+        # lock_timeout, or the old table dropped after the plan opened it: "could not open
+        # relation with OID"): ends within seconds, so ``SqlTool._scoped`` asks again
+        if isinstance(exc, psycopg.errors.LockNotAvailable) or _SWAPPED.search(str(exc)):
+            raise Busy("the business tables were being swapped") from None
+        raise ToolError("query_failed", f"the store refused the query "
+                        f"({type(exc).__name__}: {_first_line(exc)})") from None
     except psycopg.Error as exc:
         raise ToolError("query_failed", f"the store refused the query "
                         f"({type(exc).__name__}: {_first_line(exc)})") from None
     finally:
         if not pg.closed and pg.info.transaction_status == 0:   # idle: restorable
             pg.isolation_level, pg.read_only = kept
+
+
+# what a statement meets when a table it planned on was dropped by a swap since
+_SWAPPED = re.compile(r"could not open relation with OID|cache lookup failed for relation")
 
 
 def _first_line(exc: Exception) -> str:
@@ -1333,6 +1584,37 @@ GENERIC_ABOUT = {
         "stored_by_text_join, lead (a guess)"}),
 }
 GENERIC = tuple(GENERIC_ABOUT)
+# views over the communications views (``operating.pg.comms_findings``): a statement naming
+# one reads with the communications settings (its rows are those of messages the reader's
+# own mail and Teams views show; unset, it shows nothing)
+COMMS_DERIVED_ABOUT = {
+    "comms_findings": (
+        "decisions, requests, complaints and praise read out of mail and Teams messages "
+        "(one row per item a message states; a message this reader cannot read shows none; "
+        "the summary is a model's one-line reading: open the handle with plx.open to quote "
+        "the message). Customer feedback = kind complaint or praise; GROUP BY topic or "
+        "customers for themes", {
+            "kind": "text: decision, request, complaint or praise",
+            "topic": "text: delivery, pricing, quality, documents, order, payment, product, "
+                     "samples, packaging, schedule, stock, service or other",
+            "summary": "text: one plain sentence saying what was decided, asked or "
+                       "reported",
+            "who": "text: who decided, asked or complained, as the message names them "
+                   "('' not named)",
+            "from_side": "text: who sent the message: us (our staff), customer, outside "
+                         "(another party: supplier, carrier, vendor) or '' (unknown: a Teams "
+                         "sender not matched to staff)",
+            "said_at": "timestamptz: when the message was sent",
+            "said_date": "date: its business date",
+            "source": "text: email or teams",
+            "sender": "text: the message's sender (an address for mail, a name in Teams)",
+            "subject": "text: the mail subject or Teams chat topic",
+            "thread": "text: the mail thread (emails.thread) or Teams chat id",
+            "customers": "text[]: handles of customers rows the message is about (join "
+                         "customers ON handle = ANY(customers))",
+            "suppliers": "text[]: handles of suppliers rows it is about"}),
+}
+COMMS_DERIVED = tuple(COMMS_DERIVED_ABOUT)
 GENERIC_TABLES = ("records", "record_links")
 TYPE_SAMPLE = 500
 
@@ -1426,7 +1708,7 @@ def _dictionary() -> dict[str, Any]:
         for cname, kind, cdoc in sql_views.SHOWN_COMMON:
             cols[cname] = f"{kind}: {cdoc}"
         out[name] = {"about": entry["about"], "columns": cols}
-    for name, (about, cols) in GENERIC_ABOUT.items():
+    for name, (about, cols) in {**GENERIC_ABOUT, **COMMS_DERIVED_ABOUT}.items():
         cols = dict(cols)
         if name != "record_types":
             for cname, kind, cdoc in sql_views.SHOWN_COMMON:

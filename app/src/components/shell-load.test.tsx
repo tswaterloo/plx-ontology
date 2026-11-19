@@ -1,12 +1,16 @@
 import { render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-const api = vi.hoisted(() => ({ homes: [] as unknown[], homeCalls: 0, total: 0, lateCalls: [] as number[] }));
+const api = vi.hoisted(() => ({ homes: [] as unknown[], homeCalls: 0, total: 0, lateCalls: [] as number[], sidebar: {} as unknown, sidebarCalls: 0 }));
 vi.mock("next/navigation", () => ({ usePathname: () => "/", useRouter: () => ({ push: () => undefined }), useSearchParams: () => new URLSearchParams() }));
-vi.mock("./auth", () => ({ useAuth: () => ({ state: {} }), RequireAuth: ({ children }: { children: unknown }) => children }));
+vi.mock("./auth", () => ({ useAuth: () => ({ state: { status: "signed-in" } }), RequireAuth: ({ children }: { children: unknown }) => children }));
 vi.mock("@/lib/api", async (orig) => ({
   ...(await orig<typeof import("@/lib/api")>()),
   getHome: () => Promise.resolve(api.homes[Math.min(api.homeCalls++, api.homes.length - 1)]),
+  getSidebar: () => {
+    api.sidebarCalls += 1;
+    return Promise.resolve(api.sidebar);
+  },
   getLateList: (offset: number, _s: unknown, limit: number) => {
     api.lateCalls.push(offset);
     const n = Math.min(limit, Math.max(0, api.total - offset));
@@ -20,7 +24,7 @@ vi.mock("@/lib/api", async (orig) => ({
   },
 }));
 
-import { LateBySupplier, loadHome, loadLateRead, onHomeRead } from "./shell";
+import { LateBySupplier, loadHome, loadLateRead, loadSidebar, onHomeRead } from "./shell";
 
 describe("Today's shared reads", () => {
   beforeEach(() => {
@@ -42,22 +46,51 @@ describe("Today's shared reads", () => {
     off();
   });
 
-  it("501 late orders: Today reads 300 and says so, with the count the server holds", async () => {
+  it("Today still reads up to 300 late orders, with the count the server holds", async () => {
     api.total = 501;
     const read = await loadLateRead(true);
     expect(read.items).toHaveLength(300);
     expect(read.total).toBe(501);
-    render(<LateBySupplier />);
-    const note = await screen.findByTestId("late-by-supplier-partial");
-    expect(note).toHaveTextContent("first 300 of 501");
-    expect(note).toHaveAttribute("href", "/?show=late");
+  });
+});
+
+describe("the sidebar's late suppliers", () => {
+  beforeEach(() => {
+    api.lateCalls = [];
+    api.sidebarCalls = 0;
   });
 
-  it("a short list is not labelled partial", async () => {
-    api.total = 40;
-    await loadLateRead(true);
+  it("come from the sidebar's own small read, never the late list: 7 named, the rest counted", async () => {
+    api.sidebar = {
+      late_total: 501,
+      supplier_total: 12,
+      partial: false,
+      late_suppliers: Array.from({ length: 8 }, (_, i) => ({ supplier: `S${i}`, late: 40 - i })),
+      recent_questions: [],
+    };
+    await loadSidebar(true);
     render(<LateBySupplier />);
     await waitFor(() => expect(screen.getByTestId("late-by-supplier")).toBeInTheDocument());
+    expect(screen.getAllByRole("link").map((a) => a.textContent)).toEqual([
+      ...Array.from({ length: 7 }, (_, i) => `S${i}${40 - i}`),
+      "5 more",
+    ]);
     expect(screen.queryByTestId("late-by-supplier-partial")).toBeNull();
+    expect(api.lateCalls).toEqual([]);
+    expect(api.sidebarCalls).toBe(1);
+  });
+
+  it("counts of the longest late only say so; none late shows nothing", async () => {
+    api.sidebar = { late_total: 3, supplier_total: 1, partial: true, late_suppliers: [{ supplier: "Acme", late: 3 }], recent_questions: [] };
+    await loadSidebar(true);
+    const view = render(<LateBySupplier />);
+    const note = await screen.findByTestId("late-by-supplier-partial");
+    expect(note).toHaveAttribute("href", "/?show=late");
+    view.unmount();
+    api.sidebar = { late_total: 0, supplier_total: 0, partial: false, late_suppliers: [], recent_questions: [] };
+    await loadSidebar(true);
+    render(<LateBySupplier />);
+    await new Promise((r) => setTimeout(r, 20));
+    expect(screen.queryByTestId("late-by-supplier")).toBeNull();
   });
 });

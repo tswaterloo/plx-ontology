@@ -111,7 +111,7 @@ export const GUIDES: RoleGuide[] = [
     ],
     lookUp: "a supplier invoice or a customer with an open balance",
     asks: ["Which approvals are waiting on me?", "Does the Northfield invoice for PO 4512 match what we received?", "What is Acme's open balance and when did they last pay?"],
-    autopilots: ["approval_request", "mail_approval_request", "cash_application"],
+    autopilots: ["mail_approval_request", "cash_application"],
     pages: [{ href: "/?show=alerts", label: "Alerts" }],
   },
 ];

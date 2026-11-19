@@ -134,11 +134,14 @@ def looked_up(found: Any) -> Optional[dict[str, Any]]:
     return {"mentions": mentions, "entities": isinstance(found.get("entities"), list)}
 
 
-# One agent session at its peak beside what already runs: its tool host (about 1 GB
-# resident once its facts are kept and its heap trimmed, ``ontology_tools_traverse``),
-# helpers and the model CLI. Memory the running sessions hold is already out of
-# MemAvailable, so only sessions too young to have reached their peak are reserved for.
-ASK_SESSION_GB = 3.0
+# One agent session at its peak beside what already runs: its tool host, helpers and the
+# model CLI. Memory the running sessions hold is already out of MemAvailable, so only
+# sessions too young to have reached their peak are reserved for. Measured on the simple
+# Ask (three Opus sessions on live data, peak RSS per process): tool host 290-335 MB,
+# model CLI 233-247 MB, so ~0.6 GB a session; 1.0 keeps a margin. At 3.0 (sized for the
+# old traverse host's ~1 GB) a 15-20 GB-available box admitted one or two sessions per
+# 90 s ramp and three concurrent questions waited 20 s (median) before their first read.
+ASK_SESSION_GB = 1.0
 ASK_SESSION_FLOOR_GB = 8.0        # no further session starts with less available
 ASK_SESSION_RAMP_SECONDS = 90.0   # a session admitted this recently is still growing
 # Sessions at once at most: the CPUs a session's model CLI and host share, not memory.
@@ -239,9 +242,14 @@ class SessionSlots:
 def memory_available_gb(meminfo: Path = Path("/proc/meminfo"),
                         cgroup: Optional[Path] = None) -> Optional[float]:
     """The memory this process may still take, in GB: MemAvailable, but no more than the
-    headroom (memory.max less memory.current) of any cgroup v2 limit over it (a scope or
-    slice capped at 8 GB on a 61 GB host: 11-11 an eval API counted the host's 37 GB,
-    started four Ask workers in an 8 GB scope and was OOM-killed before its first answer).
+    headroom of any cgroup v2 limit over it (a scope or slice capped at 8 GB on a 61 GB
+    host: 11-11 an eval API counted the host's 37 GB, started four Ask workers in an 8 GB
+    scope and was OOM-killed before its first answer). A cgroup's headroom is memory.max
+    less what it holds that cannot be dropped: memory.current counts the page cache its
+    reads left behind too, which the kernel reclaims inside the cgroup before it would
+    kill anything (as MemAvailable counts it available). Measured on the live API
+    (MemoryMax 20G): memory.current 8.6 GB of which 7.3 GB page cache, anonymous 3.8 GB,
+    so it saw 11.4 GB where 18.7 GB could be taken, and started or admitted that less.
     ``cgroup``: this process's cgroup directory (tests; default from /proc/self/cgroup).
     None where MemAvailable cannot be read; a limit that cannot be read is no limit."""
     try:
@@ -260,7 +268,8 @@ def memory_available_gb(meminfo: Path = Path("/proc/meminfo"),
 
 
 def _cgroup_limits(start: Optional[Path]) -> list[tuple[int, int]]:
-    """(memory.max, memory.current) in bytes of each limited cgroup from ``start`` up."""
+    """(memory.max, memory held) in bytes of each limited cgroup from ``start`` up: held
+    is memory.current less its reclaimable page cache (``_reclaimable``)."""
     root = Path("/sys/fs/cgroup")
     if start is None:
         try:
@@ -275,13 +284,30 @@ def _cgroup_limits(start: Optional[Path]) -> list[tuple[int, int]]:
         try:
             limit = (here / "memory.max").read_text("ascii").strip()
             if limit != "max":
-                out.append((int(limit), int((here / "memory.current").read_text("ascii"))))
+                current = int((here / "memory.current").read_text("ascii"))
+                out.append((int(limit), max(0, current - _reclaimable(here))))
         except (OSError, ValueError):
             pass
         if here == root or here.parent == here:
             break
         here = here.parent
     return out
+
+
+def _reclaimable(cgroup: Path) -> int:
+    """The bytes of a cgroup's memory.current the kernel drops before it runs out: clean
+    page cache (file less shmem, dirty and under-writeback pages) and reclaimable slab,
+    from its memory.stat; 0 when that cannot be read (all of memory.current is held)."""
+    try:
+        stat = {}
+        for line in (cgroup / "memory.stat").read_text("ascii").splitlines():
+            key, _, value = line.partition(" ")
+            stat[key] = int(value)
+    except (OSError, ValueError):
+        return 0
+    cache = stat.get("file", 0) - sum(stat.get(k, 0) for k in
+                                      ("shmem", "file_dirty", "file_writeback"))
+    return max(0, cache) + max(0, stat.get("slab_reclaimable", 0))
 
 
 # Page reads served at once: the owner thread and helpers, each its own runtime and thread
@@ -336,6 +362,11 @@ SECTION_WORKERS = 4
 # and thread (~0.5 GB each). One serialised every reader's checks and door reads: Home
 # 2.3-4 s warm, 7-13 s cold, 40-60 jobs queued behind each other (11-18 walk).
 ACCESS_WORKERS = 2
+# The check workers: the kept pages' access checks alone, on their own queue. One ran every
+# check of a Home visit (~30, 0.01-0.5 s each) in turn: the last waited 1 s and more
+# (11-19 cold round: "access check queued 1.0-1.2 s, ran 0.1 s"), past the 3 s a page
+# waits for its check on a loaded box, then the page was read again in full.
+CHECK_WORKERS = 2
 SECTION_START_SECONDS = 300   # how long the API waits for the pool before it serves
 PREWARM_SECONDS = 60          # the known readers' policies decided before it serves
 # The readers' kept pages on disk (``page_store``) and the attachment page counts, in the
@@ -415,7 +446,24 @@ CARD_WORDS_KEPT = 20000
 # seen, that session's reference and expiry, and the record pages they opened last; no
 # name), kept owner-only in the app's own data directory, never the state's.
 KNOWN_READERS_FILE = "known-readers.json"
-KNOWN_READERS = 8
+
+
+def others_app_data(data_dir: Optional[Path]) -> Optional[int]:
+    """The user id that keeps ``data_dir`` when that is not this process's user: its
+    known-readers file is written only by the API that serves from it (replaced whole, so
+    owned by that API's user). A second API pointed at a directory another user's API
+    keeps then keeps no pages there and
+    rewrites no known readers: two APIs of different users writing one page cache is how
+    the live one was suspected corrupt. Root, an absent directory or file: None."""
+    if data_dir is None or os.geteuid() == 0:
+        return None
+    try:
+        owner = os.stat(Path(data_dir) / KNOWN_READERS_FILE).st_uid
+    except OSError:
+        return None
+    return owner if owner != os.geteuid() else None
+KNOWN_READERS = 40
+RECENT_USER_SECONDS = 7 * 24 * 3600   # who used the app this recently has their late orders' trails read ahead
 GENERATION_POLL_SECONDS = 10   # a delta layer, generation or inbox change read ahead
 # A recent reader's page door is decided again this often (``_keep_doors``), inside the
 # door's own age limit (``ontology_tools_sql.DOOR_MAX_AGE_SECONDS``, 120 s), for readers
@@ -964,7 +1012,13 @@ class Worker:
         self.running += 1
         try:
             with self.scope():
-                future.set_result(_profiled(job, self._workspace(reader.session), future))
+                built = time.monotonic()
+                view = self._workspace(reader.session)
+                built = time.monotonic() - built
+                if built >= 0.5 and stage_timing():
+                    STAGE_LOG.info("job %s: the reader's workspace took %.2f s on %s",
+                                   _job_name(job), built, threading.current_thread().name)
+                future.set_result(_profiled(job, view, future))
             self.served.add(",".join(sorted(reader.session.principals)))
         except BaseException as error:  # noqa: BLE001 - handed to the route
             future.set_exception(error)
@@ -1159,8 +1213,9 @@ def _profiled(job: Callable[[Any], Any], view: Any, future: Future) -> Any:
                     r"[^A-Za-z0-9_.]+", "_", _job_name(job))[:60], ran)
                 profile.dump_stats(str(Path(folder) / name))
         if timed:
-            STAGE_LOG.info("job %s waited %.2f s, ran %.2f s", _job_name(job),
-                           began - getattr(future, "plx_queued", began), ran)
+            STAGE_LOG.info("job %s waited %.2f s, ran %.2f s on %s", _job_name(job),
+                           began - getattr(future, "plx_queued", began), ran,
+                           threading.current_thread().name)
 
 
 class _Watched:

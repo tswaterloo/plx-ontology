@@ -700,6 +700,10 @@ class AnswerPayload(_Model):
         default_factory=list, json_schema_extra=_optional,
         description="Emails and actions the question asked to have drafted; each is done "
                     "only from its preview with your explicit confirm.")
+    charts: list["AskChart"] = Field(
+        default_factory=list, json_schema_extra=_optional,
+        description="Charts the answer draws (any kind of operator_api.charts), each from the rows of one "
+                    "query result the session read (never numbers the model wrote).")
     documents: list["AskDocument"] = Field(
         default_factory=list, json_schema_extra=_optional,
         description="Files the answer made for you (plx.make_document): each kept for you "
@@ -733,7 +737,8 @@ class HistoryTurn(_Model):
 
 class AskAttachment(_Model):
     """A file or image attached to one question (``operating.ask_attachments``): read in
-    memory for that answer only, never stored."""
+    memory for that answer only; a Word, Excel or PowerPoint file is also kept as your own
+    file (yours only), so the Ask can edit it and give you the edited copy."""
     name: str = Field(min_length=1, max_length=200)
     data: str = Field(min_length=1, max_length=11_200_000,
                       description="The file's bytes, base64 (8 MB a file, 10 MB together).")
@@ -761,8 +766,8 @@ class AskRequest(_Model):
                                               "or picked; read for them as they may read it.")
     attachments: list[AskAttachment] = Field(
         default_factory=list, max_length=5,
-        description="Files and images the person attached (PDF, .xlsx, .csv, text, PNG, "
-                    "JPEG, GIF, WebP): up to five, 10 MB together.")
+        description="Files and images the person attached (PDF, .xlsx, .csv, .docx, .pptx, "
+                    "text, PNG, JPEG, GIF, WebP): up to five, 10 MB together.")
     context: Optional["InstructContext"] = Field(
         None, json_schema_extra=_optional,
         description="The page the box was opened on (a meeting, an autopilot item, a page); "
@@ -778,6 +783,10 @@ class AskRequest(_Model):
         None, json_schema_extra=_optional,
         description="An answer to the question an earlier answer asked back (or another "
                     "reading of its assumption): continues that question.")
+    deep: bool = Field(
+        False, json_schema_extra=_optional,
+        description="Think it through: plan the reads, cross-check the key figures a "
+                    "second way and answer with the evidence per part (slower).")
 
     @model_validator(mode="after")
     def _attachments_fit(self) -> "AskRequest":
@@ -966,6 +975,34 @@ class Home(_Model):
         description="Set when the server could not read this page in time and serves the "
                     "last page it read for this same reader instead: when that page was "
                     "read (ISO). It is refreshed in the background.")
+    reading: bool = _reading()
+
+
+class SupplierLate(_Model):
+    supplier: str
+    late: int = Field(ge=1)
+
+
+class Sidebar(_Model):
+    """The sidebar's numbers on every page, small and kept per reader (never Home's lists):
+    how many late purchase orders this reader may see and the suppliers with the most."""
+    late_total: Optional[int] = Field(
+        None, json_schema_extra=_optional,
+        description="Every late purchase order this reader may see; null when it could not "
+                    "be read now (never 0 for unknown).")
+    late_suppliers: list[SupplierLate] = Field(
+        default_factory=list, description="The suppliers with the most late purchase "
+                                          "orders, most first (the first few only).")
+    supplier_total: int = Field(0, ge=0, description="How many suppliers have a late "
+                                                     "purchase order.")
+    partial: bool = Field(False, description="The supplier counts are of the longest late "
+                                             "orders only, not every one.")
+    recent_questions: list[RecentQuestion] = Field(default_factory=list)
+    freshness: Freshness = Field(default_factory=lambda: Freshness())
+    stale_since: Optional[str] = Field(
+        None, json_schema_extra=_optional,
+        description="Set when the server serves the last numbers it read for this same "
+                    "reader: when they were read (ISO). Refreshed in the background.")
     reading: bool = _reading()
 
 
@@ -2213,6 +2250,10 @@ class Briefing(_Model):
                                    "('partly_checked': some were not, they rank as not "
                                    "yours), or you have no identity on record.")
     reading: bool = _reading()
+    pages: list[BriefingItems] = Field(
+        default_factory=list, json_schema_extra=_optional,
+        description="With ``pages=true``: the first page of each group Home lists past its "
+                    "top items (``/api/briefing/items``), in this answer: no second request.")
 
 
 class BriefingEventType(_Model):
@@ -2241,6 +2282,13 @@ class BriefingItems(_Model):
     offset: int = Field(ge=0)
     items: list[BriefingItem] = Field(default_factory=list)
     more: bool = False
+
+
+class BriefingPages(_Model):
+    """The first page of several event types' items of your briefing, asked at once (Home's
+    groups): each as ``/api/briefing/items`` answers it; a type that could not be read now
+    is left out (its group opens on its own)."""
+    pages: list[BriefingItems] = Field(default_factory=list)
 
 
 class UnjudgedRecord(_Model):
@@ -3712,18 +3760,30 @@ class AutopilotJob(_Model):
                                  "reviewed (prepared, confirmed, dismissed, ...).")
 
 
+class AutopilotTodo(_Model):
+    """Something to do by hand that no prepared change reaches (a system with no write path,
+    or a question an hourly look raised): which system, which record, what to do."""
+    system: str = ""
+    record: str = ""
+    what: str
+
+
 class AutopilotPrepared(_Model):
     """One thing prepared for you: who wrote, what they wrote, and either the reply (to
-    edit, confirm, copy or open in Outlook), the question only you can answer, or the system
-    changes the event calls for (``job``: each reviewed and confirmed on its own)."""
+    edit, confirm, copy or open in Outlook), the question only you can answer, the system
+    changes the event calls for (``job``: each reviewed and confirmed on its own), or only
+    things to do by hand (``todo``: mark it done or not needed; nothing is written)."""
     item_id: str
     sender: str
     channel: Literal["mail", "teams", "system"]
     subject: str = ""
     message: str = Field("", description="What they wrote, as far as the item keeps it.")
-    kind: Literal["reply", "your_call", "job"]
-    summary: str = Field("", description="On a job: what the event asks to be done.")
+    kind: Literal["reply", "your_call", "job", "todo"]
+    summary: str = Field("", description="On a job or a to-do: what the event asks to be "
+                         "done.")
     jobs: list[AutopilotJob] = Field(default_factory=list)
+    todos: list[AutopilotTodo] = Field(
+        default_factory=list, description="Things to do by hand, on any kind of item.")
     to: list[str] = Field(default_factory=list)
     cc: list[str] = Field(default_factory=list)
     body: str = Field("", description="The reply as it stands now (your edit when you made "
@@ -4491,6 +4551,30 @@ class WorkLogOrganise(_Model):
     closed: Optional[bool] = Field(None, description="Close a waiting loop yourself.")
 
 
+class AskChat(_Model):
+    """One of your Ask conversations in your chats list."""
+    conversation_id: str
+    title: str = Field(description="The name you gave it, else its first question.")
+    named: bool = False
+    pinned: bool = False
+    questions: int
+    last_at: str
+
+
+class AskChats(_Model):
+    available: bool = Field(True, description="False while the people exclusion cannot "
+                            "decide what may be listed (nothing is listed then).")
+    chats: list[AskChat]
+
+
+class AskChatUpdate(_Model):
+    """Rename, pin or delete one of your own Ask conversations. Deleting takes it off your
+    chats list; your work log keeps the record of what was asked."""
+    name: Optional[str] = Field(None, max_length=120)
+    pinned: Optional[bool] = None
+    deleted: Optional[bool] = None
+
+
 class WorkLogSave(_Model):
     """The record page's or Ask's Save (kept in the browser too)."""
     saved: bool
@@ -4612,10 +4696,191 @@ class EntryConfirm(_Model):
     currency: Optional[str] = Field(None, max_length=8)
 
 
+ChartKind = Literal["bar", "line", "area", "pie", "donut", "scatter", "histogram", "heatmap",
+                    "waterfall", "funnel", "combo", "kpi", "table"]
+
+
+class ChartSpec(_Model):
+    """What to draw from a result's rows (``operator_api.charts``): its kind, columns and
+    options; it names columns, never numbers."""
+    kind: ChartKind
+    x: Optional[str] = Field(None, description="The label column (none: a kpi or histogram).")
+    y: list[str] = Field(min_length=1, max_length=12, description="The value columns.")
+    y2: list[str] = Field(default_factory=list, max_length=6, json_schema_extra=_optional,
+                          description="A combo's columns drawn as lines on a right axis.")
+    split: Optional[str] = Field(None, json_schema_extra=_optional, description=(
+        "Long rows (x, group, value): one series (a heatmap's row) per value of this column."))
+    facet: Optional[str] = Field(None, json_schema_extra=_optional,
+                                 description="Small multiples: one panel per value.")
+    label: Optional[str] = Field(None, json_schema_extra=_optional,
+                                 description="A scatter's point names.")
+    stacked: bool = Field(False, json_schema_extra=_optional)
+    horizontal: bool = Field(False, json_schema_extra=_optional)
+    trend: bool = Field(False, json_schema_extra=_optional,
+                        description="A scatter's least-squares line and correlation r.")
+    bins: Optional[int] = Field(None, ge=1, le=40, json_schema_extra=_optional)
+
+
+class AskChartSeries(_Model):
+    name: str = Field(description="The result column (or split value) the values are from.")
+    values: list[Optional[float]] = Field(description="One per label; null: not a number.")
+    axis: Optional[Literal["right"]] = Field(None, json_schema_extra=_optional,
+                                             description="right: a combo's line axis.")
+
+
+class AskChartPanel(_Model):
+    """One of a chart's small multiples: the rows of one facet value."""
+    title: str
+    labels: list[str]
+    series: list[AskChartSeries]
+
+
+class AskChartTrend(_Model):
+    """A scatter's least-squares line y = slope * x + intercept through its n points and
+    their correlation r (how closely they move together, never cause)."""
+    slope: float
+    intercept: float
+    r: float
+    n: int
+
+
+class AskChart(_Model):
+    """A chart drawn from one query result: ``labels`` are the x column's values in the
+    result's row order (a histogram's bins, a pie's slices), each series one numeric
+    column (or one split value) of the same rows."""
+    kind: ChartKind
+    title: str
+    x: str = Field(description="The result column the labels are from.")
+    labels: list[str]
+    series: list[AskChartSeries]
+    as_of: Optional[str] = None
+    sql: Optional[str] = Field(None, description="The statement whose rows it draws: pinned "
+                               "(POST /api/insights) it reads again as whoever opens it.")
+    spec: Optional[ChartSpec] = Field(None, json_schema_extra=_optional,
+                                      description="What it was drawn as (pinning keeps it).")
+    rows: Optional[int] = Field(None, json_schema_extra=_optional,
+                                description="Rows of the result it was drawn from.")
+    shown: Optional[int] = Field(None, json_schema_extra=_optional,
+                                 description="Rows of those the chart shows.")
+    partial: bool = Field(False, json_schema_extra=_optional,
+                          description="The result held only its statement's first rows.")
+    omitted: int = Field(0, json_schema_extra=_optional,
+                         description="Series (split values, panels) not drawn.")
+    currency: Optional[str] = Field(None, json_schema_extra=_optional,
+                                    description="The one currency the rows are in.")
+    xs: Optional[list[Optional[float]]] = Field(None, json_schema_extra=_optional,
+                                                description="A scatter's x values.")
+    trend: Optional[AskChartTrend] = Field(None, json_schema_extra=_optional)
+    edges: Optional[list[float]] = Field(None, json_schema_extra=_optional,
+                                         description="A histogram's bin edges.")
+    skipped: Optional[int] = Field(None, json_schema_extra=_optional,
+                                   description="A histogram's rows with no number.")
+    panels: Optional[list[AskChartPanel]] = Field(None, json_schema_extra=_optional)
+    open_period: Optional[str] = Field(
+        None, json_schema_extra=_optional,
+        description="The label of a calendar period not over at as_of (a month, quarter, "
+                    "year, week or day): its figures are of part of it.")
+
+
+class ChartFile(_Model):
+    """A chart you were shown, to download as a file."""
+    chart: AskChart
+    format: Literal["xlsx", "pptx", "docx", "pdf"]
+
+
+class InsightInfo(_Model):
+    """One insight on a dashboard: a built-in definition or one the person saved."""
+    id: str = Field(description="A built-in's name, or 's<n>' for one you saved.")
+    title: str
+    about: str = Field(description="Its definition in plain words (a saved one: the "
+                       "question it answers).")
+    group: str
+    saved: bool
+    question: Optional[str] = None
+    chart: Optional[ChartSpec] = None
+    schedule: Literal["", "hourly", "daily", "weekly"] = ""
+    notify: Literal["never", "rows", "new_rows", "every_run", "crosses"] = "never"
+    watch: Optional["InsightWatch"] = Field(None, description="The number it watches "
+                                            "(notify crosses).")
+    last_run: Optional[str] = Field(None, description="A scheduled one: when it last ran "
+                                    "by itself and what it found, in plain words.")
+
+
+class InsightList(_Model):
+    scope: Literal["everyone", "self"] = Field(description="everyone: the people views list "
+                                               "everyone; self: only your own row.")
+    items: list[InsightInfo]
+    saving: bool = Field(description="Whether you can pin and save insights here.")
+
+
+class InsightResult(InsightInfo):
+    """An insight read now as you: its statement, rows, chart and the people they name."""
+    sql: str = Field(description="The statement it reads (its definition, exactly).")
+    columns: list[str]
+    rows: list[list[Optional[str]]]
+    people: list[Optional[str]] = Field(description="Per row: the Team key of the person "
+                                        "it is about (open /team), or null.")
+    row_count: int
+    truncated: bool
+    as_of: Optional[str] = None
+    read_at: str
+    drawn: Optional[AskChart] = None
+
+
+class InsightSave(_Model):
+    title: str = Field(min_length=1, max_length=160)
+    question: str = Field("", max_length=2000)
+    sql: str = Field(min_length=1, max_length=8000)
+    chart: Optional[ChartSpec] = None
+    schedule: Literal["", "hourly", "daily", "weekly"] = ""
+    notify: Literal["never", "rows", "new_rows", "every_run"] = "never"
+
+
+class InsightDeleted(_Model):
+    deleted: bool
+
+
+class InsightWatch(_Model):
+    """A line a number of a saved insight is watched against: a run tells you when some
+    row's ``column`` is ``above`` / ``below`` ``value`` and the run before had none."""
+    column: str = Field(min_length=1, max_length=63)
+    op: Literal["above", "below"]
+    value: float
+
+
+class InsightSchedule(_Model):
+    """When one of your saved insights runs by itself, and when what it finds comes to you
+    on Home (``notify``: rows = any row, new_rows = a row the last run did not have,
+    crosses = a number crossed the line in ``watch``)."""
+    schedule: Literal["", "hourly", "daily", "weekly"]
+    notify: Literal["never", "rows", "new_rows", "every_run", "crosses"]
+    watch: Optional[InsightWatch] = None
+
+
+class InsightNews(_Model):
+    """A run of one of your saved insights that came to you: how many rows it found (open
+    the insight to read them, live, as you)."""
+    run_id: str
+    insight_id: str
+    title: str
+    ran_at: str
+    row_count: int
+    new_rows: int
+    said: str = Field(description="One plain line: what it found.")
+
+
+class InsightNewsList(_Model):
+    items: list[InsightNews]
+
+
+class InsightNewsSeen(_Model):
+    seen: bool
+
+
 class AskDocument(_Model):
     """A file the Ask made for you: its name, kind, size and download link."""
     name: str
-    kind: Literal["docx", "xlsx", "pdf"]
+    kind: Literal["docx", "xlsx", "pdf", "pptx", "csv"]
     size: int
     download_url: str
 
@@ -4624,7 +4889,7 @@ class InstructDocument(_Model):
     """A document made as a file, and its upload to SharePoint as a draft you approve
     (``/api/instruct/uploads/{upload_id}``)."""
     name: str
-    kind: Literal["docx", "xlsx", "pdf"]
+    kind: Literal["docx", "xlsx", "pdf", "pptx", "csv"]
     size: int
     digest: str
     download_url: str

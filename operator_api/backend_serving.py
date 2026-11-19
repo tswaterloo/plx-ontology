@@ -215,21 +215,28 @@ class ServingMixin:
         if not page_sql.on(kind):
             raise errors.UserFacing("pages_off", "These record pages aren't switched on on "
                                     "this server yet.", 404)
-        try:
-            if record and not handle and kind != "chain":
-                handle = page_sql.resolve(self, reader, kind, record)
-            if kind in ("purchase_order", "sales_order"):
-                return page_sql.order(self, reader, kind, handle)
-            return page_sql.account(self, reader, kind, handle=handle, chain=chain)
-        except page_sql.NotFound:
-            raise errors.UserFacing("not_found", "No such record that you can open.",
-                                    404) from None
-        except page_sql.PageDoorUnavailable as exc:
-            why = ("took too long" if exc.code == "timeout" else
-                   "is busy" if exc.code == "busy" else
-                   "isn't built yet" if exc.code == "not_ready" else "couldn't be read")
-            raise errors.UserFacing("page_unavailable", f"The record's figures {why}; "
-                                    "try again in a minute.", 503) from None
+
+        def read() -> m.BizPage:
+            try:
+                at = page_sql.resolve(self, reader, kind, record) \
+                    if record and not handle and kind != "chain" else handle
+                if kind in ("purchase_order", "sales_order"):
+                    return page_sql.order(self, reader, kind, at)
+                return page_sql.account(self, reader, kind, handle=at, chain=chain)
+            except page_sql.NotFound:
+                raise errors.UserFacing("not_found", "No such record that you can open.",
+                                        404) from None
+            except page_sql.PageDoorUnavailable as exc:
+                why = ("took too long" if exc.code == "timeout" else
+                       "is busy" if exc.code == "busy" else
+                       "isn't built yet" if exc.code == "not_ready" else "couldn't be read")
+                raise errors.UserFacing("page_unavailable", f"The record's figures {why}; "
+                                        "try again in a minute.", 503) from None
+
+        # kept per reader as every screen is: the door's read took 1.5-1.7 s on each open of
+        # the order Home's detail pane shows (11-19 cold round), after a restart too
+        return self._serving(reader, ("biz_page", kind, handle, chain, record), read,
+                             self._screen_inputs())
 
     def test_named(self) -> frozenset[str]:
         """The deployment's named test records (``operator_api.test_records``)."""

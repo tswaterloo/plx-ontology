@@ -293,6 +293,32 @@ class LastGoodPage(unittest.TestCase):
         self.reads.policy = policy("finance")   # a new policy object, the same grants
         self.assertEqual(self.serve(who, busy).total, 5)
 
+    def test_a_full_readers_new_source_keys_keep_the_page_a_staff_readers_refuse_it(self):
+        full = reader("grp-a")
+        self.reads.policy = policy("finance", unrestricted=True)
+        self.serve(full, lambda: page(5))
+        moved = policy("finance", unrestricted=True)
+        moved.audiences = {"mail:new-box": ["grp-a"]}     # a delta named a new mailbox
+        moved.units = {"mail": ["mail:new-box"]}
+        self.reads.policy = moved
+        self.assertEqual(self.serve(full, busy).total, 5)
+        self.reads.policy = policy(unrestricted=True)     # a marking revoked: refused
+        with self.assertRaises(TimeoutError):
+            self.serve(full, busy)
+
+    def test_a_staff_readers_changed_audiences_refuse_the_kept_page(self):
+        staff = reader("grp-a")
+        self.serve(staff, lambda: page(5))
+        moved = policy("finance")
+        moved.audiences = {"mail:new-box": ["grp-a"]}
+        self.reads.policy = moved
+        with self.assertRaises(TimeoutError):
+            self.serve(staff, busy)
+        full = policy("finance", unrestricted=True)       # became a full reader: refused
+        self.reads.policy = full
+        with self.assertRaises(TimeoutError):
+            self.serve(staff, busy)
+
     def test_a_revoked_marking_with_the_same_principals_refuses_the_kept_page(self):
         who = reader("grp-a")
         self.serve(who, lambda: page(5))
@@ -451,6 +477,117 @@ class NeverServedCold(LastGoodPage.__base__):
         self.backend._good.clear()
         self.reads.policy = policy()               # finance revoked since it was kept
         self.assertEqual(self.serve(who, slow(page(2), 0.3)).stale_since, None)
+
+    def test_alert_rules_that_stopped_drop_the_kept_page_from_memory_and_disk(self):
+        """The late POs' rules not running (``alerts_stale``) must say unavailable, never
+        the old list marked stale for the 12 hours it is held (11-19 review blocker)."""
+        import tempfile
+        from operator_api.page_store import PageStore
+        folder = tempfile.TemporaryDirectory()
+        self.addCleanup(folder.cleanup)
+        store = PageStore(Path(folder.name), "c1")
+        self.backend.page_cache = SimpleNamespace(store=store)
+        who = reader("grp-a")
+        key = (who.key, who.mode, ("late", 0, 25))
+        stopped = errors.UserFacing("alerts_stale", "Late purchase orders are unavailable")
+
+        def rules_stopped():
+            raise stopped
+
+        def slow_stopped():
+            time.sleep(0.5)
+            raise stopped
+
+        for read in (rules_stopped, slow_stopped):
+            self.serve(who, lambda: page(3))
+            self.assertIn(key, self.backend._good)
+            try:
+                self.serve(who, read)          # fast read: refused; slow: old page once
+            except errors.UserFacing as error:
+                self.assertEqual(error.code, "alerts_stale")
+            self.wait_finished()
+            self.assertNotIn(key, self.backend._good)
+            self.backend._good.clear()         # a restart: only the disk copy remains
+            with self.assertRaises(errors.UserFacing) as raised:
+                self.serve(who, rules_stopped)
+            self.assertEqual(raised.exception.code, "alerts_stale")
+            self.assertNotIn(key, self.backend._good)
+            # the disk copy is gone too: a read that works is a fresh page, not the old
+            self.assertEqual(self.serve(who, lambda: page(1)).total, 1)
+
+    def test_the_alerts_home_briefing_and_items_are_kept_screens_not_a_door_read_each_visit(self):
+        """Under the SQL alerts Home, the briefing and a type's items go through
+        ``_serving`` (kept per reader, served at once after a restart), as the other
+        screens do; a rule that is not current still says unavailable (raised through)."""
+        from operator_api import page_sql
+        b = self.backend
+        b._recent, b.freshness = {}, lambda: m.Freshness()
+        b._screen_inputs = lambda **kw: (lambda: "inputs")
+        who = reader("grp-a")
+        who.display_name = "Test Reader"
+        seen: list[tuple] = []
+        served = b._serving
+
+        def spy(reader_, name, read, *a, **kw):
+            seen.append(name)
+            return served(reader_, name, read, *a, **kw)
+
+        calls: list[str] = []
+
+        def alert_home(*a, **kw):
+            calls.append("home")
+            return 2, [], "2026-11-19", [], {}
+
+        stopped = errors.UserFacing("alerts_stale", "Late purchase orders are unavailable")
+
+        def items(*a, **kw):
+            raise stopped
+
+        with mock.patch.object(b, "_serving", spy), \
+                mock.patch.object(page_sql, "alerts_on", lambda: True), \
+                mock.patch.object(page_sql, "alert_home", alert_home), \
+                mock.patch.object(page_sql, "alert_briefing", lambda *a, **k: m.Briefing(
+                    status="read", count=0, new_since_visit=0, since_visit=False,
+                    other_teams=0, rank_basis="", routing_basis="", complete=True,
+                    digest_preview="")), \
+                mock.patch.object(page_sql, "alert_briefing_items", items):
+            home = b._home_alerts(who)
+            self.assertEqual((home.needs_attention.status, home.needs_attention.late_total),
+                             ("read", 2))
+            self.assertEqual(b.briefing(who).status, "read")
+            with mock.patch.object(page_sql, "alert_home", items):   # rules not running
+                other = reader("grp-b")
+                other.display_name = "Other Reader"
+                down = b._home_alerts(other)
+            self.assertEqual(down.needs_attention.status, "unavailable")
+            with self.assertRaises(errors.UserFacing) as raised:
+                b.briefing_items(who, "po_late", offset=0, limit=25)
+            self.assertEqual(raised.exception.code, "alerts_stale")
+        self.assertEqual(seen, [("home", "alerts"), ("briefing", False),
+                                ("home", "alerts"), ("briefing_items", "po_late", 0, 25)])
+
+    def test_a_record_page_through_the_door_is_a_kept_screen_whose_refusals_stand(self):
+        from operator_api import page_sql
+        b = self.backend
+        b._screen_inputs = lambda **kw: (lambda: "inputs")
+        who = reader("grp-a")
+        seen = []
+        served = b._serving
+
+        def spy(reader_, name, read, *a, **kw):
+            seen.append(name)
+            return served(reader_, name, read, *a, **kw)
+
+        def missing(*a, **k):
+            raise page_sql.NotFound()
+
+        with mock.patch.object(b, "_serving", spy), \
+                mock.patch.object(page_sql, "on", lambda kind=None: True), \
+                mock.patch.object(page_sql, "order", missing):
+            with self.assertRaises(errors.UserFacing) as raised:
+                b.biz_page(who, "purchase_order", "bc://x/1")
+        self.assertEqual(raised.exception.status, 404)
+        self.assertEqual(seen, [("biz_page", "purchase_order", "bc://x/1", "", "")])
 
     def revoked_mid_read(self, value):
         """A read that outlasts the fast budget, with finance revoked once it started."""
@@ -646,6 +783,16 @@ class NeverServedCold(LastGoodPage.__base__):
                     self.backend._serving(last, late, busy)
                 self.reads.hidden = set()
 
+    def test_the_api_starts_two_check_workers_on_one_queue_by_default(self):
+        """A Home visit asks ~30 access checks at once: one check worker ran them in turn
+        and the last waited past the page's 3 s (11-19 cold round)."""
+        import argparse
+        from operator_api import cli
+        parser = argparse.ArgumentParser()
+        cli.add_arguments(parser)
+        self.assertEqual(parser.parse_args([]).check_workers, 2)
+        self.assertEqual(parser.parse_args(["--check-workers", "1"]).check_workers, 1)
+
     def test_access_workers_share_one_queue_so_one_slow_read_never_holds_the_next(self):
         """11-18 walk: one access worker ran every reader's kept-page checks and door reads
         one after another (Home 2.3-4 s warm, 7-13 s cold; 40-60 jobs queued). Each
@@ -713,6 +860,170 @@ class NeverServedCold(LastGoodPage.__base__):
                     for t in loops:
                         t.join(2)
                     stopped.clear()
+
+    def test_a_kept_pages_check_never_waits_behind_the_doors_reads(self):
+        """11-19 after a restart: every access worker held by the door's reads (Home, the
+        late list, the briefing groups: seconds each cold), the kept pages' checks queued
+        behind them were not decided within ACCESS_WAIT_SECONDS, so Autopilot, My work and
+        the suggestions were read whole (14 s). The check worker takes the checks alone:
+        with every access worker held, a check (``_access_later``) is decided at once,
+        and a door read never runs on the check worker."""
+        import queue as q
+        self.backend.access_worker = None
+        self.backend.check_worker = None
+        self.backend.access_jobs = q.PriorityQueue()
+        self.backend.check_jobs = q.PriorityQueue()
+        self.backend._access_started = False
+        self.backend.prewarm_policies = lambda worker=None: 0
+        self.backend._keep_access_open = lambda worker: None
+        stopped = threading.Event()
+        self.backend.reads = SimpleNamespace(stopped=stopped, jobs=q.PriorityQueue())
+        self.addCleanup(stopped.set)
+        ran_on = []
+        view = SimpleNamespace(bind=lambda session: None, close=lambda: None)
+        from operator_api import backend_warm as bw
+        with mock.patch.object(bw, "prewarm_shared_reads", lambda: None):
+            door = [self.backend.add_access_worker(lambda s: view) for _ in range(2)]
+            check = self.backend.add_access_worker(lambda s: view, checks=True)
+        self.assertIs(self.backend.access_worker, door[0])
+        self.assertIs(self.backend.check_worker, check)
+        loops = [threading.Thread(target=w.loop, daemon=True) for w in door + [check]]
+        for t in loops:
+            t.start()
+        held = threading.Event()
+        who = reader("grp-a")
+        who.session = SimpleNamespace(principals=["grp-a"])
+
+        def door_read(v):
+            ran_on.append(threading.current_thread())
+            held.wait(5)
+            return "rows"
+
+        reads = [self.backend.access_worker.submit(who, door_read) for _ in range(4)]
+        time.sleep(0.05)   # both access workers held, two door reads queued
+        self.backend._access_job = lambda handles=(), screen=None, objects=None, who=None: (
+            lambda v: (("state",), True))
+        started = time.monotonic()
+        decided = self.backend._access_later(who, (), screen=("home",))
+        self.assertEqual(decided.result(timeout=2), (("state",), True))
+        self.assertLess(time.monotonic() - started, 1)
+        self.assertFalse(any(r.done() for r in reads))
+        held.set()
+        self.assertEqual([r.result(timeout=2) for r in reads], ["rows"] * 4)
+        self.assertEqual(len(ran_on), 4)
+        self.assertNotIn(loops[2], ran_on)   # no door read on the check worker
+        for w in door + [check]:
+            w.stop()
+        for t in loops:
+            t.join(2)
+
+    def test_one_readers_checks_decide_each_handle_and_record_once_and_never_for_another(self):
+        a, b = reader("grp-a"), reader("grp-b")
+        for who in (a, b):
+            who.session = SimpleNamespace(principals=[who.key])
+        self.reads.hidden = {"o2"}
+        self.reads.denied = {"h-no"}
+        wide = [f"h{i}" for i in range(14)] + ["h-no"]
+        first = self.backend._access_later(a, wide, screen=("home",), objects=["o1", "o2"])
+        again = self.backend._access_later(a, wide[:5], screen=("briefing",), objects=["o1", "o2", "o3"])
+        other = self.backend._access_later(b, wide[:5], screen=("home",), objects=["o1"])
+        got = [f.result(timeout=2) for f in (first, again, other)]
+        # h-no is refused and o2 is hidden for a, in every check that names them
+        self.assertEqual([opens for _state, opens in got], [False, False, True])
+        # a's second check reused a's first (handles and records); b's are b's own
+        decided = [h for call in self.reads.decided for h in call]
+        self.assertEqual(sorted(decided), sorted(wide + wide[:5]))
+        self.assertEqual(sorted(i for call in self.reads.looked_up for i in call),
+                         ["o1", "o1", "o2", "o3"])
+
+    def test_one_readers_waiting_checks_are_decided_in_one_request_scope(self):
+        """A Home visit asked ~30 checks that name no record, each queued behind the
+        others (2 s waits for 0.05 s jobs). The ones of one reader still waiting are one
+        job in one request scope; each is decided after it was asked, by its own job; a
+        check naming records (a slow decision must not hold the rest), another reader's
+        and one asked after the job started are jobs of their own; a cancelled one is not
+        run."""
+        import queue as q
+        self.backend.access_worker = None
+        self.backend.check_worker = None
+        self.backend.access_jobs = q.PriorityQueue()
+        self.backend.check_jobs = q.PriorityQueue()
+        self.backend._access_started = False
+        self.backend.prewarm_policies = lambda worker=None: 0
+        self.backend._keep_access_open = lambda worker: None
+        stopped = threading.Event()
+        self.backend.reads = SimpleNamespace(stopped=stopped, jobs=q.PriorityQueue())
+        self.addCleanup(stopped.set)
+        scopes = []
+
+        @contextlib.contextmanager
+        def request():
+            scopes.append(threading.get_ident())
+            yield
+
+        view = SimpleNamespace(bind=lambda session: None, close=lambda: None, _request=request)
+        from operator_api import backend_warm as bw
+        with mock.patch.object(bw, "prewarm_shared_reads", lambda: None):
+            self.backend.add_access_worker(lambda s: view)
+            check = self.backend.add_access_worker(lambda s: view, checks=True)
+        loop = threading.Thread(target=check.loop, daemon=True)
+        loop.start()
+        self.addCleanup(lambda: (check.stop(), loop.join(2)))
+        a, b = reader("grp-a"), reader("grp-b")
+        for who in (a, b):
+            who.session = SimpleNamespace(principals=[who.key])
+        held = threading.Event()
+        gate = check.submit(a, lambda v: held.wait(5), priority=-2)
+        time.sleep(0.05)   # the one check worker is held
+        self.backend._access_job = lambda handles=(), screen=None, objects=None, who=None: (
+            lambda v: ((screen[0] if screen else None, tuple(handles)), True))
+        mine = [self.backend._access_later(a, (), screen=(name,)) for name in ("home", "team", "my_work")]
+        theirs = self.backend._access_later(b, (), screen=("home",))
+        named = self.backend._access_later(a, ("h1",), screen=("home",))
+        cancelled = self.backend._access_later(a, (), screen=("autopilot",))
+        self.assertTrue(cancelled.cancel())
+        held.set()
+        gate.result(timeout=2)
+        self.assertEqual([f.result(timeout=2) for f in mine],
+                         [((n, ()), True) for n in ("home", "team", "my_work")])
+        self.assertEqual(theirs.result(timeout=2), (("home", ()), True))
+        self.assertEqual(named.result(timeout=2), (("home", ("h1",)), True))
+        self.assertEqual(len(scopes), 2)   # reader a's three at once, reader b's (the named one is its own job)
+        # one asked after that job started is decided by a job of its own
+        later = self.backend._access_later(a, (), screen=("insights",))
+        self.assertEqual(later.result(timeout=2), (("insights", ()), True))
+        self.assertEqual(len(scopes), 3)
+        # a check that fails fails alone
+        self.backend._access_job = lambda handles=(), screen=None, objects=None, who=None: (
+            lambda v: 1 / 0 if screen == ("bad",) else "ok")
+        bad = self.backend._access_later(a, (), screen=("bad",))
+        good = self.backend._access_later(a, (), screen=("good",))
+        with self.assertRaises(ZeroDivisionError):
+            bad.result(timeout=2)
+        self.assertEqual(good.result(timeout=2), "ok")
+
+    def test_marking_the_briefing_seen_runs_on_the_check_worker_not_behind_door_reads(self):
+        """The visit mark is a short write a Home visit waits on: it ran on an access
+        worker (1 s behind the door's reads); it runs on the check worker, else the access
+        worker, else the read worker."""
+        ran = []
+
+        def worker(name, stopped=False):
+            def run(who, job, timeout=0, priority=0):
+                ran.append(name)
+                return job(SimpleNamespace(briefing_seen=lambda: "2026-01-01T00:00:00Z"))
+            return SimpleNamespace(run=run, stopped=SimpleNamespace(is_set=lambda: stopped))
+
+        self.backend.warm_briefing = lambda who: True
+        who = reader("grp-a")
+        for check, access, expect in ((worker("check"), worker("access"), "check"),
+                                      (worker("check", True), worker("access"), "access"),
+                                      (None, None, "reads")):
+            self.backend.check_worker, self.backend.access_worker = check, access
+            self.backend.reads = worker("reads")
+            ran.clear()
+            self.assertTrue(self.backend.briefing_seen(who).ok)
+            self.assertEqual(ran, [expect])
 
     def test_a_new_layer_opens_each_known_readers_scope_on_the_access_worker(self):
         """After a delta layer (any inputs change) the access worker opens each known,
@@ -1215,6 +1526,62 @@ class SnapshotFirst(LastGoodPage.__base__):
         self.assertIsNotNone(got.stale_since)
         self.wait_kept(who, 9)
 
+    def test_the_sql_doors_late_list_is_kept_and_served_with_no_read(self):
+        """The door's late list took 1.8-4.6 s on every visit (nothing kept it, so the
+        warm-up read it for nothing): it is a kept screen as Home and the sidebar are."""
+        from operator_api import page_sql
+        who = reader("grp-a")
+        reads = []
+
+        def door(backend, w, offset, limit):
+            reads.append((offset, limit))
+            return 3, [], "2026-11-19T00:00:00+00:00"
+        with mock.patch.object(page_sql, "alerts_on", lambda: True), \
+                mock.patch.object(page_sql, "alert_late_pos", door), \
+                mock.patch.object(page_sql, "runs_fresh", lambda backend: "fresh"), \
+                mock.patch.object(be.WorkspaceBackend, "freshness",
+                                  lambda backend, *a, **k: m.Freshness()):
+            first = self.backend.late_list(who, offset=0, limit=100)
+            key = (who.key, who.mode, ("late", 0, 100))
+            for _ in range(400):   # kept off the request
+                if key in self.backend._good and not self.backend._refreshing:
+                    break
+                time.sleep(0.05)
+            again = self.backend.late_list(who, offset=0, limit=100)
+            other = self.backend.late_list(reader("grp-b"), offset=0, limit=100)
+        self.assertEqual((first.total, again.total, again.stale_since), (3, 3, None))
+        self.assertEqual(reads.count((0, 100)), 2)   # the visit's, and grp-b's own: never shared
+        self.assertEqual(other.total, 3)
+
+    def test_the_kept_check_runs_again_for_each_known_reader_before_the_port_opens(self):
+        """After the warm-up kept this code version's pages, each known reader's kept
+        pages' checks run once more (the first visit's own were cold: 1-5 s); a reader
+        refused or failing is skipped alone; none is run twice."""
+        for n in (1, 10, 60):
+            with self.subTest(n=n):
+                ran, jobs = [], []
+                worker = SimpleNamespace(stopped=threading.Event(), submit=lambda r, job, **kw: (
+                    jobs.append(kw.get("deadline")), self._done(job(None)))[1])
+                fake = SimpleNamespace(
+                    identity_for=lambda oid, exp: (_ for _ in ()).throw(LookupError()) if oid == "bad"
+                    else oid, revoked=lambda ref: ref == "r" * 63 + "x", reader_mode="dev",
+                    known_readers=lambda: {**{f"u{i}": {"ref": "r" * 64, "exp": 9} for i in range(n)},
+                                           "bad": {"ref": "r" * 64, "exp": 9},
+                                           "gone": {"ref": "r" * 63 + "x", "exp": 9}},
+                    check_worker=worker, access_worker=None,
+                    _prewarm_kept_checks=lambda view, r, until: ran.append(r.session) or 1)
+                started = time.monotonic()
+                self.assertEqual(be.WorkspaceBackend.prewarm_checks_after_warm(fake, 5.0), n)
+                self.assertLess(time.monotonic() - started, 2.0)
+                self.assertEqual(sorted(ran), sorted(f"u{i}" for i in range(n)))
+
+    @staticmethod
+    def _done(value):
+        from concurrent.futures import Future
+        f = Future()
+        f.set_result(value)
+        return f
+
     def test_new_inputs_serve_the_page_stale_at_once_and_keep_the_new_read(self):
         who = reader("grp-a")
         self.serve(who, lambda: page(3))
@@ -1647,7 +2014,7 @@ class OtherScreens(LastGoodPage.__base__):
         self.backend._home = lambda w: read.append("home") or m.Home.model_construct()
         self.backend._briefing_cached = lambda view, w, since_visit: (
             read.append(("briefing", since_visit)) or m.Briefing.model_construct())
-        self.backend._suggestions_cached = lambda view: (
+        self.backend._suggestions_cached = lambda view, alerts=None: (
             read.append("suggestions") or m.Suggestions.model_construct())
         self.backend._late_list = lambda w, offset, limit: (
             read.append(("late", offset, limit)) or page())
@@ -1684,18 +2051,22 @@ class OtherScreens(LastGoodPage.__base__):
         self.backend._briefing_cached = lambda view, w, since_visit: old.append("briefing")
         self.backend._late_held = lambda view: old.append("late") or ({}, [], {}, {})
         self.backend._home_served = lambda w: old.append("home served")
-        self.backend._suggestions_cached = lambda view: (
+        # the suggestion cards are made from the SQL alerts: read ahead as the screen
+        # (``suggestions``), never as the old engine's job (``_suggestions_cached``)
+        self.backend._suggestions_cached = lambda view, *a: old.append("suggestions")
+        self.backend.suggestions = lambda w: (
             read.append("suggestions") or m.Suggestions.model_construct())
         self.backend._upcoming_cached = lambda view, w: read.append("meetings")
         self.backend._home_alerts = lambda w: read.append("sql home") or m.Home.model_construct()
         today = tuple(k for k in be.SCREENS_AHEAD
-                      if (k if isinstance(k, str) else k[0]) == "_home_served")
+                      if (k if isinstance(k, str) else k[0]) in ("_home_served",
+                                                                 "suggestions"))
         with mock.patch.dict("os.environ", {"PLX_ALERTS_SQL": "1"}), \
                 mock.patch.object(be, "SCREENS_AHEAD", today), \
                 mock.patch("operator_api.simple_ask.ready", lambda *a: False):
             self.assertTrue(self.backend.warm(who, force=True))
             for _ in range(200):
-                if "sql home" in read:
+                if "sql home" in read and "suggestions" in read:
                     break
                 time.sleep(0.05)
         self.assertEqual(old, [])

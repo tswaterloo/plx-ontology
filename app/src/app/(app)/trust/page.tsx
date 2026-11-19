@@ -1,7 +1,6 @@
 "use client";
 
 import { useMemo } from "react";
-import { NotFoundBody } from "@/components/not-found-body";
 import { eastern, SectionTabs } from "@/components/shell";
 import { LoadProblem } from "@/components/ui/notice";
 import { Pending } from "@/components/ui/skeleton";
@@ -71,7 +70,7 @@ function sourcesSentence(fresh: TrustFreshness[]): string {
 /** One sentence: has answer accuracy on questions never used for tuning been measured? */
 function heldOutSentence(sets: TrustAnswerSet[]): string {
   const measured = sets.filter((s) => s.held_out);
-  if (measured.length === 0) return "Answer accuracy on questions never used for tuning has not been measured yet; the measure runs after the served data's rebuild.";
+  if (measured.length === 0) return "Answer accuracy on questions never used for tuning has not been measured on this server yet.";
   const missing = sets.length - measured.length;
   return `Answer accuracy on questions never used for tuning is measured for ${plural(measured.length, "question set", "question sets")}${missing ? `; ${missing} not yet` : ""} (scores below).`;
 }
@@ -128,7 +127,9 @@ export default function TrustRoute() {
     const all = page?.alerts ?? [];
     return { on: all.filter((a) => a.on), off: all.filter((a) => !a.on && a.judged != null), unmeasured: all.filter((a) => a.judged == null) };
   }, [page]);
-  if (error instanceof ApiError && error.status === 404) return <NotFoundBody />;
+  // the server answers 404 to a reader it does not open Trust for (it is left out of their
+  // menu): said as the Reliability page says its 403, never "Page not found" for a page that is there
+  const refused = error instanceof ApiError && error.status === 404;
   const fresh = page?.freshness ?? [];
   const rows = page?.autopilot ?? [];
   return (
@@ -137,7 +138,9 @@ export default function TrustRoute() {
       <SectionTabs section="admin" />
       <PageIntro path="/trust" />
       <div className="mx-auto w-full max-w-5xl space-y-6 overflow-y-auto px-4 py-4 sm:px-6" data-testid="trust-page">
-        {error ? (
+        {refused ? (
+          <p className="text-[13px]" data-testid="trust-refused">{plainError(new ApiError(403, "forbidden"))}</p>
+        ) : error ? (
           <LoadProblem message={plainError(error)} busy={noticeKind(error) === "busy"} onRetry={retry} />
         ) : !page ? (
           <Pending page label="Reading freshness, scores and switches" />

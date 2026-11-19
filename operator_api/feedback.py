@@ -59,7 +59,7 @@ from pathlib import Path
 from typing import Any, Callable, Mapping, Optional, Sequence
 from operating import declared_schema as _schemas
 from operating.declared_schema import feedback as _FEEDBACK
-from operating.file_modes import keep_private, keep_shared
+from operating.file_modes import keep_private, keep_shared, make_absent
 
 from .errors import RecordNotFound
 
@@ -337,7 +337,7 @@ class FeedbackStore:
             self.directory.mkdir(parents=True, exist_ok=True, mode=0o700)
             keep_private(self.directory, 0o700)   # an existing folder too
             path = self.directory / "feedback.sqlite"
-            os.close(os.open(path, os.O_RDWR | os.O_CREAT, 0o600))
+            make_absent(path, 0o600)   # never opened when it exists (its SQLite locks)
             keep_private(path, 0o600)
             self._conn = sqlite3.connect(str(path), timeout=30,
                                          check_same_thread=False, isolation_level=None)

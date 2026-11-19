@@ -101,6 +101,7 @@ from typing import Any, Callable, Iterable, Iterator, Mapping, Sequence
 from operating import declared_schema as _schemas
 from operating.declared_schema import ai_watcher as _AI_WATCHER
 from operating import humanize
+from operating.file_modes import make_absent
 from operating.prose_style import PROSE_STYLE_RULE
 
 SCHEMA = "plx-ai-watcher/v1"
@@ -239,7 +240,7 @@ def open_store(directory: Path) -> sqlite3.Connection:
     """The watcher's store, its owner's alone (0600: it keeps digests of addresses)."""
     path = store_path(directory)
     path.parent.mkdir(parents=True, exist_ok=True)
-    os.close(os.open(path, os.O_CREAT | os.O_RDWR, 0o600))
+    make_absent(path, 0o600)   # never opened when it exists (its SQLite locks: file_modes)
     for part in (path, path.with_name(path.name + "-wal"), path.with_name(path.name + "-shm")):
         try:   # only a file this process owns, only ever narrowed; the setgid state dir keeps its group bits
             info = os.stat(part)

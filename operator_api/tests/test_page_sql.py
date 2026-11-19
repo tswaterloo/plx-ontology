@@ -353,7 +353,33 @@ class PageDoor(unittest.TestCase):
 
             def freshness(self, *a, **k):
                 return m.Freshness()
+
+            def _serving(self, reader, name, read, inputs_of=None, reading=None):
+                return read()   # nothing kept here: the read itself
+
+            def _screen_inputs(self, **kw):
+                return lambda: None
         return Screens(), SimpleNamespace(key="r", display_name="Pat Reader", session=None)
+
+    def assert_sidebar_is_the_late_list(self, screens, reader):
+        """The sidebar's count and suppliers equal the reader's whole late list paged."""
+        from collections import Counter
+        listed, offset = [], 0
+        while True:
+            pg = screens.late_list(reader, offset=offset, limit=25)
+            listed += pg.items
+            offset = pg.next_offset
+            if not pg.more:
+                break
+        by = Counter(p.supplier for p in listed if p.supplier)
+        side = screens.sidebar(reader)
+        self.assertEqual(side.late_total, len(listed))
+        self.assertEqual(side.supplier_total, len(by))
+        from operator_api.backend_screens import SIDEBAR_SUPPLIERS
+        self.assertEqual([(s.supplier, s.late) for s in side.late_suppliers],
+                         sorted(by.items(), key=lambda kv: (-kv[1], kv[0]))[:SIDEBAR_SUPPLIERS])
+        self.assertFalse(side.partial)
+        return side
 
     def test_home_and_late_list_numbers_are_the_truth_for_each_reader(self):
         from operator_api.serving import LATE_LIST_LIMIT
@@ -388,6 +414,8 @@ class PageDoor(unittest.TestCase):
                             break
                     self.assertEqual(len(seen), total)
                     self.assertEqual(len(set(seen)), total)
+                    side = self.assert_sidebar_is_the_late_list(screens, reader)
+                    self.assertTrue(side.late_suppliers)   # the fixture's own suppliers
             one = screens.late_list(reader, offset=0, limit=25).items[0]
             self.assertTrue(one.amount is None or one.amount.currency)
 
@@ -519,7 +547,9 @@ class PageDoor(unittest.TestCase):
                             if not pg.more:
                                 break
                         self.assertEqual(sorted(listed), sorted(handles))
+                        side = self.assert_sidebar_is_the_late_list(screens, reader)
                         if actor is NOBODY:
+                            self.assertEqual((side.late_total, side.late_suppliers), (0, []))
                             self.assertEqual((b.count, na.late_total, na.at_risk), (0, 0, []))
                 screens, reader = self.screens(FULL)
                 with mock.patch.object(pr.PageReads, "call", return_value={
@@ -531,6 +561,9 @@ class PageDoor(unittest.TestCase):
                     self.assertEqual(screens.briefing(reader).status, "unavailable")
                     with self.assertRaises(errors.UserFacing):
                         screens.late_list(reader)
+                    # the sidebar not read: no count at all, never "0 late"
+                    side = screens.sidebar(reader)
+                    self.assertEqual((side.late_total, side.late_suppliers), (None, []))
         finally:
             with psycopg.connect(self.dsn, autocommit=True) as c:
                 c.execute(f"DELETE FROM {bv.SCHEMA}.alerts WHERE rule IN "
@@ -656,6 +689,8 @@ class PageDoor(unittest.TestCase):
                     with self.assertRaises(errors.UserFacing) as cm:
                         screens.briefing_items(reader, "po_late")
                     self.assertEqual(cm.exception.code, "alerts_stale")
+                    # nor a sidebar count from the stale rule
+                    self.assertIsNone(screens.sidebar(reader).late_total)
                     b = screens.briefing(reader)
                     groups = {g.event_type: g for g in b.groups}
                     self.assertTrue(groups["po_late"].unavailable)
@@ -796,6 +831,154 @@ class PageDoor(unittest.TestCase):
                 c.execute(f"DELETE FROM {bv.SCHEMA}.alert_runs WHERE rule IN "
                           "('lot_on_hold', 'customer_order_late')")
 
+    def test_alerts_switch_suggestion_cards_are_the_alerts_home_lists(self):
+        """PLX_ALERTS_SQL=1: the suggestion cards are made from the reader's open SQL
+        alerts of the suggestion types, so each card's subject is a late PO Home lists for
+        that reader (FULL, OPS without the finance-marked ones, NOBODY none); a type off
+        for the reader (customer_order_late) or no suggestion (lot_on_hold) never; nothing
+        routed, nothing; a stale rule is not complete; a failed read is unavailable."""
+        import psycopg
+        from operating import briefing as bf
+        from operating import proactive_suggestions as sug
+        from operating.pg import alerts as al
+        # every suggestion rule runs, as on the timer: a type with no finished run would
+        # make the list incomplete
+        rules = ["po_late", "po_due", "po_undated", "eta_slipped", "negative_margin",
+                 "customer_order_at_risk"]
+        got = al.run(self.dsn, rules, schema=bv.SCHEMA, owners={})
+        self.assertEqual({g["status"] for g in got}, {"ok"}, got)
+        late = {r[0]: r[1] for r in self.truth(
+            "SELECT handle, access_class FROM {biz}.purchase_orders "
+            "WHERE verdict = 'late' AND days_late > 0")}
+        one = sorted(late)[0]
+        with psycopg.connect(self.dsn, autocommit=True) as c, \
+                mock.patch.dict("os.environ", {"PLX_ALERTS_SQL": "1"}):
+            self.put_alert(c, "lot_on_hold", "quality_hold", one, late[one])
+            self.put_alert(c, "customer_order_late", "customer_order_late", one, late[one])
+            try:
+                for actor in (FULL, OPS, NOBODY):
+                    with self.subTest(actor=sorted(actor.principals)):
+                        handles, _ = self.alerts(actor)
+                        screens, reader = self.screens(actor)
+                        out = ps.alert_suggestion_items(screens, reader, sug.KIND_OF_TYPE)
+                        # every page-path rule is current; the mail rule (no comms door
+                        # here) is said unavailable, so the list is never called complete
+                        self.assertEqual((out["status"], out["complete"],
+                                          out["unavailable_types"]),
+                                         ("read", False, ["vendor_no_reply"]))
+                        items = out["items"]
+                        self.assertEqual({i["event_type"] for i in items},
+                                         {"po_late"} if handles else set())
+                        self.assertEqual(sorted(i["sources"][0]["handle"] for i in items),
+                                         sorted(handles))    # each once, none hidden
+                        home = screens.home(reader).needs_attention
+                        built = sug.build(items, labels={}, trails={}, late_drafts={})
+                        self.assertEqual(built["total"], len(handles))
+                        self.assertEqual(built["collapsed"], {})
+                        self.assertTrue({s["subject"]["object_id"]
+                                         for s in built["suggestions"]}
+                                        <= {p.object_id for p in home.late_pos})
+                self.assertGreater(len(self.alerts(FULL)[0]), len(self.alerts(OPS)[0]))
+                # nothing routed (rights unresolved): no cards, never an error
+                screens, reader = self.screens(FULL, routing=bf.Routing(basis="x"))
+                self.assertEqual(ps.alert_suggestion_items(
+                    screens, reader, sug.KIND_OF_TYPE)["items"], [])
+                # a type the registry does not know is never asked for
+                screens, reader = self.screens(FULL)
+                self.assertEqual(ps.alert_suggestion_items(
+                    screens, reader, {"no_such_rule"})["items"], [])
+                # the rule's last run too old: its alerts are left out, not complete
+                c.execute(f"UPDATE {bv.SCHEMA}.alert_runs SET ok_at = now() - interval "
+                          "'3 days' WHERE rule = 'po_late'")
+                screens, reader = self.screens(FULL)
+                out = ps.alert_suggestion_items(screens, reader, sug.KIND_OF_TYPE)
+                self.assertEqual((out["status"], out["complete"], out["items"]),
+                                 ("read", False, []))
+                # the read fails: unavailable, never an empty, complete list
+                screens, reader = self.screens(FULL)
+                with mock.patch.object(ps, "read", side_effect=ps.PageDoorUnavailable("x")):
+                    out = ps.alert_suggestion_items(screens, reader, sug.KIND_OF_TYPE)
+                self.assertEqual((out["status"], out["complete"]), ("unavailable", False))
+                # a suggested type this path cannot show (a mail rule) is said unavailable
+                screens, reader = self.screens(FULL)
+                out = ps.alert_suggestion_items(screens, reader, {"vendor_no_reply"})
+                self.assertEqual((out["items"], out["complete"], out["unavailable_types"]),
+                                 ([], False, ["vendor_no_reply"]))
+            finally:
+                c.execute(f"DELETE FROM {bv.SCHEMA}.alerts WHERE rule IN "
+                          "('lot_on_hold', 'customer_order_late')")
+                c.execute(f"DELETE FROM {bv.SCHEMA}.alert_runs WHERE rule IN "
+                          "('lot_on_hold', 'customer_order_late')")
+                al.run(self.dsn, rules, schema=bv.SCHEMA, owners={})
+
+    def test_at_risk_card_is_visible_through_the_page_door_and_follows_the_exclusion(self):
+        """customer_order_at_risk rests on a late PO's chain but its alert is a row of
+        sales_orders: the page view must show it (sources = the order's own handle) to a
+        reader who holds both rows, and the exclusion of the late PO's own object hides it
+        (the PO's lineage objects are recorded on the alert)."""
+        import psycopg
+        from operating.pg import alerts as al
+        late = self.truth("SELECT p.handle FROM {biz}.purchase_orders p WHERE p.verdict = "
+                          "'late' AND p.status = 'open' "
+                          "ORDER BY 1 LIMIT 1")
+        self.assertTrue(late)
+        po = late[0][0]
+        pobj = self.truth("SELECT object_ids[1] FROM {biz}.lineage WHERE view = "
+                          "'purchase_orders' AND handle = %s", (po,))[0][0]
+        links = [("PurchaseOrderLine.line_of", "L:z", pobj), ("PurchaseOrderLine.for_item", "L:z", "I:z"),
+                 ("AssemblyOrderComponent.uses_item", "C:z", "I:z"),
+                 ("AssemblyOrderComponent.component_of", "C:z", "AO:z"),
+                 ("AssemblyOrderAllocation.allocates", "AL:z", "AO:z"),
+                 ("AssemblyOrderAllocation.for_order_line", "AL:z", "OL:z"),
+                 ("SalesOrderLine.line_of", "OL:z", "SO:z")]
+        with psycopg.connect(self.dsn, autocommit=True) as c:
+            cols = [r[0] for r in c.execute(
+                "SELECT column_name FROM information_schema.columns WHERE table_schema = %s "
+                "AND table_name = 'sales_orders' ORDER BY ordinal_position", (bv.SCHEMA,))]
+            self.assertTrue({"handle", "order_number", "status", "required_date", "of_record"}
+                            <= set(cols))
+            try:
+                src = c.execute(f"SELECT handle FROM {bv.SCHEMA}.sales_orders ORDER BY 1 "
+                                "LIMIT 1").fetchone()[0]
+                lst = ", ".join(f"r.{k}" for k in cols if k != "handle")
+                c.execute(f"INSERT INTO {bv.SCHEMA}.sales_orders (handle, {', '.join(k for k in cols if k != 'handle')}) "
+                          f"SELECT 'zz-so', {lst} FROM {bv.SCHEMA}.sales_orders r WHERE r.handle = %s",
+                          (src,))
+                c.execute(f"UPDATE {bv.SCHEMA}.sales_orders SET status = 'open', "
+                          "required_date = %s, of_record = true, order_number = 'ZZ1' "
+                          "WHERE handle = 'zz-so'", (tbv.AS_OF - dt.timedelta(days=400),))
+                c.execute(f"INSERT INTO {bv.SCHEMA}.lineage (view, handle, object_ids, systems, copies) "
+                          "VALUES ('sales_orders', 'zz-so', ARRAY['SO:z'], ARRAY['sage'], 1)")
+                for n, (k, a, b) in enumerate(links):
+                    c.execute("INSERT INTO ontology.link_rows (link_id, link_type, from_object, "
+                              "to_object, tier, binding_kind, why_not, markings, recorded_at, reason, "
+                              "evidence_handles) "
+                              "VALUES (%s, %s, %s, %s, 'verified', 'test', '', '[]', '2026-01-01', 'test', '[]')",
+                              (f"zz-{n}", k, a, b))
+                got = al.run(self.dsn, ["customer_order_at_risk"], schema=bv.SCHEMA, owners={},
+                             day=tbv.AS_OF.isoformat())
+                self.assertEqual(got[0]["status"], "ok", got)
+                stored = self.truth("SELECT source_table, sources, objects FROM {biz}.alerts "
+                                    "WHERE rule = 'customer_order_at_risk' AND handle = 'zz-so'")
+                self.assertEqual(len(stored), 1, stored)
+                self.assertEqual((stored[0][0], list(stored[0][1])), ("sales_orders", ["zz-so"]))
+                self.assertTrue({"SO:z", pobj} <= set(stored[0][2]), stored)
+                handles, _ = self.alerts(FULL, "customer_order_at_risk")
+                self.assertIn("zz-so", handles)
+                c.execute("INSERT INTO ontology.people_excluded_objects (l1_handle, object_id, "
+                          "reason) VALUES ('t-excl-po', %s, 'participant')", (pobj,))
+                try:
+                    self.assertNotIn("zz-so", self.alerts(FULL, "customer_order_at_risk")[0])
+                finally:
+                    c.execute("DELETE FROM ontology.people_excluded_objects "
+                              "WHERE l1_handle = 't-excl-po'")
+            finally:
+                c.execute(f"DELETE FROM {bv.SCHEMA}.alerts WHERE rule = 'customer_order_at_risk'")
+                c.execute(f"DELETE FROM {bv.SCHEMA}.alert_runs WHERE rule = 'customer_order_at_risk'")
+                c.execute(f"DELETE FROM {bv.SCHEMA}.sales_orders WHERE handle = 'zz-so'")
+                c.execute(f"DELETE FROM {bv.SCHEMA}.lineage WHERE handle = 'zz-so'")
+                c.execute("DELETE FROM ontology.link_rows WHERE link_id LIKE 'zz-%'")
+
 
 if __name__ == "__main__":
     unittest.main()
@@ -921,3 +1104,43 @@ class ColdReaderBudget(unittest.TestCase):
             self.assertEqual(watch.WatchMixin._watch(backend, reader, lambda c: c, fast=True),
                              "ok")
         self.assertEqual(asked, [watch.WATCH_SECONDS, ps.PAGE_COLD_TIMEOUT])
+
+
+from operating.pg.alerts import RULES
+
+
+class AlertRunsAsScreenInput(unittest.TestCase):
+    """A screen kept from the alert rules stops being current when the rules stop running."""
+
+    def pool(self, rows):
+        class Conn:
+            def execute(self_, sql):
+                self.sql = sql
+                return SimpleNamespace(fetchall=lambda: rows())
+
+            def __enter__(self_):
+                return self_
+
+            def __exit__(self_, *a):
+                return False
+        return SimpleNamespace(connection=lambda: Conn())
+
+    def test_the_value_moves_when_a_rule_goes_stale_and_is_held_between_reads(self):
+        now = dt.datetime.now(dt.timezone.utc)
+        ok = [now]
+        backend = SimpleNamespace(pg_dsn="x")
+        backend.pg = lambda: self.pool(lambda: [(r, ok[0]) for r in RULES])
+        with mock.patch.object(ps, "_paged", lambda name: True):
+            before = ps.runs_fresh(backend)
+            self.assertIn(("po_late", True), before)
+            ok[0] = now - dt.timedelta(hours=3)          # the rules stopped running
+            self.assertEqual(ps.runs_fresh(backend), before)   # held for RUNS_SECONDS
+            backend.__dict__.pop("_runs_fresh")
+            after = ps.runs_fresh(backend)
+            self.assertNotEqual(after, before)
+            self.assertIn(("po_late", False), after)
+
+    def test_an_unreadable_table_is_one_constant_never_a_failure(self):
+        backend = SimpleNamespace(pg_dsn="x", pg=lambda: 1 / 0)
+        self.assertEqual(ps.runs_fresh(backend), "unread")
+        self.assertEqual(ps.runs_fresh(SimpleNamespace(pg_dsn=None)), "unread")

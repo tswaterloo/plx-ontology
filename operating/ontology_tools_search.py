@@ -24,7 +24,9 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Any, Callable, Mapping
+from typing import Any, Callable, Mapping, Sequence
+
+from operating import read_ceiling
 
 TOOL_NAME = "plx.search"
 OPEN_NAME = "plx.open"
@@ -33,7 +35,9 @@ DOCUMENTS = "plx.documents"
 READ = "plx.read"
 COMMS_SEARCH = "plx.sql_comms_search"   # ontology_tools_sql.COMMS_SEARCH
 COMMS_OPEN = "plx.sql_comms_open"
-COMMS_SOURCES = ("graph_mail", "teams")
+# the sources the comms leg may search; what it did search is its ``searched.sources``
+# (SharePoint files only for a full reader: anyone else's go to plx.documents)
+COMMS_SOURCES = ("graph_mail", "teams", "sharepoint")
 RECORDS_SEARCH = "plx.sql_records_search"   # ontology_tools_sql.RECORDS_SEARCH
 RECORDS = "records"     # the structured records of every system (``records_search``)
 # the one records leg error that is the search's own (the query itself is wrong); any
@@ -70,6 +74,19 @@ _OPEN = _TOOLS[OPEN_NAME]
 OPEN_TOOL: dict[str, Any] = {"name": OPEN_NAME, "description": _OPEN["description"],
                              "inputSchema": _OPEN["input"],
                              "annotations": {"readOnlyHint": True}}
+
+
+# the times a read item carries (its own fields): any of them at or after a replay's
+# ceiling, or none at all, and the item is not shown under it
+_TIMES = ("received_date_time", "sent_date_time", "created_date_time",
+          "last_modified_date_time", "received_at", "sent_at", "created_at", "modified_at",
+          "last_modified", "created", "date")
+
+
+def _known_before(got: Mapping[str, Any], moment: Any) -> bool:
+    fields = got.get("fields") if isinstance(got.get("fields"), Mapping) else {}
+    times = [fields[k] for k in _TIMES if isinstance(fields.get(k), str) and fields[k]]
+    return bool(times) and not any(read_ceiling.after(t, moment) for t in times)
 
 
 def _error(code: str, message: str) -> dict[str, Any]:
@@ -145,6 +162,13 @@ def run(call_documents: Callable[[dict[str, Any]], Any], arguments: Any,
         wanted = arguments_for_documents(arguments)
     except ValueError as exc:
         return _error("invalid_input", str(exc))
+    try:
+        moment = read_ceiling.ceiling()
+    except read_ceiling.CeilingInvalid as exc:
+        return _error("not_ready", str(exc))
+    if moment is not None:
+        # a replay of a past moment (``read_ceiling``): every leg searches before it
+        wanted["until"] = read_ceiling.clamp_until(wanted.get("until"), moment)
     sources = list(wanted.get("sources") or ALL_SOURCES)
     cursor = wanted.get("cursor")
     records = (call_records is not None and RECORDS in sources and bool(wanted.get("query"))
@@ -163,15 +187,34 @@ def run(call_documents: Callable[[dict[str, Any]], Any], arguments: Any,
         docs = sources
     got = []
     if comms:
-        one = call_comms({**{k: v for k, v in wanted.items() if k != "sources"},
-                          "sources": comms})
+        try:
+            one = call_comms({**{k: v for k, v in wanted.items() if k != "sources"},
+                              "sources": comms})
+        except Exception as exc:  # noqa: BLE001 - one leg failing: a gap when others ran
+            if not (docs or records):
+                raise
+            one = {"error": {"code": "query_failed", "message": type(exc).__name__}}
         if isinstance(one, Mapping) and (one.get("error") or {}).get("code") in FALLBACK:
             comms, docs = [], [x for x in sources]
         else:
             one = compact(one)
+            # files the comms leg did not search (a reader who is not a full reader, or the
+            # statement failed) are searched the old way, as before files were a table
+            spill = ("sharepoint" in comms and not wanted.get("participant")
+                     and not isinstance(cursor, str))
             if "error" in one:
-                return one
-            got.append(one)
+                code = one["error"].get("code")
+                if code in COMMS_OWN_ERRORS or not (docs or records or spill):
+                    return one
+                # mail and Teams could not be read this time (timeout, busy, a failed
+                # statement): the other legs' hits stand and a gap says so
+                rest = [x for x in comms if x != "sharepoint"]
+                one = _gap(rest, code, one["error"].get("message")) if rest else None
+            served = ((one or {}).get("searched") or {}).get("sources") or []
+            if spill and "sharepoint" not in served:
+                docs = [x for x in sources if x == "sharepoint" or x in docs]
+            if one is not None:
+                got.append(one)
     if docs:
         # every non-record source and none named: the documents search's own default
         whole = not wanted.get("sources") and set(docs) == set(ALL_SOURCES) - {RECORDS}
@@ -186,6 +229,22 @@ def run(call_documents: Callable[[dict[str, Any]], Any], arguments: Any,
             return one
         got.append(one)
     return _merged(got)
+
+
+# the comms leg errors that are the search's own (the query itself is wrong): the whole
+# search answers them; any other (busy, timeout, a failed statement) is a gap when another
+# leg is searched
+COMMS_OWN_ERRORS = frozenset({"invalid_input"})
+
+
+def _gap(sources: Sequence[str], code: Any, message: Any) -> dict[str, Any]:
+    return {"documents": [], "searched": {"sources": list(sources)},
+            "gaps": [{"state": "inaccessible", "reason": str(code or "query_failed"),
+                      "subject": "mail and Teams",
+                      "detail": "mail and Teams were not searched: "
+                      + str(message or code or "query_failed")[:300]}],
+            "completeness": {"complete": False, "truncated": False, "returned": 0,
+                             "reason": str(code or "query_failed")}}
 
 
 def _records(call_records: Callable[[dict[str, Any]], Any], wanted: dict[str, Any]
@@ -338,10 +397,19 @@ def open_one(call_read: Callable[[dict[str, Any]], Any], arguments: Any,
         if isinstance(offset, bool) or not isinstance(offset, int) or offset < 0:
             return _error("invalid_input", "text_offset must be a whole number >= 0")
         wanted["text_offset"] = offset
+    try:
+        moment = read_ceiling.ceiling()
+    except read_ceiling.CeilingInvalid as exc:
+        return _error("not_ready", str(exc))
     got = call_comms(dict(wanted)) if call_comms is not None else None
     if not isinstance(got, Mapping) or got.get("not_comms") or (
             got.get("error") or {}).get("code") in OPEN_FALLBACK:
         got = call_read(wanted)
+        if moment is not None and isinstance(got, Mapping) and "error" not in got \
+                and not _known_before(got, moment):
+            # under a replay's ceiling the host's own read shows only what carries a
+            # time before it (``read_ceiling``): no time, or a later one, is not found
+            return _error("not_found", "nothing to open before the replayed moment")
     if not isinstance(got, Mapping):
         return _error("open_failed", "the read gave no result")
     if _names_freightcom(got):

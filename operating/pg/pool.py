@@ -210,9 +210,60 @@ def search_defaults(conn: psycopg.Connection, *, ef_search: int = DEFAULT_EF_SEA
         cur.execute(f"SET {scope}hnsw.max_scan_tuples = {int(max_scan_tuples)}")
 
 
+# A new connection refused because the server or the role is at its connection limit
+# ("too many connections", SQLSTATE 53300) is tried again for up to this long
+# (``PLX_PG_FULL_WAIT_SECONDS``; 0: refused at once, as before). Every other request's
+# connections free in seconds (each Ask's host returns its own after each call), so a
+# burst of Asks waits a moment for a slot instead of failing every tool call in 0.1 s
+# and answering "try again later" (11-19: 57 of 187 hard-set calls failed so).
+FULL_WAIT_ENV = "PLX_PG_FULL_WAIT_SECONDS"
+FULL_WAIT_SECONDS = 20.0
+_FULL_WORDS = ("too many connections", "remaining connection slots are reserved",
+               "sorry, too many clients")
+
+
+def full_wait_seconds(environ: Any = None) -> float:
+    """Seconds a connection refused at the limit is tried again (``FULL_WAIT_ENV``)."""
+    raw = str((os.environ if environ is None else environ).get(FULL_WAIT_ENV, "")).strip()
+    try:
+        return max(0.0, float(raw)) if raw else FULL_WAIT_SECONDS
+    except ValueError:
+        return FULL_WAIT_SECONDS
+
+
+def at_limit(exc: BaseException) -> bool:
+    """Whether ``exc`` is a connection refused because the server or the role holds as
+    many connections as it may (SQLSTATE 53300; libpq's connect errors carry the
+    server's message, not always its code)."""
+    if getattr(exc, "sqlstate", None) == "53300":
+        return True
+    text = str(exc).lower()
+    return isinstance(exc, psycopg.OperationalError) and any(w in text for w in _FULL_WORDS)
+
+
+def when_free(open_: Callable[[], Any], seconds: float | None = None) -> Any:
+    """``open_()`` (it makes one connection), tried again with a growing pause while it is
+    refused at the connection limit (``at_limit``), for at most ``seconds``
+    (``full_wait_seconds``); any other error, or the limit still hit then, is raised."""
+    budget = full_wait_seconds() if seconds is None else max(0.0, float(seconds))
+    deadline = time.monotonic() + budget
+    pause = 0.05
+    while True:
+        try:
+            return open_()
+        except psycopg.OperationalError as exc:
+            left = deadline - time.monotonic()
+            if not at_limit(exc) or left <= 0:
+                raise
+            time.sleep(min(pause, left))
+            pause = min(pause * 2, 1.0)
+
+
 def connect(dsn: str | None = None, **kwargs: Any) -> psycopg.Connection:
-    return psycopg.connect(dsn or config.dsn(), application_name=app_name("plx-workbench"),
-                           **kwargs)
+    """A new connection (``application_name``: ``app_name``), waiting for a slot while
+    the server or the role is at its connection limit (``when_free``)."""
+    return when_free(lambda: psycopg.connect(
+        dsn or config.dsn(), application_name=app_name("plx-workbench"), **kwargs))
 
 
 class PoolTimeout(RuntimeError):

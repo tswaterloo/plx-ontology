@@ -56,6 +56,34 @@ class PreloadTest(unittest.TestCase):
             self.assertIsNotNone(ontology_tools.default_schema())
             self.assertEqual(compiled.call_count, 1)
 
+    def test_the_status_line_is_read_at_start_not_on_the_first_home(self) -> None:
+        import time
+        from pathlib import Path
+        reads: list[int] = []
+
+        def slow_status(state_dir):
+            reads.append(1)
+            time.sleep(0.3)   # the derivation code parsed (~2 s live)
+            return {"stale": [], "flagged": [], "unknown": [], "artifacts": [],
+                    "checked_at": "t"}
+
+        state = Path(self.cache.name)
+        key = str(state)
+        saved = dict(derived_status._SERVED)
+        derived_status._SERVED.pop(key, None)
+        self.addCleanup(lambda: (derived_status._SERVED.pop(key, None),
+                                 derived_status._SERVED.update(saved)))
+        with mock.patch.object(derived_status, "_compute_all",
+                               lambda arts, root: {a.name: "v" for a in arts}), \
+                mock.patch.object(derived_status, "status", slow_status):
+            preload.run(state)
+            began = time.monotonic()
+            found = derived_status.served(state)
+            took = time.monotonic() - began
+        self.assertLess(took, 0.1)   # served from memory: no thread started or waited for
+        self.assertEqual(found["checked_at"], "t")
+        self.assertEqual(len(reads), 1)
+
     def test_a_failing_preload_leaves_the_work_to_the_first_read(self) -> None:
         def broken(artifacts, root):
             raise RuntimeError("no children")

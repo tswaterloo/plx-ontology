@@ -229,13 +229,45 @@ def _mail_events(st: Any, oids: Sequence[str], typed: Mapping[str, tuple[str, st
             "subject": subject[:200], "text": text[:TEXT_CHARS],
             "conversation_id": _v(row, "conversation_id"), "message_id": message_id,
             "intents": intents_of(subject, text), "side": side, "records": records[:MAX_RECORDS],
-            "asks": bool(it.reply_ask(text) or it.direct_question(text)),
+            # the cheap rules' certain asks; a mail put to the reader that they find none
+            # in (a request without a question form, a chase, a problem waiting on the
+            # reader) is the model's to read (``ask_check``: ``autopilot._judge_asks``):
+            # replayed on 2026-07 mail, 40 of 41 replies that no rule noticed were to mail
+            # the phrase rules read as asking nothing
+            **_mail_ask(it, text, subject, to_me=bool(mine & set(to))),
             "closing": closing(text),
             "addressed_other": addressed_other(text, mine, [*to, *cc]),
             "reply_all": reply_all(sender, to, cc, mine),
             "cleared": cleared,
-            "handles": [c["l1_handle"] for c in row.values() if c.get("l1_handle")][:3]})
+            "handles": [c["l1_handle"] for c in row.values() if c.get("l1_handle")][:3],
+            "item_kind": item_kind(c.get("l1_handle") for c in row.values())})
     return out
+
+
+# What kind of Exchange item a mail is, as the first byte of its change key carries it (the
+# part after "@" in its graph-mail handle; base64). Read over every captured mail of six
+# months: 0x0B on 2,427 mails (meeting requests), 0x0C on 1,544 (1,481 titled Accepted,
+# Declined or Tentative), 0x0D on 591 (548 titled Canceled), 0x1F on 423 (422 titled
+# Automatic reply), 0x17 on 197 (all Undeliverable), 0x09 on the other 243,655.
+ITEM_KINDS = {0x09: "message", 0x0B: "meeting_request", 0x0C: "meeting_response",
+              0x0D: "meeting_cancel", 0x17: "undeliverable", 0x1F: "auto_reply"}
+_CHANGE_KEY = re.compile(r"^graph-mail://[^@\s]+@([A-Za-z0-9+/_-]{4})")
+
+
+def item_kind(handles: Iterable[Any]) -> str:
+    """The mail's Exchange item kind (``ITEM_KINDS``) from its handles' change key; "" when
+    no handle carries one or its kind is not one of those (read as an ordinary message)."""
+    import base64
+    for handle in handles:
+        m = _CHANGE_KEY.match(str(handle or ""))
+        if not m:
+            continue
+        try:
+            first = base64.b64decode(m.group(1).replace("-", "+").replace("_", "/"))[0]
+        except (ValueError, IndexError):
+            continue
+        return ITEM_KINDS.get(first, "")
+    return ""
 
 
 _ROLE_WORDS = frozenset((
@@ -367,6 +399,21 @@ def _teams_events(st: Any, oids: Sequence[str], typed: Mapping[str, tuple[str, s
                 "mentioned": owner in named, "mentions": sorted(named & set(who)),
                 "closing": closing(text, chat=True), "handles": _handles_of(row)[:3]})
     return out
+
+
+def _mail_ask(it: Any, text: str, subject: str, *, to_me: bool) -> dict[str, Any]:
+    """A mail's ``asks``: True when the phrase rules find an ask (``inbox_triage``); else
+    False, and for a mail sent to the reader (in To) whose text the model may read (two
+    words or more, no notice that no reply is wanted) ``ask_check`` "model": the chat ask
+    model reads it (``autopilot._ask_wanted``) and its "yes" sets it True. With no model
+    configured it stays False (the phrase rules' answer)."""
+    from .chat_ask_model import certain_no
+    if it.reply_ask(text) or it.direct_question(text):
+        return {"asks": True}
+    if to_me and not certain_no(text, mentioned=True) and \
+            not it.NO_REPLY.search(text) and not it.NOTICE.search(text):
+        return {"asks": False, "ask_check": "model"}
+    return {"asks": False}
 
 
 def reply_all(sender: str, to: Sequence[str], cc: Sequence[str], mine: Iterable[str]

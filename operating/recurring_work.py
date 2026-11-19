@@ -756,56 +756,71 @@ def stale(found: Any, today: date, now: datetime) -> bool:
 
 
 def due_events(state: Path, st: Any, owners: Iterable[str], now: datetime,
-               measure_fn: Any = None) -> list[dict[str, Any]]:
+               measure_fn: Any = None, failed: Optional[Counter] = None
+               ) -> list[dict[str, Any]]:
     """``record.due`` events for each of ``owners`` (the people the live prepare gate
     passes ``routine_update`` for): their recurring work (``measure``, kept in ``FOLDER``
     and re-measured once a day), each scheduled job of ``JOB_KINDS`` no other autopilot
     covers, and each meeting series they run (``PREP_KINDS``: a brief before it), that is
     due now and whose record the store holds (today's occurrence, else the last instance:
-    its object id; none: no event, never a guess)."""
+    its object id; none: no event, never a guess). One person's scan or store read that
+    fails costs only that person's events: counted in ``failed`` ("recurring_unreadable"),
+    the others' still returned."""
     measure_fn = measure_fn or measure
-    folder = Path(state) / "autopilot" / FOLDER
-    today = _local(now).date()
     out = []
     for owner in sorted({str(o).lower() for o in owners}):
-        path = folder / f"{_digest('person', owner)}.json"
         try:
-            found = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, ValueError):
-            found = None
-        if stale(found, today, now):
-            found = {**measure_fn(Path(state), owner, as_of=today),
-                     "measured_at": now.astimezone(timezone.utc).isoformat()}
-            folder.mkdir(parents=True, exist_ok=True)
-            tmp = path.with_suffix(".tmp")
-            tmp.write_text(json.dumps(found, sort_keys=True), encoding="utf-8")
-            os.replace(tmp, path)
-        if found.get("status") != "built":
-            continue
-        for job in found.get("jobs") or ():
-            kind = (job.get("system"), job.get("kind"))
-            handles: list[str] = []
-            starts = None
-            if kind in PREP_KINDS:
-                today = todays_meeting(Path(state), str(job.get("ref") or ""), now)
-                if today is None or not prep_due(today[1], now):
-                    continue
-                handles, starts = [today[0]], today[1]
-            elif kind in POST_KINDS:
-                if not job.get("ref") or not due_now(job, now):
-                    continue
-            elif kind not in JOB_KINDS or (job.get("coverage") or {}).get("autopilots") \
-                    or not due_now(job, now):
+            out += _owner_due(Path(state), st, owner, now, measure_fn)
+        except Exception:  # noqa: BLE001 - one person's failure never costs another's work
+            if failed is not None:
+                failed["recurring_unreadable"] += 1
+    return out
+
+
+def _owner_due(state: Path, st: Any, owner: str, now: datetime,
+               measure_fn: Any) -> list[dict[str, Any]]:
+    """``due_events`` for one ``owner``."""
+    folder = state / "autopilot" / FOLDER
+    today = _local(now).date()
+    out: list[dict[str, Any]] = []
+    path = folder / f"{_digest('person', owner)}.json"
+    try:
+        found = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        found = None
+    if stale(found, today, now):
+        found = {**measure_fn(state, owner, as_of=today),
+                 "measured_at": now.astimezone(timezone.utc).isoformat()}
+        folder.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_suffix(".tmp")
+        tmp.write_text(json.dumps(found, sort_keys=True), encoding="utf-8")
+        os.replace(tmp, path)
+    if found.get("status") != "built":
+        return out
+    for job in found.get("jobs") or ():
+        kind = (job.get("system"), job.get("kind"))
+        handles: list[str] = []
+        starts = None
+        if kind in PREP_KINDS:
+            meeting = todays_meeting(state, str(job.get("ref") or ""), now)
+            if meeting is None or not prep_due(meeting[1], now):
                 continue
-            for handle in [*handles, *reversed(job.get("examples") or ())]:
-                row = st.conn.execute(
-                    "SELECT object_id FROM object_versions WHERE l1_handle = ? AND "
-                    "superseded_at IS NULL", (handle,)).fetchone() if handle else None
-                if row:
-                    out.append(event_of(owner, job, now, str(row[0]),
-                                        [*(job.get("examples") or ()), *handles][-EXAMPLES:]
-                                        if handles else (), starts))
-                    break
+            handles, starts = [meeting[0]], meeting[1]
+        elif kind in POST_KINDS:
+            if not job.get("ref") or not due_now(job, now):
+                continue
+        elif kind not in JOB_KINDS or (job.get("coverage") or {}).get("autopilots") \
+                or not due_now(job, now):
+            continue
+        for handle in [*handles, *reversed(job.get("examples") or ())]:
+            row = st.conn.execute(
+                "SELECT object_id FROM object_versions WHERE l1_handle = ? AND "
+                "superseded_at IS NULL", (handle,)).fetchone() if handle else None
+            if row:
+                out.append(event_of(owner, job, now, str(row[0]),
+                                    [*(job.get("examples") or ()), *handles][-EXAMPLES:]
+                                    if handles else (), starts))
+                break
     return out
 
 

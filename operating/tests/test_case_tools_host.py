@@ -1385,6 +1385,7 @@ class CapturedDocumentDirectionTests(unittest.TestCase):
         """A request that needs the attachment mailboxes while the host's start read runs
         takes that read's list; it never scans the capture a second time."""
         from operating import case_tools_host as cth
+        from operating import case_tools_host_mailboxes
         key = os.path.realpath("/nonexistent/mail-capture/capture.db")
         running = threading.Event()
         listed = [{"mailbox_upn": "orders@example.com"}]
@@ -1398,7 +1399,7 @@ class CapturedDocumentDirectionTests(unittest.TestCase):
             cth._MAILBOXES_READING[key] = running
         self.addCleanup(cth._MAILBOXES.pop, key, None)
         threading.Timer(0.05, finish).start()
-        with mock.patch.object(cth, "_mailbox_list", side_effect=AssertionError("scanned")):
+        with mock.patch.object(case_tools_host_mailboxes, "_mailbox_list", side_effect=AssertionError("scanned")):
             self.assertEqual(cth._attachment_mailboxes(
                 types.SimpleNamespace(path="/nonexistent/mail-capture/capture.db")), listed)
 
@@ -1414,26 +1415,26 @@ class CapturedDocumentDirectionTests(unittest.TestCase):
         listed = [{"mailbox_upn": "orders@example.com"}]
         store = types.SimpleNamespace(path=key)
         with mock.patch.dict(os.environ, {case_tools_host_mailboxes.MAILBOXES_CACHE_ENV: temp.name}):
-            with mock.patch.object(cth, "_mailbox_list", return_value=listed) as scan:
+            with mock.patch.object(case_tools_host_mailboxes, "_mailbox_list", return_value=listed) as scan:
                 self.assertEqual(cth._attachment_mailboxes(store), listed)
                 self.assertEqual(scan.call_count, 1)
             cth._MAILBOXES.pop(key, None)   # another process: nothing held in memory
             self.assertEqual(oct(case_tools_host_mailboxes._mailboxes_cache(key).stat().st_mode & 0o777),
                              "0o600")
-            with mock.patch.object(cth, "_mailbox_list",
+            with mock.patch.object(case_tools_host_mailboxes, "_mailbox_list",
                                    side_effect=AssertionError("scanned")):
                 self.assertEqual(cth._attachment_mailboxes(store), listed)
             cth._MAILBOXES.pop(key, None)
             old = time.time() - cth.ATTACHMENT_MAILBOXES_SECONDS - 5
             os.utime(case_tools_host_mailboxes._mailboxes_cache(key), (old, old))
             fresh = [{"mailbox_upn": "sales@example.com"}]
-            with mock.patch.object(cth, "_mailbox_list", return_value=fresh) as scan:
+            with mock.patch.object(case_tools_host_mailboxes, "_mailbox_list", return_value=fresh) as scan:
                 self.assertEqual(cth._attachment_mailboxes(store), fresh)
                 self.assertEqual(scan.call_count, 1)
             # a folder others may read is never read from or written to
             cth._MAILBOXES.pop(key, None)
             os.chmod(temp.name, 0o755)
-            with mock.patch.object(cth, "_mailbox_list", return_value=listed) as scan:
+            with mock.patch.object(case_tools_host_mailboxes, "_mailbox_list", return_value=listed) as scan:
                 self.assertEqual(cth._attachment_mailboxes(store), listed)
                 self.assertEqual(scan.call_count, 1)
             self.assertEqual(json.loads(case_tools_host_mailboxes._mailboxes_cache(key).read_text())["mailboxes"],
@@ -1456,7 +1457,7 @@ class CapturedDocumentDirectionTests(unittest.TestCase):
             time.sleep(0.5)   # the scan of 2.3M attachments, shortened
             return listed
         with mock.patch.dict(os.environ, {case_tools_host_mailboxes.MAILBOXES_CACHE_ENV: temp.name}), \
-                mock.patch.object(cth, "_mailbox_list", side_effect=scan):
+                mock.patch.object(case_tools_host_mailboxes, "_mailbox_list", side_effect=scan):
             hosts = [threading.Thread(target=cth._read_mailboxes, args=(key, threading.Event()))
                      for _ in range(4)]
             for host in hosts:

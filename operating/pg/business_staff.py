@@ -10,7 +10,9 @@ per staff person: name, title, department, office, address, manager (only a mana
 also listed) and the people reporting to them.
 
 Who reads it: every staff reader and every full reader (``staff_scope.ORG_CHART_KEY``, the org chart is not sensitive), never
-a guest or an unresolved reader (their policy grants no ``org:`` key). The row's own
+a guest or an unresolved reader (their policy grants no ``org:`` key). A row carries no
+record marking: its values are the org chart capture's, not the staff Person's (whose
+version may be marked ``pii`` as a mail contact). The row's own
 record is the staff Person (``object_ids``): the people exclusion drops the row
 (``business_views_access``) and ``door.exclude`` drops it when the set grows; the manager
 and reports cells name other Persons (``Row.col_names``): such a cell is emptied when one of
@@ -81,12 +83,16 @@ def staff_rows(org: Mapping[str, Mapping[str, Any]],
         if org[oid].get("manager_state") == "listed" and boss in kept and boss != oid:
             reports.setdefault(boss, []).append(oid)
     for oid in listed:
-        held, (obj, handle, marks) = org[oid], persons[oid]
+        held, (obj, handle, _marks) = org[oid], persons[oid]
         row = Row()
         row.objects, row.handle, row.copies = [obj], handle, 1
         row.systems = ["directory"]
         row.audience = {ORG_CHART_KEY}
-        row.marks = {marks}
+        # every value is the org chart capture's (work name, title, department, office,
+        # address, manager): the Person is the row's identity for the people exclusion,
+        # none of its cells is shown, so its version's marking (a mail contact's "pii")
+        # is not the row's; carrying it hid the org chart from every staff reader
+        row.marks = {"[]"}
         cite = [f"org-user://{oid}", "row"]
         boss = held.get("manager_object_id")
         boss = boss if held.get("manager_state") == "listed" and boss in kept \
@@ -97,6 +103,7 @@ def staff_rows(org: Mapping[str, Mapping[str, Any]],
             "name": held.get("display_name"), "title": held.get("job_title"),
             "department": held.get("department"), "office": held.get("office"),
             "email": held.get("upn"),
+            "person_id": oid.lower(),
             "manager": org[boss].get("display_name") if boss else None,
             "manager_email": org[boss].get("upn") if boss else None,
             "manager_state": "listed" if boss else (
@@ -104,7 +111,8 @@ def staff_rows(org: Mapping[str, Mapping[str, Any]],
             "reports": [org[o].get("display_name") or org[o].get("upn") or ""
                         for o in under[:MAX_REPORTS]],
             "reports_count": len(under)})
-        for col in ("name", "title", "department", "office", "email", "manager_state"):
+        for col in ("name", "title", "department", "office", "email", "person_id",
+                    "manager_state"):
             row.cites[col] = cite
         if boss:
             row.cites["manager"] = row.cites["manager_email"] = cite
@@ -127,6 +135,9 @@ def staff_rows(org: Mapping[str, Mapping[str, Any]],
        ("department", "text", "department as the directory states it (may be empty)"),
        ("office", "text", "office location as the directory states it (may be empty)"),
        ("email", "text", "work address (user principal name), lower-case"),
+       ("person_id", "text", "their directory id: their own mailbox and calendar rows have "
+        "emails.mailbox / meetings.mailbox = person_id, and their Teams messages carry it as "
+        "the sender's \"id\""),
        ("manager", "text", "the manager's display name (empty: none or not known)"),
        ("manager_email", "text", "the manager's work address"),
        ("manager_state", "text", "listed (manager named), none (the directory names no "

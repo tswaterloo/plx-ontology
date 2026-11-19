@@ -72,6 +72,15 @@ class SessionSlotsTests(unittest.TestCase):
     admitted, another only while memory holds it above the floor, and a session waiting
     for memory starts once memory frees, without any release."""
 
+    def test_three_questions_at_once_start_together_on_a_box_with_15_gb_free(self):
+        # a session peaks at ~0.6 GB (tool host + model CLI): three people asking at once
+        # on a box with 15 GB available all start at once, none waits for the ramp
+        slots = be.SessionSlots(4, available=lambda: 15.0)
+        got = [slots.acquire(timeout=0.01) for _ in range(3)]
+        self.assertEqual(got, [True, True, True])
+        for _ in got:
+            slots.release()
+
     def test_admission_follows_the_memory_available_now(self):
         clock = [1000.0]
         # room above the floor for one session growing to its peak, not two

@@ -83,6 +83,38 @@ class OpsHealthTest(unittest.TestCase):
         runtime = next(c for c in report["checks"] if c["name"] == "delta_cycle_runtime")
         self.assertEqual(runtime["value"], 45.0)
 
+    def test_alerts_age_is_read_from_the_engine_the_app_shows(self) -> None:
+        """With the SQL alerts on, the old engine's inbox is no longer written: its age is
+        not the alerts' age (it put 'Alerts show the last check's findings' on every page
+        while the SQL alerts ran every 15 min). The SQL runner's newest finished rule is."""
+        from datetime import timedelta
+        from unittest import mock
+        state = make_state(self.root, proactive="2030-01-01T12:00:00Z")   # a day old
+        ran = [NOW - timedelta(minutes=14)]
+
+        class Conn:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+            def execute(self, sql):
+                assert "alert_runs" in sql, sql
+                return mock.Mock(fetchone=lambda: (ran[0],))
+
+        sql_on = {"PLX_ALERTS_SQL": "1"}
+        with mock.patch("psycopg.connect", lambda *a, **k: Conn()):
+            fresh = ops_health.collect(state, now=NOW, environ=sql_on, pg_dsn="postgresql:///x")
+            ran[0] = NOW - timedelta(hours=5)
+            stale = ops_health.collect(state, now=NOW, environ=sql_on, pg_dsn="postgresql:///x")
+        self.assertEqual(states(fresh)["proactive_last_pass"], "ok")
+        self.assertEqual(states(stale)["proactive_last_pass"], "breach")
+        unread = ops_health.collect(state, now=NOW, environ=sql_on)       # no DSN: unknown
+        self.assertEqual(states(unread)["proactive_last_pass"], "unknown")
+        old = ops_health.collect(state, now=NOW, environ={})              # old engine: inbox
+        self.assertEqual(states(old)["proactive_last_pass"], "breach")
+
     def test_capture_progress_reads_each_store_against_its_own_bound(self) -> None:
         """Owner 11-13: mail and Teams page within 30 min of their capture stopping, Portal
         within 1 h, whatever the runs report (a run that captured and died in its closing
@@ -218,6 +250,55 @@ class SearchLagAndDetectorsTest(unittest.TestCase):
         self.assertIn(f"blocked on unserved data (not paged): {gap}", check["detail"])
         from operating import ops_alarms
         self.assertTrue("proactive_detectors".startswith(ops_alarms.PAGED_HEALTH))
+
+    def test_with_sql_alerts_the_rules_judged_are_the_sql_runners(self) -> None:
+        """With the SQL alerts on, the old engine's detectors feed no page: a stale one of
+        theirs must not say the alerts are behind (live: 'Alerts show the last check's
+        findings' on every page from two old-engine detectors). The SQL rules are judged
+        from ``alert_runs``; unreadable: unknown."""
+        from datetime import timedelta
+        from unittest import mock
+        from operating.proactive_engine_config import DETECTORS
+        inbox = self.root / "projection" / "ontology.sqlite.gap-inbox.sqlite"
+        conn = sqlite3.connect(inbox)
+        conn.execute("CREATE TABLE detector_runs (detector TEXT, status TEXT, run_at TEXT)")
+        conn.execute("CREATE TABLE detector_history (detector TEXT, status TEXT, run_at TEXT)")
+        conn.execute("INSERT INTO detector_runs VALUES (?, 'truncated', ?)",
+                     (DETECTORS[0], "2030-01-02T11:00:00+00:00"))
+        conn.commit()
+        conn.close()
+        self.assertEqual(ops_health.detectors_check(self.root, NOW, self.t)["state"], "breach")
+        rules = [("po_late", NOW - timedelta(minutes=10)),
+                 ("lot_on_hold", NOW - timedelta(minutes=20))]
+
+        class Conn:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+            def execute(self, sql):
+                assert "alert_runs" in sql, sql
+                return mock.Mock(fetchall=lambda: list(rules))
+        sql_on = {"PLX_ALERTS_SQL": "1"}
+        dsn = "postgresql:///x"
+        with mock.patch("psycopg.connect", lambda *a, **k: Conn()):
+            fresh = ops_health.detectors_check(self.root, NOW, self.t, sql_on, dsn)
+            rules.append(("price_below_cost", NOW - timedelta(hours=30)))
+            rules.append(("customer_demand_drop", None))
+            stale = ops_health.detectors_check(self.root, NOW, self.t, sql_on, dsn)
+        self.assertEqual((fresh["state"], fresh["value"]), ("ok", 0))
+        self.assertEqual((stale["state"], stale["value"]), ("breach", 2))
+        self.assertIn("price_below_cost 30 h", stale["detail"])
+        self.assertIn("customer_demand_drop never completed", stale["detail"])
+        self.assertNotIn(DETECTORS[0], stale["detail"])
+        self.assertEqual(ops_health.detectors_check(self.root, NOW, self.t, sql_on)["state"],
+                         "unknown")
+        rules.clear()   # no rule has run yet: unknown, never fine
+        with mock.patch("psycopg.connect", lambda *a, **k: Conn()):
+            empty = ops_health.detectors_check(self.root, NOW, self.t, sql_on, dsn)
+        self.assertEqual((empty["state"], empty["value"]), ("unknown", None))
 
     def test_an_inbox_without_detector_tables_has_no_detector_check(self) -> None:
         self.assertIsNone(ops_health.detectors_check(self.root, NOW, self.t))

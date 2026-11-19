@@ -776,6 +776,142 @@ class WaitingOnYou(World):
                 self.assertNotIn("th-", dump)
                 self.assertEqual(self.replay()["workflows"], out["workflows"])  # no double
 
+    REQUEST = "Please coordinate the filling day with Oxana for these three batches."
+    FYI = "The labels were printed and handed over to shipping this morning."
+
+    def test_cardinality_a_mail_request_without_a_question_goes_to_the_ask_model(self):
+        """Replayed mail: 40 of 41 replies no rule noticed answered mail the phrase rules read
+        as asking nothing ("Please coordinate the day with her", "Checking in on this").
+        Mail to the reader with no phrase ask is read by the ask model: its yes is prepared,
+        its no is not; mail only copied to the reader never reaches the model; with no model
+        nothing changes (the phrase rules' answer). Each mail read once; N=1/10/60."""
+        from operating import chat_ask_model as cam
+        for n in (1, 10, 60):
+            with self.subTest(n=n):
+                self.setUp()
+                # the reader wrote to the sender before (a correspondent), not in these threads
+                self.sent(mail(self.w, SENT - timedelta(days=5), sender=OURS, to=(REP,),
+                               body="Here are the specs.", subject="Specs", mailbox=OURS_OID,
+                               conversation="intro", n=79_000, hour=9), 9, -5)
+                for i in range(n):
+                    self.thread(i, ask=self.REQUEST if i % 2 == 0 else self.FYI, earlier=False)
+                copied = mail(self.w, SENT, sender=REP, to=(OTHER,), cc=(OURS,),
+                              body=self.REQUEST, subject="Batches", mailbox=OURS_OID,
+                              conversation="copied", n=78_000, hour=10)
+                self.sent(copied, 10)
+                self.store()
+                model = StubAsks(yes=(self.REQUEST,))
+                st = pe._Store(self.dir / "s.sqlite", threads=1)
+                try:
+                    out = rp.replay(st, people(), role=f"person:{OURS}", out=self.dir / "out",
+                                    since=DAY, until=DAY + timedelta(days=1), roles={},
+                                    config=rp.load_config(), environ={},
+                                    end=DAY + timedelta(days=10), probe=lambda: 64.0,
+                                    ask_judge=cam.Judge(model, batch=25))
+                finally:
+                    st.close()
+                self.assertEqual(out["prepared_by_autopilot"], {"reply_prep": (n + 1) // 2})
+                sent = [m for b in model.sent for m in b]
+                self.assertEqual(len(sent), n)          # each mail to the reader once
+                self.assertTrue(all(m.get("email") and m.get("subject") for m in sent))
+                self.assertFalse(any("@" in json.dumps(m) for m in sent))
+                q = self.queue_file()
+                self.assertFalse([i for i in q.items(None) if "copied" in json.dumps(i)])
+                # no model: the phrase rules' answer, nothing prepared for these mails
+                self.setUp()
+                for i in range(n):
+                    self.thread(i, ask=self.REQUEST, earlier=False)
+                self.store()
+                self.assertEqual(self.replay()["prepared_by_autopilot"], {})
+
+    def correspondent(self) -> None:
+        """The reader wrote to the supplier before (not in the window's threads)."""
+        self.sent(mail(self.w, SENT - timedelta(days=5), sender=OURS, to=(REP,),
+                       body="Here are the specs.", subject="Specs", mailbox=OURS_OID,
+                       conversation="intro", n=79_000, hour=9), 9, -5)
+
+    def mail_run(self, model):
+        from operating import chat_ask_model as cam
+        st = pe._Store(self.dir / "s.sqlite", threads=1)
+        try:
+            return rp.replay(st, people(), role=f"person:{OURS}", out=self.dir / "out",
+                             since=DAY, until=DAY + timedelta(days=1), roles={},
+                             config=rp.load_config(), environ={},
+                             end=DAY + timedelta(days=10), probe=lambda: 64.0,
+                             ask_judge=cam.Judge(model, batch=25))
+        finally:
+            st.close()
+
+    def test_mail_from_a_freightcom_address_with_a_neutral_body_never_reaches_the_model(self):
+        """Review of the mail ask path: a mail's sender is an address, with no name. A mail
+        from a Freightcom address (or copying one) whose subject and body never name
+        Freightcom is screened before any model call, keeps the phrase rules' answer
+        (nothing prepared), and every other mail of the run is still read."""
+        for n in (1, 10):
+            with self.subTest(n=n):
+                self.setUp()
+                self.correspondent()
+                for i in range(n):
+                    self.thread(i, ask=self.REQUEST, earlier=False)
+                fc = (mail(self.w, SENT, sender="billing@freightcom.com", to=(OURS,),
+                           body=self.REQUEST, subject="Batches", mailbox=OURS_OID,
+                           conversation="fc-sender", n=77_000, hour=10),
+                      mail(self.w, SENT, sender=REP, to=(OURS,), cc=("ops@freightcom.ca",),
+                           body=self.REQUEST, subject="Batches", mailbox=OURS_OID,
+                           conversation="fc-copied", n=77_001, hour=10))
+                for oid in fc:
+                    self.sent(oid, 10)
+                self.store()
+                model = StubAsks(yes=(self.REQUEST,))
+                out = self.mail_run(model)
+                sent = [m for b in model.sent for m in b]
+                self.assertEqual(len(sent), n)      # only the n mails with no Freightcom party
+                self.assertEqual(out["prepared_by_autopilot"], {"reply_prep": n})
+                dump = json.dumps(self.queue_file().items(None))
+                self.assertNotIn("fc-sender", dump)
+                self.assertNotIn("fc-copied", dump)
+
+    def test_screen_reads_every_participant_of_mail_and_teams(self):
+        """The model screen covers each participant field, not only text and names: a mail's
+        sender, To and Cc addresses, a chat's sender name, a meeting's attendees."""
+        from operating import chat_ask_model as cam
+
+        class Clear:
+            def identity_clear(self, _who):
+                return True
+        base = {"cleared": True, "text": "Please coordinate the filling day.",
+                "subject": "Batches", "sender": "rep@synth-supplier.example"}
+        self.assertIsNone(cam.screened({**base, "channel": "mail"}, Clear(), OURS))
+        for extra in ({"sender": "billing@freightcom.com"}, {"to": ["x@freightcom.ca"]},
+                      {"cc": ["ops@Freight-Com.net"]}, {"sender_name": "Dana (FreightCom)"},
+                      {"attendees": ["dispatch@freightcom.com"]},
+                      {"reply_all": {"to": ["a@freightcom.com"], "cc": []}}):
+            with self.subTest(extra=extra):
+                self.assertEqual(cam.screened({**base, **extra}, Clear(), OURS), "freightcom")
+
+    def test_a_failed_model_call_keeps_the_phrase_rules_answer_for_mail(self):
+        """A timeout, an error or an unparsed reply never turns mail into an ask: the mail
+        keeps the phrase rules' answer (nothing prepared for a request without a question
+        form), is not cached, and is read again on a later cycle; a phrase-rule ask is
+        prepared whatever the model does."""
+        for fail in ("raise", "none", "short"):
+            with self.subTest(fail=fail):
+                self.setUp()
+                self.correspondent()
+                for i in range(3):
+                    self.thread(i, ask=self.REQUEST, earlier=False)
+                self.thread(9, ask="Thanks. Can you confirm the quantity for next week?",
+                            earlier=False)
+                self.store()
+                model = StubAsks(yes=(self.REQUEST,), fail=fail)
+                out = self.mail_run(model)
+                got = out["prepared_by_autopilot"].get("reply_prep", 0)
+                # "short": the batch's last verdict is missing; the others are the model's
+                self.assertEqual(got, 1 + (2 if fail == "short" else 0))
+                q = self.queue_file()
+                cached = q.conn.execute("SELECT count(*) FROM chat_asks").fetchone()[0]
+                self.assertEqual(cached, 2 if fail == "short" else 0)
+
     def own_again(self, i: int) -> None:
         """A second own message in thread ``i``, the day before the window."""
         made = mail(self.w, SENT - timedelta(days=1), sender=OURS, to=(REP,),

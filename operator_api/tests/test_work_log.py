@@ -136,6 +136,49 @@ class WorkLogApi(unittest.TestCase):
         self.assertEqual(self.log(self.ana, case_id="case-77")["total"], 2)
         self.assertEqual(self.log(self.ana, q="chase")["total"], 2)
 
+    def test_the_chats_list_is_each_persons_own_conversations(self):
+        """Ask's chats list: one row per conversation, titled by its first question (or the
+        name given), pinned first then newest; renamed, pinned, searched and deleted by its
+        own person only; deleting takes it off the list and keeps the log; nothing while the
+        exclusion cannot decide."""
+        first = ask(self.ana, "where is PO 90412, is it late")
+        ask(self.ana, "who is the supplier", first["conversation_id"])
+        other = ask(self.ana, "which orders are late")
+        ask(self.ben, "what did we ship today")
+
+        def chats(client, **params):
+            return client.get("/api/ask/chats", params=params).json()
+        got = chats(self.ana)
+        self.assertTrue(got["available"])
+        self.assertEqual([(c["conversation_id"], c["title"], c["questions"]) for c in got["chats"]],
+                         [(other["conversation_id"], "which orders are late", 1),
+                          (first["conversation_id"], "where is PO 90412, is it late", 2)])
+        self.assertEqual([c["title"] for c in chats(self.ben)["chats"]], ["what did we ship today"])
+        # rename and pin: the pinned one first, under its name; search reads names and questions
+        path = f"/api/ask/chats/{first['conversation_id']}"
+        out = self.ana.post(path, json={"name": "PO 90412 chase", "pinned": True}).json()
+        self.assertEqual([(c["title"], c["pinned"], c["named"]) for c in out["chats"]],
+                         [("PO 90412 chase", True, True), ("which orders are late", False, False)])
+        self.assertEqual([c["title"] for c in chats(self.ana, q="supplier")["chats"]],
+                         ["PO 90412 chase"])
+        self.assertEqual(chats(self.ana, q="chase late")["chats"][0]["title"], "PO 90412 chase")
+        self.assertEqual(chats(self.ana, q="nothing-like-this")["chats"], [])
+        # another person can neither rename nor delete it, nor see it
+        self.assertEqual(self.ben.post(path, json={"name": "mine now"}).status_code, 404)
+        self.assertEqual(self.ben.post(path, json={"deleted": True}).status_code, 404)
+        self.assertEqual(self.ana.post("/api/ask/chats/not-a-chat", json={"deleted": True})
+                         .status_code, 404)
+        # deleted: off the list, still in the work log and still opened by its link
+        out = self.ana.post(path, json={"deleted": True}).json()
+        self.assertEqual([c["title"] for c in out["chats"]], ["which orders are late"])
+        self.assertEqual(self.log(self.ana, thread=f"ask:{first['conversation_id']}")["total"], 2)
+        # asked again in the deleted chat: it is back on the list with all its questions
+        ask(self.ana, "and when is it due", first["conversation_id"])
+        self.assertEqual([(c["title"], c["questions"]) for c in chats(self.ana)["chats"]],
+                         [("PO 90412 chase", 3), ("which orders are late", 1)])
+        self.guard = Guard(unavailable=True)
+        self.assertEqual(chats(self.ana), {"available": False, "chats": []})
+
     def test_a_resumed_trail_only_answer_rechecks_the_trail_sources(self):
         """A partial answer with no facts and only a trail quoting
         records was resumed without asking the read policy. Every source the kept turn

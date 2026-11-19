@@ -62,7 +62,7 @@ import difflib
 import hashlib
 import json
 import os
-from operating.file_modes import keep_shared
+from operating.file_modes import keep_shared, make_absent
 from pathlib import Path
 import re
 import sqlite3
@@ -750,7 +750,7 @@ class Ledger:
         self.directory.mkdir(parents=True, exist_ok=True, mode=0o700)
         keep_shared(self.directory, 0o700)   # a shared-group directory keeps its group + setgid
         self.path = self.directory / FILE
-        os.close(os.open(self.path, os.O_RDWR | os.O_CREAT, 0o600))
+        make_absent(self.path, 0o600)   # never opened when it exists (its SQLite locks)
         keep_shared(self.path, 0o600)
         self.conn = sqlite3.connect(str(self.path), timeout=30, check_same_thread=False)
         self.conn.execute("PRAGMA journal_mode = WAL")

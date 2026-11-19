@@ -90,28 +90,29 @@ class TreesTest(unittest.TestCase):
 
 
 class PlainDigestTest(unittest.TestCase):
-    def test_the_clock_property_group_is_the_one_commit_over_the_base(self):
-        # 328f87f04b (main): CaptureStore.clock, nothing else of
-        # capture_store; BASE_COMMIT's capture_store is the group's earlier version
-        (path, (then, now)), = ce._CLOCK.items()
+    def test_the_acl_state_method_is_added_alone_and_no_derivation_module_calls_it(self):
+        # capture-fix-1119e: the group's file is main's (6720961dc7, the served key's) plus CaptureStore.acl_state
+        import difflib, hashlib
+        (path, (then, now)), = ce._ACL_STATE.items()
         try:
-            got = {ref: subprocess.run(["git", "-C", str(ROOT), "show", f"{ref}:{path}"],
-                                       check=True, capture_output=True, timeout=60).stdout
-                   for ref in (ce.BASE_COMMIT, "328f87f04b", "328f87f04b^")}
+            old = subprocess.run(["git", "-C", str(ROOT), "show", f"6720961dc7:{path}"],
+                                 check=True, capture_output=True, timeout=60).stdout
         except (OSError, subprocess.SubprocessError) as why:
-            self.skipTest(f"commits not readable: {why}")
-        import hashlib
-        self.assertEqual(hashlib.sha256(got[ce.BASE_COMMIT]).hexdigest(), then)
-        self.assertEqual(hashlib.sha256(got["328f87f04b"]).hexdigest(), now)
-        import difflib
+            self.skipTest(f"commit not readable: {why}")
+        self.assertEqual(hashlib.sha256(old).hexdigest(), then)
+        new = (ROOT / path).read_bytes()
+        self.assertEqual(hashlib.sha256(new).hexdigest(), now)
         diff = [line for line in difflib.unified_diff(
-            got["328f87f04b^"].decode().splitlines(), got["328f87f04b"].decode().splitlines(),
-            lineterm="", n=0) if line[:1] in "+-" and line[:3] not in ("+++", "---")]
+            old.decode().splitlines(), new.decode().splitlines(), lineterm="", n=0)
+            if line[:1] in "+-" and line[:3] not in ("+++", "---")]
         self.assertEqual([line for line in diff if line.startswith("-")], [])
-        self.assertEqual([line[1:].strip() for line in diff if line[1:].strip()],
-                         ["@property", "def clock(self) -> Callable[[], datetime]:",
-                          '"""The store clock itself, so another connection to the same '
-                          'file keeps it."""', "return self._clock"])
+        added = "\n".join(line[1:] for line in diff)
+        self.assertIn("def acl_state(self, kind_name", added)
+        self.assertEqual(added.count("def "), 1)
+        from ontology.project import derivation_files
+        for name, _ in derivation_files(ROOT):
+            if name not in (path, "ontology/code_equivalence.py") and name.endswith(".py"):
+                self.assertNotIn("acl_state", (ROOT / name).read_text(), name)
 
     def test_each_group_is_undone_alone_and_the_groups_are_disjoint(self):
         groups = ce.CHANGES["derivation"]
@@ -123,8 +124,8 @@ class PlainDigestTest(unittest.TestCase):
         zstd = [(p, ce._ZSTD[p][1] if p in ce._ZSTD else s) for p, s in base] + \
             [(p, now) for p, (old, now) in ce._ZSTD.items() if old is None]
         zstd.sort()
-        both = [(p, ce._CLOCK[p][1] if p in ce._CLOCK else s) for p, s in zstd]
-        clock = [(p, ce._CLOCK[p][1] if p in ce._CLOCK else s) for p, s in base]
+        both = [(p, ce._ACL_STATE[p][1] if p in ce._ACL_STATE else s) for p, s in zstd]
+        clock = [(p, ce._ACL_STATE[p][1] if p in ce._ACL_STATE else s) for p, s in base]
         for files in (zstd, both, clock):
             self.assertEqual(sorted(ce.earlier_files("derivation", files)), sorted(base))
 

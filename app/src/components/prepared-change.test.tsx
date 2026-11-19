@@ -101,8 +101,8 @@ describe("prepared change in an Ask answer", () => {
     ).toBeTruthy();
     await userEvent.click(screen.getByRole("button", { name: "Dismiss" }));
     expect(api.preparedStep).toHaveBeenCalledWith("pw_1", "dismiss");
-    expect(screen.getByTestId("prepared-state").textContent).toContain(
-      "Nothing was written",
+    expect(screen.getByTestId("prepared-state").textContent).toBe(
+      "Dismissed; nothing was written.",
     );
   });
 

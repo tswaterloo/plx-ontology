@@ -117,7 +117,9 @@ def _report_run(number: int, run: Mapping[str, Any]) -> dict[str, Any]:
                  for r in entry["roots"]]
         targets.append({"index": entry["index"], "status": entry["status"],
                         "complete": entry["complete"], "roots": roots,
-                        "discovered": bool(entry.get("discovered"))})
+                        "discovered": bool(entry.get("discovered")),
+                        # planned from the store while a listing failed (``_carry``)
+                        "carried": bool(entry.get("carried"))})
     report = {"run": number, "complete": run["complete"], "targets": targets,
               "complete_bound": run["complete_bound"], "bound_total": run["bound_total"],
               "incomplete_reasons": run["incomplete_reasons"]}

@@ -37,7 +37,7 @@ import re
 import secrets
 import time
 from pathlib import Path
-from typing import Any, Callable, Iterator, Mapping, Optional
+from typing import Any, Callable, Iterator, Mapping, Optional, Sequence
 from urllib.parse import quote
 
 from operating import card_actions as ca
@@ -113,6 +113,21 @@ def _person(reader: Any) -> Optional[str]:
         getattr(reader, "session", None), "email", None)
     return email.strip().lower() if isinstance(email, str) and "@" in email else None
 
+
+def _clean_chart(chart: Mapping[str, Any], clean: Callable[[str], str]) -> dict[str, Any]:
+    """``chart`` with every word it shows passed through ``clean``."""
+    out = dict(chart)
+    out["title"] = clean(str(chart.get("title") or ""))
+    out["labels"] = [clean(str(v)) for v in chart.get("labels") or ()]
+    out["series"] = [{**s, "name": clean(str(s.get("name") or ""))}
+                     for s in chart.get("series") or ()]
+    if chart.get("panels"):
+        out["panels"] = [{**p, "title": clean(str(p.get("title") or "")),
+                          "labels": [clean(str(v)) for v in p.get("labels") or ()],
+                          "series": [{**s, "name": clean(str(s.get("name") or ""))}
+                                     for s in p.get("series") or ()]}
+                         for p in chart["panels"]]
+    return out
 
 class InstructMixin(ia.InstructAssistMixin):
     """Needs ``source``, ``object_page``, ``suggest``, ``work_log`` and the write desk
@@ -571,8 +586,10 @@ class InstructMixin(ia.InstructAssistMixin):
         from operating import ask_attachments
         from .feedback import clean
         batch = ask_attachments.decode(a.model_dump() for a in request.attachments)
-        return [dataclasses.replace(f, text=clean(f.text, guard, len(f.text) + 1) or "")
-                if f.text else f for f in batch.read]
+        return [dataclasses.replace(f, text=clean(f.text, guard, len(f.text) + 1) or "",
+                                    data=None)
+                if f.text else dataclasses.replace(f, data=None)
+                for f in ask_attachments.screened(batch.read)]
 
     def _targets(self, mats: list[ins.Material], sources: list[Any]
                  ) -> tuple[list[ins.WriteTarget], list[ins.Folder]]:
@@ -789,21 +806,25 @@ class InstructMixin(ia.InstructAssistMixin):
         return self.instruct_uploads
 
     def _prepare_document(self, reader: Reader, doc: Mapping[str, str],
-                          folders: list[ins.Folder], guard: Any) -> m.InstructDocument:
+                          folders: list[ins.Folder], guard: Any,
+                          charts: Sequence[Mapping[str, Any]] = ()) -> m.InstructDocument:
         from .feedback import clean
         kind = doc["kind"]
         raw = str(doc.get("content") or "")
         # the file's words as drafts' are: no excluded person's address or object id and
-        # no secret-looking string in the bytes anyone downloads or uploads (ACT-008)
+        # no secret-looking string in the bytes anyone downloads or uploads (ACT-008);
+        # a chart's words (title, labels, series and panel names) too
         content = clean(raw, guard, max(len(raw), 1)) or ""
-        if not content:
+        charts = [_clean_chart(c, lambda t: clean(t, guard, max(len(t), 1)) or "")
+                  for c in charts]
+        if not content and not charts:
             raise _refuse("no_draft")
         try:
-            data = files.make(kind, content)
+            data = files.make(kind, content, charts)
         except files.FileRefused as refused:
             if refused.code != "pdf_unavailable":
                 raise _refuse("no_draft") from None
-            kind, data = "docx", files.make("docx", content)
+            kind, data = "docx", files.make("docx", content, charts)
         folder = next((f for f in folders if f.key == doc.get("folder")), None)
         target = None
         if folder is not None:

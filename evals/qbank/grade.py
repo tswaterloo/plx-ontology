@@ -14,6 +14,7 @@ import datetime as dt
 import decimal
 import json
 import re
+import urllib.parse
 import unicodedata
 from typing import Any, Mapping
 
@@ -99,6 +100,17 @@ def num_ok(spec: Mapping[str, Any], found) -> bool:
     return False
 
 
+def _spellings(entry: Any) -> list[str]:
+    """An entry's acceptable spellings; a "CODE = Name" truth (a code beside what it
+    stands for) is said rightly by either side too."""
+    out: list[str] = []
+    for alt in (entry if isinstance(entry, list) else [entry]):
+        out.append(alt)
+        if isinstance(alt, str) and " = " in alt:
+            out += [part for part in alt.split(" = ") if part.strip()]
+    return out
+
+
 def name_ok(name: str, t: str) -> bool:
     n = norm(re.sub(r"^\s*((re|fw|fwd)\s*:\s*)+", "", str(name), flags=re.I))
     if not n:
@@ -148,7 +160,9 @@ def grade(item: Mapping[str, Any], ans: Mapping[str, Any] | None) -> tuple[bool,
             break
     names = list(g.get("names") or ())
     if names:
-        hits = sum(any(name_ok(alt, t) for alt in (n if isinstance(n, list) else [n])) for n in names)
+        # a name an answer gives inside a link is URL-encoded ("Inv%2082012%20-%2082208.pdf")
+        tn = t + norm(urllib.parse.unquote(raw)) + " " if "%" in raw else t
+        hits = sum(any(name_ok(alt, tn) for alt in _spellings(n)) for n in names)
         if hits < int(g.get("min_names", 1)):
             why.append(f"names {hits}/{g.get('min_names')}")
     dates = [dt.date.fromisoformat(d) for d in g.get("dates") or ()]

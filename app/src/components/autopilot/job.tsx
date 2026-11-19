@@ -8,6 +8,7 @@ import { useState } from "react";
 import { Button } from "@/components/ui/button";
 import { ErrorNotice } from "@/components/ui/notice";
 import { PreparedChange } from "@/components/prepared-change";
+import { TodoSteps } from "@/components/autopilot/todo";
 import { prepareAutopilotJob, type PreparedItem, type ProposedJob } from "@/lib/api";
 import { plainError } from "@/lib/errors";
 import { formatDateTime } from "@/lib/format";
@@ -77,6 +78,7 @@ export function JobCard({ item, linked }: { item: PreparedItem; linked?: boolean
           <Proposed key={j.index} itemId={item.item_id} job={j} />
         ))}
       </ul>
+      <TodoSteps todos={item.todos ?? []} />
     </li>
   );
 }

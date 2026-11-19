@@ -236,7 +236,8 @@ class TrustAndDraft(unittest.TestCase):
                                        aw.APPROVED_ENV: "bc_write,send_mail"}
         words = next(x["words"] for x in self.client(TEAM).get("/api/trust").json()["lines"]
                      if x["words"].startswith(line))
-        self.assertIn("or for bc write, send mail when a person approves and confirms", words)
+        self.assertIn("or for Business Central changes, mail when a person approves and "
+                      "confirms", words)
         with mock.patch.object(aw, "load_rules", side_effect=aw.RulesInvalid("schema")):
             page = self.client(TEAM).get("/api/trust").json()
         self.assertIsNone(page["autopilot_gate"])
@@ -265,8 +266,8 @@ class TrustAndDraft(unittest.TestCase):
         self.assertEqual(page["answers"], [])
         held = [x["words"] for x in page["lines"] if x["words"].startswith("Held-out")]
         self.assertEqual(len(held), 1)
-        self.assertIn("not measured yet. The measure of answers to questions never used for "
-                      "tuning runs after the served data's rebuild", held[0])
+        self.assertIn("not measured yet on this server. Its score on questions never used "
+                      "for tuning shows here once a held-out run records it", held[0])
         # alert precision: correct never above judged; an unmeasured type has no numbers
         for a in page["alerts"]:
             if a["judged"] is None:

@@ -24,7 +24,8 @@ ROLES_FILE = "autopilot-roles.json"
 QUEUE_FILE = "autopilot.sqlite"
 CARD_PREFIX = "autopilot:"
 EVENT_TYPES = ("message.received", "task.assigned", "record.changed", "qc.result",
-               "approval.requested", "meeting.ended", "record.due", "question.asked")
+               "approval.requested", "meeting.ended", "record.due", "question.asked",
+               "assistant.look")
 OWNER_RULES = ("recipient", "assignee", "approvers", "organizer", "buyer", "addressee",
                "hinted")
 ROLE_OWNER = re.compile(r"^role:[a-z_]{1,40}$")

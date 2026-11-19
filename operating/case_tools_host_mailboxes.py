@@ -1,7 +1,7 @@
 """The attachment mailbox list cache of the capture case host.
 
-Split from ``operating/case_tools_host.py`` (the scan itself, ``_mailbox_list``, stays
-there); moved unchanged.
+Split from ``operating/case_tools_host.py``, moved unchanged: the kept list, and the scan
+(``_mailbox_list``) with its background read and the per-request wait.
 """
 
 from __future__ import annotations
@@ -10,6 +10,7 @@ from contextlib import contextmanager
 import hashlib
 import json
 import os
+import sqlite3
 from operating.file_modes import keep_shared
 from pathlib import Path
 import threading
@@ -130,3 +131,126 @@ def _one_scan(path: str) -> Iterator[None]:
     finally:
         if handle is not None:
             handle.close()   # the lock goes with it (also when the process dies)
+
+
+# How long a request waits for the background read of the list before reading it itself
+# (the side-by-side read takes a few seconds; the background one ran 12-60 s at a start).
+MAILBOXES_WAIT_SECONDS = 5.0
+
+
+def _mailbox_list(path: str) -> list[dict[str, Any]]:
+    """``ontology.project.attachment_mailboxes`` of the capture file ``path``, read side by
+    side: one read-only reader per core, each over a range of attachment handles (cut at
+    mailbox ids, so ranges of the handle index; the ranges cover every handle, the first
+    and last unbounded), each attachment's message found through its own handle
+    (``MailCaptures._ONE_ATTACHED``: the same latest-interval rows). The same list, about
+    a sixth of the time on the live capture's 2.3M attachments (2026-11-05: 3 s, not 19)."""
+    from concurrent.futures import ThreadPoolExecutor
+    from ontology.project import MailCaptures
+
+    select = (f"SELECT DISTINCT json_extract(m.record, '$.mailbox_upn') "
+              f"{MailCaptures._ONE_ATTACHED}")
+
+    def connect() -> sqlite3.Connection:
+        return sqlite3.connect(f"file:{path}?mode=ro", uri=True, check_same_thread=False)
+
+    def part(bounds: tuple[str | None, str | None]) -> set[Any]:
+        sql, args = select, []
+        for op, bound in ((">=", bounds[0]), ("<", bounds[1])):
+            if bound is not None:
+                sql += f" AND a.l1_handle {op} ?"
+                args.append(f"graph-mail://{bound}/")
+        conn = connect()
+        try:
+            return {row[0] for row in conn.execute(sql, args)}
+        finally:
+            conn.close()
+
+    conn = connect()
+    try:
+        ids = [row[0] for row in conn.execute("SELECT mailbox_id FROM mailboxes "
+                                              "ORDER BY mailbox_id")]
+    finally:
+        conn.close()
+    readers = max(1, min(os.cpu_count() or 1, len(ids)))
+    cuts = list(dict.fromkeys(ids[len(ids) * i // readers] for i in range(1, readers)))
+    ranges = list(zip([None, *cuts], [*cuts, None]))
+    with ThreadPoolExecutor(len(ranges), thread_name_prefix="attachment-mailboxes") as pool:
+        found = set().union(*pool.map(part, ranges))
+    return [{"mailbox_upn": upn} for upn in sorted(found, key=lambda upn: (upn is None,
+                                                                          str(upn)))]
+
+
+def _scan_mailboxes(path: str) -> tuple[float, list[dict[str, Any]]]:
+    """(the monotonic time it stands for, the list) of ``path``: the list another host
+    kept within the refresh interval, else scanned now and kept, one host at a time."""
+    with _one_scan(path):
+        kept = _cached_mailboxes(path)
+        if kept is not None:
+            return kept
+        found = _mailbox_list(path)
+        _keep_mailboxes(path, found)
+        return time.monotonic(), found
+
+
+def _read_mailboxes(path: str, done: threading.Event) -> None:
+    try:
+        got = _scan_mailboxes(path)
+        with _MAILBOXES_LOCK:
+            _MAILBOXES[path] = got
+    except sqlite3.Error:
+        pass   # read again by the next request that needs it
+    finally:
+        with _MAILBOXES_LOCK:
+            _MAILBOXES_READING.pop(path, None)
+        done.set()
+
+
+def _refresh_mailboxes(path: str) -> None:
+    with _MAILBOXES_LOCK:
+        if path in _MAILBOXES_READING:
+            return
+        done = _MAILBOXES_READING[path] = threading.Event()
+    threading.Thread(target=_read_mailboxes, args=(path, done), name="attachment-mailboxes",
+                     daemon=True).start()
+
+
+def prime_attachment_mailboxes(mail_capture_dir: Any) -> None:
+    """Read the capture's attachment mailboxes now, in the background (a server's start)."""
+    from integrations.capture_mail import DB_FILE, STORE_DIR
+    if mail_capture_dir is not None:
+        path = Path(mail_capture_dir).expanduser() / STORE_DIR / DB_FILE
+        if path.is_file():
+            _refresh_mailboxes(os.path.realpath(path))
+
+
+def _attachment_mailboxes(store: Any) -> list[dict[str, Any]]:
+    key = os.path.realpath(str(store.path))
+    with _MAILBOXES_LOCK:
+        held = _MAILBOXES.get(key)
+        running = _MAILBOXES_READING.get(key)
+    if held is None and running is not None:
+        # The start's read is running: the list another host kept (the one that read
+        # takes too), else its list once it ends, waiting at most MAILBOXES_WAIT_SECONDS
+        # (a failed or slower one: read now).
+        kept = _cached_mailboxes(key)
+        if kept is not None:
+            with _MAILBOXES_LOCK:
+                _MAILBOXES.setdefault(key, kept)
+            return kept[1]
+        running.wait(MAILBOXES_WAIT_SECONDS)
+        with _MAILBOXES_LOCK:
+            held = _MAILBOXES.get(key)
+    if held is None:   # never read in this process: another host's, else read now
+        kept = _cached_mailboxes(key)
+        if kept is not None:
+            with _MAILBOXES_LOCK:
+                _MAILBOXES[key] = kept
+            return kept[1]
+        got = _scan_mailboxes(key)
+        with _MAILBOXES_LOCK:
+            _MAILBOXES[key] = got
+        return got[1]
+    if time.monotonic() - held[0] >= ATTACHMENT_MAILBOXES_SECONDS:
+        _refresh_mailboxes(key)
+    return held[1]

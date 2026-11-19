@@ -57,6 +57,7 @@ import os
 import json
 from pathlib import Path
 import re
+import threading
 from typing import Any, Callable, Iterable, Mapping, Optional, Sequence
 from xml.etree import ElementTree as ET
 from xml.sax.saxutils import escape
@@ -974,19 +975,54 @@ def save(path: Path, templates: Sequence[Mapping[str, Any]], learned_at: str,
 def load(path: Path) -> list[dict[str, Any]]:
     """The learned templates; a file this code does not understand gives none
     (``StyleRefused("templates_invalid")``), never a guess."""
+    return _read(Path(path))["templates"]
+
+
+def _read(path: Path) -> dict[str, Any]:
     try:
-        raw = json.loads(Path(path).read_text(encoding="utf-8"))
+        raw = json.loads(path.read_text(encoding="utf-8"))
         if raw.get("schema") != SCHEMA or not isinstance(raw.get("templates"), list):
             raise ValueError("schema")
         for t in raw["templates"]:
             if not (t["id"] and t["author"] and t["kind"] and t["members"]
                     and t["exemplar"]["digest"] and isinstance(t["units"], list)):
                 raise ValueError("template")
-        return raw["templates"]
+        return raw
     except FileNotFoundError:
         raise StyleRefused("no_templates") from None
     except (OSError, ValueError, KeyError, TypeError) as error:
         raise StyleRefused("templates_invalid") from error
+
+
+_KEPT_LOCK = threading.Lock()
+_KEPT: dict[str, tuple[tuple[int, int, int], list[dict[str, Any]], Optional[str]]] = {}
+
+
+def load_kept(path: Path) -> tuple[list[dict[str, Any]], Optional[str]]:
+    """``load`` and the file's ``learned_at``, parsed once per version of the file (its
+    inode, size and modified time: ``save`` replaces it whole), so a page that lists the
+    learned templates does not parse the whole file (tens of MB) on every visit. The
+    templates are shared between callers: read them, never change them. A refusal is
+    never kept (the next call reads the file again)."""
+    path = Path(path)
+    try:
+        st = path.stat()
+    except FileNotFoundError:
+        raise StyleRefused("no_templates") from None
+    except OSError as error:
+        raise StyleRefused("templates_invalid") from error
+    stamp = (st.st_ino, st.st_size, st.st_mtime_ns)
+    key = str(path)
+    with _KEPT_LOCK:
+        kept = _KEPT.get(key)
+    if kept is not None and kept[0] == stamp:
+        return kept[1], kept[2]
+    raw = _read(path)
+    learned = raw.get("learned_at")
+    got = (stamp, raw["templates"], learned if isinstance(learned, str) else None)
+    with _KEPT_LOCK:
+        _KEPT[key] = got
+    return got[1], got[2]
 
 
 def choose(templates: Sequence[Mapping[str, Any]], author: str, kind: str

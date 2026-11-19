@@ -16,6 +16,10 @@ EnvironmentFile=-@PLX_HOME@/.config/plx/proactive.env
 Environment=PATH=/data/venv/bin:/usr/local/bin:/usr/bin:/bin
 # names its Postgres sessions after the unit (ARCH T2: pg_stat_activity, slow-query log)
 Environment=PGAPPNAME=%N
+# a statement spills at most 3 x 4 GB of Postgres temp (the scoped quantity read's
+# 5 x ~10 GB swung /data 30-40 GB); collapse limit 10: a read of up to 10 relations is
+# planned whole (at 8 the scope's key set was joined last, after every value cell)
+Environment="PGOPTIONS=-c temp_file_limit=4GB -c max_parallel_workers_per_gather=2 -c join_collapse_limit=10 -c from_collapse_limit=10"
 # the tool-call rules on a pool of 6 workers whatever the host's free memory reads at the
 # start (without it a loaded host sizes the pool to one, no pool: the margins, the orders at
 # risk and the cards are then read only up to their per-run bounds). Capped at 22G (was 8G)

@@ -62,7 +62,7 @@ from operating.app_tables import rows as _rows
 
 from . import feedback as fb
 from .ask_drafts import linked_records
-from operating.file_modes import keep_private
+from operating.file_modes import keep_private, make_absent
 
 log = logging.getLogger("operator_api.work_log")
 
@@ -192,7 +192,7 @@ class WorkLog:
             self.directory.mkdir(parents=True, exist_ok=True, mode=0o700)
             keep_private(self.directory, 0o700)
             path = self.directory / "work-log.sqlite"
-            os.close(os.open(path, os.O_RDWR | os.O_CREAT, 0o600))
+            make_absent(path, 0o600)   # never opened when it exists (its SQLite locks)
             keep_private(path, 0o600)
             self._conn = sqlite3.connect(str(path), timeout=30, check_same_thread=False,
                                          isolation_level=None)
@@ -274,6 +274,10 @@ class WorkLog:
                 seq = cur.lastrowid
                 self._conn.executemany("INSERT OR IGNORE INTO event_record VALUES (?, ?)",
                                        [(seq, oid) for oid in ids])
+                if kind == "ask":
+                    # asked again in a deleted chat: it is back on the chats list
+                    self._conn.execute("DELETE FROM thread_hidden WHERE reader = ? AND "
+                                       "thread = ?", (reader.key, thread))
             except BaseException as error:
                 self._conn.execute("ROLLBACK TO event")
                 self._conn.execute("RELEASE event")
@@ -326,6 +330,62 @@ class WorkLog:
                 (reader_key, thread, meta["name"], int(meta["pinned"]), meta["case_id"],
                  meta["closed_at"], _iso(self.clock())))
         return meta
+
+    def hide(self, reader_key: str, thread: str) -> None:
+        """Delete one of the reader's own Ask conversations from their chats list (its
+        events stay in the log; KeyError: no event of theirs is in it)."""
+        if not valid_thread(thread) or not thread.startswith("ask:"):
+            raise ValueError("work_log_thread_invalid")
+        with self._lock:
+            if self._conn.execute("SELECT 1 FROM event WHERE reader = ? AND thread = ? "
+                                  "LIMIT 1", (reader_key, thread)).fetchone() is None:
+                raise KeyError("work_log_thread_not_found")
+            self._conn.execute("INSERT OR REPLACE INTO thread_hidden (reader, thread, at) "
+                               "VALUES (?, ?, ?)", (reader_key, thread, _iso(self.clock())))
+
+    def chats(self, reader_key: str, q: Optional[str] = None, limit: int = 100
+              ) -> Optional[list[dict[str, Any]]]:
+        """The reader's own Ask conversations, pinned first, then the most recently asked:
+        each its title (the name they gave it, else its first question), whether it is
+        pinned, how many questions it holds and when the last was asked. ``q``: every word
+        in its name or one of its questions. A deleted one (``hide``) is left out, and so
+        is a question the people exclusion now hides; None while the exclusion cannot
+        decide (fail closed)."""
+        guard = self.guard()
+        if guard is None or getattr(guard, "unavailable", "absent"):
+            return None
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT e.seq, e.reader, e.people, e.thread, e.title, e.at FROM event e "
+                "WHERE e.reader = ? AND e.kind = 'ask' AND e.thread LIKE 'ask:%' AND "
+                "e.thread != 'ask:failed' AND "
+                "e.thread NOT IN (SELECT thread FROM thread_hidden WHERE reader = ?) "
+                "ORDER BY e.seq", (reader_key, reader_key)).fetchall()
+            meta = {r["thread"]: r for r in self._conn.execute(
+                "SELECT thread, name, pinned FROM thread WHERE reader = ? AND thread LIKE "
+                "'ask:%'", (reader_key,))}
+        found: dict[str, dict[str, Any]] = {}
+        for r in rows:
+            if _row_excluded(guard, r):
+                continue
+            chat = found.setdefault(r["thread"], {"thread": r["thread"], "first": r["title"],
+                                                  "questions": [], "last_at": r["at"]})
+            chat["questions"].append(str(r["title"] or ""))
+            chat["last_at"], chat["seq"] = max(chat["last_at"], r["at"]), r["seq"]
+        words = [w.lower() for w in (q or "").split()[:8]]
+        out = []
+        for chat in found.values():
+            kept = meta.get(chat["thread"])
+            name = kept["name"] if kept is not None else None
+            said = " ".join([name or "", *chat["questions"]]).lower()
+            if any(w not in said for w in words):
+                continue
+            out.append({"seq": chat["seq"], "conversation_id": chat["thread"][len("ask:"):],
+                        "title": name or chat["first"] or "Untitled", "named": bool(name),
+                        "pinned": bool(kept is not None and kept["pinned"]),
+                        "questions": len(chat["questions"]), "last_at": chat["last_at"]})
+        out.sort(key=lambda c: (c["pinned"], c["last_at"], c.pop("seq")), reverse=True)
+        return out[:limit]
 
     # -- reads --
 

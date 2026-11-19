@@ -196,6 +196,48 @@ export type paths = {
         patch?: never;
         trace?: never;
     };
+    "/api/ask/chats": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Ask Chats
+         * @description Your Ask conversations, pinned first then the most recent: open one with
+         *     ``/ask?c=<conversation_id>`` and go on asking in it. ``q``: words in its name or
+         *     its questions. Yours only.
+         */
+        get: operations["ask_chats_api_ask_chats_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/ask/chats/{conversation_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Ask Chat Update
+         * @description Rename, pin or delete one of your own Ask conversations; your chats list after.
+         */
+        post: operations["ask_chat_update_api_ask_chats__conversation_id__post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/auth/config": {
         parameters: {
             query?: never;
@@ -722,6 +764,8 @@ export type paths = {
          *     top ones each with why, a suggested next action and how we know, every other one
          *     counted in its type's group; each check's state; and a preview of the daily
          *     digest (never sent). ``view=since_visit``: only what is new since your last visit.
+         *     ``pages=true``: also the first page of each group Home lists past its top items
+         *     (``pages``), so Home asks once.
          */
         get: operations["briefing_api_briefing_get"];
         put?: never;
@@ -744,6 +788,29 @@ export type paths = {
          * @description One event type's items of your briefing, a page at a time (a group's "+N more").
          */
         get: operations["briefing_items_api_briefing_items_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/briefing/pages": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Briefing Pages
+         * @description The first page of each of several event types' items of your briefing in one
+         *     request (Home's groups, one answer for what were four): each as
+         *     ``/api/briefing/items`` answers it. A type that could not be read is left out; every
+         *     one failing is that failure.
+         */
+        get: operations["briefing_pages_api_briefing_pages_get"];
         put?: never;
         post?: never;
         delete?: never;
@@ -808,6 +875,28 @@ export type paths = {
          *     undoes it). Only your own briefing changes; nothing is sent.
          */
         post: operations["watcher_item_state_api_briefing_watcher__item_id__post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/charts/file": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Chart File
+         * @description A chart you were shown as a file for you: Excel (its rows and a live chart over
+         *     them), PowerPoint, Word or PDF, with where its numbers come from. Nothing is read,
+         *     kept or sent.
+         */
+        post: operations["chart_file_api_charts_file_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -1024,6 +1113,119 @@ export type paths = {
         /** Home */
         get: operations["home_api_home_get"];
         put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/insight-news": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Insight News
+         * @description What your scheduled insights found that came to you (counts only: open the
+         *     insight to read its rows, live, as you).
+         */
+        get: operations["insight_news_api_insight_news_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/insight-news/{run_id}/seen": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Insight News Seen
+         * @description Put one away: it leaves Home.
+         */
+        post: operations["insight_news_seen_api_insight_news__run_id__seen_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/insights": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Insights List
+         * @description Your dashboard: the built-in team, org and customer insights you may see, then
+         *     the ones you pinned or saved.
+         */
+        get: operations["insights_list_api_insights_get"];
+        put?: never;
+        /**
+         * Insight Save
+         * @description Pin a chart from an answer (or save a statement) to your dashboard: it reads
+         *     again as whoever opens it.
+         */
+        post: operations["insight_save_api_insights_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/insights/{insight_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Insight Result
+         * @description One insight as you read it (kept from your read of the last few minutes; again:
+         *     read now): its definition (the statement), rows, chart and the people they name.
+         */
+        get: operations["insight_result_api_insights__insight_id__get"];
+        put?: never;
+        post?: never;
+        /**
+         * Insight Delete
+         * @description Remove one of your saved insights.
+         */
+        delete: operations["insight_delete_api_insights__insight_id__delete"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/insights/{insight_id}/schedule": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /**
+         * Insight Schedule
+         * @description When one of your saved insights runs by itself (read as you, through your own
+         *     access) and when what it finds comes to you on Home.
+         */
+        put: operations["insight_schedule_api_insights__insight_id__schedule_put"];
         post?: never;
         delete?: never;
         options?: never;
@@ -1634,6 +1836,28 @@ export type paths = {
          *     reply. Only your own mailbox. Nothing is sent.
          */
         get: operations["reply_triage_api_replies_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/sidebar": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Sidebar
+         * @description The sidebar's numbers on every page: how many late purchase orders you may see
+         *     and the suppliers with the most, your recent questions and the data's as-of. Small
+         *     and kept for you (never Home's lists); null count when it could not be read.
+         */
+        get: operations["sidebar_api_sidebar_get"];
         put?: never;
         post?: never;
         delete?: never;
@@ -2858,6 +3082,11 @@ export type components = {
              */
             attachments?: components["schemas"]["AskAttachmentNote"][];
             /**
+             * Charts
+             * @description Charts the answer draws (any kind of operator_api.charts), each from the rows of one query result the session read (never numbers the model wrote).
+             */
+            charts?: components["schemas"]["AskChart"][];
+            /**
              * Cited
              * @description The simple Ask's sources: every result its session read. Present (maybe empty) only on that path, whose answer page is the answer and one collapsed 'Sources (n records)' line opening to these rows.
              */
@@ -3065,7 +3294,8 @@ export type components = {
         /**
          * AskAttachment
          * @description A file or image attached to one question (``operating.ask_attachments``): read in
-         *     memory for that answer only, never stored.
+         *     memory for that answer only; a Word, Excel or PowerPoint file is also kept as your own
+         *     file (yours only), so the Ask can edit it and give you the edited copy.
          */
         AskAttachment: {
             /**
@@ -3102,6 +3332,183 @@ export type components = {
             size: number;
         };
         /**
+         * AskChart
+         * @description A chart drawn from one query result: ``labels`` are the x column's values in the
+         *     result's row order (a histogram's bins, a pie's slices), each series one numeric
+         *     column (or one split value) of the same rows.
+         */
+        AskChart: {
+            /** As Of */
+            as_of?: string | null;
+            /**
+             * Currency
+             * @description The one currency the rows are in.
+             */
+            currency?: string | null;
+            /**
+             * Edges
+             * @description A histogram's bin edges.
+             */
+            edges?: number[] | null;
+            /**
+             * Kind
+             * @enum {string}
+             */
+            kind: "bar" | "line" | "area" | "pie" | "donut" | "scatter" | "histogram" | "heatmap" | "waterfall" | "funnel" | "combo" | "kpi" | "table";
+            /** Labels */
+            labels: string[];
+            /**
+             * Omitted
+             * @description Series (split values, panels) not drawn.
+             */
+            omitted?: number;
+            /**
+             * Open Period
+             * @description The label of a calendar period not over at as_of (a month, quarter, year, week or day): its figures are of part of it.
+             */
+            open_period?: string | null;
+            /** Panels */
+            panels?: components["schemas"]["AskChartPanel"][] | null;
+            /**
+             * Partial
+             * @description The result held only its statement's first rows.
+             */
+            partial?: boolean;
+            /**
+             * Rows
+             * @description Rows of the result it was drawn from.
+             */
+            rows?: number | null;
+            /** Series */
+            series: components["schemas"]["AskChartSeries"][];
+            /**
+             * Shown
+             * @description Rows of those the chart shows.
+             */
+            shown?: number | null;
+            /**
+             * Skipped
+             * @description A histogram's rows with no number.
+             */
+            skipped?: number | null;
+            /** @description What it was drawn as (pinning keeps it). */
+            spec?: components["schemas"]["ChartSpec"] | null;
+            /**
+             * Sql
+             * @description The statement whose rows it draws: pinned (POST /api/insights) it reads again as whoever opens it.
+             */
+            sql?: string | null;
+            /** Title */
+            title: string;
+            trend?: components["schemas"]["AskChartTrend"] | null;
+            /**
+             * X
+             * @description The result column the labels are from.
+             */
+            x: string;
+            /**
+             * Xs
+             * @description A scatter's x values.
+             */
+            xs?: (number | null)[] | null;
+        };
+        /**
+         * AskChartPanel
+         * @description One of a chart's small multiples: the rows of one facet value.
+         */
+        AskChartPanel: {
+            /** Labels */
+            labels: string[];
+            /** Series */
+            series: components["schemas"]["AskChartSeries"][];
+            /** Title */
+            title: string;
+        };
+        /** AskChartSeries */
+        AskChartSeries: {
+            /**
+             * Axis
+             * @description right: a combo's line axis.
+             */
+            axis?: "right" | null;
+            /**
+             * Name
+             * @description The result column (or split value) the values are from.
+             */
+            name: string;
+            /**
+             * Values
+             * @description One per label; null: not a number.
+             */
+            values: (number | null)[];
+        };
+        /**
+         * AskChartTrend
+         * @description A scatter's least-squares line y = slope * x + intercept through its n points and
+         *     their correlation r (how closely they move together, never cause).
+         */
+        AskChartTrend: {
+            /** Intercept */
+            intercept: number;
+            /** N */
+            n: number;
+            /** R */
+            r: number;
+            /** Slope */
+            slope: number;
+        };
+        /**
+         * AskChat
+         * @description One of your Ask conversations in your chats list.
+         */
+        AskChat: {
+            /** Conversation Id */
+            conversation_id: string;
+            /** Last At */
+            last_at: string;
+            /**
+             * Named
+             * @default false
+             */
+            named: boolean;
+            /**
+             * Pinned
+             * @default false
+             */
+            pinned: boolean;
+            /** Questions */
+            questions: number;
+            /**
+             * Title
+             * @description The name you gave it, else its first question.
+             */
+            title: string;
+        };
+        /**
+         * AskChatUpdate
+         * @description Rename, pin or delete one of your own Ask conversations. Deleting takes it off your
+         *     chats list; your work log keeps the record of what was asked.
+         */
+        AskChatUpdate: {
+            /** Deleted */
+            deleted?: boolean | null;
+            /** Name */
+            name?: string | null;
+            /** Pinned */
+            pinned?: boolean | null;
+        };
+        /** AskChats */
+        AskChats: {
+            /**
+             * Available
+             * @description False while the people exclusion cannot decide what may be listed (nothing is listed then).
+             * @default true
+             */
+            available: boolean;
+            /** Chats */
+            chats: components["schemas"]["AskChat"][];
+        };
+        /**
          * AskDocument
          * @description A file the Ask made for you: its name, kind, size and download link.
          */
@@ -3112,7 +3519,7 @@ export type components = {
              * Kind
              * @enum {string}
              */
-            kind: "docx" | "xlsx" | "pdf";
+            kind: "docx" | "xlsx" | "pdf" | "pptx" | "csv";
             /** Name */
             name: string;
             /** Size */
@@ -3194,7 +3601,7 @@ export type components = {
         AskRequest: {
             /**
              * Attachments
-             * @description Files and images the person attached (PDF, .xlsx, .csv, text, PNG, JPEG, GIF, WebP): up to five, 10 MB together.
+             * @description Files and images the person attached (PDF, .xlsx, .csv, .docx, .pptx, text, PNG, JPEG, GIF, WebP): up to five, 10 MB together.
              */
             attachments?: components["schemas"]["AskAttachment"][];
             /** @description An answer to the question an earlier answer asked back (or another reading of its assumption): continues that question. */
@@ -3203,6 +3610,11 @@ export type components = {
             context?: components["schemas"]["InstructContext"] | null;
             /** Conversation Id */
             conversation_id?: string | null;
+            /**
+             * Deep
+             * @description Think it through: plan the reads, cross-check the key figures a second way and answer with the evidence per part (slower).
+             */
+            deep?: boolean;
             /** History */
             history?: components["schemas"]["HistoryTurn"][];
             /** @description An answer to the question an instruction asked, or the meetings to use: continues that instruction. */
@@ -4066,8 +4478,9 @@ export type components = {
         /**
          * AutopilotPrepared
          * @description One thing prepared for you: who wrote, what they wrote, and either the reply (to
-         *     edit, confirm, copy or open in Outlook), the question only you can answer, or the system
-         *     changes the event calls for (``job``: each reviewed and confirmed on its own).
+         *     edit, confirm, copy or open in Outlook), the question only you can answer, the system
+         *     changes the event calls for (``job``: each reviewed and confirmed on its own), or only
+         *     things to do by hand (``todo``: mark it done or not needed; nothing is written).
          */
         AutopilotPrepared: {
             /**
@@ -4105,7 +4518,7 @@ export type components = {
              * Kind
              * @enum {string}
              */
-            kind: "reply" | "your_call" | "job";
+            kind: "reply" | "your_call" | "job" | "todo";
             /**
              * Learned
              * @description On a draft you edited: what your edit changed, as the Workbench learns it for your next drafts (greeting, sign-off, length, a sentence you add or take out).
@@ -4131,12 +4544,17 @@ export type components = {
             subject: string;
             /**
              * Summary
-             * @description On a job: what the event asks to be done.
+             * @description On a job or a to-do: what the event asks to be done.
              * @default
              */
             summary: string;
             /** To */
             to?: string[];
+            /**
+             * Todos
+             * @description Things to do by hand, on any kind of item.
+             */
+            todos?: components["schemas"]["AutopilotTodo"][];
             /** @description Your preferences and memory the draft applied (and those read but not applied), and its template. */
             used_for_draft?: components["schemas"]["AutopilotDraftUse"] | null;
         };
@@ -4342,6 +4760,25 @@ export type components = {
              * @description Set only when you may use the template.
              */
             name?: string | null;
+        };
+        /**
+         * AutopilotTodo
+         * @description Something to do by hand that no prepared change reaches (a system with no write path,
+         *     or a question an hourly look raised): which system, which record, what to do.
+         */
+        AutopilotTodo: {
+            /**
+             * Record
+             * @default
+             */
+            record: string;
+            /**
+             * System
+             * @default
+             */
+            system: string;
+            /** What */
+            what: string;
         };
         /**
          * AutopilotWorkflowDetail
@@ -4805,6 +5242,11 @@ export type components = {
              * @description Events you may see routed to other teams.
              */
             other_teams: number;
+            /**
+             * Pages
+             * @description With ``pages=true``: the first page of each group Home lists past its top items (``/api/briefing/items``), in this answer: no second request.
+             */
+            pages?: components["schemas"]["BriefingItems"][];
             /** Rank Basis */
             rank_basis: string;
             /**
@@ -5135,6 +5577,16 @@ export type components = {
             /** Total */
             total: number;
         };
+        /**
+         * BriefingPages
+         * @description The first page of several event types' items of your briefing, asked at once (Home's
+         *     groups): each as ``/api/briefing/items`` answers it; a type that could not be read now
+         *     is left out (its group opens on its own).
+         */
+        BriefingPages: {
+            /** Pages */
+            pages?: components["schemas"]["BriefingItems"][];
+        };
         /** BriefingSeen */
         BriefingSeen: {
             /** At */
@@ -5254,6 +5706,71 @@ export type components = {
             label: string;
             /** Outbound */
             outbound: boolean;
+        };
+        /**
+         * ChartFile
+         * @description A chart you were shown, to download as a file.
+         */
+        ChartFile: {
+            chart: components["schemas"]["AskChart"];
+            /**
+             * Format
+             * @enum {string}
+             */
+            format: "xlsx" | "pptx" | "docx" | "pdf";
+        };
+        /**
+         * ChartSpec
+         * @description What to draw from a result's rows (``operator_api.charts``): its kind, columns and
+         *     options; it names columns, never numbers.
+         */
+        ChartSpec: {
+            /** Bins */
+            bins?: number | null;
+            /**
+             * Facet
+             * @description Small multiples: one panel per value.
+             */
+            facet?: string | null;
+            /** Horizontal */
+            horizontal?: boolean;
+            /**
+             * Kind
+             * @enum {string}
+             */
+            kind: "bar" | "line" | "area" | "pie" | "donut" | "scatter" | "histogram" | "heatmap" | "waterfall" | "funnel" | "combo" | "kpi" | "table";
+            /**
+             * Label
+             * @description A scatter's point names.
+             */
+            label?: string | null;
+            /**
+             * Split
+             * @description Long rows (x, group, value): one series (a heatmap's row) per value of this column.
+             */
+            split?: string | null;
+            /** Stacked */
+            stacked?: boolean;
+            /**
+             * Trend
+             * @description A scatter's least-squares line and correlation r.
+             */
+            trend?: boolean;
+            /**
+             * X
+             * @description The label column (none: a kpi or histogram).
+             */
+            x?: string | null;
+            /**
+             * Y
+             * @description The value columns.
+             */
+            y: string[];
+            /**
+             * Y2
+             * @description A combo's columns drawn as lines on a right axis.
+             */
+            y2?: string[];
         };
         /**
          * CitedTable
@@ -6673,6 +7190,232 @@ export type components = {
             /** Unknown */
             unknown?: string[];
         };
+        /** InsightDeleted */
+        InsightDeleted: {
+            /** Deleted */
+            deleted: boolean;
+        };
+        /**
+         * InsightInfo
+         * @description One insight on a dashboard: a built-in definition or one the person saved.
+         */
+        InsightInfo: {
+            /**
+             * About
+             * @description Its definition in plain words (a saved one: the question it answers).
+             */
+            about: string;
+            chart?: components["schemas"]["ChartSpec"] | null;
+            /** Group */
+            group: string;
+            /**
+             * Id
+             * @description A built-in's name, or 's<n>' for one you saved.
+             */
+            id: string;
+            /**
+             * Last Run
+             * @description A scheduled one: when it last ran by itself and what it found, in plain words.
+             */
+            last_run?: string | null;
+            /**
+             * Notify
+             * @default never
+             * @enum {string}
+             */
+            notify: "never" | "rows" | "new_rows" | "every_run" | "crosses";
+            /** Question */
+            question?: string | null;
+            /** Saved */
+            saved: boolean;
+            /**
+             * Schedule
+             * @default
+             * @enum {string}
+             */
+            schedule: "" | "hourly" | "daily" | "weekly";
+            /** Title */
+            title: string;
+            /** @description The number it watches (notify crosses). */
+            watch?: components["schemas"]["InsightWatch"] | null;
+        };
+        /** InsightList */
+        InsightList: {
+            /** Items */
+            items: components["schemas"]["InsightInfo"][];
+            /**
+             * Saving
+             * @description Whether you can pin and save insights here.
+             */
+            saving: boolean;
+            /**
+             * Scope
+             * @description everyone: the people views list everyone; self: only your own row.
+             * @enum {string}
+             */
+            scope: "everyone" | "self";
+        };
+        /**
+         * InsightNews
+         * @description A run of one of your saved insights that came to you: how many rows it found (open
+         *     the insight to read them, live, as you).
+         */
+        InsightNews: {
+            /** Insight Id */
+            insight_id: string;
+            /** New Rows */
+            new_rows: number;
+            /** Ran At */
+            ran_at: string;
+            /** Row Count */
+            row_count: number;
+            /** Run Id */
+            run_id: string;
+            /**
+             * Said
+             * @description One plain line: what it found.
+             */
+            said: string;
+            /** Title */
+            title: string;
+        };
+        /** InsightNewsList */
+        InsightNewsList: {
+            /** Items */
+            items: components["schemas"]["InsightNews"][];
+        };
+        /** InsightNewsSeen */
+        InsightNewsSeen: {
+            /** Seen */
+            seen: boolean;
+        };
+        /**
+         * InsightResult
+         * @description An insight read now as you: its statement, rows, chart and the people they name.
+         */
+        InsightResult: {
+            /**
+             * About
+             * @description Its definition in plain words (a saved one: the question it answers).
+             */
+            about: string;
+            /** As Of */
+            as_of?: string | null;
+            chart?: components["schemas"]["ChartSpec"] | null;
+            /** Columns */
+            columns: string[];
+            drawn?: components["schemas"]["AskChart"] | null;
+            /** Group */
+            group: string;
+            /**
+             * Id
+             * @description A built-in's name, or 's<n>' for one you saved.
+             */
+            id: string;
+            /**
+             * Last Run
+             * @description A scheduled one: when it last ran by itself and what it found, in plain words.
+             */
+            last_run?: string | null;
+            /**
+             * Notify
+             * @default never
+             * @enum {string}
+             */
+            notify: "never" | "rows" | "new_rows" | "every_run" | "crosses";
+            /**
+             * People
+             * @description Per row: the Team key of the person it is about (open /team), or null.
+             */
+            people: (string | null)[];
+            /** Question */
+            question?: string | null;
+            /** Read At */
+            read_at: string;
+            /** Row Count */
+            row_count: number;
+            /** Rows */
+            rows: (string | null)[][];
+            /** Saved */
+            saved: boolean;
+            /**
+             * Schedule
+             * @default
+             * @enum {string}
+             */
+            schedule: "" | "hourly" | "daily" | "weekly";
+            /**
+             * Sql
+             * @description The statement it reads (its definition, exactly).
+             */
+            sql: string;
+            /** Title */
+            title: string;
+            /** Truncated */
+            truncated: boolean;
+            /** @description The number it watches (notify crosses). */
+            watch?: components["schemas"]["InsightWatch"] | null;
+        };
+        /** InsightSave */
+        InsightSave: {
+            chart?: components["schemas"]["ChartSpec"] | null;
+            /**
+             * Notify
+             * @default never
+             * @enum {string}
+             */
+            notify: "never" | "rows" | "new_rows" | "every_run";
+            /**
+             * Question
+             * @default
+             */
+            question: string;
+            /**
+             * Schedule
+             * @default
+             * @enum {string}
+             */
+            schedule: "" | "hourly" | "daily" | "weekly";
+            /** Sql */
+            sql: string;
+            /** Title */
+            title: string;
+        };
+        /**
+         * InsightSchedule
+         * @description When one of your saved insights runs by itself, and when what it finds comes to you
+         *     on Home (``notify``: rows = any row, new_rows = a row the last run did not have,
+         *     crosses = a number crossed the line in ``watch``).
+         */
+        InsightSchedule: {
+            /**
+             * Notify
+             * @enum {string}
+             */
+            notify: "never" | "rows" | "new_rows" | "every_run" | "crosses";
+            /**
+             * Schedule
+             * @enum {string}
+             */
+            schedule: "" | "hourly" | "daily" | "weekly";
+            watch?: components["schemas"]["InsightWatch"] | null;
+        };
+        /**
+         * InsightWatch
+         * @description A line a number of a saved insight is watched against: a run tells you when some
+         *     row's ``column`` is ``above`` / ``below`` ``value`` and the run before had none.
+         */
+        InsightWatch: {
+            /** Column */
+            column: string;
+            /**
+             * Op
+             * @enum {string}
+             */
+            op: "above" | "below";
+            /** Value */
+            value: number;
+        };
         /**
          * InstructContext
          * @description The page the instruction was typed on, attached by the app: an email (its citation),
@@ -6716,7 +7459,7 @@ export type components = {
              * Kind
              * @enum {string}
              */
-            kind: "docx" | "xlsx" | "pdf";
+            kind: "docx" | "xlsx" | "pdf" | "pptx" | "csv";
             /** Name */
             name: string;
             /** Size */
@@ -9304,6 +10047,48 @@ export type components = {
              */
             writes: 0;
         };
+        /**
+         * Sidebar
+         * @description The sidebar's numbers on every page, small and kept per reader (never Home's lists):
+         *     how many late purchase orders this reader may see and the suppliers with the most.
+         */
+        Sidebar: {
+            freshness?: components["schemas"]["Freshness"];
+            /**
+             * Late Suppliers
+             * @description The suppliers with the most late purchase orders, most first (the first few only).
+             */
+            late_suppliers?: components["schemas"]["SupplierLate"][];
+            /**
+             * Late Total
+             * @description Every late purchase order this reader may see; null when it could not be read now (never 0 for unknown).
+             */
+            late_total?: number | null;
+            /**
+             * Partial
+             * @description The supplier counts are of the longest late orders only, not every one.
+             * @default false
+             */
+            partial: boolean;
+            /**
+             * Reading
+             * @description True when this screen's first read for this reader is still going on: nothing of it is shown yet (its lists are empty and its counts zero, never a finding); ask again shortly for the page.
+             */
+            reading?: boolean;
+            /** Recent Questions */
+            recent_questions?: components["schemas"]["RecentQuestion"][];
+            /**
+             * Stale Since
+             * @description Set when the server serves the last numbers it read for this same reader: when they were read (ISO). Refreshed in the background.
+             */
+            stale_since?: string | null;
+            /**
+             * Supplier Total
+             * @description How many suppliers have a late purchase order.
+             * @default 0
+             */
+            supplier_total: number;
+        };
         /** Source */
         Source: {
             /**
@@ -9664,6 +10449,13 @@ export type components = {
              * @description Records with a suggestion (all, not only shown).
              */
             total: number;
+        };
+        /** SupplierLate */
+        SupplierLate: {
+            /** Late */
+            late: number;
+            /** Supplier */
+            supplier: string;
         };
         /** SystemCoverage */
         SystemCoverage: {
@@ -12054,6 +12846,100 @@ export interface operations {
             };
         };
     };
+    ask_chats_api_ask_chats_get: {
+        parameters: {
+            query?: {
+                q?: string | null;
+                limit?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AskChats"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    ask_chat_update_api_ask_chats__conversation_id__post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                conversation_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AskChatUpdate"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AskChats"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     auth_config_route_api_auth_config_get: {
         parameters: {
             query?: never;
@@ -13303,6 +14189,7 @@ export interface operations {
         parameters: {
             query?: {
                 view?: "all" | "since_visit";
+                pages?: boolean;
             };
             header?: never;
             path?: never;
@@ -13360,6 +14247,48 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["BriefingItems"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Unprocessable Entity */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    briefing_pages_api_briefing_pages_get: {
+        parameters: {
+            query: {
+                event_type: ("po_late" | "po_due" | "eta_slipped" | "vendor_no_reply" | "vendor_terms_unapplied" | "negative_margin" | "lot_near_expiry" | "lot_on_hold" | "quote_accepted_no_order" | "quantity_mismatch" | "customer_order_at_risk" | "po_undated" | "customer_order_late" | "watcher_attention" | "stock_out_risk" | "overdue_receivable" | "unit_cost_jump" | "customer_demand_drop" | "promise_date_slip" | "margin_erosion" | "supplier_reliability" | "shipped_not_invoiced" | "duplicate_customer_order" | "recurring_component_damage" | "customer_chasing_order" | "tell_before_they_ask" | "quality_hold_aging" | "reject_trend" | "expedite_unanswered" | "supplier_shortage_open_orders" | "return_unanswered" | "supplier_chasing_payment" | "customer_paying_slower" | "early_pay_discount_missed" | "duplicate_supplier_invoice" | "duplicate_supplier_payment" | "customer_credits_rising" | "price_below_typical" | "price_below_cost" | "customer_price_drop" | "mc_task_stuck" | "mc_approval_pending" | "portal_approval_pending" | "planner_task_overdue" | "aged_receivable_worsening" | "aged_payable_worsening" | "production_late" | "assembly_damage_spike" | "teams_unanswered_ask" | "commitment_due" | "commitment_missed" | "needs_my_reply" | "approval_waiting" | "chase_escalating" | "party_chase_unanswered" | "internal_order_chase" | "slow_moving_stock" | "expiring_lot_stock" | "assembly_blocked_by_component" | "certificate_expiring" | "freight_cost_anomaly" | "stale_quote" | "priority_order_unfilled" | "duplicate_party_candidate" | "key_field_missing" | "twins_disagree" | "source_stale" | "sync_missing" | "sync_mismatch" | "reorder_soon" | "inventory_adjustment" | "blocked_account_activity" | "gl_posting_errors" | "recurring_task_missed" | "label_change" | "label_revision_superseded" | "rd_project" | "unapplied_remittance" | "short_payment" | "statement_difference")[];
+                limit?: number;
+                view?: "all" | "since_visit";
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BriefingPages"];
                 };
             };
             /** @description Unauthorized */
@@ -13521,6 +14450,86 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    chart_file_api_charts_file_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ChartFile"];
+            };
+        };
+        responses: {
+            /** @description The file. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                    "application/pdf": unknown;
+                    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": unknown;
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Unprocessable Entity */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Service Unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
         };
@@ -14106,6 +15115,452 @@ export interface operations {
             };
             /** @description Unauthorized */
             401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    insight_news_api_insight_news_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["InsightNewsList"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    insight_news_seen_api_insight_news__run_id__seen_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                run_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["InsightNewsSeen"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Unprocessable Entity */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Service Unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    insights_list_api_insights_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["InsightList"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    insight_save_api_insights_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["InsightSave"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["InsightInfo"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Unprocessable Entity */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Service Unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    insight_result_api_insights__insight_id__get: {
+        parameters: {
+            query?: {
+                again?: boolean;
+            };
+            header?: never;
+            path: {
+                insight_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["InsightResult"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Unprocessable Entity */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Service Unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    insight_delete_api_insights__insight_id__delete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                insight_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["InsightDeleted"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Unprocessable Entity */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Service Unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    insight_schedule_api_insights__insight_id__schedule_put: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                insight_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["InsightSchedule"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["InsightInfo"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Unprocessable Entity */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Service Unavailable */
+            503: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -15525,6 +16980,35 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ReplyTriage"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    sidebar_api_sidebar_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Sidebar"];
                 };
             };
             /** @description Unauthorized */

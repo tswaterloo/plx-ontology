@@ -1344,21 +1344,29 @@ class EvidenceTools:
         """Links touching ``object_ids`` the reader may see at T (live, markings held,
         every evidence handle passes the item gate, both ends visible)."""
         gate = scope.gate
-        rows = self.store.conn.execute(
+        # the links first, by id, then their ends and gates (``TraverseTools._link_pages``:
+        # joined in one statement, a large reach was hash-joined to every object and spilled)
+        rows = self.traverse._link_pages(
+            scope,
+            f"""(l.from_object IN (SELECT value FROM json_each(:ids))
+                 OR l.to_object IN (SELECT value FROM json_each(:ids)))
+                AND {tt._live('l')} AND l.markings IN (SELECT value FROM json_each(:marks))
+                {extra}""",
             f"""SELECT l.*, fo.object_type AS from_type, xo.object_type AS to_type,
                        fo.audience_key AS from_audience, xo.audience_key AS to_audience
                 FROM links l JOIN objects fo ON fo.object_id = l.from_object
                 JOIN objects xo ON xo.object_id = l.to_object
-                WHERE (l.from_object IN (SELECT value FROM json_each(:ids))
-                       OR l.to_object IN (SELECT value FROM json_each(:ids)))
+                WHERE l.link_id IN (SELECT value FROM json_each(:link_ids))
+                AND fo.object_id IN (SELECT value FROM json_each(:from_ids))
+                AND xo.object_id IN (SELECT value FROM json_each(:to_ids))
                 AND {tt._live('l')} AND l.markings IN (SELECT value FROM json_each(:marks))
                 AND NOT EXISTS (SELECT 1 FROM json_each(l.evidence_handles) h
                                 WHERE NOT {gate}(h.value))
                 AND {tt._visible_object('fo', gate)} AND {tt._visible_object('xo', gate)}
                 {extra}
-                ORDER BY l.link_id LIMIT :cap""",
-            scope.params(ids=json.dumps(sorted(set(object_ids))), cap=LINK_SCAN_CAP + 1,
-                         **dict(params or {}))).fetchall()
+                ORDER BY l.link_id""",
+            {"ids": json.dumps(sorted(set(object_ids))), **dict(params or {})},
+            LINK_SCAN_CAP, pages=None) or []
         ends = {r["from_object"] for r in rows} | {r["to_object"] for r in rows}
         strict = self.traverse._visible_ids(scope, ends)
         return [r for r in rows if r["from_object"] in strict and r["to_object"] in strict]
@@ -2320,9 +2328,12 @@ class EvidenceTools:
     def _linked_documents(self, scope: Any, ids: Sequence[str], families: Sequence[str]
                           ) -> tuple[set[str], bool]:
         """Document objects linked to ``ids``, and documents linked to those (a
-        message's attachments), as the reader may see them."""
+        message's attachments), as the reader may see them. No family: none (a link's end
+        is kept only when its family is one of ``families``; nothing is read)."""
         out: set[str] = set()
         cut = False
+        if not families:
+            return out, cut
         frontier = list(ids)
         for _hop in range(2):
             rows = self._visible_links(scope, frontier)
@@ -2403,8 +2414,8 @@ class EvidenceTools:
                 scope.params(pairs=json.dumps(pairs), cap=DOC_SCAN_CAP + 1)).fetchall()
             if len(rows) > DOC_SCAN_CAP:
                 rows, cut = rows[:DOC_SCAN_CAP], True
-            objects = list(dict.fromkeys(r["object_id"] for r in rows))
-            firm, firm_cut = self._firm_twins(scope, objects)
+            objects = list(dict.fromkeys(r["object_id"] for r in rows)) if families else []
+            firm, firm_cut = self._firm_twins(scope, objects) if objects else ([], False)
             objects += [oid for oid in firm if oid not in objects]
             cut |= firm_cut
             direct = {r["object_id"] for r in rows if _family(r["audience_key"]) in families}
@@ -2418,6 +2429,11 @@ class EvidenceTools:
             cut |= more
             if named is not None:
                 named |= direct | linked
+        if not families:
+            # no stored family searched (operator originals alone, which read only the
+            # keys and readings above): no document of a family could be found below,
+            # and its link and word scans cost up to minutes over a common identifier
+            return out, pairs, bare, cut, []
         words = _content_words(ot._text_tokens(query, keys, limit=None))[:6]
         tokens = words or ([query.strip()] if not pairs else [])
         # Words, never identifiers: a query naming an identifier (a label or a

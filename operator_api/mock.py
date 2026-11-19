@@ -838,6 +838,19 @@ class MockBackend(TemplatesMixin, ActionsMixin, WriteIntentsMixin, AutopilotMixi
                                                        as_of=_iso(0.5), late_total=len(late)),
                       recent_questions=recent, freshness=FRESH)
 
+    def sidebar(self, reader: Reader) -> m.Sidebar:
+        late = self._late()
+        counts: dict[str, int] = {}
+        for po in late:
+            if po.supplier:
+                counts[po.supplier] = counts.get(po.supplier, 0) + 1
+        ranked = sorted(counts.items(), key=lambda kv: (-kv[1], kv[0]))
+        with self._lock:
+            recent = list(self._recent.get(reader.key, []))
+        return m.Sidebar(late_total=len(late), supplier_total=len(ranked),
+                         late_suppliers=[m.SupplierLate(supplier=k, late=v) for k, v in ranked],
+                         recent_questions=recent, freshness=FRESH)
+
     def _briefing(self, since_visit: bool, reader: str | None = None
                   ) -> tuple[dict, dict[str, str]]:
         """A demo briefing built by the real rules (``operating.briefing.build``) over demo

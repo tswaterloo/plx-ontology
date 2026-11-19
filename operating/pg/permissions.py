@@ -296,13 +296,40 @@ def _fingerprint(policy: ReadPolicy, actor: Actor) -> str:
     return out
 
 
-def _fingerprint_of(policy: ReadPolicy, actor: Actor) -> str:
-    body = {"tenant": policy.tenant,
+_PARTS: OrderedDict[tuple, tuple[ReadPolicy, tuple]] = OrderedDict()
+
+
+def policy_parts(policy: ReadPolicy, actor: Actor) -> tuple[tuple[str, str], ...]:
+    """The reader's policy as ``_fingerprint`` takes it, a digest per part: ((part,
+    digest), ...) for tenant, audiences, markings, units and actor. Equal exactly when the
+    fingerprints are; a kept page's access state holds it, so a refusal can say which part
+    changed (never a value), also for a page another process kept. Memoized per policy
+    object as ``_fingerprint``."""
+    key = (id(policy), actor)
+    with _FINGERPRINTS_LOCK:
+        hit = _PARTS.get(key)
+    if hit is not None and hit[0] is policy:
+        return hit[1]
+    out = tuple((name, hashlib.sha256(json.dumps(part, sort_keys=True).encode()).hexdigest())
+                for name, part in sorted(_body(policy, actor).items()))
+    with _FINGERPRINTS_LOCK:
+        _PARTS[key] = (policy, out)
+        while len(_PARTS) > 64:
+            _PARTS.popitem(last=False)
+    return out
+
+
+def _body(policy: ReadPolicy, actor: Actor) -> dict[str, Any]:
+    return {"tenant": policy.tenant,
             "audiences": {p: sorted(v) for p, v in sorted(policy.audiences.items())},
             "markings": {m: sorted(v) for m, v in sorted(policy.markings.items())},
             "units": {f: list(k) for f, k in sorted(policy.units.items())},
             "actor": [actor.tenant, sorted(actor.principals), actor.clearance]}
-    return hashlib.sha256(json.dumps(body, sort_keys=True).encode()).hexdigest()
+
+
+def _fingerprint_of(policy: ReadPolicy, actor: Actor) -> str:
+    return hashlib.sha256(json.dumps(_body(policy, actor), sort_keys=True).encode()
+                          ).hexdigest()
 
 
 class ScopeCache:

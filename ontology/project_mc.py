@@ -149,6 +149,7 @@ class McCaptures(Reopenable):
             ).fetchone()[0]
             relations[collection] = {
                 "last_refresh_at": min(u["refreshed_at"] for u in units.values()),
+                "unit_times": [u["refreshed_at"] for u in units.values()],
                 "last_capture_id": last,
                 "last_full_traversal_at": (min(u["full_at"] for u in units.values())
                                            if self.capture_gap(collection) is None else None)}

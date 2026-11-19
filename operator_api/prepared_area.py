@@ -25,6 +25,7 @@ from datetime import datetime, timezone
 import hashlib
 import json
 from pathlib import Path
+import re
 from typing import Any, Mapping, Optional
 
 from operating import prepared_writes as pw
@@ -105,6 +106,8 @@ class DocumentEditMixin:
                     DOC_TOOL["inputSchema"]["properties"]):  # type: ignore[index]
                 return {"refused": ["Unknown fields."]}
             citation = str(arguments.get("citation") or "")
+            if citation.startswith("file:"):
+                return self._pw_own_file_edit(reader, desk, citation, arguments)
             try:
                 (drive, item), _v, _x = parse_handle(citation.split("#", 1)[0], "sharepoint", 2)
             except ValueError:
@@ -152,10 +155,89 @@ class DocumentEditMixin:
                                     read={"name": name})
             except pw.Refused as refused:
                 return {"refused": refused.problems}
-            return {"prepared_id": card["prepared_id"], "diff": card["diff"],
-                    "note": "Prepared, not done: the person confirms it in the app."}
+            out = {"prepared_id": card["prepared_id"], "diff": card["diff"],
+                   "note": "Prepared, not done: the person confirms it in the app."}
+            copy = self._pw_edited_copy(reader, name, kind, new)
+            if copy:
+                out["edited_copy"] = copy
+                out["note"] = ("Prepared, not done: the file in SharePoint changes only when "
+                               "the person confirms it in the app. The edited copy is kept "
+                               "for them only and shown under your answer to download now: "
+                               "say so, never its link.")
+            return out
 
         return LocalTool(spec=DOC_TOOL, call=call)
+
+    def _pw_own_file_edit(self, reader: Reader, desk: pw.Desk, citation: str,
+                          arguments: Mapping[str, Any]) -> dict[str, Any]:
+        """One edit of a file that is the reader's own (``file:<id>``: a file they attached,
+        ``backend_ask._keep_attached``, or one the Ask made or edited for them): the edited
+        copy kept for them only, nothing written anywhere and nothing to confirm. The file
+        is read only as theirs (``_pw_file``: another reader's id, or a file naming a person
+        excluded since, is none) and its whole text filtered before any of it can reach the
+        model, as every document edit is."""
+        from operating import doc_edit
+        import base64
+        own = self._pw_file(reader, citation[len("file:"):])
+        if own is None:
+            return {"refused": ["That file is not one of yours here: use the file: citation "
+                                "you were given."]}
+        name, data = str(own["name"]), base64.b64decode(own["content_b64"])
+        change = {k: arguments[k] for k in ("find", "replace", "sheet", "cell", "value")
+                  if k in arguments}
+        try:
+            _ext, kind = doc_edit.kind_of(name)
+            text = doc_edit.text_of(name, data)
+        except doc_edit.Refused as refused:
+            return {"refused": [str(refused)]}
+        try:
+            guard = desk.executor().guard
+        except Exception:  # noqa: BLE001 - undecidable: refused
+            guard = None
+        withheld = self._pw_withheld(" \n".join(
+            [name, text, *(str(v) for v in change.values()),
+             str(arguments.get("reason") or "")]), guard)
+        if withheld:
+            return {"refused": [withheld.replace(": edit it in SharePoint.", ".")]}
+        try:
+            new, diff = doc_edit.edit(name, data, change)
+        except doc_edit.Refused as refused:
+            return {"refused": [str(refused)]}
+        copy = self._pw_edited_copy(reader, name, kind, new)
+        if not copy:
+            return {"refused": ["The edited copy could not be kept: nothing was changed."]}
+        return {"diff": diff, "edited_copy": copy, "edited_from": citation,
+                "citation": f"file:{copy['download_url'].rsplit('/', 1)[-1]}",
+                "note": "Edited copy made for the person only; nothing in any system changed "
+                        "and nothing waits for a confirm. It is shown under your answer to "
+                        "download: say so, never its link. A further change: call again "
+                        "with this result's citation."}
+
+    def _pw_edited_copy(self, reader: Reader, name: str, mime: str, data: bytes
+                        ) -> Optional[dict[str, Any]]:
+        """The edited bytes kept as the reader's own file (the made documents' store,
+        ``instruct_files.UploadDesk``: theirs only, the people it names cleared again before
+        a download), so the edit can be downloaded at once while the write-back waits for
+        its confirm. Word, Excel and PowerPoint only (the answer's file kinds); None when it cannot be
+        kept (the edit stands without it)."""
+        from operating import doc_edit
+        from operating.instruct_files import file_name
+        from .feedback import _ADDRESS
+        kind = {doc_edit.DOCX: "docx", doc_edit.XLSX: "xlsx", doc_edit.PPTX: "pptx"}.get(mime)
+        uploads = getattr(self, "_uploads", None)
+        if kind is None or not callable(uploads):
+            return None
+        try:
+            text = doc_edit.text_of(name, data)
+            stem = name.rsplit(".", 1)[0] if "." in name else name
+            stem = re.sub(r"(?:\s*\(edited\))+$", "", stem)   # a copy edited again
+            row = uploads().prepare(
+                reader.key, name=file_name(f"{stem} (edited)", kind), kind=kind, data=data,
+                target=None, people=sorted({a.lower() for a in _ADDRESS.findall(text)}))
+        except Exception:  # noqa: BLE001 - the prepared edit stands without its copy
+            return None
+        return {"name": row["name"], "kind": kind, "size": int(row["size"]),
+                "download_url": f"/api/instruct/files/{row['file_id']}"}
 
 
 class PreparedWritesMixin(DocumentEditMixin, TeamsConnectMixin):

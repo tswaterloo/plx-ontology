@@ -792,7 +792,7 @@ class ListItemAclFallbackTest(tcl.CaptureCase):
             with self.subTest(items=n):
                 self.graph.lists[tcl.LIST]["items"] = {}
                 for i in range(1, n + 1):
-                    self.graph.add(i)
+                    self.graph.add(i, version=n)   # a new eTag per cardinality: each is read
                 self.graph.perms = {"2": [{"id": "9", "roles": ["read"], "grantedToV2": {
                     "user": {"email": "someone.else@example-plx.com"}}}]}
                 self.graph.calls.clear()

@@ -6,6 +6,7 @@ import { ErrorNotice } from "@/components/ui/notice";
 import { decideAutopilotItem, replyFromLine, saveMemory, type PreparedItem } from "@/lib/api";
 import { DraftUse, draftUseOf } from "@/components/autopilot/draft-use";
 import { JobCard } from "@/components/autopilot/job";
+import { TodoCard, TodoSteps } from "@/components/autopilot/todo";
 import { cn } from "@/lib/cn";
 import { plainError } from "@/lib/errors";
 import { formatDateTime } from "@/lib/format";
@@ -129,6 +130,7 @@ function Card({ item, linked, onGone, onChanged }: { item: PreparedItem; linked?
           </div>
         </>
       )}
+      <TodoSteps todos={item.todos ?? []} />
       <DraftUse use={draftUseOf(item)} />
       {(item.learned ?? []).length > 0 && (
         <p className="max-w-[46rem] text-[12px] text-muted" data-testid="draft-learned">
@@ -164,6 +166,8 @@ export function PreparedView({ items, empty, linked, onGone, onChanged }: { item
       {items.map((i) =>
         i.kind === "job" ? (
           <JobCard key={i.item_id} item={i} linked={i.item_id === linked} />
+        ) : i.kind === "todo" ? (
+          <TodoCard key={i.item_id} item={i} linked={i.item_id === linked} onGone={onGone} />
         ) : (
           <Card key={i.item_id} item={i} linked={i.item_id === linked} onGone={onGone} onChanged={onChanged} />
         ),

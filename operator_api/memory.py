@@ -297,13 +297,108 @@ def _recency(now: datetime, at: datetime, half_life: float) -> float:
 
 # Standing instructions and commitments a person states in a question.
 _INSTRUCTION = re.compile(
-    r"^\s*(?:please\s+)?(?:always|never|from now on|going forward|in (?:the )?future|"
-    r"remember (?:that|to)|don'?t ever|do not ever|i(?:'d| would)? prefer|i like|"
-    r"i want (?:you to|answers|it)|by default)\b", re.I)
+    r"^\s*(?:(?:please|can you|could you|would you|will you)[\s,]+)*(?:always|never|"
+    r"from now on|going forward|in (?:the )?future|remember(?: that| to|:)|"
+    r"don'?t ever|do not ever|don'?t forget(?: that)?|i(?:'d| would)? prefer|i like|"
+    r"i want (?:you to|answers|it)|by default)(?:\b|(?<=:)|(?<=,))", re.I)
+# openers that also lead into a question about the thing noted ("Note that PO 1234 is
+# late, what is the new ETA?"): a standing instruction only when no question follows
+_NOTE = re.compile(
+    r"^\s*(?:(?:please|can you|could you|would you|will you)[\s,]+)*(?:"
+    r"(?:please )?note(?: that|:)|keep in mind|make a note|for (?:the|your) record,)"
+    r"(?:\b|(?<=:)|(?<=,))", re.I)
+_ASKS = re.compile(r"\?|(?:^|[.;:,!]\s*|\b(?:and|so|but)\s+)(?:what|which|who|whom|whose|"
+                   r"when|where|why|how|is|are|was|were|do|does|did|can|could|should|"
+                   r"will|would|has|have|had)\b", re.I)
+
+
+def _instruction(said: str) -> bool:
+    if _INSTRUCTION.search(said):
+        return True
+    head = _NOTE.search(said)
+    return bool(head) and not _ASKS.search(said[head.end():])
+# where the words to keep end when a question follows them: a sentence boundary, or a
+# comma before a question word ("Remember that X, what is the ETA?")
+_KEEP_ENDS = re.compile(r"(?<=[.!?;])\s+|\n+|,\s*(?=(?:and |so |but )?(?:what|which|who|whom|"
+                        r"whose|when|where|why|how)\b)", re.I)
+_ASKS_FIRST = re.compile(r"\s*(?:and |so |but |also )?(?:what|which|who|whom|whose|when|where|why|"
+                         r"how|is|are|was|were|do|does|did|can|could|should|will|would|has|"
+                         r"have|had)\b", re.I)
+
+
+def kept_words(said: Any) -> str:
+    """The part of ``said`` kept as the instruction or commitment it states: up to a
+    question that follows it ("Remember that Croda is PO100109. What is its status?"
+    keeps "Remember that Croda is PO100109."); the whole of it when no question follows
+    (or the question is the instruction's own sentence)."""
+    text = str(said or "").strip()
+    for end in _KEEP_ENDS.finditer(text):
+        head, rest = text[:end.start()].rstrip(" ,;"), text[end.end():]
+        if not head:
+            continue
+        first = _SENTENCE.split(rest.strip(), 1)[0]
+        if _ASKS_FIRST.match(rest) or first.rstrip().endswith("?"):
+            return head
+    return text
+
+
 _COMMITMENT = re.compile(
     r"\b(?:remind me|i(?:'ll| will| need to| have to| must) (?:follow up|send|call|check|"
     r"get back|chase|email|confirm|reply)|follow up (?:with|on)|don'?t let me forget)\b",
     re.I)
+
+
+def stated_kind(said: Any) -> Optional[str]:
+    """``instruction`` or ``commitment`` when the person's words state one (``_INSTRUCTION``,
+    ``_COMMITMENT``), else None."""
+    said = str(said or "")
+    return "instruction" if _instruction(said) else \
+        "commitment" if _COMMITMENT.search(said) else None
+
+
+# the person asks to be reminded: a commitment they want kept, said back whether it was
+_REMIND = re.compile(r"\b(?:remind me|don'?t let me forget)\b", re.I)
+
+
+def asked_to_keep(said: Any) -> Optional[str]:
+    """``instruction`` or ``commitment`` when the person asks the assistant to keep
+    something ("remember that ...", "from now on ...", "remind me to ..."), else None. A
+    commitment merely mentioned ("follow up with Croda" in a task to create) is not asked
+    to be kept: the answer's record keeps it (``from_answer``), nothing is said of it."""
+    said = str(said or "")
+    return "instruction" if _instruction(said) or _steers_autopilot(said) else \
+        "commitment" if _REMIND.search(said) else None
+
+
+def _steers_autopilot(said: str) -> bool:
+    """A line stating an Autopilot rule ("stop drafting replies to X", "always cc Y on
+    internal emails": ``operating.learning.autopilot_rules``) is kept like 'remember that'."""
+    try:
+        from operating.learning import autopilot_rules
+        return bool(autopilot_rules(said))
+    except Exception:  # noqa: BLE001 - no rule read: not kept as one
+        return False
+
+
+@dataclass(frozen=True)
+class Stated:
+    """What became of an instruction or commitment the person stated in a question
+    (``Memory.state``): ``item`` the kept item's id, or None with ``why`` it was not kept:
+    ``unavailable`` (no memory store, or the people exclusion cannot be checked now, so
+    nothing may be written), ``finance`` (finance and pay are never kept), ``not_theirs``
+    (viewing as someone, the Ask canary), ``not_kept`` (it names someone the exclusion
+    keeps out, or the person deleted the same item before), ``error`` (the store failed)."""
+    kind: str
+    item: Optional[int] = None
+    why: Optional[str] = None
+
+    @property
+    def saved(self) -> bool:
+        return self.item is not None
+
+
+# how long a stated instruction waits for the excluded names' first read (a new process)
+STATE_NAMES_SECONDS = 8.0
 
 
 # ---- when a commitment is due, in the person's words --------------------------------------
@@ -551,6 +646,18 @@ class ExcludedNames:
         """Read the names again on the next call (the exclusion list changed)."""
         with self._lock:
             self._at = None
+
+    def settle(self, seconds: float) -> None:
+        """Wait up to ``seconds`` for a read under way (or one this call starts) to end:
+        a person's stated instruction is kept before the answer, so it waits for the
+        names a new process has not read yet rather than refusing it."""
+        self()
+        ends = time.monotonic() + max(0.0, seconds)
+        while time.monotonic() < ends:
+            with self._lock:
+                if not self._reading:
+                    return
+            time.sleep(0.05)
 
     def __call__(self) -> Optional[frozenset[str]]:
         with self._lock:
@@ -1650,18 +1757,54 @@ class Memory:
                   log_id: int) -> list[int]:
         """A standing instruction ("always ...", "from now on ...") or a commitment
         ("remind me ...", "I'll follow up with ...") the person stated."""
-        kind = "instruction" if _INSTRUCTION.search(said) else \
-            "commitment" if _COMMITMENT.search(said) else None
+        kind = stated_kind(said)
         if kind is None:
             return []
-        about = _key(_INSTRUCTION.sub("", said), 3) if kind == "instruction" else _key(said, 6)
-        kept = self.remember(reader, kind=kind, source="ask", text=said,
-                             subject=f"{kind} | {about}" if about else None,
-                             conversation=conversation, source_ref=f"{kind}:{log_id}",
-                             log_ids=[log_id], confidence=0.8)
+        kept = self._keep_stated(reader, kind, said, conversation, [log_id])
+        return [kept] if kept is not None else []
+
+    def _keep_stated(self, reader: Any, kind: str, said: str, conversation: Optional[str],
+                     log_ids: Sequence[int]) -> Optional[int]:
+        """Keep the stated ``kind`` (one item per subject: the same words again refresh
+        it and add the question's log row, ``remember``); the kept id or None."""
+        said = kept_words(said)
+        about = (_key(_NOTE.sub("", _INSTRUCTION.sub("", said)), 3) if kind == "instruction"
+                 else _key(said, 6))
+        subject = f"{kind} | {about}" if about else None
+        kept = self.remember(reader, kind=kind, source="ask", text=said, subject=subject,
+                             conversation=conversation,
+                             source_ref=(f"{kind}:{log_ids[0]}" if log_ids else None),
+                             log_ids=log_ids, confidence=0.8)
         if kept is not None and kind == "instruction":
             self._tell_stated(reader, kept, said)
-        return [kept] if kept is not None else []
+        return kept
+
+    def state(self, reader: Any, said: str, conversation: Optional[str] = None
+              ) -> Optional[Stated]:
+        """An instruction or commitment the person states in a question, kept NOW, before
+        the Ask answers (so the answer can say truthfully whether it was saved, and a new
+        conversation applies it); None when the words state none. The answer's own record
+        (``from_answer``) later finds the same item and adds the question's log row to it.
+        Never raises: why it was not kept is in the result (``Stated``)."""
+        kind = asked_to_keep(said)
+        if kind is None:
+            return None
+        if _not_theirs(reader):
+            return Stated(kind, why="not_theirs")
+        if finance_text(kept_words(said)):
+            return Stated(kind, why="finance")
+        try:
+            if self._guard() is None:
+                settle = getattr(self.names, "settle", None)
+                if callable(settle):
+                    settle(STATE_NAMES_SECONDS)
+                if self._guard() is None:
+                    return Stated(kind, why="unavailable")
+            kept = self._keep_stated(reader, kind, str(said).strip(), conversation, [])
+        except Exception as error:  # noqa: BLE001 - told as not saved, never fails the Ask
+            log.warning("stated %s not kept: %s", kind, type(error).__name__)
+            return Stated(kind, why="error")
+        return Stated(kind, item=kept, why=None if kept is not None else "not_kept")
 
     def from_tools(self, reader: Any, conversation: Optional[str], answer_id: str,
                    calls: Sequence[Mapping[str, Any]]) -> list[int]:

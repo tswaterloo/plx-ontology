@@ -261,9 +261,13 @@ CLAUDE_STUB = textwrap.dedent("""\
     for line in sys.stdin:
         message = json.loads(line)
         n += 1
-        text = message["message"]["content"][0]["text"]
+        content = message["message"]["content"]
+        text = [b for b in content if b["type"] == "text"][0]["text"]
+        shown = [[b["source"]["media_type"], b["source"]["data"]] for b in content
+                 if b["type"] == "image"]
         with open(log, "a") as out:
-            out.write(json.dumps({{"turn": n, "text": text}}) + "\\n")
+            out.write(json.dumps({{"turn": n, "text": text, "kinds": [b["type"] for b in content],
+                                  "images": shown}}) + "\\n")
         if n == 1:
             print(json.dumps({{"type": "system", "subtype": "init", "model": "m",
                               "mcp_servers": [{{"name": "plx", "status": "connected"}}],
@@ -326,6 +330,36 @@ class WarmSessionTests(unittest.TestCase):
         self.assertTrue(any('"answer 2"' in line for line in lines))
         self.assertFalse(session.alive)
         self.assertTrue(self.wait_gone([starts[0]["start"], *host.started()]))
+
+    def test_an_attached_image_is_shown_to_the_model_with_its_turn_only(self):
+        """``images`` go in the turn's user message as image blocks before its text; a
+        follow-up without one carries none; an image the model cannot be shown (another
+        media type, data that is not base64) is refused before anything is sent."""
+        import base64
+        png = base64.b64encode(b"\x89PNG\r\n\x1a\nlabel").decode("ascii")
+        host = _Host(self.work, "answer")
+        session = self.agent().open_session(host)
+        try:
+            first = session.turn("What product is on this label?",
+                                 images=[{"media_type": "image/png", "data": png}])
+            second = session.turn("And its supplier?")
+        finally:
+            session.close()
+        self.assertEqual((first.final_text, second.final_text), ("answer 1", "answer 2"))
+        turns = [e for e in self.entries() if "turn" in e]
+        self.assertEqual([(t["kinds"], t["images"]) for t in turns],
+                         [(["image", "text"], [["image/png", png]]), (["text"], [])])
+        for bad in ({"media_type": "application/pdf", "data": png},
+                    {"media_type": "image/png", "data": "not base64!"}):
+            with self.assertRaises(ValueError):
+                runner.image_blocks([bad])
+        refused = self.agent().open_session(_Host(self.work, "answer"))
+        try:
+            with self.assertRaises(ValueError):
+                refused.turn("Read it", images=[{"media_type": "text/html", "data": png}])
+        finally:
+            refused.close()
+        self.assertEqual(len([e for e in self.entries() if "turn" in e]), 2)
 
     def test_a_prestarted_session_is_up_before_its_question_and_its_clock_starts_then(self):
         host = _Host(self.work, "answer")

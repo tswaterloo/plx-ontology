@@ -280,10 +280,9 @@ class GenericViews(Fixture, unittest.TestCase):
                 ours = sorted((r[0] for r in self.rows(
                     f"SELECT label FROM records WHERE type = '{otype}'", actor)), key=_order)
                 # the door's additions to plx.table's rule, for every reader: nothing
-                # naming Freightcom, never an excluded person's own record, and a record
-                # with a field marked beyond the reader's markings is not shown at all
-                hide = {"Freightcom Inc", "Excluded task"} | (
-                    set() if actor is FULL else {"IN-1"})
+                # naming Freightcom, never an excluded person's own record; a record with
+                # a field marked beyond the reader's markings is shown, that field withheld
+                hide = {"Freightcom Inc", "Excluded task"}
                 self.assertEqual(ours, [x for x in shown if x not in hide], (otype, actor))
         # staff: a list row of a non-business system is a full reader's alone
         self.assertEqual(self.rows("SELECT count(*) FROM records WHERE type = "
@@ -291,15 +290,52 @@ class GenericViews(Fixture, unittest.TestCase):
         everything = json.dumps([self.call({"sql": f"SELECT * FROM {v} LIMIT 500"}, actor)
                                  for v in ("records", "record_links")
                                  for actor in (OPS, NOBODY)])
-        for secret in OPS_SECRET + NEVER + ("IN-1",):
+        for secret in OPS_SECRET + NEVER:
             self.assertNotIn(secret, everything)
-        # a link shows when the reader holds both ends: OPS, the unmarked invoice's only
-        self.assertEqual(self.rows("SELECT from_type, link_type, to_type, from_handle FROM "
-                                   "record_links WHERE from_type = 'SalesInvoice'", OPS),
-                         [["SalesInvoice", "SalesInvoice.billed_to", "Customer",
-                           _api("portal.sage_oe_invoice_header", "i2")]])
+        # a link shows when the reader holds both ends: OPS, both invoices' to the customer
+        # it reads (never to the finance-marked customer or Freightcom)
+        self.assertEqual(sorted(self.rows(
+            "SELECT from_type, link_type, to_type, from_handle FROM record_links WHERE "
+            "from_type = 'SalesInvoice'", OPS)),
+            [["SalesInvoice", "SalesInvoice.billed_to", "Customer",
+              _api("portal.sage_oe_invoice_header", h)] for h in ("i1", "i2")])
         for view in ("records", "record_links"):
             self.assertEqual(self.rows(f"SELECT count(*) FROM {view}", NOBODY), [["0"]])
+
+    def test_a_marked_field_is_withheld_never_the_record(self):
+        # Staff read every business record, finance values withheld
+        # (live 2026-11-19: 6.58M Sage records hidden whole for one marked balance each)
+        sql = ("SELECT label, fields->>'invoice_number', fields->>'total_amount', "
+               "fields->>'total_amount_currency', record_date, withheld FROM records "
+               "WHERE type = 'SalesInvoice' ORDER BY label")
+        full = self.rows(sql)
+        self.assertEqual([r[:5] for r in full], [["IN-1", "IN-1", "4444.44", "CAD",
+                                                   "2026-11-03"],
+                                                  ["IN-2", "IN-2", "12.50", "USD",
+                                                   "2026-11-04"]])
+        ops = self.call({"sql": sql}, OPS)
+        self.assertNotIn("error", ops, ops)
+        cells = [[c.get("untrusted_text", c) if isinstance(c, dict) else c for c in r["cells"]]
+                 for r in ops["rows"]]
+        self.assertEqual([r[:5] for r in cells], [["IN-1", "IN-1", None, None, "2026-11-03"],
+                                                  ["IN-2", "IN-2", "12.50", "USD",
+                                                   "2026-11-04"]])
+        self.assertIn("fields", json.dumps(cells[0][5]))    # said withheld, not absent
+        self.assertNotIn("fields", json.dumps(cells[1][5]))
+        self.assertNotIn("4444.44", json.dumps(ops))
+        # every way into the row's fields gives the open ones only
+        for probe in ("SELECT fields::text FROM records WHERE label = 'IN-1'",
+                      "SELECT jsonb_object_keys(fields) FROM records WHERE label = 'IN-1'",
+                      "SELECT count(*) FROM records WHERE (fields->>'total_amount')::numeric"
+                      " > 4000"):
+            self.assertNotIn("4444", json.dumps(self.call({"sql": probe}, OPS)), probe)
+        self.assertEqual(self.rows("SELECT count(*) FROM records WHERE "
+                                   "(fields->>'total_amount')::numeric > 4000", OPS), [["0"]])
+        self.assertEqual(self.rows("SELECT count(*) FROM records WHERE type = "
+                                   "'SalesInvoice'", NOBODY), [["0"]])
+        # the finance-marked customer is marked as a whole record: still nobody's but FULL
+        self.assertEqual(self.rows("SELECT count(*) FROM records WHERE label = 'Hidden Co'",
+                                   OPS), [["0"]])
 
     def test_counts_do_not_leak(self):
         # the catalog is the store's structure: listed, with no count or date of records
@@ -307,14 +343,15 @@ class GenericViews(Fixture, unittest.TestCase):
         self.assertFalse({"rows", "newest"} & {c["name"] if isinstance(c, dict) else c
                                                for c in cols}, cols)
         self.assertEqual(self.rows("SELECT count(*) FROM record_types", NOBODY), [["5"]])
-        for actor, want in ((FULL, 2), (OPS, 1), (NOBODY, 0)):
+        for actor, want in ((FULL, 2), (OPS, 2), (NOBODY, 0)):
             described = self.call({"describe": "SalesInvoice"}, actor)
             self.assertEqual(described["sample"]["records_you_can_read"], want, actor)
             self.assertNotIn("4444.44", json.dumps(described) if actor is not FULL else "")
         out = self.call({"sql": "SELECT count(*) FROM records WHERE type = 'SalesInvoice'"},
                         OPS)
-        self.assertEqual([r["cells"] for r in out["rows"]], [["1"]])
-        self.assertNotIn("records", out.get("withheld") or {})   # nothing counted aside
+        self.assertEqual([r["cells"] for r in out["rows"]], [["2"]])
+        # no row counted aside; the one row read with a field withheld is said so
+        self.assertEqual(out.get("withheld") or {}, {"records": {"fields": 1}})
 
     def test_unset_or_forged_scope_reads_nothing(self):
         import psycopg
@@ -347,9 +384,11 @@ class GenericViews(Fixture, unittest.TestCase):
                                    "'mc://tasks/t60-5'"), [["Task 60-5"]])
         with mock.patch.object(gv, "MAX_RECORDS", 5):   # 8 links, 78 records
             for sql in ("SELECT count(*) FROM records", "SELECT * FROM record_links"):
-                out = self.call({"sql": sql})
+                out = self.call({"sql": sql}, OPS)
                 self.assertEqual((out.get("error") or {}).get("code"), "too_broad", (sql, out))
                 self.assertIn("type", out["error"]["hint"])
+            # a full reader reads as at a psql prompt (its statement's time bounds it)
+            self.assertNotIn("error", self.call({"sql": "SELECT count(*) FROM records"}))
 
     def test_injection_and_unknown_input_fail_closed(self):
         odd = self.rows(f"SELECT fields->>{gv._lit(ODD)} FROM records WHERE handle = "
@@ -399,6 +438,160 @@ def decide(dsn, covered):
                   "(SELECT max(ver) FROM ontology.object_versions))", (covered,))
         door.exclude_everywhere(c)
     ts._DOOR.clear()
+
+
+TEAMS_DOMAIN = dict(DOMAIN, object_types=DOMAIN["object_types"] + [
+    ev._type("TeamsChat", [("topic", "text")], [("teams.chats", "teams")],
+             display=["topic"]),
+    ev._type("TeamsChatMessage", [("subject", "text")], [("teams.chat_messages", "teams")],
+             display=["subject"])])
+for _spec in TEAMS_DOMAIN["object_types"][-2:]:
+    for _binding in _spec["bindings"]:
+        _binding["relation"] = _binding["id"]
+
+
+def build_with_teams(base=build):
+    """The fixture plus a Teams chat (no comms table of its own: a record) and one of its
+    messages (the teams_messages table's: never a record)."""
+    s, ids = base()
+    ids["chat"] = obj(s, "TeamsChat", "teams.chats", "c1", {"topic": "Chat topic"},
+                      audience="teams:chat:c1", handle="teams-chat://c1")
+    ids["chat_message"] = obj(s, "TeamsChatMessage", "teams.chat_messages", "c1m1",
+                              {"subject": "Chat line"}, audience="teams:chat:c1",
+                              handle="teams-chat://c1/message/m1")
+    s.conn.commit()
+    return s, ids
+
+
+class TeamsRecords(Fixture, unittest.TestCase):
+    """A Teams chat has no comms table: it is a record, a full reader's alone (a staff reader
+    holding the chat's audience still reads none), served once the exclusion decided it;
+    a chat message stays the teams_messages table's."""
+
+    @classmethod
+    def setUpClass(cls):
+        import sys
+        here = sys.modules[__name__]
+        with mock.patch.object(here, "build", build_with_teams), \
+                mock.patch.object(here, "SCHEMA", ot.SchemaView.from_documents([TEAMS_DOMAIN])):
+            super().setUpClass()
+
+    def base(self):
+        """The fixture's reader policy with the chat's audience granted to staff and the
+        full reader alike."""
+        from operating.pg.ontology_reader import PgStoreReader
+        from operating.pg.sqlite_compat import PgCompatConnection
+        conn = PgCompatConnection(self.dsn, link_guard=True)
+        self.addCleanup(conn.close)
+        reader = PgStoreReader(conn, ot.StoreReader(self.store.conn))
+        policy = ot.ReadPolicy(tenant="plx", audiences={
+            **tab.POLICY.audiences, "teams:*": {"ops", "full"}}, markings=tab.POLICY.markings)
+        return ot.OntologyTools(reader, policy, item_gate=lambda a, h: True,
+                                schema=ot.SchemaView.from_documents([TEAMS_DOMAIN]),
+                                grammar=None, contracts=ev.CONTRACTS, clock=lambda: ev.NOW)
+
+    def test_a_chat_is_a_full_readers_record_and_its_messages_are_not_records(self):
+        import psycopg
+        with psycopg.connect(self.dsn) as c:
+            got = dict(c.execute("SELECT handle, biz FROM biz.records WHERE type LIKE "
+                                 "'Teams%'").fetchall())
+        self.assertEqual(got, {"teams-chat://c1": False})
+        self.assertEqual(self.rows("SELECT count(*) FROM records WHERE type = 'TeamsChat'"),
+                         [["0"]])   # not decided by the exclusion yet: nobody's
+        decide(self.dsn, None)
+        self.assertEqual(self.rows("SELECT label FROM records WHERE type = 'TeamsChat'"),
+                         [["Chat topic"]])
+        # staff hold the chat's audience and still read none of it: not a business system
+        for actor in (OPS, NOBODY):
+            self.assertEqual(self.rows("SELECT count(*) FROM records WHERE type LIKE "
+                                       "'Teams%'", actor), [["0"]], actor)
+            listed = json.dumps(self.call({"sql": "SELECT * FROM records LIMIT 500"}, actor))
+            self.assertNotIn("Chat topic", listed)
+            self.assertNotIn("Chat line", listed)
+            described = self.call({"describe": "TeamsChat"}, actor)
+            self.assertEqual(described["sample"]["records_you_can_read"], 0, actor)
+            self.assertNotIn("Chat topic", json.dumps(described))
+        self.assertEqual(self.call({"describe": "TeamsChat"}, FULL)["sample"][
+            "records_you_can_read"], 1)
+
+
+PEOPLE_FIELDS = ("driver", "technician", "attendee", "organizer", "organiser", "participant",
+                 "agent", "driver_name", "sales_agent")
+
+
+class KindsInTheCatalog(Fixture, unittest.TestCase):
+    """The catalog row of a type names the values its category-like text fields take (so a
+    question can find a type by what its records say), from records anyone holding the
+    record may read, never an audience's own value, a name, an address or a marked field."""
+
+    def kinds(self, rows, types, staff=(), classes=None):
+        import psycopg
+        with psycopg.connect(self.dsn, autocommit=True) as c:
+            c.execute("DROP SCHEMA IF EXISTS kt CASCADE")
+            c.execute("CREATE SCHEMA kt")
+            c.execute("CREATE TABLE kt.access_classes (id int, audience_keys text[], rec_marks text[], "
+                      "blocked bool)")
+            c.execute("CREATE TABLE kt.staff (name text, email text)")
+            c.execute("CREATE TABLE kt.records (type text, col_class int, ai_ok bool, "
+                      "access_class int, fields jsonb)")
+            for cid, keys, marks, blocked in (
+                    [(i, [f"mail:{i}"], ["[]"], False) for i in range(1, 6)]
+                    + [(6, ["mail:6"], ['["finance"]'], False), (7, ["mail:7"], ["[]"], True),
+                       (8, ["api:sage.x"], ["[]"], False)]):
+                c.execute("INSERT INTO kt.access_classes VALUES (%s, %s, %s, %s)",
+                          (cid, keys, marks, blocked))
+            for name in staff:
+                c.execute("INSERT INTO kt.staff VALUES (%s, NULL)", (name,))
+            for t, cls, n, fields in rows:
+                for _ in range(n):
+                    c.execute("INSERT INTO kt.records VALUES (%s, 0, true, %s, %s::jsonb)",
+                              (t, cls, json.dumps(fields)))
+            try:
+                return gv.kinds_of(c, "kt", types, {t for t, *_ in rows})
+            finally:
+                c.execute("DROP SCHEMA kt CASCADE")
+
+    def test_values_are_listed_only_when_anyone_holding_the_record_reads_them(self):
+        spec = {"Notice": {"properties": [
+            {"name": "kind", "value_type": "text"}, {"name": "payer", "value_type": "text",
+                                                     "markings": ["finance"]},
+            {"name": "ticket", "value_type": "text"}, {"name": "owner", "value_type": "text"},
+            {"name": "by", "value_type": "text"},
+            {"name": "total", "value_type": "money"}]
+            + [{"name": n, "value_type": "text"} for n in PEOPLE_FIELDS]}}
+        rows = []
+        for cls in (1, 2, 3):            # one value in three audiences' records
+            rows.append(("Notice", cls, 3, {"kind": "payment", "payer": "Acme", "total": "5",
+                                            **{n: "Dale" for n in PEOPLE_FIELDS},
+                                            "owner": "Pat Lee", "by": "PAT",
+                                            "ticket": f"T-{cls}"}))
+        rows.append(("Notice", 1, 6, {"kind": "private only here"}))     # one audience
+        rows.append(("Notice", 6, 9, {"kind": "marked record"}))        # marked class
+        rows.append(("Notice", 7, 9, {"kind": "blocked record"}))       # blocked class
+        rows.append(("Notice", 1, 6, {"kind": "mail me a@b.com"}))
+        for cls in (1, 2, 3, 4):
+            rows.append(("Notice", cls, 2, {"kind": "invoice_received"}))
+        rows.append(("Notice", 8, 6, {"kind": "from a business system"}))   # api: class
+        rows.append(("Notice", 8, 2, {"kind": "too few"}))
+        got = self.kinds(rows, spec, staff=("Pat Lee",))
+        self.assertEqual(got, {"Notice": {"kind": ["payment", "invoice_received",
+                                                   "from a business system"]}})
+
+    def test_a_field_with_many_values_or_a_type_with_no_fields_lists_nothing(self):
+        spec = {"Doc": {"properties": [{"name": "title", "value_type": "text"}]},
+                "Odd": {"properties": []}}
+        rows = [("Doc", 1 + i % 5, 2, {"title": f"title {i}"}) for i in range(45)]
+        rows.append(("Odd", 1, 9, {"x": "y"}))
+        self.assertEqual(self.kinds(rows, spec), {})
+
+    def test_the_built_catalog_carries_kinds_and_still_no_counts(self):
+        import psycopg
+        with psycopg.connect(self.dsn) as c:
+            c.execute("SELECT kinds FROM biz.record_types LIMIT 1")      # the column exists
+        cols = self.call({"sql": "SELECT * FROM record_types LIMIT 1"}, NOBODY)["columns"]
+        names = {c["name"] if isinstance(c, dict) else c for c in cols}
+        self.assertIn("kinds", names)
+        self.assertFalse({"rows", "newest"} & names)
 
 
 class Undecided(Fixture, unittest.TestCase):
@@ -497,7 +690,8 @@ class RecordsSearch(Fixture, unittest.TestCase):
         self.addCleanup(decide, self.dsn, 0)   # the class's other tests see the fixture's set
         args = {"query": "IN", "sources": ["records"]}
         self.assertEqual(self.titles(self.search(args)), ["IN-1", "IN-2"])
-        self.assertEqual(self.titles(self.search(args, OPS)), ["IN-2"])   # IN-1: finance
+        # IN-1's amount is finance-marked: OPS finds the invoice, never the amount
+        self.assertEqual(self.titles(self.search(args, OPS)), ["IN-1", "IN-2"])
         self.assertEqual(self.titles(self.search(args, NOBODY)), [])
         for actor in (FULL, OPS, NOBODY):
             for q in ("Freightcom", "GONE", "Excluded task", "Mail one", "Hidden Co",
@@ -543,6 +737,50 @@ class RecordsSearch(Fixture, unittest.TestCase):
             self.assertEqual(out["documents"], [])
             self.assertEqual(out["gaps"][0]["reason"], "too_broad")
             self.assertFalse(out["completeness"]["complete"])
+
+
+    def test_label_candidates_give_every_reader_the_same_hits_as_reading_every_label(self):
+        # the label index finds candidates as the store; the hits are read through the
+        # door among them: for every reader, query and candidate cap (a cap the matches
+        # pass included), page by page, the hits are those of the whole read through
+        # the door, in its order (no row lost, added or moved)
+        from operating import ontology_tools_search as srch
+        from operating.pg import records_search as rs
+        tool = ts.SqlTool(self.base())   # one connection for the whole walk
+        full = (lambda base, a: TAG if a is FULL else "")
+
+        def pages(query, actor):
+            seen, cursor = [], None
+            for _ in range(10):
+                args = {"query": query, "sources": ["records"], "limit": 4}
+                if cursor:
+                    args["cursor"] = cursor
+                with mock.patch("operating.pg.people_excluded.full_reader", full):
+                    out = srch.run(lambda a: self.fail("documents called"), args,
+                                   call_records=lambda a: tool.guarded(tool.records_search,
+                                                                       a, actor))
+                self.assertNotIn("error", out, out)
+                self.assertEqual(out["gaps"], [], out)
+                seen.append([d["citation"] for d in out["documents"]])
+                cursor = out["completeness"]["next_cursor"]
+                if not cursor:
+                    return seen
+            return seen
+        decide(self.dsn, None)
+        self.addCleanup(decide, self.dsn, 0)
+        queries = ("Task", "Task 60", "task 1", "Ltd", "Acme", "Hidden Co", "Freightcom",
+                   "List row", "Mail one", "Excluded", "nothing like it",
+                   "Task 1-0")   # short words: checked on the candidates only
+        for actor in (FULL, OPS, NOBODY):
+            for query in queries:
+                with mock.patch.object(rs, "INDEXED_LETTERS", 99):   # no candidates
+                    whole = pages(query, actor)
+                for floor, per_row in ((1, 1), (2, 1), (1000, 4)):
+                    with self.subTest(actor=actor, query=query, cap=(floor, per_row)), \
+                            mock.patch.object(rs, "CANDIDATES", floor), \
+                            mock.patch.object(rs, "PER_ROW", per_row):
+                        self.assertEqual(pages(query, actor), whole)
+        self.assertEqual(len(pages("Task 60", OPS)[0]), 4)   # the case was exercised
 
 
 class Exclusion(Fixture, unittest.TestCase):
@@ -674,6 +912,42 @@ class BuildDuringRewrite(Fixture, unittest.TestCase):
                                        "biz.records").fetchone()[0], 0)
 
 
+class RefreshOverAnOlderBuild(Fixture, unittest.TestCase):
+    def test_a_refresh_over_a_table_built_before_withholds_and_never_shows_unmasked(self):
+        """The served table was built under the old rule (no ``fields_open``, a marked
+        field's markings in the record's class, no column class, views masking nothing).
+        The first refresh after the change adds the column and reads changed records under
+        the new rule; the views are made again with ``fields`` masked in the same
+        transaction, so no reader ever reads the row with its marked field unmasked."""
+        import psycopg
+        from operating.pg import door
+        from operating.pg import business_views as bv
+        S = bv.SCHEMA
+        with psycopg.connect(self.dsn, autocommit=True) as c:
+            for name in ("record_links", "records"):
+                gv.sql_views.drop(c, name, S)
+            c.execute(f"ALTER TABLE {S}.records DROP COLUMN fields_open")
+            c.execute(f"UPDATE {S}.records SET col_class = 0")
+            door.recount(c, S, "records")
+            gv.make_views(c, S)
+            self.assertEqual(door.masked_columns(c, S, "records"), [])
+            # every record read again by the next refresh
+            c.execute(f"UPDATE {S}.state SET notes = jsonb_set(notes, '{{marks,ver}}', "
+                      "'0') WHERE view = 'records'")
+        gr.refresh(self.dsn, S)
+        with psycopg.connect(self.dsn) as c:
+            self.assertEqual(door.masked_columns(c, S, "records"), ["fields"])
+            (masked,) = c.execute(f"SELECT masked FROM {S}.door_views WHERE view = "
+                                  "'records'").fetchone()
+            self.assertEqual(list(masked), ["fields"])
+        sql = ("SELECT label, fields->>'total_amount' FROM records WHERE type = "
+               "'SalesInvoice' ORDER BY label")
+        self.assertEqual(self.rows(sql), [["IN-1", "4444.44"], ["IN-2", "12.50"]])
+        self.assertEqual(self.rows(sql, OPS), [["IN-1", None], ["IN-2", "12.50"]])
+        self.assertNotIn("4444.44", json.dumps(self.call({"sql": "SELECT * FROM records LIMIT 500"},
+                                                    OPS)))
+
+
 class DiskRoom(unittest.TestCase):
     def test_a_batch_waits_for_room_and_stops_well_above_the_floor(self):
         """11-18 7:20 PM ET live: a records build of 8 workers took /data from 56 to 22 GB
@@ -724,6 +998,17 @@ class TypeChoice(unittest.TestCase):
         with self.assertRaises(ValueError):
             gr.type_choice(True, True, ["Rel%' OR true --"])
         self.assertEqual(gr.types_sql({"skip_prefixes": ["x' OR '1"]}), "false")
+        # with the business types: every system's copy of an order, invoice, product, batch,
+        # customer or supplier is a record of its own (its own status words), only the
+        # communications tables' types stay out
+        business = gr.type_choice(True, True, ["RelSage"], business=True)
+        self.assertEqual(business["skip_types"], gr.comms_types())
+        self.assertEqual(set(gr.comms_types()),
+                         {"Email", "TeamsChatMessage", "CalendarEvent", "MeetingTranscript"})
+        for kept in ("SalesOrder", "PurchaseOrder", "PurchaseOrderLine", "Batch", "Customer"):
+            self.assertIn(kept, covered)
+            self.assertNotIn(kept, business["skip_types"])
+        self.assertIn("NOT LIKE 'RelSage%'", gr.types_sql(business))
 
 
 class Coverage(Fixture, unittest.TestCase):
@@ -768,3 +1053,25 @@ class Coverage(Fixture, unittest.TestCase):
                          {("dropped", "MCTask")})
         self.assertIn(("unreachable", "Email"),
                       {(f["kind"], f.get("type")) for f in again["findings"]})
+
+    def test_a_failed_records_read_is_a_failed_run_not_every_type_unreachable(self):
+        import tempfile
+        from pathlib import Path
+        from unittest import mock
+        decide(self.dsn, None)
+        real = cov._door_counts
+
+        def broken(pg, s, settings, views):
+            got = real(pg, s, settings, views)
+            got["views"]["records"], got["records"] = None, {}
+            return got
+        with tempfile.TemporaryDirectory() as tmp, \
+                mock.patch.object(cov, "RETRY_WAIT_S", 0):
+            home = Path(tmp) / cov.STATUS_DIR
+            cov.run(self.dsn, Path(tmp))
+            good = (home / "baseline.json").read_text()
+            with mock.patch.object(cov, "_door_counts", broken):
+                bad = cov.run(self.dsn, Path(tmp))
+            self.assertIs(bad["ok"], False)
+            self.assertIn("records view", bad["error"])
+            self.assertEqual((home / "baseline.json").read_text(), good)

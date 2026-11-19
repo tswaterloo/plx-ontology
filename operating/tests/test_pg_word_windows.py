@@ -55,6 +55,44 @@ class WordWindowTests(unittest.TestCase):
         for (_a, b), (c, _d) in zip(windows, windows[1:]):
             self.assertEqual(c, b + 1)
 
+    def test_a_word_over_several_runs_is_read_once_and_kept_to_them(self):
+        # the files' chunks lie in 3 runs of a 30M-chunk store; a word of ~3,000 matches:
+        # one read of the whole match (each run's bounded read paid the postings again,
+        # 32 runs = 20-28 s live), the rows outside the runs dropped, the same rows ascending
+        runs = [(100, 200), (5_000, 5_100), (20_000_000, 20_000_050)]
+        stored = [50, 150, 199, 200, 201, 4_999, 5_000, 5_050, 9_000_000, 20_000_010,
+                  25_000_000]
+        reads: list[tuple[int, int]] = []
+        ww = R.WordWindows(conn=None)
+        facts = {"rank": {}, "field_of": {}, "by_property": {}, "indexed": frozenset(),
+                 "text": frozenset(), "estimates": {}, "kept": {},
+                 "chunk_text": (1, 30_000_000, 30_000_000.0),
+                 "stats:chunk_text": ({"word": 3_000 / 30_000_000}, ["word"], 1e-7)}
+        ww.facts = facts
+        ww.refresh = lambda: facts   # type: ignore[method-assign]
+
+        def read(_table, _query, lo, hi, *_rest):
+            reads.append((lo, hi))
+            return [(c,) for c in stored if lo <= c <= hi]
+        ww._read = read   # type: ignore[method-assign]
+        got = [row for window in ww.windows("chunk_text", "'word'", 0, runs)
+               for row, _key in window]
+        self.assertEqual(reads, [(1, 30_000_000)])
+        self.assertEqual(got, [150, 199, 200, 5_000, 5_050, 20_000_010])
+        # a next page (after a row) continues past it, from the read kept
+        later = [row for window in ww.windows("chunk_text", "'word'", 200, runs)
+                 for row, _key in window]
+        self.assertEqual(later, [5_000, 5_050, 20_000_010])
+        self.assertEqual(len(reads), 1)
+        # a common word over the same runs is still read run by run (a page stops early)
+        reads.clear()
+        facts["stats:chunk_text"] = ({"word": 0.2}, ["word"], 1e-7)
+        facts["estimates"].clear()
+        for _ in ww.windows("chunk_text", "'word'", 0, runs):
+            pass
+        self.assertGreater(len(reads), 1)
+        self.assertTrue(all(lo >= 100 and hi <= 20_000_050 for lo, hi in reads))
+
     def test_document_text_threshold_unchanged(self):
         # document words are not value cells: 24,000 matches stay windowed there
         self.assertGreater(len(_windows(24_000 / ROWS, table="chunk_text")), 1)

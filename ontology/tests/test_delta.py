@@ -358,7 +358,8 @@ class CycleReadsTests(DeltaCase):
         self.assertTrue(report["mail_skipped"])
         self.assertEqual({k: v for k, v in reads["graph_mail"].items() if k != "read_from"},
                          {"state": "skipped", "left": 0,
-                          "reason": "people_exclusion_unavailable", "refreshed_at": None})
+                          "reason": "people_exclusion_unavailable", "refreshed_at": None,
+                          "refresh_overdue": False})
         # no capture store here: nothing said of a source no scan read
         self.assertEqual(set(reads), {"portal_api", "graph_mail"})
 

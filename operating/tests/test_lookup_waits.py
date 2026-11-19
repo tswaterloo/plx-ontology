@@ -39,12 +39,12 @@ class MailboxWaitTests(unittest.TestCase):
         for patched in (mock.patch.dict(os.environ, {case_tools_host_mailboxes.MAILBOXES_CACHE_ENV: str(cache)}),
                         mock.patch.dict(host._MAILBOXES, clear=True),
                         mock.patch.dict(host._MAILBOXES_READING, {self.key: self.running}),
-                        mock.patch.object(host, "MAILBOXES_WAIT_SECONDS", 0.3)):
+                        mock.patch.object(case_tools_host_mailboxes, "MAILBOXES_WAIT_SECONDS", 0.3)):
             patched.start()
             self.addCleanup(patched.stop)
 
     def test_a_slow_background_read_is_waited_for_a_bounded_time(self):
-        with mock.patch.object(host, "_mailbox_list", return_value=FOUND) as listed:
+        with mock.patch.object(case_tools_host_mailboxes, "_mailbox_list", return_value=FOUND) as listed:
             began = time.monotonic()
             self.assertEqual(host._attachment_mailboxes(self.store), FOUND)
         self.assertLess(time.monotonic() - began, 3.0)
@@ -52,7 +52,7 @@ class MailboxWaitTests(unittest.TestCase):
 
     def test_the_list_another_host_kept_is_taken_without_waiting(self):
         host._keep_mailboxes(self.key, FOUND)
-        with mock.patch.object(host, "_mailbox_list",
+        with mock.patch.object(case_tools_host_mailboxes, "_mailbox_list",
                                side_effect=AssertionError("read again")):
             began = time.monotonic()
             self.assertEqual(host._attachment_mailboxes(self.store), FOUND)
@@ -243,16 +243,28 @@ class SharedLookupTests(unittest.TestCase):
         generation = shared.generation()
         self.assertIsNotNone(generation)
         self.store.add("sharepoint://po2", "po2.txt")
-        # A bring-up failing midway (I/O) leaves the file as the last one made: nothing
-        # of the new state is half-written and the file is not made anew.
+        # A bring-up failing midway (I/O) is not made anew and nothing of the new state is
+        # searchable: the bring-up is kept in steps (files, then each chunk of entries),
+        # so the new file may be listed, but with no entry it is never searched as empty
+        # (a reader says it is not searched yet, ``_visible_exceptions``).
         with mock.patch.object(host, "_sync_entries",
                                side_effect=sqlite3.OperationalError("disk I/O error")), \
                 self.assertRaises(sqlite3.OperationalError):
             shared.sync(self.store, wait=True)
         self.assertEqual(shared.generation(), generation)
         conn = shared.reader()
-        self.assertEqual([r[0] for r in conn.execute("SELECT handle FROM files")],
-                         ["sharepoint://po1"])
+        self.assertEqual([r[0] for r in conn.execute(
+            "SELECT f.handle FROM files f JOIN entries e ON e.key = f.key")],
+            ["sharepoint://po1"])
+        listed = [{"l1_handle": h, "content_sha256": c, "recorded_at": r}
+                  for h, c, r in conn.execute("SELECT handle, csha, rec FROM files "
+                                              "ORDER BY handle")]
+        self.assertEqual([i["l1_handle"] for i in listed],
+                         ["sharepoint://po1", "sharepoint://po2"])
+        self.assertEqual([(at, stale) for at, stale, *_ in
+                          host._visible_exceptions(shared, listed)],
+                         [(n, True) for n, item in enumerate(listed)
+                          if item["l1_handle"] != "sharepoint://po1"])
         self.assertEqual(first.found({("petra_po", "PO1")}), {0: {None}})
         # A file made anew (another store, another code's file) has a new generation: a
         # lookup held from the old one is never reused, even with no commit to the store.

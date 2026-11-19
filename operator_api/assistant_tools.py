@@ -13,7 +13,7 @@ LocalTool``) beside the write tools (``simple_ask.write_tools``):
   ones they may use, save their own (from a description, or from a document they read: its
   ``source`` handle kept with it) and delete their own. A placeholder names a record field
   (``{{po_number}}``); an unknown one is refused with the fields there are.
-* ``plx.make_document``: a Word, Excel or PDF file of what the model wrote, made as the
+* ``plx.make_document``: a Word, Excel, PowerPoint, PDF or CSV file of what the model wrote, made as the
   instruction engine makes its documents (``InstructMixin._prepare_document``: cleaned of
   excluded people and secret-looking text) and kept for this reader only: its download
   link, and its ``file_id`` for an email attachment or a SharePoint upload prepared
@@ -32,7 +32,11 @@ from operating import learning
 REMEMBER = "plx.remember"
 TEMPLATE = "plx.template"
 DOCUMENT = "plx.make_document"
+# a prepared document edit keeps its edited copy for the reader (``prepared_area``)
+EDITED = "plx.edit_document"
 NAMES = (REMEMBER, TEMPLATE, DOCUMENT)
+# the kinds of file plx.make_document makes (``operating.instruct_files.KINDS``)
+KINDS = ("docx", "xlsx", "pdf", "pptx", "csv")
 MOST_LISTED = 40
 
 REMEMBER_SPEC = {
@@ -88,8 +92,16 @@ TEMPLATE_SPEC = {
 DOCUMENT_SPEC = {
     "name": DOCUMENT,
     "description": (
-        "Make a file the person can download: kind docx (Word: content is the text, one "
-        "paragraph per line), xlsx (Excel: one row per line, cells split by |) or pdf. "
+        "Make a file the person can download: kind docx (Word: content is Markdown, one "
+        "paragraph per line: '# '/'## ' headings, '- ' bullets, **bold**, tables as '| a | "
+        "b |' rows with a '|---|---|' row under the header), xlsx (Excel: one row per line, "
+        "cells split by |), pptx (PowerPoint: a slide per '# ' heading, its lines below it; "
+        "a '[chart N]' line under a heading with up to 3 lines puts the chart on that "
+        "slide), csv (rows only, cells split by | as xlsx; no charts) or pdf. charts: up to 8 "
+        "charts, each {\"sql\": <a SELECT you ran with plx.sql>, \"type\", \"title\", "
+        "\"x\", \"y\": [...], options as in a chart block}: the statement is read again as "
+        "the person and the chart drawn from its rows (a native chart in Word, Excel and "
+        "PowerPoint); a line '[chart N]' in content places chart N, the rest go at the end. "
         "name: the file name. It answers file_id and download_url: to email it, call "
         "plx.prepare_write (system mail, operation send_email) with change.attachments: "
         "[file_id]; to save it to SharePoint, operation file_upload with change.file_id "
@@ -98,8 +110,10 @@ DOCUMENT_SPEC = {
         "type": "object", "additionalProperties": False,
         "required": ["name", "kind", "content"],
         "properties": {"name": {"type": "string"},
-                       "kind": {"type": "string", "enum": ["docx", "xlsx", "pdf"]},
-                       "content": {"type": "string"}}},
+                       "kind": {"type": "string", "enum": ["docx", "xlsx", "pdf", "pptx", "csv"]},
+                       "content": {"type": "string"},
+                       "charts": {"type": "array", "maxItems": 8,
+                                  "items": {"type": "object", "required": ["sql", "type", "y"]}}}},
     "annotations": {"readOnlyHint": False, "destructiveHint": False},
 }
 
@@ -278,15 +292,20 @@ class AssistantToolsMixin:
         if guard is None:
             return {"refused": "This is paused: the list of people whose data stays out is "
                     "not loaded."}
-        kind = args.get("kind") if args.get("kind") in ("docx", "xlsx", "pdf") else "docx"
+        kind = args.get("kind") if args.get("kind") in KINDS else "docx"
+        if kind == "csv" and args.get("charts"):
+            return {"refused": "A CSV file holds rows only, never a chart: make an xlsx "
+                    "(Excel) for the chart, or the CSV without it."}
         from integrations.image_ocr_gpu import touches_freightcom
         if touches_freightcom(str(args.get("content") or ""), str(args.get("name") or "")):
             # the carrier whose data never reaches the AI or an action: no file of it
             return {"refused": "That carrier is never written about through the Workbench."}
         try:
+            charts = self._document_charts(reader, args.get("charts"))
             doc = self._prepare_document(  # type: ignore[attr-defined]
                 reader, {"kind": kind, "content": str(args.get("content") or ""),
-                         "name": _words(args.get("name")) or "Document"}, [], guard)
+                         "name": _words(args.get("name")) or "Document"}, [], guard,
+                charts=charts)
         except UserFacing as refused:
             return {"refused": refused.message}
         file_id = doc.download_url.rsplit("/", 1)[-1]
@@ -297,23 +316,60 @@ class AssistantToolsMixin:
                         "name or link."}
 
 
+    def _document_charts(self, reader: Any, raw: Any) -> list[dict[str, Any]]:
+        """The charts a document asks for, each drawn from the rows of its statement read
+        again now as ``reader`` (their door; ``insights.read_sql``), never from numbers the
+        model wrote. One that cannot be read or drawn refuses the document with why."""
+        from operating.instruct_files import MAX_DOC_CHARTS
+        from . import charts as ch
+        from .errors import UserFacing
+        from .insights import read_sql
+        if raw is None:
+            return []
+        if not isinstance(raw, list) or len(raw) > MAX_DOC_CHARTS:
+            raise UserFacing("chart", f"A document holds up to {MAX_DOC_CHARTS} charts.", 422)
+        out = []
+        for n, item in enumerate(raw, 1):
+            spec = ch.parse(item)
+            sql = item.get("sql") if isinstance(item, Mapping) else None
+            if spec is None or not isinstance(sql, str) or not sql.strip():
+                raise UserFacing("chart", f"Chart {n} is not a chart of a statement.", 422)
+            got = read_sql(self, reader, sql)
+            rows = [r.get("cells", []) for r in got.get("rows") or () if isinstance(r, Mapping)]
+            try:
+                out.append(ch.build(spec, got["columns"], rows, title=str(
+                    item.get("title") or ""), as_of=got.get("as_of"), sql=sql,
+                    truncated=bool(got.get("truncated"))))
+            except ch.NotDrawn as why:
+                raise UserFacing("chart", f"Chart {n} can't be drawn: {why}", 422) from None
+        return out
+
+
 def documents(events: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
-    """The files the session made (``plx.make_document`` results, in order, each once):
-    name, kind, size and download link, for the answer to show."""
+    """The files the session made (``plx.make_document`` results, and the edited copy a
+    ``plx.edit_document`` kept, in order, each once): name, kind, size and download link,
+    for the answer to show. A copy edited again (``edited_from`` names it) gives its place
+    to the newer copy: the person gets the file with every change, once."""
     from .simple_ask import _parsed
     out: list[dict[str, Any]] = []
     for event in events:
         name = str(event.get("name") or "").split("__")[-1].replace(".", "_")
         if event.get("type") != "tool_call" or event.get("is_error") \
-                or name != DOCUMENT.replace(".", "_"):
+                or name not in (DOCUMENT.replace(".", "_"), EDITED.replace(".", "_")):
             continue
         result = _parsed(event.get("result"))
+        if name == EDITED.replace(".", "_"):
+            source = result.get("edited_from") if isinstance(result, Mapping) else None
+            result = result.get("edited_copy") if isinstance(result, Mapping) else None
+            if isinstance(source, str) and source.startswith("file:f_") \
+                    and isinstance(result, Mapping):
+                older = f"/api/instruct/files/{source[len('file:'):]}"
+                out = [d for d in out if d["download_url"] != older]
         url = result.get("download_url") if isinstance(result, Mapping) else None
         if not isinstance(url, str) or not url.startswith("/api/instruct/files/f_") \
                 or any(d["download_url"] == url for d in out):
             continue
         out.append({"name": str(result.get("name") or "Document")[:200],
-                    "kind": result.get("kind") if result.get("kind") in ("docx", "xlsx",
-                                                                         "pdf") else "docx",
+                    "kind": result.get("kind") if result.get("kind") in KINDS else "docx",
                     "size": int(result.get("size") or 0), "download_url": url})
     return out

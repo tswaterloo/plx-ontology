@@ -122,9 +122,9 @@ class BusinessTool:
         if isinstance(name, str) and name in ITEM_VIEWS:
             raise ToolError("use_plx_table", f"{name} are read per item under the mail "
                             "rules", f"call plx.table with from: {ITEM_VIEWS[name]}")
-        if not isinstance(name, str) or name not in bv.VIEWS:
+        if not isinstance(name, str) or name not in bv.listed():
             raise ToolError("unknown_view", f"no business view {str(name)[:64]!r}",
-                            "views: " + ", ".join(sorted(bv.VIEWS)) +
+                            "views: " + ", ".join(sorted(bv.listed())) +
                             " (describe: true lists their columns)")
         conn, scope, docs = self._reader(actor)
         view = bv.VIEWS[name]

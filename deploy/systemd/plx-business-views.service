@@ -8,11 +8,12 @@
 # store only; writes only schema biz. Does nothing before migration 0041 (skipped); one run
 # at a time (advisory lock); skipped in a migration window (window_lock). Started by
 # plx-business-views.timer. Each successful run starts plx-alerts.service (the alert rules over
-# the views just built).
+# the views just built) and plx-comms-findings.service (what mail and Teams messages record).
 [Unit]
 Description=PLX business views refresh (one run)
 After=postgresql.service
 OnSuccess=plx-alerts.service
+OnSuccess=plx-comms-findings.service
 
 [Service]
 Type=oneshot

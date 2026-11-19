@@ -18,7 +18,7 @@ import time
 from urllib.parse import quote
 from datetime import date, datetime
 from decimal import Decimal
-from typing import Any, Mapping, Optional, Sequence
+from typing import Any, Collection, Mapping, Optional, Sequence
 
 from . import models as m
 from .serving import object_url, open_url, record_words, system_of
@@ -204,7 +204,8 @@ def alerts_on() -> bool:
     return os.environ.get(ALERTS_SWITCH, "").strip() == "1"
 
 
-def alert_types(enabled: Sequence[str] = (), *, home: bool = False) -> list[str]:
+def alert_types(enabled: Sequence[str] = (), *, home: bool = False,
+                suggestions: bool = False) -> list[str]:
     """The SQL rules' alert types on for a reader: on by default in the registry or
     switched on by them (``enabled``), and (``home``) reaching My work. A type the
     registry or the API does not know is never asked for (fail closed)."""
@@ -218,7 +219,7 @@ def alert_types(enabled: Sequence[str] = (), *, home: bool = False) -> list[str]
             continue
         if home and not alert_kinds.home(name):
             continue
-        if alert_kinds.shown(name, enabled):
+        if alert_kinds.shown(name, enabled) or (suggestions and alert_kinds.suggested(name)):
             out.append(name)
     return out
 
@@ -395,6 +396,39 @@ def runs_state(rows: Sequence[Mapping[str, Any]], now: Optional[datetime] = None
     return out
 
 
+RUNS_SECONDS = 30   # how long the alert rules' freshness is held before it is read again
+_RUNS_LOCK = threading.Lock()
+
+
+def runs_fresh(backend: Any) -> Any:
+    """Which alert rules are current now (``alerts.STALE_MINUTES``), as one value for a kept
+    screen's inputs: when the rules stop running it changes, so a Home, briefing or sidebar
+    kept from before is read again (and says unavailable) instead of being served as current.
+    Read from the alert runs on the backend's Postgres pool, held ``RUNS_SECONDS``; a pool
+    or table that cannot be read gives one constant ("unread"): the screens then stand on
+    the read's own stale check (``alerts_stale``) as before."""
+    now = time.monotonic()
+    with _RUNS_LOCK:
+        held = backend.__dict__.get("_runs_fresh")
+        if held is not None and now - held[0] < RUNS_SECONDS:
+            return held[1]
+    got: Any = "unread"
+    try:
+        from operating.pg import business_views as bv
+        pool = backend.pg() if getattr(backend, "pg_dsn", None) else None
+        if pool is not None:
+            with pool.connection() as conn:
+                rows = conn.execute(
+                    f"SELECT rule, ok_at FROM {bv.SCHEMA}.alert_runs").fetchall()
+            state = runs_state([{"rule": r[0], "ok_at": r[1]} for r in rows])
+            got = tuple(sorted((name, fresh) for name, (fresh, _ok) in state.items()))
+    except Exception:  # noqa: BLE001 - unread: the constant
+        got = "unread"
+    with _RUNS_LOCK:
+        backend.__dict__["_runs_fresh"] = (now, got)
+    return got
+
+
 def alerts_stale(label: str, since: Optional[datetime]) -> Any:
     from .errors import UserFacing
     when = _when(since)
@@ -456,6 +490,30 @@ def alert_home(backend: Any, reader: Any, *, limit: int = 25
     return total, late, _iso(ok), risk, stale
 
 
+def late_suppliers(backend: Any, reader: Any, *, limit: int = 10
+                   ) -> tuple[int, list[tuple[str, int]], int]:
+    """The sidebar's late POs: (every late PO the reader may see, the ``limit`` suppliers
+    with the most of them as (name, count) most first, how many suppliers have one), in one
+    transaction; under ``PLX_ALERTS_SQL`` from the po_late alerts as Home reads them (the
+    rule not current: ``alerts_stale``, raised, never an old count)."""
+    alerts = alerts_on()
+    count, by = (("alerts_late_po_count", "alerts_late_po_suppliers") if alerts
+                 else ("late_po_count", "late_po_suppliers"))
+    reads: list[dict[str, Any]] = [{"name": count},
+                                   {"name": by, "params": {"limit": limit}}]
+    if alerts:
+        reads.append({"name": "alert_runs"})
+    rows, _ids = read(backend, reader, reads)
+    if alerts:
+        fresh, ok = runs_state(rows["alert_runs"]).get("po_late", (False, None))
+        if not fresh:
+            raise alerts_stale("Late purchase orders", ok)
+    got = rows[by]
+    return (int(rows[count][0]["late"]),
+            [(str(r["supplier"]), int(r["late"])) for r in got],
+            int(got[0]["suppliers"]) if got else 0)
+
+
 def _alert_ref(row: Mapping[str, Any], ids: Mapping[str, Mapping[str, str]]
                ) -> tuple[str, str, str, list[m.Source]]:
     """(object id, object type, open url, sources) of an alert's record."""
@@ -512,6 +570,47 @@ def alert_item(row: Mapping[str, Any], ids: Mapping[str, Mapping[str, str]], ran
         new_since_visit=new, new_this_generation=new, alert_kind=alert_kinds.kind_of(rule),
         default_on=alert_kinds.default_on(rule), home=alert_kinds.home(rule),
         first_seen=seen, open_url=url, sources=sources)
+
+
+SUGGESTION_ALERTS_READ = 500   # open alerts read for the suggestion cards (the page cap)
+
+
+def alert_suggestion_items(backend: Any, reader: Any, types: Collection[str], *,
+                           limit: int = SUGGESTION_ALERTS_READ) -> dict[str, Any]:
+    """The open alerts of ``types`` (the suggestion kinds' event types) on for the reader
+    and routed to them, as briefing items (``alert_item`` dumped), oldest first, for the
+    suggestion cards: the same alerts Home lists, so each card lands on a row Home shows.
+    ``status`` "read" or "unavailable" (a failed scope or read: never an empty, complete
+    list); ``complete`` only when every asked type is current and every open alert was
+    read; ``as_of`` the oldest last finished run among them. A type the registry or the
+    API does not know is never asked for (``alert_types``)."""
+    try:
+        scope = reader_scope(backend, reader)
+    except PageDoorUnavailable:
+        return {"status": "unavailable", "items": [], "complete": False}
+    wanted = set(types)
+    asked = [t for t in alert_types(scope.enabled, suggestions=True)
+             if t in wanted and routed(t, scope.routing)]
+    # a type this page path cannot show (a mail rule: no comms door here) is said unavailable,
+    # never counted as none
+    unavailable = [t for t in asked if not _paged(t)]
+    mine = [t for t in asked if _paged(t)]
+    if not mine:
+        return {"status": "read", "items": [], "complete": not unavailable, "as_of": None,
+                "unavailable_types": unavailable}
+    try:
+        counts, rows, ids, runs = alerts_read(backend, reader, mine, limit=limit)
+    except PageDoorUnavailable:
+        return {"status": "unavailable", "items": [], "complete": False}
+    items = [alert_item(r, ids, i + 1, scope.visit).model_dump(mode="json")
+             for i, r in enumerate(rows)]
+    current = all(runs.get(t, (False, None))[0] for t in mine)
+    return {"status": "read", "items": items,
+            "rank_basis": "business impact first, then the oldest open alert",
+            "complete": current and not unavailable
+            and sum(counts.get(t, 0) for t in mine) <= len(rows),
+            "unavailable_types": unavailable,
+            "as_of": _oldest({t: runs.get(t, (False, None))[1] for t in mine})}
 
 
 def _oldest(times: Mapping[str, Optional[datetime]]) -> Optional[str]:

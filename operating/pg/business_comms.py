@@ -71,6 +71,13 @@ class Spec:
     # reader holding the unit only when one of their identities is among them, or a full
     # reader (``transcript_reader``)
     participants: bool = False
+    # True: the row carries ``cells_ok`` (no cell of it names Freightcom): a row whose
+    # version has no document text (an image, a binary file) is decided by its cells alone
+    # (scope "files"); its text, once indexed, is never matched or shown before a refresh
+    # has read it (``ai_ok``)
+    cells_ok: bool = False
+    # False: a search-only table (``business_views.View.listed``)
+    listed: bool = True
 
 
 def _addresses(*exprs: str) -> str:
@@ -227,10 +234,14 @@ def _register(spec: Spec, doc: str, cols: Sequence[tuple[str, str, str]]) -> Non
         ("records", "list", "handles of the order, invoice, PO and product rows it names"),
     )
     made = [bv.Col(n, k, d) for n, k, d in (*cols, *common, *linked)]
-    internal = INTERNAL + ((("participants", "text[]"),) if spec.participants else ())
+    # positional: the row read (``_rows_sql``) writes ``cells_ok`` right after INTERNAL
+    assert not (spec.participants and spec.cells_ok)
+    internal = INTERNAL + ((("participants", "text[]"),) if spec.participants else ()) \
+        + ((("cells_ok", "boolean"),) if spec.cells_ok else ())
     bv.VIEWS[spec.view] = bv.View(spec.view, doc, made, lambda rd, as_of: iter(()),
                                   spec.types, fill=lambda w, t, a: fill(spec, w, t),
-                                  internal=internal)
+                                  internal=internal, covers=spec.listed,
+                                  listed=spec.listed)
 
 
 _register(EMAIL, "Every captured email, one row per mailbox copy (count distinct message_id "
@@ -349,12 +360,48 @@ _register(TRANSCRIPT, "Teams meeting transcripts you may read (meetings you took
           TRANSCRIPT_COLS)
 
 
+# SharePoint files: one row
+# per captured drive item, so ``plx.search`` finds a file by its name, folder or text in the
+# same ranked statement as mail and Teams (``comms_search``) instead of the documents
+# engine's whole-store scan. SEARCH ONLY (``listed`` False: no reader query names it): the
+# row rule here is the drive (unit: the item's audience key, its marks), Freightcom (the
+# text, else the cells: ``cells_ok``), hidden ids and the people flag, admitting only a
+# full reader inside a search statement (``plx.reader_files`` = 'search', which only
+# ``SqlTool._comms_search`` sets, for a full reader); the file's own item rule (file class,
+# its permission list, the full-read grant, the capture age, the people exclusion over its
+# creator and modifier) is the item gate's, which that search applies to every row it
+# returns before any is shown. Every other reader searches files the old way.
+FILES = Spec(
+    "sharepoint_files", ("SharePointFile",),
+    ("name", "path", "size", "mime_type", "last_modified", "content_status"),
+    "modified_at",
+    f"{_ts('p.last_modified')}, {_day('p.last_modified')}, p.name, p.path, "
+    "CASE WHEN btrim(p.size) ~ '^[0-9]{1,18}$' THEN btrim(p.size)::numeric END, "
+    "p.mime_type, p.content_status",
+    (), text_in_fields=True, header="name, path", scope="files", cells_ok=True,
+    listed=False)
+FILES_COLS = (
+    ("modified_at", "timestamp", "when the file was last modified"),
+    ("modified_date", "date", "the day it was last modified (business time zone)"),
+    ("name", "text", "the file name (untrusted text)"),
+    ("path", "text", "its folder path in the drive (untrusted text)"),
+    ("size", "numeric", "its size in bytes"),
+    ("mime_type", "text", "its content type"),
+    ("content_status", "text", "whether its content was captured"),
+)
+_register(FILES, "SharePoint and OneDrive files (search only): name, folder, size, type, "
+          "when modified, and the customers, suppliers and records they name.", FILES_COLS)
+
+
 # --------------------------------------------------------------------------- build
 
 
-def _prep(write: Any, spec: Spec, ids: str | None = None) -> None:
+def _prep(write: Any, spec: Spec, ids: str | None = None,
+          fit: Sequence[tuple[str, str]] | None = None) -> None:
     """The temporary tables a fill reads: removed records of the types, the biz rows'
-    object ids and (for the full build) the link and attachment counts of the types."""
+    object ids, (for the full build) the link and attachment counts of the types, and the
+    corroborated sender links the rows follow (``fit``: as ``fit_pairs`` read them once
+    for every reader of a build; else read here)."""
     from ontology import store as ostore
     from operating.pg.sqlite_compat import translate
     write.execute("SET LOCAL search_path = ontology, public")
@@ -392,6 +439,7 @@ def _prep(write: Any, spec: Spec, ids: str | None = None) -> None:
                       "sender text, subject text, preview text)")
     write.execute("ANALYZE cm_gone")
     write.execute("ANALYZE cm_biz")
+    _sender_fit(write, fit_pairs(write, spec, ids) if fit is None else fit)
 
 
 def _has_col(write: Any, table: str, col: str) -> bool:
@@ -400,10 +448,121 @@ def _has_col(write: Any, table: str, col: str) -> bool:
                          (bv.SCHEMA, table, col)).fetchone()[0]
 
 
+# The sender-party links (``ontology.sender_parties``: a message's sender, a meeting's
+# organizer and attendees) carry the ``pii`` marking of the party's stored address they
+# were matched with. Such a link is followed when what it says can be read from the row
+# itself: the address's domain (shown in the row) spells the party's name (its name word,
+# ``sender_parties.name_fits_domain``): every ``lead`` by the step's rule, and a
+# ``corroborated`` message link when its sender's domain does by whole words too
+# (``domain_spells_name``, ``cm_fit``). A stored
+# address on a shared mail provider, or a domain the name does not spell, is never
+# followed: it would tell whose address it is.
+SENDER_LINKS = ("Email.sent_by_customer", "Email.sent_by_supplier")
+PARTY_LINK_MARKS = '["pii"]'
+
+
+def _sender_link_types() -> tuple[str, ...]:
+    from ontology import sender_parties as sp
+    return tuple(sorted({*sp.LINK_TYPES.values(), *(
+        t for m in sp.MEETING_LINK_TYPES.values() for t in m.values())}))
+
+
+def _current_values(write: Any, objects: Sequence[str], prop: str) -> dict[str, str]:
+    """object id -> its current value of ``prop`` (the first cell read), by index."""
+    fields = [r[0] for r in write.execute(
+        "SELECT field FROM ontology.value_fields WHERE property = %s", (prop,)).fetchall()]
+    out: dict[str, str] = {}
+    if not fields:
+        return out
+    objects = sorted(set(objects))
+    for i in range(0, len(objects), 20_000):
+        for oid, value in write.execute(
+                "SELECT v.object_id, c.value FROM unnest(%s::text[]) o(object_id) JOIN "
+                "ontology.object_versions v ON v.object_id = o.object_id AND "
+                "v.superseded_at IS NULL "
+                "JOIN ontology.value_sources s ON s.ver = v.ver AND s.superseded_at IS NULL "
+                "JOIN ontology.value_cells c ON c.src = s.src AND c.field = ANY(%s::int[])",
+                (objects[i:i + 20_000], fields)).fetchall():
+            if value is not None:
+                out.setdefault(oid, value)
+    return out
+
+
+def domain_spells_name(name: str, domain: str) -> bool:
+    """Whether a domain spells a party's (normalised) name by the step's rule
+    (``sender_parties.name_fits_domain``) and by whole words: the domain's label holds a
+    distinctive name word (four letters or more anywhere, the first word of three at its
+    start), or the label is a run of the name's words (four letters or more, or the whole
+    name). A label that is only a piece of a word ("info" of "Information") spells
+    nothing."""
+    from ontology import mentions, sender_parties as sp
+    if not sp.name_fits_domain(name, domain):
+        return False
+    label = re.sub(r"[^a-z0-9]", "", mentions.registrable_domain(domain).split(".")[0])
+    words = [w for w in re.findall(r"[a-z0-9]+", name.lower()) if w not in sp._GENERIC]
+    if not label or not words:
+        return False
+    if any(len(w) >= 4 and w in label for w in words) or (
+            len(words[0]) >= 3 and label.startswith(words[0])):
+        return True
+    runs = {"".join(words[i:j]) for i in range(len(words))
+            for j in range(i + 1, len(words) + 1)}
+    return label in runs and (len(label) >= 4 or label == "".join(words))
+
+
+def fit_pairs(write: Any, spec: Spec, ids: str | None) -> list[tuple[str, str]]:
+    """(message, party) of the ``corroborated`` pii sender links of the messages (of
+    ``ids``; all of them in a build) whose sender's domain spells the party's name, as the
+    step judges a name (``identity_scoring.normalize_name``), by whole words
+    (``domain_spells_name``); never one on a shared mail provider."""
+    from ontology import mentions, sender_parties as sp
+    from ontology.identity_scoring import normalize_name
+    links = [t for t in SENDER_LINKS if t.split(".", 1)[0] in spec.types]
+    if not links:
+        return []
+    pairs = write.execute(
+        "SELECT DISTINCT l.from_object, l.to_object FROM ontology.links l WHERE "
+        "l.link_type = ANY(%s) AND l.superseded_at IS NULL AND l.markings = %s AND "
+        "l.tier <> 'lead' AND l.from_object <> l.to_object"
+        + (f" AND l.from_object IN (SELECT object_id FROM {ids})" if ids else ""),
+        (links, PARTY_LINK_MARKS)).fetchall()
+    if not pairs:
+        return []
+    senders = _current_values(write, [f for f, _t in pairs], sp.SENDER)
+    names = _current_values(write, [t for _f, t in pairs], "name")
+    fit = []
+    for message, party in pairs:
+        found = sp.addresses(senders.get(message))
+        domain = mentions.mail_domain(found[0]) if len(found) == 1 else None
+        if domain and not mentions.shared_mail_domain(domain) and domain_spells_name(
+                normalize_name(names.get(party) or ""), domain):
+            fit.append((message, party))
+    return fit
+
+
+def _sender_fit(write: Any, fit: Sequence[tuple[str, str]]) -> None:
+    """``cm_fit``: the (message, party) pairs ``fit_pairs`` found (``_links_sql`` follows
+    those corroborated links)."""
+    write.execute("DROP TABLE IF EXISTS pg_temp.cm_fit")
+    write.execute("CREATE TEMP TABLE cm_fit (oid text, party text, PRIMARY KEY (oid, party))")
+    if fit:
+        with write.cursor() as cur, cur.copy("COPY cm_fit (oid, party) FROM STDIN") as copy:
+            for row in sorted(set(fit)):
+                copy.write_row(row)
+    write.execute("ANALYZE cm_fit")
+
+
 def _links_sql(spec: Spec, ids: str) -> str:
     """SQL: per record of ``ids`` (a relation of object ids), its party and record handles
-    (unmarked live links whose target is a biz row)."""
+    (live links whose target is a biz row, never a person's rejection: unmarked, or a
+    sender-party link whose party the row's own address names, ``SENDER_LINKS``'
+    comment)."""
     types = [f"{t}.{s}" for t in spec.types for s in spec.party_links]
+    senders = [t for t in _sender_link_types() if t.split(".", 1)[0] in spec.types]
+    named = ("" if not senders else
+             f" OR (l.markings = {bv_lit(PARTY_LINK_MARKS)} AND l.link_type IN ("
+             + ", ".join(bv_lit(t) for t in senders) + ") AND (l.tier = 'lead' OR "
+             "fit.oid IS NOT NULL))")
     likes = " OR ".join([f"l.link_type IN ({', '.join(bv_lit(x) for x in types)})"]
                         * bool(types) + [f"starts_with(l.link_type, {bv_lit(t + '.mentions_')})"
                            for t in spec.types])
@@ -414,8 +573,11 @@ def _links_sql(spec: Spec, ids: str) -> str:
         "array_agg(DISTINCT b.handle) FILTER (WHERE b.kind NOT IN ('customer', "
         "'supplier')) AS records "
         f"FROM links l JOIN cm_biz b ON b.oid = l.to_object "
+        # one join (a probe per link is a subplan per row): at most one pair (primary key)
+        "LEFT JOIN cm_fit fit ON fit.oid = l.from_object AND fit.party = l.to_object "
         f"WHERE l.from_object IN (SELECT object_id FROM {ids}) AND l.superseded_at IS NULL "
-        f"AND l.markings = '[]' AND l.from_object <> l.to_object AND ({likes}) "
+        "AND l.tier <> 'contradicted' "   # a person's rejection of the pair, never a link
+        f"AND (l.markings = '[]'{named}) AND l.from_object <> l.to_object AND ({likes}) "
         "GROUP BY l.from_object")
 
 
@@ -465,7 +627,9 @@ def _rows_sql(spec: Spec, table: str, where: str, units: bool, text: str = "cm_t
         "ARRAY[coalesce(r.audience_key, '')], "
         "ARRAY(SELECT DISTINCT m FROM unnest(ARRAY['[]', coalesce(r.markings, '[]')] || "
         "coalesce(p.cell_marks, '{}')) m ORDER BY m), '{}'::jsonb, '{}'::jsonb, r.ver, "
-        f"NULL::integer, {ai_ok}, NULL::boolean, NULL::tsvector FROM r JOIN p ON p.object_id = r.object_id LEFT JOIN lk ON lk.oid = "
+        f"NULL::integer, {ai_ok}, NULL::boolean, NULL::tsvector"
+        + (", NOT p.fc" if spec.cells_ok else "")
+        + " FROM r JOIN p ON p.object_id = r.object_id LEFT JOIN lk ON lk.oid = "
         f"r.object_id LEFT JOIN cm_attach at ON at.oid = r.object_id WHERE {spec.keep}")
 
 
@@ -795,6 +959,22 @@ def bulk_sender(address: str) -> bool:
                         or bool(inbox_triage.BULK_DOMAIN.search(a)))
 
 
+def links_rule(spec: Spec) -> str:
+    """A stamp of what decides the party and record links a row of ``spec`` carries: the
+    link SQL, which sender links it follows, the domain-spelling rule, the (customer or
+    supplier) rules of ``message_parties``. A refresh reads again only the records changed
+    since its marks, so a row built under an older rule keeps its links for good; the stamp
+    kept in the table's marks tells ``refresh_changed`` the rule moved and every row's links
+    are decided again (``message_parties.relink`` and ``apply``)."""
+    import hashlib
+    import inspect
+    from operating.pg import message_parties
+    parts = [_links_sql(spec, "x"), repr(_sender_link_types()), PARTY_LINK_MARKS,
+             inspect.getsource(domain_spells_name), inspect.getsource(fit_pairs),
+             inspect.getsource(message_parties.PartyIndex), repr(message_parties.RULES)]
+    return hashlib.sha256("\n".join(parts).encode()).hexdigest()[:16]
+
+
 def marks(write: Any) -> dict[str, int]:
     """The store's high-water marks a refresh continues from (``field``: the document text
     fields, so a body indexed after its message is read at the next refresh)."""
@@ -936,6 +1116,8 @@ def _read_rows(spec: Spec, write: Any, table: str, top: int, disk: str, units: b
     live: list[Any] = []
     lock = threading.Lock()
 
+    fit = fit_pairs(write, spec, None)   # read once for every reader
+
     def reader() -> None:
         conn = connect()
         with lock:
@@ -945,7 +1127,7 @@ def _read_rows(spec: Spec, write: Any, table: str, top: int, disk: str, units: b
                 return
             conn.execute("SELECT set_config('statement_timeout', %s, false)", (timeout,))
             with conn.transaction():
-                _prep(conn, spec)
+                _prep(conn, spec, fit=fit)
                 while not stop.is_set():
                     try:
                         lo, hi = ranges.get_nowait()
@@ -1039,6 +1221,13 @@ def fill(spec: Spec, write: Any, table: str, *, connect: Any = None) -> dict[str
         write.execute(_compose(spec, stage, t, people=got["people"] is not None,
                                rows=(lo, lo + WRITE_CHUNK)))
     write.execute(f"DROP TABLE {stage}" + (f", {text}" if spec.mail else ""))
+    if spec.view in ("emails", "teams_messages"):
+        # the parties a message's addresses and words name, before the indexes (no index
+        # to keep up with the rows it sets)
+        from operating.pg import message_parties
+        got["dropped"] = sorted(
+            message_parties.apply(write, spec.view, t).get("names_dropped", {}))
+        got["links"] = links_rule(spec)
     _disk_guard(write, disk, "the indexes")
     write.execute(f"CREATE INDEX ON {t} ((object_ids[1]))")
     write.execute(f"CREATE INDEX ON {t} (handle)")
@@ -1087,7 +1276,7 @@ def _compose(spec: Spec, stage: str, table: str, *, people: bool,
             f"{int(rows[1])}) s " + " ".join(joins))
 
 
-SPECS: dict[str, Spec] = {s.view: s for s in (EMAIL, TEAMS, MEETING, TRANSCRIPT)}
+SPECS: dict[str, Spec] = {s.view: s for s in (EMAIL, TEAMS, MEETING, TRANSCRIPT, FILES)}
 
 
 def refresh_changed(write: Any, view: str, since: Mapping[str, Any], *,
@@ -1142,6 +1331,20 @@ def refresh_changed(write: Any, view: str, since: Mapping[str, Any], *,
         got["people"] = _classify(write, spec, view,
                                   "object_ids[1] IN (SELECT object_id FROM cm_changed)",
                                   since.get("people"))
+        if spec.view in ("emails", "teams_messages"):
+            from operating.pg import message_parties
+            stamp = links_rule(spec)
+            if since.get("links") != stamp:
+                # the links' rule moved since the table's rows were written: every row's
+                # links are decided again (a refresh alone reads only the changed records)
+                got["dropped"] = sorted(
+                    message_parties.redo(write, spec.view).get("names_dropped", {}))
+            else:
+                message_parties.apply(write, spec.view, f"{bv.SCHEMA}.{view}",
+                                      "object_ids[1] IN (SELECT object_id FROM cm_changed)",
+                                      drop_names=since.get("dropped") or ())
+                got["dropped"] = since.get("dropped") or []
+            got["links"] = stamp
         rows = write.execute(f"SELECT count(*) FROM {bv.SCHEMA}.{view}").fetchone()[0]
         write.execute(
             f"UPDATE {bv.SCHEMA}.state SET built_at = %s, digest = %s, rows = %s, "
@@ -1207,6 +1410,15 @@ def _classify(write: Any, spec: Spec, table: str, where: str,
 
 
 TEXT_BATCH = 5_000
+# A row whose message the source says has no body: its record has a current mail body
+# preview and none with a visible character (meeting accept/decline/update notices and
+# invitations with no text; 11-19: 49,775 of the 49,886 undecided live mails, withheld from
+# every model for good while waiting for text that never comes). No preview property, or a
+# preview with words but no text indexed yet, is not bodiless: it stays undecided.
+BODILESS_SQL = ("SELECT v.object_id FROM unnest(%s::text[]) AS o(oid) JOIN ontology.object_values "
+                "v ON v.object_id = o.oid AND v.property = 'body_preview' AND v.superseded_at "
+                "IS NULL GROUP BY v.object_id HAVING bool_and(v.value IS NOT NULL AND v.value "
+                "!~ '[^[:space:]]')")
 ACL_KIND = {"meeting-transcript": "meeting_participants"}
 
 
@@ -1354,16 +1566,22 @@ def _ai_verdicts(write: Any, table: str, where: str) -> None:
                 {"after": after, "n": TEXT_BATCH}).fetchall()
             if not got:
                 return
-            yield [(h, o) for h, oids in got for o in oids if o is not None], [h for h, _ in got]
+            pairs = [(h, o) for h, oids in got for o in oids if o is not None]
+            empty = {r[0] for r in write.execute(
+                BODILESS_SQL, ([o for _, o in pairs],)).fetchall()}
+            yield pairs, [(h, bool(oids) and all(o in empty for o in oids)) for h, oids in got]
             if len(got) < TEXT_BATCH:
                 return
             after = got[-1][0]
 
-    def put(handles: list[str], got: Mapping[str, bool]) -> None:
-        # every handle of the page gets a row: one with no text is undecided (NULL)
+    def put(handles: list[tuple[str, bool]], got: Mapping[str, bool]) -> None:
+        # every handle of the page gets a row: one with no text is undecided (NULL), unless
+        # the source says it has no body (``BODILESS_SQL``): then its cells decide it, and a
+        # row reaches here only when they do not name Freightcom (``ai_ok`` not false)
         with write.cursor().copy("COPY cm_ai (handle, ok) FROM STDIN") as cp:
-            for h in handles:
-                cp.write_row((h, got.get(h)))
+            for h, bodiless in handles:
+                ok = got.get(h)
+                cp.write_row((h, True if ok is None and bodiless else ok))
     # many or few: the first pages tell (at most FLAG_POOL_MIN handles held)
     parts = pages()
     head: list[Any] = []
@@ -1427,6 +1645,10 @@ def recheck(write: Any, view: str) -> dict[str, Any]:
     return {"view": view, "undecided_before": before, "undecided": after}
 
 
+# the setting a search statement admits ``FILES`` rows by (``SqlTool._comms_search`` only)
+FILES_SETTING, FILES_SEARCH = "plx.reader_files", "search"
+
+
 def view_ddl(v: Any, src: str, dst: str, *, ai: bool = True) -> str:
     """``CREATE VIEW`` of a communications table's guarded view (door v2): the row's unit
     among the units the reader holds (``comms_units`` whose audience key and record marks
@@ -1450,14 +1672,20 @@ def view_ddl(v: Any, src: str, dst: str, *, ai: bool = True) -> str:
                f"'{v.name}')")
     hidden = ("t.object_ids[1] NOT IN (SELECT json_array_elements_text(current_setting("
               "'plx.reader_hidden', true)::json))")
-    where = [f"t.unit = ANY({units})", *(["t.ai_ok"] if ai else []), "t.excluded IS FALSE",
+    # Freightcom: decided on the text; a files row with no text yet, on its cells
+    fc = ("(t.ai_ok OR (t.ai_ok IS NULL AND t.cells_ok))" if spec is not None
+          and spec.cells_ok else "t.ai_ok")
+    where = [f"t.unit = ANY({units})", *([fc] if ai else []), "t.excluded IS FALSE",
              f"t.ver <= {covered}", f"(coalesce({current}, false) OR NOT EXISTS (SELECT 1 FROM "
              "ontology.people_excluded_objects peo WHERE peo.object_id = t.object_ids[1]))",
              "t.handle IS NOT NULL", hidden,
              *(f"current_setting('{n}', true) IS NOT NULL" for n in SETTINGS)]
     join = ""
-    if spec is None or spec.scope not in ("audience", "teams", "participants"):
+    if spec is None or spec.scope not in ("audience", "teams", "participants", "files"):
         where.append("false")   # an unknown rule: nothing (fail closed)
+    elif spec.scope == "files":
+        # only inside a search statement that re-gates every row (``FILES``' comment)
+        where.append(f"current_setting('{FILES_SETTING}', true) = '{FILES_SEARCH}'")
     elif spec.scope == "participants":
         # the item rule: a full reader, or one of the reader's identities a participant;
         # an unset or malformed setting reads as neither (fail closed)

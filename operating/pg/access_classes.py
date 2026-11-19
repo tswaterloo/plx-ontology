@@ -27,6 +27,26 @@ def ensure(write: Any, schema: str) -> None:
     door.ensure(write, schema)
 
 
+def assign_cols(write: Any, schema: str, patterns: str) -> int:
+    """Give every column pattern of the query ``patterns`` (rows of one ``marks jsonb``:
+    column -> marking set) not in ``col_classes`` yet the next ids (no ``needs``), id 0
+    being nothing marked; the caller's transaction, under the lock
+    ``business_views_access.col_class_ids`` takes too. Returns how many were added."""
+    write.execute(f"LOCK TABLE {schema}.col_classes IN SHARE ROW EXCLUSIVE MODE")
+    write.execute(f"INSERT INTO {schema}.col_classes (id, marks, needs) SELECT 0, '{{}}', "
+                  f"'{{}}' WHERE NOT EXISTS (SELECT 1 FROM {schema}.col_classes WHERE id = 0)")
+    cur = write.execute(
+        f"INSERT INTO {schema}.col_classes (id, marks, needs) SELECT (SELECT COALESCE(max(id), "
+        f"0) FROM {schema}.col_classes) + row_number() OVER (ORDER BY p.marks::text), p.marks, "
+        f"'{{}}'::jsonb FROM (SELECT DISTINCT q.marks FROM ({patterns}) q(marks)) p WHERE NOT "
+        f"EXISTS (SELECT 1 FROM {schema}.col_classes c WHERE c.marks = p.marks AND "
+        "c.needs = '{}'::jsonb)")
+    top = write.execute(f"SELECT max(id) FROM {schema}.col_classes").fetchone()[0]
+    if top is not None and top > CLASS_MAX:
+        raise RuntimeError(f"{schema}.col_classes: more than {CLASS_MAX} patterns")
+    return cur.rowcount
+
+
 def assign(write: Any, schema: str, patterns: str) -> int:
     """Give every pattern of the query ``patterns`` (rows of ``keys text[], marks text[]``,
     each sorted and distinct) not in ``access_classes`` yet the next ids (never ``blocked``,

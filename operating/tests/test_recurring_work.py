@@ -293,6 +293,39 @@ class DueEvents(unittest.TestCase):
             rw.due_events(state, st, [ME[1]], at(AS_OF + timedelta(days=7), 11, 5), measure)
             self.assertEqual(len(calls), 2)
 
+    def test_each_person_gets_their_due_work_whatever_the_people_before_them_had(self):
+        """Several people in one cycle: one who runs a meeting today (its brief) does not
+        change the day the next is measured for, and one whose scan fails costs only their
+        own work (counted), never the others' (N = 1, 10, 60 people)."""
+        from collections import Counter
+
+        def oid(i):
+            return f"aaaaaaaa-0000-4000-8000-{i:012d}"
+        for n in (1, 10, 60):
+            days = []
+
+            def measure(state, owner, as_of):
+                days.append(as_of)
+                if owner == oid(n + 1):
+                    raise sqlite3.OperationalError("store unreadable")
+                runs = int(owner[-12:]) % 2 == 0
+                return self.found(self.weekly("calendar", "run_meeting", handle="m1")
+                                  if runs else self.weekly(handle=f"h{owner[-12:]}"))
+            st = self.Store([("Meeting:1", self.TODAY)] + [
+                (f"SharePointFile:{i}", f"h{oid(i)[-12:]}") for i in range(n)])
+            failed = Counter()
+            with tempfile.TemporaryDirectory() as d:
+                self.calendar(Path(d), at(AS_OF, 11, 30))
+                got = rw.due_events(Path(d), st, [oid(i) for i in range(n)] + [oid(n + 1)],
+                                    at(AS_OF, 11, 5), measure, failed=failed)
+            self.assertEqual(set(days), {AS_OF}, n)
+            self.assertEqual(len(days), n + 1, n)
+            self.assertEqual(failed["recurring_unreadable"], 1, n)
+            want = sorted((oid(i), "Meeting:1" if i % 2 == 0 else f"SharePointFile:{i}")
+                          for i in range(n))
+            self.assertEqual(sorted((e["owner_hint"], e["object_id"]) for e in got), want, n)
+            self.assertEqual(len({e["event_id"] for e in got}), n, n)
+
     def test_a_scheduled_teams_post_is_drafted_into_its_chat_when_due(self) -> None:
         def measure(state, owner, as_of):
             return self.found(self.weekly("teams", "post", handle="t1", ref="19:c@thread.v2"),

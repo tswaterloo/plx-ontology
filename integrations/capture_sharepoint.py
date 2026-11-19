@@ -476,6 +476,15 @@ REEXTRACT_SHARE = 0.25
 # The longest Retry-After a run without a time budget waits once (:meth:`_throttled`);
 # a budgeted run waits only what ends before its root's slice and its deadline.
 RETRY_AFTER_MAX_SECONDS = 120
+# The estate discovery's listings (the site listing, each site's library listing) wait out
+# the source's own Retry-After on a 429 or 503 (:meth:`_listing`): at most this many waits
+# a run, each at most this long and ending before the run's deadline. The transport's own
+# backoff is capped at seconds, and a site listing it gives up on plans no root at all
+# (11-19: Graph throttled ``getAllSites``; four runs in a row planned 0 of 230 roots).
+DISCOVERY_WAITS = 3
+DISCOVERY_RETRY_AFTER_MAX_SECONDS = 300
+# The wait for a 429 or 503 that names no usable Retry-After (Graph's guidance: back off).
+DISCOVERY_DEFAULT_WAIT_SECONDS = 60
 FIRST_PASS_SHARE = 0.5   # the most of the budget left a run's retry-first pass spends
 # Named items (module docstring, Named items first): the most of the budget left the pass
 # spends, the most items one run names, and the outcomes it types per item.
@@ -979,6 +988,52 @@ class SharePointCaptureStore:
                                 "security_class, decided_at=excluded.decided_at",
                                 (drive_id, security_class, self.now()))
 
+    def note_planned_libraries(self, libraries: Sequence[Mapping[str, Any]]) -> None:
+        """Record each library estate discovery planned (``drive_id``, ``site_id``,
+        ``site_name``, ``host``, ``personal``, ``library_name``) with the time: what a run
+        whose listing fails carries (:meth:`SharePointCapture._carry`)."""
+        if not libraries:
+            return
+        now = self.now()
+        with self.db:
+            self.db.executemany(
+                "INSERT INTO planned_libraries VALUES (?,?,?,?,?,?,?) ON CONFLICT (drive_id) "
+                "DO UPDATE SET site_id=excluded.site_id, site_name=excluded.site_name, "
+                "host=excluded.host, personal=excluded.personal, "
+                "library_name=excluded.library_name, planned_at=excluded.planned_at",
+                [(lib["drive_id"], lib["site_id"], lib["site_name"], lib["host"],
+                  1 if lib["personal"] else 0, lib["library_name"], now)
+                 for lib in libraries])
+
+    def prune_planned_libraries(self, listed_sites: set[str], settled: set[str],
+                                planned: set[str]) -> int:
+        """Forget the planned libraries a complete discovery shows are gone: those of a site
+        the whole site listing no longer names (deleted upstream, or no longer visible to
+        the app), and those of a site whose libraries this run listed whole
+        (``settled``) that it did not plan (``planned`` drive ids: removed, renamed to an
+        excluded name, or no longer a document library). Only called after a complete
+        site listing, so a failed or cut one never forgets what it could not see. Returns
+        the rows removed."""
+        removed = 0
+        with self.db:
+            for row in self.db.execute("SELECT drive_id, site_id FROM planned_libraries"
+                                       ).fetchall():
+                if row["site_id"] not in listed_sites or (
+                        row["site_id"] in settled and row["drive_id"] not in planned):
+                    removed += self.db.execute(
+                        "DELETE FROM planned_libraries WHERE drive_id = ?",
+                        (row["drive_id"],)).rowcount
+        return removed
+
+    def planned_libraries(self) -> list[dict[str, Any]]:
+        """Every library some discovery planned (:meth:`note_planned_libraries`), by drive
+        id; none in a store opened read-only from before they were kept."""
+        try:
+            return [dict(row) for row in self.db.execute(
+                "SELECT * FROM planned_libraries ORDER BY drive_id")]
+        except sqlite3.OperationalError:
+            return []
+
     def drive_class(self, drive_id: str) -> str | None:
         try:
             found = self.db.execute("SELECT security_class FROM drive_classes WHERE "
@@ -1022,8 +1077,13 @@ class SharePointCaptureStore:
         age = None if walked is None else int((self._clock() - datetime.strptime(
             walked, "%Y-%m-%dT%H:%M:%S.%fZ").replace(tzinfo=timezone.utc)
         ).total_seconds() // 3600)
+        # whether a position is stored, never the position itself: a cut walk's stored
+        # position runs to megabytes of JSON (39 roots held 4.3 MB live), and every
+        # resolved document asks this (a PO page with documents: 1.5 s of decoding)
+        open_ = self.db.execute("SELECT 1 FROM walk_positions WHERE drive_id=? AND "
+                                "root_path=?", (drive_id, root_path)).fetchone()
         return {"last_full_walk_at": walked, "age_hours": age,
-                "refresh_open": self.walk_position(drive_id, root_path) is not None}
+                "refresh_open": open_ is not None}
 
     def walk_position(self, drive_id: str, root_path: str) -> dict[str, Any] | None:
         """The stored position of a root's cut full walk (``walk_positions``), or None."""
@@ -2164,7 +2224,8 @@ DISCOVERY_COUNTS = ("sites_seen", "sites_other_host", "sites_personal", "sites_l
                     "sites_listed",
                     "libraries_seen", "libraries_not_document_library", "libraries_excluded",
                     "libraries_covered_by_target", "libraries_planned",
-                    "libraries_personal_planned", "libraries_restricted_unclassified")
+                    "libraries_personal_planned", "libraries_restricted_unclassified",
+                    "libraries_carried", "libraries_carry_refused", "libraries_forgotten")
 FOLDER_COUNTS = ("folders_listed", "files_seen", "versions_new", "versions_superseded",
                  "unchanged", "moved", "reappeared", "absent_after_resync",
                  "moved_out_of_scope", "contents_captured", "content_bytes",
@@ -2355,6 +2416,8 @@ class SharePointCapture:
         self._extraction = _Extraction(1, self._read_text)   # the walking root's
         # The source's own Retry-After waits honoured (:meth:`_throttled`): count, seconds.
         self.retry_after_waits, self.retry_after_seconds = 0, 0.0
+        self.throttle_hold = False   # Graph held the app past a read's wait (``_note_hold``)
+        self._discovery_waits = 0   # this run's discovery listing waits (:meth:`_listing`)
         # Drives whose source failed as a whole on a re-read refetch this run; whether a
         # refetch was refused for the run's credentials (no refetch follows this run);
         # downloads that succeeded this run, and 5xx refetch failures in a row since the
@@ -2383,7 +2446,15 @@ class SharePointCapture:
         if now is None and self._deadline is not None:
             now = self._checked_at = self._monotonic()
         from . import drain   # a drain request (the ingest host's SIGTERM) spends it
-        return drain.requested() or (self._deadline is not None and now >= self._deadline)
+        return (drain.requested() or self.throttle_hold
+                or (self._deadline is not None and now >= self._deadline))
+
+    def _note_hold(self, exc: BaseException) -> None:
+        """Graph is holding this app for longer than a read may wait (``graph_throttle``,
+        the shared 429/503 hold): the run ends like a spent budget (every position kept,
+        the rest read next run) instead of sending refused reads item after item."""
+        if getattr(exc, "throttle_hold", False):
+            self.throttle_hold = True
 
     def _throttled(self, call: Callable[[], Any]) -> Any:
         """``call()``; when the source refused it with 429 or 503 and its own Retry-After
@@ -2395,8 +2466,9 @@ class SharePointCapture:
         try:
             return call()
         except SourceUnavailable as exc:
+            self._note_hold(exc)
             wait = getattr(exc, "retry_after_seconds", None)
-            if (getattr(exc, "http_status", None) not in (429, 503)
+            if (self.throttle_hold or getattr(exc, "http_status", None) not in (429, 503)
                     or isinstance(wait, bool) or not isinstance(wait, (int, float))
                     or not 0 <= wait <= self._wait_left()):
                 raise
@@ -2404,6 +2476,46 @@ class SharePointCapture:
         self.retry_after_waits += 1
         self.retry_after_seconds += wait
         return call()
+
+    def _listing(self, call: Callable[[], Any]) -> Any:
+        """A discovery listing ``call()``. Refused with 429 or 503, it waits the source's
+        own Retry-After (:data:`DISCOVERY_DEFAULT_WAIT_SECONDS` when it names none) and
+        calls again, at most :data:`DISCOVERY_WAITS` times a run, each wait at most
+        :data:`DISCOVERY_RETRY_AFTER_MAX_SECONDS` and ending before the run's deadline.
+        Any other failure, a wait the bounds cannot hold or a drain request during the
+        wait raises the refusal as it came: the caller records its gap, as before."""
+        while True:
+            try:
+                return call()
+            except SourceUnavailable as exc:
+                wait = getattr(exc, "retry_after_seconds", None)
+                if isinstance(wait, bool) or not isinstance(wait, (int, float)):
+                    wait = DISCOVERY_DEFAULT_WAIT_SECONDS
+                left = (float("inf") if self._deadline is None
+                        else self._deadline - self._monotonic())
+                if (self._discovery_waits >= DISCOVERY_WAITS
+                        or getattr(exc, "http_status", None) not in (429, 503)
+                        or not 0 <= wait <= min(DISCOVERY_RETRY_AFTER_MAX_SECONDS, left)
+                        or not self._drainable_wait(wait)):
+                    self._note_hold(exc)   # a hold this wait cannot outlast ends the run
+                    raise
+            self._discovery_waits += 1
+            self.retry_after_waits += 1
+            self.retry_after_seconds += wait
+
+    def _drainable_wait(self, seconds: float) -> bool:
+        """Sleep ``seconds`` in steps of at most one second; False (the wait given up) as
+        soon as a drain is requested (``integrations.drain``: the host's SIGTERM)."""
+        from . import drain
+        left = float(seconds)
+        while True:
+            if drain.requested():
+                return False
+            if left <= 0:
+                return True
+            step = min(1.0, left)
+            self._sleep(step)
+            left -= step
 
     def _wait_left(self) -> float:
         """Seconds a wait may take: until the nearer of the slice and the deadline. A
@@ -2519,6 +2631,7 @@ class SharePointCapture:
             return {"content_status": _UNAVAILABLE + "not_visible",
                     "text_status": "not_read"}, record, None
         except SourceUnavailable as exc:
+            self._note_hold(exc)
             counts["contents_unavailable"] += 1
             self.failed_reads.add(str(record.get("id")))
             return {"content_status": _UNAVAILABLE + (unavailable_detail(exc) or "unclassified"),
@@ -2809,6 +2922,7 @@ class SharePointCapture:
                 return None, "file", "acl_unreadable"
             return None, "final", "not_visible"
         except SourceUnavailable as exc:
+            self._note_hold(exc)
             return None, _refetch_failure(exc), unavailable_detail(exc) or "unclassified"
         content = read.get("content")
         if isinstance(content, bytes):
@@ -2996,6 +3110,7 @@ class SharePointCapture:
                     fail(drive_id, item_id, "not_found")
                     continue
                 except SourceUnavailable as exc:
+                    self._note_hold(exc)
                     fail(drive_id, item_id,
                          "source_error:" + (unavailable_detail(exc) or "unclassified"))
                     continue
@@ -3159,6 +3274,7 @@ class SharePointCapture:
                     queue.pop(0)
                     continue
                 except SourceUnavailable as exc:
+                    self._note_hold(exc)
                     reasons.add("source_error:" + (unavailable_detail(exc) or "unclassified"))
                     queue.pop(0)
                     continue
@@ -3583,6 +3699,7 @@ class SharePointCapture:
         self._reread_auth = False
         self._downloads_ok = self._reread_streak = 0
         self._reread_failed = set()
+        self._discovery_waits = 0
         targets: list[dict[str, Any]] = []
         plans: list[tuple[dict[str, Any], Any, str, str, CaptureTarget]] = []
         walks: list[tuple[dict[str, Any], dict[str, Any]]] = []
@@ -3818,7 +3935,10 @@ class SharePointCapture:
         HTTP 423, counted ``sites_locked``, no gap), ``excluded`` or ``other_host`` (on any
         host but those two; a personal site has no URL name);
         ``sites_complete``: the site listing itself was read whole (never printed by the
-        CLI; it names only sites a registry already names, :func:`registry_site_outcomes`)."""
+        CLI; it names only sites a registry already names, :func:`registry_site_outcomes`).
+        Each library planned is kept in the store with its site
+        (``note_planned_libraries``); while the site listing or a site's library listing
+        fails, the site libraries planned before are carried (:meth:`_carry`)."""
         rule = scope.discover
         counts = {key: 0 for key in DISCOVERY_COUNTS}
         gaps: list[str] = []
@@ -3834,9 +3954,10 @@ class SharePointCapture:
             gaps.append("discovery_unavailable")
             return outcome()
         try:
-            sites, done = self.estate.sites(max_items=rule.max_sites)
+            sites, done = self._listing(lambda: self.estate.sites(max_items=rule.max_sites))
         except (SourceUnavailable, NotVisible) as exc:
             gaps.append("discovery_sites:" + (unavailable_detail(exc) or "not_visible"))
+            self._carry(scope, claimed, targets, plans, counts, settled=set(), only=None)
             return outcome()
         if not done.get("complete", False):
             gaps.append("discovery_sites_truncated")
@@ -3845,6 +3966,9 @@ class SharePointCapture:
         sites_complete = not gaps
         hosts = estate_hosts(self.estate.host)
         people = _OneDriveOwners(self.estate)
+        settled: set[str] = set()   # site ids whose libraries were listed whole this run
+        unlisted: set[str] = set()  # site ids whose library listing failed or was cut
+        noted: list[dict[str, Any]] = []   # the libraries planned (note_planned_libraries)
         for site in sites:
             counts["sites_seen"] += 1
             if site["host"] not in hosts:
@@ -3877,7 +4001,8 @@ class SharePointCapture:
                 sites_seen[site["name"]] = "excluded"
                 continue
             try:
-                libraries, done = self.estate.libraries(site["id"], max_items=rule.max_libraries)
+                libraries, done = self._listing(lambda: self.estate.libraries(
+                    site["id"], max_items=rule.max_libraries))
             except (SourceUnavailable, NotVisible) as exc:
                 detail = unavailable_detail(exc)
                 if personal and detail in LOCKED_DETAILS:
@@ -3890,6 +4015,7 @@ class SharePointCapture:
                     continue
                 gaps.append("library_listing:" + (detail or "not_visible"))
                 sites_seen[site["name"]] = "failed"
+                unlisted.add(site["id"])
                 continue
             counts["sites_listed"] += 1
             if sites_seen.get(site["name"]) != "failed":
@@ -3900,6 +4026,10 @@ class SharePointCapture:
             if done.get("provenance_dropped"):
                 gaps.append("discovery_provenance_dropped")
                 sites_seen[site["name"]] = "failed"
+            if done.get("complete", False) and not done.get("provenance_dropped"):
+                settled.add(site["id"])
+            else:
+                unlisted.add(site["id"])
             for library in libraries:
                 counts["libraries_seen"] += 1
                 # Graph types a OneDrive for Business drive "business": a library on the
@@ -3916,19 +4046,82 @@ class SharePointCapture:
                     gaps.append("restricted_library_unclassified")
                     sites_seen[site["name"]] = "failed"
                 else:
-                    claimed[library["id"]] = ["/"]
-                    target = CaptureTarget({"id": "discovered", "drive_id": library["id"],
-                                            "folders": ["/"], "max_depth": rule.max_depth,
-                                            "max_folders": rule.max_folders})
-                    entry = {"index": len(targets), "discovered": True, "roots": [],
-                             "drive_id": library["id"], "site": site["name"],
-                             "personal": personal}
-                    targets.append(entry)
-                    plans.append((entry, self.readers(library["id"]), library["id"], "/",
-                                  target))
+                    self._plan_library(rule, claimed, targets, plans, library["id"],
+                                       site["name"], personal)
+                    noted.append({"drive_id": library["id"], "site_id": site["id"],
+                                  "site_name": site["name"], "host": site["host"],
+                                  "personal": personal, "library_name": library["name"]})
                     counts["libraries_planned"] += 1
                     counts["libraries_personal_planned"] += personal
+        self.store.note_planned_libraries(noted)
+        if sites_complete:
+            counts["libraries_forgotten"] = self.store.prune_planned_libraries(
+                {site["id"] for site in sites}, settled, {lib["drive_id"] for lib in noted})
+        if not sites_complete:
+            # The site listing was cut: every site it did not list whole may hold a
+            # library planned before.
+            self._carry(scope, claimed, targets, plans, counts, settled=settled, only=None)
+        elif unlisted:
+            self._carry(scope, claimed, targets, plans, counts, settled=settled,
+                        only=unlisted)
         return outcome()
+
+    def _plan_library(self, rule: Any, claimed: dict[str, list[str]],
+                      targets: list[dict[str, Any]], plans: list[tuple], drive_id: str,
+                      site_name: str | None, personal: bool, *, carried: bool = False
+                      ) -> None:
+        """Plan one library from its root ``/`` as a ``discovered`` target."""
+        claimed[drive_id] = ["/"]
+        target = CaptureTarget({"id": "discovered", "drive_id": drive_id,
+                                "folders": ["/"], "max_depth": rule.max_depth,
+                                "max_folders": rule.max_folders})
+        entry = {"index": len(targets), "discovered": True, "roots": [],
+                 "drive_id": drive_id, "site": site_name, "personal": personal}
+        if carried:
+            entry["carried"] = True
+        targets.append(entry)
+        plans.append((entry, self.readers(drive_id), drive_id, "/", target))
+
+    def _carry(self, scope: CaptureScope, claimed: dict[str, list[str]],
+               targets: list[dict[str, Any]], plans: list[tuple], counts: dict[str, int],
+               *, settled: set[str], only: set[str] | None) -> None:
+        """Plan the site libraries an earlier discovery planned
+        (``store.planned_libraries``) whose site this run could not list whole: the site
+        listing failed or was cut (``only`` None: any site not in ``settled``, the sites
+        whose libraries this run listed whole), or the site's own library listing did
+        (``only``: those site ids). Capture continues over them while Graph refuses a
+        listing (11-19: HTTP 429 on getAllSites for hours planned no root at all).
+
+        Each is judged again on the scope as it is now, never on what was true when it
+        was planned: a OneDrive (its owner's people exclusion needs the live site) or a
+        library on any host but the site host, on an excluded site, itself excluded, or
+        restricted and unclassified (:meth:`_classify`) is never carried
+        (``libraries_carry_refused``); a drive this run already plans or a named target
+        holds is skipped. Discovery stays incomplete (its gaps are kept), so no root is
+        retired (``retire_unplanned_roots``). Counted ``libraries_carried``.
+
+        Known limit: exclusions match site and library *names*, and a carried library is
+        judged on the names stored when it was last planned. A site or library renamed
+        upstream since then is carried under its old name, so an exclusion written for
+        its new name does not apply until the next complete listing stores the new one
+        (every complete discovery refreshes the names; one that no longer names the site
+        forgets it, ``prune_planned_libraries``). Add the old name to an exclusion to
+        close that window while Graph keeps refusing the listing."""
+        rule = scope.discover
+        for row in self.store.planned_libraries():
+            drive_id, site, name = row["drive_id"], row["site_name"], row["library_name"]
+            if row["site_id"] in settled or (only is not None and row["site_id"] not in only):
+                continue
+            if drive_id in claimed:
+                continue
+            if (row["personal"] != 0 or row["host"] != self.estate.host
+                    or rule.site_excluded(site) or rule.library_excluded(site, name)
+                    or self._classify(scope, None, drive_id, site, {"name": name})):
+                counts["libraries_carry_refused"] += 1
+                continue
+            self._plan_library(rule, claimed, targets, plans, drive_id, site, False,
+                               carried=True)
+            counts["libraries_carried"] += 1
 
     def _site(self, site: str | None) -> str:
         if site is None or self.site_drive is None:
@@ -4287,8 +4480,49 @@ def run_cli(args: argparse.Namespace, *, environ: Mapping[str, str] | None = Non
             capture.named_items = sharepoint_items(state_dir)
         before = _progress_marks(store, actor, audience)
         started_at = store.now()   # a version recorded from here on is new to this run
-        raw_runs = [capture.run(scope) for _n in range(args.runs)]
+        from . import drain
+        raw_runs: list[dict[str, Any]] = []
+        for _n in range(args.runs):
+            raw_runs.append(capture.run(scope))
+            if drain.requested():
+                break
         runs = [_report_run(n, run) for n, run in enumerate(raw_runs, 1)]
+
+        def drained() -> dict[str, Any] | None:
+            """The runs' report without the self-check, once a drain is requested (the
+            ingest host's SIGTERM): the store-wide self-check below takes minutes on the
+            estate store (~80-140 s live, 11-19), past the host's drain bound, so a drained
+            run used to be killed in it and its walk never recorded (11-19: a 2 h walk,
+            2:10-4:08 AM ET). Checked before and between its steps."""
+            if not drain.requested():
+                return None
+            report = {"check": "capture.sharepoint", "drained": True,
+                      "self_check": "skipped_drained",
+                      "evidence_label": "injected-transport" if transport.sender_injected
+                      else "live-read",
+                      "read_only_guard": "GET-only; token POST only",
+                      "runs": runs,
+                      "incomplete_scope": (named := incomplete_scope(
+                          raw_runs[-1], scope,
+                          persisted=carried and getattr(args, "state_kept", None)
+                          is not False)),
+                      "blocked_upstream": blocked_scope(
+                          named, (raw_runs[-1].get("discovery") or {}).get("gaps") or [],
+                          carried=carried and getattr(args, "state_kept", None)
+                          is not False),
+                      "requests_sent": transport.requests_sent,
+                      "request_mix": transport.request_mix(),
+                      "throttle_hold": capture.throttle_hold,
+                      "retry_after_waits": capture.retry_after_waits,
+                      "retry_after_seconds": round(capture.retry_after_seconds, 1),
+                      "operations_read": sorted(transport.operations_read),
+                      "ok": False}
+            if retry_first is not None:
+                report["retried_first"] = capture.first_counts["contents_recovered"]
+            return report
+
+        if (cut := drained()) is not None:
+            return cut
         # Offline resolution of what was captured (no source read).
         index = store.index(actor, audience, limit=INDEX_LIMIT)
         # The offline self-check resolves (as three actors) and re-hashes each handle it
@@ -4302,9 +4536,13 @@ def run_cli(args: argparse.Namespace, *, environ: Mapping[str, str] | None = Non
         checked = fresh + sampled
         # the capture's own integrity (every version resolves offline), not what the
         # people exclusion serves: carried mail is decided at read (DOC-008)
+        if (cut := drained()) is not None:
+            return cut
         resolved = sum(1 for item in checked
                        if store.resolve(item["l1_handle"], actor, audience,
                                         _whole=False) is not None)
+        if (cut := drained()) is not None:
+            return cut
         pinned = [i for i in checked if i["content_sha256"]]
         verified, failed_bytes = 0, {}
         for i in pinned:
@@ -4317,6 +4555,8 @@ def run_cli(args: argparse.Namespace, *, environ: Mapping[str, str] | None = Non
                 code = (exc.code if isinstance(exc, CaptureError) else "blob_unreadable"
                         if isinstance(exc, OSError) else "unexpected:" + type(exc).__name__)
                 failed_bytes[code] = failed_bytes.get(code, 0) + 1
+        if (cut := drained()) is not None:
+            return cut
         hidden_index = store.index(withheld, audience, limit=INDEX_LIMIT)
         hidden_counts = store.counts(withheld, audience)
         hidden_roots = store.completeness(withheld, audience)["roots"]
@@ -4333,8 +4573,12 @@ def run_cli(args: argparse.Namespace, *, environ: Mapping[str, str] | None = Non
         folder_resolved = sum(1 for item in checked
                               if store.resolve(item["l1_handle"], folder_actor,
                                                folder_audience) is not None)
+        if (cut := drained()) is not None:
+            return cut
         counts = store.counts(actor, audience)
         completeness = store.completeness(actor, audience)
+        if (cut := drained()) is not None:
+            return cut
         last = runs[-1]
         report = {
             "check": "capture.sharepoint",
@@ -4407,6 +4651,8 @@ def run_cli(args: argparse.Namespace, *, environ: Mapping[str, str] | None = Non
             "relations": ({"driveItems": counts["files_current"]}
                           if counts["files_current"] else {}),
             "requests_sent": transport.requests_sent,
+            "request_mix": transport.request_mix(),
+            "throttle_hold": capture.throttle_hold,
             # Throttled reads read again once after the source's own Retry-After wait.
             "retry_after_waits": capture.retry_after_waits,
             "retry_after_seconds": round(capture.retry_after_seconds, 1),
@@ -4438,13 +4684,22 @@ def run_cli(args: argparse.Namespace, *, environ: Mapping[str, str] | None = Non
             named: dict[str, int] = {}
             for reason in sorted(x for r in gaps for x in r):
                 named[reason] = named.get(reason, 0) + 1
+            if (cut := drained()) is not None:
+                return cut
             unavailable: dict[str, int] = {}
             for row in store._visible_rows(actor, audience):
                 if str(row["content_status"]).startswith(_UNAVAILABLE):
                     detail = row["content_status"][len(_UNAVAILABLE):]
                     unavailable[detail] = unavailable.get(detail, 0) + 1
+            if (cut := drained()) is not None:
+                return cut
             after = _progress_marks(store, actor, audience)
             planned = capture.planned
+            if (cut := drained()) is not None:
+                return cut
+            judged = carried_estate(store, actor, audience, planned)
+            if (cut := drained()) is not None:
+                return cut
             unvisited_before = sum(1 for root in planned if root not in before["visited"])
             unvisited = sum(1 for root in planned if root not in after["visited"])
             report["estate"] = {**last["discovery"]["counts"],
@@ -4470,7 +4725,7 @@ def run_cli(args: argparse.Namespace, *, environ: Mapping[str, str] | None = Non
                                     if r.get("walk_position") is not None
                                     and TIME_BUDGET not in _root_reasons(r)),
                                 # The estate judged across runs (:func:`carried_estate`).
-                                "carried": carried_estate(store, actor, audience, planned),
+                                "carried": judged,
                                 # Across invocations on the host state (module docstring,
                                 # Estate progress): complete roots never fewer, roots no
                                 # walk has reached fewer each run until none is left.
@@ -4484,6 +4739,8 @@ def run_cli(args: argparse.Namespace, *, environ: Mapping[str, str] | None = Non
                                     "roots_unvisited": unvisited,
                                     "roots_unvisited_falling": (unvisited < unvisited_before
                                                                 or unvisited == 0)}}
+            if (cut := drained()) is not None:
+                return cut
             if registry_sites is not None:
                 report["registry_sites"] = registry_site_outcomes(raw_runs[-1],
                                                                   registry_sites)

@@ -16,7 +16,7 @@ const ROUTES = readdirSync(join(__dirname, "../app/(app)"), { withFileTypes: tru
 
 describe("the sidebar: one fixed list (owner, 11-17: items moved depending on the page)", () => {
   it("a plain reader sees Home, Ask, Records, Meetings, Autopilot; no Team, no Admin; Memory, Templates and Work log in the account menu (simpler tabs 11-18)", () => {
-    expect(navSectionsFor({}).filter((s) => s.group === "main").map((s) => s.label)).toEqual(["Home", "Ask", "Records", "Meetings", "Autopilot"]);
+    expect(navSectionsFor({}).filter((s) => s.group === "main").map((s) => s.label)).toEqual(["Home", "Ask", "Insights", "Records", "Meetings", "Autopilot"]);
     expect(navSectionsFor({}).filter((s) => s.group === "account").map((s) => s.href)).toEqual(["/memory", "/templates", "/work-log"]);
     expect(navSectionsFor({}).some((s) => s.group === "last")).toBe(false);
   });
@@ -119,9 +119,9 @@ describe("the sidebar: one fixed list (owner, 11-17: items moved depending on th
     expect(pinnable("/rd-projects")).toBe(false);
   });
 
-  it("the owner's sidebar is Home, Ask, Records, Meetings, Autopilot, Team, then Admin; Memory, Templates and Work log are in the account menu", () => {
+  it("the owner's sidebar is Home, Ask, Insights, Records, Meetings, Autopilot, Team, then Admin; Memory, Templates and Work log are in the account menu", () => {
     const secs = navSectionsFor({ owner: true, ops_reader: true, feedback_admin: true });
-    expect(secs.filter((s) => s.group !== "account").map((s) => s.label)).toEqual(["Home", "Ask", "Records", "Meetings", "Autopilot", "Team", "Admin"]);
+    expect(secs.filter((s) => s.group !== "account").map((s) => s.label)).toEqual(["Home", "Ask", "Insights", "Records", "Meetings", "Autopilot", "Team", "Admin"]);
     expect(secs.filter((s) => s.group === "account").map((s) => s.key)).toEqual(["memory", "templates", "work-log"]);
   });
 });
@@ -161,7 +161,7 @@ describe("the sidebar drawn on every page is identical", () => {
     const hrefs = first!.map(([h]) => h);
     expect(new Set(hrefs).size).toBe(hrefs.length);
     // the seven items, then the one pin that is a view of its own (purchasing's supplier alerts)
-    expect(first!.map(([, l]) => l)).toEqual(["Home", "Ask", "Records", "Meetings", "Autopilot", "Team", "Admin", "Supplier issues"]);
+    expect(first!.map(([, l]) => l)).toEqual(["Home", "Ask", "Insights", "Records", "Meetings", "Autopilot", "Team", "Admin", "Supplier issues"]);
     expect(first!.map(([, l]) => l).join("|")).not.toMatch(/Watching|Memory|Templates|Approvals|Autopilot review queue|Alerts|Autopilot log|Prepared for you|Your actions|Lists|ops targets? missed/);
   });
 

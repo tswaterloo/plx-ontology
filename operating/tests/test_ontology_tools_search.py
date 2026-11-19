@@ -189,7 +189,8 @@ class RoutingTest(unittest.TestCase):
         got = s.run(docs, {"query": "pallets"}, call_comms=comms)
         self.assertEqual([d["citation"] for d in got["documents"]],
                          ["sharepoint://s/a.pdf", "email:v1"])
-        self.assertEqual(seen["comms"][0]["sources"], ["graph_mail", "teams"])
+        # files too: this comms leg did not search them (no ``searched``), so the old way
+        self.assertEqual(seen["comms"][0]["sources"], ["graph_mail", "sharepoint", "teams"])
         self.assertEqual(seen["docs"][0]["sources"], ["sharepoint", "original"])
 
     def test_participant_and_comms_cursor_search_mail_only(self):
@@ -201,14 +202,32 @@ class RoutingTest(unittest.TestCase):
                 self.assertEqual(len(seen["comms"]), 1)
                 self.assertEqual(seen["docs"], [])
 
-    def test_other_cursor_and_file_sources_never_reach_the_comms_path(self):
-        for args in ({"query": "pallets", "cursor": "opaque-docs-cursor"},
-                     {"query": "pallets", "sources": ["sharepoint"]}):
-            with self.subTest(args=args):
-                seen, comms, docs = self.calls()
-                s.run(docs, args, call_comms=comms)
-                self.assertEqual(seen["comms"], [])
-                self.assertEqual(len(seen["docs"]), 1)
+    def test_another_cursor_never_reaches_the_comms_path(self):
+        seen, comms, docs = self.calls()
+        s.run(docs, {"query": "pallets", "cursor": "opaque-docs-cursor"}, call_comms=comms)
+        self.assertEqual(seen["comms"], [])
+        self.assertEqual(len(seen["docs"]), 1)
+
+    def test_files_the_comms_leg_did_not_search_are_searched_the_old_way(self):
+        # not searched (a reader who is not a full reader), or the statement failed
+        for answer in ({"documents": [], "completeness": {"complete": True,
+                                                           "truncated": False}},
+                       {"error": {"code": "timeout", "message": "past 25 s"}}):
+            with self.subTest(answer=answer):
+                seen, comms, docs = self.calls(answer)
+                got = s.run(docs, {"query": "pallets", "sources": ["sharepoint"]},
+                            call_comms=comms)
+                self.assertEqual(seen["comms"][0]["sources"], ["sharepoint"])
+                self.assertEqual(seen["docs"][0]["sources"], ["sharepoint"])
+                self.assertEqual([d["citation"] for d in got["documents"]],
+                                 ["sharepoint://s/a.pdf"])
+                self.assertEqual(got.get("gaps") or [], [])
+        # searched by the comms leg (a full reader): never again the old way
+        seen, comms, docs = self.calls({
+            "documents": [], "searched": {"sources": ["sharepoint"]},
+            "completeness": {"complete": True, "truncated": False}})
+        s.run(docs, {"query": "pallets", "sources": ["sharepoint"]}, call_comms=comms)
+        self.assertEqual(seen["docs"], [])
 
     def test_not_served_falls_back_and_other_errors_stay(self):
         for code in ("not_served", "not_ready"):
@@ -217,10 +236,35 @@ class RoutingTest(unittest.TestCase):
             self.assertEqual(seen["docs"][0].get("sources"), None)   # the old path, whole ask
             self.assertEqual([d["citation"] for d in got["documents"]],
                              ["sharepoint://s/a.pdf"])
+        # the query itself is wrong: the whole search says so, nothing else searched
         seen, comms, docs = self.calls({"error": {"code": "invalid_input", "message": "x"}})
         self.assertEqual(s.run(docs, {"query": "pallets"}, call_comms=comms)["error"]["code"],
                          "invalid_input")
         self.assertEqual(seen["docs"], [])
+
+    def test_mail_and_teams_not_read_is_a_gap_beside_the_other_hits(self):
+        """A comms leg that timed out, was busy, failed or raised: the files' and records'
+        hits stand with a gap naming mail and Teams; asked for mail alone, the error."""
+        rec = {"documents": [{"citation": "api://c/1", "kind": "record", "date": "2026-10-01",
+                              "title": {"untrusted_text": "Acme Ltd"}}],
+               "searched": {"sources": ["records"]}, "gaps": [],
+               "completeness": {"complete": True, "truncated": False, "returned": 1}}
+        for answer in ({"error": {"code": "timeout", "message": "past 25 s"}},
+                       {"error": {"code": "busy", "message": "x"}}, RuntimeError("boom")):
+            with self.subTest(answer=answer):
+                seen, comms, docs = self.calls(answer if isinstance(answer, dict) else None)
+                if not isinstance(answer, dict):
+                    def comms(arguments, error=answer):
+                        raise error
+                got = s.run(docs, {"query": "acme"}, call_comms=comms,
+                            call_records=lambda a: rec)
+                self.assertEqual([d["citation"] for d in got["documents"]],
+                                 ["sharepoint://s/a.pdf", "api://c/1"])
+                self.assertEqual([g["subject"] for g in got["gaps"]], ["mail and Teams"])
+                self.assertFalse(got["completeness"]["complete"])
+        seen, comms, docs = self.calls({"error": {"code": "timeout", "message": "x"}})
+        got = s.run(docs, {"query": "acme", "sources": ["graph_mail"]}, call_comms=comms)
+        self.assertEqual(got["error"]["code"], "timeout")
 
     def test_file_hits_are_full_text_checked_and_comms_hits_decided_by_the_views(self):
         seen, comms, docs = self.calls()
@@ -320,3 +364,63 @@ class RoutingTest(unittest.TestCase):
         self.assertEqual(s.open_one(read, {"citation": "email:v3"}, lambda a: {
             **opened, "text": {"untrusted_text": "Freightcom booked"}})["error"]["code"],
             "egress_withheld")
+
+
+class ReplayCeilingTest(unittest.TestCase):
+    """A replay of a past moment (``read_ceiling``, ``PLX_READ_CEILING``): every leg of
+    plx.search is asked for nothing after it, and plx.open shows a non-comms item only when
+    it carries a time before it; an unreadable ceiling answers nothing at all."""
+
+    def setUp(self):
+        import os
+        from unittest import mock
+        from operating import read_ceiling
+        self.env = lambda value: mock.patch.dict(os.environ, {read_ceiling.CEILING_ENV: value})
+
+    def test_every_leg_searches_before_the_moment(self):
+        seen = []
+
+        def leg(arguments):
+            seen.append(arguments)
+            return {"documents": [], "completeness": {"complete": True, "truncated": False}}
+        with self.env("2026-07-14T14:00:00Z"):
+            for until, want in ((None, "2026-07-14T14:00:00.000Z"),
+                                ("2026-12-31", "2026-07-14T14:00:00.000Z"),
+                                ("2026-07-14T15:00:00Z", "2026-07-14T14:00:00.000Z"),
+                                ("2026-07-10", "2026-07-10")):
+                seen.clear()
+                s.run(leg, {"query": "pallets", **({"until": until} if until else {})},
+                      call_comms=leg, call_records=leg)
+                with self.subTest(until=until):
+                    self.assertEqual(len(seen), 3)
+                    self.assertEqual({a.get("until") for a in seen}, {want})
+
+    def test_open_shows_only_what_was_there_then(self):
+        def read_at(**fields):
+            return lambda arguments: {"status": "resolved", "fields": fields,
+                                      "text": {"untrusted_text": "ok"}}
+        with self.env("2026-07-14T14:00:00Z"):
+            ok = s.open_one(read_at(received_date_time="2026-07-14T13:00:00Z"),
+                            {"citation": "graph-mail://a/att1"}, lambda a: {"not_comms": True})
+            self.assertEqual(ok["status"], "resolved")
+            for fields in ({"received_date_time": "2026-07-14T14:00:00Z"},
+                           {"created_at": "2026-07-01", "last_modified": "2026-08-02T00:00Z"},
+                           {}, {"received_date_time": "not a time"}):
+                with self.subTest(fields=fields):
+                    got = s.open_one(read_at(**fields), {"citation": "sharepoint://s/a.pdf"},
+                                     lambda a: {"not_comms": True})
+                    self.assertEqual(got["error"]["code"], "not_found")
+
+    def test_an_unreadable_ceiling_answers_nothing(self):
+        calls = []
+
+        def leg(arguments):
+            calls.append(arguments)
+            return {"documents": [], "completeness": {"complete": True, "truncated": False}}
+        for bad in ("yesterday", "2026-07-14T14:00:00"):
+            with self.env(bad), self.subTest(ceiling=bad):
+                self.assertEqual(s.run(leg, {"query": "x"}, call_comms=leg)["error"]["code"],
+                                 "not_ready")
+                self.assertEqual(s.open_one(leg, {"citation": "email:v1"}, leg)["error"]
+                                 ["code"], "not_ready")
+        self.assertEqual(calls, [])

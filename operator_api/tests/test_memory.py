@@ -744,6 +744,168 @@ class AgentTool(MemoryCase):
         self.assertEqual(forwarded, 0)
 
 
+class StatedFirst(MemoryCase):
+    """"Remember that ..." through the app's simple Ask (``simple_ask.ask``): the
+    instruction is kept BEFORE the session answers, the session is told it was saved (or
+    why not), an answer about one that was not saved never says it was, and a later
+    conversation is told it."""
+
+    def ask(self, question, said, conversation="c1"):
+        import threading
+        from types import SimpleNamespace
+        from operator_api import models as m
+        from operator_api import simple_ask as sa
+        from operator_api.backend_ask import AskMixin
+        seen = {}
+
+        def fake_run(asker, session, q, history, emit, cancel, memory, **kw):
+            seen["context"] = list(kw.get("context") or ())
+            seen["kept_before"] = self.count("item")
+            seen["memory"] = memory() if callable(memory) else memory
+            return sa.SimpleRun(text=said, agent_text=said, unverified=[], events=[],
+                                seconds=1.0, stopped=False, failure=None)
+        store = self.store
+        backend = SimpleNamespace(
+            agent_ask=object(), _sessions=threading.Semaphore(1), memory=store,
+            _memory_turn=lambda who, req, conv, roots: (
+                store.context(who, req.question, conversation=conv, budget_ms=2000), None),
+            _clarified=lambda who, req: req)
+        backend._drain = lambda *a: AskMixin._drain(backend, *a)
+        original, sa.run = sa.run, fake_run
+        try:
+            gen = sa.ask(backend, self.ana, m.AskRequest(question=question), conversation,
+                         lambda: 1)
+            try:
+                while True:
+                    next(gen)
+            except StopIteration as stop:
+                answer = stop.value
+        finally:
+            sa.run = original
+        return answer, seen
+
+    def setUp(self):
+        super().setUp()
+        self.ana = reader("ana")
+        self.ana.session.canary = False
+
+    def test_kept_before_the_answer_and_told_in_the_next_conversation(self):
+        answer, seen = self.ask("Remember that our fiscal year starts on October 1.",
+                                "Noted: your fiscal year starts on October 1.")
+        self.assertEqual(seen["kept_before"], 1)          # saved before the session ran
+        self.assertIn("SAVED to their memory", seen["context"][-1])
+        self.assertIn("fiscal year starts on October 1", seen["memory"])
+        self.assertEqual(answer.direct_answer, "Noted: your fiscal year starts on October 1.")
+        # the answer's own record finds the same item (one item, the question's log row on it)
+        self.store.from_answer(self.ana, answer.model_dump(mode="json"))
+        items = self.store.items(self.ana, kinds=("instruction",))
+        self.assertEqual(len(items), 1)
+        self.assertEqual(self.count("log"), 2)            # the question and the answer
+        said = self.store.context(self.ana, "Total invoiced sales this fiscal year?",
+                                  conversation="later", budget_ms=2000)
+        self.assertIn("our fiscal year starts on October 1", said)
+
+    def test_not_saved_is_said_whatever_the_session_wrote(self):
+        self.store.guard = lambda: None    # the exclusion cannot be checked: nothing kept
+        answer, seen = self.ask("Remember that our fiscal year starts on October 1.",
+                                "Noted: your fiscal year starts on October 1. That means "
+                                "the current one began on 2026-10-01.")
+        self.assertEqual(self.count("item"), 0)
+        self.assertIn("could NOT be saved", seen["context"][-1])
+        self.assertTrue(answer.direct_answer.startswith("I couldn't save that to your memory"))
+        self.assertNotIn("Noted", answer.direct_answer)
+        self.assertIn("began on 2026-10-01", answer.direct_answer)   # the rest stands
+        answer, seen = self.ask("Remember that our fiscal year starts on October 1, and "
+                                "how many invoices are overdue?",
+                                "I'll remember that. 3 invoices are noted as overdue.")
+        self.assertTrue(answer.direct_answer.startswith("I couldn't save that"))
+        self.assertNotIn("I'll remember", answer.direct_answer)
+        self.assertIn("3 invoices are noted as overdue.", answer.direct_answer)
+        # the session already said it was not saved: said once, not twice
+        said = "I couldn't save that to your memory right now. Tell me again later."
+        answer, seen = self.ask("Remember that our fiscal year starts on October 1.", said)
+        self.assertEqual(answer.direct_answer, said)
+        # finance is never kept, and said so
+        self.store.guard = lambda: self.guard
+        answer, seen = self.ask("Please remember that Quinn's salary review is in March.",
+                                "Got it, I'll remember that.")
+        self.assertEqual(self.count("item"), 0)
+        self.assertIn("never kept", answer.direct_answer)
+        self.assertNotIn("Got it", answer.direct_answer)
+        # a question stating nothing: no memory line, the answer untouched
+        answer, seen = self.ask("Do you remember what the fiscal year is?", "October 1.")
+        self.assertEqual(seen["context"], [])
+        self.assertEqual(answer.direct_answer, "October 1.")
+        # a commitment only mentioned in a request (a task to create) is not asked to be
+        # kept: nothing is said about memory (live 11-18: the Planner task answer opened
+        # with "I couldn't save that to your memory")
+        answer, seen = self.ask("Create a Planner task for Ricardo: follow up with Croda "
+                                "about PO100109.", "I've prepared the task for you to confirm.")
+        self.assertEqual(seen["context"], [])
+        self.assertEqual(answer.direct_answer, "I've prepared the task for you to confirm.")
+
+    def test_only_the_instruction_before_a_question_is_kept(self):
+        """"Remember that X. What is ...?" keeps X alone; the session answers the question
+        (it is told the instruction was saved), and the answer's record adds to that item."""
+        answer, seen = self.ask("Remember that the Croda order is PO100109. What is its "
+                                "status?", "Saved. PO100109 is open.")
+        self.assertIn("SAVED to their memory", seen["context"][-1])
+        self.store.from_answer(self.ana, answer.model_dump(mode="json"))
+        kept = [i["text"] for i in self.store.items(self.ana, kinds=("instruction",))]
+        self.assertEqual(kept, ["Remember that the Croda order is PO100109."])
+        # a finance question after a plain instruction does not make it a finance one
+        got = self.store.state(self.ana, "Remember that Ana handles Croda, what is our "
+                               "accounts receivable balance?", "c2")
+        self.assertTrue(got.saved, got)
+        self.assertIn("Remember that Ana handles Croda",
+                      [i["text"] for i in self.store.items(self.ana, kinds=("instruction",))])
+        for said, kept_words in (
+                ("Remind me to chase Croda on Friday. When did they last order?",
+                 "Remind me to chase Croda on Friday."),
+                ("Remember: Croda is PO100109? Which POs are open", "Remember: Croda is PO100109?"),
+                ("Remember that Mr. Smith buys for Croda. Who else buys there?",
+                 "Remember that Mr. Smith buys for Croda."),
+                ("Can you remember that Ana is away Friday?",
+                 "Can you remember that Ana is away Friday?"),
+                ("Remember that Croda orders are late and should be chased.",
+                 "Remember that Croda orders are late and should be chased."),
+                ("From now on list the newest first. Also always cc Ana.",
+                 "From now on list the newest first. Also always cc Ana.")):
+            self.assertEqual(mem.kept_words(said), kept_words, said)
+
+    def test_a_new_process_waits_for_the_excluded_names_instead_of_refusing(self):
+        names = mem.ExcludedNames(read=lambda: (time.sleep(0.3), self.names)[1],
+                                  key=lambda: mem._list_key(self.guard))
+        self.store.names, held = names, self.store.names
+        try:
+            got = self.store.state(self.ana, "From now on list the newest orders first.", "c9")
+        finally:
+            self.store.names = held
+        self.assertTrue(got.saved, got)
+        self.assertEqual(got.kind, "instruction")
+
+    def test_what_states_an_instruction(self):
+        for said, kind in (("Remember that the Croda order is PO100109.", "instruction"),
+                           ("Can you remember that Ana is away Friday?", "instruction"),
+                           ("Please note that we ship from dock 4.", "instruction"),
+                           ("Keep in mind that USD is our default.", "instruction"),
+                           ("Remind me to chase Croda on Friday.", "commitment"),
+                           ("Follow up with Croda about PO100109.", None),
+                           ("Do you remember what I said?", None),
+                           ("What is noted on PO100109?", None),
+                           ("Notes from the Take 5 meeting?", None),
+                           # a note leading into a question is the question's context
+                           ("Note that PO 1234 is late, what is the new ETA?", None),
+                           ("Keep in mind Croda is late. Which POs are open?", None),
+                           ("For the record, Ana handles Croda.", "instruction"),
+                           ("Remember that Croda is PO100109. What is its status?",
+                            "instruction"),
+                           # an Autopilot rule in the person's words is kept the same way
+                           ("Stop drafting replies to vince@petrasoap.com", "instruction"),
+                           ("What did vince@petrasoap.com send me?", None)):
+            self.assertEqual(mem.asked_to_keep(said), kind, said)
+
+
 class Latency(MemoryCase):
     def test_a_turns_read_adds_under_150_ms_over_a_heavy_history(self):
         ana = reader("ana")

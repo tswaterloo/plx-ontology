@@ -31,8 +31,7 @@ type Item =
   | { kind: "example"; id: string; q: string };
 
 const PLACES: { label: string; href: string; hint: string; words: string }[] = [
-  { label: "Home", href: "/", hint: "What needs you today", words: "my work today home front page briefing" },
-  { label: "Prepared for you", href: "/my-work", hint: "Replies and entries the autopilots prepared", words: "prepared autopilot drafts entries my work" },
+  { label: "Home", href: "/", hint: "What needs you today, and what the autopilots prepared", words: "my work today home front page briefing prepared autopilot drafts entries" },
   { label: "Late POs", href: "/?show=late", hint: "Every PO past its needed-by date", words: "late orders purchase pos overdue" },
   { label: "Alerts", href: "/?show=alerts", hint: "Every alert, rules and data health", words: "alerts watching briefing rules attention" },
   { label: "Meetings", href: "/meetings", hint: "Upcoming meetings, weekly review and follow-ups", words: "meetings calendar prep weekly review follow-ups action items" },

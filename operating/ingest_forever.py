@@ -513,7 +513,28 @@ def summarize_sharepoint(report: Mapping[str, Any]) -> dict[str, Any]:
     units += [{"complete": False, "resumed": False, "reason": target.get("status")}
               for target in _rows(_last_run(report).get("targets"))
               if not _rows(target.get("roots")) and target.get("complete") is not True]
-    return _units(units, report)
+    discovery = _last_run(report).get("discovery")
+    gaps = _codes(discovery.get("gaps")) if isinstance(discovery, Mapping) else []
+    found = discovery.get("counts") if isinstance(discovery, Mapping) else None
+    if units and isinstance(found, Mapping) and (count(found.get("libraries_carried")) or 0):
+        # Roots carried from the store because a listing failed (capture_sharepoint
+        # ``_carry``): captured, but the estate was not listed, so the run is partial with
+        # the listing's own gap, never complete.
+        units.append({"complete": False, "resumed": False,
+                      "reason": next((g for g in gaps if g.startswith("discovery_sites")),
+                                     gaps[0] if gaps else "discovery_carried")})
+    if report.get("throttle_hold") is True:
+        # Graph held the app (the shared 429/503 hold, ``graph_throttle``) past what a read
+        # may wait: the run stopped there, every position kept, the rest read next run.
+        units.append({"complete": False, "resumed": False, "reason": "throttle_hold"})
+    summary = _units(units, report)
+    if not units and gaps:
+        # An estate scope plans its roots from discovery: one that found nothing to plan
+        # failed with its own typed gap (``discovery_sites:retried.http_429``: Graph
+        # throttled the site listing), never the bare ``no_units_reported`` (11-19).
+        summary["error_code"] = next((g for g in gaps if g.startswith("discovery_sites")),
+                                     gaps[0])
+    return summary
 
 
 def summarize_lists(report: Mapping[str, Any]) -> dict[str, Any]:

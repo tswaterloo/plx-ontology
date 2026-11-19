@@ -4,7 +4,7 @@ import { describe, expect, it, vi } from "vitest";
 
 // /ask?c=<conversation>: a conversation whose read fails says so with a way to try again,
 // and a second try that reads it shows its turns
-const api = vi.hoisted(() => ({ getWorkThread: vi.fn() }));
+const api = vi.hoisted(() => ({ getWorkThread: vi.fn(), getAskChats: vi.fn(() => Promise.resolve({ available: true, chats: [] })) }));
 const thread = vi.hoisted(() => ({ seed: vi.fn() }));
 vi.mock("@/lib/api", async (orig) => ({ ...(await orig<object>()), ...api }));
 vi.mock("@/components/shell", async (orig) => ({
@@ -16,6 +16,7 @@ vi.mock("@/components/ask-box", () => ({ AskBox: () => <div data-testid="ask-box
 vi.mock("next/navigation", () => ({ useSearchParams: () => new URLSearchParams("c=559a23fcd1231cb2"), useRouter: () => ({ replace: () => undefined, push: () => undefined }) }));
 vi.mock("@/lib/thread", () => ({
   askUrlKey: () => "",
+  conversationOf: () => undefined,
   useThread: () => ({ turns: [], run: vi.fn(), retry: vi.fn(), followUp: vi.fn(), stop: vi.fn(), reset: vi.fn(), busy: false, seed: thread.seed }),
 }));
 

@@ -11,6 +11,32 @@ from __future__ import annotations
 import os
 from pathlib import Path
 import stat
+import threading
+
+# held while ``make_absent`` has a new file open: a thread of this process that makes the
+# same file waits until it is closed again before it connects to it
+_MAKING = threading.Lock()
+
+
+def make_absent(path: str | os.PathLike[str], mode: int = 0o600) -> bool:
+    """Make ``path`` an empty file of ``mode`` when it does not exist; one that exists is
+    never opened. True when it was made.
+
+    Why never opened: closing any descriptor of a file drops every POSIX lock this process
+    holds on it, and SQLite's locks are such locks. ``os.close(os.open(db))`` in one thread
+    while another thread of the process has the database open silently unlocks that
+    connection; another process then takes the database for itself, checkpoints and resets
+    the write-ahead log under it, and the file is corrupt ("database disk image is
+    malformed": the live page cache, after a restart beside the standby). A database is
+    connected to only after this returns (a thread making the file holds ``_MAKING`` from
+    its open to its close, so none connects in between)."""
+    with _MAKING:
+        try:
+            fd = os.open(path, os.O_RDWR | os.O_CREAT | os.O_EXCL, mode)
+        except FileExistsError:
+            return False
+        os.close(fd)
+        return True
 
 
 def keep_shared(path: str | os.PathLike[str], mode: int) -> None:

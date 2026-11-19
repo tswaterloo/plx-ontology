@@ -1,10 +1,12 @@
 [Unit]
-Description=PLX Team view snapshot nightly (03:30 ET, after the system activity snapshot)
+Description=PLX Team view snapshot every hour (the system activity it adds is nightly)
 
+# Hourly, not nightly: the Team view said "Counted 3:33 AM" until the next night (20 h
+# old by evening). A run takes about 20 s; the system activity it folds in stays nightly.
 [Timer]
-OnCalendar=*-*-* 03:30:00 America/New_York
+OnCalendar=*-*-* *:25:00 America/New_York
 Persistent=true
-RandomizedDelaySec=300
+RandomizedDelaySec=120
 
 [Install]
 WantedBy=timers.target

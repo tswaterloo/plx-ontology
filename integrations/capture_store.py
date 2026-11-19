@@ -1032,6 +1032,23 @@ class CaptureStore:
                     + seen + " ORDER BY path",
                     (kind_name, unit, *(() if seen_in_run is None else (seen_in_run,))))]
 
+    def acl_state(self, kind_name: str, unit: str) -> dict[str, tuple[str, Any, str]]:
+        """Writer side: for the unit's current, not-missing versions, the item key (the last
+        path part) -> ``(source_version, source ACL as saved, last_seen_at)``: what a capture
+        that reads permissions only when due (``ListCapture``) decides from. The ACL is
+        ``None`` when the version carries none."""
+        kind = source_kind(kind_name)
+        found: dict[str, tuple[str, Any, str]] = {}
+        for row in self._db.execute(
+                "SELECT path, payload, source_version, last_seen_at FROM versions WHERE "
+                "kind = ? AND unit = ? AND superseded_at IS NULL "
+                "AND missing_from_source_since IS NULL", (kind_name, unit)):
+            path = kind.canonical_path([unquote(p) for p in row["path"].split("/")])
+            meta = json.loads(row["payload"]).get("meta")
+            acl = meta.get("source_acl") if isinstance(meta, dict) else None
+            found[path[-1]] = (row["source_version"], acl, row["last_seen_at"])
+        return found
+
     def seen_before(self, kind_name: str, age: timedelta, limit: int
                     ) -> list[tuple[str, CapturedRecord]]:
         """Writer side: (unit, record) of the kind's current, not-missing versions last

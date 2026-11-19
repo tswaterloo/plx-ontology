@@ -153,12 +153,106 @@ class ProposalsAreShapedLikeTheWritePath(unittest.TestCase):
         self.assertTrue(any(line.startswith("portal purchase-order.update") and "expectedDate"
                             in line for line in lines), lines)
         self.assertTrue(any(line.startswith("planner task_create") for line in lines))
-        self.assertFalse([line for line in lines if line.split(" ", 1)[0] in ("graph", "mail",
-                                                                              "teams")])
+        self.assertTrue(any(line.startswith("calendar event_respond") and "accept" in line
+                            for line in lines), lines)
+        # messages only as new messages to someone other than the sender; never the
+        # write path's own "graph" kind
+        messages = [line for line in lines if line.split(" ", 1)[0] in ("mail", "teams")]
+        self.assertEqual(len(messages), 2, messages)
+        self.assertTrue(all("someone other than the event's sender" in m for m in messages))
+        self.assertFalse([line for line in lines if line.split(" ", 1)[0] == "graph"])
         self.assertFalse([line for line in lines if "_delete" in line or "file_upload" in line])
+
+    MESSAGE = {"system": "mail", "operation": "send_email", "target": {},
+               "change": {"to": ["luis@plx.example"], "cc": ["stephen@plx.example"],
+                          "subject": "Plant design", "body": "Hi Luis, could you share the "
+                          "plant layout PDF with Stephen?"},
+               "reason": "Stephen asked for the plant design."}
+    RESPOND = {"system": "calendar", "operation": "event_respond",
+               "target": {"event_id": "AAMkAGU3MWUx="},
+               "change": {"response": "accept", "comment": ""}, "reason": "Free then."}
+
+    def test_a_message_to_someone_else_and_an_invitations_answer_are_proposals(self):
+        """Owner: Autopilot does the person's whole job: asking a colleague or a supplier,
+        passing a message on, answering an invitation are proposals like a system change
+        (the write path's own shapes); a message with no recipient or body, an answer that
+        is not accept/decline/tentative or that sets anything else is refused."""
+        self.assertEqual(aj.check("plx.prepare_write", self.MESSAGE), [])
+        teams = {"system": "teams", "operation": "chat_message", "target": {},
+                 "change": {"members": ["luis@plx.example"], "body": "Plant layout PDF?"},
+                 "reason": "r"}
+        self.assertEqual(aj.check("plx.prepare_write", teams), [])
+        self.assertEqual(aj.check("plx.prepare_write", self.RESPOND), [])
+        for response in ("decline", "tentative", "Accept"):
+            self.assertEqual(aj.check("plx.prepare_write", {
+                **self.RESPOND, "change": {"response": response}}), [], response)
+        refused = {
+            "no recipient": {**self.MESSAGE, "change": {"subject": "s", "body": "b"}},
+            "no body": {**self.MESSAGE, "change": {"to": ["luis@plx.example"], "body": " "}},
+            "a field the card does not show": {**self.MESSAGE, "change": {
+                **self.MESSAGE["change"], "bcc": ["x@plx.example"]}},
+            "Teams with no one": {**teams, "change": {"body": "hi"}},
+            "no reason": {**self.MESSAGE, "reason": ""},
+            "Freightcom": {**self.MESSAGE, "change": {**self.MESSAGE["change"],
+                                                      "to": ["ops@freightcom.com"]}},
+            "maybe": {**self.RESPOND, "change": {"response": "maybe"}},
+            "an answer that edits": {**self.RESPOND, "change": {"response": "accept",
+                                                               "subject": "Mine now"}},
+            "no event": {**self.RESPOND, "target": {}},
+        }
+        for why, args in refused.items():
+            with self.subTest(why):
+                self.assertTrue(aj.check("plx.prepare_write", args))
+
+    def test_an_invitations_answer_is_one_of_graphs_three_actions_and_has_no_undo(self):
+        from integrations import live_source_guard as guard
+        adapter = wa.default_adapters({})["calendar_write"]
+        for response, verb in (("accept", "accept"), ("decline", "decline"),
+                               ("tentative", "tentativelyAccept")):
+            action = {"kind": "calendar_write", "system": "calendar",
+                      "operation": "event_respond",
+                      "target": {"user": "me@plx.example", "event_id": "AAMkAGU3MWUx="},
+                      "payload": {"response": response, "comment": "See you then"}}
+            request = adapter.request(action)
+            self.assertEqual(request["method"], "POST")
+            self.assertTrue(request["url"].endswith(f"/events/AAMkAGU3MWUx=/{verb}"),
+                            request["url"])
+            self.assertEqual(request["body"], {"comment": "See you then", "sendResponse": True})
+            self.assertIsNone(adapter.undo_request(action, request))
+            self.assertEqual(guard.write_shape("POST", request["url"]), "calendar")
+        base = "https://graph.microsoft.com/v1.0/users/me@plx.example/events/AAMkAGU3MWUx="
+        for verb in ("forward", "cancel", "accept/x", "snoozeReminder"):
+            self.assertIsNone(guard.write_shape("POST", f"{base}/{verb}"), verb)
 
 
 class JobberBoundary(unittest.TestCase):
+    def test_a_message_to_the_sender_is_the_drafts_reply_never_a_job_proposal(self):
+        """A message addressed to the event's sender, or posted into the event's own chat,
+        is a reply: dropped from the job (the drafts prepare it); a message to someone else,
+        even copying the sender, is kept."""
+        to_sender = {"system": "mail", "operation": "send_email", "target": {},
+                     "change": {"to": ["Sup@vendor.example"], "body": "Noted, thanks."},
+                     "reason": "r"}
+        onward = {"system": "mail", "operation": "send_email", "target": {},
+                  "change": {"to": ["buyer@plx.example"], "cc": ["sup@vendor.example"],
+                             "subject": "PO 77", "body": "PO 77 lands Nov 20: please "
+                             "plan the receipt."}, "reason": "r"}
+        same_chat = {"system": "teams", "operation": "chat_message",
+                     "target": {"chat_id": "19:abc"}, "change": {"body": "On it"},
+                     "reason": "r"}
+        session = Session(calls=[("plx.prepare_write", to_sender),
+                                 ("plx.prepare_write", onward),
+                                 ("plx.prepare_write", same_chat)])
+        event = {**MAIL, "conversation_id": "19:abc"}
+        got, why = jobber(session).run(event, "me", aj.described(event, MAIL["text"]),
+                                       "me@plx.example", People())
+        self.assertEqual(why, "")
+        self.assertEqual([p["arguments"] for p in got.proposals], [onward])
+        only = Session(calls=[("plx.prepare_write", to_sender)])
+        self.assertEqual(jobber(only).run(MAIL, "me", aj.described(MAIL, MAIL["text"]),
+                                          "me@plx.example", People()),
+                         (None, "no_system_work"))
+
     def test_a_message_the_small_model_finds_no_work_in_starts_no_session(self):
         session = Session(calls=[("plx.prepare_write", PO_DATE)])
         got, why = jobber(session, triage=False).run(MAIL, "me", aj.described(MAIL, ""),
@@ -350,6 +444,34 @@ class LiveCycle(ta.Fixture):
         out, items = self.live([msg], jobber(session), queue="replay")
         self.assertEqual((items, session.runs), ([], []))
         self.assertFalse([k for k in out["skipped"] if k.startswith("job_")])
+
+    def test_a_proposed_message_carrying_another_partys_business_outside_is_held(self):
+        """A job reads as the person; what it proposes to send outside the company is
+        checked (``autopilot_outbound``): another customer named, or a price the readers'
+        own material does not state, is held back and named on the item; a system change
+        and a clean message stand; nothing left: no item."""
+        self.w.obj("Customer", {"name": "Northwind Soapworks Inc", "code": "C200",
+                                "erp_code": "C200", "email": "ap@northwind.example"})
+        def message(body):
+            return {"system": "mail", "operation": "send_email", "target": {},
+                    "change": {"to": ["sales@vendor.example"], "subject": "Stock", "body": body},
+                    "reason": "Ask the supplier."}
+        name = message("Northwind Soapworks takes the next lot first.")
+        price = message("We pay $4.85 per kg now.")
+        clean = message("Can you confirm stock for next week?")
+        msg = self.message(84, "Confirmed, we deliver PO 77 on Nov 20.")
+        session = Session(calls=[("plx.prepare_write", PO_DATE), ("plx.prepare_write", name),
+                                 ("plx.prepare_write", price), ("plx.prepare_write", clean)])
+        out, items = self.live([msg], jobber(session))
+        body = json.loads(items[0]["body"])["prepared"]
+        self.assertEqual([p["arguments"] for p in body["jobs"]], [PO_DATE, clean])
+        self.assertEqual([b["why"] for b in body["held_back"]],
+                         ["another_partys_name", "price_not_on_their_records"])
+        self.assertIn("held back", body["summary"])
+        out, items = self.live([self.message(85, "Confirmed, we deliver PO 77 on Nov 20.")],
+                               jobber(Session(calls=[("plx.prepare_write", name)])), "h.sqlite")
+        self.assertEqual(len(items), 1)          # the first message's item only
+        self.assertEqual(out["skipped"].get("job_message:outbound_held"), 1, out)
 
     def test_cardinality_jobs_never_spend_the_drafts_budget_and_none_is_lost(self):
         """N=1/10/60 messages each with a change: one job item per message up to the
