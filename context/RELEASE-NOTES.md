@@ -29,6 +29,13 @@ Changed:
 - the sidebar waits for the page
 - Templates opens instantly
 
+## Update 2026-11-19
+Changed:
+- [migration] carried_mail key only: Outlook .msg files with an Outlook data store are read and checked instead of being held back whole
+- the views refresh swaps its tables without making readers wait
+- Ask's mail, Teams and file search answers common words in seconds instead of timing out, and keeps the hits that fit when a result is too large
+- A search result too large to send with no hits is returned as it is, and Teams and file searches are tested to give the same pages however far the walk reads
+
 ## v0.22 (2026-11-19)
 Changed:
 - Autopilot drafts by default with question cards, looks things up as the person, learns from edits and applies saved preferences; chat drafts read the chat and the person's own replies as style.

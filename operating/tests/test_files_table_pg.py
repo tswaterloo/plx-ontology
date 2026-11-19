@@ -227,6 +227,31 @@ class FilesTableThroughTheGate(unittest.TestCase):
                     self.assertEqual(set(got), served - fc)
                     self.assertFalse(set(got) & fc, "the Freightcom file was returned")
 
+    def test_a_files_search_is_the_same_whatever_rows_the_walk_reads_first(self):
+        """A files search walks the newest rows before it reads the word index's whole
+        match (``comms_search.WALK_ROWS``): a walk of 1, 2 or 7 rows, one over every row
+        and a rare word's (the index at once) give each reader the same files in the same
+        order, page by page, with the item gate refusing some of them."""
+        from operating.pg import comms_search as cs
+        gate = item_gate_from_case_runtime(self.runtime())
+        walked = 0
+        for actor in (QUALITY, EMPLOYEE):
+            for limit in (1, 3, 50):
+                with mock.patch.object(cs, "WALK_ROWS", 100000), \
+                        mock.patch.object(cs, "COMMON_CHUNKS", 0):
+                    whole, _ = self.walk(self.tool(gate), actor, "widget", limit)
+                self.assertEqual(self.walk(self.tool(gate), actor, "widget", limit)[0], whole)
+                for rows in (1, 2, 7):
+                    with self.subTest(actor=sorted(actor.principals), limit=limit,
+                                      walk=rows), \
+                            mock.patch.object(cs, "WALK_ROWS", rows), \
+                            mock.patch.object(cs, "COMMON_CHUNKS", 0):
+                        self.assertEqual(
+                            self.walk(self.tool(gate), actor, "widget", limit)[0], whole)
+                walked += len(whole) > 7
+        self.assertTrue(walked, "no search held more rows than the walk: the index read "
+                                "past the walk never ran")
+
     def test_a_long_run_of_refused_files_pages_past_them_and_loses_none(self):
         # a gate that serves only the two oldest matches: every page before them reads
         # refused files only, so each cursor carries the start and a count, never a

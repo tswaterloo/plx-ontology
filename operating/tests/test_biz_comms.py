@@ -761,6 +761,62 @@ class EmailsThroughTheDoor(unittest.TestCase):
         # the rank changed an order somewhere (an older header match before a newer text one)
         self.assertTrue(mixed)
 
+    def test_a_search_is_the_same_whatever_rows_the_walk_reads_first(self):
+        """The search walks each view's newest rows before it reads the word index's whole
+        match (``comms_search.WALK_ROWS``): a walk of 1, 2 or 7 rows (the rest from the
+        index) and one over every row give each reader the same hits, in the same order,
+        page by page (1, 10, 60 a page), with dates, a party and a cursor's tier; so does a
+        rare word's search, which reads the index at once (``comms_search.walk_rows``)."""
+        from operating.pg import comms_search as cs
+
+        tagged = mock.patch.object(ts, "_people_tag", return_value=self.tag)
+        tagged.start()
+        self.addCleanup(tagged.stop)
+        tool = self.tool()   # one tool (its own connections) for the hundreds of pages
+
+        def pages(actor, limit, **args):
+            got, cursor = [], None
+            for _ in range(200):
+                out = tool.comms_search({"limit": limit, **args, **(
+                    {"cursor": cursor} if cursor else {})}, actor)
+                got.append([h["citation"] for h in out["documents"]])
+                cursor = out["completeness"]["next_cursor"]
+                if not cursor:
+                    return got
+            self.fail("the pages never ended")
+        hits = self.found(tmp.OWNER, query="samples")
+        at = {_cell(r["cells"][0]): _cell(r["cells"][1]) for r in self.sql(
+            tmp.OWNER, "SELECT handle, to_char(received_at AT TIME ZONE 'UTC', "
+            "'YYYY-MM-DD\"T\"HH24:MI:SS') FROM emails")["rows"]}
+        middle = sorted(at[h] for h in hits)[len(hits) // 2]
+        asks = [{"query": w} for w in ("agreed", "note", "samples", "order", "booking")] + [
+            {"query": "samples", "since": middle}, {"query": "samples", "until": middle},
+            {"query": "note", "participant": "@vendor.example"}]
+        import psycopg
+        with psycopg.connect(self.dsn) as pg:   # the fixture's words are rare: no walk
+            self.assertEqual(cs.walk_rows(pg, cs.tsquery("samples")), 1)
+            with mock.patch.object(cs, "COMMON_CHUNKS", 1):
+                self.assertEqual(cs.walk_rows(pg, cs.tsquery("samples")), cs.WALK_ROWS)
+        walked = 0
+        for actor in READERS:
+            for ask in asks:
+                for limit in (1, 10, 60):
+                    with mock.patch.object(cs, "WALK_ROWS", 100000), \
+                            mock.patch.object(cs, "COMMON_CHUNKS", 0):
+                        whole = pages(actor, limit, **dict(ask))
+                    # a rare word (the fixture's every word, by the estimate) reads the
+                    # word index at once: the same pages
+                    self.assertEqual(pages(actor, limit, **dict(ask)), whole)
+                    for rows in (1, 2, 7):
+                        with self.subTest(actor=sorted(actor.principals), ask=ask,
+                                          limit=limit, walk=rows), \
+                                mock.patch.object(cs, "WALK_ROWS", rows), \
+                                mock.patch.object(cs, "COMMON_CHUNKS", 0):   # every word walks
+                            self.assertEqual(pages(actor, limit, **dict(ask)), whole)
+                    walked += sum(map(len, whole)) > 7
+        self.assertTrue(walked, "no search held more rows than the walk: the index read "
+                                "past the walk never ran")
+
     def test_party_search_counts_1_10_60_exactly_and_follows_the_gate(self):
         for n in (1, 10, 60):
             out = self.found(tmp.MID, participant=f"bulk{n}@vendor.example")

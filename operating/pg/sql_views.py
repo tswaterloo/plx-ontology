@@ -168,12 +168,14 @@ def drop(write: Any, name: str, schema: str | None = None) -> None:
     write.execute(f"DROP VIEW IF EXISTS {page_schema(schema)}.{name}")
 
 
-def create(write: Any, v: bv.View, schema: str | None = None) -> None:
+def create(write: Any, v: bv.View, schema: str | None = None, *, follow: bool = True) -> None:
     """The guarded view of ``v`` (its schema made first when missing) and its grant, in
     the caller's transaction (a build's swap): made, then the door follows the people
-    exclusion and every reader's door is decided again."""
+    exclusion and every reader's door is decided again. ``follow`` False: the caller decided
+    the table's rows against the exclusion already (a swap that did it on the staged table,
+    ``door.exclude(staged=)``, so its locks never wait on that scan)."""
     drop(write, v.name, schema)
-    make(write, v, schema, follow=True)
+    make(write, v, schema, follow=follow)
 
 
 def make(write: Any, v: bv.View, schema: str | None = None, *,

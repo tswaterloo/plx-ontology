@@ -1810,6 +1810,130 @@ class BusinessViews(unittest.TestCase):
                                          "lineage", "class_counts", "comms_units"]))
         self.assertEqual(state["customers"], 20)
 
+    def test_swap_waits_out_a_reader_and_no_other_reader_waits_long(self):
+        """Behaviour at the swap's boundary: a reader holding the served table open (a
+        plx.sql cursor) must not make every NEW reader queue behind the rename. The swap
+        tries its lock-taking statements under a short lock_timeout and tries again; the
+        heavy statements (lineage, counts) ran before and never held a reader out."""
+        import threading
+        import time
+        import psycopg
+        from operating.pg import swap_lock
+        slept: list[float] = []
+        real = swap_lock.swap_in
+
+        def watched(write, steps, **kw):   # a failed try ends in the pause: note it
+            return real(write, steps, sleep=lambda s: (slept.append(s), time.sleep(s)), **kw)
+
+        holder = psycopg.connect(self.dsn)
+        holder.execute("SELECT count(*) FROM biz.customers")   # ACCESS SHARE, held open
+        out: dict = {}
+
+        def rebuild():
+            try:
+                with mock.patch.object(swap_lock, "swap_in", watched):
+                    out["got"] = bv.build(self.dsn, ["customers"], schema=SCHEMA, as_of=AS_OF)
+            except BaseException as exc:  # noqa: BLE001 - reported by the assertion
+                out["err"] = exc
+        t = threading.Thread(target=rebuild)
+        t.start()
+        waits: list[float] = []
+        try:
+            deadline = time.monotonic() + 90
+            while t.is_alive() and time.monotonic() < deadline:
+                with psycopg.connect(self.dsn, autocommit=True) as c:
+                    began = time.monotonic()
+                    c.execute("SELECT count(*) FROM biz.customers").fetchone()
+                    waits.append(time.monotonic() - began)
+                if len(slept) >= 3:
+                    holder.rollback()   # the swap tried and failed three times: let it through
+                time.sleep(0.05)
+        finally:
+            holder.rollback()
+            holder.close()
+            t.join(120)
+        self.assertNotIn("err", out, out.get("err"))
+        self.assertEqual(out["got"][0]["rows"], self.built[0]["rows"])
+        self.assertGreaterEqual(len(slept), 3)   # it did wait on the held reader
+        self.assertLess(max(waits), 2.0, waits)   # and no new reader queued behind it
+
+    def test_staged_exclusion_decides_the_next_table_and_touches_nothing_live(self):
+        """door.exclude(staged=): the people exclusion applied to a build's own _next table
+        and lineage stage; the live table, its lineage and its counts are not touched."""
+        import psycopg
+        from operating.pg import door
+        with psycopg.connect(self.dsn, autocommit=True) as c:
+            door.ensure(c, "biz")
+            live_rows = c.execute("SELECT count(*) FROM biz.customers").fetchone()[0]
+            live_lineage = c.execute("SELECT count(*) FROM biz.lineage WHERE view = "
+                                     "'customers'").fetchone()[0]
+            try:
+                c.execute("CREATE TABLE biz.customers_next AS SELECT * FROM biz.customers")
+                c.execute("CREATE TABLE biz.lineage_customers_next AS SELECT * FROM "
+                          "biz.lineage WHERE view = 'customers'")
+                handle = c.execute("SELECT handle FROM biz.lineage_customers_next LIMIT 1"
+                                   ).fetchone()[0]
+                c.execute("UPDATE biz.lineage_customers_next SET object_ids = object_ids || "
+                          "%s::text WHERE handle = %s", (EXCLUDED_ID, handle))
+                gone = door.exclude(c, "biz", only="customers", record=False,
+                                    staged=("biz.customers_next", "biz.lineage_customers_next"))
+                self.assertGreaterEqual(gone, 1)
+                self.assertEqual(c.execute("SELECT count(*) FROM biz.customers_next WHERE "
+                                           "handle = %s", (handle,)).fetchone()[0], 0)
+                self.assertEqual(c.execute("SELECT count(*) FROM biz.lineage_customers_next "
+                                           "WHERE handle = %s", (handle,)).fetchone()[0], 0)
+                self.assertEqual(c.execute("SELECT count(*) FROM biz.customers").fetchone()[0],
+                                 live_rows)
+                self.assertEqual(c.execute("SELECT count(*) FROM biz.lineage WHERE view = "
+                                           "'customers'").fetchone()[0], live_lineage)
+                with self.assertRaises(ValueError):   # fail closed: a staged run records nothing
+                    door.exclude(c, "biz", only="customers", record=True,
+                                 staged=("biz.customers_next", "biz.lineage_customers_next"))
+            finally:
+                c.execute("DROP TABLE IF EXISTS biz.customers_next, biz.lineage_customers_next")
+                c.execute("DROP TABLE IF EXISTS biz.door_state, biz.door_views")
+
+    def test_swap_decides_the_people_exclusion_in_the_swap_when_the_set_moved(self):
+        """The staged exclusion is the swap's only decision of the rows while the set is
+        the one it was decided against; a set that moved before the locks were taken sends
+        the swap through its own follow (fail closed): ``create`` is told not to follow
+        only in the first case."""
+        import psycopg
+        from operating.pg import door
+        seen: list = []
+
+        class Guard:
+            @staticmethod
+            def drop(write, name, schema):
+                pass
+
+            @staticmethod
+            def create(write, v, schema, **kw):
+                seen.append(kw)
+        with psycopg.connect(self.dsn, autocommit=True) as c:
+            door.ensure(c, "biz")
+            c.execute("INSERT INTO ontology.people_excluded_state (exclusion, built_at, "
+                      "objects, handles, covered_ver) VALUES ('t', 'now', 0, 0, 1)")
+            c.execute("UPDATE biz.door_state SET excluded_at = %s", (door.exclusion_stamp(c),))
+        real = door.exclude
+
+        def moves_the_set(*a, **kw):
+            got = real(*a, **kw)
+            with psycopg.connect(self.dsn, autocommit=True) as c2:
+                c2.execute("UPDATE ontology.people_excluded_state SET covered_ver = "
+                           "covered_ver + 1")
+            return got
+        try:
+            with mock.patch.object(bv, "_guarded_views", lambda: Guard):
+                bv.build(self.dsn, ["customers"], schema=SCHEMA, as_of=AS_OF)
+                with mock.patch.object(door, "exclude", moves_the_set):
+                    bv.build(self.dsn, ["customers"], schema=SCHEMA, as_of=AS_OF)
+        finally:
+            with psycopg.connect(self.dsn, autocommit=True) as c:
+                c.execute("DELETE FROM ontology.people_excluded_state")
+                c.execute("DROP TABLE IF EXISTS biz.door_state, biz.door_views")
+        self.assertEqual(seen, [{"follow": False}, {}])
+
 
 if __name__ == "__main__":
     unittest.main()

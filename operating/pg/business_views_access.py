@@ -34,6 +34,8 @@ import datetime as dt
 from collections import Counter
 from typing import Any, Iterable, Mapping, Sequence
 
+from operating.pg import swap_lock
+
 UNREADABLE = "*search-store-unreadable*"   # operating/pg/door.py's token: documents unresolved
 CHUNK = 20000   # rows resolved at a time (bounded memory over the largest view)
 
@@ -245,7 +247,6 @@ def build_view(name: str, reader: Any, write: Any, *, as_of: dt.date,
             "them only through operating.pg.sql_views; build into a schema without them")
     started = time.monotonic()
     notes: Counter = Counter()
-    counts: Counter = Counter()
     nxt, old, lin = f"{name}_next", f"{name}_old", f"lineage_{name}_next"
     cols = ", ".join(f'"{n}"' for n, _ in bv.columns(v))
     lcols = ", ".join(bv.LINEAGE_COLS)
@@ -268,7 +269,6 @@ def build_view(name: str, reader: Any, write: Any, *, as_of: dt.date,
             with write.cursor().copy(f"COPY {S}.{lin} ({lcols}) FROM STDIN") as cp:
                 for m in made:
                     cp.write_row(m[4])
-        counts.update((ids[m[1]], col_ids[m[2]]) for m in made)
         rows += len(made)
 
     try:
@@ -289,22 +289,16 @@ def build_view(name: str, reader: Any, write: Any, *, as_of: dt.date,
             _indexes(write, v, nxt)
         seconds = round(time.monotonic() - started, 2)
         with write.transaction():
-            if guarded is not None:   # plx.sql's guarded view reads the live table
-                guarded.drop(write, name, S)
-            write.execute(f"DROP TABLE IF EXISTS {S}.{old}")
-            write.execute(f"ALTER TABLE IF EXISTS {S}.{name} RENAME TO {old}")
-            write.execute(f"ALTER TABLE {S}.{nxt} RENAME TO {name}")
-            write.execute(f"DROP TABLE IF EXISTS {S}.{old}")
+            # everything heavy first: none of it locks a table a reader has open
+            decided = _decide_staged(write, S, name, nxt, lin, guarded)
             write.execute(f"DELETE FROM {S}.class_counts WHERE view = %s", (name,))
-            with write.cursor().copy(f"COPY {S}.class_counts (view, access_class, col_class, "
-                                     "rows) FROM STDIN") as cp:
-                for (a, c), n in sorted(counts.items()):
-                    cp.write_row((name, a, c, n))
+            write.execute(f"INSERT INTO {S}.class_counts (view, access_class, col_class, "
+                          f"rows) SELECT %s, access_class, col_class, count(*) FROM {S}.{nxt} "
+                          "GROUP BY 2, 3", (name,))
+            rows = write.execute(f"SELECT count(*) FROM {S}.{nxt}").fetchone()[0]
             write.execute(f"DELETE FROM {S}.lineage WHERE view = %s", (name,))
             write.execute(f"INSERT INTO {S}.lineage ({lcols}) SELECT {lcols} FROM {S}.{lin}")
             write.execute(f"DROP TABLE {S}.{lin}")
-            if guarded is not None:
-                guarded.create(write, v, S)
             write.execute(
                 f"INSERT INTO {S}.state (view, built_at, digest, rows, seconds, notes) "
                 "VALUES (%s, %s, %s, %s, %s, %s) ON CONFLICT (view) DO UPDATE SET "
@@ -316,13 +310,63 @@ def build_view(name: str, reader: Any, write: Any, *, as_of: dt.date,
                                                      notes["people_excluded_rows"],
                                                  "people_excluded_cells":
                                                      notes["people_excluded_cells"]})))
-            write.execute("DO $$ BEGIN IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = "
-                          "'plx_api') THEN EXECUTE 'GRANT SELECT ON " + S + "." + name +
-                          " TO plx_api'; END IF; END $$")
+
+            def swap() -> None:
+                follow = not _still_decided(write, decided)
+                if guarded is not None:   # plx.sql's guarded view reads the live table
+                    guarded.drop(write, name, S)
+                write.execute(f"DROP TABLE IF EXISTS {S}.{old}")
+                write.execute(f"ALTER TABLE IF EXISTS {S}.{name} RENAME TO {old}")
+                write.execute(f"ALTER TABLE {S}.{nxt} RENAME TO {name}")
+                write.execute(f"DROP TABLE IF EXISTS {S}.{old}")
+                if guarded is not None:
+                    guarded.create(write, v, S, **({} if follow else {"follow": False}))
+                write.execute("DO $$ BEGIN IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = "
+                              "'plx_api') THEN EXECUTE 'GRANT SELECT ON " + S + "." + name +
+                              " TO plx_api'; END IF; END $$")
+            swap_lock.swap_in(write, swap)
     except BaseException:
         _drop_leftovers(write, S, (nxt, lin))
         raise
     return {"view": name, "rows": rows, "seconds": seconds}
+
+
+def _decide_staged(write: Any, schema: str, name: str, nxt: str, lin: str,
+                   guarded: Any) -> str | None:
+    """Decide the staged table's rows against the people exclusion now, before the swap
+    takes its locks (``door.exclude(staged=)``: the lineage scan it costs no longer runs
+    while readers are locked out). Returns the exclusion stamp it decided against, or
+    None where the swap's own ``door.follow`` must decide it (no door, an old-shape table,
+    a schema whose stamp was never recorded: that one decides the whole schema)."""
+    if guarded is None:
+        return None
+    from operating.pg import door
+    try:
+        stamp = door.exclusion_stamp(write)
+    except LookupError:
+        return None
+    if write.execute("SELECT to_regclass(%s)", (f"{schema}.{door.STATE}",)).fetchone()[0] is None:
+        return None   # a schema with no door yet: the swap's follow makes it and decides it
+    if (write.execute(f"SELECT excluded_at FROM {schema}.{door.STATE}").fetchone() or
+            (None,))[0] is None or not door.is_v2(write, schema, nxt):
+        return None
+    door.exclude(write, schema, only=name, record=False,
+                 staged=(f"{schema}.{nxt}", f"{schema}.{lin}"))
+    return stamp
+
+
+def _still_decided(write: Any, stamp: str | None) -> bool:
+    """Whether the set is still the one the staged table was decided against. Asked with
+    the swap's locks held: a set that grows after this waits for the swap's commit, then
+    decides the table's rows itself; one that grew before this is a slow path (the swap's
+    own ``door.follow``)."""
+    if stamp is None:
+        return False
+    from operating.pg import door
+    try:
+        return door.exclusion_stamp(write) == stamp
+    except LookupError:
+        return False
 
 
 def sweep_leftovers(write: Any) -> list[str]:

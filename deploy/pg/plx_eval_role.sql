@@ -12,11 +12,17 @@
 DO $$
 BEGIN
     CREATE ROLE plx_eval LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS
-        NOINHERIT CONNECTION LIMIT 32;
+        NOINHERIT CONNECTION LIMIT 80;
 EXCEPTION WHEN duplicate_object THEN
     NULL;
 END $$;
 ALTER ROLE plx_eval NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS NOINHERIT;
+-- Two concurrent Ask hosts held ~15 connections each at their peak (each plx.sql/pages/search
+-- pool is max_size 4 and busy during a tool-call burst; pools close one idle past 60 s and keep
+-- at most 2, operating/pg/pool.py): a 32 cap failed 57 of 187 Ask tool calls with "too many
+-- connections for role plx_eval". 80 leaves the served API (64 cap, ~16 used) and the loader
+-- (64 cap) room under max_connections = 200.
+ALTER ROLE plx_eval CONNECTION LIMIT 80;
 ALTER ROLE plx_eval SET default_transaction_read_only = on;
 ALTER ROLE plx_eval SET statement_timeout = '300s';
 ALTER ROLE plx_eval SET lock_timeout = '30s';

@@ -193,6 +193,80 @@ class RoutingTest(unittest.TestCase):
         self.assertEqual(seen["comms"][0]["sources"], ["graph_mail", "sharepoint", "teams"])
         self.assertEqual(seen["docs"][0]["sources"], ["sharepoint", "original"])
 
+    def test_a_search_too_large_for_one_response_keeps_the_hits_that_fit_and_says_so(self):
+        """Live: an all-sources search of 20 hits a leg was refused whole as too large
+        after 18 s. As many hits as fit one response come back, in order, the rest
+        counted in a gap and never continued by a cursor (it would start past them); a
+        result that fits is untouched (1 or 10 hits a leg); 60 a leg is cut to the
+        contract's 50, 20 long ones a leg to what fits. Checked on the contract."""
+        import json
+        from pathlib import Path
+        from ontology.json_contract import validate
+        from operating.mcp_server_calls import search_fits as fits
+        sized = 0
+        contract = json.loads((Path(s.__file__).with_name("ontology_tool_contracts.json"))
+                              .read_text(encoding="utf-8"))
+        for n, words in ((1, 16), (10, 16), (60, 16), (20, 250)):
+            def leg(kind, n=n, words=words):
+                def answer(arguments):
+                    return {"documents": [
+                        {"citation": f"graph-mail://{kind}/{i}", "kind": "email",
+                         "title": {"untrusted_text": "t " * 40,
+                                   "origin": {"citation": f"graph-mail://{kind}/{i}"}},
+                         "snippet": {"untrusted_text": "purchase order " * words,
+                                     "origin": {"citation": f"graph-mail://{kind}/{i}"}},
+                         "date": f"2026-10-{1 + i % 28:02d}"}
+                        for i in range(n)],
+                        "searched": {"sources": ["graph_mail"]}, "gaps": [],
+                        "completeness": {"complete": False, "truncated": True, "returned": n,
+                                         "reason": "page_cap", "next_cursor": f"c1:{kind}"}}
+                return answer
+            whole = s.run(leg("docs"), {"query": "purchase order", "limit": 50},
+                          call_comms=leg("mail"), call_records=leg("records"))
+            got = s.fitted(whole, fits)
+            with self.subTest(n=n, words=words):
+                self.assertTrue(fits(got))
+                self.assertEqual(validate(got, contract["tools"][s.TOOL_NAME]["output"],
+                                          root=contract), [])
+                kept = got["documents"]
+                self.assertEqual(kept, whole["documents"][:len(kept)])   # a prefix, in order
+                if fits(whole):
+                    self.assertIs(got, whole)
+                    self.assertLess(n, 60)
+                    continue
+                self.assertGreater(len(kept), 0)
+                self.assertLess(len(kept), len(whole["documents"]))
+                done = got["completeness"]
+                self.assertEqual((done["truncated"], done["complete"], done["next_cursor"],
+                                  done["reason"], done["returned"]),
+                                 (True, False, None, "result_budget", len(kept)))
+                self.assertIn(f"{len(whole['documents']) - len(kept)} more hits",
+                              got["gaps"][-1]["detail"])
+                # at most the contract's hits, and one more hit would not have fit
+                more = {**got, "documents": whole["documents"][:len(kept) + 1]}
+                self.assertLessEqual(len(kept), s.MAX_HITS)
+                self.assertTrue(len(kept) == s.MAX_HITS or not fits(more), len(kept))
+                sized += len(kept) < s.MAX_HITS
+        self.assertTrue(sized, "no result was cut by its size")
+        # an error answer is never touched
+        self.assertEqual(s.fitted({"error": {"code": "x"}}, lambda r: False),
+                         {"error": {"code": "x"}})
+        # a result with no hits to leave out is never said to have left some out
+        bare = {"documents": [], "gaps": [{"state": "unknown", "detail": "x" * 10}],
+                "completeness": {"complete": True, "returned": 0}}
+        self.assertIs(s.fitted(bare, lambda r: False), bare)
+        # the host's plx.search answers so (60 hits each from mail and records)
+        from operating.mcp_server_calls import CallsMixin
+        legs = {s.COMMS_SEARCH: leg("mail", 60), s.RECORDS_SEARCH: leg("records", 60),
+                s.DOCUMENTS: lambda wanted: {"documents": [], "completeness": {}}}
+
+        class Host(CallsMixin):
+            def _generic_call(self, name, wanted):
+                return legs[name](wanted)
+        got = Host()._call(s.TOOL_NAME, {"query": "purchase order", "limit": 50})
+        self.assertTrue(fits(got))
+        self.assertEqual(got["completeness"]["reason"], "result_budget")
+
     def test_participant_and_comms_cursor_search_mail_only(self):
         for args in ({"participant": "a@b.example"},
                      {"query": "pallets", "cursor": "c1:2026-10-02T00:00:00Z|email:v1"}):

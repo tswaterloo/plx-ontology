@@ -10,7 +10,7 @@ from ontology.core import Actor
 from . import (
     action_tools, agent_definitions, answer_gate, capability_guards, case_context_tools,
     host_peers, kind_confirmation, mcp_portfolio, ontology_tools, ontology_tools_search,
-    session_identity
+    session_identity, tool_results
 )
 from .case_tools_host import PagedRead
 from .session_identity import SessionIdentity, SessionIdentityRefused
@@ -21,11 +21,25 @@ from .mcp_server_catalog import (
     GENERIC_TOOLS, home_kinds, HOST_READS, LATE_PO_KINDS, PLAYBOOK_TOOLS, RETURNING_TOOLS
 )
 from .mcp_server_evidence import (
-    _drop_changed, _evidence_items, _evidence_scope, _ItemPermissions, _merged, _served_texts,
-    _text_key, _unkept_reason, MAX_SERVED_SPANS, MAX_SERVED_TEXTS, MAX_TEXT_HANDLES,
-    PERMISSIONS_UNREADABLE, UNRESTRICTED_SCOPE
+    _UNKEPT_NOTE_BYTES, _drop_changed, _evidence_items, _evidence_scope, _ItemPermissions,
+    _merged, _served_texts, _text_key, _unkept_reason, MAX_RESULT_BYTES, MAX_SERVED_SPANS,
+    MAX_SERVED_TEXTS, MAX_TEXT_HANDLES, PERMISSIONS_UNREADABLE, UNRESTRICTED_SCOPE
 )
 from .mcp_server_results import _FRESHNESS_UNIT_FIELDS, InputError
+
+
+def search_fits(result: dict[str, Any]) -> bool:
+    """Whether a ``plx.search`` result fits one response as ``MCPServer.handle`` sends it
+    at its last size tier: its JSON text alone (``tool_results.TEXT_ONLY_STUB``), as the
+    client sees it (``_firewall``), with room for the freshness summary, the agent stamp
+    (``META_RESERVE_BYTES``) and an unkept evidence note."""
+    from .mcp_server_results import _envelope_size, _firewall, META_RESERVE_BYTES
+    text = json.dumps(_firewall(result, ontology_tools_search.TOOL_NAME),
+                      ensure_ascii=False, separators=(",", ":"))
+    payload = {"content": [{"type": "text", "text": text}], "isError": False,
+               "_meta": {tool_results.TEXT_ONLY_KEY: tool_results.TEXT_ONLY_STUB}}
+    return (_envelope_size(payload) + META_RESERVE_BYTES + _UNKEPT_NOTE_BYTES
+            <= MAX_RESULT_BYTES)
 
 
 class CallsMixin:
@@ -318,15 +332,16 @@ class CallsMixin:
 
     def _call(self, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
         if name == ontology_tools_search.TOOL_NAME:
-            # plx.documents itself, as this session's reader, its hits cut short
-            return ontology_tools_search.run(
+            # plx.documents itself, as this session's reader, its hits cut short; as many
+            # as fit one response (``search_fits``)
+            return ontology_tools_search.fitted(ontology_tools_search.run(
                 lambda wanted: self._generic_call(ontology_tools_search.DOCUMENTS, wanted),
                 arguments,
                 call_read=lambda wanted: self._generic_call(ontology_tools_search.READ, wanted),
                 call_comms=lambda wanted: self._generic_call(ontology_tools_search.COMMS_SEARCH,
                                                              wanted),
                 call_records=lambda wanted: self._generic_call(
-                    ontology_tools_search.RECORDS_SEARCH, wanted))
+                    ontology_tools_search.RECORDS_SEARCH, wanted)), search_fits)
         if name == ontology_tools_search.OPEN_NAME:
             # plx.read itself, as this session's reader; Freightcom never shown
             return ontology_tools_search.open_one(

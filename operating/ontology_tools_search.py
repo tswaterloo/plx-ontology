@@ -55,6 +55,7 @@ OPEN_MAX_CHARS = 20000
 CHECK_MAX_CHARS = 200_000  # a hit's full text checked for Freightcom up to this many chars
 CHECK_RESERVE_S = 2.0      # time kept back from the call's limit when checking full texts
 DEFAULT_LIMIT = 20
+MAX_HITS = 50   # the contract's documents maxItems (and limit maximum)
 
 _TOOLS = json.loads((Path(__file__).with_name("ontology_tool_contracts.json"))
                     .read_text(encoding="utf-8"))["tools"]
@@ -374,6 +375,42 @@ def _merged(results: list[dict[str, Any]]) -> dict[str, Any]:
         if left:
             out[key] = left
     return out
+
+
+def fitted(result: Any, fits: Callable[[dict[str, Any]], bool]) -> Any:
+    """``result`` (``run``'s) with as many of its hits, in order, as fit one response
+    (``fits``): live, an all-sources search of 20 hits a leg (mail, Teams, files and
+    records together) was refused whole as too large after 18 s; at most ``MAX_HITS``
+    (the contract's, as many as a leg's ``limit``: the legs' lists merged can hold
+    three times that). The hits left out are
+    said (``completeness.reason`` "result_budget" and a gap counting them), never
+    continued by a cursor: the list's own cursor would start past them, so it is
+    dropped."""
+    if not isinstance(result, dict) or "error" in result or (
+            len(result.get("documents") or ()) <= MAX_HITS and fits(result)):
+        return result
+    documents = list(result.get("documents") or [])
+    if not documents:   # nothing to leave out: the response bound refuses it as it is
+        return result
+
+    def cut(n: int) -> dict[str, Any]:
+        done = dict(result.get("completeness") or {})
+        done.update({"complete": False, "truncated": True, "returned": n,
+                     "next_cursor": None, "reason": "result_budget"})
+        gap = {"state": "unknown", "reason": "result_budget", "subject": "search hits",
+               "detail": f"{len(documents) - n} more hits found did not fit one response "
+                         "(no cursor continues them): search again with a smaller limit, "
+                         "fewer sources or narrower words"}
+        return {**result, "documents": documents[:n], "completeness": done,
+                "gaps": [*(result.get("gaps") or [])[:19], gap]}
+    # cut(low) fits or low == 0; cut(high) does not fit (or is past MAX_HITS)
+    low, high = 0, min(len(documents), MAX_HITS + 1)
+    if fits(cut(high - 1)):
+        return cut(high - 1)
+    while high - low > 1:
+        mid = (low + high) // 2
+        low, high = (mid, high) if fits(cut(mid)) else (low, mid)
+    return cut(low)
 
 
 def open_one(call_read: Callable[[dict[str, Any]], Any], arguments: Any,

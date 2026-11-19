@@ -35,6 +35,7 @@ from dataclasses import dataclass
 from typing import Any, Mapping, Sequence
 
 from operating.pg import business_views as bv
+from operating.pg import swap_lock
 
 CHUNK = 200_000   # versions per insert statement (bounded statement and memory)
 WRITE_CHUNK = 250_000   # stage rows per statement of the build's write of its table
@@ -186,14 +187,7 @@ def build_view(v: Any, write: Any, *, as_of: dt.date, digest: str | None = None
         raise
     seconds = round(time.monotonic() - started, 2)
     with write.transaction():
-        if guarded is not None:
-            guarded.drop(write, name, bv.SCHEMA)
-        write.execute(f"DROP TABLE IF EXISTS {bv.SCHEMA}.{old}")
-        write.execute(f"ALTER TABLE IF EXISTS {bv.SCHEMA}.{name} RENAME TO {old}")
-        write.execute(f"ALTER TABLE {bv.SCHEMA}.{nxt} RENAME TO {name}")
-        write.execute(f"DROP TABLE IF EXISTS {bv.SCHEMA}.{old}")
-        if guarded is not None:
-            guarded.create(write, v, bv.SCHEMA)
+        # the state row first: only the statements that need the readers out are in the swap
         write.execute(
             f"INSERT INTO {bv.SCHEMA}.state (view, built_at, digest, rows, seconds, notes) "
             "VALUES (%s, %s, %s, %s, %s, %s) ON CONFLICT (view) DO UPDATE SET "
@@ -201,9 +195,20 @@ def build_view(v: Any, write: Any, *, as_of: dt.date, digest: str | None = None
             "seconds = excluded.seconds, notes = excluded.notes",
             (name, dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds"), digest,
              count, seconds, json.dumps(notes)))
-        write.execute("DO $$ BEGIN IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = "
-                      f"'plx_api') THEN EXECUTE 'GRANT SELECT ON {bv.SCHEMA}.{name} TO "
-                      "plx_api'; END IF; END $$")
+
+        def swap() -> None:
+            if guarded is not None:
+                guarded.drop(write, name, bv.SCHEMA)
+            write.execute(f"DROP TABLE IF EXISTS {bv.SCHEMA}.{old}")
+            write.execute(f"ALTER TABLE IF EXISTS {bv.SCHEMA}.{name} RENAME TO {old}")
+            write.execute(f"ALTER TABLE {bv.SCHEMA}.{nxt} RENAME TO {name}")
+            write.execute(f"DROP TABLE IF EXISTS {bv.SCHEMA}.{old}")
+            if guarded is not None:
+                guarded.create(write, v, bv.SCHEMA)
+            write.execute("DO $$ BEGIN IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = "
+                          f"'plx_api') THEN EXECUTE 'GRANT SELECT ON {bv.SCHEMA}.{name} TO "
+                          "plx_api'; END IF; END $$")
+        swap_lock.swap_in(write, swap)
     return {"view": name, "rows": count, "seconds": seconds}
 
 

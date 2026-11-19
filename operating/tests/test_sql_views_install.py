@@ -251,6 +251,37 @@ class InstallOnLiveStore(unittest.TestCase):
                 c.execute("DROP VIEW public.reads_it")
             self._install()
 
+    def test_a_refresh_whose_view_fails_keeps_the_served_table_and_view(self):
+        """No deploy step installs views: a release's changed view reaches the live store
+        in its table's refresh swap, the view made inside the swap's transaction. A view
+        that fails there rolls the whole swap back (the served table and its view as they
+        were, readable) and the build fails loudly (the refresh unit fails: its alarm)."""
+        import psycopg
+        view = self.guarded()[0]
+        name = view.split(".", 1)[1]
+        with self.connect() as c:
+            table = c.execute("SELECT to_regclass(%s)::oid", (f"{bv.SCHEMA}.{name}",)
+                              ).fetchone()[0]
+            old = c.execute("SELECT to_regclass(%s)::oid", (view,)).fetchone()[0]
+            rows = c.execute(f"SELECT count(*) FROM {bv.SCHEMA}.{name}").fetchone()[0]
+
+        def broken(*_a, **_k):
+            raise psycopg.errors.InsufficientPrivilege("view make failed")
+        with mock.patch.object(sql_views, "make", side_effect=broken), \
+                self.assertRaisesRegex(RuntimeError, "view make failed"):
+            bv.build(self.dsn, [name], schema=tbv.SCHEMA, as_of=tbv.AS_OF)
+        with self.connect() as c:
+            self.assertEqual(c.execute("SELECT to_regclass(%s)::oid", (f"{bv.SCHEMA}.{name}",)
+                                       ).fetchone()[0], table, "the served table was swapped")
+            self.assertEqual(c.execute("SELECT to_regclass(%s)::oid", (view,)).fetchone()[0],
+                             old, "the served view was dropped or changed")
+            self.assertEqual(sql_views._refs(c, view), [f"{bv.SCHEMA}.{name}"])
+            c.execute(f"SELECT count(*) FROM {view}").fetchone()   # still readable
+            self.assertEqual(c.execute(f"SELECT count(*) FROM {bv.SCHEMA}.{name}"
+                                       ).fetchone()[0], rows)
+            self.assertIsNone(c.execute("SELECT to_regclass(%s)", (f"{bv.SCHEMA}.{name}_next",)
+                                        ).fetchone()[0], "a _next table left behind")
+
 
 if __name__ == "__main__":
     unittest.main()

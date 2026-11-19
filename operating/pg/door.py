@@ -342,7 +342,7 @@ def recount(write: Any, schema: str, name: str) -> None:
 
 
 def exclude(write: Any, schema: str, *, only: str | None = None, record: bool = True,
-            among: Sequence[str] | None = None) -> int:
+            among: Sequence[str] | None = None, staged: tuple[str, str] | None = None) -> int:
     """Drop every row of every v2 table (``only``: of that view) whose lineage names an
     object of the people exclusion among its own or read records (``object_ids ||
     read_ids``), empty a cell whose column was read from one (``col_objects``), and
@@ -350,9 +350,15 @@ def exclude(write: Any, schema: str, *, only: str | None = None, record: bool = 
     only these objects are tested (the ones a grown set added, over a door decided
     against the set before it: ``exclude_within``), found by the lineage's object-id
     indexes in well under a second, where the whole set's test scans the lineage (41 s
-    live, three times)."""
+    live, three times). ``staged`` (with ``only``): ``(table, lineage)``, a build's own
+    ``_next`` table and lineage stage, not yet swapped in: the same rows are decided there
+    (the swap then holds its locks for the renames alone, never for the lineage scan); the
+    class counts and the stamp are the caller's."""
     from operating.pg.people_excluded import TABLE as EXCLUDED
     gone = 0
+    if staged is not None and (only is None or record or among is not None):
+        raise ValueError("a staged exclusion names one view and records nothing")
+    lineage_ref = staged[1] if staged else f"{schema}.{LINEAGE}"
     view_only = "AND l.view = %(only)s" if only else ""
     params: dict[str, Any] = {"only": only, "among": list(among or ())}
     with write.transaction():
@@ -366,17 +372,18 @@ def exclude(write: Any, schema: str, *, only: str | None = None, record: bool = 
             hit = ("(l.object_ids && %(among)s::text[] OR l.read_ids && %(among)s::text[])")
             named = "WHERE o = ANY(%(among)s::text[])"
         views = {r[0] for r in write.execute(
-            f"SELECT DISTINCT l.view FROM {schema}.{LINEAGE} l WHERE {hit} {view_only}",
+            f"SELECT DISTINCT l.view FROM {lineage_ref} l WHERE {hit} {view_only}",
             params).fetchall()}
         cells: dict[tuple[str, str], list[str]] = {}
         for view, col, handle in write.execute(
-                f"SELECT l.view, e.k, l.handle FROM {schema}.{LINEAGE} l, "
+                f"SELECT l.view, e.k, l.handle FROM {lineage_ref} l, "
                 "jsonb_each(l.col_objects) e(k, ids) WHERE jsonb_typeof(e.ids) = 'array' "
                 f"AND EXISTS (SELECT 1 FROM jsonb_array_elements_text(e.ids) o "
                 f"{named}) {view_only}", params).fetchall():
             cells.setdefault((view, col), []).append(handle)
         for view in sorted(views | {v for v, _ in cells}):
-            if not is_v2(write, schema, view):
+            target = staged[0] if staged else f"{schema}.{view}"
+            if not is_v2(write, *(target.split(".", 1) if staged else (schema, view))):
                 continue
             # a curated view's columns; another v2 table's (the generic ``records`` and
             # ``record_links``, ``operating.pg.generic_records``) as the table has them
@@ -389,24 +396,25 @@ def exclude(write: Any, schema: str, *, only: str | None = None, record: bool = 
                     continue
                 if col not in known or not _COL.fullmatch(col):
                     # a column the view does not have: its rows go whole (fail closed)
-                    gone += write.execute(f"DELETE FROM {schema}.{view} WHERE handle = "
+                    gone += write.execute(f"DELETE FROM {target} WHERE handle = "
                                           "ANY(%s)", (handles,)).rowcount
-                    write.execute(f"DELETE FROM {schema}.{LINEAGE} WHERE view = %s AND "
+                    write.execute(f"DELETE FROM {lineage_ref} WHERE view = %s AND "
                                   "handle = ANY(%s)", (view, handles))
                     continue
-                gone += write.execute(f'UPDATE {schema}.{view} SET "{col}" = NULL WHERE '
+                gone += write.execute(f'UPDATE {target} SET "{col}" = NULL WHERE '
                                       'handle = ANY(%s)', (handles,)).rowcount
-                write.execute(f"UPDATE {schema}.{LINEAGE} SET col_objects = col_objects - "
+                write.execute(f"UPDATE {lineage_ref} SET col_objects = col_objects - "
                               "%s, cites = cites - %s WHERE view = %s AND handle = ANY(%s)",
                               (col, col, view, handles))
             gone += write.execute(
-                f"DELETE FROM {schema}.{view} t USING {schema}.{LINEAGE} l WHERE "
+                f"DELETE FROM {target} t USING {lineage_ref} l WHERE "
                 f"l.view = %(view)s AND l.handle = t.handle AND {hit}",
                 {**params, "view": view}).rowcount
-            write.execute(f"DELETE FROM {schema}.{LINEAGE} l WHERE l.view = %(view)s AND {hit}",
+            write.execute(f"DELETE FROM {lineage_ref} l WHERE l.view = %(view)s AND {hit}",
                           {**params, "view": view})
-            recount(write, schema, view)
-        if gone:
+            if not staged:
+                recount(write, schema, view)
+        if gone and not staged:
             _bump(write, schema)
         if record:
             write.execute(f"UPDATE {schema}.{STATE} SET excluded_at = %s", (set_stamp,))

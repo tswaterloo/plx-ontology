@@ -592,6 +592,7 @@ class SqlTool:
         # cursor skips (read again past its returned row, refused again)
         skip = cur[3] if cur else 0
         k = (2 * limit + 1 if files else limit + 1) + skip
+        own = limit + 1 + skip   # mail and Teams rows: never refused (``search_sql``)
 
         def work(pg: Any) -> Any:
             views = [v for v in cs.present(pg, guarded) if cs.VIEWS[v][2] in wanted
@@ -607,7 +608,7 @@ class SqlTool:
             return views, who, pg.execute(sql, {
                 "q": q, "party": who.value if who else None, "since": since, "until": until,
                 "c_at": cur[1] if cur else None, "c_h": cur[2] if cur else None,
-                "k": k}).fetchall()
+                "k": k, "k_own": own, "walk": cs.walk_rows(pg, q)}).fetchall()
         try:
             views, who, rows = self._comms_scoped(conn, settings, work, actor)
         except cs.SearchInputError as exc:

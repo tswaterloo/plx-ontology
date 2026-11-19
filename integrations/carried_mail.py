@@ -34,7 +34,9 @@ Stdlib only.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from struct import error as struct_error
 import functools
+import re
 from email import policy
 from email.parser import BytesHeaderParser
 from email.utils import getaddresses
@@ -185,7 +187,17 @@ def carried_people(content: bytes, name: str, mime_type: str | None = None
         found, complete = _people(item["data"], kind)
         mails.append(CarriedMail(item["path"], frozenset(found), complete))
     # a part that was not read (unreadable, over a cap) may be a mail nobody saw
-    whole = not any(_may_hide_mail(g) for g in listed["gaps"])
+    whole = True
+    owners = {item["path"]: item["data"] for item in listed["files"]}
+    for gap in listed["gaps"]:
+        if not _may_hide_mail(gap):
+            continue
+        store = _office_xml_store(gap, content, owners)
+        if store is None:
+            whole = False
+            continue
+        if store:                       # a person the custom XML names is decided like a sender
+            mails.append(CarriedMail(str(gap["path"]), frozenset(store), True))
     return mails, whole
 
 
@@ -207,6 +219,83 @@ def _may_hide_mail(gap: Mapping[str, Any]) -> bool:
         name = str(gap.get("path") or "").rsplit("!/", 1)[-1]
         return PurePosixPath(name).suffix.lower() in _HIDING_SUFFIXES
     return False
+
+
+# Outlook's top-level ``MsoDataStore`` storage (Office custom-XML data stores: add-in and
+# content-type state) is not parsed by the container walk (``msg_storage_not_parsed``: it
+# is a storage whose streams could be anything), which withheld two of every three ``.msg``
+# in the SharePoint estate whole. It holds no message: when its bytes are exactly the
+# shape Outlook writes (storages holding only ``Item`` and ``Properties`` streams, each XML
+# text) it is no hiding place, and the addresses its XML names are decided like a sender's.
+# Any other shape stays a hiding gap (fail closed).
+_STORE = "MsoDataStore"
+_STORE_STREAMS = ("Item", "Properties")
+_STORE_HEADS = ("<?xml", "<?mso-")
+_STORE_MAX_STREAM = 1 << 20
+_ADDRESS = re.compile(r"[A-Za-z0-9._%+'-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+")
+
+
+def _office_xml_store(gap: Mapping[str, Any], content: bytes,
+                      owners: Mapping[str, bytes]) -> frozenset[str] | None:
+    """The addresses named inside the ``MsoDataStore`` a walk's ``gap`` left unparsed
+    when the store is only XML text (a set, empty when it names none); None when the
+    gap is something else or the store is not exactly that shape."""
+    if gap.get("kind") != "msg_storage" or gap.get("reason") != "msg_storage_not_parsed":
+        return None
+    path = str(gap.get("path") or "")
+    if path == _STORE:
+        owner = content
+    elif path.endswith("!/" + _STORE):
+        owner = owners.get(path[:-len(_STORE) - 2])
+    else:
+        return None
+    if not isinstance(owner, (bytes, bytearray)):
+        return None
+    try:
+        from operating import msg_reader
+        cfb = msg_reader.Cfb(bytes(owner))
+        store = cfb.child(0, _STORE)
+        if store is None or cfb.entries[store][1] != msg_reader.STORAGE:
+            return None
+        streams = 0
+        found: set[str] = set()
+        for held in cfb.children(store):
+            if cfb.entries[held][1] != msg_reader.STORAGE:
+                return None
+            for child in cfb.children(held):
+                if cfb.entries[child][1] == msg_reader.STORAGE \
+                        or cfb.entries[child][0] not in _STORE_STREAMS:
+                    return None
+                text = _store_text(cfb.stream(child, _STORE_MAX_STREAM))
+                if text is None:
+                    return None
+                streams += 1
+                found.update(a.strip("'.").lower() for a in _ADDRESS.findall(text))
+        return frozenset(found) if streams else None
+    except (ValueError, OverflowError, IndexError, KeyError, struct_error, RecursionError):
+        return None
+
+
+def _store_text(data: bytes) -> str | None:
+    """One custom-XML stream as text, or None when it is not plain UTF-8/UTF-16 XML text
+    opening with an XML declaration or an ``mso-`` instruction (a NUL or a binary
+    container is not)."""
+    for bom, codec in ((b"\xff\xfe", "utf-16"), (b"\xfe\xff", "utf-16"),
+                       (b"\xef\xbb\xbf", "utf-8-sig")):
+        if data.startswith(bom):
+            try:
+                text = data.decode(codec)
+            except UnicodeDecodeError:
+                return None
+            break
+    else:
+        try:
+            text = data.decode("utf-8")
+        except UnicodeDecodeError:
+            return None
+    if not text.lstrip().startswith(_STORE_HEADS) or "\x00" in text:
+        return None
+    return text
 
 
 def _tenant_domains(guard: Any) -> frozenset[str]:

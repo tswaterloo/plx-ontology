@@ -9,8 +9,10 @@ every word ranks first, then the rows matched in their text; newest first within
 (``tier``: the cursor carries it). The permission predicate is
 the view's, inside the statement: no scan-then-gate and no item gate inside a row-limited
 walk. The words match the header (the table's own ``words``: subject and addresses, GIN)
-or the body (``ontology.chunk_words`` of the version's document text, GIN); the planner
-walks the date index for common words and starts from the word indexes for rare ones.
+or the body (``ontology.chunk_words`` of the version's document text, GIN); the statement
+walks each view's newest rows first, checking each row's own words (a common word fills
+its page there), and reads the word index's whole match only for the rows past the walk
+when the walk found too few (a rare word): ``search_sql``.
 Party (an address, a domain, a customer or supplier) and dates are plain predicates on the
 table (GIN over ``addresses`` / ``domains`` / ``customers`` / ``suppliers``).
 
@@ -121,47 +123,67 @@ def present(pg: Any, guarded: str, *, opening: bool = False) -> list[str]:
             and not (opening and v in SEARCH_ONLY)]
 
 
+# rows of one table (its newest, in the dates) whose reader's rows are walked newest first
+# for text matches before the word index's whole match is read (``search_sql``): a common
+# word ("purchase order": 263,186 matched mails, 20.7 s to read them all) fills the page
+# from the newest few hundred rows (0.1-1.4 s); a rare one finds its page in the word index
+# (``_fallback``)
+WALK_ROWS = 4000
+# the walk is for a common word only: the planner's estimate of the word index's whole
+# match (its column statistics, no row read, 0.5 ms) at or past this many text chunks.
+# A rarer one reads that match at once (``PO100109``: 9,072 estimated, 0.2 s; walked, its
+# 4,000 rows' own checks took 6.3 s); "purchase order" (121,662) or "invoice" walk.
+COMMON_CHUNKS = 50000
+# a second walk stage, DEEPER times as deep, for a word the first stage found too few of
+# but often enough to fill the page there ("purchase order" in Teams: 5 in its newest
+# 4,000 messages; the word index's whole match, every document's chunks, took 18 s)
+STAGES, DEEPER = 2, 16
+
+
+def walk_rows(pg: Any, q: str | None) -> int:
+    """The ``walk`` parameter of ``search_sql`` for the tsquery ``q``: ``WALK_ROWS`` for
+    a common word (``COMMON_CHUNKS``), else 1 (the newest row; the word index then reads
+    the rest). Either gives the same rows in the same order: only the time differs."""
+    if q is None or COMMON_CHUNKS <= 0:
+        return WALK_ROWS
+    plan = pg.execute("EXPLAIN (FORMAT JSON) SELECT 1 FROM ontology.chunk_words w WHERE "
+                      "w.words @@ %s::tsquery", (q,)).fetchone()[0]
+    if isinstance(plan, str):
+        import json
+        plan = json.loads(plan)
+    return WALK_ROWS if plan[0]["Plan"]["Plan Rows"] >= COMMON_CHUNKS else 1
+
+
 def search_sql(views: Sequence[str], *, guarded: str, biz: str, query: bool,
                party_kind: str | None, since: bool, until: bool, cursor: bool,
                cursor_tier: int = 0) -> str:
-    """The one statement (named parameters: q, party, since, until, c_at, c_h, k). Its rows
-    end with ``tier`` (1: the header holds every query word; 0: the text does, or no query
-    words), in the order tier, date, handle, all descending; ``cursor_tier`` is the tier of
-    the cursor's row (``read_cursor``)."""
-    parts = []
-    # a page after a header-matched row (tier 1) still has every text-matched row to come,
-    # whatever its date: the date bounds the word match only within the last tier
-    dated = cursor and cursor_tier == 0
-    for view in views:
+    """The one statement (named parameters: q, party, since, until, c_at, c_h, k, k_own,
+    walk; ``k_own`` <= ``k``: the rows read of mail and Teams, ``k`` of the files and in all).
+    Its rows end with ``tier`` (1: the header holds every query word; 0: the text does, or
+    no query words), in the order tier, date, handle, all descending; ``cursor_tier`` is the
+    tier of the cursor's row (``read_cursor``).
+
+    With query words each view gives up to three parts, each its newest ``k`` rows: the
+    header rows (the table's own GIN); the text rows among the view's rows at or after the
+    walk's floor (the ``walk``-th newest row of the table in the dates; each row checked by
+    its own text, newest first, stopping at ``k``); and, only when those rows held fewer
+    than ``k`` text rows and the table has rows below the floor, the text rows below it from
+    the word index's whole match (``_fallback``: never read otherwise). The floor splits
+    the reader's rows in two by (date, handle), so together they are the same rows, in the
+    same order, as one read of every match: whatever the word's frequency, the page is
+    found where it is cheap."""
+    parts, ctes = [], []
+    for at, view in enumerate(views):
         kind, when, _ = VIEWS[view]
         mail = view == "emails"
+        # its rows: ``k`` for the files (room for those the item gate refuses), ``k_own``
+        # for mail and Teams (never refused: the page and its "more" are decided within
+        # their first ``k_own``; reading ``k`` of them walked twice as deep for nothing)
+        kk = "%(k)s" if view in SEARCH_ONLY else "%(k_own)s"
         # a files row's text only once a build or refresh read it for Freightcom
         # (``ai_ok``; a row admitted on its cells alone matches by name and folder)
         checked = " AND b.ai_ok" if view in SEARCH_ONLY else ""
-        conds = ["true"]
-        if query:
-            # the text of the row's own object and version: the fields ``ai_ok`` decided
-            # (``business_comms._text_ai``), never a same-citation copy under another object.
-            # The dates bound the word match too (the outer read keeps its own bounds): a
-            # common word over all time matched 150,908 mails (13.2 s) where the 3 days
-            # asked held 91 (1.3 s), and every party search ran into its 25 s limit
-            window = "".join(f" AND b.{when} {op} %({name})s" for on, op, name in (
-                (since, ">=", "since"), (until, "<", "until"), (dated, "<=", "c_at")) if on)
-            header = (f"SELECT b.handle FROM {biz}.{view} b WHERE b.words @@ %(q)s::tsquery"
-                      f"{window}")
-            # ARRAY(...): the match is read once (an init plan) and the view's rows found
-            # by handle; as "IN (...)" the planner, taking the reader's rows for one, ran
-            # the match again per row of the window (a party search: 25 s timeout)
-            conds.append(
-                "e.handle = ANY(ARRAY(SELECT b.handle FROM ontology.text_fields fd JOIN "
-                "ontology.text_chunks c ON c.field_id = fd.field_id JOIN ontology.chunk_words w "
-                f"ON w.chunk_id = c.chunk_id JOIN {biz}.{view} b ON b.handle = "
-                "fd.version_handle AND b.object_ids[1] = fd.object_id WHERE w.words @@ "
-                f"%(q)s::tsquery AND fd.markings = '[]'{checked}{window} UNION ALL "
-                f"{header}))")
-            tier = f"(e.handle = ANY(ARRAY({header})))::int"
-        else:
-            tier = "0"
+        conds = []
         if party_kind is not None:
             if not mail:
                 continue
@@ -169,28 +191,96 @@ def search_sql(views: Sequence[str], *, guarded: str, biz: str, query: bool,
                           "domain": "e.domains @> ARRAY[%(party)s]::text[]",
                           "record": "(e.customers && %(party)s::text[] OR e.suppliers && "
                                     "%(party)s::text[])"}[party_kind])
-        if since:
-            conds.append(f"e.{when} >= %(since)s")
-        if until:
-            conds.append(f"e.{when} < %(until)s")
-        if cursor:
-            after = f"(e.{when} < %(c_at)s OR (e.{when} = %(c_at)s AND e.handle < %(c_h)s))"
-            conds.append(f"({tier} = 0 AND {after})" if cursor_tier == 0 else
-                         f"({tier} = 0 OR {after})")
+        # the dates (the walk's floor is read in them, never under a party's: a rare
+        # party over the date index read every row)
+        dates = ([f"e.{when} >= %(since)s"] if since else []) + (
+            [f"e.{when} < %(until)s"] if until else []) + [f"e.{when} IS NOT NULL"]
+        conds += dates
+        after = f"(e.{when} < %(c_at)s OR (e.{when} = %(c_at)s AND e.handle < %(c_h)s))"
         addresses = ("e.sender_domain, e.addresses" if mail else
                      "NULL::text AS sender_domain, NULL::text[] AS addresses")
-        parts.append(
-            f"(SELECT '{view}'::text AS view, e.handle, {_TITLE.get(view, 'e.subject')} AS "
-            f"title, {_SENDER.get(view, 'e.sender')} AS sender, "
-            f"e.{when} AS at, {addresses}, {tier} AS tier FROM {guarded}.{view} e WHERE "
-            + " AND ".join(conds) + f" AND e.{when} IS NOT NULL ORDER BY 8 DESC, e.{when} "
-            "DESC, e.handle DESC LIMIT %(k)s)")
+        cols = (f"'{view}'::text AS view, e.handle, {_TITLE.get(view, 'e.subject')} AS "
+                f"title, {_SENDER.get(view, 'e.sender')} AS sender, e.{when} AS at, "
+                f"{addresses}")
+        newest = f"ORDER BY e.{when} DESC, e.handle DESC"
+
+        def part(tier: int, where: Sequence[str], source: str = f"{guarded}.{view} e",
+                 cols: str = cols, newest: str = newest, kk: str = kk) -> str:
+            return (f"(SELECT {cols}, {tier} AS tier FROM {source} WHERE "
+                    + " AND ".join(where) + f" {newest} LIMIT {kk})")
+        if not query:
+            # no query words: every row is tier 0 (a cursor's tier is 0 then too)
+            parts.append(part(0, conds + ([after if cursor_tier == 0 else "true"]
+                                          if cursor else [])))
+            continue
+        # the dates bound the word match too (the outer read keeps its own bounds): a
+        # common word over all time matched 150,908 mails (13.2 s) where the 3 days
+        # asked held 91 (1.3 s), and every party search ran into its 25 s limit
+        dated = cursor and cursor_tier == 0
+        window = "".join(f" AND b.{when} {op} %({name})s" for on, op, name in (
+            (since, ">=", "since"), (until, "<", "until"), (dated, "<=", "c_at")) if on)
+        header = (f"SELECT b.handle FROM {biz}.{view} b WHERE b.words @@ %(q)s::tsquery"
+                  f"{window}")
+        # the text of the row's own object and version: the fields ``ai_ok`` decided
+        # (``business_comms._text_ai``), never a same-citation copy under another object
+        text = ("FROM ontology.text_fields fd JOIN ontology.text_chunks c ON c.field_id = "
+                "fd.field_id JOIN ontology.chunk_words w ON w.chunk_id = c.chunk_id JOIN "
+                f"{biz}.{view} b ON b.handle = fd.version_handle AND b.object_ids[1] = "
+                f"fd.object_id WHERE w.words @@ %(q)s::tsquery AND fd.markings = '[]'{checked}")
+        # one row's own checks, as subplans run per row (a LIMIT 1 subquery is never made
+        # a join over the whole match): its header, its text
+        own_header = (f"(SELECT 1 FROM {biz}.{view} b WHERE b.handle = e.handle AND "
+                      "b.words @@ %(q)s::tsquery LIMIT 1)")
+        own_text = f"(SELECT 1 {text} AND b.handle = e.handle LIMIT 1)"
+        # tier 1 (header rows) and tier 0 (text rows whose header lacks a word): a cursor
+        # of tier 0 is past every header row; one of tier 1 has every text row still to come
+        tiers = [] if cursor and cursor_tier == 0 else [
+            (1, conds + ([after] if cursor else []), f"{own_header} IS NOT NULL",
+             f"{header}", [])]
+        tiers.append((0, conds + ([after] if dated else []),
+                      f"{own_header} IS NULL AND {own_text} IS NOT NULL",
+                      f"SELECT b.handle {text}{window}", [f"{own_header} IS NULL"]))
+        # the walk's floors: the ``walk``-th newest row of the table itself in the dates
+        # (the index on the date column read in order, ``walk`` rows), then (``STAGES``)
+        # the ``walk * DEEPER``-th: each stage walks the reader's rows between its floor and
+        # the one before. Not the reader's own ``walk`` newest rows: through the guarded
+        # view (a unit list the planner cannot size) that read and sorted every row the
+        # reader holds, 2.5 million mails for a full reader, 10 s per walk
+        for tier, scope, check, match, keep in tiers:
+            fscope = dates + ([after, f"e.{when} <= %(c_at)s"] if after in scope else [])
+            founds, top = [], None
+            for stage in range(STAGES):
+                found, floor = f"found_{at}_{tier}_{stage}", f"floor_{at}_{tier}_{stage}"
+                ctes.append(_floor(floor, top, founds, fscope, biz=biz, view=view,
+                                   when=when, newest=newest, depth=DEEPER ** stage, kk=kk))
+                f_at, f_h = (f"(SELECT f.at FROM {floor} f)",
+                             f"(SELECT f.handle FROM {floor} f)")
+                rows = [*scope, f"e.{when} >= {f_at}", f"(e.{when}, e.handle) >= ({f_at}, {f_h})"]
+                if top is not None:
+                    t_at, t_h = (f"(SELECT f.at FROM {top} f)",
+                                 f"(SELECT f.handle FROM {top} f)")
+                    rows += [f"e.{when} <= {t_at}", f"(e.{when}, e.handle) < ({t_at}, {t_h})"]
+                # each walked row checked in date order until ``k`` are found (a subquery's
+                # order carries through: no sort, no row checked past)
+                walk = (f"(SELECT e.handle, e.{when} AS at FROM {guarded}.{view} e WHERE "
+                        + " AND ".join(rows) + f" {newest})")
+                ctes.append(f"{found} AS MATERIALIZED (SELECT e.handle FROM {walk} e WHERE "
+                            f"{check} ORDER BY e.at DESC, e.handle DESC LIMIT {kk})")
+                # the found rows by handle (an init plan: the view read by its handle
+                # index, never a join against every row the reader holds)
+                parts.append(part(tier, scope + [f"e.handle = ANY(ARRAY(SELECT handle FROM "
+                                                 f"{found}))"]))
+                founds.append(found)
+                top = floor
+            parts.append(_fallback(part, tier, scope, top, founds, when=when, match=match,
+                                   keep=keep, kk=kk))
     if not parts:
         return ""
     best = ("ORDER BY (w.words @@ %(q)s::tsquery) DESC, fd.field_id, c.start" if query
             else "ORDER BY fd.field_id, c.start")
     return (
-        "SELECT y.view, y.handle, y.title, y.sender, y.at, y.sender_domain, y.addresses, "
+        ("WITH " + ", ".join(ctes) + " " if ctes else "")
+        + "SELECT y.view, y.handle, y.title, y.sender, y.at, y.sender_domain, y.addresses, "
         "s.body, s.start, s.sender_class, y.tier FROM (SELECT * FROM ("
         + " UNION ALL ".join(parts)
         + ") x ORDER BY x.tier DESC, x.at DESC, x.handle DESC LIMIT %(k)s) y LEFT JOIN LATERAL ("
@@ -199,6 +289,53 @@ def search_sql(views: Sequence[str], *, guarded: str, biz: str, query: bool,
         "ON w.chunk_id = c.chunk_id WHERE fd.version_handle = y.handle AND fd.object_id IN ("
         + _objects(views, biz, "y") + ") AND fd.markings = '[]' "
         f"{best} LIMIT 1) s ON true ORDER BY y.tier DESC, y.at DESC, y.handle DESC")
+
+
+def _floor(name: str, top: str | None, founds: Sequence[str], fscope: Sequence[str], *,
+           biz: str, view: str, when: str, newest: str, depth: int, kk: str) -> str:
+    """One walk stage's floor (``search_sql``), one row always: the ``walk * depth``-th
+    newest row of the table in the dates (``fscope``); no such row (the table holds no
+    more) is the floor below every row, with nothing under it (``more`` false). A later
+    stage is read only when the stages above it found some rows but fewer than ``k``, as
+    many as promise ``k`` within it (found * DEEPER >= k; ``kk``: the view's ``k``), and
+    more rows lie below them;
+    otherwise its floor is the one above (an empty stage) and a rare word goes straight to
+    the word index. A COALESCE in a walk's own condition is not pushed into the guarded
+    (security barrier) view, so the floor's columns are never null."""
+    def read(*gate: str) -> str:
+        return (f"SELECT e.{when} AS at, e.handle FROM {biz}.{view} e WHERE "
+                + " AND ".join([*gate, *fscope])
+                + f" {newest} OFFSET %(walk)s * {depth} - 1 LIMIT 1")
+    if top is None:
+        return (f"{name} AS MATERIALIZED (SELECT coalesce(x.at, '-infinity') AS at, "
+                "coalesce(x.handle, '') AS handle, x.handle IS NOT NULL AS more FROM "
+                f"(SELECT 1) o LEFT JOIN LATERAL ({read()}) x ON true)")
+    n = " + ".join(f"(SELECT count(*) FROM {f})" for f in founds)
+    run = f"t.more AND {n} > 0 AND {n} < {kk} AND ({n}) * {DEEPER} >= {kk}"
+    return (f"{name} AS MATERIALIZED (SELECT CASE WHEN g.run THEN coalesce(x.at, '-infinity') "
+            "ELSE t.at END AS at, CASE WHEN g.run THEN coalesce(x.handle, '') ELSE t.handle "
+            "END AS handle, CASE WHEN g.run THEN x.handle IS NOT NULL ELSE t.more END AS more "
+            f"FROM {top} t CROSS JOIN LATERAL (SELECT {run} AS run) g LEFT JOIN LATERAL "
+            f"({read('g.run')}) x ON true)")
+
+
+def _fallback(part: Any, tier: int, scope: Sequence[str], floor: str,
+              founds: Sequence[str], *, when: str, match: str, keep: Sequence[str],
+              kk: str) -> str:
+    """The ``tier`` rows past the walked ones (``search_sql``), from the word index's whole
+    match (``match``: handles, bounded by the dates) cut below the last walk stage's floor.
+    Read only when the walk found fewer than ``k`` rows and rows lie below the floor (the
+    table holds more rows than the walk): both are init plans of a one-time filter, so the
+    match itself (an init plan too) is otherwise never run. ARRAY(...): the match is read
+    once and the view's rows found by handle; as "IN (...)" the planner, taking the
+    reader's rows for one, ran the match again per row of the window (a party search: 25 s
+    timeout)."""
+    last = f"(SELECT f.at FROM {floor} f)"
+    last_h = f"(SELECT f.handle FROM {floor} f)"
+    n = " + ".join(f"(SELECT count(*) FROM {f})" for f in founds)
+    short = f"{n} < {kk} AND (SELECT f.more FROM {floor} f)"
+    return part(tier, [short, *scope, f"(e.{when}, e.handle) < ({last}, {last_h})",
+                       f"e.handle = ANY(ARRAY({match} AND b.{when} <= {last}))", *keep])
 
 
 def _objects(views: Sequence[str], biz: str, row: str) -> str:
