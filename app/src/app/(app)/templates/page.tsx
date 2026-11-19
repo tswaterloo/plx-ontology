@@ -259,7 +259,7 @@ export default function TemplatesPage() {
       />
       <div className="w-full max-w-[60rem] overflow-y-auto px-6 py-5">
         <p className="mb-4 max-w-[70ch] text-[13px] leading-5 text-muted">
-          Documents you write often, with blanks where a record&apos;s details go. Using one fills each blank from the record you name and shows where it came from; anything the records don&apos;t settle is marked to check. In the Ask box, type &ldquo;use my order confirmation template for SO 5512&rdquo;.
+          Documents you write often, with blanks where a record&apos;s details go. Using one fills each blank from the record you name and shows where it came from; anything the records don&apos;t settle is marked to check. In the Ask box, type &ldquo;use my order confirmation template for SO 5512&rdquo;, or &ldquo;save a template for supplier follow-ups&rdquo; to make one from your words or from a document you name.
         </p>
         {problem ? <LoadProblem message={plainError(problem)} onRetry={load} /> : null}
         {!list && !problem && <Pending label="Reading your templates" />}
@@ -283,7 +283,7 @@ export default function TemplatesPage() {
             <section aria-labelledby="mine-title">
               <h2 id="mine-title" className="text-[15px] font-semibold">Yours</h2>
               {mine.length === 0 ? (
-                <p className="mt-1 text-[13px] text-muted">None yet. Save one here, or with &ldquo;Save as template&rdquo; under a draft or a filled form.</p>
+                <p className="mt-1 text-[13px] text-muted">None yet. Save one here, ask for one in the Ask box, or use &ldquo;Save as template&rdquo; under a draft or a filled form.</p>
               ) : (
                 <ul className="divide-y divide-border">{mine.map((t) => <Row key={t.id} t={t} list={list} onChanged={load} />)}</ul>
               )}

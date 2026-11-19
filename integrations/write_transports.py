@@ -16,6 +16,8 @@ asked for.
   permission (``GRAPH_PERMISSIONS``); otherwise nothing is sent (a definite refusal).
   Teams posts take only a person's delegated token, which no code here holds: no Teams
   transport.
+* Portal: the Portal's Workbench write API (``PortalWriteTransport``), not built upstream
+  yet; its key and address come from ``PORTAL_WRITE_KEY``/``PORTAL_WRITE_URL``.
 * BC: the ``BC_*`` app's token for ``BC_SCOPE``; the request's ``{tenant}`` is the BC
   tenant id; live needs ``write_intents.live_gate`` too (the owner's production or sandbox
   flag and Vince's scopes grant ``PLX_WRITES_SCOPES_GRANTED=bc``).
@@ -220,6 +222,46 @@ class BCWriteTransport(_Transport):
         return {"status": "unknown", "http_status": status}
 
 
+class PortalWriteTransport(_Transport):
+    """The Portal's staff routes that take a ``workbench_write`` key (TASK-5101;
+    ``live_source_guard.PORTAL_WRITE_SHAPES``) at ``PORTAL_WRITE_URL`` on that key,
+    ``PORTAL_WRITE_KEY`` (``Bearer plx_...``, bound by the Portal to one staff user; never
+    a person's session, never the read-only reporting key). Each request carries the
+    executor's idempotency key as ``Idempotency-Key``."""
+
+    system = "portal"
+    KEY_ENV = "PORTAL_WRITE_KEY"
+
+    def missing(self) -> list[str]:
+        out = super().missing()
+        if guard.portal_write_host(self.environ) is None:
+            out.append(f"the Portal write API's address is not configured "
+                       f"({guard.PORTAL_URL_ENV}, https://host)")
+        key = str(self.environ.get(self.KEY_ENV) or "").strip()
+        if not key:
+            out.append(f"the Portal write key is not configured ({self.KEY_ENV})")
+        elif not key.startswith("plx_"):
+            out.append(f"{self.KEY_ENV} is not a Portal workbench_write key (plx_...)")
+        return out
+
+    def _url(self, request: Mapping[str, Any]) -> str:
+        path = str(request.get("url") or "")
+        host = guard.portal_write_host(self.environ)
+        return f"https://{host}{path}" if host and path.startswith("/api/") else ""
+
+    def _token(self) -> str:
+        if self._bearer is not None:
+            return self._bearer()
+        key = str(self.environ.get(self.KEY_ENV) or "").strip()
+        if not key:
+            raise ValueError("no Portal write key")
+        return key
+
+    def __call__(self, request: Mapping[str, Any], key: str) -> tuple[int, Mapping[str, Any]]:
+        headers = {**(request.get("headers") or {}), "Idempotency-Key": str(key)}
+        return super().__call__({**request, "headers": headers}, key)
+
+
 def for_system(system: str, environ: Mapping[str, str] | None = None) -> _Transport | None:
     """The write transport of ``system`` when the owner opened it, else None."""
     env = dict(os.environ if environ is None else environ)
@@ -227,6 +269,8 @@ def for_system(system: str, environ: Mapping[str, str] | None = None) -> _Transp
         return None
     if system == "bc":
         return BCWriteTransport(env)
+    if system == "portal":
+        return PortalWriteTransport(env)
     return GraphWriteTransport(system, env) if system in GRAPH_PERMISSIONS else None
 
 

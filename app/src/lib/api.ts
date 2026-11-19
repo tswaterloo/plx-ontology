@@ -90,6 +90,7 @@ import type { DocList, Explore, LabourPage, LateList, RecordAsOf, RecordHistory,
   WatchReadResult,
   TimeSaved,
   UploadPreview,
+  PreparedWrite,
   EntryHold,
   EntryConfirm,
   DocFillRequest,
@@ -615,10 +616,44 @@ export function getAutopilot(signal?: AbortSignal): Promise<AutopilotArea> {
 
 /** One thing prepared for you: who wrote, what they wrote, and the reply or the question. */
 export type PreparedItem = {
-  item_id: string; sender: string; channel: "mail" | "teams"; subject: string; message: string;
-  kind: "reply" | "your_call"; to: string[]; cc: string[]; body: string; edited: boolean;
-  ask: string; facts: string[]; created_at: string;
+  item_id: string; sender: string; channel: "mail" | "teams" | "system"; subject: string; message: string;
+  kind: "reply" | "your_call" | "job"; to: string[]; cc: string[]; body: string; edited: boolean;
+  /** On a job: what the event asks to be done, and each system change proposed for it. */
+  summary?: string; jobs?: ProposedJob[];
+  ask: string; facts: string[]; options?: { label: string; reply: string }[]; created_at: string;
+  /** On a draft you edited: what the edit changed, as it is learned for your next drafts. */
+  learned?: string[];
+  /** Your preferences and memory the draft applied (DraftUse). */
+  used_for_draft?: { memory?: { id: number; kind?: string | null; text?: string | null }[]; related?: { id: number; kind?: string | null; text?: string | null }[]; template?: { id: number; name?: string | null; doc_type?: string | null } | null } | null;
 };
+
+/** One system change an autopilot proposed (nothing prepared or written until you review it). */
+export type ProposedJob = {
+  index: number; tool: string; system: string; operation: string; reason: string;
+  target: Record<string, unknown>; change: Record<string, unknown>;
+  prepared_id?: string | null; state?: string | null;
+};
+
+/** Review a proposed change: it is prepared as you (read from its system); confirm it on the card. */
+export async function prepareAutopilotJob(itemId: string, index: number): Promise<PreparedWrite> {
+  return (await (await call(`/api/autopilot/items/${encodeURIComponent(itemId)}/jobs/${index}/prepare`, { method: "POST" })).json()) as PreparedWrite;
+}
+
+/** Your own Teams sign-in, so a Teams reply you confirm posts as you (never the token). */
+export type TeamsConnection = { connected: boolean; scopes?: string[]; connected_at?: string | null; used_at?: string | null; missing?: string[] };
+
+export function getTeamsConnection(signal?: AbortSignal): Promise<TeamsConnection> {
+  return getJson<TeamsConnection>("/api/teams/connection", signal);
+}
+
+/** Start your one-time Teams sign-in: the Microsoft address to open. */
+export async function startTeamsConnect(): Promise<{ url: string }> {
+  return (await (await call("/api/teams/connect", { method: "POST" })).json()) as { url: string };
+}
+
+export async function forgetTeams(): Promise<TeamsConnection> {
+  return (await (await call("/api/teams/connection", { method: "DELETE" })).json()) as TeamsConnection;
+}
 
 /** Your open prepared replies, newest first (the one list Home reads too). */
 export async function getAutopilotDrafts(signal?: AbortSignal): Promise<{ items: PreparedItem[] }> {
@@ -644,6 +679,22 @@ export function getEntryHold(entryId: string, signal?: AbortSignal): Promise<Ent
  * left the entry goes to the write desk for a colleague to approve. */
 export async function confirmEntryValue(entryId: string, body: EntryConfirm): Promise<EntryHold> {
   return (await (await call(`/api/entries/${encodeURIComponent(entryId)}/confirm`, { method: "POST", json: body })).json()) as EntryHold;
+}
+
+/** A change Ask or your autopilot prepared: before and after, and what confirming does now. */
+export function getPrepared(preparedId: string, signal?: AbortSignal): Promise<PreparedWrite> {
+  return getJson<PreparedWrite>(`/api/prepared/${encodeURIComponent(preparedId)}`, signal);
+}
+
+/** Your second, Confirm click on a prepared change you previewed; dismiss and undo too. */
+export async function preparedStep(
+  preparedId: string,
+  step: "confirm" | "dismiss" | "undo" | "retry",
+  previewHash?: string,
+): Promise<PreparedWrite> {
+  const path = `/api/prepared/${encodeURIComponent(preparedId)}/${step}`;
+  const init = step === "confirm" ? { method: "POST", json: { confirm: true, preview_hash: previewHash } } : { method: "POST" };
+  return (await (await call(path, init)).json()) as PreparedWrite;
 }
 
 /** A drafted document's upload to SharePoint: before and after, re-checked as you now. */
@@ -787,10 +838,12 @@ export function suggest(q: string, signal?: AbortSignal, limit = 8): Promise<Sug
 }
 
 /** A business record page (customer, chain, supplier account; PO or customer order). */
-export function bizPage(kind: BizKind, key: { h?: string; chain?: string }, signal?: AbortSignal): Promise<BizPage> {
+export function bizPage(kind: BizKind, key: { h?: string; chain?: string; record?: string }, signal?: AbortSignal): Promise<BizPage> {
   const q = new URLSearchParams({ kind });
   if (key.h) q.set("h", key.h.slice(0, 600));
   if (key.chain) q.set("chain", key.chain.slice(0, 200));
+  // a record id: the page of the row it was read into (404 when the door has none)
+  if (key.record && !key.h) q.set("record", key.record.slice(0, 700));
   return getJson<BizPage>(`/api/biz/page?${q.toString()}`, signal);
 }
 

@@ -11,11 +11,12 @@ import json
 import re
 from collections import Counter, defaultdict
 from dataclasses import dataclass, field as dc_field
+from decimal import Decimal
 from typing import Any, Iterable, Iterator, Mapping, Sequence
 
 from operating.pg.business_views import (
     Cell, MERGE_RULES_DOC, PARTY_MERGE, PILOT_DOC, Reader, Rec, Row, Thing, _text,
-    aging_bucket, binding_rank, fill, handle_col, money, money_of, name_linked,
+    aging_bucket, binding_rank, cents, fill, handle_col, money, money_of, name_linked,
     party_codes, party_handle, pick, pilot_binding, to_currency, to_date, to_decimal,
     unique_things, view)
 
@@ -594,7 +595,14 @@ def receipt_note(found: Sequence[Any]) -> tuple[str | None, "Sources"]:
         "do when the requested-by date is the supplier's promise (no record states one)"),
        ("days_late", "integer", "as_of - requested_date in days, late POs only (a joined "
         "order: its latest late copy); requested_date's column marks"),
-       ("total", "money", "PO total as its source states it (a zeroed copy is skipped)"),
+       ("total", "money", "PO total as its source states it (a zeroed copy is skipped); "
+        "when no copy states a total above 0, the sum of its lines (lines_total, "
+        "total_basis 'lines')"),
+       ("total_basis", "text", "header (a copy's stated total) or lines (no copy states "
+        "one above 0: the sum of the lines, before tax and charges); none without a total"),
+       ("lines_total", "money", "the sum of the PO's lines' line_total (the lines "
+        "purchase_order_lines shows), when every line states one in one currency; it may "
+        "differ from a header total (tax, freight). COLUMN CLASS: read from the lines"),
        ("purchaser", "text", "purchaser code"),
        ("line_count", "integer", "PO lines (of the copy that holds them)"),
        ("as_of", "date", "the day the verdict was computed"),
@@ -607,12 +615,68 @@ def _purchase_orders(rd: Reader, as_of: dt.date) -> Iterator[Row]:
     suppliers, things = supplier_things(rd)
     found = {r.object_id: r for p in model["orders"].values() for r in p.thing.members}
     ordered_from = rd.linked("PurchaseOrder.ordered_from", found, suppliers)
+    lines, held = _held_lines(rd, model)
     for top, po in model["orders"].items():
-        yield _po_row(po, things, ordered_from, as_of)
+        yield _po_row(po, things, ordered_from, as_of, lines, held)
+
+
+def _held_lines(rd: Reader, model: Mapping[str, Any]) -> tuple[dict[str, Rec], Counter]:
+    """Every PO line record, and how many orders hold each (a line two hold is shown by
+    neither)."""
+    return (rd.records("PurchaseOrderLine", PO_LINE_PROPS),
+            Counter(ln for p in model["orders"].values() for ln, _m in p.lines))
+
+
+def _shown_lines(po: Purchase, lines: Mapping[str, Rec], held: Counter
+                 ) -> list[tuple[Rec, str]]:
+    """The lines ``purchase_order_lines`` shows for ``po`` (record, link markings)."""
+    return [(lines[ln], marks) for ln, marks in po.lines if ln in lines and held[ln] == 1]
+
+
+def _carrier(po: Purchase, lines: Mapping[str, Rec]) -> Rec:
+    return next((m for m in po.thing.members if any(ln in lines for ln, _ in po.lines)),
+                po.thing.rep)
+
+
+def _lines_total(row: Row, po: Purchase, lines: Mapping[str, Rec], held: Counter) -> None:
+    """``lines_total``: the shown lines' line totals summed, when every one states an
+    amount in one currency (the line's own, else the order's, as the lines view reads it);
+    else none. Read from the lines: their records, cells and link markings are the
+    column's class, never the whole row's."""
+    shown = _shown_lines(po, lines, held)
+    row.values["lines_total"] = row.values["lines_total_currency"] = None
+    if not shown:
+        return
+    carrier = _carrier(po, lines)
+    order_cur = to_currency(_text(getattr(carrier.cell("currency"), "value", None)))
+    amount, codes, used = Decimal(0), set(), []
+    for rec, link_marks in shown:
+        cell = rec.cell("line_total")
+        got = to_decimal(cell.num if cell is not None and cell.num is not None
+                         else cell.value if cell is not None else None)
+        code = (to_currency(cell.currency) if cell is not None else None) or order_cur
+        if got is None or code is None:
+            return
+        amount += got
+        codes.add(code)
+        used.append((rec, cell, link_marks))
+    if len(codes) != 1:
+        return
+    row.values["lines_total"], row.values["lines_total_currency"] = cents(amount), codes.pop()
+    first = used[0][1]
+    for col in ("lines_total", "lines_total_currency"):
+        row.cites[col] = [first.handle, first.field_path]
+        for rec, cell, link_marks in used:
+            row.read_record(rec.object_id, cell.handle, column=col)
+            row.col_link_marks[col].add(link_marks or "[]")
+            if cell.marks not in ("", "[]"):
+                row.col_link_marks[col].add(cell.marks)
+        if order_cur is not None and col.endswith("_currency"):
+            row.read_record(carrier.object_id, column=col)
 
 
 def _po_row(po: Purchase, things: Mapping[str, Thing], ordered_from: Mapping[str, list],
-            as_of: dt.date) -> Row:
+            as_of: dt.date, lines: Mapping[str, Rec], held: Counter) -> Row:
     thing = po.thing
     row = Row(thing)
     row.marks |= po.marks
@@ -646,6 +710,7 @@ def _po_row(po: Purchase, things: Mapping[str, Thing], ordered_from: Mapping[str
             row.cites["promised_date"] = [cited["l1_handle"], cited.get("field_path")
                                          or cited.get("property") or ""]
     # the first copy stating a non-zero total (a Portal header is zeroed on some copies)
+    _lines_total(row, po, lines, held)
     for rec in thing.members:
         cell = rec.cell("total_cost")
         amount = to_decimal(cell.num if cell and cell.num is not None else
@@ -655,6 +720,18 @@ def _po_row(po: Purchase, things: Mapping[str, Thing], ordered_from: Mapping[str
             break
     else:
         money_of(row, thing, "total", "total_cost")
+        if row.values.get("lines_total"):
+            # no copy states a total above 0 (the Portal leaves a header at 0 until it is
+            # costed): the order is worth its lines, said as such (total_basis)
+            row.values["total"] = row.values["lines_total"]
+            row.values["total_currency"] = row.values["lines_total_currency"]
+            for col in ("total", "total_currency"):
+                row.cites[col] = row.cites["lines_total"]
+                row.col_marks.pop(col, None)
+                row.derive(col, row, "lines_total")
+            row.values["total_basis"] = "lines"
+    row.values.setdefault("total_basis", "header" if row.values.get("total") is not None
+                          else None)
     if fill(row, thing, "purchaser", "purchaser_code") is None:
         fill(row, thing, "purchaser", "requisitioner")
     row.values["line_count"] = len(po.lines)
@@ -686,14 +763,12 @@ def _purchase_order_lines(rd: Reader, as_of: dt.date) -> Iterator[Row]:
     suppliers, things = supplier_things(rd)
     found = {r.object_id: r for p in model["orders"].values() for r in p.thing.members}
     ordered_from = rd.linked("PurchaseOrder.ordered_from", found, suppliers)
-    lines = rd.records("PurchaseOrderLine", PO_LINE_PROPS)
-    held = Counter(ln for p in model["orders"].values() for ln, _m in p.lines)
+    lines, held = _held_lines(rd, model)
     for top, po in model["orders"].items():
         if not po.lines:
             continue
-        head = _po_row(po, things, ordered_from, as_of)
-        carrier = next((m for m in po.thing.members if any(
-            ln in lines for ln, _ in po.lines)), po.thing.rep)
+        head = _po_row(po, things, ordered_from, as_of, lines, held)
+        carrier = _carrier(po, lines)
         for ln, link_marks in po.lines:
             rec = lines.get(ln)
             if rec is None or held[ln] != 1:
@@ -869,7 +944,7 @@ def _supplier_invoices(rd: Reader, as_of: dt.date) -> Iterator[Row]:
                   f"({', '.join(VENDOR_SUPPLIER_LINKS)}); a BC invoice's "
                   "PurchaseInvoice.billed_by link")],
       reads=(AP_OPEN, "RelSageApVendor", "Supplier"),
-      memos=("suppliers", "vendor_suppliers"))
+      memos=("suppliers", "vendor_suppliers"), covers=False)   # the open documents only
 def _supplier_balances(rd: Reader, as_of: dt.date) -> Iterator[Row]:
     docs = rd.records(AP_OPEN, AP_PROPS)
     vendors = _ap_vendors(rd)

@@ -155,6 +155,7 @@ RELATIONS = {"calendar_event": "calendarEvents", "planner_task": "plannerTasks",
              "meeting_transcript": "meetingTranscripts"}
 GRAPH_PERMISSIONS = ("User.Read.All", "Calendars.Read", "Tasks.Read.All",
                      "OnlineMeetings.Read.All", "OnlineMeetingTranscript.Read.All")
+ACCESS_POLICY = "application_access_policy"   # see TRANSCRIPTS_GRANTED
 _PERMISSION = {"graph.users": "User.Read.All", "graph.user": "User.Read.All",
                "graph.user_calendar_view": "Calendars.Read",
                "graph.user_event": "Calendars.Read",
@@ -166,7 +167,7 @@ _PERMISSION = {"graph.users": "User.Read.All", "graph.user": "User.Read.All",
                "graph.planner_plan_buckets": "Tasks.Read.All",
                "graph.planner_plan_tasks": "Tasks.Read.All",
                "graph.planner_task_details": "Tasks.Read.All",
-               "graph.user_online_meetings": "OnlineMeetings.Read.All",
+               "graph.user_online_meetings": "OnlineMeetings.Read.All:" + ACCESS_POLICY,
                "graph.online_meeting_transcripts": "OnlineMeetingTranscript.Read.All",
                "graph.online_meeting_transcript_content": "OnlineMeetingTranscript.Read.All"}
 # Identity fields only: what the people guard decides an event on (no subject, body,
@@ -181,9 +182,12 @@ UTC_PREFER = {"Prefer": 'outlook.timezone="UTC"'}
 SENSITIVE = frozenset({"private", "confidential"})
 JOIN_PREFIX = "https://teams.microsoft.com/l/meetup-join/"
 TRANSCRIPT_CHECKS = "meetings_transcript_checks"
-# Transcripts stay dormant until Vince grants OnlineMeetingTranscript.Read.All (and the
-# application access policy OnlineMeetings.Read.All needs): no online-meeting or transcript
-# request is made unless this is "1" in the capture's environment.
+# Transcripts stay dormant until the grant is recorded: the scope's ``transcripts_granted``
+# (the reviewed record; Vince's OK relayed 2026-11-11, both application permissions in the
+# admin app's token 2026-11-18) or this set to "1" in the capture's environment. Without
+# either, no online-meeting or transcript request is made. The permissions alone are not
+# enough: Teams answers 403 to /users/{id}/onlineMeetings until a tenant admin grants the
+# app a Teams application access policy (``ACCESS_POLICY``).
 TRANSCRIPTS_GRANTED = "PLX_MEETINGS_TRANSCRIPTS_GRANTED"
 UNIT_PREFIX = "meetings:"
 REASON_MAX = 64
@@ -207,6 +211,9 @@ _LIMITS = {"window_days_back": (365, 0, 3650), "window_days_ahead": (90, 0, 730)
            "transcript_days_back": (90, 0, 3650),
            "max_transcript_bytes": (2_000_000, 10_000, 8_000_000)}
 _PARTS = ("calendar", "planner", "transcripts")
+# What a 403 on the online-meeting lookup needs besides OnlineMeetings.Read.All: the Teams
+# application access policy (New-/Grant-CsApplicationAccessPolicy) naming the app. With the
+# role in the token and no policy, Graph answers exactly this 403 (measured 2026-11-18).
 
 
 class MeetingsCaptureError(ValueError):
@@ -277,10 +284,12 @@ class MeetingsScope:
     ``plan_groups``: Planner plans are also found through every Microsoft 365 group of
     the tenant (a group whose members are all excluded people is skipped), listed with
     ``directory_credentials`` (a credential prefix holding GroupMember.Read.All; default
-    the capture's own). Anything unknown or out of bounds is refused."""
+    the capture's own). ``transcripts_granted``: the transcript grant is recorded (else
+    the transcript part stays dormant unless ``TRANSCRIPTS_GRANTED`` is "1"). Anything
+    unknown or out of bounds is refused."""
 
     KEYS = {"schema", "note", "mailboxes", "all_mailboxes", "directory_scope", "parts",
-            "plan_groups", "directory_credentials", *_LIMITS}
+            "plan_groups", "directory_credentials", "transcripts_granted", *_LIMITS}
 
     def __init__(self, document: Any, *, base: Path | None = None) -> None:
         if not isinstance(document, Mapping) or document.get("schema") != SCOPE_SCHEMA \
@@ -307,6 +316,9 @@ class MeetingsScope:
         self.plan_groups = document.get("plan_groups", False)
         if not isinstance(self.plan_groups, bool):
             raise MeetingsCaptureError("scope_plan_groups_invalid")
+        self.transcripts_granted = document.get("transcripts_granted", False)
+        if not isinstance(self.transcripts_granted, bool):
+            raise MeetingsCaptureError("scope_transcripts_granted_invalid")
         self.directory_credentials = document.get("directory_credentials")
         if self.directory_credentials is not None \
                 and self.directory_credentials not in CREDENTIAL_PREFIXES:
@@ -739,7 +751,8 @@ class MeetingsCapture:
                 reasons |= set(result["reasons"])
             if len(plan_ids) > scope.max_plans_per_run:
                 reasons.add("cap:max_plans")
-        if "transcripts" in scope.parts and not self.transcripts_granted:
+        granted = self.transcripts_granted or scope.transcripts_granted
+        if "transcripts" in scope.parts and not granted:
             # dormant: no online-meeting or transcript request until the grant is recorded
             report["transcripts"] = {"status": "dormant", "reasons": ["dormant:transcript_grant"],
                                      "needs": ["OnlineMeetingTranscript.Read.All",

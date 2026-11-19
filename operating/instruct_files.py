@@ -95,14 +95,67 @@ _RELS = ('<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
          'relationships/officeDocument" Target="{target}"/></Relationships>')
 
 
+# the Markdown a drafted document is written in, as Word shows it: "#" headings, "-"/"*"
+# bullets, "**bold**", and a run of "|" lines a table (its "|---|" rule line dropped)
+_HEADING = re.compile(r"^(#{1,3})\s+(.*)$")
+_BULLET = re.compile(r"^\s*[-*]\s+(.*)$")
+_RULE_ROW = re.compile(r"^\|?\s*:?-{2,}:?\s*(\|\s*:?-{2,}:?\s*)*\|?\s*$")
+_HEADING_SIZE = {1: 32, 2: 28, 3: 24}   # half-points
+
+
+def _runs(text: str, bold: bool = False, size: int = 0) -> str:
+    """``text`` as Word runs, each ``**...**`` part bold."""
+    out = []
+    for n, part in enumerate(re.split(r"\*\*", text)):
+        if not part:
+            continue
+        props = ("<w:b/>" if bold or n % 2 else "") + (f'<w:sz w:val="{size}"/>' if size else "")
+        out.append(f"<w:r>{f'<w:rPr>{props}</w:rPr>' if props else ''}"
+                   f'<w:t xml:space="preserve">{escape(part)}</w:t></w:r>')
+    return "".join(out)
+
+
+def _cells(line: str) -> list[str]:
+    return [c.strip() for c in line.strip().strip("|").split("|")]
+
+
+def _table(rows: list[list[str]]) -> str:
+    width = max(len(r) for r in rows)
+    edge = "".join(f'<w:{side} w:val="single" w:sz="4" w:space="0" w:color="999999"/>'
+                   for side in ("top", "left", "bottom", "right", "insideH", "insideV"))
+    body = "".join(
+        "<w:tr>" + "".join(f"<w:tc><w:p>{_runs(c, bold=i == 0)}</w:p></w:tc>"
+                           for c in r + [""] * (width - len(r))) + "</w:tr>"
+        for i, r in enumerate(rows))
+    return (f'<w:tbl><w:tblPr><w:tblW w:w="0" w:type="auto"/><w:tblBorders>{edge}'
+            f"</w:tblBorders></w:tblPr>{body}</w:tbl>")
+
+
 def _docx(content: str) -> bytes:
-    paras = []
-    for line in content.split("\n"):
-        run = f'<w:r><w:t xml:space="preserve">{escape(line)}</w:t></w:r>' if line else ""
-        paras.append(f"<w:p>{run}</w:p>")
+    parts: list[str] = []
+    table: list[list[str]] = []
+    for line in content.split("\n") + [""]:
+        if line.lstrip().startswith("|"):
+            if not _RULE_ROW.match(line.strip()):
+                table.append(_cells(line))
+            continue
+        if table:
+            parts.append(_table(table))
+            table = []
+        heading, bullet = _HEADING.match(line), _BULLET.match(line)
+        if heading:
+            size = _HEADING_SIZE[len(heading.group(1))]
+            parts.append(f"<w:p>{_runs(heading.group(2), bold=True, size=size)}</w:p>")
+        elif bullet:
+            parts.append(f'<w:p><w:pPr><w:ind w:left="360" w:hanging="240"/></w:pPr>'
+                         f"{_runs(chr(8226) + ' ' + bullet.group(1))}</w:p>")
+        else:
+            parts.append(f"<w:p>{_runs(line)}</w:p>")
+    while parts and parts[-1] == "<w:p></w:p>":
+        parts.pop()
     body = ('<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
             '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/'
-            'main"><w:body>' + "".join(paras) + "</w:body></w:document>")
+            'main"><w:body>' + "".join(parts) + "</w:body></w:document>")
     types = ('<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
              '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">'
              '<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.'
@@ -182,7 +235,8 @@ def _pdf(content: str) -> bytes:
 
 
 def make(kind: str, content: str) -> bytes:
-    """The file of ``kind`` holding ``content`` (lines; an xlsx row's cells split on "|")."""
+    """The file of ``kind`` holding ``content`` (lines; a docx reads its Markdown headings,
+    bullets, bold and tables; an xlsx row's cells split on "|")."""
     if kind not in KINDS:
         raise FileRefused("kind_unknown")
     if not content.strip() or len(content) > MAX_CONTENT:

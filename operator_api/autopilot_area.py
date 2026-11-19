@@ -33,7 +33,9 @@ from typing import Any, Mapping, Optional
 from operating import autopilot as ap
 from operating import autopilot_engine
 from operating import autopilot_events
+from operating import autopilot_outcomes as ao
 from operating import autopilot_queue
+from operating import learning
 from operating import autopilot_write as aw
 from operating import workflows as wf
 from operating.card_actions import Journal
@@ -43,7 +45,14 @@ from .auth import Reader
 from .errors import UserFacing
 
 DECISIONS_FILE = "autopilot-writes/decisions.jsonl"
+# a confirmed job change that went nowhere: offered for review again (``_apa_job_stage``)
+JOB_AGAIN = frozenset({"failed", "refused"})
+# each reply-from-line attempt (who, when; never the line): the hourly limit counts these
+LINE_ATTEMPTS_FILE = "autopilot-writes/line-attempts.jsonl"
+MESSAGE_CHARS = 1500      # the message shown beside a prepared reply: the newest one only
 CONFIRMS_FILE = "autopilot-writes/live-confirms.jsonl"   # offered and spent (digests)
+# which prepared change each reviewed job of an item became (item, index -> prepared id)
+JOBS_FILE = "autopilot-writes/jobs.jsonl"
 CONFIRM_SECONDS = 600
 BULK_LIVE = "A live item is not accepted in bulk: open it and confirm it alone."
 SNOOZE_DAYS = 30
@@ -57,6 +66,9 @@ WRITE_SYSTEM = {"bc_write": "bc", "sage_write": "sage", "portal_write": "portal"
                 "calendar_write": "calendar", "sharepoint_write": "sharepoint"}
 
 
+# the actions that send the reply itself: an email, or a message posted to the Teams chat
+SENDS = frozenset({"send_mail", "send_teams"})
+
 # statuses of an action the write path never performed (nothing was sent or written)
 NOT_RUN = frozenset({"dry_run", "needs_confirm", "killed", "refused", "excluded",
                      "not_routine", "unavailable", "rate_limited", "duplicate",
@@ -64,18 +76,27 @@ NOT_RUN = frozenset({"dry_run", "needs_confirm", "killed", "refused", "excluded"
 
 
 
+def shown_message(text: Any) -> str:
+    """The message a prepared reply answers, as shown beside it: the newest message only
+    (the quoted thread below it cut, ``learning.reply_core``), at most ``MESSAGE_CHARS``."""
+    from operating.learning import reply_core
+    core = reply_core(text)
+    return core if len(core) <= MESSAGE_CHARS else core[:MESSAGE_CHARS].rstrip() + "..."
+
+
 def decision_sent(dec: Mapping[str, Any], item: Mapping[str, Any]) -> bool:
-    """Whether an accepted item's email went out: the decision's own ``sent`` (only the
-    email's own result counts); a decision recorded before ``sent`` was kept, by its
-    outcomes read against the item's actions in the order they ran (an email whose own
-    outcome is done). Anything else (no outcomes, no email step) reads as not sent."""
+    """Whether an accepted item's reply went out: the decision's own ``sent`` (only the
+    email's or Teams message's own result counts: ``SENDS``); a decision recorded before
+    ``sent`` was kept, by its outcomes read against the item's actions in the order they ran
+    (a send whose own outcome is done). Anything else (no outcomes, no send step) reads as
+    not sent."""
     if "sent" in dec:
         return dec.get("sent") is True
     outcomes = dec.get("outcomes")
     if not isinstance(outcomes, list):
         return False
     kinds = [a.get("kind") for a in aw.actions_of(item)]
-    return any(kind == "send_mail" and status == "done"
+    return any(kind in SENDS and status == "done"
                for kind, status in zip(kinds, outcomes))
 
 
@@ -271,6 +292,39 @@ class AutopilotAreaMixin:
             guard = exclusion_for(env, Path(base) if base else None)
         return aw.Executor(state, environ=env, adapters=self.autopilot_adapters, guard=guard)
 
+    def _apa_drafted(self, env: Mapping[str, str], reader: Reader, me: Any,
+                     everyone: bool) -> dict[str, frozenset[str]]:
+        """Person id -> the workflows the owner's Draft file (``autopilot.load_draft``)
+        turns on for them, resolved as the live feed resolves it
+        (``autopilot_engine.draft_owners``): the reader's own entry (an address or id the
+        signed-in session holds) as their id; for the owner and admins (``everyone``) every
+        entry, an address through the people exclusion's directory. Each person must be
+        cleared by the people exclusion; with it unavailable, nobody (fail closed)."""
+        draft = ap.load_draft(env)
+        mine = sorted(me)
+        held = _identities(reader) | set(mine)
+        if not draft or not (everyone or held & set(draft)):
+            return {}
+        guard = self.autopilot_people if self.autopilot_people is not None \
+            else self.autopilot_guard
+        if guard is None:
+            from .feedback import exclusion
+            guard = exclusion()
+        directory: dict[str, str] = {}
+        for who in draft:
+            if who in held:
+                if len(mine) == 1:
+                    directory[who] = mine[0]
+            elif everyone and guard is not None:
+                try:
+                    found = guard.object_id_of(who)
+                except Exception:  # noqa: BLE001 - unresolved: nothing in draft for them
+                    found = None
+                if found:
+                    directory[who] = str(found).lower()
+        drafted = autopilot_engine.draft_owners(draft, directory, _Cleared(guard))
+        return drafted if everyone else {k: v for k, v in drafted.items() if k in me}
+
     @staticmethod
     def _apa_off(env: Mapping[str, str], state: Optional[Path]) -> tuple[bool, set[str], bool]:
         """(global kill, workflows off, the workflow file unreadable)."""
@@ -350,6 +404,10 @@ class AutopilotAreaMixin:
                 else:
                     item_state = {"accept": "accepted", "reject": "rejected",
                                   "snooze": "snoozed", "edit": "edited"}[dec["decision"]]
+                    if ao.refused_accept(dec):
+                        # the write path refused or failed it: nothing went out, the item
+                        # still waits on its person (the decision shows why)
+                        item_state = "waiting"
                     decision = m.AutopilotDecision(
                         decision=dec["decision"], at=dec["at"], by_you=dec.get("by") in me,
                         until=dec.get("until"), text=dec.get("text"), note=dec.get("note"),
@@ -501,10 +559,13 @@ class AutopilotAreaMixin:
                     countdown=_countdown(published.get(role), flow, rules)))
         if not dev and not fresh:
             notes.append("No replay has scored the workflows yet.")
-        # items are prepared only for what a person switched on themselves (or the
-        # owner's own Draft: ``autopilot_engine.SwitchGate``): with nothing on for this
-        # reader, that is why nothing is here
-        if not items and not any(aw.drafts_on(rows).get(o) for o in me):
+        # what is prepared for whom: the rule the live feed reads
+        # (``autopilot_engine.SwitchGate``): a person's own switch or the owner's Draft file
+        # for them, their own off or pause winning over the Draft file. With nothing on for
+        # this reader, that is why nothing is here
+        prep = aw.prepared_for(rows, self._apa_drafted(env, reader, me, everyone=sees_all),
+                               autopilot_engine.DRAFT_NEVER)
+        if not items and not any(prep.get(o) for o in me):
             notes.insert(0, NO_DRAFTS_ON)
         mine_opt, paused_me = self._apa_my_opt_ins(gate, chosen, stopped, me)
         switched_on = None
@@ -526,20 +587,24 @@ class AutopilotAreaMixin:
         gate_notices = [m.AutopilotGateNotice(role=str(n["role"]), workflow=str(n["workflow"]),
                                               passed_at=str(n["passed_at"]))
                         for n in aw.notices(rows)] if owner else None
-        mine_drafts = aw.drafts_on(rows)
-        my_flows = set().union(*(mine_drafts.get(o, frozenset()) for o in me)) if me else set()
-        my_drafts = [m.AutopilotDraftChoice(choice=cid, label=label,
-                                            on=bool(me) and set(flows) <= my_flows)
-                     for cid, label, flows in aw.DRAFT_CHOICES]
+        mine: dict[str, tuple[str, Any]] = {}
+        for oid in sorted(me):
+            for flow, how in (prep.get(oid) or {}).items():
+                if flow not in mine or mine[flow][0] == aw.BY_OWNER:
+                    mine[flow] = how
+        my_drafts = [_choice_row(cid, label, flows, mine) for cid, label, flows in aw.DRAFT_CHOICES]
         drafts_who = None
         if sees_all:
-            drafts_who = [m.AutopilotDraftsPerson(person=p, choice=cid, label=label)
-                          for p, on in sorted(mine_drafts.items())
-                          for cid, label, flows in aw.DRAFT_CHOICES if set(flows) <= on]
+            drafts_who = [m.AutopilotDraftsPerson(person=p, choice=c.choice, label=c.label,
+                                                  by_owner=c.by_owner, partly=c.partly)
+                          for p, on in sorted(prep.items())
+                          for c in (_choice_row(cid, label, flows, on)
+                                    for cid, label, flows in aw.DRAFT_CHOICES) if c.on]
             for entry in drafts_who:
                 people.setdefault(entry.person, m.AutopilotPerson(
                     id=entry.person, name="", you=entry.person in me,
                     roles=sorted(member_of.get(entry.person, ()))))
+        from operating.autopilot_fast import last_ran
         return m.AutopilotArea(
             owner=owner, gate_notices=gate_notices, my_drafts=my_drafts,
             my_opt_ins=mine_opt, paused=paused_me, switched_on=switched_on,
@@ -554,7 +619,7 @@ class AutopilotAreaMixin:
                     off & {w.workflow for w in workflows})),
             people=sorted(people.values(), key=lambda p: (not p.you, not p.name, p.name, p.id)),
             roles=sorted(roles_seen), items=items, workflows=workflows, notes=notes,
-            outcomes=outcomes,
+            outcomes=outcomes, checked_at=last_ran(queue_path) if queue_path else None,
             known_workflows=_known_workflows() if owner else sorted(
                 {w.workflow for w in workflows} | {it.workflow for it in items}))
 
@@ -596,7 +661,8 @@ class AutopilotAreaMixin:
             raise UserFacing("bad_request", "This item has no draft to edit.", 422)
         if body.decision == "accept" and not text:
             prior = self._apa_decisions(state).get(item_id) or {}
-            text = prior.get("text") if prior.get("decision") == "edit" else None
+            text = prior.get("text") if prior.get("decision") == "edit" \
+                or ao.refused_accept(prior) else None
         if body.decision == "accept" and not text and \
                 (found["body"].get("prepared") or {}).get("your_call"):
             # a "your call" card has no reply until the person says what to say
@@ -615,18 +681,19 @@ class AutopilotAreaMixin:
                 prepared = {**(found["body"].get("prepared") or {}), "draft": sent}
                 item = {**found, "body": {**found["body"], "prepared": prepared}}
             executor = self._apa_executor(state)
-            if body.bulk and executor.live_kinds(item):
+            live = bool(executor.live_kinds(item))
+            if body.bulk and live:
                 raise UserFacing("action_refused", BULK_LIVE, 409)
             # the owner accepting their own item is a person's approval of it: it goes
             # live only through the owner's per-kind switch (or the workflow's passed
             # gate), and only once they confirmed it goes live (a second accept carrying
             # the token the first one answered); money or a judgment call still needs
-            # each reason acknowledged
+            # each reason acknowledged. It runs through the prepared-writes desk, the one
+            # write path Ask uses too (same checks, journal, card and confirm).
             confirmed = not body.bulk and self._apa_confirmed(
                 state, item_id, row["by"], text, body.confirm_token, now)
-            approval = aw.Approval(by=tuple(sorted(self._apa_me(reader))),
-                                   confirmed_live=confirmed)
-            results = executor.run(item, now, approval)
+            results = self._apa_through_desk(reader, item, chat, now, live, confirmed,
+                                             executor)
             if any(r.get("status") == "needs_confirm" for r in results):
                 if body.bulk:
                     raise UserFacing("action_refused", BULK_LIVE, 409)
@@ -640,9 +707,10 @@ class AutopilotAreaMixin:
                              "status": str(r.get("status") or ""),
                              "reasons": [str(x) for x in r.get("reasons") or ()][:2]}
                             for r in results]
-            # only the email's own result says it went out (an entry before it can be done
-            # while the confirmation failed, was refused or ran dry)
-            row["sent"] = any(r.get("kind") == "send_mail" and r.get("status") == "done"
+            # only the send's own result says it went out (an entry before it can be done
+            # while the confirmation failed, was refused or ran dry); a Teams reply is sent
+            # as much as an email is
+            row["sent"] = any(r.get("kind") in SENDS and r.get("status") == "done"
                               for r in results)
             row["reasons"] = [str(x) for r in results for x in r.get("reasons") or ()][:8]
         state.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -667,21 +735,30 @@ class AutopilotAreaMixin:
         path = self._ap_queue_path()  # type: ignore[attr-defined]
         queue = ap.Queue(path) if path is not None and Path(path).exists() else None
         now = datetime.now(timezone.utc)
+        used_cache: dict[str, Any] = {}
+        jobs_cache: dict[str, Any] = {}
         out: list[m.AutopilotPrepared] = []
         try:
             for item in items:
                 dec = decisions.get(item["item_id"])
-                if dec:
+                # kept: an edit, an accept the write path refused (nothing went out: the
+                # reply stays to confirm again), a snooze that has run out
+                again = bool(dec) and (dec["decision"] == "edit" or ao.refused_accept(dec))
+                if dec and not again:
                     until = _instant(dec.get("until"))
-                    if dec["decision"] != "edit" and not (
-                            dec["decision"] == "snooze" and until is not None and until <= now):
+                    if not (dec["decision"] == "snooze" and until is not None and until <= now):
                         continue
                 shown = autopilot_engine.shown_item(item)
                 prepared = shown["body"].get("prepared") or {}
+                if prepared.get("kind") == "job":
+                    job = self._apa_job_shown(reader, item, shown, jobs_cache)
+                    if job is not None:
+                        out.append(job)
+                    continue
                 card = prepared.get("your_call")
                 envelope = prepared.get("draft") or prepared.get("teams_draft") or {}
                 body = str(envelope.get("body") or "")
-                if dec and dec["decision"] == "edit" and dec.get("text"):
+                if again and dec.get("text"):
                     body = str(dec["text"])
                 if not body and not isinstance(card, Mapping):
                     continue
@@ -693,23 +770,226 @@ class AutopilotAreaMixin:
                     item_id=item["item_id"], sender=str(happened.get("sender") or ""),
                     channel="teams" if teams else "mail",
                     subject=str(envelope.get("subject") or happened.get("subject") or ""),
-                    message=str((prepared.get("message") or {}).get("text")
-                                or happened.get("snippet") or ""),
+                    message=shown_message((prepared.get("message") or {}).get("text")
+                                          or happened.get("snippet")),
                     kind="your_call" if isinstance(card, Mapping) and not body else "reply",
                     to=[str(t.get("address") if isinstance(t, Mapping) else t)
                         for t in envelope.get("to") or ()],
                     cc=[str(t.get("address") if isinstance(t, Mapping) else t)
                         for t in envelope.get("cc") or ()],
-                    body=body, edited=bool(dec and dec["decision"] == "edit"),
+                    body=body, edited=bool(again and dec.get("text")),
                     ask=str((card or {}).get("ask") or "") if isinstance(card, Mapping) else "",
                     facts=[str(f) for f in (card or {}).get("facts") or ()]
                     if isinstance(card, Mapping) else [],
+                    options=[m.AutopilotOption(label=str(o.get("label") or ""),
+                                               reply=str(o["reply"]))
+                             for o in (card or {}).get("options") or ()
+                             if isinstance(o, Mapping) and isinstance(o.get("reply"), str)
+                             and o["reply"].strip()] if isinstance(card, Mapping) else [],
+                    used_for_draft=self._apa_used(reader, item, used_cache),
+                    learned=learning.describe_edit(str(envelope.get("body") or ""), body)
+                    if again and dec.get("text") else [],
                     created_at=str(item["created_at"])))
         finally:
             if queue is not None:
                 queue.close()
         out.sort(key=lambda d: d.created_at, reverse=True)
         return m.AutopilotDrafts(items=out)
+
+    # ------------------------------------------------------------ jobs
+
+    def _apa_job_ids(self, state: Optional[Path], item_id: str) -> dict[int, str]:
+        """Each reviewed job of an item: its index -> the prepared change it became."""
+        if state is None or not (state / JOBS_FILE).exists():
+            return {}
+        return {int(r["index"]): str(r["prepared_id"]) for r in Journal(state / JOBS_FILE).rows()
+                if r.get("item_id") == item_id and isinstance(r.get("index"), int)
+                and isinstance(r.get("prepared_id"), str)}
+
+    @staticmethod
+    def _apa_job_stage(card: Optional[Mapping[str, Any]]) -> str:
+        """Where a reviewed job's prepared change stands: ``open`` (to confirm), ``again``
+        (expired, or confirmed and the write failed or was refused: it is reviewed again as
+        a new change) or ``decided`` (confirmed and run, possibly run or recorded as a dry
+        run where writes are not live; dismissed; undone)."""
+        if card is None:
+            return "again"
+        state = str(card.get("state") or "")
+        statuses = {str(o.get("status")) for o in card.get("outcome") or ()
+                    if isinstance(o, Mapping)}
+        if state in ("expired", "not_run") or (
+                state == "confirmed" and statuses and statuses <= JOB_AGAIN):
+            return "again"
+        return "decided" if state in ("confirmed", "dismissed", "undone") else "open"
+
+    def _apa_job_decided(self, reader: Reader, pid: str) -> None:
+        """After the person confirmed, dismissed or undid a prepared change: when it was a
+        job's and every job of that item is now decided, the item is closed as the
+        person's decision (``person_decided``: an accept if any change was confirmed, else
+        a reject), the engine's settle then marks it done. Never fails the step itself."""
+        from operating import autopilot_jobs as aj
+        from operating import prepared_writes as pw
+        state = self._apa_state()
+        if state is None or not (state / JOBS_FILE).exists():
+            return
+        try:
+            item_id = next((str(r["item_id"]) for r in Journal(state / JOBS_FILE).rows()
+                            if r.get("prepared_id") == pid and r.get("item_id")), None)
+            if item_id is None or item_id in self._apa_decisions(state):
+                return
+            found = next((i for i in self._ap_visible(reader) or ()  # type: ignore[attr-defined]
+                          if i["item_id"] == item_id and i["mine"]), None)
+            if found is None:
+                return
+            proposals = aj.kept(((found.get("body") or {}).get("prepared") or {}
+                                 ).get("jobs") or ())
+            made = self._apa_job_ids(state, item_id)
+            desk, person = self._pw_desk(reader), self._pw_person(reader)  # type: ignore[attr-defined]
+            cards = []
+            for n in range(len(proposals)):
+                if n not in made:
+                    return
+                card = desk.card(person, made[n])
+                if self._apa_job_stage(card) != "decided":
+                    return
+                cards.append(card)
+        except (pw.Refused, OSError, ValueError, UserFacing):
+            return
+        if not cards:
+            return
+        confirmed = any(c.get("state") == "confirmed" for c in cards)
+        row = {"event": "item_decision", "item_id": item_id,
+               "decision": "accept" if confirmed else "reject",
+               "at": _iso(datetime.now(timezone.utc)), "by": sorted(self._apa_me(reader))[0],
+               "note": None, "closed": "person_decided",
+               "outcome": "done" if confirmed else None,
+               "steps": [{"kind": "job", "system": str(c.get("system") or "other"),
+                          "status": str(c.get("state") or ""), "reasons": []} for c in cards]}
+        with Journal(state / DECISIONS_FILE).locked() as held:
+            if not any(r.get("item_id") == item_id for r in held.rows):
+                held.append(row)
+
+    def _apa_job_shown(self, reader: Reader, item: Mapping[str, Any],
+                       shown: Mapping[str, Any], cache: dict[str, Any]
+                       ) -> Optional[m.AutopilotPrepared]:
+        """A job item as the person sees it: what happened, what it asks and each proposed
+        change (checked again: ``autopilot_jobs.kept``) with the state of the prepared
+        change it became, or the brief it holds (meeting prep). None once every change was
+        confirmed or dismissed (done)."""
+        from operating import autopilot_jobs as aj
+        from operating import prepared_writes as pw
+        body = shown.get("body") or {}
+        prepared = body.get("prepared") or {}
+        happened = body.get("happened") or {}
+        proposals = aj.kept(prepared.get("jobs") or ())
+        if not proposals and not prepared.get("brief"):
+            return None
+        if "desk" not in cache:
+            try:
+                cache["desk"] = (self._pw_desk(reader), self._pw_person(reader))  # type: ignore[attr-defined]
+            except UserFacing:
+                cache["desk"] = None
+        made = self._apa_job_ids(self._apa_state(), str(item["item_id"]))
+        jobs: list[m.AutopilotJob] = []
+        stages: list[Optional[str]] = []
+        for n, p in enumerate(proposals):
+            args = p["arguments"]
+            pid, state, stage = made.get(n), None, None
+            if pid and cache["desk"] is not None:
+                desk, person = cache["desk"]
+                try:
+                    card = desk.card(person, pid)
+                except pw.Refused:
+                    card = None
+                stage = self._apa_job_stage(card)
+                state = str(card.get("state") or "") if card is not None else None
+                if stage == "again":
+                    # expired or nothing written: offered for review again (a new change)
+                    pid = None
+            doc = p["tool"] == aj.DOC_TOOL_NAME
+            jobs.append(m.AutopilotJob(
+                index=n, tool=p["tool"], system="sharepoint" if doc else str(args.get("system") or ""),
+                operation="document_edit" if doc else str(args.get("operation") or ""),
+                reason=str(args.get("reason") or "")[:600],
+                target={"citation": args.get("citation")} if doc else dict(args.get("target") or {}),
+                change={k: args[k] for k in ("find", "replace", "sheet", "cell", "value") if k in args}
+                if doc else dict(args.get("change") or {}),
+                prepared_id=pid, state=state))
+            stages.append(stage)
+        brief = str(prepared.get("brief") or "")
+        if (stages and all(st == "decided" for st in stages)) or (not stages and not brief):
+            return None
+        channel = str(happened.get("channel") or "")
+        return m.AutopilotPrepared(
+            item_id=item["item_id"], sender=str(happened.get("sender") or ""),
+            channel=channel if channel in ("mail", "teams") else "system",
+            subject=str(happened.get("subject") or (happened.get("fields") or {}).get("title") or ""),
+            # a brief (meeting prep) is the item's own text: what the person reads
+            message=brief[:3000] if brief else shown_message(happened.get("snippet")),
+            kind="job",
+            summary=str(prepared.get("summary") or "")[:300], jobs=jobs,
+            created_at=str(item["created_at"]))
+
+    def autopilot_job_prepare(self, reader: Reader, item_id: str, index: int
+                              ) -> m.PreparedWrite:
+        """Review one proposed change of a job item of your own: it is prepared through the
+        prepared-writes desk as you (the record read from its system, before and after,
+        could you make it yourself, the people exclusion), the same as an Ask request; the
+        card then takes the two-step confirm on ``/api/prepared/{id}``. A job reviewed
+        before answers the change it became (never a second one)."""
+        from operating import autopilot_jobs as aj
+        from operating import prepared_writes as pw
+        found = next((i for i in self._ap_visible(reader) or ()  # type: ignore[attr-defined]
+                      if i["item_id"] == item_id and i["mine"]), None)
+        if found is None:
+            raise UserFacing("not_found", "That item is not on your list.", 404)
+        state = self._apa_state()
+        if state is None:
+            raise UserFacing("action_refused", "Prepared changes are not configured on this "
+                             "server.", 409)
+        if self._apa_off(self._ap_env(), state)[0]:  # type: ignore[attr-defined]
+            raise UserFacing("action_refused", "The autopilot is switched off.", 409)
+        proposals = aj.kept(((found.get("body") or {}).get("prepared") or {}).get("jobs") or ())
+        if not 0 <= index < len(proposals):
+            raise UserFacing("not_found", "That change is not on this item.", 404)
+        desk, person = self._pw_desk(reader), self._pw_person(reader)  # type: ignore[attr-defined]
+        made = self._apa_job_ids(state, item_id).get(index)
+        if made:
+            try:
+                card = desk.card(person, made)
+            except pw.Refused:
+                card = None
+            if self._apa_job_stage(card) != "again":
+                return self._pw_card(card)  # type: ignore[attr-defined]
+            # expired, or confirmed with nothing written: prepared anew below (every check
+            # again, the record read again), the job then answers the new change
+        proposal = proposals[index]
+        args = dict(proposal["arguments"])
+        cites = [*[c for c in args.pop("citations", None) or () if isinstance(c, str)],
+                 *[c for c in found.get("citations") or () if isinstance(c, str)]][:20]
+        origin = str(found.get("autopilot") or "autopilot")
+        if proposal["tool"] == aj.DOC_TOOL_NAME:
+            got = self._pw_doc_tool(reader, desk, person).call(args)  # type: ignore[attr-defined]
+            if not isinstance(got, Mapping) or not got.get("prepared_id"):
+                raise UserFacing("action_refused", " ".join(
+                    str(x) for x in (got or {}).get("refused") or ["Refused."])[:600], 422)
+            pid = str(got["prepared_id"])
+        else:
+            # the same step as the Ask's: a file only from the reader's own made files
+            args, refused = self._pw_resolve(reader, args)  # type: ignore[attr-defined]
+            if refused:
+                raise UserFacing("action_refused", refused, 422)
+            card = self._pw_do(lambda: desk.prepare(person, args, origin=origin,  # type: ignore[attr-defined]
+                                                    citations=cites))
+            pid = str(card["prepared_id"])
+        with Journal(state / JOBS_FILE).locked() as held:
+            last = [r.get("prepared_id") for r in held.rows
+                    if r.get("item_id") == item_id and r.get("index") == index]
+            if (last[-1] if last else None) == made:     # nobody reviewed it meanwhile
+                held.append({"event": "job_prepared", "at": _iso(datetime.now(timezone.utc)),
+                             "item_id": item_id, "index": index, "prepared_id": pid,
+                             "by": sorted(self._apa_me(reader))[0]})
+        return self._pw_card(self._pw_do(lambda: desk.card(person, pid)))  # type: ignore[attr-defined]
 
     def autopilot_reply_from_line(self, reader: Reader, item_id: str,
                                   body: m.AutopilotLineRequest) -> m.AutopilotItem:
@@ -744,16 +1024,21 @@ class AutopilotAreaMixin:
             raise UserFacing("action_refused", "This card was prepared before replies could "
                              "be written from it; write the reply yourself.", 409) from None
         by = sorted(self._apa_me(reader))[0]
-        hour_ago = _iso(datetime.now(timezone.utc) - timedelta(hours=1))
-        if sum(1 for r in Journal(state / DECISIONS_FILE).rows()
-               if r.get("from_line") is not None and r.get("by") == by
-               and str(r.get("at") or "") > hour_ago) >= LINE_REPLIES_PER_HOUR:
-            raise UserFacing("rate_limited", LINE_REFUSED["rate_limited"], 429)
         writer = self.autopilot_writer if self.autopilot_writer is not None \
             else ad.from_environ(env)
         if writer is None:
             raise UserFacing("action_refused", "No model is set up to write replies on this "
                              "server.", 409)
+        # every attempt counts (one that failed or was refused called the model too), read
+        # and recorded under one lock: two requests at once never both pass the last slot
+        state.mkdir(parents=True, exist_ok=True, mode=0o700)
+        now = datetime.now(timezone.utc)
+        hour_ago = _iso(now - timedelta(hours=1))
+        with Journal(state / LINE_ATTEMPTS_FILE).locked() as held:
+            if sum(1 for r in held.rows if r.get("by") == by
+                   and str(r.get("at") or "") > hour_ago) >= LINE_REPLIES_PER_HOUR:
+                raise UserFacing("rate_limited", LINE_REFUSED["rate_limited"], 429)
+            held.append({"event": "line_attempt", "by": by, "at": _iso(now)})
         people = self.autopilot_people
         if people is None:
             try:
@@ -789,6 +1074,43 @@ class AutopilotAreaMixin:
             if it.item_id == item_id:
                 return it
         raise UserFacing("not_found", "That item is not on your list.", 404)
+
+    def _apa_through_desk(self, reader: Reader, item: Mapping[str, Any],
+                          chat: Mapping[str, Any], now: datetime, live: bool,
+                          confirmed: bool, executor: Any) -> list[dict[str, Any]]:
+        """An accept as the prepared-writes desk runs it (``Desk.adopt`` then
+        ``Desk.confirm``): the executor's result per action. A live item not yet
+        confirmed runs nothing (each action ``needs_confirm``: the page offers the
+        confirm); a refusal of the desk's checks is each action ``refused``. An item with
+        nothing to write is the executor's own answer (its ``no_action`` refusal: nothing
+        runs, and the item stays prepared, never accepted); a confirm that recorded no
+        outcome is ``unknown``, never an accept."""
+        from operating import prepared_writes as pw
+        actions = aw.actions_of(item)
+        if not actions:
+            return [dict(r) for r in executor.run(item, now, aw.Approval(
+                by=tuple(sorted(self._apa_me(reader))), confirmed_live=confirmed))] or [
+                {"kind": None, "status": "refused", "reasons": ["no_action"]}]
+        desk = self._pw_desk(reader)  # type: ignore[attr-defined]
+        person = self._pw_person(reader)  # type: ignore[attr-defined]
+        # a Teams reply into the chat the person's own message came from is theirs to post
+        own = frozenset({"send_teams"}) if chat.get("conversation") else frozenset()
+        try:
+            card = desk.adopt(person, item, origin=str(item.get("autopilot") or "autopilot"),
+                              now=now, own=own)
+            if live and not confirmed:
+                return [{"kind": a.get("kind"), "status": "needs_confirm",
+                         "reasons": ["confirm_live"]} for a in actions]
+            shown = desk.preview(person, card["prepared_id"], now=now)
+            done = desk.confirm(person, card["prepared_id"],
+                                preview_hash=str(shown.get("preview_hash") or ""),
+                                confirm=True, now=now, confirmed_live=confirmed,
+                                acknowledged=())
+        except pw.Refused as refused:
+            return [{"kind": a.get("kind"), "status": "refused",
+                     "reasons": [str(p) for p in refused.problems][:2]} for a in actions]
+        return [dict(o) for o in done.get("outcome") or ()] or [
+            {"kind": None, "status": "unknown", "reasons": ["no_outcome"]}]
 
     @staticmethod
     def _apa_accepted(item_id: str, by: str, text: Optional[str]) -> str:
@@ -1171,6 +1493,42 @@ def draft_roles(draft: Mapping[str, Any], docs: Mapping[str, Mapping[str, Any]]
         if role:
             out[role] = frozenset(out.get(role, frozenset()) | set(flows))
     return out
+
+
+def _choice_row(cid: str, label: str, flows: tuple[str, ...],
+                on: Mapping[str, tuple[str, Any]]) -> m.AutopilotDraftChoice:
+    """One choice of prepared work as it stands for one person (``on``: their
+    ``autopilot_write.prepared_for`` entry): on when any workflow of it is prepared for
+    them (so its off reaches what the Draft file turned on), ``partly`` when not all are
+    (a workflow of ``DRAFT_NEVER`` is never one a switch turns on, so it does not decide
+    the row); set by the owner when any of it is on only through the Draft file."""
+    counted = [f for f in flows if f not in autopilot_engine.DRAFT_NEVER]
+    live = [f for f in counted if f in on]
+    is_on = bool(live)
+    by_owner = any(on[f][0] == aw.BY_OWNER for f in live)
+    since = max((str(on[f][1] or "") for f in live), default="") \
+        if is_on and not by_owner else ""
+    return m.AutopilotDraftChoice(choice=cid, label=label, on=is_on,
+                                  partly=is_on and len(live) < len(counted),
+                                  by_owner=by_owner, since=since or None)
+
+
+class _Cleared:
+    """The people exclusion as ``autopilot_engine.draft_owners`` asks it: unavailable when
+    it is missing or cannot decide, and whether a person id is clear of it."""
+
+    def __init__(self, guard: Any) -> None:
+        self.guard = guard
+        try:
+            self.unavailable = "absent" if guard is None else guard.unavailable
+        except Exception:  # noqa: BLE001 - undecidable: unavailable
+            self.unavailable = "undecidable"
+
+    def identity_clear(self, oid: str) -> bool:
+        try:
+            return not self.guard.is_excluded(oid)
+        except Exception:  # noqa: BLE001 - undecidable: not clear
+            return False
 
 
 def _identities(reader: Reader) -> set[str]:

@@ -77,7 +77,9 @@ class AutopilotFollowUnit(unittest.TestCase):
                           lines)
             # plx.env is read only through the allowlist, never loaded whole into the unit
             files = [ln for ln in lines if ln.startswith("EnvironmentFile=")]
-            self.assertEqual(files, ["EnvironmentFile=-/home/u/.config/plx/proactive.env"])
+            # and the reader host's session secret (look-ups as the person, nothing else)
+            self.assertEqual(files, ["EnvironmentFile=-/home/u/.config/plx/proactive.env",
+                                     "EnvironmentFile=-/home/u/.config/plx/workbench-session.env"])
             self.assertFalse([ln for ln in lines if "PLX_PG_DSN" in ln])
             self.assertIn("Environment=PLX_AUTOPILOT_EVQ=1", lines)
             self.assertIn("Environment=PLX_ONTOLOGY_PG=only", lines)
@@ -91,9 +93,16 @@ class AutopilotFollowUnit(unittest.TestCase):
         self.assertIn("plx-autopilot-fast-serve", text.split("SYS_DAEMONS=", 1)[1].splitlines()[0])
         unit = (tmp / "out" / "plx-autopilot-fast-serve.service").read_text()
         lines = [ln for ln in unit.splitlines() if ln and not ln.startswith("#")]
+        # the consumer that runs drafts as the fast unit would: through
+        # operator_api.autopilot_context, with every drafting setting the fast unit has
+        # (2026-11-18: it had none, so the live queue never got a reply draft)
         self.assertEqual([ln for ln in lines if ln.startswith("ExecStart=")],
-                         ["ExecStart=/data/venv/bin/python3 -m operating.autopilot fast --serve"
-                          " --state-dir /data/plx-state"])
+                         ["ExecStart=/data/venv/bin/python3 -m operator_api.autopilot_context"
+                          " fast --serve --state-dir /data/plx-state"])
+        fast = [ln for ln in (tmp / "out" / "plx-autopilot-fast.service").read_text()
+                .splitlines() if ln.startswith("Environment")]
+        self.assertIn("Environment=PLX_AUTOPILOT_DRAFT_MODEL=opus", fast)
+        self.assertEqual([ln for ln in fast if ln not in lines], [])
         for want in ("Type=simple", "Restart=always", "Environment=PLX_AUTOPILOT_EVQ=1",
                      "Environment=PLX_ONTOLOGY_PG=only"):
             self.assertIn(want, lines)

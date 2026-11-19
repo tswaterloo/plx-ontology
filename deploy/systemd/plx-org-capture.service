@@ -1,0 +1,30 @@
+# PLX Workbench org chart capture (integrations.capture_org): one daily pass over the tenant
+# directory (users and their managers) through the one GET-only Graph client
+# (User.Read.All), into its own store <PLX_INGEST_STATE>/org-capture/capture.db, which the
+# business build's biz.staff reads. Capture-style: it never starts, stops or waits on
+# plx-ingest and writes no other capture's store. The people exclusion is checked before any
+# request (unusable: it refuses and exits non-zero); an excluded, undecided or deny-listed
+# user is never stored nor named as a manager. Prints counts only.
+#
+# Switch-on: systemctl enable --now plx-org-capture.timer
+[Unit]
+Description=PLX Workbench org chart capture (directory, GET-only)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=@PLX_USER@
+Group=@PLX_GROUP@
+WorkingDirectory=@PLX_CURRENT@
+EnvironmentFile=/etc/plx/ingest.env
+EnvironmentFile=@PLX_HOME@/.config/plx/plx.env
+Environment=PATH=/data/venv/bin:/usr/local/bin:/usr/bin:/bin
+# SEC-S-05: only the capture's read-only Graph app is used; the send-capable app, BC and MC
+# credentials of the shared env file are dropped
+UnsetEnvironment=AZURE_CLIENT_SECRET BC_CLIENT_SECRET MC_MCP_API_KEY
+ExecStart=/data/venv/bin/python3 -m integrations.capture_org --state-dir ${PLX_INGEST_STATE} --live-audience @PLX_CURRENT@/examples/org_capture_audience.live-check.json
+Nice=10
+CPUWeight=20
+MemoryMax=512M
+TimeoutStartSec=30min

@@ -23,14 +23,17 @@ beforeEach(() => {
 
 describe("Memory", () => {
   it("groups items by kind with where each came from, and links their records", async () => {
-    api.getMemory.mockResolvedValue({ available: true, items: [item(), item({ id: 4, kind: "fact", source: "you", text: "M lot codes are Mississauga.", records: [] })] });
+    const rule = "Autopilot drafts nothing for messages from news@x.example";
+    api.getMemory.mockResolvedValue({ available: true, items: [item(), item({ id: 4, kind: "fact", source: "you", text: "M lot codes are Mississauga.", records: [] }), item({ id: 5, text: "Stop drafting replies to news@x.example", records: [], autopilot: [rule] })] });
     render(<MemoryPage />);
     expect(await screen.findByText("Always give quantities in cases.")).toBeTruthy();
+    // what the Autopilot now does because of an item is said under it
+    expect(screen.getByTestId("memory-autopilot")).toHaveTextContent(rule);
     // the intro says plainly what it is for and who sees it
     expect(screen.getByText(/Only you can see it\./)).not.toHaveTextContent(/owner included|pay or finance/);
     const headings = screen.getAllByRole("heading", { level: 2 }).map((h) => h.textContent);
-    expect(headings).toEqual(["Tell it something to remember", "Standing instructions 1", "Facts 1"]);
-    expect(screen.getByText("From a question of yours")).toBeTruthy();
+    expect(headings).toEqual(["Tell it something to remember", "Standing instructions 2", "Facts 1"]);
+    expect(screen.getAllByText("From a question of yours")).toHaveLength(2);
     expect(screen.getByText("In your words")).toBeTruthy();
     expect(screen.getByText("SO 5512").getAttribute("href")).toBe("/object/SalesOrder/SalesOrder%3A5512");
   });

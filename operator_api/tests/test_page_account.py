@@ -13,6 +13,7 @@ import time
 import unittest
 from decimal import Decimal
 from types import SimpleNamespace
+from urllib.parse import quote
 
 from operating import ontology_tools_sql as sqlt
 from operating import page_reads as pr
@@ -114,9 +115,11 @@ class Pages(unittest.TestCase):
 
     @staticmethod
     def owed(page, key="owed"):
-        """{currency: (total, documents)} of the owed section."""
+        """{currency: (total, documents)} of the owed section (total None: shown hidden)."""
         sec = Pages.section(page, key)
-        return {r[0].text: (Decimal(r[6].money.amount), int(r[7].number)) for r in sec.rows}
+        return {r[0].text: (Decimal(r[6].money.amount) if r[6].money else None,
+                            int(r[7].number)) for r in sec.rows
+                if r[6].money is not None or r[6].hidden}
 
     @staticmethod
     def years(page):
@@ -135,9 +138,10 @@ class Pages(unittest.TestCase):
         self.assertEqual(acme, [("Customer", "Acme Ltd")])
         self.assertEqual(top("ACME")[0], ("Customer", "Acme Ltd"))
         self.assertEqual(self.find("ACME")[0].match, "exact")
-        # a supplier held three times: one result
+        # a supplier held three times: one result (BC's separate payment vendor by the
+        # same name is its own account, found as such)
         self.assertEqual([x for x in top("croda") if x[0] == "Supplier"],
-                         [("Supplier", "Croda Canada")])
+                         [("Supplier", "Croda Canada"), ("Supplier", "CRODA CANADA (EFT)")])
         # a number opens its record: the PO, first, exact; its page is the order page
         po = self.find("PO-1")
         self.assertEqual((po[0].type, po[0].label, po[0].match),
@@ -246,13 +250,24 @@ class Pages(unittest.TestCase):
         for secret in ("4444.44", "SECRET-FIN", "IN-FIN"):
             self.assertNotIn(secret, dump)
         # the same numbers the same door gives this reader through plx.sql
+        # a currency holding an amount the reader may not see shows its total hidden,
+        # never the sum of the rest as if it were all (11-18 staff walk: CAD 126,051.50
+        # owed read "0.00")
+        # (plx.sql reads the AI's views: a cell it masks beyond the page's is a NULL there,
+        # so the shown totals are checked against its sums and the hidden ones by name)
         for actor, page in ((FULL, full), (OPS, ops)):
             rows = self.sql("SELECT amount_due_currency, sum(amount_due), count(*) FROM "
                             f"customer_balances WHERE customer_handle = '{h}' "
                             "AND amount_due_currency IS NOT NULL GROUP BY 1", actor)
-            want = {r[0]: (Decimal(str(r[1] or 0)), int(r[2])) for r in rows}
-            self.assertEqual({k: (v[0].normalize(), v[1]) for k, v in self.owed(page).items()},
-                             {k: (v[0].normalize(), v[1]) for k, v in want.items()}, actor)
+            want = {r[0]: (Decimal(str(r[1] or 0)).normalize(), int(r[2])) for r in rows}
+            got = self.owed(page)
+            self.assertEqual(set(got), set(want), actor)
+            for cur, (total, docs) in got.items():
+                self.assertEqual(docs, want[cur][1], (actor, cur))
+                if total is not None:
+                    self.assertEqual(total.normalize(), want[cur][0], (actor, cur))
+        self.assertEqual(self.owed(ops)["CAD"][0], None)          # INV-3's currency: hidden
+        self.assertIsNotNone(self.owed(full)["CAD"][0])
         # INV-3's amount is finance-marked: counted, never summed as zero, and said so
         self.assertIn("can't see", self.section(ops, "owed").note or "")
         self.assertIsNone(self.section(full, "owed").note)
@@ -279,6 +294,37 @@ class Pages(unittest.TestCase):
         self.assertEqual(self.section(ops, "open_orders").total, int(self.sql(
             "SELECT count(*) FROM purchase_orders WHERE status = 'open' AND supplier_handle = "
             f"'{h}'", OPS)[0][0]))
+
+    def test_a_supplier_page_lists_other_accounts_by_its_name_never_merged(self):
+        """Served 11-18: BC's payment vendor "EZ CHEMICALS (EFT)" holds the balance while
+        the POs name the purchasing vendor "EZ Chemicals" (the page said "None open"
+        beside 57k owed). Each page lists the other account and its open POs; neither
+        page's numbers include the other's."""
+        croda = self.handle("suppliers", "name", "Croda Canada")
+        eft = self.handle("suppliers", "name", "CRODA CANADA (EFT)")
+        page = self.page("supplier", handle=eft)
+        same = self.section(page, "same_name")
+        open_pos = self.truth("SELECT count(*) FROM {biz}.purchase_orders WHERE status = "
+                              "'open' AND supplier_handle = %s", (croda,))[0][0]
+        self.assertGreater(open_pos, 0)
+        self.assertEqual([(r[0].text, r[2].number) for r in same.rows],
+                         [("Croda Canada", str(open_pos))])
+        self.assertTrue(same.rows[0][0].href.endswith(quote(croda, safe="")))
+        self.assertEqual(self.section(page, "open_orders").total, 0)   # never merged
+        back = self.section(self.page("supplier", handle=croda), "same_name")
+        self.assertEqual([r[0].text for r in back.rows], ["CRODA CANADA (EFT)"])
+        other = self.page("supplier", handle=self.handle("suppliers", "name", "Other Chem"))
+        self.assertIsNone(self.section(other, "same_name"))
+
+    def test_a_zeroed_po_header_shows_its_lines_total_and_a_differing_header_both(self):
+        def facts(number):
+            page = self.page("purchase_order", handle=self.handle(
+                "purchase_orders", "po_number", number))
+            return {f.label: (f.value.money.amount if f.value.money else None)
+                    for f in page.facts if "otal" in f.label}
+        self.assertEqual(facts("PO-LN"), {"Total (sum of lines)": "112.50"})
+        self.assertEqual(facts("PO-HL"), {"Total": "130", "Lines total": "100.00"})
+        self.assertEqual(facts("PO-NP"), {"Total": "0"})
 
     # ---- Freightcom: a person sees it, the AI's path never does ------------------------
 

@@ -473,12 +473,32 @@ class AlertRules(unittest.TestCase):
         self.assertEqual(status, "failed")
 
     def test_stale_after_two_cycles_of_the_timer_that_starts_the_runner(self):
-        timer = (Path(al.__file__).resolve().parents[2] / "deploy" / "systemd"
-                 / "plx-business-views.timer").read_text()
+        units = Path(al.__file__).resolve().parents[2] / "deploy" / "systemd"
+        timer = (units / "plx-business-views.timer").read_text()
         every = re.search(r"^OnCalendar=\*:\d+/(\d+)$", timer, re.M)
         self.assertIsNotNone(every, timer)
         self.assertEqual(al.REFRESH_MINUTES, int(every.group(1)))
         self.assertEqual(al.STALE_MINUTES, 2 * al.REFRESH_MINUTES)
+        # 11-18: a views rebuild ran 80 min (and one was OOM-killed), so a runner started
+        # only after a refresh left every alert "unavailable"; its own timer runs it at
+        # least twice within the stale window, whatever the views do
+        own = (units / "plx-alerts.timer").read_text()
+        runs = re.search(r"^OnCalendar=\*:\d+/(\d+)$", own, re.M)
+        self.assertIsNotNone(runs, own)
+        self.assertLessEqual(2 * int(runs.group(1)), al.STALE_MINUTES)
+
+    def test_one_run_at_a_time(self):
+        """The timer's run and the one after a refresh never overlap: while one holds the
+        run lock a second leaves at once and changes nothing."""
+        import psycopg
+        self.po("p1", 3)
+        with psycopg.connect(self.dsn, autocommit=True) as other:
+            other.execute("SELECT pg_advisory_lock(%s)", (al.RUN_LOCK,))
+            self.assertEqual(al.run(self.dsn, ["po_late"], schema=S, day=DAY, owners=OWNERS),
+                             [])
+            self.assertIsNone(self.conn.execute("SELECT to_regclass(%s)",
+                                                (f"{S}.alert_runs",)).fetchone()[0])
+        self.assertEqual(self.fire("po_late")["po_late"]["open"], 1)
 
     def test_every_rule_is_a_declared_alert_type(self):
         kinds = json.loads(al.KINDS_FILE.read_text(encoding="utf-8"))

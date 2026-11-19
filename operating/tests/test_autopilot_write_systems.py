@@ -12,6 +12,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
+from pathlib import Path
 import time
 import unittest
 
@@ -49,6 +50,8 @@ def mcp(tool, arguments):
 
 
 # (name, prepared write or draft, the request's essentials, the undo request or None)
+
+
 CASES = [
     ("mc_note", {"write": {"system": "mc", "operation": "task_note",
                            "target": {"task_id": "TASK-7"},
@@ -85,14 +88,18 @@ CASES = [
      {"method": "DELETE",
       "url": f"{BC_ROOT}/purchaseOrders({DOC})/purchaseOrderLines({{response:id}})",
       "headers": {"If-Match": "{response:@odata.etag}"}, "body": None}),
-    ("portal_po", {"write": {"system": "portal", "operation": "sales_order_set_customer_po",
-                             "target": {"order_id": "so_abc123"},
+    # the Portal's own staff route (TASK-5101), the version as read sent along
+    ("portal_po", {"write": {"system": "portal", "operation": "sales-order.update",
+                             "target": {"id": "so_abc123"},
                              "payload": {"poReference": "P-778"},
-                             "precondition": {"prior": {"poReference": None}}}},
+                             "precondition": {"updated_at": "2026-11-18T14:00:00+00:00",
+                                              "prior": {"poReference": None}}}},
      {"method": "PATCH", "url": "/api/mrp/sales-orders/so_abc123",
-      "body": {"poReference": "P-778"}},
+      "headers": {"Content-Type": "application/json"},
+      "body": {"poReference": "P-778", "expectedUpdatedAt": "2026-11-18T14:00:00+00:00"}},
      {"method": "PATCH", "url": "/api/mrp/sales-orders/so_abc123",
-      "headers": {"Content-Type": "application/json"}, "body": {"poReference": None}}),
+      "headers": {"Content-Type": "application/json"},
+      "body": {"poReference": None}, "body_json": '{"poReference":null}'}),
     ("fm_create", {"write": {"system": "filemaker", "operation": "record_create",
                              "target": {"database": "Plant", "layout": "Batch"},
                              "payload": {"Status": "Ready", "Lot": "L-1"}}},
@@ -110,14 +117,12 @@ CASES = [
                               "body": "Docs are in the folder.", "members": []}},
      {"method": "POST", "url": f"{GRAPH}/chats/19:abc@thread.v2/messages",
       "body": {"body": {"contentType": "text", "content": "Docs are in the folder."}}},
-     {"method": "POST", "url": f"{GRAPH}/users/{OWNER}/chats/19:abc@thread.v2/messages/"
-      "{response:id}/softDelete", "body": None}),
+     None),            # a posted Teams message is not recalled from the Workbench
     ("teams_channel", {"draft": {"channel": "teams", "team_id": TEAM,
                                  "channel_id": "19:ops@thread.tacv2", "body": "Lot 4 shipped."}},
      {"method": "POST", "url": f"{GRAPH}/teams/{TEAM}/channels/19:ops@thread.tacv2/messages",
       "body": {"body": {"contentType": "text", "content": "Lot 4 shipped."}}},
-     {"method": "POST", "url": f"{GRAPH}/teams/{TEAM}/channels/19:ops@thread.tacv2/messages/"
-      "{response:id}/softDelete", "body": None}),
+     None),
     ("planner_create", {"write": {"system": "planner", "operation": "task_create",
                                   "payload": {"planId": "plan-1", "title": "Book the carrier",
                                               "assignees": [OWNER_OID]}}},
@@ -294,10 +299,34 @@ class Systems(Base):
             "bc unknown op": ("bc_line", lambda w: w.update(operation="post_invoice")),
             "bc G/L line": ("bc_line", lambda w: w["payload"].update(lineType="Account")),
             "bc line for no document": ("bc_line", lambda w: w.update(target={})),
-            "portal overwrite": ("portal_po", lambda w: w["precondition"]["prior"].update(
-                poReference="P-1")),
             "portal no prior": ("portal_po", lambda w: w["precondition"].update(
                 prior={"x": 1})),
+            "portal not read": ("portal_po", lambda w: w["precondition"].pop("updated_at")),
+            "portal field the route ignores": ("portal_po", lambda w: w["payload"].update(
+                x=1)),
+            "portal lines of an order": ("portal_po", lambda w: w["payload"].update(
+                lines=[])),
+            "portal outside the route's statuses": ("portal_po", lambda w: w.update(
+                payload={"status": "SHIPPED"})),
+            "portal money on a PO": ("portal_po", lambda w: w.update(
+                operation="purchase-order.update", payload={"totalCost": "1"})),
+            "portal float quantity": ("portal_po", lambda w: w.update(
+                operation="ship-release.create", target={"order_id": "o1"},
+                payload={"customerLocationId": "loc1", "lines": [{
+                    "orderLineRef": "l1", "productId": "p1", "qtyAuthorized": 1.5,
+                    "uom": "EA"}]})),
+            "portal typed address": ("portal_po", lambda w: w.update(
+                operation="ship-release.create", target={"order_id": "o1"},
+                payload={"adHocShipTo": {"addressLine1": "1 Main"}, "lines": []})),
+            "portal create lacks required": ("portal_po", lambda w: w.update(
+                operation="activity.note", target={"record_type": "order",
+                                                   "record_id": "o1"}, payload={})),
+            "portal asked route not opened": ("portal_po", lambda w: w.update(
+                operation="customer-contact.create", target={"customer_id": "c1"},
+                payload={"name": "A"})),
+            "portal other target": ("portal_po", lambda w: w.update(
+                target={"id": "so_1", "entity": "app_user"})),
+            "portal unknown op": ("portal_po", lambda w: w.update(operation="record_delete")),
             "fm related field": ("fm_create", lambda w: w["payload"].update(
                 {"Customer::Name": "x"})),
             "fm edit without prior": ("fm_edit", lambda w: w["precondition"].update(prior={})),

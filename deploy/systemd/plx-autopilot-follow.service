@@ -38,6 +38,16 @@ Environment=PATH=/data/venv/bin:/usr/local/bin:/usr/bin:/bin
 Environment=PLX_CHAT_ASK_MODEL=haiku
 # reply drafts for the people who switched them on (operating/autopilot_drafter.py)
 Environment=PLX_AUTOPILOT_DRAFT_MODEL=opus
+# Reply drafts look facts up with the Simple Ask's tools as the person they are drafted for
+# (operator_api.autopilot_context.Lookup): the session secret the reader host's ticket is
+# signed with, and the readers file (autopilot-readers.json, mode 600: each opted-in
+# person's id -> their four identity claims). Either absent: no lookup, the plain draft.
+# Only replies whose every reader is the company's own look anything up.
+EnvironmentFile=-@PLX_HOME@/.config/plx/workbench-session.env
+Environment=PLX_AUTOPILOT_READERS_FILE=@PLX_HOME@/.config/plx/autopilot-readers.json
+Environment=PLX_AUTOPILOT_HOST_CONFIG=@PLX_HOME@/.config/plx/workbench-host-vince/host.json
+Environment=PLX_AUTOPILOT_HOST_STATE=/data/plx-state
+# up to 4 drafts at once (PLX_AUTOPILOT_DRAFT_PARALLEL), each a model process and a host
 # names its Postgres sessions after the unit (ARCH T2: pg_stat_activity, slow-query log)
 Environment=PGAPPNAME=%N
 Environment=PLX_ONTOLOGY_PG=only
@@ -56,8 +66,8 @@ Nice=10
 CPUWeight=20
 IOSchedulingClass=best-effort
 IOSchedulingPriority=7
-MemoryHigh=1G
-MemoryMax=2G
+MemoryHigh=4G
+MemoryMax=6G
 MemorySwapMax=512M
 TimeoutStartSec=30min
 UMask=0077

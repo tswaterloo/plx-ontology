@@ -44,7 +44,9 @@ DEFAULT_LIMIT, MAX_LIMIT = 50, 200
 MAX_CITED = 50
 STATEMENT_SECONDS = 20.0
 # views held as per-item permissioned captures: asked of plx.table
-ITEM_VIEWS = {"emails": "Email", "teams_messages": "TeamsMessage"}
+ITEM_VIEWS = {"emails": "Email", "teams_messages": "TeamsMessage",
+              "meetings": "CalendarEvent",
+              "meeting_transcripts": "MeetingTranscript"}
 PILOT = "pilot"
 OF_RECORD = "of_record"
 # rows a view holds outside the system of record are left out unless the request filters

@@ -1,8 +1,10 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
-import { EveryoneView, PreparedView } from "@/components/autopilot/prepared";
+import { useRouter, useSearchParams } from "next/navigation";
+import { EveryoneView, PreparedView, emptyWords } from "@/components/autopilot/prepared";
 import { DraftsPanel } from "@/components/autopilot/opt-in";
+import { TeamsConnect } from "@/components/autopilot/teams-connect";
 import { ErrorNotice, LoadProblem } from "@/components/ui/notice";
 import { Pending } from "@/components/ui/skeleton";
 import { getAutopilotDrafts, type PreparedItem } from "@/lib/api";
@@ -10,7 +12,7 @@ import { cn } from "@/lib/cn";
 import { noticeKind, plainError } from "@/lib/errors";
 import type { AutopilotArea as Area } from "@/lib/types";
 
-// The autopilot page: what to prepare for you (five switches, each yours alone) and what was
+// The autopilot page: what to prepare for you (six switches, each yours to turn off even when the owner turned it on) and what was
 // prepared, newest first, each to confirm, edit, copy or open in Outlook. Admins also see who
 // switched what on and how each workflow is doing. Nothing is sent until you confirm it.
 
@@ -24,6 +26,18 @@ export function AutopilotView({ area: initial }: { area: Area; onReload?: () => 
   const [error, setError] = useState<unknown>(null);
   const [round, setRound] = useState(0);
   const reload = useCallback(() => setRound((n) => n + 1), []);
+  // links from Home, the work log and the desktop app: ?item=<id> opens that item,
+  // ?tab=audit is the log (its own page under Admin)
+  const params = useSearchParams();
+  const router = useRouter();
+  const linked = params.get("item");
+  useEffect(() => {
+    if (params.get("tab") === "audit") router.replace("/autopilot-log");
+  }, [params, router]);
+  useEffect(() => {
+    if (!linked || !items) return;
+    document.getElementById(`prepared-${linked}`)?.scrollIntoView({ block: "center" });
+  }, [linked, items]);
   useEffect(() => {
     const ctl = new AbortController();
     getAutopilotDrafts(ctl.signal).then(
@@ -42,6 +56,7 @@ export function AutopilotView({ area: initial }: { area: Area; onReload?: () => 
       {area.switches.global_off && <ErrorNotice tone="notice" message="Every autopilot write is switched off. A confirm is recorded and nothing is sent." />}
       {area.switches.autopilot_off && <ErrorNotice tone="notice" message="The autopilot is switched off on this server: nothing new is prepared." />}
       <DraftsPanel area={area} onArea={setArea} />
+      <TeamsConnect />
       <nav className="flex h-9 items-stretch gap-4" role="tablist" aria-label="Autopilot">
         {tabs.map(([t, label]) => (
           <button
@@ -63,7 +78,10 @@ export function AutopilotView({ area: initial }: { area: Area; onReload?: () => 
         ) : error ? (
           <LoadProblem message={plainError(error)} busy={noticeKind(error) === "busy"} onRetry={reload} />
         ) : items ? (
-          <PreparedView items={items} onGone={(id) => setItems((xs) => (xs ?? []).filter((x) => x.item_id !== id))} onChanged={reload} />
+          <>
+            {linked && !items.some((i) => i.item_id === linked) && <p className="py-2 text-[13px] text-muted">That item is no longer waiting for you: it was answered, decided or set aside.</p>}
+            <PreparedView items={items} empty={emptyWords(area)} linked={linked} onGone={(id) => setItems((xs) => (xs ?? []).filter((x) => x.item_id !== id))} onChanged={reload} />
+          </>
         ) : (
           <Pending label="Reading what was prepared" />
         )}

@@ -1,4 +1,4 @@
-# PLX Workbench mail and Teams re-flag, nightly at low priority: one run of
+# PLX Workbench mail and Teams re-flag, nightly: one run of
 # `python3 -m operating.pg.business_comms recheck`. Every emails / teams_messages row still
 # undecided for the assistant (its body text was not indexed when the table was built or
 # refreshed, so it is withheld) has its indexed text read again and is decided: Freightcom
@@ -25,10 +25,9 @@ Environment=PGAPPNAME=%N
 Environment=PLX_ONTOLOGY_PG=only
 ExecCondition=/bin/sh -c '/data/venv/bin/python3 -c "import ontology.window_lock" 2>/dev/null || exit 0; exec /data/venv/bin/python3 -m ontology.window_lock check delta'
 ExecStart=/data/venv/bin/python3 -m operating.pg.business_comms recheck
-Nice=19
-CPUWeight=20
-IOWeight=20
-IOSchedulingClass=idle
+# Full speed (No nice, CPU or IO caps on a build; every core reads the rows,
+# PLX_BIZ_READ_WORKERS): bounded by memory here and the build's disk floor
+# (PLX_BIZ_MIN_FREE_GB) only.
 MemoryHigh=5G
 MemoryMax=6G
 TimeoutStartSec=2h

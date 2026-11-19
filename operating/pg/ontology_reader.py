@@ -424,9 +424,45 @@ LINK_ODD_OWNED_SQL = (
     "WHERE l.evidence_id IS NOT NULL AND (l.from_object = ANY(%(owned)s::text[]) "
     "OR l.to_object = ANY(%(owned)s::text[]))")
 # A word match's value row: SQLite joins the cell rowid; here the cell's key, so the value
-# row is one index probe (``row_no`` is computed).
-VALUE_WORD_JOIN = ("value_text f JOIN object_values_numbered v "
-                   "ON v.src = f.src AND v.field = f.field")
+# row is one index probe (``row_no`` is computed: the view's order, or ``numbered_sql``'s
+# written in, ``PgStoreReader.value_word_join``).
+VALUE_WORD_JOIN_ON = "value_text f JOIN {values} v ON v.src = f.src AND v.field = f.field"
+VALUE_WORD_JOIN = VALUE_WORD_JOIN_ON.format(values="object_values_numbered")
+# The value rows of word-row numbers ``:ids`` (``PgStoreReader.numbered_values``): each
+# number's cell by its key, the field read off the number's low bits in the field order.
+NUMBERED_BY_ID = ("(SELECT value AS row_no FROM json_each(:ids)) n JOIN {values} v "
+                  "ON v.src = (n.row_no >> 20) AND v.field = {field_at}[(n.row_no & 1048575)::int] "
+                  "AND v.row_no = n.row_no")
+_NUMBERED_OUT = ("object_id", "property", "value_type", "value", "unit", "quantity_role",
+                 "currency", "tax_basis", "currency_citation", "l1_handle", "field_path",
+                 "digest", "lineage", "binding_id", "parser", "authority_rank", "markings",
+                 "recorded_at", "superseded_at", "src", "field")
+
+
+def numbered_sql(rank: Mapping[int, int]) -> tuple[str, str | None]:
+    """(the value rows numbered as ``object_values_numbered`` numbers them, as a subquery;
+    the field at each place of the order, an array literal), from the field order
+    ``rank`` (field -> place, ``WordWindows.refresh``: migration 0011's order). The view
+    numbers a cell by joining ``value_field_order``, a window over every field, and the
+    planner, misjudging the candidates as one row, ran that window again for each
+    candidate cell (live 11-18: 1,248 loops of ~1 ms, 1.3-5 s per 2,001-id slice of
+    plx.search's value scan, ~0.2 s with the order written in). Places and fields are
+    array subscripts here (a field or place not in the order: NULL, so no row), so each
+    candidate is one index probe of its cell. An empty order or one a subscript cannot
+    name (a field or place below 1): the view, and None."""
+    if not rank or min(rank) < 1 or min(rank.values()) < 1:
+        # nothing to write in (or a place no subscript can name): the view's own order
+        return "object_values_numbered", None
+    top = max(rank)
+    places = ",".join(str(rank[f]) if f in rank else "NULL" for f in range(1, top + 1))
+    field_of = {at: field for field, at in rank.items()}
+    fields = ",".join(str(field_of[a]) if a in field_of else "NULL"
+                      for a in range(1, max(field_of) + 1))
+    columns = ", ".join(f"t.{c}" for c in _NUMBERED_OUT)
+    values = (f"(SELECT (t.src << 20) | ('{{{places}}}'::bigint[])[t.field] AS row_no, "
+              f"{columns} FROM object_values_typed t WHERE t.value_num IS NULL "
+              "AND t.value IS NOT NULL AND t.value_type IN ('text', 'identifier', 'enum'))")
+    return values, f"('{{{fields}}}'::bigint[])"
 _NUMBERED = ", ".join(f"v.{c}" for c in ("row_no", *VALUE_COLUMNS))
 # A window's candidates are joined as many at a time as rows are still wanted, and twice
 # as many again each time fewer passed, up to this many (in order: a page stops early).
@@ -971,7 +1007,29 @@ class PgStoreReader(StoreReader):
     @property
     def value_word_join(self) -> str:
         """``StoreReader.value_word_join`` on the connection ``word_conn`` reads."""
-        return VALUE_WORD_JOIN if self.words_loaded() else StoreReader.value_word_join
+        if not self.words_loaded():
+            return StoreReader.value_word_join
+        return VALUE_WORD_JOIN_ON.format(values=self._numbered()[0])
+
+    def word_estimate(self, table: str, words: str) -> float | None:
+        """The matches the word index ``table`` is estimated to hold for the FTS5 query
+        ``words`` (``WordWindows.estimate``: the words' statistics, no read of the index);
+        None where the index is not read here."""
+        loaded = self.chunk_words_loaded() if table == "chunk_text" else self.words_loaded()
+        if not loaded:
+            return None
+        from operating.pg.words import tsquery
+        self.windows.refresh()
+        return self.windows.estimate(table, tsquery(words))
+
+    def _numbered(self) -> tuple[str, str | None]:
+        """``numbered_sql`` of the field order of the data version held now, made once
+        per version (``WordWindows.refresh``)."""
+        facts = self.windows.refresh()
+        held = facts.get("numbered_sql")
+        if held is None:
+            held = facts["numbered_sql"] = numbered_sql(facts["rank"])
+        return held
 
     @property
     def cell_span_sql(self) -> str | None:
@@ -1228,8 +1286,12 @@ class PgStoreReader(StoreReader):
         number is computed here, never indexed)."""
         if not self.words_loaded():
             return StoreReader.numbered_values
-        return ("(SELECT value AS row_no FROM json_each(:ids)) n JOIN object_values_numbered v "
-                "ON v.src = (n.row_no >> 20) AND v.row_no = n.row_no", "1 = 1")
+        values, field_at = self._numbered()
+        if field_at is None:
+            return ("(SELECT value AS row_no FROM json_each(:ids)) n JOIN "
+                    "object_values_numbered v ON v.src = (n.row_no >> 20) "
+                    "AND v.row_no = n.row_no", "1 = 1")
+        return NUMBERED_BY_ID.format(values=values, field_at=field_at), "1 = 1"
 
     @contextmanager
     def word_rows(self, table: str, words: str,

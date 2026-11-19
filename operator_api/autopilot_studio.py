@@ -57,6 +57,8 @@ CONDITION_WORDS = {
     "after_own_post": "It answers the person's own message in a conversation they keep writing in",
     "cc_min": "Several people are copied on it",
     "answers_sender": "The person usually answers this sender",
+    "usual_answerer": "The person is the one who usually answers this sender in the chat",
+    "any_of": "One of these holds",
 }
 # conditions whose words run straight into their value ("The record is a purchase order")
 PLAIN_JOIN = frozenset({"object_type_in", "status_in", "quality_in"})
@@ -91,6 +93,19 @@ def _value_words(value: Any) -> str:
     return re.sub(r"(?<=[a-z])(?=[A-Z])", " ", str(value)).replace("_", " ").lower()
 
 
+def _condition_words(key: str, value: Any) -> str:
+    """One condition in words; ``any_of``: its sets joined by "or", each set's by "and"."""
+    if key == "any_of":
+        sets = [" and ".join(_condition_words(k, v) for k, v in branch.items())
+                for branch in value if isinstance(branch, Mapping)] \
+            if isinstance(value, list) else []
+        return CONDITION_WORDS["any_of"] + ": " + "; or ".join(sets)
+    lead = CONDITION_WORDS.get(key, _humanize(key))
+    if isinstance(value, bool) and value:
+        return lead
+    return f"{lead} {_value_words(value)}" if key in PLAIN_JOIN else f"{lead}: {_value_words(value)}"
+
+
 def steps_of(spec: Mapping[str, Any]) -> tuple[m.AutopilotStep, list[m.AutopilotStep],
                                                   list[m.AutopilotStep]]:
     """(trigger, conditions, actions) of one registered autopilot, in words."""
@@ -99,9 +114,7 @@ def steps_of(spec: Mapping[str, Any]) -> tuple[m.AutopilotStep, list[m.Autopilot
                               params=dict(spec.get("params") or {}))
     conditions = []
     for key, value in (spec.get("when") or {}).items():
-        lead = CONDITION_WORDS.get(key, _humanize(key))
-        words = lead if isinstance(value, bool) and value else \
-            f"{lead} {_value_words(value)}" if key in PLAIN_JOIN else f"{lead}: {_value_words(value)}"
+        words = _condition_words(key, value)
         conditions.append(m.AutopilotStep(kind=str(key), words=words[:300],
                                           params={"value": value}))
     handler = str(spec.get("handler") or "")

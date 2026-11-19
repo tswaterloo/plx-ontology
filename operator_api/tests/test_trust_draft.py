@@ -64,11 +64,30 @@ class DraftConfig(unittest.TestCase):
         self.addCleanup(os.unlink, f.name)
         return {autopilot_engine.DRAFT_ENV: f.name}
 
-    def test_the_default_config_drafts_the_three_workflows_and_never_other_external(self):
+    def test_the_shipped_config_loads_and_other_external_only_for_its_exempt_people(self):
+        # Drafts on for the people the file names, outside mail
+        # (other_external) only for those its exemption list names one by one
+        raw = json.loads(autopilot_engine.DRAFT_FILE.read_text())
         found = ap.load_draft({})
-        self.assertEqual(list(found.values()),
-                         [["internal_approval", "mc_question", "teams_chat"]])
-        self.assertNotIn("other_external", {f for v in found.values() for f in v})
+        self.assertEqual(set(found), {k.lower() for k in raw["people"]})
+        exempt = {a.lower() for a in raw.get(autopilot_engine.DRAFT_NEVER_FOR, [])}
+        for who, flows in found.items():
+            if who not in exempt:
+                self.assertNotIn("other_external", flows, who)
+
+    def test_the_never_list_holds_for_everyone_the_exemption_does_not_name(self):
+        key = autopilot_engine.DRAFT_NEVER_FOR
+        base = {"schema": autopilot_engine.DRAFT_SCHEMA}
+        both = {TEAM[0]: [FLOW, "other_external"]}
+        self.assertEqual(ap.load_draft(self.write({**base, "people": both, key: [TEAM[0].upper()]})),
+                         {TEAM[0]: sorted([FLOW, "other_external"])})
+        for bad in ({**base, "people": {**both, OTHER[0]: ["other_external"]}, key: [TEAM[0]]},
+                    {**base, "people": both, key: [OTHER[0]]},
+                    {**base, "people": both, key: []},
+                    {**base, "people": both, key: TEAM[0]},
+                    {**base, "people": both, key: [1]}):
+            with self.subTest(bad=bad):
+                self.assertEqual(ap.load_draft(self.write(bad)), {})
 
     def test_an_unknown_or_forbidden_workflow_refuses_the_whole_file(self):
         good = {"schema": autopilot_engine.DRAFT_SCHEMA, "people": {TEAM[0]: [FLOW]}}

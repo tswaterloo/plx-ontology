@@ -88,13 +88,47 @@ _IMAGE_OCR: Mapping[str, tuple[str | None, str]] = {
         "fa8c5c80af674319c8e0e12c9417664627e00fc01684e455af1835deb9367e6c"),
 }
 
+# The transport out of the derivation (writes owner, 11-18): the mail
+# source's people relation (``ontology.project``'s ``_exclusion``, read as records like
+# capture_mail's) imported ``integrations.people_exclusion``, which imports
+# ``live_source_guard`` and its grammar, so the guarded transport, its grammar, its write
+# shapes, ``plx_hub_guard`` and ``integrations.http`` were derivation code: every new read
+# or write path moved the digest (11-18: writes-on c5e12474 -> 40809e01). Now
+# ``project._NOT_DERIVATION`` names that import (the only line of project.py that moved),
+# so the derivation reaches none of the six. No derived record moves: none of them runs
+# while a document's fields or members are derived, and the people relation is
+# fingerprinted as the records it reads. ``then`` is the served key's (c5e12474, main
+# 68cf23d9d7); ``ABSENT``: a file the derivation no longer reaches.
+ABSENT = ""
+_TRANSPORT_OUT: Mapping[str, tuple[str | None, str]] = {
+    "ontology/project.py": (
+        "b65638145828db3f1c116361c1cd575e7794d593d0f959299ff03c93b3fecd65",
+        "f79c461449d3664388aabbeae567496f8a7d19bb5b0a618dafe5257b2879a01e"),
+    "integrations/people_exclusion.py": (
+        "ce71c3e42cdf87edc1c1be771d3ae80d5ebf12a4c0c5261728bf332dfea209ae", ABSENT),
+    "integrations/live_source_guard.py": (
+        "332383f0d5a832b0b405af37e9e444fddeeb508d61f1b8c1f0b689017cbc56c5", ABSENT),
+    "integrations/live_source_grammar.py": (
+        "89e3e82f243233af259c7bd967d22477b389df93b57fae3b4d23e595342b7eec", ABSENT),
+    "integrations/plx_hub_guard.py": (
+        "515032235e71503f3085f752ceb39dbaf75bbfdaac8798046e6b5d67439fd026", ABSENT),
+    "integrations/http.py": (
+        "706b74388fbfa936f1ad75751be61abba5a6326538a1c489a518e6be12872254", ABSENT),
+}
+# ``document_code`` digests project.py's bytes whole (with the derivation and readings
+# codes): its value with _TRANSPORT_OUT's project.py and nothing else moved -> the served
+# key (one line of project.py moved, no document is read differently).
+VALUES: Mapping[str, Mapping[str, str]] = {"document_code": {
+    "de06e1aaf36dbc15a0e76c9a4d2e84f7b73d3a50d844bb444c93adac4a1196d0":
+    "2ba0a66b527095643cad850274adfa952303e7ddb0c1c84c2733b10c9d2b6e3b"}}
+
 # kind -> groups of {file: (sha256 at BASE_COMMIT or None: not there, sha256 now)}, each
 # group undone only while every file it lists is exactly its listed version.
 # ``derivation``: ``project.derivation_files``
 # paths; ``readings_code``: ``captured_text.READING_MODULES`` module names (of which only
 # captured_text moved).
 CHANGES: Mapping[str, tuple[Mapping[str, tuple[str | None, str]], ...]] = {
-    "derivation": (_ZSTD, _CLOCK, _IMAGE_OCR),
+    "derivation": (_ZSTD, _CLOCK, _IMAGE_OCR, _TRANSPORT_OUT),
     "readings_code": ({"integrations.captured_text": _ZSTD["integrations/captured_text.py"]},
                       {"integrations.document_understanding":
                        _IMAGE_OCR["integrations/document_understanding.py"]}),
@@ -106,15 +140,27 @@ def earlier_files(kind: str, files: Iterable[tuple[str, str | None]]
     """``files`` (name, sha256 or None: missing) as BASE_COMMIT's tree had them, as far
     as ``CHANGES[kind]`` proves: each group whose files are all exactly their listed
     versions now is put back to its BASE_COMMIT versions (a file BASE_COMMIT had not
-    dropped); every other file as given, in the given order."""
+    dropped); every other file as given, in the given order. A file a group lists as
+    ``ABSENT`` (no longer reached) holds only while it is not among ``files``; put back,
+    the derivation's order is restored (its modules by path, then its data files)."""
     files = [(name, sha) for name, sha in files if name != _SELF]
     held = dict(files)
     undo: dict[str, str | None] = {}
     for group in CHANGES.get(kind) or ():
-        if all(held.get(name, "") == now for name, (_, now) in group.items()):
+        if all((name not in held) if now == ABSENT else held.get(name, "") == now
+               for name, (_, now) in group.items()):
             undo.update({name: then for name, (then, _) in group.items()})
-    return [(name, undo[name] if name in undo else sha) for name, sha in files
-            if name not in undo or undo[name] is not None]
+    out = [(name, undo[name] if name in undo else sha) for name, sha in files
+           if name not in undo or undo[name] is not None]
+    back = [(name, then) for name, then in undo.items() if name not in held and then]
+    if not back:
+        return out
+    from pathlib import PurePosixPath
+    from ontology.project import _DERIVATION_DATA
+    data = [f for f in out if f[0] in _DERIVATION_DATA]
+    modules = sorted([f for f in out if f[0] not in _DERIVATION_DATA] + back,
+                     key=lambda f: PurePosixPath(f[0]).parts)
+    return modules + data
 
 
 def equivalent_derivation_code(files: Iterable[tuple[str, str]]) -> str | None:
@@ -130,10 +176,12 @@ def equivalent_derivation_code(files: Iterable[tuple[str, str]]) -> str | None:
 
 
 def earlier_value(kind: str, value: str) -> str:
-    """``value`` itself: no memo code is kept by value (``mention_memo`` and
-    ``text_index_memo`` digest no file the tables change; ``document_code`` keeps
-    BASE_COMMIT's through the derivation and readings codes it digests)."""
-    return value
+    """``value`` itself, but a ``document_code`` value ``VALUES`` pins: that served key (no
+    memo code is otherwise kept by value: ``mention_memo`` and ``text_index_memo`` digest
+    no file the tables change; ``document_code`` keeps BASE_COMMIT's through the derivation
+    and readings codes it digests). A value is a digest of every input, so it equals the
+    pinned one only when nothing but the listed change moved."""
+    return VALUES.get(kind, {}).get(value, value)
 
 
 __all__ = ["BASE_COMMIT", "CHANGES", "earlier_files", "earlier_value",

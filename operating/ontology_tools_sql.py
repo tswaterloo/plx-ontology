@@ -58,6 +58,7 @@ TOOL_NAMES = (TOOL_NAME,)
 # internal (never in the MCP catalog): plx.search / plx.open's mail and Teams path
 COMMS_SEARCH = "plx.sql_comms_search"
 COMMS_OPEN = "plx.sql_comms_open"
+RECORDS_SEARCH = "plx.sql_records_search"   # plx.search's records leg (ontology_tools_search)
 MAX_ROWS = 200
 MAX_SQL = 8000
 # the rows' text, measured as plx.sql writes it; the host sends a result twice (text and
@@ -94,6 +95,8 @@ cardinality array_length array_position array_remove array_to_string string_to_a
 unnest generate_series row_number rank dense_rank percent_rank cume_dist ntile lag lead
 first_value last_value nth_value to_tsvector to_tsquery plainto_tsquery phraseto_tsquery
 websearch_to_tsquery ts_rank ts_rank_cd ts_headline
+jsonb_each_text jsonb_object_keys jsonb_array_elements_text jsonb_typeof jsonb_array_length
+jsonb_extract_path_text
 """.split())
 # words a "(" may follow that are SQL syntax, never a call
 SYNTAX = frozenset("""
@@ -438,7 +441,9 @@ class SqlTool:
             # communications views; '' when it cannot be decided (they then show nothing)
             "plx.reader_people": _people_tag(),
             # the Teams chats the reader may read and from which message creation on
-            "plx.reader_teams": json.dumps(_teams_windows(self.base, actor))}
+            "plx.reader_teams": json.dumps(_teams_windows(self.base, actor)),
+            # the transcript item rule: full reader or own identities (participants)
+            "plx.reader_self": json.dumps(_transcript_reader(self.base, actor))}
         return settings
 
     def _schema_names(self, conn: Any) -> frozenset[str]:
@@ -610,6 +615,49 @@ class SqlTool:
             raise ToolError("not_ready", "mail and Teams are not readable as tables here "
                             "yet") from None
 
+    # ------------------------------------------------------------------ records search
+
+    def records_search(self, args: dict[str, Any], actor: Any) -> dict[str, Any]:
+        """``plx.search``'s records leg (``operating.pg.records_search``): label words over
+        the reader's guarded ``records`` view through the same door as ``plx.sql``
+        (decided in the statement's own snapshot, the generic cost guard applied). Not
+        built here: ``not_served``; being rebuilt: ``not_ready`` (the leg is skipped)."""
+        from operating.pg import generic_views
+        from operating.pg import records_search as rs
+        conn, scope = self._reader(actor)
+        limit = int(args.get("limit") or 20)
+        try:
+            words = rs.terms(args.get("query"))
+            since, until = rs.day(args.get("since")), rs.day(args.get("until"))
+            off = rs.read_cursor(args["cursor"]) if args.get("cursor") else 0
+        except rs.SearchInputError as exc:
+            raise ToolError("invalid_input", str(exc)) from None
+        sql = rs.search_sql(len(words), since=since is not None, until=until is not None)
+        bound = rs.params(words, str(args.get("query")), since=since, until=until,
+                          k=limit + 1, off=off)
+        door = Door(reader_grant(scope, full=self._full(actor)))
+
+        def work(pg: Any) -> Any:
+            if pg.execute("SELECT to_regclass('records')").fetchone()[0] is None:
+                raise ToolError("not_served", "records are not served as a table here")
+            if "records" in door.decided["refused"]:
+                raise ToolError("not_ready", "records is being rebuilt")
+            (plan,) = pg.execute("EXPLAIN (FORMAT JSON) " + sql, bound).fetchone()
+            plan = plan if isinstance(plan, list) else json.loads(plan)
+            generic_views.guard(plan, sql, generic_views.table_sizes(pg))
+            return pg.execute(sql, bound).fetchall()
+        rows = self._scoped(conn, door, work)
+        more = len(rows) > limit
+        rows = rows[:limit]
+        out = {"documents": rs.hits(rows), "searched": rs.searched(args, words), "gaps": [],
+               "completeness": {"complete": not more, "truncated": more,
+                                "returned": len(rows),
+                                "next_cursor": f"r1:{off + limit}" if more and
+                                off + limit <= rs.MAX_OFFSET else None}}
+        if more:
+            out["completeness"]["reason"] = "page_cap"
+        return out
+
     # ------------------------------------------------------------------ query
 
     def _query(self, conn: Any, scope: Any, sql: str, actor: Any) -> dict[str, Any]:
@@ -619,7 +667,10 @@ class SqlTool:
         # the statement names one (unset, they show nothing: fail closed)
         extra = self._comms_settings(scope, actor) \
             if any(bv.VIEWS[v].fill for v in views) else None
-        door = Door(reader_grant(scope))
+        # the generic door tables (``generic_views``): refused while rebuilt, withheld
+        # counts and build time as a curated view's
+        views += [v for v in GENERIC if re.search(rf"\b{v}\b", sql, re.I)]
+        door = Door(reader_grant(scope, full=self._full(actor)))
         started = time.monotonic()
 
         def work(pg: Any) -> Any:
@@ -635,6 +686,11 @@ class SqlTool:
                 raise ToolError("too_costly", f"the plan's cost ({cost:.3g}) is past "
                                 f"{MAX_COST:.3g}: it would read too much",
                                 "filter (where on a date or key) or aggregate first")
+            if any(v in GENERIC_TABLES for v in views):
+                # records/record_links: a plan reading past MAX_RECORDS rows of them is
+                # refused with what to filter on (``generic_views.guard``)
+                from operating.pg import generic_views
+                generic_views.guard(plan, sql, generic_views.table_sizes(pg))
             cols, rows, stopped = _fetch(pg, sql)
             return cols, rows, stopped, _built(pg, views), _visible(pg, views, cols, rows)
 
@@ -689,6 +745,15 @@ class SqlTool:
 
     # ------------------------------------------------------------------ describe
 
+    def _full(self, actor: Any) -> bool:
+        """Whether ``actor`` is a full reader (``people_excluded.full_reader``): its door
+        also holds the classes only a full reader holds (``access_classes.FULL_KEY``)."""
+        from operating.pg import people_excluded
+        try:
+            return bool(people_excluded.full_reader(self.base, actor))
+        except Exception:  # noqa: BLE001 - undecidable: not a full reader (fail closed)
+            return False
+
     def _describe(self, what: Any, actor: Any) -> dict[str, Any]:
         doc = {"rules": RULES, "views": _dictionary()}
         if what is True:
@@ -700,9 +765,15 @@ class SqlTool:
                 for name, entry in doc["views"].items()},
                 "more": "plx.sql {\"describe\": \"<view>\"}: a view's column meanings, "
                         "sample rows and commonest values"}
+        if isinstance(what, str) and what in GENERIC:
+            return {**doc, "views": {what: doc["views"][what]}}
+        if isinstance(what, str) and what not in bv.VIEWS and \
+                re.fullmatch(r"[A-Za-z][A-Za-z0-9_]{0,63}", what):
+            return self._describe_type(what, actor, doc)
         if not isinstance(what, str) or what not in bv.VIEWS:
             raise ToolError("unknown_view", f"no view {str(what)[:64]!r}",
-                            "views: " + ", ".join(sorted(bv.VIEWS)))
+                            "views: " + ", ".join(sorted(bv.VIEWS)) + "; or a record "
+                            "type record_types lists")
         conn, scope = self._reader(actor)
         v = bv.VIEWS[what]
         extra = self._comms_settings(scope, actor) if v.fill else None
@@ -723,11 +794,59 @@ class SqlTool:
             (total,) = pg.execute(f"SELECT count(*) FROM {what}").fetchone()
             return rows, common, total
 
-        rows, common, total = self._scoped(conn, Door(reader_grant(scope)), work,
+        rows, common, total = self._scoped(conn, Door(reader_grant(
+            scope, full=self._full(actor))), work,
                                            extra=extra)
         return {**doc, "views": {what: doc["views"][what]},
                 "sample": {"rows_you_can_read": total, "rows": rows,
                            "commonest_values": common}}
+
+
+    def _describe_type(self, what: str, actor: Any, doc: dict[str, Any]) -> dict[str, Any]:
+        """One record type as this reader may read it (through the door): its catalog
+        row, three records and the commonest values of its fields over the first
+        ``TYPE_SAMPLE`` records of it the reader may read."""
+        conn, scope = self._reader(actor)
+
+        def work(pg: Any) -> Any:
+            if pg.execute("SELECT to_regclass('records')").fetchone()[0] is None:
+                return None
+            cur = pg.execute("SELECT * FROM record_types WHERE type = %s", (what,))
+            cols = [d.name for d in cur.description]
+            got = cur.fetchone()
+            if got is None:
+                return None
+            entry = dict(zip(cols, got))
+            sample = pg.execute("SELECT handle, label, record_date, fields FROM records "
+                                "WHERE type = %s ORDER BY record_date DESC NULLS LAST "
+                                "LIMIT 3", (what,)).fetchall()
+            common = pg.execute(
+                "SELECT e.key, e.value, count(*) FROM (SELECT fields FROM records WHERE "
+                f"type = %s LIMIT {TYPE_SAMPLE}) r, jsonb_each_text(r.fields) e "
+                "GROUP BY 1, 2 ORDER BY 1, 3 DESC, 2", (what,)).fetchall()
+            (total,) = pg.execute("SELECT count(*) FROM records WHERE type = %s",
+                                  (what,)).fetchone()
+            return entry, sample, common, total
+
+        got = self._scoped(conn, Door(reader_grant(scope, full=self._full(actor))), work)
+        if got is None:
+            raise ToolError("unknown_view", f"no view or record type {what[:64]!r}",
+                            "plx.sql {\"describe\": true} lists the views; "
+                            "SELECT type, name FROM record_types lists the record types")
+        entry, sample, common, total = got
+        values: dict[str, list[Any]] = {}
+        for key, value, n in common:
+            if len(values.setdefault(key, [])) < SAMPLE_VALUES:
+                values[key].append([_cell(value)[0], n])
+        return {"rules": RULES, "record_type": {
+            k: (_cell(v)[0] if not isinstance(v, (list, dict)) else v)
+            for k, v in entry.items()},
+            "sample": {"records_you_can_read": total,
+                       "rows": [{"handle": h, "label": _cell(lb)[0], "record_date": d,
+                                 "fields": {k: _cell(v)[0] for k, v in (f or {}).items()}}
+                                for h, lb, d, f in sample],
+                       "commonest_values": values,
+                       "values_read_from": f"the first {TYPE_SAMPLE} records"}}
 
 
 def _teams_windows(base: Any, actor: Any) -> dict[str, str]:
@@ -741,6 +860,20 @@ def _teams_windows(base: Any, actor: Any) -> dict[str, str]:
         return business_comms.teams_windows(runtime, actor)
     except Exception:  # noqa: BLE001 - undecidable: no Teams message (fail closed)
         return {}
+
+
+def _transcript_reader(base: Any, actor: Any) -> dict[str, Any]:
+    """The reader's transcript rule settings (``business_comms.transcript_reader``); none
+    without a case-runtime item gate or on any failure (no transcript: fail closed)."""
+    from operating.pg import business_comms
+    runtime = getattr(getattr(base, "item_gate", None), "runtime", None)
+    try:
+        return business_comms.transcript_reader(runtime, actor) if runtime is not None \
+            else {"full": False, "ids": []}
+    except Exception:  # noqa: BLE001 - undecidable: no transcript (fail closed)
+        return {"full": False, "ids": []}
+
+from operating.pg.access_classes import FULL_KEY  # noqa: E402
 
 
 def _people_tag() -> str:
@@ -797,7 +930,7 @@ _HIDDEN: "OrderedDict[tuple[int, int], tuple[tuple, tuple, str]]" = OrderedDict(
 _GRANTS_LOCK = threading.Lock()
 
 
-def reader_grant(scope: Any) -> Grant:
+def reader_grant(scope: Any, *, full: bool = False) -> Grant:
     """``scope``'s ``Grant``, kept by the identity of the reader's grant objects
     (``reader_grants`` keeps one tuple per policy, so a session's calls hand the same
     ones): sorted and digested once, never per call (the grant and the hidden documents
@@ -807,13 +940,15 @@ def reader_grant(scope: Any) -> Grant:
     refs = (scope.audience_keys, scope.marking_sets, getattr(scope, "held", ()) or ())
     # kept by identity only when none of them can change under the entry
     kept = all(isinstance(x, (tuple, frozenset)) for x in refs)
-    key = tuple(id(x) for x in refs)
+    key = tuple(id(x) for x in refs) + (int(bool(full)),)
     with _GRANTS_LOCK:
         hit = _GRANTS.get(key) if kept else None
         if hit is not None and all(a is b for a, b in zip(hit.refs, refs)):
             _GRANTS.move_to_end(key)
             return hit
-    keys = tuple(sorted({k for k in refs[0] if isinstance(k, str)}))
+    # ``FULL_KEY`` is never a scope's own key: only a full reader's grant carries it
+    keys = tuple(sorted({k for k in refs[0] if isinstance(k, str) and k != FULL_KEY}
+                        | ({FULL_KEY} if full else set())))
     sets = tuple(sorted({m for m in refs[1] if isinstance(m, str)}))
     held = frozenset(h for h in refs[2] if isinstance(h, str))
     every = document_marks.holds_every(held)
@@ -849,7 +984,12 @@ def reader_door(base: Any, actor: Any) -> Door:
     """The door of what ``base`` (the host's ``OntologyTools``) grants ``actor`` under its
     policy now, decided in the reading transaction (``scoped_read``): the one place a
     reader's scope for the business views is computed (``plx.sql`` and ``plx.page``)."""
-    return Door(reader_grant(base._scope(actor, base.clock())))
+    from operating.pg import people_excluded
+    try:
+        full = bool(people_excluded.full_reader(base, actor))
+    except Exception:  # noqa: BLE001 - undecidable: not a full reader (fail closed)
+        full = False
+    return Door(reader_grant(base._scope(actor, base.clock()), full=full))
 
 
 def _decide(pg: Any, grant: Grant) -> dict[str, Any]:
@@ -1033,7 +1173,7 @@ _DOOR_LOCK = threading.Lock()
 # the communications views' settings (``SqlTool._comms_settings``): beside the door's, never
 # part of the door
 COMMS_SETTINGS = frozenset({"plx.reader_audience", "plx.reader_marks", "plx.reader_hidden",
-                            "plx.reader_people", "plx.reader_teams"})
+                            "plx.reader_people", "plx.reader_teams", "plx.reader_self"})
 
 
 # Column types read as they are (bounded in size); every other column comes back as text
@@ -1146,8 +1286,137 @@ RULES = (
     "record): leave them out unless asked. Text compares case-sensitively: use ILIKE "
     "'%word%' for names. A column in a row's withheld list is one you may not read (NULL). "
     "Each row has a handle: select it to cite the record. A result row's cells line up "
-    "with its columns. Mail, Teams, meetings and documents are not here: use plx.search "
-    "for them.")
+    "with its columns.")
+# the generic views' rule (``records``), said only while they are served (``served_views``)
+RULES_GENERIC = (
+    " EVERY other captured record of every system (Mission Control, "
+    "SharePoint lists, FileMaker, Portal, BC and Sage tables, Planner, records read out of "
+    "mail ...) is in the generic views: record_types (the catalog of types: plain name, "
+    "systems, fields with kind and meaning, label and date fields, links out/in), records "
+    "(one row per record) and record_links (one row per link between two records). Filter "
+    "records on type = '<Type>' and read a field as fields->>'name' (numbers: "
+    "(fields->>'name')::numeric; money beside fields->>'name_currency', quantities beside "
+    "fields->>'name_unit'). The same thing held by two systems is two records joined by an "
+    "identity link (record_types.identity_links, in record_links). {describe: '<Type>'} "
+    "shows a type's fields, sample records and commonest values.")
+RULES_TAIL = " Mail text, chats and documents: plx.search."
+RULES_BASE = RULES
+RULES = RULES_BASE + RULES_GENERIC + RULES_TAIL
+
+GENERIC_ABOUT = {
+    "record_types": ("the catalog of every record type the store holds (generated from "
+                     "the ontology: new sources and fields appear by themselves)", {
+                         "type": "text: the type's id (records.type)",
+                         "name": "text: its plain name", "description": "text",
+                         "systems": "text[]: the systems holding records of it",
+                         "sources": "text[]: the source tables (records.source)",
+                         "label_fields": "text[]: fields that name a record",
+                         "date_fields": "text[]: fields that date a record",
+                         "identity_links": "text[]: link types joining copies of one thing",
+                         "fields": "jsonb: [{name, kind, description}]",
+                         "links_out": "jsonb: [{link_type, to}]",
+                         "links_in": "jsonb: [{link_type, from}]",
+                         "tables": "text[]: the views holding its records (a curated view, "
+                                   "a mail/Teams view, or records)"}),
+    "records": ("one row per current record of a type no curated view lists, as this "
+                "reader may read it (count a type here)", {
+        "record_id": "text: the record's id (record_links.from_id / to_id)",
+        "type": "text: the record type (filter on it)", "system": "text",
+        "source": "text: the source table", "label": "text: its display name or number",
+        "record_date": "text YYYY-MM-DD: its key date (record_types.date_fields)",
+        "first_seen": "text: when it was first captured", "changed_at": "text",
+        "fields": "jsonb: field -> value (the authority-first value of each field)"}),
+    "record_links": ("one row per live link between two records this reader may read", {
+        "from_id": "text: records.record_id", "from_type": "text", "from_handle": "text",
+        "link_type": "text", "to_id": "text: records.record_id", "to_type": "text",
+        "to_handle": "text", "tier": "text: verified/reviewed/corroborated (solid), "
+        "stored_by_text_join, lead (a guess)"}),
+}
+GENERIC = tuple(GENERIC_ABOUT)
+GENERIC_TABLES = ("records", "record_links")
+TYPE_SAMPLE = 500
+
+
+_CATALOG: dict[str, Any] = {}
+
+
+def catalog_lines(pg: Any = None) -> list[str]:
+    """The record types the door holds as prompt lines, one per system: each type with its
+    plain name, the fields that label and date it and, when a curated or communications
+    view holds it instead of ``records``, that view; generated from the served
+    catalog (``<biz>.record_types``, read by the store's role: no row of any record, no
+    count). Kept per process until the catalog is built again; none when it cannot be read
+    (the prompt then lists the views alone)."""
+    from integrations.image_ocr_gpu import FREIGHTCOM
+    try:
+        if pg is None:
+            from operating.pg import pool
+            with pool.connect(connect_timeout=3, options="-c statement_timeout=2000") as c:
+                return catalog_lines(c)
+        if pg.execute("SELECT to_regclass(%s)", (f"{bv.SCHEMA}.record_types",)
+                      ).fetchone()[0] is None:
+            return []
+        # the catalog's build and where each type is held (``generic_views.mark_tables``
+        # moves ``tables`` without a new catalog build)
+        (built,) = pg.execute(f"SELECT max(built_at) || md5(string_agg(type || ':' || "
+                              "array_to_string(tables, ','), ';' ORDER BY type)) FROM "
+                              f"{bv.SCHEMA}.record_types").fetchone()
+        if _CATALOG.get("built") == built and built is not None:
+            return list(_CATALOG["lines"])
+        # the guarded view's own Freightcom rule (``generic_views.listed_sql``)
+        from operating.pg import generic_views
+        rows = pg.execute(
+            f"SELECT t.type, t.name, t.systems, t.label_fields, t.date_fields, t.tables FROM "
+            f"{bv.SCHEMA}.record_types t WHERE cardinality(t.tables) > 0 AND "
+            f"{generic_views.listed_sql('t')} ORDER BY t.type").fetchall()
+    except Exception:  # noqa: BLE001 - no catalog: the views alone
+        return []
+    by_system: dict[str, list[str]] = {}
+    for tid, name, systems, labels, dates, tables in rows:
+        if FREIGHTCOM.search(" ".join(map(str, (tid, name)))):
+            continue   # the plain name too (made from the type: the same words)
+        # a type held by a curated or comms view is named with it (records lacks it)
+        bits = [f"label {'/'.join(labels[:2])}" if labels else "",
+                f"date {'/'.join(dates[:2])}" if dates else "",
+                "in " + "/".join(tables) if list(tables) != ["records"] else ""]
+        shown = f"{tid} ({name}" + "".join(f"; {b}" for b in bits if b) + ")"
+        for system in (systems or ["unknown"]):
+            by_system.setdefault(str(system), []).append(shown)
+    lines = [f"- {system}: " + ", ".join(sorted(types))
+             for system, types in sorted(by_system.items())]
+    _CATALOG.update(built=built, lines=lines)
+    return list(lines)
+
+
+_SERVED: dict[str, Any] = {}
+SERVED_RECHECK_SECONDS = 60.0
+
+
+def served_views(names: Sequence[str] | None = None, pg: Any = None) -> frozenset[str] | None:
+    """Which of the views ``names`` (default: every view of ``_dictionary``) the served
+    schema holds now (a business table built, the mail and Teams tables once their build
+    is served, ``records`` once the generic build is): what the Ask's prompt lists, so the
+    model is never sent to a table it would be refused (11-18: emails/teams_messages and
+    records listed while not built, every mail question spent its calls on
+    'unknown view'). Read by the store's role (no row of any table), kept per process
+    ``SERVED_RECHECK_SECONDS``; None when it cannot be read (the prompt lists them all)."""
+    wanted = tuple(names if names is not None else _dictionary())
+    held = _SERVED.get(wanted)
+    if held is not None and time.monotonic() - held[0] < SERVED_RECHECK_SECONDS:
+        return held[1]
+    try:
+        if pg is None:
+            from operating.pg import pool
+            with pool.connect(connect_timeout=3, options="-c statement_timeout=2000") as c:
+                return served_views(wanted, c)
+        rows = pg.execute("SELECT name FROM unnest(%s::text[]) name WHERE "
+                          "to_regclass(%s || '.' || name) IS NOT NULL",
+                          (list(wanted), bv.SCHEMA)).fetchall()
+    except Exception:  # noqa: BLE001 - not known: every view listed, as before
+        return None
+    got = frozenset(r[0] for r in rows)
+    _SERVED[wanted] = (time.monotonic(), got)
+    return got
 
 
 def _dictionary() -> dict[str, Any]:
@@ -1157,6 +1426,12 @@ def _dictionary() -> dict[str, Any]:
         for cname, kind, cdoc in sql_views.SHOWN_COMMON:
             cols[cname] = f"{kind}: {cdoc}"
         out[name] = {"about": entry["about"], "columns": cols}
+    for name, (about, cols) in GENERIC_ABOUT.items():
+        cols = dict(cols)
+        if name != "record_types":
+            for cname, kind, cdoc in sql_views.SHOWN_COMMON:
+                cols[cname] = f"{kind}: {cdoc}"
+        out[name] = {"about": about, "columns": cols}
     return out
 
 
@@ -1171,8 +1446,10 @@ def register(table: dict[str, dict[str, Any]], base: Any) -> SqlTool:
                            tool.guarded(tool.comms_search, arguments, actor)}
     table[COMMS_OPEN] = {"name": COMMS_OPEN, "handler": lambda arguments, actor:
                          tool.guarded(tool.comms_open, arguments, actor)}
+    table[RECORDS_SEARCH] = {"name": RECORDS_SEARCH, "handler": lambda arguments, actor:
+                             tool.guarded(tool.records_search, arguments, actor)}
     return tool
 
 
-__all__ = ["COMMS_OPEN", "COMMS_SEARCH", "TOOL", "TOOL_NAME", "TOOL_NAMES", "Door", "Grant", "SqlTool",
+__all__ = ["COMMS_OPEN", "COMMS_SEARCH", "RECORDS_SEARCH", "TOOL", "TOOL_NAME", "TOOL_NAMES", "Door", "Grant", "SqlTool",
            "RESULTS", "check", "reader_door", "reader_grant", "register", "scoped_read"]

@@ -588,10 +588,16 @@ class SwitchedOn(unittest.TestCase):
                 held.append({"event": "opt_in", "person": you, "workflow": "quote_pricing",
                              "on": True, "at": "x", "by": you})
             self.assertTrue(gate(you, "quote_pricing"))
-            # a broken journal: only Draft (fail closed)
-            path.write_text(path.read_text() + "{not json\n")
-            self.assertEqual(gate.passed, {boss: ["mc_question"]})
+            # the person's own off wins over Draft; their own on brings it back
+            aw.set_drafts(journal, boss, "mc_question", False, boss, now)
+            self.assertFalse(gate(boss, "mc_question"))
+            aw.set_drafts(journal, boss, "mc_question", True, boss, now)
             self.assertTrue(gate(boss, "mc_question"))
+            # a broken journal: a person's own off cannot be read, so nothing is
+            # prepared, Draft included (fail closed)
+            path.write_text(path.read_text() + "{not json\n")
+            self.assertEqual(gate.passed, {})
+            self.assertFalse(gate(boss, "mc_question"))
 
 
 class LiveReplay(Fixture):
@@ -1091,23 +1097,7 @@ class PastApprovals(World):
 class TeamsChats(World):
     """One-to-one Teams chats feed the autopilot by their time (no event index), and the
     person's own chat messages are their actions. These tests are about which messages a
-    chat owes and how they score; the shipped rule's sender record (``answers_sender``) is
-    ``TeamsSenderAnswered``'s, so here it is left out of the registry the replay reads."""
-
-    QUIET = "00000000-0000-4000-8000-0000000000a4"
-    SENDER_RECORD = False
-
-    def setUp(self) -> None:
-        super().setUp()
-        if not self.SENDER_RECORD:
-            reg = json.loads(SHIPPED_REGISTRY.read_text(encoding="utf-8"))
-            entry = next(a for a in reg["autopilots"] if a["id"] == "teams_reply")
-            entry["when"].pop("answers_sender")
-            path = self.dir / "registry-no-sender-record.json"
-            path.write_text(json.dumps(reg))
-            patch = mock.patch.object(ap, "REGISTRY_FILE", path)
-            patch.start()
-            self.addCleanup(patch.stop)
+    chat owes and how they score."""
 
     def chat(self, chat: str, sender: str, hour: int, text: str, day: int = 0) -> str:
         # the capture's shape: {"display_name", "id"}
@@ -1666,6 +1656,36 @@ class GroupChats(TeamsChats):
                     (self.THIRD,)).fetchone()[0], 0)
                 self.assertNotIn("g2", (self.dir / "out" / autopilot_engine.GATE_FILE).read_text())
 
+    def test_cardinality_a_question_no_one_mentioned_is_the_usual_answerers(self):
+        """``teams_group_turn``'s second branch (grade 2026-11-18: a group "How do I ...?"
+        the person answered in four minutes had no item): a question nobody @mentioned is
+        the owner's when they were the first to write after most of the sender's messages
+        there in the last 14 days; one item for the burst. Not: a chat where another member
+        answers that sender first, a closing message, a sender with no answered history."""
+        for n in (1, 10, 60):
+            with self.subTest(n=n):
+                self.setUp()
+                guard = people()
+                for chat in ("g1", "g3", "g4"):
+                    guard.chat_members[chat] = [OURS_OID, APPROVER_OID, self.THIRD]
+                for d in range(-5, 0):
+                    self.msg("g1", APPROVER_OID, 9, f"Is batch {d} labelled?", day=d)
+                    self.msg("g1", OURS_OID, 9.5, f"Yes, batch {d} is done.", day=d)
+                    self.msg("g3", APPROVER_OID, 9, f"Is pallet {d} wrapped?", day=d)
+                    self.msg("g3", self.THIRD, 9.2, f"Wrapped {d}.", day=d)
+                    self.msg("g3", OURS_OID, 9.5, f"Thanks {d}.", day=d)
+                    self.msg("g4", OURS_OID, 9.5, f"Shift {d} notes are up.", day=d)
+                for i in range(n):
+                    self.msg("g1", APPROVER_OID, 10 + (i % 30) / 60, f"How do I make invoice {i}?")
+                    self.msg("g3", APPROVER_OID, 10 + (i % 30) / 60, f"How do I book pallet {i}?")
+                    self.msg("g4", self.THIRD, 10 + (i % 30) / 60, f"Where is form {i}?")
+                self.msg("g1", APPROVER_OID, 13, "Thanks all, sorted.")
+                self.store()
+                out = Replay.replay(self, role=f"person:{OURS}", guard=guard)
+                self.assertEqual(out["prepared_by_autopilot"], {"teams_group_turn": 1})
+                self.assertEqual(out["skipped"].get("teams_group_turn:thread_item_open", 0),
+                                 n - 1)
+
     def test_a_third_member_writing_in_between_ends_the_reply(self):
         """In a group the owner answers a mention; another member (not the asker) writes;
         the owner's next message five minutes on answers that, not the mention."""
@@ -1736,11 +1756,11 @@ class CaptureShapeChats(TeamsChats):
 
 
 class TeamsSenderAnswered(World):
-    """The shipped ``teams_reply`` rule: a chat is prepared only for a sender whose last
-    three or more messages the person answered in the chat within the window the replay
-    judges (24 working hours, ``autopilot_replay.json``) nine times in ten. A sender they
-    answer only days later (inside 72 clock hours: the old record's window), and a sender
-    with too short a record, are not prepared."""
+    """The shipped ``teams_reply`` rule (grade 2026-11-18): a question put to the person
+    directly (a one-to-one chat, an @mention) is prepared whoever asks, however rarely or
+    late the person answered that sender before; a group message that does not name them
+    is not ``teams_reply``'s, even from a sender they always answer. The sender record
+    (``answers_sender``) stays a registry condition, fail closed without its window."""
 
     chat = TeamsChats.chat
     FAST = "00000000-0000-4000-8000-0000000000b1"
@@ -1755,13 +1775,13 @@ class TeamsSenderAnswered(World):
             self.chat(chat, sender, 10, "Can you check the batch sheet?", day=d)
             self.chat(chat, OURS_OID, 10 + answer_hours, "Checked.", day=d)
 
-    def test_cardinality_only_a_sender_answered_within_the_working_day_is_prepared(self):
+    def test_cardinality_a_direct_question_is_prepared_whoever_asks(self):
         for n in (1, 10, 60):
             with self.subTest(n=n):
                 self.setUp()
                 guard = people()
                 self.history(guard, self.FAST, (-12, -11, -10), 2)
-                # answered two days on (49 h: inside 72 clock hours, past 24 working hours)
+                # answered two days on (49 h: past 24 working hours), and too short a record
                 self.history(guard, self.SLOW, (-12, -11, -10), 49)
                 self.history(guard, self.FEW, (-11, -10), 2)
                 for i in range(n):
@@ -1769,6 +1789,10 @@ class TeamsSenderAnswered(World):
                     guard.chat_members[chat] = [OURS_OID, self.FAST]
                     self.chat(chat, OURS_OID, 8, "Morning", day=-1)
                     self.chat(chat, self.FAST, 9 + i // 10, f"Did batch {i} pass?")
+                    # the same sender in a group chat, the person not named: not this rule's
+                    group = f"g{i}"
+                    guard.chat_members[group] = [OURS_OID, self.FAST, APPROVER_OID]
+                    self.chat(group, self.FAST, 9 + i // 10, f"Did lot {i} ship already?")
                 for sender in (self.SLOW, self.FEW):
                     chat = f"w-{sender[-2:]}"
                     guard.chat_members[chat] = [OURS_OID, sender]
@@ -1777,26 +1801,41 @@ class TeamsSenderAnswered(World):
                 self.store()
                 out = Replay.replay(self, role=f"person:{OURS}", guard=guard)
                 self.assertEqual(out["status"], "complete")
-                self.assertEqual(out["prepared_by_autopilot"], {"teams_reply": n})
+                self.assertEqual(out["prepared_by_autopilot"], {"teams_reply": n + 2})
                 q = ap.Queue(next((self.dir / "out").glob("person_*")) / ap.QUEUE_FILE)
                 self.addCleanup(q.close)
-                senders = {i["body"]["happened"]["sender"]
-                           for i in q.items(None, ("open", "done"))}
-                self.assertEqual(senders, {self.FAST})
+                items = q.items(None, ("open", "done"))
+                self.assertEqual({i["body"]["happened"]["sender"] for i in items},
+                                 {self.FAST, self.SLOW, self.FEW})
+                self.assertFalse([i for i in items if "teams:chat:g" in json.dumps(i)])
 
     def test_an_unreadable_answer_window_prepares_nothing(self):
         """Fail closed: without the judged window the sender record is unknown, so no chat
-        passes ``answers_sender`` (never a guess at the window)."""
+        passes a rule needing ``answers_sender`` (never a guess at the window)."""
+        reg = json.loads(SHIPPED_REGISTRY.read_text(encoding="utf-8"))
+        entry = next(a for a in reg["autopilots"] if a["id"] == "teams_reply")
+        entry["when"]["answers_sender"] = [3, 0.9]
+        path = self.dir / "registry-sender-record.json"
+        path.write_text(json.dumps(reg))
         guard = people()
         self.history(guard, self.FAST, (-12, -11, -10), 2)
         guard.chat_members["w0"] = [OURS_OID, self.FAST]
         self.chat("w0", OURS_OID, 8, "Morning", day=-1)
         self.chat("w0", self.FAST, 9, "Did batch 1 pass?")
         self.store()
+        with mock.patch.object(ap, "REGISTRY_FILE", path):
+            out = Replay.replay(self, role=f"person:{OURS}", guard=guard)
+        self.assertEqual(out["prepared_by_autopilot"], {"teams_reply": 1})
         broken = self.dir / "replay-broken.json"
         broken.write_text("{not json")
-        with mock.patch.object(ap, "REPLAY_CONFIG_FILE", broken):
+        with mock.patch.object(ap, "REPLAY_CONFIG_FILE", broken), \
+                mock.patch.object(ap, "REGISTRY_FILE", path):
             self.assertIsNone(ap.answer_window_hours())
+            self.setUp()
+            self.history(guard, self.FAST, (-12, -11, -10), 2)
+            self.chat("w0", OURS_OID, 8, "Morning", day=-1)
+            self.chat("w0", self.FAST, 9, "Did batch 1 pass?")
+            self.store()
             out = Replay.replay(self, role=f"person:{OURS}", guard=guard)
         self.assertEqual(out["prepared_by_autopilot"], {})
         for bad in ({"horizon_hours": 0}, {"horizon_hours": True}, {"horizon_hours": "24"},

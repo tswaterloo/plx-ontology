@@ -1,0 +1,22 @@
+[Unit]
+Description=PLX Portal read replica tunnel (loopback port -> Petra tailnet SOCKS -> the replica)
+# deploy/ops/portal_replica_tunnel.py: it carries bytes only; TLS and the read-only login run
+# end to end between the API and the replica (integrations/portal_replica.py).
+After=network-online.target
+
+[Service]
+Type=simple
+User=@PLX_USER@
+Group=@PLX_GROUP@
+# the replica's host and port only: the login never reaches this process
+EnvironmentFile=/etc/plx/portal-replica.env
+UnsetEnvironment=PLX_PORTAL_REPLICA_USER PLX_PORTAL_REPLICA_PASSWORD PLX_PORTAL_REPLICA_DB PLX_PORTAL_REPLICA_SSLMODE PLX_PORTAL_REPLICA_EXPIRES
+ExecStart=/usr/bin/python3 -I @PLX_CURRENT@/deploy/ops/portal_replica_tunnel.py --listen 127.0.0.1:15433 --socks 127.0.0.1:1055
+Restart=always
+RestartSec=10
+MemoryMax=128M
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

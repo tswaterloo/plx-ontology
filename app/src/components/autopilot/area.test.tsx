@@ -6,7 +6,8 @@ import { mailtoOf, scoreOf } from "@/components/autopilot/prepared";
 import type { PreparedItem } from "@/lib/api";
 import type { AutopilotArea } from "@/lib/types";
 
-vi.mock("next/navigation", () => ({ useSearchParams: () => new URLSearchParams(), useRouter: () => ({ push: vi.fn() }) }));
+const nav = vi.hoisted(() => ({ params: "", replace: vi.fn() }));
+vi.mock("next/navigation", () => ({ useSearchParams: () => new URLSearchParams(nav.params), useRouter: () => ({ push: vi.fn(), replace: nav.replace }) }));
 
 const reply: PreparedItem = { item_id: "ap_1", sender: "Dana Buyer", channel: "mail", subject: "RE: PO 7", message: "Can you ship Friday?", kind: "reply", to: ["dana@customer.example"], cc: [], body: "Yes, Friday works.", edited: false, ask: "", facts: [], created_at: "2026-11-18T14:00:00Z" };
 const card: PreparedItem = { ...reply, item_id: "ap_2", sender: "Lee Supplier", message: "Can you do 12.50 a case?", kind: "your_call", body: "", ask: "Do you agree to 12.50 a case?", facts: ["Their PO P-1."] };
@@ -27,8 +28,43 @@ function fetchMock(handlers: Partial<Record<string, (body: unknown) => unknown>>
 }
 
 describe("the autopilot page", () => {
-  beforeEach(() => vi.unstubAllGlobals());
+  beforeEach(() => {
+    vi.unstubAllGlobals();
+    nav.params = "";
+    nav.replace.mockReset();
+  });
   afterEach(cleanup);
+
+  it("a link to one item marks it, says when it is no longer waiting, and the old audit link opens the log", async () => {
+    Element.prototype.scrollIntoView = vi.fn();
+    fetchMock({ "/api/autopilot/drafts": () => ({ items: [reply, card] }) });
+    nav.params = "item=ap_2";
+    render(<AutopilotView area={area()} />);
+    await screen.findByText("Lee Supplier");
+    expect(document.getElementById("prepared-ap_2")?.className).toContain("border-accent");
+    expect(document.getElementById("prepared-ap_1")?.className).not.toContain("border-accent");
+    expect(screen.queryByText(/no longer waiting/)).toBeNull();
+    cleanup();
+    nav.params = "item=ap_gone";
+    render(<AutopilotView area={area()} />);
+    expect(await screen.findByText(/no longer waiting for you/)).toBeTruthy();
+    cleanup();
+    nav.params = "tab=audit";
+    render(<AutopilotView area={area()} />);
+    await waitFor(() => expect(nav.replace).toHaveBeenCalledWith("/autopilot-log"));
+  });
+
+  it("a send the server refused stays on the card to confirm again", async () => {
+    fetchMock({
+      "/api/autopilot/drafts": () => ({ items: [reply] }),
+      "/api/autopilot/items/ap_1/decision": () => ({ item_id: "ap_1", state: "waiting", decision: { decision: "accept", sent: false, outcome: "refused" } }),
+    });
+    render(<AutopilotView area={area()} />);
+    await screen.findByText("Dana Buyer");
+    await userEvent.click(screen.getByRole("button", { name: "Confirm" }));
+    expect(await screen.findByText(/Not sent: the send was refused or failed/)).toBeTruthy();
+    expect(screen.getByText("Yes, Friday works.")).toBeTruthy();
+  });
 
   it("lists what was prepared with Edit, Confirm, Copy and Open in Outlook; a card asks for your line; no Workflows, Builder or Schedules", async () => {
     fetchMock({ "/api/autopilot/drafts": () => ({ items: [reply, card] }) });
@@ -65,6 +101,40 @@ describe("the autopilot page", () => {
     await waitFor(() => expect(calls.some(([p, b]) => p.endsWith("/reply-from-line") && (b as { line: string }).line === "yes at 12.50")).toBe(true));
   });
 
+  it("a card asks one question with one-tap answers; a tap shows that answer's full reply and Confirm sends it", async () => {
+    const options = [{ label: "Yes", reply: "Yes, 12.50 a case works." }, { label: "No, list", reply: "Sorry, we stay at list." }];
+    const calls = fetchMock({
+      "/api/autopilot/drafts": () => ({ items: [{ ...card, options }] }),
+      "/api/autopilot/items/ap_2/decision": () => ({ item_id: "ap_2", decision: { decision: "accept", sent: false } }),
+    });
+    render(<AutopilotView area={area()} />);
+    await screen.findByRole("button", { name: "No, list" });
+    // the replies wait behind the answers: nothing is shown or decided before a tap
+    expect(screen.queryByText("Sorry, we stay at list.")).toBeNull();
+    expect(screen.getByLabelText("Other: answer in a few words")).toBeTruthy();
+    expect(calls.some(([p]) => p.endsWith("/decision"))).toBe(false);
+    await userEvent.click(screen.getByRole("button", { name: "No, list" }));
+    expect(await screen.findByText("Sorry, we stay at list.")).toBeTruthy();
+    await userEvent.click(screen.getByRole("button", { name: "Confirm" }));
+    await waitFor(() => expect(calls.some(([p, b]) => p === "/api/autopilot/items/ap_2/decision" && (b as { text?: string }).text === "Sorry, we stay at list.")).toBe(true));
+  });
+
+  it("a draft shows the preferences it applied and what an edit taught; a preference is saved from the card", async () => {
+    const used = { memory: [{ id: 7, kind: "preference", text: "Never mention prices to Kim" }], related: [], template: null };
+    const calls = fetchMock({
+      "/api/autopilot/drafts": () => ({ items: [{ ...card, kind: "reply", body: "Kim, it ships Friday.", edited: true, learned: ["Starts replies with just the person's name"], used_for_draft: used }] }),
+      "/api/memory": () => ({ id: 8, kind: "preference", text: "Always sign off V" }),
+    });
+    render(<AutopilotView area={area()} />);
+    expect(await screen.findByText("Never mention prices to Kim")).toBeTruthy();
+    expect(screen.getByText("Applied")).toBeTruthy();
+    expect(screen.getByTestId("draft-learned").textContent).toContain("Starts replies with just the person's name");
+    await userEvent.type(screen.getByLabelText(/Save as a preference/), "Always sign off V");
+    await userEvent.click(screen.getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(calls.some(([p, b]) => p === "/api/memory" && (b as { kind: string; text: string }).kind === "preference" && (b as { text: string }).text === "Always sign off V")).toBe(true));
+    expect(await screen.findByText(/Saved as your preference/)).toBeTruthy();
+  });
+
   it("admins get an Everyone tab: who switched what on and each workflow's score, flagged below the bar", async () => {
     fetchMock({ "/api/autopilot/drafts": () => ({ items: [] }) });
     render(
@@ -78,6 +148,28 @@ describe("the autopilot page", () => {
     expect(screen.getByText(/1 accepted, 1 edited, 10 rejected/)).toBeTruthy();
     expect(screen.getByText(/keep it off: 2 of 12 kept/)).toBeTruthy();
     expect(screen.queryByText(/0 accepted, 0 edited/)).toBeNull(); // no zero counters
+  });
+
+  it("a choice the owner's Draft file turned on shows on, set by the owner, and an empty list says it is on and when it last looked", async () => {
+    fetchMock({ "/api/autopilot/drafts": () => ({ items: [] }) });
+    const drafts = [
+      { choice: "customer_replies", label: "Replies to customers", on: true, by_owner: true },
+      { choice: "teams_replies", label: "Replies in Teams", on: true, by_owner: false, since: "2026-11-18T19:00:00Z" },
+      { choice: "collections", label: "Collections and invoices", on: false },
+      { choice: "approvals", label: "Approvals", on: true, partly: true, by_owner: true },
+    ];
+    render(<AutopilotView area={area({ my_drafts: drafts, checked_at: "2026-11-18T23:14:34Z" })} />);
+    const states = (await screen.findAllByTestId("draft-choice-state")).map((e) => e.textContent);
+    expect(states[0]).toBe("On, set by the owner");
+    expect(states[1]).toMatch(/^On since /);
+    expect(states[2]).toBe("Off");
+    expect(states[3]).toBe("Partly on, set by the owner");
+    expect(screen.getByRole("switch", { name: "Approvals: on" }).textContent).toBe("Turn off");
+    expect(screen.getByRole("switch", { name: "Replies to customers: on" }).textContent).toBe("Turn off");
+    expect((await screen.findByTestId("prepared-empty")).textContent).toMatch(/^On\. Nothing new for you as of /);
+    cleanup();
+    render(<AutopilotView area={area({ my_drafts: [{ ...drafts[2] }] })} />);
+    expect((await screen.findByTestId("prepared-empty")).textContent).toBe("Nothing is prepared for you: nothing is switched on above.");
   });
 
   it("scoreOf flags a workflow only with ten settled and under a fifth kept", () => {

@@ -1,0 +1,11 @@
+# Runs the org chart capture daily (not enabled by the build; see the service).
+[Unit]
+Description=PLX Workbench org chart capture, daily (10:20 UTC = 5:20 AM ET)
+
+[Timer]
+OnCalendar=*-*-* 10:20:00 UTC
+Persistent=true
+RandomizedDelaySec=10min
+
+[Install]
+WantedBy=timers.target

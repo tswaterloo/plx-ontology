@@ -20,7 +20,8 @@ until ``/etc/plx/ops-notify.json`` names a sender, 11-14: nobody may have to wat
   ``ingest_service`` instead, which says why), and every enabled timer with no next run
   while its service is not running (``PLX_OPS_IGNORE_UNITS``, comma separated unit names
   stopped on purpose, set in ``/etc/plx/ops-page.env``, are left out);
-* Postgres: client connections over ``pg_connections_share`` of ``max_connections``,
+* Postgres: client connections at or over ``pg_connections_share`` of ``max_connections``
+  (the line names the three biggest holders),
   sessions idle in a transaction past ``pg_idle_in_transaction_minutes``, a server that
   refuses the check's connection;
 * resources: free space on ``/data`` (``PLX_OPS_DISK_PATH``) under ``disk_free_gb``,
@@ -94,6 +95,7 @@ import argparse
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 import json
+import math
 import os
 import re
 from pathlib import Path
@@ -105,6 +107,7 @@ from typing import Any, Callable, Mapping, Optional, Sequence
 from . import ops_health, ops_notify
 from . import ops_alarms_backup as _backup_stores
 from . import ops_alarms_delta as _delta_steps
+from . import ops_alarms_coverage as _coverage
 from .ops_health import Check, _check, _minutes, targets
 
 ALARM_DIR, STATE_FILE, STATUS_FILE, LOCK_FILE = ("ops-alarms", "state.json", "status.json",
@@ -160,7 +163,8 @@ LABELS = {"disk_free": "Disk", "memory_available": "Memory",
           "truth_checked_share": "Truth check coverage",
           "ask_canary": "Live Ask canary",
           "exclusion_leak": "People exclusion leak scan",
-          "maintenance_window": "Planned maintenance", **_backup_stores.LABELS}
+          "maintenance_window": "Planned maintenance", _coverage.NAME: _coverage.LABEL,
+          **_backup_stores.LABELS}
 PREFIX_LABELS = (("credential_expiry:", "Credential expiry"),
                  ("disk_forecast:", "Disk forecast"),
                  ("exclusion_unavailable:", "People exclusion"),
@@ -194,6 +198,12 @@ SELECT current_setting('max_connections')::int,
        max(extract(epoch FROM now() - state_change)) FILTER (
            WHERE state LIKE 'idle in transaction%%')
 FROM pg_stat_activity"""
+# who holds the client connections (application names: a unit's PGAPPNAME or the pool kind,
+# ``operating.idle_close.app_name``), the most first: the alarm names them
+PG_HOLDERS_SQL = """
+SELECT coalesce(nullif(application_name, ''), '(unnamed)'), count(*)
+FROM pg_stat_activity WHERE backend_type = 'client backend'
+GROUP BY 1 ORDER BY 2 DESC, 1 LIMIT 3"""
 
 
 def pg_probe(dsn: str, idle_minutes: float) -> dict[str, Any]:
@@ -202,7 +212,8 @@ def pg_probe(dsn: str, idle_minutes: float) -> dict[str, Any]:
     import psycopg  # optional
     with psycopg.connect(dsn, connect_timeout=5) as conn:
         row = conn.execute(PG_SQL, (int(idle_minutes),)).fetchone()
-    return {"max": int(row[0]), "clients": int(row[1]), "idle": int(row[2]),
+        holders = [(str(n)[:40], int(k)) for n, k in conn.execute(PG_HOLDERS_SQL).fetchall()]
+    return {"max": int(row[0]), "clients": int(row[1]), "idle": int(row[2]), "holders": holders,
             "idle_in_transaction": int(row[3]),
             "longest_idle_in_transaction_minutes": None if row[4] is None
             else round(float(row[4]) / 60, 1)}
@@ -568,8 +579,13 @@ def pg_checks(dsn: Optional[str], t: Mapping[str, float], probes: Probes) -> lis
     share = round(held["clients"] / held["max"], 3) if held["max"] else 0.0
     idle = held["idle_in_transaction"]
     longest = held.get("longest_idle_in_transaction_minutes")
-    return [_check("pg_connections", share, share_bound, share > share_bound, "share",
-                   f"{held['clients']} of {held['max']} connections ({held['idle']} idle)"),
+    most = ", ".join(f"{n} {k}" for n, k in held.get("holders") or ())
+    # at the bound is a breach (160 of 200 at 0.8, owner 11-18), not one connection past it
+    return [_check("pg_connections", share, share_bound,
+                   bool(held["max"]) and held["clients"] >= math.ceil(
+                       round(share_bound * held["max"], 6)), "share",
+                   f"{held['clients']} of {held['max']} connections ({held['idle']} idle"
+                   + (f"; most: {most}" if most else "") + ")"),
             _check("pg_idle_in_transaction", idle, 0, idle > 0, "sessions",
                    f"{idle} idle in a transaction over {idle_bound:g} min"
                    + (f", longest {longest:g} min" if longest is not None else "")
@@ -1172,7 +1188,8 @@ def outcome_checks(state: Path, now: datetime, t: Mapping[str, float], probes: "
     out += listing_cap_checks(state)
     out += served_lag_checks(state, now, t)
     for found in (canary_check(state, now, t, _timer_enabled(units, CANARY_TIMER)),
-                  leak_check(state, now, t, _timer_enabled(units, LEAK_TIMER))):
+                  leak_check(state, now, t, _timer_enabled(units, LEAK_TIMER)),
+                  _coverage.coverage_check(state, now, _timer_enabled(units, _coverage.TIMER))):
         if found is not None:
             out.append(found)
     return out

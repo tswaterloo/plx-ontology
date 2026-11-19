@@ -142,6 +142,12 @@ class _GatesMixin:
                 fast.exclusion, str) else ""
 
         gate.full_reader_tag = full_reader_tag  # type: ignore[attr-defined]
+        # The case runtime the inner gate decides with (``item_gate_from_case_runtime``):
+        # the bulk readers compute each reader's parts with its functions (plx.sql's Teams
+        # chat windows and transcript rule, plx.table's mail and Teams rules). Without it
+        # every one of them failed closed on a served host: plx.sql showed every reader,
+        # the owner too, 0 Teams messages (2026-11-18).
+        gate.runtime = getattr(runtime_gate, "runtime", None)  # type: ignore[attr-defined]
         return gate
 
     def _set_kept(self, fast: Any, handle: str, container: str | None) -> tuple[Any, Any]:

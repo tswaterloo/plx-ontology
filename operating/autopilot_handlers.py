@@ -1081,14 +1081,20 @@ def h_qc(ctx: Ctx, event: Mapping[str, Any]) -> dict[str, Any]:
                            "body": "Hello,\n\nA quality check on a lot for your order "
                                    f"{_v(r, 'order_number')} needs more time. We will "
                                    "confirm the ship date shortly.\n\nBest regards,"})
+    if not affected:
+        # 11-18 owner walk: ten "Decide" items for lots holding up no open order, each
+        # "0 open order(s) affected; Missing: no order named". Nothing to decide: the
+        # hold stays on the Alerts list (lot_on_hold), no item here
+        return {"skip": "no_open_order_held"}
     lot = f.get("lot_number") or f.get("batch_number") or ""
-    return {"summary": f"Lot {lot} is {event.get('quality')}"
-                       + (f" ({_v(prow, 'code') or _v(prow, 'name')})" if prow else "")
-                       + f"; {len(affected)} open order(s) affected.",
+    what = f" ({_v(prow, 'code') or _v(prow, 'name')})" if prow else ""
+    status = str(event.get("quality") or "on hold").strip()
+    n = len(affected)
+    return {"summary": f"Lot {lot}{what} is {status.lower()}; it holds up "
+                       + ("1 open order" if n == 1 else f"{n} open orders") + ".",
             "lot": lot, "quality": event.get("quality"),
             "results": {k: v for k, v in f.items() if k.startswith("qc_")},
-            "affected": affected, "customer_notices": drafts[:5],
-            "gaps": [] if orders else ["no_order_named"]}
+            "affected": affected, "customer_notices": drafts[:5], "gaps": []}
 
 
 def _attendee_customer(ctx: Ctx, event: Mapping[str, Any], address: str) -> str:
@@ -1195,6 +1201,13 @@ def _collections(name: str) -> Callable[[Ctx, Mapping[str, Any]], dict[str, Any]
     return run
 
 
+def h_job(ctx: Ctx, event: Mapping[str, Any]) -> dict[str, Any]:
+    """The system work an event calls for: the model decides it (``autopilot_jobs``, run by
+    the cycle for a ``"draft": "job"`` autopilot); the handler only names the event."""
+    what = str(event.get("subject") or (event.get("fields") or {}).get("title") or "")
+    return {"kind": "job", "summary": what[:120]}
+
+
 HANDLERS: dict[str, Callable[[Ctx, Mapping[str, Any]], dict[str, Any]]] = {
     "order_entry": _work("h_order_entry"), "po_followup": _work("h_po_followup"),
     "supplier_eta": _work("h_supplier_eta"), "desk": _work("h_desk"),
@@ -1210,7 +1223,7 @@ HANDLERS: dict[str, Callable[[Ctx, Mapping[str, Any]], dict[str, Any]]] = {
     "delay_impact": h_delay_impact, "approval_recommendation": h_approval,
     "task_prepare": h_task, "ledger_answer": h_ledger, "qc_impact": h_qc,
     "question_prepare": h_question,
-    "meeting_followup": h_meeting}
+    "meeting_followup": h_meeting, "job": h_job}
 
 
 def _meeting_extra(st: Any, event: dict[str, Any], domains: Sequence[str]) -> None:

@@ -11,6 +11,7 @@ whole and their own personal sources:
 * ``mail:`` the reader's own mailbox and every shared mailbox (``shared_mailboxes``: the
   kind the mail capture's directory listing records) not listed as restricted
   (``RESTRICTED_SHARED_ENV``); never another person's personal mailbox;
+* ``org:chart`` (``ORG_CHART_KEY``): the org chart, with a usable people exclusion;
 * ``meetings:`` the reader's own calendar and transcripts, and every Planner plan (plans
   are business records: a plan's unit names no members, so its people decide nothing but
   the exclusion).
@@ -37,6 +38,12 @@ from typing import Any, Callable, Iterable, Mapping
 
 # The families every employee reads whole.
 BUSINESS_FAMILIES = ("api", "bc", "mc", "sharepoint-list")
+# The org chart (``biz.staff``: name, title, department, office, manager, reports), read by
+# every staff reader (Staff read all business records). No store
+# object carries it: the business view's rows do, and ``ontology_tools_policy.reader_grants``
+# offers it to every reader's policy beside the store's keys. Granted only with a usable
+# people exclusion; a guest or unresolved reader's policy grants it nothing.
+ORG_CHART_KEY = "org:chart"
 # Shared mailboxes that stay with the readers who hold them today (HR, payroll,
 # finance-only boxes): a comma-separated list of mailbox object ids or addresses. A
 # listed mailbox is never opened by the staff rule (only a full-read grant reads it).
@@ -415,6 +422,7 @@ def staff_grants(keys: Iterable[str], units: Mapping[str, Unit], *, own: str,
         own = ""   # no object id: no personal unit is the reader's
     open_mail = {str(m).strip().lower() for m in mailboxes} | ({own} if own else set())
     out: dict[str, bool] = {f"{family}:*": True for family in BUSINESS_FAMILIES}
+    out[ORG_CHART_KEY] = excluded is not None
     for key in sorted({str(k) for k in keys}):
         family = key.partition(":")[0]
         unit = units.get(key)

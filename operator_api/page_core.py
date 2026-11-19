@@ -19,6 +19,11 @@ from .errors import UserFacing
 # On the read worker's queue ahead of page and section reads: it is the first thing the
 # reader sees and costs one card read.
 CORE_PRIORITY = -1
+# Home's enrichment reads over the old alert engine (suggestion cards, the replies list,
+# the approvals queue: 35-75 s cold each, 11-18): queued after every other page read, so
+# a screen a person waits on (Home's own list, My work, a record) is never behind them.
+# Each is a long read too (``long=True``): it runs on all but one read worker at once.
+ENRICH_PRIORITY = 1
 
 
 def core_page(backend: Any, view: Any, object_type: str, object_id: str) -> m.ObjectPage:

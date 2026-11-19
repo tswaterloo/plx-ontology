@@ -780,8 +780,10 @@ def served(state_dir: Path | None, *, monotonic: Callable[[], float] = time.mono
     """What the operator API shows beside its data (cached ``SERVED_TTL`` seconds): the
     artifacts on screen made by older code, being refreshed, and the model-made ones
     flagged. None without a state directory. Read by one background thread per state
-    directory at a time, waited for ``SERVED_WAIT``: meanwhile the last status known is
-    shown, else ``status_computing`` (unknown, never "all current")."""
+    directory at a time: the last status known is shown at once while it is read again (a
+    page never waits on a status it already has, 11-18: up to 1 s every 30 s); before the
+    first read ends, waited for ``SERVED_WAIT``, then ``status_computing`` (unknown, never
+    "all current")."""
     if state_dir is None:
         return None
     key = str(state_dir)
@@ -804,12 +806,12 @@ def served(state_dir: Path | None, *, monotonic: Callable[[], float] = time.mono
                 name="derived-served", daemon=True)
             _SERVING[key] = thread
             thread.start()
+    if held is not None:
+        return held[1]   # the last status known at once while it is read again
     thread.join(SERVED_WAIT)
     now = _SERVED.get(key)
-    if now is not None and now is not held:
+    if now is not None:
         return now[1]
-    if held is not None:
-        return held[1]   # the last status known while it is read again
     return {"stale": [], "flagged": [], "unknown": ["status_computing"], "titles": {},
             "checked_at": None}
 

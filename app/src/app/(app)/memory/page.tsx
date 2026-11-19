@@ -18,7 +18,7 @@ import { eastern, objectHref } from "@/lib/format";
 import type { MemoryItem, MemoryItems, MemoryKind } from "@/lib/types";
 
 const KINDS: { kind: MemoryKind; title: string; hint: string; example: string }[] = [
-  { kind: "instruction", title: "Standing instructions", hint: "How every answer and draft of yours should go. A sign-off, a greeting or a sentence to leave out applies to your next drafts.", example: "Sign off with Thanks, Ana. Never write \u201cI hope this email finds you well\u201d." },
+  { kind: "instruction", title: "Standing instructions", hint: "How every answer and draft of yours should go. A sign-off, a greeting or a sentence to leave out applies to your next drafts; who the Autopilot drafts nothing for, and who it copies, apply to its next drafts.", example: "Sign off with Thanks, Ana. Stop drafting replies to news@supplier.com. Always cc ana@company.com on supplier emails." },
   { kind: "preference", title: "Preferences", hint: "What you mean by a word, the systems and wording you prefer.", example: "By “the Kestrel order” I mean the Kestrel Foods standing order." },
   { kind: "commitment", title: "Commitments", hint: "What you said you would do, until it is done.", example: "Follow up with Northwind on the label proof by Friday." },
   { kind: "fact", title: "Facts", hint: "Things about your work the records don't say.", example: "Lot codes from the Mississauga line start with M." },
@@ -126,6 +126,11 @@ function Row({ item, onChanged }: { item: MemoryItem; onChanged: () => void }) {
     <li className="flex gap-3 py-3" data-testid="memory-row">
       <div className="min-w-0 flex-1">
         <p className="whitespace-pre-wrap text-[13px] leading-5">{item.text}</p>
+        {(item.autopilot ?? []).map((rule) => (
+          <p key={rule} className="mt-0.5 text-[12px] leading-4" data-testid="memory-autopilot">
+            {rule}
+          </p>
+        ))}
         <p className="mt-0.5 flex flex-wrap gap-x-2 text-[12px] leading-4 text-muted">
           {item.due && <span className={item.due < todayET() ? "font-medium text-late" : "text-fg"}>{dueLine(item.due, todayET())}</span>}
           <span>{SOURCE_LABEL[item.source] ?? "Remembered"}</span>

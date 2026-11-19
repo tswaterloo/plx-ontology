@@ -102,7 +102,7 @@ ROUNDS, ROUNDS_SECONDS = 20, 240   # cycles one start runs while versions wait
 WORK_DIR = "fast-work"
 TEAMS_KINDS = ("teams_chat", "teams_channel")
 MC_KIND = "mission_control"   # the MC capture store's kind (``integrations.mc_sources.KIND``)
-MC_TYPES = ("MCApproval",)    # the record types an MC version is typed as here
+MC_TYPES = ("MCApproval", "MCTaskEvent")   # the record types an MC version is typed as here
 CLOSURE = "mc_closure"        # ``take``'s key of a taken gate's task and its other gates
 STORE_SOURCES = ("teams", "mission_control")   # capture stores read by capture id
 MESSAGE_SOURCES = ("teams", "mail")            # the latency alarm's sources (messages)
@@ -276,11 +276,16 @@ def _take_approvals(conn: sqlite3.Connection, mark: int, newest: int, people: An
             break
         last = capture_id
         parts = str(path).split("/")
-        if len(parts) != 3 or parts[1] != "approvals":
+        if len(parts) != 3 or parts[1] not in ("approvals", "task_events"):
             continue
         try:
             row = json.loads(payload).get("row") or {}
         except (ValueError, AttributeError):
+            continue
+        if parts[1] == "task_events":
+            if isinstance(row, dict) and row.get("kind") == "question.asked":
+                _take_question(conn, parts, path, unit, row, recorded, people, horizon, keys,
+                               counts, times, closure)
             continue
         if not isinstance(row, dict) or not requested(row):
             continue
@@ -308,6 +313,58 @@ def _take_approvals(conn: sqlite3.Connection, mark: int, newest: int, people: An
     if len(rows) < SCAN and len(keys) < MAX_RECORDS:
         last = newest
     return last
+
+
+def _take_question(conn: sqlite3.Connection, parts: list[str], path: str, unit: str,
+                   row: Mapping[str, Any], recorded: Any, people: Any, horizon: datetime,
+                   keys: list[tuple[str, str]], counts: dict[str, int], times: dict | None,
+                   closure: list[tuple[str, str]] | None) -> None:
+    """``take`` of one ``question.asked`` task event (the ``mc_question`` autopilot's): taken
+    when the question is still open on its task's current row, was asked inside the horizon
+    and ``question_clear`` clears it; its task goes into the closure (the event is typed
+    with its task, as ``follow`` types it). Before, MC questions reached the autopilot only
+    through ``follow`` (median 31 h after they were asked, 37 of 41 already answered)."""
+    from .autopilot_records import _instant
+    counts["versions"] += 1
+    payload = row.get("payload") if isinstance(row.get("payload"), Mapping) else {}
+    task_id = row.get("task_id") or row.get("taskId")
+    task = _current_row(conn, f"{parts[0]}/tasks/{task_id}") \
+        if isinstance(task_id, str) and task_id else None
+    if not task or not question_open(task, payload.get("questionId")):
+        counts["answered"] = counts.get("answered", 0) + 1
+        return
+    if not question_clear(people, unit, row, task):
+        counts["not_cleared"] += 1        # never projected nor read further
+        return
+    at = _instant(row.get("ts"))
+    if at is None or at < horizon:
+        counts["before_horizon"] += 1
+        return
+    if closure is not None:
+        closure.append((MC_KIND, f"{parts[0]}/tasks/{task_id}"))
+    keys.append((MC_KIND, path))
+    if times is not None:
+        times.setdefault(("mission_control", (MC_KIND, path)), (row.get("ts"), recorded))
+
+
+def question_open(task: Mapping[str, Any], question_id: Any) -> bool:
+    """The task's current row holds the question unanswered and not withdrawn."""
+    for q in task.get("questions") or ():
+        if isinstance(q, Mapping) and question_id and q.get("id") == question_id:
+            return not q.get("answer") and not q.get("withdrawal")
+    return False
+
+
+def question_clear(people: Any, unit: str, event: Mapping[str, Any],
+                   task: Mapping[str, Any]) -> bool:
+    """May the fast feed read this question? As ``mc_clear`` for a gate: its unit clears,
+    and every person the event and its task name does (the asker, the addressee, the
+    task's people, every address anywhere in either row). Fail closed."""
+    payload = event.get("payload") if isinstance(event.get("payload"), Mapping) else {}
+    if not people.unit_clear(unit) or not str(payload.get("addressee") or "").strip():
+        return False
+    return _named_clear(people, ((event, ("actor",)), (payload, ("addressee",)),
+                                 (task, TASK_PEOPLE)))
 
 
 def gate_closure(conn: sqlite3.Connection, scope: str, task_id: Any, path: str, people: Any,
@@ -413,8 +470,14 @@ def mc_clear(people: Any, unit: str, gate: Mapping[str, Any],
         return False                      # who asked is not known: nothing decided
     if not people.unit_clear(unit):
         return False
+    return _named_clear(people, ((gate, GATE_PEOPLE), (task or {}, TASK_PEOPLE)))
+
+
+def _named_clear(people: Any, rows: Any) -> bool:
+    """Every person the rows name (their ``fields``, and every address anywhere in each
+    row) is cleared (``person_clear``); a person field of another shape: undecided."""
     named: set[str] = set()
-    for row, fields in ((gate, GATE_PEOPLE), (task or {}, TASK_PEOPLE)):
+    for row, fields in rows:
         for field in fields:
             value = row.get(field)
             for one in value if isinstance(value, list) else [value]:
@@ -491,7 +554,7 @@ def message_ids(store: Path, keys: Mapping[str, list[tuple[str, str]]] | None = 
             "FROM json_each(?))", (json.dumps(types),)).fetchall()
         if keys is None:
             return [r[0] for r in rows]
-        gates = [r[0] for r in rows if r[1] in MC_TYPES]
+        gates = [r[0] for r in rows if r[1] == "MCApproval"]
         # MC's gate ids (``apg_...``) are its own, one per gate in every scope
         taken = {str(path).rsplit("/", 1)[-1] for _k, path in
                  keys.get("mission_control") or ()}
@@ -499,6 +562,21 @@ def message_ids(store: Path, keys: Mapping[str, list[tuple[str, str]]] | None = 
             "SELECT object_id, value FROM object_values WHERE superseded_at IS NULL AND "
             "property = 'gate_id' AND object_id IN (SELECT value FROM json_each(?))",
             (json.dumps(gates),)) if str(gid) in taken} if gates else set()
+        # a question's task event by its scope and event id (its native key)
+        asked = {tuple(str(path).split("/")[::2]) for _k, path in
+                 keys.get("mission_control") or () if "/task_events/" in str(path)}
+        events = [r[0] for r in rows if r[1] == "MCTaskEvent"]
+        if events and asked:
+            for oid, native in conn.execute(
+                    "SELECT object_id, native_key FROM objects WHERE object_id IN (SELECT "
+                    "value FROM json_each(?))", (json.dumps(events),)):
+                try:
+                    raw = json.loads(native)
+                except (TypeError, ValueError):
+                    continue
+                if isinstance(raw, dict) and (str(raw.get("scope")),
+                                              str(raw.get("event_id"))) in asked:
+                    keep.add(oid)
         return [r[0] for r in rows if r[1] not in MC_TYPES or r[0] in keep]
 
 
@@ -533,6 +611,8 @@ def cycle(state_dir: Path, st: Any, queue: Any, people: Any, registry: Mapping[s
         summary["projected_seconds"] = round(time.monotonic() - started, 2)
         ids = message_ids(store, keys)
         fast = _Store(store, threads=1, file_only=True)
+        # a question's event is filled from the MC capture (``_question_event``)
+        fast.autopilot_mc = getattr(st, "autopilot_mc", None)
         try:
             limits = {**registry["limits"], "cycle_seconds": CYCLE_SECONDS}
             from .chat_ask_model import from_environ as chat_ask_judge
@@ -696,6 +776,22 @@ def settle_checks(state_dir: Path, now: datetime) -> list[dict[str, Any]]:
                    f"{errors} of {checked} open items could not be checked for done "
                    f"({rules}); they stay open: {str(note.get('last_error') or '')[:160]}"
                    if errors else f"all {checked} open items checked")]
+
+
+def last_ran(queue: Path) -> str | None:
+    """When a start of the fast feed last ended (the queue's ``RAN`` meta, an ISO instant),
+    read-only; None when the feed never ran on this queue or the queue cannot be read."""
+    if not Path(queue).is_file():
+        return None
+    try:
+        with contextlib.closing(sqlite3.connect(f"file:{queue}?mode=ro", uri=True,
+                                                timeout=2)) as conn:
+            row = conn.execute("SELECT value FROM meta WHERE key = ?", (RAN,)).fetchone()
+        ran = _when(json.loads(row[0])) if row else None
+    except (sqlite3.Error, ValueError, TypeError):
+        return None
+    return ran.astimezone(timezone.utc).isoformat(timespec="seconds").replace(
+        "+00:00", "Z") if ran else None
 
 
 def feed_checks(state_dir: Path, now: datetime) -> list[dict[str, Any]]:

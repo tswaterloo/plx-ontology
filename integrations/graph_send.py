@@ -177,6 +177,40 @@ def _default_bearer(environ: Mapping[str, str]) -> Callable[[], str]:
     return bearer
 
 
+def action_app(environ: Mapping[str, str]) -> tuple[str, str]:
+    """The approved-action app's public identifiers (tenant id, client id) for a person's
+    own sign-in address (``integrations.teams_delegated``); raises when it is not
+    configured. Its secret stays here."""
+    credentials = guard.action_credentials(environ)
+    return credentials.tenant_id, credentials.client_id
+
+
+def delegated_token(environ: Mapping[str, str], form: Mapping[str, str],
+                    request: Callable[..., tuple[int, Mapping[str, str], bytes]] | None = None
+                    ) -> tuple[int, bytes]:
+    """One token POST of a person's own delegated sign-in on the approved-action app
+    (``integrations.teams_delegated``: the authorization-code exchange or its refresh).
+    The app's secret is added here and never returned; the form with it must be exactly
+    one of the guard's delegated forms for ``TEAMS_DELEGATED_SCOPE``
+    (``live_source_guard.delegated_form_ok``), checked before any I/O and again by the
+    guarded sender. ``request`` stands in for the guarded transport in tests. Answers
+    (status, body); the caller keeps or drops the tokens in it."""
+    credentials = guard.action_credentials(environ)
+    full = {**form, "client_id": credentials.client_id,
+            "client_secret": credentials.client_secret.reveal(),
+            "scope": guard.TEAMS_DELEGATED_SCOPE}
+    if not guard.delegated_form_ok(full):
+        raise guard.ReadOnlyGuardError("not a delegated sign-in form")
+    if request is None:
+        transport = guard.GuardedTransport(environ=environ)
+        transport.register_secret(credentials.client_secret)
+        request = transport.request
+    url = f"https://{guard.LOGIN_HOST}/{credentials.tenant_id}/oauth2/v2.0/token"
+    status, _headers, raw = request("POST", url, {"Accept": "application/json"},
+                                    form=full, max_bytes=200_000)
+    return int(status), raw
+
+
 def action_bearer(environ: Mapping[str, str]) -> Callable[[], str]:
     """The approved-action app's Graph token for the approved write transports
     (``integrations.write_transports``: Planner, calendar, SharePoint), issued here like

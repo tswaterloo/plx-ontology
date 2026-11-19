@@ -387,6 +387,28 @@ export type paths = {
         patch?: never;
         trace?: never;
     };
+    "/api/autopilot/items/{item_id}/jobs/{index}/prepare": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Autopilot Job Prepare
+         * @description Review one system change an autopilot proposed on an item of yours: it is
+         *     prepared as you (the record read from its system, before and after); confirm it in
+         *     two steps on /api/prepared/{id}. Nothing is written here.
+         */
+        post: operations["autopilot_job_prepare_api_autopilot_items__item_id__jobs__index__prepare_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/autopilot/items/{item_id}/reply-from-line": {
         parameters: {
             query?: never;
@@ -606,7 +628,8 @@ export type paths = {
          * Biz Page
          * @description A customer's, chain's or supplier's account page, or a PO's or customer order's
          *     page (header, then lines): every number from the business tables, as you may see
-         *     them, in one read.
+         *     them, in one read. ``record``: a record id (object id) instead of ``h``: the page
+         *     of the row it was read into.
          */
         get: operations["biz_page_api_biz_page_get"];
         put?: never;
@@ -1448,6 +1471,132 @@ export type paths = {
         patch?: never;
         trace?: never;
     };
+    "/api/prepared": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Prepared List
+         * @description Your open prepared changes (Ask and your autopilots prepared them): nothing in
+         *     them is done before you confirm it.
+         */
+        get: operations["prepared_list_api_prepared_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/prepared/{prepared_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Prepared Preview
+         * @description One prepared change of yours, before and after, with what confirming it does
+         *     now (written at once, or recorded only, and why) and the hash its confirm carries.
+         *     Another person's is not found.
+         */
+        get: operations["prepared_preview_api_prepared__prepared_id__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/prepared/{prepared_id}/confirm": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Prepared Confirm
+         * @description Your second step: the preview's hash and confirm=true. Runs the change once,
+         *     as you, under every write guard; a changed preview is refused (409).
+         */
+        post: operations["prepared_confirm_api_prepared__prepared_id__confirm_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/prepared/{prepared_id}/dismiss": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Prepared Dismiss
+         * @description Drop a prepared change of yours; nothing is written.
+         */
+        post: operations["prepared_dismiss_api_prepared__prepared_id__dismiss_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/prepared/{prepared_id}/retry": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Prepared Retry
+         * @description Prepare again a change of yours that was dismissed, expired, failed or only
+         *     recorded: a new prepared change, checked anew; nothing is written.
+         */
+        post: operations["prepared_retry_api_prepared__prepared_id__retry_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/prepared/{prepared_id}/undo": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Prepared Undo
+         * @description Undo a change of yours that was written, through the inverse recorded when it
+         *     ran (refused when the system has none or someone changed it since).
+         */
+        post: operations["prepared_undo_api_prepared__prepared_id__undo_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/record-pack/{object_type}/{object_id}": {
         parameters: {
             query?: never;
@@ -1619,6 +1768,50 @@ export type paths = {
         put?: never;
         post?: never;
         delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/teams/connect": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Teams Connect
+         * @description Start your one-time Teams sign-in: open the address it answers.
+         */
+        post: operations["teams_connect_api_teams_connect_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/teams/connection": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Teams Connection
+         * @description Your own Teams sign-in: connected or not, the scopes, when (never the token).
+         */
+        get: operations["teams_connection_api_teams_connection_get"];
+        put?: never;
+        post?: never;
+        /**
+         * Teams Disconnect
+         * @description Forget your Teams sign-in: nothing is posted as you after this.
+         */
+        delete: operations["teams_disconnect_api_teams_connection_delete"];
         options?: never;
         head?: never;
         patch?: never;
@@ -2683,6 +2876,11 @@ export type components = {
             /** Direct Answer */
             direct_answer: string;
             /**
+             * Documents
+             * @description Files the answer made for you (plx.make_document): each kept for you only, downloaded from its link; sent or saved only through a prepared change you confirm.
+             */
+            documents?: components["schemas"]["AskDocument"][];
+            /**
              * Drafts
              * @description Emails and actions the question asked to have drafted; each is done only from its preview with your explicit confirm.
              */
@@ -2712,6 +2910,11 @@ export type components = {
              * @enum {string}
              */
             outcome: "answered" | "partial" | "not_found" | "abstained" | "refused";
+            /**
+             * Prepared
+             * @description Changes the answer prepared (plx.prepare_write, plx.edit_document), by id: each is done only after the person confirms it (GET /api/prepared/{id}, then its confirm).
+             */
+            prepared?: string[];
             /** @description A customer's profitability and why an order lost money, when the question asks it (optional: older clients ignore it). */
             profitability?: components["schemas"]["Profitability"] | null;
             /**
@@ -2895,6 +3098,23 @@ export type components = {
             note: string | null;
             /** Read */
             read: boolean;
+            /** Size */
+            size: number;
+        };
+        /**
+         * AskDocument
+         * @description A file the Ask made for you: its name, kind, size and download link.
+         */
+        AskDocument: {
+            /** Download Url */
+            download_url: string;
+            /**
+             * Kind
+             * @enum {string}
+             */
+            kind: "docx" | "xlsx" | "pdf";
+            /** Name */
+            name: string;
             /** Size */
             size: number;
         };
@@ -3090,6 +3310,11 @@ export type components = {
          *     state, the switches (``owner``: you may change them), and your own opt-ins.
          */
         AutopilotArea: {
+            /**
+             * Checked At
+             * @description When the live feed last looked for new mail and chats (absent when it has not run on this server).
+             */
+            checked_at?: string | null;
             /**
              * Drafts Switched On
              * @description Owner and admins: who switched which prepared work on for themselves. Absent for everyone else.
@@ -3348,20 +3573,36 @@ export type components = {
         };
         /**
          * AutopilotDraftChoice
-         * @description Work the autopilot prepares for you only once you switch it on yourself: a draft or
-         *     a prepared action waiting in My work for your confirm. Nothing is sent or written by
-         *     itself.
+         * @description Work the autopilot prepares for you: a draft or a prepared action waiting in My work
+         *     for your confirm. On when you switched it on yourself or the owner's Draft file turned
+         *     it on for you; your own off or pause wins over the Draft file. Nothing is sent or
+         *     written by itself.
          */
         AutopilotDraftChoice: {
+            /**
+             * By Owner
+             * @description On because the owner's Draft file turned it on for you, not your own switch.
+             */
+            by_owner?: boolean;
             /** Choice */
             choice: string;
             /** Label */
             label: string;
             /**
              * On
-             * @description You switched it on (and did not pause).
+             * @description Some or all of it is prepared for you now (not switched off or paused by you).
              */
             on: boolean;
+            /**
+             * Partly
+             * @description On for only some of its workflows (the owner's Draft file turned on part of it).
+             */
+            partly?: boolean;
+            /**
+             * Since
+             * @description When you switched it on yourself (absent when set by the owner).
+             */
+            since?: string | null;
         };
         /** AutopilotDraftKept */
         AutopilotDraftKept: {
@@ -3409,10 +3650,20 @@ export type components = {
          *     owner and admins, who can see it but cannot switch it for them).
          */
         AutopilotDraftsPerson: {
+            /**
+             * By Owner
+             * @description On through the owner's Draft file, not the person's own switch.
+             */
+            by_owner?: boolean;
             /** Choice */
             choice: string;
             /** Label */
             label: string;
+            /**
+             * Partly
+             * @description On for only some of the choice's workflows.
+             */
+            partly?: boolean;
             /** Person */
             person: string;
         };
@@ -3569,6 +3820,56 @@ export type components = {
             /** Workflow */
             workflow: string;
         };
+        /**
+         * AutopilotJob
+         * @description One system change an autopilot proposed from an event (``operating.autopilot_jobs``):
+         *     nothing is prepared or written until you review it (``POST .../jobs/{index}/prepare``
+         *     reads the record from its system and makes the change you confirm in two steps).
+         */
+        AutopilotJob: {
+            /** Change */
+            change?: {
+                [key: string]: unknown;
+            };
+            /** Index */
+            index: number;
+            /**
+             * Operation
+             * @default
+             */
+            operation: string;
+            /**
+             * Prepared Id
+             * @description Set once you reviewed it: the prepared change (``/api/prepared/{id}``).
+             */
+            prepared_id?: string | null;
+            /**
+             * Reason
+             * @description Why, in one line, as the model put it.
+             * @default
+             */
+            reason: string;
+            /**
+             * State
+             * @description The prepared change's state once reviewed (prepared, confirmed, dismissed, ...).
+             */
+            state?: string | null;
+            /**
+             * System
+             * @description bc, portal, mc, planner, calendar or sharepoint.
+             * @default
+             */
+            system: string;
+            /** Target */
+            target?: {
+                [key: string]: unknown;
+            };
+            /**
+             * Tool
+             * @enum {string}
+             */
+            tool: "plx.prepare_write" | "plx.edit_document";
+        };
         /** AutopilotLineRequest */
         AutopilotLineRequest: {
             /**
@@ -3670,6 +3971,19 @@ export type components = {
             workflow: string;
         };
         /**
+         * AutopilotOption
+         * @description One choice on a "your call" card and the reply written for it.
+         */
+        AutopilotOption: {
+            /**
+             * Label
+             * @default
+             */
+            label: string;
+            /** Reply */
+            reply: string;
+        };
+        /**
          * AutopilotOutcomeCounts
          * @description What became of prepared items (``operating.autopilot_outcomes``): each item in one
          *     class, so the five counts sum to ``items``; shares (percent, one decimal, as text) are
@@ -3751,8 +4065,9 @@ export type components = {
         };
         /**
          * AutopilotPrepared
-         * @description One thing prepared for you to answer: who wrote, what they wrote, and either the
-         *     reply (to edit, confirm, copy or open in Outlook) or the question only you can answer.
+         * @description One thing prepared for you: who wrote, what they wrote, and either the reply (to
+         *     edit, confirm, copy or open in Outlook), the question only you can answer, or the system
+         *     changes the event calls for (``job``: each reviewed and confirmed on its own).
          */
         AutopilotPrepared: {
             /**
@@ -3772,7 +4087,7 @@ export type components = {
              * Channel
              * @enum {string}
              */
-            channel: "mail" | "teams";
+            channel: "mail" | "teams" | "system";
             /** Created At */
             created_at: string;
             /**
@@ -3784,17 +4099,29 @@ export type components = {
             facts?: string[];
             /** Item Id */
             item_id: string;
+            /** Jobs */
+            jobs?: components["schemas"]["AutopilotJob"][];
             /**
              * Kind
              * @enum {string}
              */
-            kind: "reply" | "your_call";
+            kind: "reply" | "your_call" | "job";
+            /**
+             * Learned
+             * @description On a draft you edited: what your edit changed, as the Workbench learns it for your next drafts (greeting, sign-off, length, a sentence you add or take out).
+             */
+            learned?: string[];
             /**
              * Message
              * @description What they wrote, as far as the item keeps it.
              * @default
              */
             message: string;
+            /**
+             * Options
+             * @description On a "your call" card: the replies written for each choice you could make; pick one to edit and confirm.
+             */
+            options?: components["schemas"]["AutopilotOption"][];
             /** Sender */
             sender: string;
             /**
@@ -3802,8 +4129,16 @@ export type components = {
              * @default
              */
             subject: string;
+            /**
+             * Summary
+             * @description On a job: what the event asks to be done.
+             * @default
+             */
+            summary: string;
             /** To */
             to?: string[];
+            /** @description Your preferences and memory the draft applied (and those read but not applied), and its template. */
+            used_for_draft?: components["schemas"]["AutopilotDraftUse"] | null;
         };
         /**
          * AutopilotReplay
@@ -7305,6 +7640,11 @@ export type components = {
         MemoryItem: {
             /** At */
             at: string;
+            /**
+             * Autopilot
+             * @description What the Autopilot does because of it, in plain words (no draft for a sender or side, who your email drafts copy or never copy); empty when it states no such rule.
+             */
+            autopilot?: string[];
             /** Confidence */
             confidence: number;
             /**
@@ -8137,6 +8477,143 @@ export type components = {
              * @description The verdict and its rule in one sentence.
              */
             verdict?: string | null;
+        };
+        /**
+         * PreparedAttachment
+         * @description A file an email carries: its name and size, opened from
+         *     ``/api/instruct/files/{file_id}`` (a file your Ask made for you).
+         */
+        PreparedAttachment: {
+            /** File Id */
+            file_id?: string | null;
+            /** Name */
+            name?: string | null;
+            /** Size */
+            size?: number | null;
+        };
+        /** PreparedChange */
+        PreparedChange: {
+            /** After */
+            after?: unknown;
+            /** Before */
+            before?: unknown;
+            /** Field */
+            field: string;
+        };
+        /** PreparedConfirmRequest */
+        PreparedConfirmRequest: {
+            /** Confirm */
+            confirm: boolean;
+            /** Preview Hash */
+            preview_hash: string;
+        };
+        /**
+         * PreparedMessage
+         * @description A mail or Teams message as it is sent: sender, recipients, subject, the full body
+         *     and the files attached.
+         */
+        PreparedMessage: {
+            /** Attachments */
+            attachments?: components["schemas"]["PreparedAttachment"][];
+            /** Body */
+            body?: string | null;
+            /** Cc */
+            cc?: string[];
+            /** Sender */
+            sender?: string | null;
+            /** Subject */
+            subject?: string | null;
+            /** To */
+            to?: string[];
+        };
+        /** PreparedOutcome */
+        PreparedOutcome: {
+            /** Key */
+            key?: string | null;
+            /** Kind */
+            kind?: string | null;
+            /** Mode */
+            mode?: string | null;
+            /** Reasons */
+            reasons?: string[] | null;
+            /** Status */
+            status?: string | null;
+        };
+        /**
+         * PreparedTarget
+         * @description One action exactly as the executor runs it: every field it builds the request
+         *     from (``prepared_writes.shown_action``); ``record`` is the record's name as read from
+         *     the system (None: a new record or a message); ``company`` the BC company the request
+         *     goes to (``{"id", "name"}``: its id and BC's name for it; BC actions only).
+         */
+        PreparedTarget: {
+            /** Company */
+            company?: unknown;
+            /** Condition */
+            condition?: unknown;
+            /** Decision */
+            decision?: string | null;
+            /** Fields */
+            fields?: unknown;
+            /** Kind */
+            kind?: string | null;
+            message?: components["schemas"]["PreparedMessage"] | null;
+            /** Operation */
+            operation?: string | null;
+            /** People */
+            people?: string[];
+            /** Record */
+            record?: string | null;
+            /** System */
+            system?: string | null;
+            /** Target */
+            target?: unknown;
+        };
+        /**
+         * PreparedWrite
+         * @description A change Ask or an autopilot prepared in a business system for the person
+         *     (``operating.prepared_writes``): nothing is written before their two-step confirm.
+         *     ``live``/``missing``/``acknowledge``/``preview_hash`` come with a preview only.
+         */
+        PreparedWrite: {
+            /** Acknowledge */
+            acknowledge?: string[];
+            /** Actions */
+            actions?: components["schemas"]["PreparedTarget"][];
+            /** Citations */
+            citations?: string[];
+            /** Diff */
+            diff?: components["schemas"]["PreparedChange"][];
+            /** Expires */
+            expires?: string | null;
+            /** Live */
+            live?: boolean | null;
+            /** Missing */
+            missing?: string[];
+            /** Origin */
+            origin?: string | null;
+            /** Outcome */
+            outcome?: components["schemas"]["PreparedOutcome"][];
+            /** Prepared Id */
+            prepared_id: string;
+            /** Preview Hash */
+            preview_hash?: string | null;
+            /** Reason */
+            reason?: string | null;
+            /**
+             * State
+             * @enum {string}
+             */
+            state: "prepared" | "confirmed" | "dismissed" | "undone" | "expired" | "not_run";
+            /** Title */
+            title?: string | null;
+            /** Undo */
+            undo?: string[];
+        };
+        /** PreparedWrites */
+        PreparedWrites: {
+            /** Items */
+            items?: components["schemas"]["PreparedWrite"][];
         };
         /**
          * ProactiveSuggestion
@@ -9465,6 +9942,33 @@ export type components = {
             chat_id: string;
             /** Name */
             name: string;
+        };
+        /** TeamsConnectStart */
+        TeamsConnectStart: {
+            /**
+             * Url
+             * @description The Microsoft sign-in address to open.
+             */
+            url: string;
+        };
+        /**
+         * TeamsConnection
+         * @description Your own Teams sign-in (so a Teams reply you confirm posts as you): never the token.
+         */
+        TeamsConnection: {
+            /** Connected */
+            connected: boolean;
+            /** Connected At */
+            connected_at?: string | null;
+            /**
+             * Missing
+             * @description What this server still lacks for a sign-in (empty: you can connect).
+             */
+            missing?: string[];
+            /** Scopes */
+            scopes?: string[];
+            /** Used At */
+            used_at?: string | null;
         };
         /**
          * Template
@@ -11964,6 +12468,65 @@ export interface operations {
             };
         };
     };
+    autopilot_job_prepare_api_autopilot_items__item_id__jobs__index__prepare_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                item_id: string;
+                index: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PreparedWrite"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Unprocessable Entity */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
     autopilot_reply_from_line_api_autopilot_items__item_id__reply_from_line_post: {
         parameters: {
             query?: never;
@@ -12561,6 +13124,7 @@ export interface operations {
                 kind: "customer" | "chain" | "supplier" | "purchase_order" | "sales_order";
                 h?: string;
                 chain?: string;
+                record?: string;
             };
             header?: never;
             path?: never;
@@ -14572,6 +15136,329 @@ export interface operations {
             };
         };
     };
+    prepared_list_api_prepared_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PreparedWrites"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    prepared_preview_api_prepared__prepared_id__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                prepared_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PreparedWrite"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    prepared_confirm_api_prepared__prepared_id__confirm_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                prepared_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PreparedConfirmRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PreparedWrite"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Unprocessable Entity */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    prepared_dismiss_api_prepared__prepared_id__dismiss_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                prepared_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PreparedWrite"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    prepared_retry_api_prepared__prepared_id__retry_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                prepared_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PreparedWrite"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    prepared_undo_api_prepared__prepared_id__undo_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                prepared_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PreparedWrite"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     record_pack_api_record_pack__object_type___object_id__get: {
         parameters: {
             query?: never;
@@ -14894,6 +15781,138 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    teams_connect_api_teams_connect_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TeamsConnectStart"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    teams_connection_api_teams_connection_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TeamsConnection"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    teams_disconnect_api_teams_connection_delete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TeamsConnection"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
         };

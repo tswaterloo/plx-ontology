@@ -46,6 +46,11 @@ def queued(item_id: str, owner: str, *, markings=(), created: str | None = None)
             "due_at": created, "created_at": created}
 
 
+def switched(rows) -> dict:
+    """person -> the workflows prepared for them by their own switch alone (no Draft)."""
+    return {p: frozenset(f) for p, f in aw.prepared_for(rows, {}).items()}
+
+
 def steps(decision: dict) -> list[tuple[str, str, str]]:
     return [(s["kind"], s["system"], s["status"]) for s in decision["steps"]]
 
@@ -368,7 +373,7 @@ class AutopilotArea(unittest.TestCase):
         nobody = self.client(("nobody@plx.example", None))
         self.assertEqual(nobody.post("/api/autopilot/drafts", json={
             "choice": "teams_replies", "on": True}).status_code, 403)
-        self.assertEqual(aw.drafts_on(aw.Journal(self.state / aw.AUDIT_FILE).rows()), {})
+        self.assertEqual(switched(aw.Journal(self.state / aw.AUDIT_FILE).rows()), {})
         got = them.post("/api/autopilot/drafts", json={"choice": "teams_replies", "on": True})
         self.assertEqual(got.status_code, 200, got.text)
         self.assertEqual([c["choice"] for c in got.json()["my_drafts"] if c["on"]],
@@ -377,19 +382,119 @@ class AutopilotArea(unittest.TestCase):
         self.assertFalse(any(c["on"] for c in seen["my_drafts"]))
         # the owner sees who switched what on (read only); the colleague sees no one's list
         self.assertEqual(seen["drafts_switched_on"], [
-            {"person": COLLEAGUE[1], "choice": "teams_replies", "label": "Replies in Teams"}])
+            {"person": COLLEAGUE[1], "choice": "teams_replies", "label": "Replies in Teams",
+             "by_owner": False, "partly": False}])
         self.assertIsNone(got.json().get("drafts_switched_on"))
         rows = aw.Journal(self.state / aw.AUDIT_FILE).rows()
-        self.assertEqual(aw.drafts_on(rows), {COLLEAGUE[1]: frozenset({"teams_chat", "teams_group"})})
+        self.assertEqual(switched(rows), {COLLEAGUE[1]: frozenset({"teams_chat", "teams_group"})})
         self.assertTrue(all(r["by"] == r["person"] == COLLEAGUE[1] for r in rows
                             if r.get("event") == aw.DRAFTS_EVENT))
         # a pause stops everything they switched on; off switches the choice off
         self.assertEqual(them.post("/api/autopilot/pause", json={"paused": True}).status_code, 200)
-        self.assertEqual(aw.drafts_on(aw.Journal(self.state / aw.AUDIT_FILE).rows()), {})
+        self.assertEqual(switched(aw.Journal(self.state / aw.AUDIT_FILE).rows()), {})
         self.assertEqual(them.post("/api/autopilot/pause", json={"paused": False}).status_code, 200)
         off = them.post("/api/autopilot/drafts", json={"choice": "teams_replies", "on": False})
         self.assertFalse(any(c["on"] for c in off.json()["my_drafts"]))
-        self.assertEqual(aw.drafts_on(aw.Journal(self.state / aw.AUDIT_FILE).rows()), {})
+        self.assertEqual(switched(aw.Journal(self.state / aw.AUDIT_FILE).rows()), {})
+
+    def test_the_owners_draft_file_shows_on_and_the_persons_own_off_wins_on_page_and_feed(
+            self) -> None:
+        """The owner was in the Draft file for every workflow,
+        the live feed prepared for him, yet the page showed every choice off ("Turn on").
+        The page and the live feed now read one rule (``aw.prepared_for``): Draft-on
+        shows on, set by the owner; the person's own off (or pause) wins over the Draft
+        file in both; their own on again is theirs. Every Draft workflow sits in a
+        choice, so each can be switched off. An excluded person, an unavailable people
+        check, or an address the session does not hold shows nothing on."""
+        from operating import workflows as wf
+        draft = self.state.parent / "draft.json"
+        every = sorted({f for _c, _l, flows in aw.DRAFT_CHOICES for f in flows})
+        draft.write_text(json.dumps({"schema": autopilot_engine.DRAFT_SCHEMA,
+                                     autopilot_engine.DRAFT_NEVER_FOR: [OWNER[0]],
+                                     "people": {OWNER[0]: every,
+                                                COLLEAGUE[0]: ["teams_chat", "teams_group",
+                                                               "quote_pricing"]}}))
+        self.backend.writes_environ = {**ENV, autopilot_engine.DRAFT_ENV: str(draft)}
+        # every Draft workflow the real file names is in one of the page's choices
+        real = autopilot_engine.load_draft({})
+        self.assertTrue(real)
+        self.assertLessEqual(set().union(*map(set, real.values())), set(every))
+        self.assertEqual(set(every), set(wf.names()))      # every workflow has a switch
+        journal = self.state / aw.AUDIT_FILE
+        feed = autopilot_engine.SwitchGate(journal, {OWNER[1]: frozenset(every)})
+        owner, sam = self.client(OWNER), self.client(COLLEAGUE)
+
+        def choices(area: dict) -> dict:
+            return {c["choice"]: (c["on"], c.get("by_owner"), bool(c.get("since")))
+                    for c in area["my_drafts"]}
+        area = owner.get("/api/autopilot").json()
+        self.assertEqual(choices(area), {c[0]: (True, True, False) for c in aw.DRAFT_CHOICES})
+        self.assertNotIn(ws.NO_DRAFTS_ON, area["notes"])
+        self.assertTrue(all(feed(OWNER[1], f) for f in every))
+        # the owner sees the colleague on through the Draft file too, set by the owner;
+        # the colleague sees only their own, never the owner's or the who-list
+        self.assertIn({"person": COLLEAGUE[1], "choice": "teams_replies",
+                       "label": "Replies in Teams", "by_owner": True, "partly": False},
+                      area["drafts_switched_on"])
+        theirs = sam.get("/api/autopilot").json()
+        self.assertEqual({k for k, v in choices(theirs).items() if v[0]},
+                         {"teams_replies", "customer_replies"})
+        # a choice the Draft file covers in part shows partly on, and its off stops it
+        part = {c["choice"]: c for c in theirs["my_drafts"]}["customer_replies"]
+        self.assertEqual((part["on"], part["partly"], part["by_owner"]), (True, True, True))
+        self.assertFalse({c["choice"]: c for c in theirs["my_drafts"]}["teams_replies"]["partly"])
+        self.assertIsNone(theirs.get("drafts_switched_on"))
+        feed_sam = autopilot_engine.SwitchGate(journal, {COLLEAGUE[1]: frozenset(
+            {"teams_chat", "teams_group", "quote_pricing"})})
+        self.assertTrue(feed_sam(COLLEAGUE[1], "quote_pricing"))
+        sam.post("/api/autopilot/drafts", json={"choice": "customer_replies", "on": False})
+        self.assertFalse(feed_sam(COLLEAGUE[1], "quote_pricing"))
+        self.assertFalse(choices(sam.get("/api/autopilot").json())["customer_replies"][0])
+        # the owner's own off wins over the Draft file: on the page and in the feed
+        off = owner.post("/api/autopilot/drafts", json={"choice": "customer_replies", "on": False})
+        self.assertEqual(off.status_code, 200, off.text)
+        self.assertEqual(choices(off.json())["customer_replies"], (False, False, False))
+        self.assertTrue(choices(off.json())["teams_replies"][0])
+        self.assertFalse(any(feed(OWNER[1], f) for f in aw.draft_choice("customer_replies")))
+        self.assertTrue(feed(OWNER[1], "teams_chat"))
+        # the last choice holds the never-list workflow: its off reaches it, its on is
+        # only the Draft file's (a switch row never turns it on for anyone)
+        owner.post("/api/autopilot/drafts", json={"choice": "other_work", "on": False})
+        self.assertFalse(feed(OWNER[1], "other_external") or feed(OWNER[1], "reporting"))
+        sam.post("/api/autopilot/drafts", json={"choice": "other_work", "on": True})
+        self.assertFalse(feed(COLLEAGUE[1], "other_external"))
+        self.assertTrue(feed(COLLEAGUE[1], "reporting"))
+        self.assertTrue(choices(sam.get("/api/autopilot").json())["other_work"][0])
+        on = owner.post("/api/autopilot/drafts", json={"choice": "other_work", "on": True})
+        self.assertEqual(choices(on.json())["other_work"], (True, False, True))
+        self.assertTrue(feed(OWNER[1], "other_external"))
+        # their own on again is theirs (since when), not the owner's
+        on = owner.post("/api/autopilot/drafts", json={"choice": "customer_replies", "on": True})
+        self.assertEqual(choices(on.json())["customer_replies"], (True, False, True))
+        self.assertTrue(all(feed(OWNER[1], f) for f in aw.draft_choice("customer_replies")))
+        # a pause takes out everything, the Draft file's too; resume brings it back
+        self.assertEqual(owner.post("/api/autopilot/pause", json={"paused": True}).status_code, 200)
+        self.assertFalse(any(feed(OWNER[1], f) for f in every))
+        self.assertFalse(any(c["on"] for c in owner.get("/api/autopilot").json()["my_drafts"]))
+        owner.post("/api/autopilot/pause", json={"paused": False})
+        self.assertTrue(feed(OWNER[1], "teams_chat"))
+        # an excluded person or an unavailable people check: nothing on through the
+        # Draft file (fail closed)
+        barred = PeopleExclusion([OWNER[1]])
+        barred.attach_directory([(OWNER[1], OWNER[0], []), (COLLEAGUE[1], COLLEAGUE[0], [])])
+        for guard, colleague in ((barred, True),
+                                 (PeopleExclusion(unavailable="excluded_people_oids_absent"),
+                                  False)):
+            self.backend.autopilot_guard = guard
+            got = owner.get("/api/autopilot").json()
+            self.assertFalse(choices(got)["approvals"][0], guard)
+            self.assertTrue(choices(got)["customer_replies"][0])     # their own switch
+            self.assertEqual(any(d["person"] == COLLEAGUE[1] and d["by_owner"]
+                                 for d in got["drafts_switched_on"]), colleague, guard)
+        # a broken journal: the person's own off cannot be read, so the feed prepares
+        # nothing at all (not the Draft file alone)
+        journal.write_text(journal.read_text() + "{not json\n")
+        self.assertEqual(feed.passed, {})
 
     def test_an_unnamed_teams_sender_never_shows_as_an_id_and_a_named_one_is_unchanged(
             self) -> None:
@@ -509,6 +614,16 @@ class AutopilotArea(unittest.TestCase):
         self.assertEqual(audit["live"], 0)
         self.assertEqual([(r["kind"], r["status"], r["mode"]) for r in audit["rows"]],
                          [("send_mail", "unavailable", None), ("bc_write", "dry_run", "dry_run")])
+        # one write path: the accept ran through the prepared-writes desk Ask uses (its
+        # journal holds the item prepared by this autopilot, confirmed by its owner, and
+        # the executor's outcome), keyed by the autopilot item's own id
+        desk = [json.loads(line) for line in (
+            self.state / "prepared-writes" / "journal.jsonl").read_text().splitlines()]
+        events = [(r.get("event"), r.get("origin")) for r in desk]
+        self.assertEqual([e for e, _o in events], ["prepared", "confirmed", "outcome"], events)
+        self.assertEqual(events[0][1], "customer_po")
+        self.assertEqual([(o["kind"], o["status"]) for o in desk[-1]["results"]],
+                         [("bc_write", "dry_run"), ("send_mail", "unavailable")])
         # the global kill switch refuses an accept and is on the audit log
         self.assertFalse(owner.post("/api/autopilot/switches",
                                     json={"global_off": False}).json()["global_off"])
@@ -802,6 +917,29 @@ class SupersedeDraftless(unittest.TestCase):
             self.assertEqual(len(q.items()), 2)
             q.close()
 
+    def test_an_item_that_informs_or_is_no_reply_is_never_set_aside(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            q = ap.Queue(Path(tmp) / ap.QUEUE_FILE)
+            with q.conn:
+                empty = queued("ap_empty", OWNER[1])
+                empty["body"]["prepared"] = {"summary": "X is waiting on a reply."}
+                q.add_item(empty)
+                lines = queued("ap_lines", OWNER[1])
+                lines["body"]["prepared"] = {"summary": "Order status",
+                                             "records": ["SalesOrder:1"]}
+                q.add_item(lines)
+                hold = queued("ap_hold", OWNER[1])
+                hold["autopilot"] = "qc_hold"
+                hold["body"]["prepared"] = {"summary": "Lot 7 is on hold"}
+                q.add_item(hold)
+            replies = [x["id"] for x in ap.load_registry(None)["autopilots"]
+                       if x.get("done_when") == "owner_replied"]
+            got = q.supersede_draftless("2026-11-18T00:00:00Z", True, replies)
+            self.assertEqual(got["items"], 1)
+            self.assertEqual([i["item_id"] for i in q.items(states=("superseded",))],
+                             ["ap_empty"])
+            q.close()
+
 
 if __name__ == "__main__":
     unittest.main()
@@ -872,6 +1010,31 @@ class ReplyFromLine(unittest.TestCase):
         listed = next(i for i in owner.get("/api/autopilot").json()["items"]
                       if i["item_id"] == "ap_card")
         self.assertEqual(set(listed["prepared"]["your_call"]), {"ask", "facts"})
+
+    def test_a_card_lists_a_reply_per_choice_and_never_its_material(self) -> None:
+        item = self.card("ap_opts", OWNER[1])
+        item["body"]["prepared"]["your_call"]["options"] = [
+            {"label": "Yes", "reply": "Yes, 12.50 a case for 400 works."},
+            {"label": "No", "reply": "Sorry, we cannot go below list."},
+            {"label": "broken", "reply": ""}, "junk"]
+        q = ap.Queue(self.backend.autopilot_queue)
+        with q.conn:
+            q.add_item(item)
+        q.close()
+        owner = self.client(OWNER)
+        got = next(i for i in owner.get("/api/autopilot/drafts").json()["items"]
+                   if i["item_id"] == "ap_opts")
+        self.assertEqual((got["kind"], got["body"]), ("your_call", ""))
+        self.assertEqual(got["options"], [
+            {"label": "Yes", "reply": "Yes, 12.50 a case for 400 works."},
+            {"label": "No", "reply": "Sorry, we cannot go below list."}])
+        listed = next(i for i in owner.get("/api/autopilot").json()["items"]
+                      if i["item_id"] == "ap_opts")
+        self.assertEqual(set(listed["prepared"]["your_call"]), {"ask", "facts", "options"})
+        self.assertNotIn("can you do 12.50 a case on PO P-1",
+                         json.dumps(listed["prepared"]["your_call"]))
+        # someone else never sees it
+        self.assertNotIn("ap_opts", self.client(COLLEAGUE).get("/api/autopilot/drafts").text)
 
     def test_the_model_comes_from_the_servers_environment(self) -> None:
         from unittest import mock
@@ -947,11 +1110,66 @@ class ReplyFromLine(unittest.TestCase):
         self.assertEqual(got.status_code, 422, got.text)       # the copy rules refuse it
         self.assertIn("template", got.json()["error"]["message"])
         from operator_api import autopilot_area as aa
-        self.backend.autopilot_writer, _ = self.writer("Yes, 12.50 a case works.")
+        self.backend.autopilot_writer, model = self.writer("Yes, 12.50 a case works.")
+        # every attempt counts, the refused one above included (it called the model too)
         with patch.object(aa, "LINE_REPLIES_PER_HOUR", 2):
             self.assertEqual(self.ask(owner, "ap_card", "yes").status_code, 200)
-            self.assertEqual(self.ask(owner, "ap_card", "yes").status_code, 200)
             self.assertEqual(self.ask(owner, "ap_card", "yes").status_code, 429)
+        self.assertEqual(len(model.prompts), 1)               # the limit stops the call
+        # many at once never pass the last slot together (counted under one lock)
+        from concurrent.futures import ThreadPoolExecutor
+        with patch.object(aa, "LINE_REPLIES_PER_HOUR", 5):
+            with ThreadPoolExecutor(8) as pool:
+                codes = list(pool.map(lambda _: self.ask(owner, "ap_card", "yes").status_code,
+                                      range(8)))
+        self.assertEqual(sorted(codes), [200, 200, 200, 429, 429, 429, 429, 429])
+
+    def test_a_refused_send_stays_prepared_and_a_teams_send_counts_as_sent(self) -> None:
+        from operating import autopilot_outcomes as ao
+        q = ap.Queue(self.backend.autopilot_queue)
+        item = self.card("ap_teams", OWNER[1])
+        prepared = item["body"]["prepared"]
+        prepared.pop("your_call")
+        prepared["teams_draft"] = {**prepared.pop("draft"), "channel": "teams", "body":
+                                   "Yes, 12.50 a case works.", "conversation": "19:abc@thread.v2"}
+        prepared["message"] = {"text": "Can you do 12.50?\r\n\r\nFrom: Earlier Person\r\n"
+                                       "Sent: Monday\r\nThe quoted history below it."}
+        with q.conn:
+            q.add_item(item)
+        q.close()
+        owner = self.client(OWNER)
+        listed = {i["item_id"]: i for i in owner.get("/api/autopilot/drafts").json()["items"]}
+        # the message beside the reply is the newest one, the quoted thread cut
+        self.assertEqual(listed["ap_teams"]["message"], "Can you do 12.50?")
+
+        class Executor:
+            status = "refused"
+
+            def live_kinds(self, _item):
+                return []
+
+            def run(self, _item, _now, _approval):
+                return [{"kind": "send_teams", "status": Executor.status,
+                         "reasons": ["not_live"]}]
+
+        with patch.object(type(self.backend), "_apa_executor", lambda *_a: Executor()):
+            for status in ("refused", "failed", "killed"):
+                Executor.status = status
+                got = owner.post("/api/autopilot/items/ap_teams/decision",
+                                 json={"decision": "accept"}).json()
+                self.assertEqual((got["state"], got["decision"]["outcome"],
+                                  got["decision"]["sent"]), ("waiting", status, False))
+                ids = [i["item_id"] for i in owner.get("/api/autopilot/drafts").json()["items"]]
+                self.assertIn("ap_teams", ids, status)     # still there to confirm again
+                decision = self.backend._apa_decisions(self.backend._apa_state())["ap_teams"]
+                self.assertEqual(ao.classify(dict(item, state="open"), decision,
+                                             datetime.now(timezone.utc))[0], "waiting")
+            Executor.status = "done"
+            got = owner.post("/api/autopilot/items/ap_teams/decision",
+                             json={"decision": "accept"}).json()
+        self.assertEqual((got["state"], got["decision"]["sent"]), ("accepted", True))
+        ids = [i["item_id"] for i in owner.get("/api/autopilot/drafts").json()["items"]]
+        self.assertNotIn("ap_teams", ids)
 
     def test_a_teams_reply_from_a_line_can_be_confirmed(self) -> None:
         q = ap.Queue(self.backend.autopilot_queue)

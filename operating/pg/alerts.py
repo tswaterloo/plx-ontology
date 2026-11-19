@@ -36,7 +36,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
 import re
 import sys
 import time
@@ -715,6 +714,7 @@ STALE_CYCLES = 2
 STALE_MINUTES = REFRESH_MINUTES * STALE_CYCLES
 # the person's guarded schema's objects the runner owns (``ensure``)
 PAGE_VIEW, PAGE_RUNS, PAGE_HELD = "alerts", "alert_runs", "alert_held"
+RUN_LOCK = 41044   # pg advisory lock key: one alerts run at a time (business views: 41041)
 
 
 def held_function_ddl(page: str) -> str:
@@ -1049,7 +1049,18 @@ def run(dsn: str, names: Sequence[str] | None = None, *, schema: str | None = No
         from operating.pg import business_comms
         owners = business_comms.mailbox_addresses(business_comms.capture_db())
     with psycopg.connect(dsn, autocommit=True) as conn:
-        s = ensure(conn, schema)
+        # one run at a time: the timer's and the one after a views refresh never overlap
+        # (the second leaves at once; the first's results are as current)
+        if not conn.execute("SELECT pg_try_advisory_lock(%s)", (RUN_LOCK,)).fetchone()[0]:
+            return []
+        try:
+            s = ensure(conn, schema)
+        except psycopg.errors.InsufficientPrivilege as exc:
+            # 11-18: run by hand as the API's role, ensure() could not read biz_page
+            raise PermissionError(
+                f"the alerts runner makes the guarded alerts view in {_schema(schema)}'s "
+                "page schema: run it as that schema's owner (the plx-alerts unit's user), "
+                f"not as role {conn.info.user!r}: {str(exc).splitlines()[0]}") from None
         if owners:
             owner_table(conn, owners)
         out = []
@@ -1203,10 +1214,6 @@ def main(argv: Sequence[str] | None = None) -> int:
             print(json.dumps(parity(conn, args.inbox, args.rule, day=args.day), indent=1,
                              default=str))
         return 0
-    try:
-        os.nice(10)
-    except OSError:
-        pass
     got = run(args.dsn or config.dsn(), args.rule, day=args.day)
     for out in got:
         print(json.dumps(out))

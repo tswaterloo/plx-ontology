@@ -39,6 +39,7 @@ import ast
 from concurrent.futures import ProcessPoolExecutor
 from dataclasses import dataclass, field
 import os
+from pathlib import Path
 import re
 
 from tools import import_graph
@@ -371,20 +372,37 @@ def _module_units(job: tuple[str, str, bool, frozenset[str], tuple[str, ...]]) -
 
 
 def index(root, graph: dict) -> dict[str, Parsed | None]:
-    """Every module's units (None: a module the parser cannot read), parsed on every core."""
+    """Every module's units (None: a module the parser cannot read): those the disk cache
+    (``import_graph.DiskCache``) holds for the same text, module names and imports are read
+    back; the rest are parsed on every core."""
     modules = frozenset(graph)
-    jobs = []
+    cache = import_graph.DiskCache(f"units:{__name__}", "\n".join(sorted(modules)),
+                                   Path(__file__).read_text("utf-8"))
+    found: dict[str, Parsed | None] = {}
+    jobs, keys = [], {}
     for module in graph.values():
         try:
             text = (root / module.path).read_text("utf-8")
         except (OSError, UnicodeDecodeError):
             text = "\0"
-        jobs.append((module.name, text, module.path.endswith("__init__.py"), modules, tuple(module.imports)))
+        is_package = module.path.endswith("__init__.py")
+        key = cache.key(module.name, str(is_package), "\n".join(module.imports), text)
+        hit = cache.get(key)
+        if hit is not None:
+            found[module.name] = hit[0]
+            continue
+        keys[module.name] = key
+        jobs.append((module.name, text, is_package, modules, tuple(module.imports)))
     workers = min(len(jobs) // 50 + 1, os.cpu_count() or 1)
     if workers > 1:
         with ProcessPoolExecutor(workers, **parent_watch.pool_init()) as pool:
-            return dict(pool.map(_module_units, jobs, chunksize=16))
-    return dict(map(_module_units, jobs))
+            parsed = list(pool.map(_module_units, jobs, chunksize=16))
+    else:
+        parsed = list(map(_module_units, jobs))
+    for name, units in parsed:
+        cache.put(keys[name], (units,))
+        found[name] = units
+    return {name: found[name] for name in graph}
 
 
 def _resolve(parsed: dict, module: str, name: str, seen: set | None = None) -> set[tuple]:

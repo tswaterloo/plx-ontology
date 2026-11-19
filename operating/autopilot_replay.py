@@ -423,6 +423,37 @@ def teams_received(st: Any, people: Any, who: set[str], since: str, until: str
     return out
 
 
+def teams_members_sent(st: Any, people: Any, who: set[str], since: str, until: str
+                       ) -> list[dict[str, Any]]:
+    """The other members' messages in the group chats a member of ``who`` is in, as the
+    live feed notes them (``Queue.note_sent`` of every sender: who wrote after whom there,
+    ``usual_answerer``): the replay's history before its window, never their words."""
+    import bisect
+    directory, _a, _d = ap._people_maps(people)
+    members = getattr(people, "chat_members", None) or {}
+    lo, hi = ap._instant(since), ap._instant(until)
+    notes: list[dict[str, Any]] = []
+    skipped: Counter = Counter()
+    for otype in autopilot_events.TEAMS_TYPES:
+        dated = autopilot_events._dated(st, otype, "created_at")
+        ids = [o for _t, o in dated[bisect.bisect_left(dated, (lo,)):
+                                    bisect.bisect_left(dated, (hi,))]]
+        for start in range(0, len(ids), CHUNK):
+            chunk = ids[start:start + CHUNK]
+            typed = autopilot_records._types(st, chunk)
+            autopilot_events._teams_events(st, list(typed), typed, people, directory, skipped,
+                                           notes, words=False)
+    out = []
+    for n in notes:
+        conv = str(n.get("conversation") or "")
+        if n.get("owner") in who or not conv.startswith("teams:chat:"):
+            continue
+        chat = autopilot_events.chat_people(conv[len("teams:chat:"):], members, directory)
+        if len(chat) > 2 and set(chat) & who:
+            out.append(n)
+    return out
+
+
 PROVIDERS: dict[str, Callable[..., list[dict[str, Any]]]] = {
     "mail_sent": mail_sent, "approval_decided": approval_decided, "task_event": task_event,
     "record_actor": record_actor, "teams_sent": teams_sent}
@@ -861,6 +892,7 @@ def replay(st: Any, people: Any, *, role: str, out: Path, since: datetime, until
                       "message_id": f"{a['person']}:{a['at']}", "to": a.get("to") or (),
                       "at": a["at"]}
                      for a in sent + teams_sent(st, people, who, lo, hi) if a.get("at")]
+            notes += teams_members_sent(st, people, who, lo, hi)
             heard = mail_received(st, people, who, lo, hi) + teams_received(
                 st, people, who, lo, hi)
             with queue.conn:

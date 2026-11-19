@@ -60,6 +60,17 @@ def _handle(ctx: Any, oid: str) -> str | None:
     return row[0] if row else None
 
 
+def linked_handles(ctx: Any, event: Mapping[str, Any], most: int = 8) -> list[str]:
+    """The current handles of the records the store links an event to (``records``), for
+    a model to open them directly (``autopilot_jobs``); a record with none is left out."""
+    out: list[str] = []
+    for oid in list(event.get("records") or ())[:most]:
+        handle = _handle(ctx, str(oid)) if oid else None
+        if handle:
+            out.append(handle)
+    return out
+
+
 def _store_text(ctx: Any, handle: str, path: str) -> str | None:
     from .mail_text import joined_chunks
     try:
@@ -126,6 +137,64 @@ class MCQuestions:
                                     check_same_thread=False)
         self._home: frozenset[str] | None = None
         self._live_since: Any = None
+        self._answers: tuple[Any, list[tuple[Any, str, str]]] | None = None
+
+    ANSWER_DAYS = 28           # usual answerers: the answers of the last four weeks
+    ANSWER_LEAST = 3           # ...at least this many to one addressee's questions
+    ANSWER_SHARE = 0.25        # ...and this share of all the answers to them
+
+    def _answer_rows(self) -> list[tuple[Any, str, str]]:
+        """(answered at, the question's addressee, who answered) of every question a
+        person (not an agent runtime) answered, oldest first; read again when the capture
+        has written since (its newest version)."""
+        stamp = self.conn.execute("SELECT max(rowid), count(*) FROM versions").fetchone()
+        if self._answers is not None and self._answers[0] == stamp:
+            return self._answers[1]
+        addressee: dict[str, str] = {}
+        answers: list[tuple[Any, str, str]] = []
+        for (raw,) in self.conn.execute(
+                "SELECT payload FROM versions WHERE kind = ? AND superseded_at IS NULL AND "
+                "path LIKE '%/task_events/%' AND json_extract(payload, '$.row.kind') IN "
+                "('question.asked', 'question.answered') ORDER BY json_extract(payload, "
+                "'$.row.ts')", (self.KIND,)):
+            try:
+                row = json.loads(raw).get("row") or {}
+            except (TypeError, ValueError, AttributeError):
+                continue
+            payload = row.get("payload") if isinstance(row.get("payload"), Mapping) else {}
+            qid = str(payload.get("questionId") or "")
+            if row.get("kind") == "question.asked":
+                addressee[qid] = str(payload.get("addressee") or "").strip().lower()
+                continue
+            kind = str(payload.get("actorKind") or "").lower()
+            at = ap._instant(row.get("ts"))
+            if payload.get("runtime") or kind not in ("", "human") or qid not in addressee \
+                    or at is None:
+                continue
+            answers.append((at, addressee[qid],
+                            str(row.get("actor") or "").strip().lower()))
+        self._answers = (stamp, answers)
+        return answers
+
+    def answerers(self, addressee: str, before: str) -> list[str]:
+        """The people who usually answer ``addressee``'s questions (a colleague who answers
+        them, beside the addressee): at least ``ANSWER_LEAST`` of the answers given to
+        their questions in the ``ANSWER_DAYS`` before ``before`` (an ISO instant: a replay
+        never reads ahead), and ``ANSWER_SHARE`` of them; as MC names them (handles)."""
+        end = ap._instant(before)
+        who = str(addressee or "").strip().lower()
+        if end is None or not who:
+            return []
+        start, stop = end - timedelta(days=self.ANSWER_DAYS), end
+        try:
+            rows = self._answer_rows()
+        except sqlite3.Error:
+            return []           # unreadable: the addressee alone, never a guessed answerer
+        counts = Counter(actor for at, to, actor in rows
+                         if to == who and start <= at < stop and actor)
+        total = sum(counts.values())
+        return sorted(a for a, n in counts.items() if a != who and n >= self.ANSWER_LEAST
+                      and n >= self.ANSWER_SHARE * total)
 
     def home_domains(self) -> frozenset[str]:
         """The domains MC writes full addresses in (task event actors and addressees): the

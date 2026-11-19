@@ -27,6 +27,10 @@ from .errors import UserFacing
 
 RULES_MODEL_ENV = "PLX_ALERT_RULES_MODEL"   # "claude": the grammar's fallback at creation
 MODEL_SECONDS = 45.0
+# a watch call on the access worker: past this the reader is told busy and the job's
+# statements are cut (``Worker.run``), so it never holds the access checks behind it
+# long (a watchlist with signal rules reads the gap inbox: on the read queue instead)
+WATCH_SECONDS = 5.0
 NOT_SERVED = UserFacing("watch_not_served", "Watchlists need the served store, which this "
                         "server does not have.", 503)
 
@@ -67,7 +71,12 @@ def _ref(value: Mapping[str, Any]) -> m.WatchRef:
                       label=value.get("label"))
 
 
-def state(ctx: WatchContext) -> m.Watchlist:
+class _SignalRead(Exception):
+    """The reader has signal rules: their alerts read the gap inbox (a long read), which
+    never runs on the access worker (``WatchMixin.watchlist``)."""
+
+
+def state(ctx: WatchContext, *, signals_ok: bool = True) -> m.Watchlist:
     if ctx.path is None:
         return m.Watchlist(configured=False, follows=[], rules=[], alerts=[], unread=0)
     store = wl.WatchStore(ctx.path)
@@ -83,6 +92,8 @@ def state(ctx: WatchContext) -> m.Watchlist:
             label=wl._label(rec, vocab) if ok else None, at=f["at"], following=True,
             readable=ok, watching_since=f["baseline_at"]))
     kept = store.rules(ctx.reader)
+    if not signals_ok and any("signal" in r["spec"] for r in kept):
+        raise _SignalRead()
     rules = [m.WatchRule(**{k: r[k] for k in ("rule_id", "text", "spec", "description",
                                               "at", "state", "note")},
                          watching_since=r["baseline_at"]) for r in kept]
@@ -253,16 +264,31 @@ class WatchMixin:
     """The ``/api/watch*`` methods; the backend provides ``_watch(reader, fn)``: ``fn``
     run with this reader's ``WatchContext``."""
 
-    def _watch(self, reader: Reader, fn: Callable[[WatchContext], Any]) -> Any:
+    def _watch(self, reader: Reader, fn: Callable[[WatchContext], Any], *,
+               fast: bool = False) -> Any:
+        """``fn`` first on the read queue; ``fast`` (the watchlist read: no model call, no
+        write) on the access worker instead (short jobs only: the access checks and the
+        page door's reads), never queued behind a page's long read or a briefing on the
+        read workers (11-18 walk: Watching's GET 503 at 60 s behind them)."""
         from .backend import READ_TIMEOUT_SECONDS
 
         def run(view: Any) -> Any:
             with view._request():
                 return fn(view_context(view))
+        worker = getattr(self, "access_worker", None) if fast else None
+        if worker is not None and not worker.stopped.is_set():
+            # a reader's first job there also decides their policy: the door's cold budget
+            # (11-18 walk: a staff Home's first Watching read 503 at 5 s behind it)
+            from .page_sql import _timeout
+            return worker.run(reader, run, timeout=_timeout(worker, reader, WATCH_SECONDS),
+                              priority=0)
         return self.reads.run(reader, run, timeout=READ_TIMEOUT_SECONDS, priority=-1)
 
     def watchlist(self, reader: Reader) -> m.Watchlist:
-        return self._watch(reader, state)
+        try:
+            return self._watch(reader, lambda ctx: state(ctx, signals_ok=False), fast=True)
+        except _SignalRead:   # signal rules read the gap inbox: never on the access worker
+            return self._watch(reader, state)
 
     def watch_follow(self, reader: Reader, request: m.WatchFollowRequest) -> m.WatchFollow:
         return self._watch(reader, lambda ctx: follow(ctx, request.object_id, True))
@@ -292,7 +318,8 @@ class MockWatchMixin(WatchMixin):
     _watch_dir: Optional[str] = None
     _watch_lock = threading.Lock()
 
-    def _watch(self, reader: Reader, fn: Callable[[WatchContext], Any]) -> Any:
+    def _watch(self, reader: Reader, fn: Callable[[WatchContext], Any], *,
+               fast: bool = False) -> Any:
         with self._watch_lock:
             if self._watch_dir is None:
                 self._watch_dir = tmp_root.mkdtemp(prefix="plx-watch-demo-")

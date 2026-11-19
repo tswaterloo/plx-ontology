@@ -1,0 +1,10 @@
+[Unit]
+Description=PLX Ask question bank truth refresh, nightly 02:30 ET
+
+[Timer]
+OnCalendar=*-*-* 02:30:00 America/New_York
+AccuracySec=1min
+Persistent=true
+
+[Install]
+WantedBy=timers.target

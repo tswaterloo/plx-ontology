@@ -45,9 +45,16 @@ function Row({ o, busy, onSet }: { o: AutopilotOptIn; busy: boolean; onSet: (on:
 }
 
 function DraftRow({ c, busy, onSet }: { c: AutopilotDraftChoice; busy: boolean; onSet: (on: boolean) => void }) {
+  const on = c.partly ? "Partly on" : "On";
+  const state = !c.on ? "Off" : c.by_owner ? `${on}, set by the owner` : c.since && !c.partly ? `On since ${formatDateTime(c.since)}` : on;
   return (
     <li className="flex items-center justify-between gap-6 py-2" data-testid="draft-choice">
-      <p className="text-[13px]">{c.label}</p>
+      <div className="min-w-0 space-y-0.5">
+        <p className="text-[13px]">{c.label}</p>
+        <p className={cn("text-[12px]", c.on ? "text-ok" : "text-muted")} data-testid="draft-choice-state">
+          {state}
+        </p>
+      </div>
       <Button size="sm" variant="outline" role="switch" aria-checked={c.on} aria-label={`${c.label}: ${c.on ? "on" : "off"}`} disabled={busy} onClick={() => onSet(!c.on)}>
         {c.on ? "Turn off" : "Turn on"}
       </Button>
@@ -79,7 +86,7 @@ export function DraftsPanel({ area, onArea }: { area: Area; onArea: (a: Area) =>
         What to prepare for me
       </h2>
       <p className="max-w-[46rem] text-[12px] text-muted">
-        Switched on, a reply or an action is drafted for you and waits on Home. Nothing is sent or changed until you confirm it there, and you can edit it first.
+        Switched on, a reply or an action is drafted for you and waits on Home. Nothing is sent or changed until you confirm it there, and you can edit it first. What the owner turned on for you, you can turn off; your choice wins.
       </p>
       {error && <ErrorNotice message={error} />}
       <ul className="divide-y divide-border" aria-label="What to prepare for me">
@@ -152,7 +159,7 @@ export function OptInPanel({ area, onArea }: { area: Area; onArea: (a: Area) => 
                 <li key={`${d.person}/drafts/${d.choice}`} className="flex flex-wrap gap-x-3 py-0.5">
                   <span>{personName(area, d.person)}</span>
                   <span>{d.label}</span>
-                  <span className="text-[12px] text-muted">drafts</span>
+                  <span className="text-[12px] text-muted">{`${d.partly ? "some drafts" : "drafts"}${d.by_owner ? ", set by the owner" : ""}`}</span>
                 </li>
               ))}
               {(who ?? []).map((w) => (

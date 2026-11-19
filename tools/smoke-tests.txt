@@ -3,6 +3,11 @@
 # host. Measured 2026-11-11 3:27 PM ET: 16 modules in 119 s wall with 8 workers at load
 # average 15-22 (slowest: answer_gate_one_path 115 s, access_control_proof 112 s).
 # Hard rules first; the full suite runs nightly (plx-suite).
+# Lane runs on the Sparks leave the set out (deploy/spark/spark_test.sh; SPARK_SMOKE=1 adds it).
+# Measured 11-18 over 1,497 Spark runs (11-14..11-18, /data/scratch/runs/spark): kept are the hard
+# rules, every module that failed in a run whose other modules all passed, and the whole-tree scans
+# (cheap, and no focused module list reaches them). operating.tests.test_fast_answer went: it never
+# failed alone there and was the set's 5th costliest (~94 CPU-s a run); a change reaching it selects it.
 
 # No real case in product code; no AI-looking copy in the app.
 tests.test_no_hardcoded_cases
@@ -17,7 +22,6 @@ tests.test_no_write_http_paths
 
 # The answer gate: claims are checked before an answer states them.
 operating.tests.test_structured_claims
-operating.tests.test_fast_answer
 evals.tests.test_answer_gate_one_path
 
 # Permissions and the people exclusion (employee ACLs, view-as, the access-control proof).

@@ -39,7 +39,7 @@ class Backend(be.WorkspaceBackend):
     owner = False
     inbox_status = "read"
 
-    def _brief_run(self, reader, job):
+    def _brief_run(self, reader, job, **_kw):
         view = SimpleNamespace(
             gap_inbox=lambda **kw: {"status": self.inbox_status, "gaps": [GAP]},
             access=SimpleNamespace(reader_policy=lambda: (

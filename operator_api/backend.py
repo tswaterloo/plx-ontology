@@ -36,6 +36,7 @@ tests); live-unverified until the verifier runs the app over the host's state.
 
 from __future__ import annotations
 
+import copy
 import argparse
 import contextvars
 import dataclasses
@@ -71,6 +72,8 @@ from . import proposals
 from .actions import ActionsMixin
 from .autopilot_api import AutopilotMixin
 from .autopilot_area import AutopilotAreaMixin
+from .prepared_area import PreparedWritesMixin
+from .assistant_tools import AssistantToolsMixin
 from .autopilot_studio import AutopilotStudioMixin
 from .doc_fill_api import DocFillMixin
 from .entry_create_api import EntryCreateMixin
@@ -93,7 +96,8 @@ from .test_records import hidden_words
 from .serving import (  # noqa: F401 - re-exported
     MAX_WORKSPACES, MAX_FACTS, LATE_LIST_LIMIT, LATE_COUNT_LIMIT,
     SAME_NAME_ROWS, LATE_LABEL_LIMIT, MAX_SOURCES_PER_FACT, MAX_ANSWERS_KEPT,
-    ASK_TIMEOUT_SECONDS, ASK_WORKERS, ASK_WORKER_GB, ASK_MEMORY_FLOOR_GB, ASK_WORKERS_MOST,
+    ACCESS_WORKERS, ASK_TIMEOUT_SECONDS, ASK_WORKERS, ASK_WORKER_GB, ASK_MEMORY_FLOOR_GB,
+    ASK_WORKERS_MOST,
     WARM_HOSTS, ask_worker_count, ASK_TOP_UP_SECONDS, top_up_ask_workers, looked_up,
     ASK_SESSION_GB, ASK_SESSION_FLOOR_GB, ASK_SESSION_RAMP_SECONDS, ASK_SESSIONS_MOST,
     ASK_WAIT_REPORT_SECONDS, SessionSlots, memory_available_gb, READ_WORKERS, fan_out,
@@ -108,6 +112,7 @@ from .serving import (  # noqa: F401 - re-exported
     SNAPSHOT_REFRESH_KEPT, SNAPSHOT_REFRESH, files_stamp,
     ACCESS_WAIT_SECONDS, REWARM_SECONDS, READER_CACHE_KEPT, CARD_WORDS_KEPT,
     KNOWN_READERS_FILE, KNOWN_READERS, GENERATION_POLL_SECONDS, FLIGHT_SECONDS,
+    DOOR_KEEP_SECONDS, DOOR_KEEP_RECENT_SECONDS,
     ORIGINAL_READS, ORIGINAL_READS_PER_READER, ORIGINAL_READ_WAIT, HOST_READ_SCHEMES,
     AGENT_QUEUE_SECONDS, AGENT_FALLBACK, DEFAULT_DATA_DIR, DEPARTMENTS, SCHEMES,
     FAMILY_OWNER, LEDGER_SYSTEMS, BEHIND_SECONDS, CAPTURE_RANK, TRUTH_STATUS,
@@ -210,7 +215,8 @@ class WorkspaceBackend(WarmMixin, AskMixin, ServingMixin, ScreensMixin,
                        TemplatesMixin, BriefsMixin, TeamViewMixin, ActionsMixin, WriteIntentsMixin,
                        AutopilotMixin,
                        AutopilotAreaMixin, AutopilotStudioMixin, InstructMixin, DocFillMixin,
-                       DocStyleMixin, EntryCreateMixin, WatchMixin,
+                       PreparedWritesMixin, AssistantToolsMixin, DocStyleMixin, EntryCreateMixin,
+                       WatchMixin,
                        AskDraftsMixin, CorePageMixin):
     """``objects_for``: the read worker's workspace factory (the owner thread's runtime).
     Asks run on the Ask pool (``add_ask_worker``: each worker its own runtime and thread,
@@ -227,14 +233,61 @@ class WorkspaceBackend(WarmMixin, AskMixin, ServingMixin, ScreensMixin,
             seen = self.inputs_stamp()
         except Exception:  # noqa: BLE001 - unread: the first change read decides
             seen = None
+        doors_at = 0.0
         while not worker.stopped.wait(GENERATION_POLL_SECONDS):
+            if time.monotonic() - doors_at >= DOOR_KEEP_SECONDS:
+                doors_at = time.monotonic()
+                try:
+                    self._keep_doors(worker)
+                except Exception:  # noqa: BLE001 - the next round tries again
+                    pass
             try:
                 now = self.inputs_stamp()
                 if now is not None and now != seen:
                     seen = now
-                    self._touch_access(worker)
+                    # once per access worker on its queue (each takes the next one)
+                    from .serving import peers
+                    jobs = getattr(worker, "jobs", None)
+                    for _ in range(max(1, len(peers(jobs)) if jobs is not None else 1)):
+                        self._touch_access(worker)
             except Exception:  # noqa: BLE001 - the next change tries again
                 continue
+
+    def _keep_doors(self, worker: Worker) -> int:
+        """Queue on ``worker``, behind every live job (``_touch_access``'s priority) and
+        dropped when not run within ``DOOR_KEEP_SECONDS``, one door read per known reader
+        seen within ``DOOR_KEEP_RECENT_SECONDS``: the cheapest read through the page door
+        (``alert_runs``), so their door is decided again before it ages out
+        (``ontology_tools_sql.DOOR_MAX_AGE_SECONDS``) and a page they open never waits on
+        deciding it (1.5 s a door, two of Home's reads at once, measured on a returning
+        visit). Nothing is kept from the read; the door's own age limit is unchanged. Only
+        while pages read through the door. How many were queued."""
+        from . import page_sql
+        if (not page_sql.alerts_on() and not os.environ.get(page_sql.SWITCH, "").strip()) \
+                or self.identity_for is None:
+            return 0
+        queued, now = 0, time.time()
+        for oid, held in self.known_readers().items():
+            if now - float(held.get("seen") or 0) > DOOR_KEEP_RECENT_SECONDS:
+                continue
+            try:
+                if self.revoked(str(held["ref"])):
+                    continue
+                session = self.identity_for(oid, int(held["exp"]))
+            except Exception:  # noqa: BLE001 - refused now: not kept
+                continue
+            deadline = time.monotonic() + DOOR_KEEP_SECONDS
+
+            def keep(view: Any, deadline: float = deadline) -> None:
+                if time.monotonic() <= deadline:
+                    view._call(page_sql.TOOL, {"reads": [{"name": "alert_runs"}]})
+            try:
+                worker.submit(Reader(session, self.reader_mode, "", None), keep,
+                              priority=1, deadline=deadline)
+            except Exception:  # noqa: BLE001 - not queued: the others still are
+                continue
+            queued += 1
+        return queued
 
     def _sections_on_pool(self, reader: Reader, object_type: str, object_id: str,
                           sections: Sequence[str] = m.PAGE_SECTIONS) -> Callable[[], None]:
@@ -409,10 +462,18 @@ class WorkspaceBackend(WarmMixin, AskMixin, ServingMixin, ScreensMixin,
                 logging.getLogger("operator_api.warm").info(
                     "warm-up done in %.1f s", time.monotonic() - now)
 
+        from . import page_sql
+        # PLX_ALERTS_SQL: Home, the briefing and the late list read the SQL alerts (a
+        # second each); the old engine's reads of them (60-110 s cold each, 11-18) would
+        # only hold the read workers that live requests wait for: not read ahead
+        sql_alerts = page_sql.alerts_on()
+
         def read_pages(view: Any) -> None:
-            inbox, labels, suppliers = without_tests(*self._attention_cached(view),
-                                                     named=self.test_named())
-            late, _ = attention_items(inbox, labels, suppliers=suppliers)
+            late: list[Any] = []
+            if not sql_alerts:
+                inbox, labels, suppliers = without_tests(*self._attention_cached(view),
+                                                         named=self.test_named())
+                late, _ = attention_items(inbox, labels, suppliers=suppliers)
             wanted = list(dict.fromkeys(
                 recent + [(po.object_id.split(":", 1)[0], po.object_id)
                           for po in late[:WARM_LATE_PAGES]]))
@@ -430,6 +491,8 @@ class WorkspaceBackend(WarmMixin, AskMixin, ServingMixin, ScreensMixin,
                           ("suggestions", self._suggestions_cached),
                           ("late list", self._late_held),
                           ("meetings", lambda view: self._upcoming_cached(view, reader))):
+            if sql_alerts and name in ("home", "briefing", "late list"):
+                continue
             if today:
                 future = self.reads.submit(reader, warm_timed(name, job),
                                            priority=WARM_PRIORITY)
@@ -464,10 +527,13 @@ class WorkspaceBackend(WarmMixin, AskMixin, ServingMixin, ScreensMixin,
     def _screens_ahead(self, reader: Reader) -> int:
         """Each of ``SCREENS_AHEAD`` read for ``reader`` as their request would (one at a
         time; one refused or failing is read when opened). How many were read."""
+        from . import page_sql
         done = 0
         log = logging.getLogger("operator_api.warm")
         for screen in SCREENS_AHEAD:
             name, *args = (screen,) if isinstance(screen, str) else screen
+            if name == "_home_served" and page_sql.alerts_on():
+                name = "home"   # the SQL alerts' Home, not the old engine's
             named = args.pop() if args and isinstance(args[-1], dict) else {}
             began = time.monotonic()
             try:
@@ -2276,13 +2342,25 @@ class WorkspaceBackend(WarmMixin, AskMixin, ServingMixin, ScreensMixin,
         from operating import briefing as bf
         from operating import proactive_suggestions as ps
 
-        found = briefing_aged(view.briefing(), self.today() if self.today else None)
+        from . import page_sql
+        if page_sql.alerts_on():   # Home's briefing is the SQL alerts': none to share
+            found = briefing_aged(view.briefing(), self.today() if self.today else None)
+            shared = None
+        else:
+            # the briefing screen's own read (``_briefing_kept``, the same key): one read
+            # of the gap inbox for both, not two (11-18: each 35-75 s cold on Home)
+            _key, (shared, _top, shared_labels, _tests) = self._briefing_kept(
+                view, since_visit=False)
+            found = copy.deepcopy(shared)
         if found.get("status") != "read":
             status = "not_configured" if found.get("status") in (
                 "not_configured", "not_scheduled") else "unavailable"
             return m.Suggestions(status=status, total=0, note=SUGGESTIONS_NOTE)
-        found, labels = briefing_without_tests(view, found, self.test_named(),
-                                               cards=self.cards)
+        if shared is None:
+            found, labels = briefing_without_tests(view, found, self.test_named(),
+                                                   cards=self.cards)
+        else:   # already without its test records, judged as the briefing judges them
+            labels = dict(shared_labels)
         items = list(found.get("items") or ())
         named = self.test_named()
         for _ in range(SUGGESTION_TEST_PASSES):
@@ -3791,8 +3869,14 @@ def run(parser: argparse.ArgumentParser, args: argparse.Namespace, mode: str,
         if live:   # Today's lists answer "reading" rather than hold the app on a first read
             backend.first_wait = FIRST_WAIT_SECONDS
         # the recorded SharePoint grants an instruction's upload checks the reader's
-        # write access to its folder against (``InstructMixin._writes``)
-        backend.sharepoint_capture_dir = ctx.get("sharepoint_capture_dir")
+        # write access to its folder against (``InstructMixin._writes``), the bytes a
+        # document edit starts from and a file's folder (``prepared_area``): the capture
+        # named, else the state directory's, the one the reader host serves
+        # (``case_workspace_live``: captures=state_dir)
+        from integrations import capture_sharepoint as _sp
+        backend.sharepoint_capture_dir = ctx.get("sharepoint_capture_dir") or (
+            Path(ctx["state_dir"]) if ctx.get("state_dir")
+            and _sp.store_exists(ctx["state_dir"]) else None)
         if resolver is not None and not args.dev_fixture_principal:
             backend.view_as = view_as_for(resolver, ctx.get("state_dir"))
         from operating.case_tools_host import prime_attachment_mailboxes
@@ -3813,7 +3897,10 @@ def run(parser: argparse.ArgumentParser, args: argparse.Namespace, mode: str,
         if fixtures is None and planner is None:
             threads += [start_read_worker(backend, argv, n)
                         for n in range(max(0, getattr(args, "read_workers", 1) - 1))]
-            threads.append(start_read_worker(backend, argv, "access", access=True))
+            threads += [start_read_worker(backend, argv, "access" if n == 0 else
+                                          f"access-{n}", access=True)
+                        for n in range(max(1, getattr(args, "access_workers",
+                                                      ACCESS_WORKERS)))]
         settings = {"data_label": str(label), "state_dir": Path(ctx["state_dir"]),
                     "store_path": ctx.get("ontology_path"),
                     "freshness_bounds": ctx.get("freshness_bounds"),

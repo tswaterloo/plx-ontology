@@ -490,6 +490,59 @@ class AskStream(unittest.TestCase):
         home = client.get("/api/home")
         self.assertEqual((home.status_code, home.json()["error"]["code"]), (504, "timeout"))
 
+    def test_postgres_refusing_connections_is_busy_not_a_server_failure(self):
+        """11-18 3:46-4:12 PM ET Postgres refused connections at its 200-client limit: a
+        page then reads "busy, try again" (503, Retry-After), never a 500 incident; any
+        other database error is still an incident (not hidden as busy)."""
+        import psycopg
+        import sqlite3
+        refused = psycopg.OperationalError(
+            'connection failed: connection to server on socket "/var/run/postgresql/'
+            '.s.PGSQL.5432" failed: FATAL:  sorry, too many clients already')
+        wrapped = sqlite3.OperationalError("postgres: reconnect failed: OperationalError")
+        wrapped.__cause__ = refused
+        cases = [refused, wrapped,
+                 sqlite3.OperationalError("postgres: OperationalError: connection failed: "
+                                          "FATAL:  sorry, too many clients already")]
+        for error in cases:
+            class Odd(MockBackend):
+                def home(self, reader, error=error):
+                    raise error
+            client = TestClient(create_app(Odd(), DevAuth(
+                fixture_identity("plx", ["staff:demo"]), mode="mock"), secure_cookie=False),
+                raise_server_exceptions=False)
+            client.post("/api/auth/dev-login", json={})
+            with contextlib.redirect_stderr(io.StringIO()):
+                home = client.get("/api/home")
+            self.assertEqual((home.status_code, home.json()["error"]["code"]), (503, "busy"),
+                             repr(error))
+            self.assertEqual(home.headers.get("Retry-After"), "5")
+            self.assertNotIn("incident", home.text)
+            self.assertNotIn("too many clients", home.text)
+
+        # any other failure, a connection one too (wrong password, server down, the
+        # store's reconnect refused for it): an incident, logged, never hidden as busy
+        password = psycopg.OperationalError(
+            'connection failed: connection to server on socket "/var/run/postgresql/'
+            '.s.PGSQL.5432" failed: FATAL:  password authentication failed for user "x"')
+        down = sqlite3.OperationalError("postgres: reconnect failed: OperationalError")
+        down.__cause__ = psycopg.OperationalError(
+            "connection failed: connection to server at \"10.0.0.9\", port 5432 failed: "
+            "Connection refused")
+        for error in (psycopg.OperationalError("division by zero"), password, down):
+            class Broken(MockBackend):
+                def home(self, reader, error=error):
+                    raise error
+            client = TestClient(create_app(Broken(), DevAuth(
+                fixture_identity("plx", ["staff:demo"]), mode="mock"), secure_cookie=False),
+                raise_server_exceptions=False)
+            client.post("/api/auth/dev-login", json={})
+            with self.assertLogs(level="ERROR"), contextlib.redirect_stderr(io.StringIO()):
+                home = client.get("/api/home")
+            self.assertEqual((home.status_code, home.json()["error"]["code"]),
+                             (500, "internal"), repr(error))
+            self.assertIn("incident", home.text)
+
 
 class AskBodySize(unittest.TestCase):
     """Up to ten attachments of 11.2 MB each were parsed into memory

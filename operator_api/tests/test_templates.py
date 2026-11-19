@@ -376,6 +376,40 @@ class Store(unittest.TestCase):
         self.assertIsNone(self.backend.template_answer(
             reader("ana"), "use my supplier chase template for SO 5512", {}, "c1", 5))
 
+    def test_the_asks_template_tool_keeps_reads_and_deletes_only_their_own(self):
+        def tool(who):
+            return {t.spec["name"]: t for t in self.backend.assistant_tools(reader(who))}[
+                "plx.template"]
+        ana, ben = tool("ana"), tool("ben")
+        body = ("Hi {{supplier_name}},\n\nPO {{po_number}} was due {{required_date}}. "
+                "What is the new ship date?\n\nThanks")
+        kept = ana.call({"action": "save", "name": "Ship date chase",
+                         "doc_type": "supplier_email", "body": body})
+        self.assertEqual(kept["placeholders"], ["supplier_name", "po_number", "required_date"])
+        self.assertEqual([t["name"] for t in ana.call({"action": "list"})["templates"]],
+                         ["Ship date chase"])
+        self.assertEqual(ana.call({"action": "get", "id": kept["saved"]})["body"], body)
+        self.assertEqual(ben.call({"action": "list"})["templates"], [])
+        self.assertIn("refused", ben.call({"action": "get", "id": kept["saved"]}))
+        self.assertIn("refused", ben.call({"action": "delete", "id": kept["saved"]}))
+        unknown = ana.call({"action": "save", "name": "Vessel", "doc_type": "other",
+                            "body": "Booked on {{vessel_name}}."})
+        self.assertIn("po_number", unknown["fields"])
+        self.assertIn("refused", ana.call({"action": "save", "name": "Price", "doc_type":
+                                           "quote", "body": "Total $4,200 for {{po_number}}."}))
+        # a template shared with a role stays shared when the Ask edits it
+        shared = self.store.save(reader("ana"), name="Shared chase", doc_type="supplier_email",
+                                 body=body, shared_with=["role:purchasing"],
+                                 shareable={"purchasing"})
+        ana.call({"action": "save", "id": shared["id"], "name": "Shared chase",
+                  "doc_type": "supplier_email", "body": body + " Regards."})
+        self.assertEqual(self.store.get(reader("ana"), shared["id"])["shared_with"],
+                         ["role:purchasing"])
+        self.assertIn("refused", ben.call({"action": "save", "id": shared["id"], "name": "x",
+                                           "doc_type": "other", "body": "Hi."}))
+        self.assertEqual(ana.call({"action": "delete", "id": kept["saved"]}),
+                         {"deleted": kept["saved"]})
+
     def test_listing_n_1_10_60(self):
         ana = self.clients["ana"]
         made = 0

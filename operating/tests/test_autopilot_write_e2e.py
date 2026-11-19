@@ -202,12 +202,11 @@ class EndToEnd(Wired):
         ex = self.executor_e2e()
         self.assertNotIn("bc", guard.writes_enabled(ex.environ))
         self.assertEqual(ex.run(po_item(draft=False), NOW)[0]["status"], "unavailable")
-        # PHSI Group configured: the probe blocks it, BC stays closed
+        # PHSI Group configured (Vince 11-18: every company): verified like any other
         phsi = {**self.env, "PLX_AUTOPILOT_BC_COMPANY_ID": PHSI}
         found = self.probe(phsi)["systems"]["bc"]
-        self.assertEqual(found["status"], "blocked")
-        self.assertIn("never PHSI Group", " ".join(found["missing"]))
-        self.assertNotIn("bc", guard.writes_enabled(self.executor_e2e(phsi).environ))
+        self.assertNotEqual(found["status"], "blocked", found)
+        self.assertEqual(found["company_name"], "PHSI Group")
         # Production as the target: live-bc alone does not open it (the second file is
         # the owner's; Production is written in BcProduction below)
         prod = {**self.env, "PLX_AUTOPILOT_BC_ENVIRONMENT": "Production"}
@@ -279,8 +278,10 @@ class EndToEnd(Wired):
         text = (aw.control_dir(self.state, {}) / rd.READINESS_FILE).read_text()
         for secret in (GRAPH_TOKEN, BC_TOKEN, "isolated-fixture-no-credential"):
             self.assertNotIn(secret, text)
+        # owner rw + group read (the API runs as another user of the control dir's
+        # group and must read it to open BC), never world-readable
         self.assertEqual(oct((aw.control_dir(self.state, {}) / rd.READINESS_FILE)
-                             .stat().st_mode & 0o777), "0o600")
+                             .stat().st_mode & 0o777), "0o640")
 
     def test_not_routine_and_malformed_bc_actions_never_reach_the_system(self):
         self.all_live()
@@ -432,9 +433,10 @@ class BcProduction(Wired):
     def test_production_stays_closed_for_phsi_a_stale_probe_or_a_removed_file(self):
         self.all_live()
         self.production_file()
-        # PHSI Group configured: the probe of Production blocks it
+        # a company id configured after the probe verified another: Production stays
+        # closed for it (PHSI Group itself is written since 11-18 once verified)
+        self.probe()
         phsi = {**self.env, "PLX_AUTOPILOT_BC_COMPANY_ID": PHSI}
-        self.assertEqual(self.probe(phsi)["systems"]["bc"]["status"], "blocked")
         ex = self.executor_e2e(phsi)
         self.assertNotIn("bc", guard.writes_enabled(ex.environ))
         self.assertEqual(self.approve(ex, po_item(draft=False), NOW,
@@ -470,6 +472,93 @@ class BcProduction(Wired):
         self.assertIs(aw._bc_production("bc_write", {"url": "/v2.0/{tenant}/Production/x"},
                                         {"PLX_BC_SANDBOX_ENVIRONMENT": "Production"}), True)
         self.assertIs(aw._bc_production("planner_write", {"url": ""}, {}), False)
+
+
+class BcCompanies(Wired):
+    """The companies as BC names them (My Company = PLX Manufacturing, PLX Distribution =
+    Petra Soap Distribution, PLX Consol = PHSI Group) and more than one company."""
+
+    MYCO = "66666666-6666-4666-8666-666666666666"
+    DIST = "88888888-8888-4888-8888-888888888888"
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.names = {self.MYCO: "My Company", self.DIST: "PLX Distribution",
+                      PHSI: "PLX Consol"}
+        self.fake = FakeSystems(self.names, SANDBOX)
+        self.env = {**self.env, rd.COMPANY_ENV: self.MYCO,
+                    rd.EXTRA_COMPANIES_ENV: self.DIST.upper()}
+
+    def companies(self, url: str, bearer: str):
+        return {"value": [{"id": k, "name": v} for k, v in self.names.items()]}
+
+    def test_plx_and_petra_soap_open_phsi_never_and_each_action_names_its_company(self):
+        self.go_live(("customer_order_intake",))
+        found = self.probe()["systems"]["bc"]
+        self.assertEqual(found["status"], "ready-live", found)
+        self.assertEqual(found["company_ids"], [self.MYCO, self.DIST])
+        # the API's user reads the record through the control directory's group
+        record = aw.control_dir(self.state, self.env) / rd.READINESS_FILE
+        self.assertEqual(record.stat().st_mode & 0o777, 0o640)
+        when = iter(NOW + timedelta(hours=h) for h in range(10))
+        ex = self.executor_e2e()
+        default = ex.run(po_item(draft=False), next(when))[0]
+        self.assertEqual(default["status"], "done", default)
+        self.assertIn(f"/companies({self.MYCO})/salesOrders", self.fake.requests[-1]["url"])
+        named = po_item(draft=False)
+        named["item_id"] = "it_po_dist"
+        named["body"]["prepared"]["write"]["target"] = {"company_id": self.DIST.upper()}
+        done = ex.run(named, next(when))[0]
+        self.assertEqual(done["status"], "done", done)
+        self.assertIn(f"/companies({self.DIST})/salesOrders", self.fake.requests[-1]["url"])
+        sent = len(self.fake.requests)
+        # a company outside the configured ones (PHSI Group, or a value that is no id)
+        # is refused before anything is sent
+        for other in (PHSI, "PLX Consol", 7):
+            bad = po_item(draft=False)
+            bad["item_id"] = f"it_po_{other}"
+            bad["body"]["prepared"]["write"]["target"] = {"company_id": other}
+            got = ex.run(bad, next(when))[0]
+            self.assertEqual(got["status"], "refused", got)
+        self.assertEqual(len(self.fake.requests), sent)
+        # a probe verifies the configured list as a whole: one id dropped or added after
+        # it, BC is closed until the next probe
+        self.assertFalse(rd.bc_verified(self.state, {**self.env, rd.EXTRA_COMPANIES_ENV: ""}))
+
+    def test_an_approved_kind_the_system_cannot_write_is_never_offered_a_confirm(self):
+        # BC opened to approved writes by the owner, but no probe verified the companies:
+        # the accept's preview says unavailable (why), not "confirm to perform live"
+        self.flag("bc", "bc-production")
+        env = {**self.env, aw.APPROVED_ENV: "bc_write"}
+        ex = self.executor_e2e(env)
+        got = ex.run(po_item(draft=False), NOW,
+                     aw.Approval(by=(OWNER,), origin="instruction"))[0]
+        self.assertEqual((got["status"], got["mode"]), ("unavailable", "live"), got)
+        self.assertTrue(got["reasons"])
+        self.probe(env)
+        got = self.executor_e2e(env).run(po_item(draft=False), NOW,
+                                         aw.Approval(by=(OWNER,), origin="instruction"))[0]
+        self.assertEqual(got["status"], "needs_confirm", got)
+        self.assertEqual(self.fake.requests, [])
+
+    def test_a_malformed_list_keeps_bc_closed_and_plx_consol_opens(self):
+        self.go_live(("customer_order_intake",))
+        # Vince 11-18: every company, PLX Consol (PHSI Group) included, once verified
+        for changed in ({rd.EXTRA_COMPANIES_ENV: f"{self.DIST},{PHSI}"},
+                        {rd.COMPANY_ENV: PHSI, rd.EXTRA_COMPANIES_ENV: ""}):
+            found = self.probe({**self.env, **changed})["systems"]["bc"]
+            self.assertEqual(found["status"], "ready-live", (changed, found))
+        self.assertTrue(rd.company_allowed("PLX Consol"))
+        self.assertFalse(rd.company_allowed(""))
+        self.fake.requests.clear()
+        cases = ({rd.EXTRA_COMPANIES_ENV: f"{self.DIST},not-a-guid"},
+                 {rd.COMPANY_ENV: "", rd.EXTRA_COMPANIES_ENV: self.DIST})
+        for changed in cases:
+            env = {**self.env, **changed}
+            found = self.probe(env)["systems"]["bc"]
+            self.assertEqual(found["status"], "blocked", (changed, found))
+            self.assertNotIn("bc", guard.writes_enabled(self.executor_e2e(env).environ))
+        self.assertEqual(self.fake.requests, [])
 
 
 class EnvFiles(unittest.TestCase):

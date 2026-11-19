@@ -669,10 +669,33 @@ class MeetingsCaptureTest(unittest.TestCase):
         self.assertEqual(report["status"], "blocked")
         part = next(p for p in report["blocked_upstream"]
                     if p["part"] == "meetings.online_meetings")
+        # the role alone does not open /onlineMeetings: the reason names the Teams
+        # application access policy too (live 2026-11-18: both roles held, 403)
         self.assertEqual((part["http_status"], part["permission"]),
-                         (403, "OnlineMeetings.Read.All"))
+                         (403, "OnlineMeetings.Read.All:application_access_policy"))
+        self.assertIn("blocked:missing_permission:OnlineMeetings.Read.All:"
+                      "application_access_policy", report["transcripts"]["reasons"])
         self.assertEqual(len(self.graph.gets(r"/onlineMeetings")), 1)   # stops at the first
         self.assertEqual(len(self.rows(cm.EVENT_KIND)), 3)              # calendars still held
+        self.assertEqual(self.rows(cm.TRANSCRIPT_KIND), {})
+
+    def test_scope_records_the_transcript_grant(self) -> None:
+        # The ingest child gets no grant variable from the host's environment (2026-11-18:
+        # 0 transcript lookups ever, the part dormant): the reviewed scope records it.
+        report, _ = self.capture(granted=False, transcripts_granted=True)
+        self.assertEqual(report["transcripts"]["status"], "complete",
+                         report["transcripts"]["reasons"])
+        self.assertTrue(self.graph.gets(r"onlineMeetings"))
+        self.assertEqual(len(self.rows(cm.TRANSCRIPT_KIND)), 1)
+        self.assertEqual(self.graph.gets(r"meeting_M[234]"), [])   # excluded/private: never
+        for bad in ("yes", 1, None, [True]):
+            with self.assertRaises(cm.MeetingsCaptureError):
+                scope(transcripts_granted=bad)
+        # the shipped scope records the grant and stays valid
+        shipped = cm.MeetingsScope.from_file(Path(cm.__file__).parent
+                                             / "meetings_capture_scope.json")
+        self.assertTrue(shipped.transcripts_granted)
+        self.assertIn("transcripts", shipped.parts)
 
     def test_guard_unavailable_reads_nothing(self) -> None:
         env = {k: v for k, v in ENV.items() if k != "PLX_EXCLUDED_PEOPLE_OIDS"}

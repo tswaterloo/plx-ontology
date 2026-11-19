@@ -196,6 +196,13 @@ _SOMEWHERE = re.compile(r"\b(?:" + _DO + r")\b", re.I)
 ROUTES = ("do", "ask", "unsure")
 
 
+def verb(text: str) -> Optional[str]:
+    """The do-verb a line leads with ("reply", "draft", "forward", ...), lower case; None
+    when it leads with none (``_DOING``)."""
+    found = _DOING.match(" ".join(str(text or "").split()))
+    return found.group("verb").lower() if found else None
+
+
 def route(text: str, *, mode: Optional[str] = None, continuing: bool = False) -> str:
     """Whether the box's line asks for something done (``do``: the instruction engine),
     asked (``ask``: the cited answer path, as before) or cannot be told apart

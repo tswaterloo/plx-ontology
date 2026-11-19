@@ -13,6 +13,7 @@ its numbers are unavailable, never "none"."""
 from __future__ import annotations
 
 import os
+import threading
 import time
 from urllib.parse import quote
 from datetime import date, datetime
@@ -33,8 +34,19 @@ class PageDoorUnavailable(RuntimeError):
         self.code = code
 
 
-def on() -> bool:
-    return os.environ.get(SWITCH, "").strip() == "1"
+PAGE_KINDS = ("customer", "chain", "supplier", "purchase_order", "sales_order")
+
+
+def on(kind: Optional[str] = None) -> bool:
+    """``PLX_PAGES_DOOR``: ``1`` every page through the door; else a comma list of the page
+    kinds switched on (``customer,chain,sales_order``: those pages and their links only).
+    Without ``kind``: whether every kind is on (the search box, Home's late POs)."""
+    raw = os.environ.get(SWITCH, "").strip()
+    if raw == "1":
+        return True
+    if kind is None:
+        return False
+    return kind in {k.strip() for k in raw.split(",")} and kind in PAGE_KINDS
 
 
 def read(backend: Any, reader: Any, reads: Sequence[Mapping[str, Any]], *, ids: bool = False
@@ -44,8 +56,8 @@ def read(backend: Any, reader: Any, reads: Sequence[Mapping[str, Any]], *, ids: 
     worker = getattr(backend, "access_worker", None) or backend.reads
     args = {"reads": [dict(r) for r in reads], "ids": ids}
     try:
-        out = worker.run(reader, lambda view: view._call(TOOL, args), timeout=PAGE_TIMEOUT,
-                         priority=CORE_PRIORITY)
+        out = worker.run(reader, lambda view: view._call(TOOL, args),
+                         timeout=_timeout(worker, reader), priority=CORE_PRIORITY)
     except TimeoutError:
         raise PageDoorUnavailable("timeout") from None
     if not isinstance(out, Mapping) or "error" in out or not isinstance(out.get("reads"),
@@ -56,6 +68,68 @@ def read(backend: Any, reader: Any, reads: Sequence[Mapping[str, Any]], *, ids: 
     rows = {name: [dict(zip(got["columns"], row)) for row in got["rows"]]
             for name, got in out["reads"].items()}
     return rows, dict(out.get("ids") or {})
+
+
+# the record page each kind of record opens through the door (``record_url``, ``resolve``)
+DOOR_KINDS = {"PurchaseOrder": "purchase_order", "SalesOrder": "sales_order",
+              "Customer": "customer", "Supplier": "supplier"}
+_VIEW_OF = {"purchase_order": "purchase_orders", "sales_order": "sales_orders",
+            "customer": "customers", "supplier": "suppliers"}
+_KIND_OF_VIEW = {v: k for k, v in _VIEW_OF.items()}
+
+
+def resolve(backend: Any, reader: Any, kind: str, object_id: str) -> str:
+    """The door's row ``kind``'s record ``object_id`` was read into (its handle, for the
+    page's own read through the door); ``NotFound`` without one."""
+    view = _VIEW_OF.get(kind)
+    if view is None or not object_id or len(object_id) > 700:
+        raise NotFound(kind)
+    worker = getattr(backend, "access_worker", None) or backend.reads
+    from .page_core import CORE_PRIORITY
+    try:
+        out = worker.run(reader, lambda v: v._call(TOOL, {"resolve": {
+            "view": view, "object_id": object_id}}), timeout=_timeout(worker, reader),
+            priority=CORE_PRIORITY)
+    except TimeoutError:
+        raise PageDoorUnavailable("timeout") from None
+    if not isinstance(out, Mapping) or "error" in out:
+        err = (out or {}).get("error") if isinstance(out, Mapping) else None
+        raise PageDoorUnavailable(str((err or {}).get("code") or "unreadable"))
+    if not isinstance(out.get("handle"), str):
+        raise NotFound(kind)
+    return out["handle"]
+
+
+def record_url(table: Optional[str], handle: Optional[str], otype: str = "",
+               oid: str = "") -> str:
+    """Where a record a door read returned opens: its record page through the door while
+    the door is on (``table``: its business table), else the record's own page, else its
+    source."""
+    kind = _KIND_OF_VIEW.get(table or "")
+    if kind and on(kind) and isinstance(handle, str) and handle:
+        return account_url(kind, handle)
+    if otype and oid:
+        return object_url(otype, oid)
+    return open_url(handle) if isinstance(handle, str) and handle else ""
+
+
+# A reader's first read on a worker decides their workspace and policy first (2-4 s on a
+# fresh process, more under load: 11-18 walk, the late list's first read ran past 5 s and
+# said "could not be read"): that one read waits up to this long, every later one
+# PAGE_TIMEOUT.
+PAGE_COLD_TIMEOUT = 20.0
+
+
+def _timeout(worker: Any, reader: Any, warm: float = PAGE_TIMEOUT) -> float:
+    """``warm`` (PAGE_TIMEOUT) once a job finished for the reader on every worker of
+    ``worker``'s queue (``Worker.warm_for``: their policy is decided on whichever takes
+    the read; a workspace merely made, its first job still deciding, is not), else
+    PAGE_COLD_TIMEOUT (never less than ``warm``)."""
+    warm_for = getattr(worker, "warm_for", None)
+    if not callable(warm_for) or getattr(getattr(reader, "session", None), "principals",
+                                         None) is None:
+        return warm
+    return warm if warm_for(reader) else max(warm, PAGE_COLD_TIMEOUT)
 
 
 def _iso(value: Any) -> Optional[str]:
@@ -79,8 +153,8 @@ def late_po(row: Mapping[str, Any], ids: Mapping[str, Mapping[str, str]]) -> m.L
     handle = row.get("handle")
     rec = ids.get(handle) if isinstance(handle, str) else None
     oid = str(rec["object_id"]) if rec else str(handle or row.get("po_number") or "")
-    url = object_url(str(rec["object_type"]), oid) if rec else (
-        open_url(handle) if isinstance(handle, str) else "")
+    url = record_url("purchase_orders", handle, str(rec["object_type"]) if rec else "",
+                     oid if rec else "")
     due = _iso(row.get("requested_date"))
     promised = _iso(row.get("promised_date"))
     days = row.get("days_late")
@@ -168,18 +242,37 @@ def routed(event_type: str, routing: Any) -> bool:
 class ReaderScope:
     """What a reader's alerts are chosen by: their last visit, routing and own types."""
 
-    def __init__(self, visit: Optional[str], routing: Any, enabled: Sequence[str]) -> None:
+    def __init__(self, visit: Optional[str], routing: Any, enabled: Sequence[str],
+                 rules: Any = None) -> None:
         self.visit, self.routing, self.enabled = visit, routing, tuple(enabled)
+        # (the reader's watch-rule store, its stamp taken before the rules were read):
+        # a kept scope is served only while the store's stamp is the same
+        self.rules = rules
 
 
-def _rule_types(view: Any) -> list[str]:
-    """The alert types the reader's own watch rules name (their signal kinds as types)."""
+def _file_stamp(path: Any) -> Any:
+    """(size, mtime) of a SQLite store and its write-ahead log (None: absent)."""
+    out = []
+    for p in (str(path), str(path) + "-wal"):
+        try:
+            st = os.stat(p)
+            out.append((st.st_size, st.st_mtime_ns))
+        except OSError:
+            out.append(None)
+    return tuple(out)
+
+
+def _rule_types(view: Any, seen: Optional[list] = None) -> list[str]:
+    """The alert types the reader's own watch rules name (their signal kinds as types);
+    ``seen`` gets (their store, its stamp taken before reading it)."""
     from operating import briefing as bf
     from operating import watchlists as wl
     from .watch import view_context
     ctx = view_context(view)
     if ctx.path is None:
         return []
+    if seen is not None:
+        seen.append((ctx.path, _file_stamp(ctx.path)))
     out: set[str] = set()
     for rule in wl.WatchStore(ctx.path).rules(ctx.reader):
         spec = rule.get("spec") if isinstance(rule, Mapping) else None
@@ -191,7 +284,57 @@ def _rule_types(view: Any) -> list[str]:
     return sorted(out)
 
 
+# A reader's scope read once serves the burst of door reads one screen makes (Home: its
+# at-risk list, the briefing and each group's next page: 7 queued jobs per visit, 11-18
+# walk) for this long; a visit marked seen drops it (``forget_scope``), a change to the
+# reader's watch rules (their store's stamp) reads it again.
+SCOPE_SECONDS = 5.0
+_SCOPES_LOCK = threading.Lock()
+
+
+def _scopes(backend: Any) -> dict:
+    """The scopes kept on ``backend`` (each backend its own: never another's)."""
+    with _SCOPES_LOCK:
+        got = getattr(backend, "_door_scopes", None)
+        if got is None:
+            got = {}
+            setattr(backend, "_door_scopes", got)
+        return got
+
+
+def _scope_key(reader: Any) -> tuple:
+    principals = getattr(getattr(reader, "session", None), "principals", None) or ()
+    return (getattr(reader, "key", None), getattr(reader, "mode", None),
+            ",".join(sorted(principals)))
+
+
+def forget_scope(backend: Any, reader: Any) -> None:
+    """The reader's kept scope dropped (their visit was just marked seen)."""
+    kept = _scopes(backend)
+    with _SCOPES_LOCK:
+        kept.pop(_scope_key(reader), None)
+
+
 def reader_scope(backend: Any, reader: Any) -> ReaderScope:
+    """``_reader_scope`` kept per reader (key, mode, principals) on ``backend`` for
+    ``SCOPE_SECONDS`` while their watch-rule store is unchanged."""
+    kept, key = _scopes(backend), _scope_key(reader)
+    now = time.monotonic()
+    with _SCOPES_LOCK:
+        hit = kept.get(key)
+    if hit is not None and now - hit[0] <= SCOPE_SECONDS and (
+            hit[1].rules is None or _file_stamp(hit[1].rules[0]) == hit[1].rules[1]):
+        return hit[1]
+    got = _reader_scope(backend, reader)
+    with _SCOPES_LOCK:
+        kept[key] = (now, got)
+        if len(kept) > 512:
+            for k in [k for k, v in kept.items() if now - v[0] > SCOPE_SECONDS]:
+                kept.pop(k, None)
+    return got
+
+
+def _reader_scope(backend: Any, reader: Any) -> ReaderScope:
     """The reader's last visit, routing and watch-rule types, read as the reader. What
     cannot be read fails toward fewer alerts: no rules switch nothing on, the visit unknown
     counts every alert as new. A routing that cannot be read at all (the worker failed or
@@ -211,13 +354,15 @@ def reader_scope(backend: Any, reader: Any) -> ReaderScope:
             routing = view.routing()
         except Exception:  # noqa: BLE001 - unresolved: unavailable, not routed nothing
             return None  # type: ignore[return-value]
+        seen: list = []
         try:
-            enabled = _rule_types(view)
+            enabled = _rule_types(view, seen)
         except Exception:  # noqa: BLE001 - rules unreadable: only the default-on types
             enabled = []
-        return ReaderScope(visit if isinstance(visit, str) else None, routing, enabled)
+        return ReaderScope(visit if isinstance(visit, str) else None, routing, enabled,
+                           seen[0] if seen else None)
     try:
-        got = worker.run(reader, job, timeout=PAGE_TIMEOUT, priority=CORE_PRIORITY)
+        got = worker.run(reader, job, timeout=_timeout(worker, reader), priority=CORE_PRIORITY)
     except Exception:  # noqa: BLE001 - nothing known of the reader
         raise PageDoorUnavailable("routing_unread") from None
     if not isinstance(got, ReaderScope):
@@ -274,6 +419,43 @@ def alert_late_pos(backend: Any, reader: Any, *, offset: int = 0, limit: int = 2
     return total, [late_po(r, ids) for r in rows["alerts_late_po_list"]], _iso(ok)
 
 
+def alert_home(backend: Any, reader: Any, *, limit: int = 25
+               ) -> tuple[int, list[m.LatePo], Optional[str], list[m.AtRisk],
+                          dict[str, Optional[datetime]]]:
+    """Home's late POs (``alert_late_pos``) and its at-risk list (the open alerts of the
+    home types other than late POs routed to the reader) in ONE
+    read through the door (one transaction) after the reader's scope: two door reads
+    queued one after the other on the access workers cost Home 0.3-0.8 s each warm (11-18
+    walk). (late total, the first ``limit`` late, as of, at risk, the stale home types).
+    The late POs' rule not current: ``alerts_stale`` (raised), never the old list."""
+    scope = reader_scope(backend, reader)
+    types = [t for t in alert_types(scope.enabled, home=True)
+             if t != "po_late" and routed(t, scope.routing)]
+    reads: list[dict[str, Any]] = [
+        {"name": "alerts_late_po_count"},
+        {"name": "alerts_late_po_list", "params": {"limit": limit, "offset": 0}},
+        {"name": "alert_runs"}]
+    if types:
+        reads += [{"name": "alerts_count", "params": {"rules": ",".join(types)}},
+                  {"name": "alerts_open", "params": {"rules": ",".join(types),
+                                                     "limit": limit, "offset": 0}}]
+    rows, ids = read(backend, reader, reads, ids=True)
+    runs = runs_state(rows["alert_runs"])
+    fresh, ok = runs.get("po_late", (False, None))
+    if not fresh:
+        raise alerts_stale("Late purchase orders", ok)
+    total = int(rows["alerts_late_po_count"][0]["late"])
+    late = [late_po(r, ids) for r in rows["alerts_late_po_list"]]
+    risk = []
+    for row in rows.get("alerts_open", []):
+        oid, _otype, url, sources = _alert_ref(row, ids)
+        risk.append(m.AtRisk(object_id=oid, label=alert_label(row), kind=str(row.get("kind")),
+                             reason=str(row.get("why") or ""), open_url=url, sources=sources))
+    stale = {t: runs.get(t, (False, None))[1] for t in types
+             if not runs.get(t, (False, None))[0]}
+    return total, late, _iso(ok), risk, stale
+
+
 def _alert_ref(row: Mapping[str, Any], ids: Mapping[str, Mapping[str, str]]
                ) -> tuple[str, str, str, list[m.Source]]:
     """(object id, object type, open url, sources) of an alert's record."""
@@ -281,7 +463,7 @@ def _alert_ref(row: Mapping[str, Any], ids: Mapping[str, Mapping[str, str]]
     rec = ids.get(handle)
     otype = str(rec["object_type"]) if rec else ""
     oid = str(rec["object_id"]) if rec else handle
-    url = object_url(otype, oid) if rec else open_url(handle)
+    url = record_url(row.get("record_table"), handle, otype, oid if rec else "")
     return oid, otype, url, [m.Source(system=system_of(handle), handle=handle,
                                       label=record_words(handle), open_url=open_url(handle))]
 
@@ -311,25 +493,6 @@ def alerts_read(backend: Any, reader: Any, types: Sequence[str], *, limit: int =
     rows, ids = read(backend, reader, reads, ids=bool(types))
     counts = {str(r["rule"]): int(r["open"]) for r in rows.get("alerts_count", ())}
     return counts, rows.get("alerts_open", []), ids, runs_state(rows["alert_runs"])
-
-
-def alert_at_risk(backend: Any, reader: Any, *, limit: int = 25,
-                  scope: Optional[ReaderScope] = None
-                  ) -> tuple[list[m.AtRisk], dict[str, Optional[datetime]]]:
-    """Home's at-risk list: the open alerts of the home types other than late POs routed
-    to the reader, and the routed home types left out as not current (type -> last
-    finished run)."""
-    scope = scope or reader_scope(backend, reader)
-    types = [t for t in alert_types(scope.enabled, home=True)
-             if t != "po_late" and routed(t, scope.routing)]
-    _counts, rows, ids, runs = alerts_read(backend, reader, types, limit=limit)
-    out = []
-    for row in rows:
-        oid, _otype, url, sources = _alert_ref(row, ids)
-        out.append(m.AtRisk(object_id=oid, label=alert_label(row), kind=str(row.get("kind")),
-                            reason=str(row.get("why") or ""), open_url=url, sources=sources))
-    return out, {t: runs.get(t, (False, None))[1] for t in types
-                 if not runs.get(t, (False, None))[0]}
 
 
 def alert_item(row: Mapping[str, Any], ids: Mapping[str, Mapping[str, str]], rank: int,
@@ -572,24 +735,32 @@ def _hidden_note(n: int, what: str) -> Optional[str]:
 
 
 def _owed(rows: list[Mapping[str, Any]], title: str) -> m.BizTable:
-    """What is owed, by currency and aging bucket (each currency its own row)."""
+    """What is owed, by currency and aging bucket (each currency its own row). A bucket
+    holding any amount the reader may not see is shown hidden, and so is its currency's
+    total: never the sum of the amounts they may see as if it were all (11-18 staff walk: a
+    supplier's CAD 126,051.50 owed read "0.00" to a reader without finance)."""
     by: dict[Any, dict[str, Any]] = {}
     hidden = 0
     for r in rows:
-        cur = by.setdefault(r.get("currency"), {})
-        cur[r.get("aging_bucket")] = cur.get(r.get("aging_bucket"), Decimal(0)) + Decimal(
-            str(r.get("amount") or 0))
-        cur["_docs"] = cur.get("_docs", 0) + int(r.get("documents") or 0)
+        cur = by.setdefault(r.get("currency"), {"_docs": 0, "_hidden": set()})
+        bucket = r.get("aging_bucket")
+        cur[bucket] = cur.get(bucket, Decimal(0)) + Decimal(str(r.get("amount") or 0))
+        cur["_docs"] += int(r.get("documents") or 0)
+        if int(r.get("hidden") or 0):
+            cur["_hidden"].add(bucket)
         hidden += int(r.get("hidden") or 0)
     out = []
     for currency in sorted(by, key=lambda c: (c is None, c or "")):
         if currency is None:
             continue   # amounts whose currency is withheld: counted in the note only
         got = by[currency]
-        total = sum((v for k, v in got.items() if k != "_docs"), Decimal(0))
+        withheld = got["_hidden"]
+        total = sum((v for k, v in got.items() if k not in ("_docs", "_hidden")), Decimal(0))
         out.append([m.BizCell(text=currency)]
-                   + [_sum(got.get(b, Decimal(0)), currency) for b in BUCKETS]
-                   + [_sum(total, currency), m.BizCell(number=str(got["_docs"]))])
+                   + [m.BizCell(hidden=True) if b in withheld
+                      else _sum(got.get(b, Decimal(0)), currency) for b in BUCKETS]
+                   + [m.BizCell(hidden=True) if withheld else _sum(total, currency),
+                      m.BizCell(number=str(got["_docs"]))])
     hidden += by.get(None, {}).get("_docs", 0)
     note = _hidden_note(hidden, "open document" if hidden == 1 else "open documents")
     return m.BizTable(key="owed", title=title, columns=[
@@ -765,6 +936,7 @@ def _supplier(backend: Any, reader: Any, handle: str, day: str, started: float) 
         {"name": "supplier_owed", "params": key},
         {"name": "supplier_invoices", "params": {**key, "limit": 10}},
         {"name": "supplier_buys_years", "params": {**key, "as_of": day}},
+        {"name": "supplier_same_name", "params": key},
         {"name": "views_as_of"}])
     if not rows["supplier_account"]:
         raise NotFound("supplier")
@@ -795,6 +967,17 @@ def _supplier(backend: Any, reader: Any, handle: str, day: str, started: float) 
             _d(i, "due_date"), _t(i, "po_number"), _m(i, "original_amount"),
             _m(i, "amount_due")] for i in inv], note=None if inv else "No invoices."))
     sections.append(_years(rows["supplier_buys_years"], "Ordered this year and last", day))
+    same = rows.get("supplier_same_name") or []
+    if same:
+        # BC keeps a payment vendor ("X (EFT)") beside the purchasing vendor the POs name:
+        # each its own account, listed here, never added into this one
+        sections.append(m.BizTable(key="same_name", title="Other accounts by this name",
+                                   columns=["Account", "Code", "Open POs"], rows=[[
+                                       _t(r, "name", account_url("supplier", r.get("handle"))),
+                                       _t(r, "supplier_code"), _n(r, "open_pos")]
+                                       for r in same], total=len(same),
+                                   note="Separate accounts in the source systems; their "
+                                   "orders and balances are on their own pages."))
     built = _built(rows["views_as_of"])
     return m.BizPage(kind="supplier", title=str(head.get("name") or head.get("supplier_code")
                                                 or "Supplier"), subtitle="Supplier",
@@ -854,9 +1037,24 @@ def order(backend: Any, reader: Any, kind: str, handle: str) -> m.BizPage:
     for label, col, cell in spec:
         if h.get(col) is not None or _hidden(h, col):
             facts.append(m.BizFact(label=label, value=cell(h, col)))
-    facts.append(m.BizFact(label="Total" if money == "total" else "Value", value=_m(h, money)))
-    expected = h.get("line_count")
     note = None if lines else "No lines on record."
+    if money == "total" and h.get("total_basis") == "lines":
+        # no copy states a total above 0: the order is worth its priced lines, said so
+        facts.append(m.BizFact(label="Total (sum of lines)", value=_m(h, "total")))
+    else:
+        facts.append(m.BizFact(label="Total" if money == "total" else "Value",
+                               value=_m(h, money)))
+        lt, total = h.get("lines_total"), h.get("total")
+        if money == "total" and lt is not None and (
+                total is None or Decimal(str(lt)) != Decimal(str(total))
+                or h.get("lines_total_currency") != h.get("total_currency")):
+            # the header and its lines disagree (tax, freight, a header not updated): both
+            facts.append(m.BizFact(label="Lines total", value=_m(h, "lines_total")))
+    if kind == "sales_order" and lines and all(
+            r.get("shipped_quantity") is None and not _hidden(r, "shipped_quantity")
+            for r in lines):
+        note = "Shipped and still-to-ship quantities are not on these order lines."
+    expected = h.get("line_count")
     if isinstance(expected, int) and expected > len(lines):
         note = f"{len(lines)} of {expected} lines shown."
     built = _built(rows["views_as_of"])

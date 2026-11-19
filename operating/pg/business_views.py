@@ -513,6 +513,10 @@ class Row:
         self.reads: dict[str, set[str]] = defaultdict(set)
         self.col_reads: dict[str, dict[str, set[str]]] = defaultdict(lambda: defaultdict(set))
         self.col_link_marks: dict[str, set[str]] = defaultdict(set)
+        # per column, records the cell NAMES without a value read from them (the org
+        # chart's manager): no permission of theirs joins the column; the cell is emptied
+        # when one is an excluded person's (build and ``door.exclude``, ``col_objects``)
+        self.col_names: dict[str, set[str]] = {}
         if thing is not None:
             self.add_thing(thing, primary=True)
 
@@ -588,9 +592,12 @@ def _rep_handle(rec: Rec) -> str:
 
 
 def pick(thing: Thing, prop: str) -> tuple[Cell | None, Rec | None]:
+    """The first copy stating ``prop``: a blank (BC's encoded blank ``_x0020_`` too) is
+    stated by none, so the next copy's value is read."""
     for rec in thing.members:
         got = rec.cell(prop)
-        if got is not None and got.value not in (None, ""):
+        if got is not None and got.value not in (None, "") and (
+                not isinstance(got.value, str) or _text(got.value) is not None):
             return got, rec
     return None, None
 
@@ -607,10 +614,18 @@ def fill(row: Row, thing: Thing, column: str, prop: str,
     return value
 
 
+# Business Central's OData escapes a character an XML name cannot hold as ``_xHHHH_``
+# (a blank option value is ``_x0020_``, "Sales_x0020_Shipment"): decoded, never shown
+_XML_ESCAPE = re.compile(r"_x([0-9A-Fa-f]{4})_")
+
+
 def _text(raw: Any) -> str | None:
     if raw is None:
         return None
-    text = str(raw).strip()
+    text = str(raw)
+    if "_x" in text:
+        text = _XML_ESCAPE.sub(lambda m: chr(int(m[1], 16)), text)
+    text = text.strip()
     return text or None
 
 
@@ -705,6 +720,10 @@ class View:
     # fill(write, table, as_of) writes the made, empty table, returns the marks it read to
     fill: Callable[[Any, str, dt.date], Mapping[str, Any]] | None = None
     internal: tuple[tuple[str, str], ...] = ()   # its hidden columns (name, SQL type)
+    # one row per record of its first read type (``generic_records.covered_types``: that
+    # type is then left out of ``records``); False for a view of a few of them (``staff``:
+    # 165 of 45,882 Person records)
+    covers: bool = True
 
     def col(self, name: str) -> Col | None:
         return next((c for c in self.cols if c.name == name), None)
@@ -723,7 +742,7 @@ SYSTEMS_DOC = ("the systems holding a copy of this row, sorted and comma separat
 
 
 def view(name: str, doc: str, cols: Sequence[tuple[str, str, str]], reads: Sequence[str],
-         memos: Sequence[str] = ()) -> Callable[[Callable], Callable]:
+         memos: Sequence[str] = (), covers: bool = True) -> Callable[[Callable], Callable]:
     def wrap(fn: Callable) -> Callable:
         made: list[Col] = []
         for cname, kind, cdoc in cols:
@@ -732,7 +751,7 @@ def view(name: str, doc: str, cols: Sequence[tuple[str, str, str]], reads: Seque
                 made.append(Col(cname + "_currency", "currency",
                                 f"ISO currency of {cname}; sums never mix currencies"))
         made.append(Col(SYSTEMS_COL, "text", SYSTEMS_DOC))
-        VIEWS[name] = View(name, doc, made, fn, tuple(reads), tuple(memos))
+        VIEWS[name] = View(name, doc, made, fn, tuple(reads), tuple(memos), covers=covers)
         return fn
     return wrap
 
@@ -877,7 +896,8 @@ SAGE_AR_DOC = {"1": "invoice", "2": "debit note", "3": "credit note", "4": "inte
        ("customer_po", "text", "customer PO, when stated"),
        ("as_of", "date", "the day the aging was computed"), CHAIN_COL,
        handle_col("customer", f"the document's {AR_OPEN}.customer link")],
-      reads=(AR_OPEN, "Customer"), memos=("customers", "chains"))
+      reads=(AR_OPEN, "Customer"), memos=("customers", "chains"),
+      covers=False)   # the open documents only: every AR document stays in records
 def _customer_balances(rd: Reader, as_of: dt.date) -> Iterator[Row]:
     docs = rd.records(AR_OPEN, AR_PROPS)
     customers, things = customer_things(rd)
@@ -1814,6 +1834,9 @@ def _sales_order_lines(rd: Reader, as_of: dt.date) -> Iterator[Row]:
 # The products, batches, stock and purchasing views (their own module, registered here in
 # this order after the sales views); their names stay readable as this module's.
 from operating.pg import business_views_supply as _supply  # noqa: E402,F401
+# the org chart (staff), read from the org capture's store beside the staff Persons
+from operating.pg import business_staff as _staff  # noqa: E402,F401
+# registered last, after the business views of their rank (stale_views orders them so):
 # the communications tables (emails, Teams, meetings, documents) register into VIEWS too
 from operating.pg import business_comms as _comms  # noqa: E402,F401
 
@@ -1933,7 +1956,15 @@ def refresh(dsn: str, *, schema: Any = None, as_of: dt.date | None = None,
             if swept:
                 out["swept"] = swept
             if stale:
-                out["built"] = build(dsn, stale, schema=schema, as_of=when, digest=now)
+                # side by side (``business_views_parallel``): 29 min one after the other
+                from operating.pg import business_views_parallel as parallel
+                seconds = dict(meta.execute(f"SELECT view, seconds FROM {SCHEMA}.state"))
+                out["built"] = parallel.build(dsn, stale, schema=schema, as_of=when,
+                                              digest=now, seconds=seconds)
+            from operating.pg import generic_records   # records/record_links, once built
+            generic = generic_records.follow(dsn, when)
+            if generic:
+                out["generic"] = generic
             return out or {"fresh": now}
         finally:
             meta.execute("SELECT pg_advisory_unlock(%s)", (REFRESH_LOCK,))
@@ -1950,7 +1981,11 @@ def ensure_scratch_schema(write: Any) -> None:
         raise ValueError("the served schema biz is made by migration 0041, not here")
     with open(MIGRATION, encoding="utf-8") as fh:
         ddl = fh.read()
-    write.execute(re.sub(r"\bbiz\b", SCHEMA, ddl))
+    # one at a time (side-by-side builds each ensure it: their GRANTs on the one schema
+    # failed "tuple concurrently updated"), the lock released with the transaction
+    with write.transaction():
+        write.execute("SELECT pg_advisory_xact_lock(hashtext(%s))", (f"ensure {SCHEMA}",))
+        write.execute(re.sub(r"\bbiz\b", SCHEMA, ddl))
 
 
 def drop_scratch_schema(dsn: str) -> str:
@@ -2046,10 +2081,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                                  "ORDER BY view"):
                 print(*row)
         return 0
-    try:
-        os.nice(19)
-    except OSError:
-        pass
+    # full speed (No nice on a build); the unit bounds memory, the build its disk
     _stop_on_term()
     if args.command == "refresh":
         print(json.dumps(refresh(dsn, force=args.force), default=str))

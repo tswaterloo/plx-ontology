@@ -71,6 +71,8 @@ Evidence label of tests: ``injected-transport``; live-unverified.
 from __future__ import annotations
 
 import argparse
+import base64
+import binascii
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from decimal import ROUND_HALF_UP, Decimal
@@ -94,6 +96,10 @@ WRITE_GATE_FILE = "autopilot-write-gate.json"
 WRITE_GATE_SCHEMA = "plx-autopilot-write-gate/v1"
 AUDIT_FILE = "autopilot-writes/audit.jsonl"
 UNDO_FILE = "autopilot-writes/undo-store.jsonl"   # an undo's words the audit keeps as digests
+# a replaced document's prior bytes, one owner-only file each (the undo store's row names
+# its digest), removed once undone or after UNDO_KEEP: the store stays small
+UNDO_BLOBS = "autopilot-writes/undo-blobs"
+UNDO_KEEP = timedelta(days=30)
 MASTER_ENV = "PLX_AUTOPILOT_WRITES"              # "1": the owner's master switch
 # retired 2026-11-13 (owner: each person switches their own workflows on): the owner's
 # per-role live flags PLX_AUTOPILOT_WRITES_LIVE and autopilot-writes-live.json are read by
@@ -250,6 +256,57 @@ def _norm_lines(payload: Mapping[str, Any]) -> dict[str, Any]:
     return out
 
 
+# an email's attached files: documents the person's Ask made (``operator_api.
+# assistant_tools``), each named by the digest of its bytes as the file store names it
+ATTACHMENT_KEYS = frozenset({"file_id", "name", "content_type", "size", "sha256",
+                             "content_b64", "people"})
+MOST_ATTACHMENTS = 5
+ATTACHMENT_BYTES = 3_000_000   # Graph sendMail takes a message under about 4 MB
+ATTACHMENT_TYPES = frozenset({
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", "application/pdf"})
+
+
+def attachments_of(raw: Any) -> list[dict[str, Any]]:
+    """A mail's attachments as prepared (``ATTACHMENT_KEYS`` each, the bytes in
+    ``content_b64``; ``prepared_writes`` checks them at prepare, ``actions_of`` again
+    before any send): ValueError unless each is whole: its bytes decode, their SHA-256 is
+    its ``sha256`` and names its ``file_id``, its size and type are a document's, and
+    ``people`` lists the addresses it names (in the payload, so ``_addresses`` gives them
+    to the people exclusion as the send runs)."""
+    if raw in (None, []):
+        return []
+    if not isinstance(raw, list) or len(raw) > MOST_ATTACHMENTS:
+        raise ValueError(f"at most {MOST_ATTACHMENTS} attachments, each a file the Ask "
+                         "made (plx.make_document).")
+    out, total = [], 0
+    for entry in raw:
+        if not isinstance(entry, Mapping) or set(entry) != ATTACHMENT_KEYS:
+            raise ValueError("an attachment is a file the Ask made: name it by its file_id.")
+        held = str(entry["content_b64"])
+        if held.startswith("blob:sha256:"):
+            # the bytes kept apart by the prepared-writes desk (``Desk._stash``), checked
+            # against their digest when read back and again as they are sent
+            digest, size = str(entry["sha256"]), entry["size"]
+        else:
+            try:
+                data = base64.b64decode(held, validate=True)
+            except (binascii.Error, ValueError):
+                raise ValueError("an attachment's bytes are unreadable.") from None
+            digest, size = hashlib.sha256(data).hexdigest(), len(data)
+        if digest != entry["sha256"] or entry["file_id"] != "f_" + digest[:24] \
+                or type(size) is not int or entry["size"] != size \
+                or entry["content_type"] not in ATTACHMENT_TYPES \
+                or not str(entry["name"] or "").strip() or not isinstance(entry["people"], list) \
+                or not all(isinstance(p, str) and "@" in p for p in entry["people"]):
+            raise ValueError("an attachment is not the file it names.")
+        total += size
+        out.append({k: entry[k] for k in sorted(ATTACHMENT_KEYS)})
+    if total > ATTACHMENT_BYTES:
+        raise ValueError("the attachments are too large to send together.")
+    return out
+
+
 def actions_of(item: Mapping[str, Any]) -> list[dict[str, Any]]:
     """The actions an item's prepared work stands for, in the order they run (an entry
     before the message that confirms it). Unknown shapes give ``{"kind": "unknown"}``."""
@@ -291,11 +348,18 @@ def actions_of(item: Mapping[str, Any]) -> list[dict[str, Any]]:
     elif isinstance(draft, Mapping) and draft.get("channel") in ("email", "mail"):
         to = [t.get("address") if isinstance(t, Mapping) else t for t in draft.get("to") or ()]
         cc = [t.get("address") if isinstance(t, Mapping) else t for t in draft.get("cc") or ()]
-        out.append({"kind": "send_mail", "system": "graph", "operation": "send_email",
-                    "target": {"sender": item.get("owner")},
-                    "payload": {"to": [a for a in to if a], "cc": [a for a in cc if a],
-                                "subject": draft.get("subject"), "body": draft.get("body")},
-                    "unknown_domains": list(draft.get("unknown_domains") or ())})
+        payload = {"to": [a for a in to if a], "cc": [a for a in cc if a],
+                   "subject": draft.get("subject"), "body": draft.get("body")}
+        try:
+            files = attachments_of(draft.get("attachments"))
+        except ValueError:
+            out.append({"kind": "unknown", "detail": "draft:attachments"})
+        else:
+            if files:
+                payload["attachments"] = files
+            out.append({"kind": "send_mail", "system": "graph", "operation": "send_email",
+                        "target": {"sender": item.get("owner")}, "payload": payload,
+                        "unknown_domains": list(draft.get("unknown_domains") or ())})
     elif isinstance(draft, Mapping) and draft.get("channel") == "teams":
         if draft.get("team_id") or draft.get("channel_id"):
             where = {"team_id": draft.get("team_id"), "channel_id": draft.get("channel_id")}
@@ -985,8 +1049,11 @@ def set_paused(journal: Journal, person: str, pause: bool, by: str, now: datetim
 
 DRAFTS_EVENT = "drafts"
 # What a person can switch drafts on for: a few plain choices, each a set of workflows
-# (``workflows.json``), instead of every role x workflow row. ``other_external`` is never
-# in one (no rule decides what it is about).
+# (``workflows.json``), instead of every role x workflow row; together they hold every
+# workflow (``workflows.names``: a test holds it), so a person can switch off anything the
+# owner's Draft file turned on for them. ``other_external`` (``autopilot_engine.DRAFT_NEVER``) sits in the
+# last one only so its off reaches it: a switch on never prepares it (``prepared_for``),
+# only the Draft file for the people it names.
 DRAFT_CHOICES: tuple[tuple[str, str, tuple[str, ...]], ...] = (
     ("customer_replies", "Replies to customers",
      ("customer_status_inquiry", "customer_order_intake", "quote_pricing",
@@ -998,6 +1065,12 @@ DRAFT_CHOICES: tuple[tuple[str, str, tuple[str, ...]], ...] = (
      ("ar_collections", "ar_invoice_send", "cash_remittance")),
     ("approvals", "Approvals and questions waiting on you",
      ("internal_approval", "external_approval", "mc_question")),
+    ("other_work", "Everything else in my mail and chats",
+     ("ap_supplier_invoice", "label_artwork", "meeting_admin", "other_internal",
+      "production_materials_internal", "qc_hold_release_internal", "reporting",
+      "rnd_sample_project", "rnd_status_update", "routine_update", "other_external")),
+    ("system_entries", "Entries in the business systems",
+     ("ar_invoice_entry", "ap_invoice_entry", "cash_application", "shipment_posting")),
 )
 
 
@@ -1028,28 +1101,51 @@ def set_drafts(journal: Journal, person: str, workflow: str, on: bool, by: str,
                             "on": bool(on), "at": _iso(now), "by": person})
 
 
-def drafts_on(rows: Sequence[Mapping[str, Any]]) -> dict[str, frozenset[str]]:
-    """person -> the workflows they switched drafts on for themselves (their last
-    ``drafts`` row per workflow; only a row whose ``by`` is its ``person`` counts), minus
-    everything while they paused (``paused``). A live ``opt_in`` they made counts as drafts
-    on too (a person who switched a workflow on to be performed wants it prepared)."""
-    last: dict[tuple[str, str], bool] = {}
+def _drafts_last(rows: Sequence[Mapping[str, Any]]) -> dict[tuple[str, str], tuple[bool, Any]]:
+    """(person, workflow) -> (on, at) of the person's own last ``drafts`` row (only a row
+    whose ``by`` is its ``person`` counts); a live ``opt_in`` they made counts as drafts on
+    where they wrote no ``drafts`` row for it."""
+    last: dict[tuple[str, str], tuple[bool, Any]] = {}
     for row in rows:
         if row.get("event") != DRAFTS_EVENT:
             continue
         who = str(row.get("person") or "").lower()
         if not who or str(row.get("by") or "").lower() != who:
             continue
-        last[(who, str(row.get("workflow") or ""))] = row.get("on") is True
+        last[(who, str(row.get("workflow") or ""))] = (row.get("on") is True, row.get("at"))
     for (who, flow), found in opt_ins(rows).items():
         if found["on"]:
-            last.setdefault((who, flow), True)
+            last.setdefault((who, flow), (True, found.get("at")))
+    return last
+
+
+BY_YOU, BY_OWNER = "you", "owner"
+
+
+def prepared_for(rows: Sequence[Mapping[str, Any]], drafted: Mapping[str, Iterable[str]],
+                 never: Iterable[str] = ()) -> dict[str, dict[str, tuple[str, Any]]]:
+    """person -> {workflow: (who set it, since)}: what the autopilot prepares for each
+    person, the one rule the live feed (``autopilot_engine.SwitchGate``) and the page read.
+    On: the person's own drafts switch (``BY_YOU``, when) or the owner's Draft file for
+    them (``drafted``, person id -> workflows: ``BY_OWNER``). The person's own word wins
+    over the Draft file: their own off on a workflow takes it out, and their pause takes
+    out everything. A workflow of ``never`` (``autopilot_engine.DRAFT_NEVER``) is on only
+    through the Draft file, never through a switch row."""
     stopped = paused(rows)
-    out: dict[str, set[str]] = {}
-    for (who, flow), on in last.items():
-        if on and flow and who not in stopped:
-            out.setdefault(who, set()).add(flow)
-    return {who: frozenset(flows) for who, flows in out.items()}
+    last = _drafts_last(rows)
+    never = frozenset(never)
+    out: dict[str, dict[str, tuple[str, Any]]] = {}
+    for who, flows in drafted.items():
+        who = str(who).lower()
+        if who in stopped:
+            continue
+        for flow in flows:
+            if last.get((who, flow), (True, None))[0]:
+                out.setdefault(who, {})[flow] = (BY_OWNER, None)
+    for (who, flow), (on, at) in last.items():
+        if on and flow and who not in stopped and flow not in never:
+            out.setdefault(who, {})[flow] = (BY_YOU, at)
+    return out
 
 
 def control_dir(state: Path, environ: Mapping[str, str]) -> Path:
@@ -1112,7 +1208,7 @@ def opened_environ(state: Path, environ: Mapping[str, str]) -> dict[str, str]:
     flagged = set(live & guard.WRITE_SYSTEMS)
     # BC is written by this executor only while a read-only probe of the last 45 min found
     # the write permission on the app's token and the very tenant, environment and company
-    # id configured here to be one allowed (PLX or Petra Soap, never PHSI Group); else BC
+    # id configured here to be one BC names (any company, 11-18); else BC
     # is closed here even when the host opened it for the BC desk. The target is either
     # the named sandbox (``live-bc``) or Production (``live-bc`` and the owner's second
     # file ``live-bc-production``; ``Executor._one`` then lets only a named person's
@@ -1262,7 +1358,7 @@ class Executor:
                                       if given is os.environ
                                       or readiness.ENV_FILES_ENV in given else dict(given))
         self.adapters = dict(adapters if adapters is not None
-                             else wa.default_adapters(self.environ))
+                             else wa.default_adapters(self.environ, self.state))
         self.guard = guard
         self.rules_path = rules_path
         self.registry = registry if registry is not None else ap.load_registry()
@@ -1427,6 +1523,13 @@ class Executor:
                 return held.append({"event": "decision", "at": _iso(now), **row,
                                     "mode": "dry_run", "status": "dry_run",
                                     "reasons": missing})
+            unavailable = adapter.unavailable()
+            if unavailable:
+                # the preview never offers a confirm the system cannot perform (BC opened
+                # by the owner's switch but its probe has not verified the company yet)
+                return held.append({"event": "decision", "at": _iso(now), **row,
+                                    "mode": "live", "status": "unavailable",
+                                    "reasons": [unavailable]})
             if approval is not None and approval.confirmed_live is not True:
                 # live by approval or by the gate: a person's accept performs it only
                 # after they confirmed it goes live (nothing leaves, nothing is keyed)
@@ -1447,11 +1550,6 @@ class Executor:
                 return held.append({"event": "decision", "at": _iso(now), **row,
                                     "mode": "live", "status": "rate_limited",
                                     "reasons": [limited]})
-            unavailable = adapter.unavailable()
-            if unavailable:
-                return held.append({"event": "decision", "at": _iso(now), **row,
-                                    "mode": "live", "status": "unavailable",
-                                    "reasons": [unavailable]})
             # a kill switch thrown since the item started wins up to the last moment
             # (checked under the journal lock, right before the attempt row) (ACT-004)
             late = killed(self.environ, self.state, base["workflow"])
@@ -1466,14 +1564,20 @@ class Executor:
         status = result.get("status")
         if status not in ("done", "failed", "unknown", "not_performed"):
             status = "unknown"
-        inverse = wa.fill(undo_plan, result.get("response")) if status == "done" else None
-        inverse = _journal_safe(inverse, wire=True) if inverse else None
-        sealed = inverse is not None and _audit_view(kind, inverse) != inverse
+        filled = wa.fill(undo_plan, result.get("response")) if status == "done" else None
+        inverse = _journal_safe(filled, wire=True) if filled else None
+        # a replaced document's prior bytes (``body_b64``) never go to the journal
+        carried = filled.get("body_b64") if isinstance(filled, Mapping) else None
+        sealed = inverse is not None and (_audit_view(kind, inverse) != inverse
+                                          or carried is not None)
         if sealed:
-            # the undo needs the words the audit does not keep: they wait in the undo
-            # store (owner-only file) under the action's key until the undo or never
+            # the undo needs the words or bytes the audit does not keep: they wait in the
+            # undo store (owner-only file) under the action's key until the undo or never
+            kept_inverse = {**inverse, "body_b64": self._undo_blob(carried)} \
+                if carried is not None else inverse
             with Journal(self.state / UNDO_FILE).locked() as kept:
-                kept.append({"key": key, "inverse": inverse, "at": _iso(now)})
+                kept.append({"key": key, "inverse": kept_inverse, "at": _iso(now)})
+            self.prune_undo(now)
         out = {**row, "mode": "live", "status": status,
                "http_status": result.get("http_status"),
                "reasons": list(result.get("missing") or ()) + (
@@ -1533,6 +1637,14 @@ class Executor:
             if not kept:
                 raise ValueError("the undo store has no inverse for this action")
             inverse = kept[-1]["inverse"]
+            held_bytes = str(inverse.get("body_b64") or "")
+            if held_bytes.startswith("blob:sha256:"):
+                path = self.state / UNDO_BLOBS / held_bytes.rsplit(":", 1)[1]
+                try:
+                    inverse = {**inverse, "body_b64": path.read_text(encoding="ascii")}
+                except OSError:
+                    raise ValueError("the prior version is no longer kept (undo is held "
+                                     f"{UNDO_KEEP.days} days)") from None
         stop = killed(self.environ, self.state, str(row.get("workflow")))
         if stop:
             raise ValueError(stop)
@@ -1555,10 +1667,53 @@ class Executor:
                          "of": key, "mode": "live", "status": "pending",
                          "request": row["inverse"]})
         result = adapter.perform(inverse, undo_key)
+        if result.get("status") == "done":
+            self.prune_undo(now, undone=key)
         return self._record({**base, "key": undo_key, "of": key, "mode": "live",
                              "status": result.get("status") if result.get("status") in
                              ("done", "failed", "unknown") else "unknown",
                              "http_status": result.get("http_status")}, now, event="outcome")
+
+    def _undo_blob(self, value: str) -> str:
+        """Keep a replaced document's prior bytes (base64) in an owner-only file; the
+        reference the undo store's row holds."""
+        digest = hashlib.sha256(value.encode("ascii", "replace")).hexdigest()
+        folder = self.state / UNDO_BLOBS
+        folder.mkdir(parents=True, exist_ok=True, mode=0o700)
+        path = folder / digest
+        if not path.exists():
+            fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            with os.fdopen(fd, "w", encoding="ascii") as out:
+                out.write(value)
+        return f"blob:sha256:{digest}"
+
+    def prune_undo(self, now: datetime, undone: str | None = None) -> int:
+        """Remove the prior bytes no undo can use any more: an action undone, or kept
+        longer than ``UNDO_KEEP`` (a bytes file no row names, older than an hour, too).
+        Returns how many files were removed."""
+        folder = self.state / UNDO_BLOBS
+        if not folder.is_dir():
+            return 0
+        live: set[str] = set()
+        drop: set[str] = set()
+        for r in Journal(self.state / UNDO_FILE).rows():
+            ref = str((r.get("inverse") or {}).get("body_b64") or "")
+            if not ref.startswith("blob:sha256:"):
+                continue
+            digest = ref.rsplit(":", 1)[1]
+            at = _instant(r.get("at"))
+            if r.get("key") == undone or at is None or now - at > UNDO_KEEP:
+                drop.add(digest)
+            else:
+                live.add(digest)
+        removed = 0
+        for path in folder.iterdir():
+            stray = path.name not in live and path.name not in drop and \
+                now.timestamp() - path.stat().st_mtime > 3600
+            if (path.name in drop and path.name not in live) or stray:
+                path.unlink(missing_ok=True)
+                removed += 1
+        return removed
 
     def reconcile(self, key: str, status: str, by: str, now: datetime) -> dict[str, Any]:
         """A person checked the system for an ``unknown``/``pending`` attempt: ``done`` or
@@ -1591,7 +1746,8 @@ _TEXT_KEYS = frozenset({"body", "content", "subject", "comment"})
 # a calendar invitation's words (its location's name too); a Planner task's assignees are
 # people's object ids: the audit keeps their digest
 _CALENDAR_TEXT = _TEXT_KEYS | {"displayname"}
-_TEXT_KINDS = {"send_mail": _TEXT_KEYS, "send_teams": _TEXT_KEYS,
+# a sent mail's attached files: their bytes' digest and length, never the bytes
+_TEXT_KINDS = {"send_mail": _TEXT_KEYS | {"content_b64"}, "send_teams": _TEXT_KEYS,
                "calendar_write": _CALENDAR_TEXT}
 
 

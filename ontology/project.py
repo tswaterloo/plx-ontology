@@ -504,7 +504,12 @@ _NOT_DERIVATION = {
                          # the table of proven-equivalent derivation code (its own value)
                          "ontology.code_equivalence",
                          # the build steps' code digest a build records (build_store)
-                         "ontology.step_code"),
+                         "ontology.step_code",
+                         # the mail source's people relation and its state (read as
+                         # records, like capture_mail's); it reached the guarded
+                         # transport, its grammar and write shapes (code_equivalence
+                         # _TRANSPORT_OUT)
+                         "integrations.people_exclusion"),
     # _pinned: a cited handle parsed for a reader's request (pinned_document_row)
     "ontology.document_fields": ("integrations.capture_sharepoint",
                                  "integrations.graph_evidence",

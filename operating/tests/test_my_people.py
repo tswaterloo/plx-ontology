@@ -57,6 +57,9 @@ ROWS = [
     came("hello@vision.example", "Join our webinar: models in production", 1),
     came("hello@vision.example", "Last chance to register", 2),
     came("news@ai.example", "This week in AI", 1),
+    # a service writing to them (owner walk: sign-up codes, bills, an invitation)
+    came("registration@cloud.example", "054145 is your sign up code", 1),
+    came("info@vpn.example", "Vince invited you to join", 2),
     came("team@supply2.example", "PO 5100 confirmed", 20),
     out(["team@supply2.example"], "Re: PO 5100 confirmed", 20),
 ]
@@ -74,6 +77,8 @@ class PeopleAndThreads(unittest.TestCase):
         self.assertNotIn("hello@vision.example", people)
         self.assertNotIn("news@ai.example", people)
         self.assertIn("team@supply2.example", people)
+        for service in ("registration@cloud.example", "info@vpn.example"):
+            self.assertNotIn(service, people)
         self.assertNotIn("ana@plx.example", people)              # never themself
         bob = got["people"][0]
         self.assertEqual((bob["sent"], bob["received"], bob["inside"]), (2, 1, False))

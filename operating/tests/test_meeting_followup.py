@@ -185,6 +185,27 @@ class UnderstandTest(Base):
         # its quote of the masked line is found and kept, masked
         self.assertEqual([i["text"] for i in items], [shown])
 
+    def test_a_transcript_naming_freightcom_never_reaches_the_model(self) -> None:
+        # In a line, the title or a person
+        seen: list[str] = []
+
+        def spawn(argv, env, timeout, prompt):
+            seen.append(prompt)
+            return json.dumps({"result": json.dumps({"items": []})})
+        for transcript in (
+                {"citation": "t://1", "cues": [{"i": 0, "speaker": "Pat",
+                                                "text": "Book it on Freight-com today."}]},
+                {"citation": "t://2", "meeting": {"title": "FreightCom rates sync"},
+                 "cues": [{"i": 0, "speaker": "Pat", "text": "Quote the lane."}]},
+                {"citation": "t://3", "meeting": {"attendees": [
+                    {"name": "Rep", "address": "rep@freightcom.example"}]},
+                 "cues": [{"i": 0, "speaker": "Rep", "text": "Quote the lane."}]}):
+            self.assertEqual(mf.ModelExtractor(spawn)(transcript), [])
+        self.assertEqual(seen, [])
+        mf.ModelExtractor(spawn)({"citation": "t://4", "cues": [
+            {"i": 0, "speaker": "Pat", "text": "Quote the lane."}]})
+        self.assertEqual(len(seen), 1)    # an unrelated transcript still goes
+
 
 class ShowTest(Base):
     def setUp(self) -> None:

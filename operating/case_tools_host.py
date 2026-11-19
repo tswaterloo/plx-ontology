@@ -862,8 +862,18 @@ class CaptureCaseHostTools(_GatesMixin, _LabelsMixin, _DocumentsMixin, _CallsMix
                 if mailbox in shared and not people_excluded(guard, [mailbox]):
                     grants[unit] = principals
             from ontology import people_directory
+            # each key decoded once per mailbox list (a pure function of the two): a
+            # staff policy decodes thousands of keys on every request (11-18 profile:
+            # 6-7 s of one 3-visit staff walk)
+            kept = getattr(self, "_decoded_mail_keys", None)
+            if kept is None or kept[0] != every:
+                kept = (every, {})
+                self._decoded_mail_keys = kept
+            decoded = kept[1]
             for unit in composites:
-                named = people_directory.decode_audience(unit, every) or ()
+                named = decoded.get(unit)
+                if named is None:
+                    named = decoded[unit] = people_directory.decode_audience(unit, every) or ()
                 grants[unit] = principals if any(
                     policy.may_read(actor, "mail:" + m) or (
                         str(m).lower() in shared and not people_excluded(guard, [m]))
@@ -1502,7 +1512,18 @@ class _SharedLookup:
         with self.locked(wait) as held:
             if not held:
                 return False
-            _sync_lookup(store, self)
+            try:
+                _sync_lookup(store, self)
+            except sqlite3.DatabaseError as exc:
+                # A file whose pages are broken (SQLITE_CORRUPT: "database disk image is
+                # malformed", found by the bring-up, not on open): made anew here, under
+                # the lock, once for every holder. Kept as it was, every process read
+                # into a private lookup of its own, the whole capture's text read again
+                # per process (live 11-18: minutes per fresh session, every session).
+                if isinstance(exc, sqlite3.OperationalError):
+                    raise   # locked, I/O, interrupted: the file is left as it is
+                _set_aside(self.path)
+                _sync_lookup(store, self)
             return True
 
 
@@ -1642,6 +1663,16 @@ def _sync_lookup(store: Any, lookup: _SharedLookup) -> None:
         _prune_indexes(lookup.path)
 
 
+def _set_aside(path: Path) -> None:
+    """A broken lookup file (and its -wal/-shm) removed, so the next bring-up makes it
+    anew; its rows are a cache of the stored text (nothing of it is lost)."""
+    for item in (path, Path(f"{path}-wal"), Path(f"{path}-shm")):
+        try:
+            item.unlink()
+        except FileNotFoundError:
+            pass
+
+
 def _lookup_writer(lookup: _SharedLookup) -> sqlite3.Connection:
     """A write connection to ``lookup``'s file (under its lock) with its tables; a file
     that is not a readable lookup database is made anew (nothing of it is used)."""
@@ -1659,11 +1690,7 @@ def _lookup_writer(lookup: _SharedLookup) -> sqlite3.Connection:
             conn.close()
             if attempt or isinstance(exc, sqlite3.OperationalError):
                 raise   # locked, I/O, unopenable: the file is left as it is
-            for item in (lookup.path, Path(f"{lookup.path}-wal"), Path(f"{lookup.path}-shm")):
-                try:
-                    item.unlink()
-                except FileNotFoundError:
-                    pass
+            _set_aside(lookup.path)
     raise AssertionError("unreachable")
 
 
@@ -1733,6 +1760,58 @@ def _sync_entries(store: Any, conn: sqlite3.Connection, lookup: _SharedLookup) -
     if not lookup.private and code is not None:
         root = lookup.path.parent
         seeded = _load_index(identifier_index_path(root, code), code) or {}
+    pool = _entry_pool(len(missing))
+    try:
+        _sync_entry_chunks(store, conn, missing, seeded, pool)
+    finally:
+        if pool is not None:
+            pool.shutdown(cancel_futures=True)
+
+
+# A bring-up reading this many files' text or more reads them in worker processes (the
+# mention reading is CPU-bound: one thread read the whole capture in tens of minutes, past
+# the life of the host that started it, so its one transaction was rolled back and the
+# next host began again: live 11-18). Spawned, never forked (the host runs threads).
+ENTRY_POOL_MIN_FILES = 200
+ENTRY_POOL_MAX_WORKERS = 32
+
+
+def _spawn_safe_main() -> bool:
+    """Whether a spawned worker starts without running this process's own work again.
+    Spawn makes each worker import the parent's ``__main__``: a module run with ``-m``
+    (every host: ``operating.host``, ``operator_api``) is imported as ``__mp_main__``,
+    so its main guard holds; ``-c`` and an interactive session have no file to import. A
+    script run by path may have no guard: each worker would run it again, here a
+    bring-up waiting on the lock its own parent holds, for ever (live 11-18, an unguarded
+    builder script: 16 workers parked on the lock, the parent waiting on them)."""
+    import sys
+    main = sys.modules.get("__main__")
+    if main is None or getattr(getattr(main, "__spec__", None), "name", None):
+        return True
+    return getattr(main, "__file__", None) is None
+
+
+def _entry_pool(files: int) -> Any:
+    """A process pool for ``files`` entries to read (None: read here: few files, one
+    core, or a ``__main__`` a spawned worker would run again, ``_spawn_safe_main``)."""
+    if files < ENTRY_POOL_MIN_FILES or not _spawn_safe_main():
+        return None
+    import multiprocessing
+    workers = min(ENTRY_POOL_MAX_WORKERS, os.cpu_count() or 1)   # every core: one run per deploy
+    if workers < 2:
+        return None
+    try:
+        from ontology import parent_watch
+        # a host killed mid-build (a short-lived Ask host) takes its readers with it
+        return concurrent.futures.ProcessPoolExecutor(
+            workers, mp_context=multiprocessing.get_context("spawn"),
+            **parent_watch.pool_init())
+    except (OSError, ValueError):
+        return None
+
+
+def _sync_entry_chunks(store: Any, conn: sqlite3.Connection, missing: Sequence[Any],
+                       seeded: Mapping[str, Any], pool: Any) -> None:
     for at in range(0, len(missing), _ENTRY_CHUNK):
         chunk = missing[at:at + _ENTRY_CHUNK]
         made: dict[str, dict[str, Any]] = {}
@@ -1756,7 +1835,17 @@ def _sync_entries(store: Any, conn: sqlite3.Connection, lookup: _SharedLookup) -
                 rekeyed.append((row["content_status"], row["content_sha256"],
                                 row["text_status"], row["text_sha256"], now_key, handle))
             if now_key not in made:
-                made[now_key] = _file_entry(store.blobs, handle, entry_row)
+                made[now_key] = (handle, entry_row)
+        reads = {key: v for key, v in made.items() if isinstance(v, tuple)}
+        if reads:
+            keys = list(reads)
+            if pool is not None:
+                got = pool.map(_file_entry, [store.blobs] * len(keys),
+                               [reads[k][0] for k in keys], [reads[k][1] for k in keys],
+                               chunksize=max(1, len(keys) // 64))
+            else:
+                got = (_file_entry(store.blobs, *reads[k]) for k in keys)
+            made.update(zip(keys, got))
         # A changed state keys the file anew; its version's ``rec`` is cleared, so a
         # lookup made before the next bring-up takes it as not current.
         conn.executemany("UPDATE files SET cs = ?, csha = ?, ts = ?, tsha = ?, key = ?, "

@@ -14,6 +14,16 @@ import { GUIDES, guideFor, guideLabel, roleKey, type GuideRole } from "@/lib/onb
 // Help: the first-week guide per role (what the Workbench does for you, how to ask, how
 // autopilot opt-in works, how to give feedback) with the week-one checklist. The role comes
 // from ?role=, else the one this reader picked last time in this browser.
+/** What a person can tell the Ask to do, one line each, in the words they would type. */
+const TELL = [
+  "From now on, keep answers short. Memory keeps it; correct or forget it there.",
+  "Stop drafting replies to news@supplier.com. Always cc ana@company.com on supplier emails. The Autopilot follows both.",
+  "Save a template for chasing a late PO. Use my late PO template for PO 106001.",
+  "Write a one-page memo of our late POs and email it to Ana as a Word file.",
+  "Make that a Word document and save it beside the March price list in SharePoint.",
+  "Rewrite this in my style: ...",
+];
+
 export default function HelpPage() {
   return (
     <Suspense>
@@ -83,6 +93,17 @@ function Help() {
           </div>
         </section>
         {principal && <OnboardingChecklist principal={principal} role={role} />}
+        <section aria-labelledby="help-tell" className="space-y-1" data-testid="help-tell">
+          <h2 id="help-tell" className="text-[13px] font-semibold">
+            Tell it, not only ask it
+          </h2>
+          <p className="text-[12px] text-muted">Type these in the Ask box, in your own words. Nothing is sent or saved anywhere until you confirm it.</p>
+          <ul className="list-disc space-y-0.5 pl-5 text-[12px]">
+            {TELL.map((t) => (
+              <li key={t}>{t}</li>
+            ))}
+          </ul>
+        </section>
         {inBrowser && (
           <section aria-labelledby="help-desktop" className="space-y-1" data-testid="help-desktop">
             <h2 id="help-desktop" className="text-[13px] font-semibold">

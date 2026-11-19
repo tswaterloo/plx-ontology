@@ -280,6 +280,34 @@ export function objectHref(type: string, objectId: string): string {
   return `/object/${encodeURIComponent(type)}/${encodeURIComponent(objectId)}`;
 }
 
+/** The record types that have a record page over the business tables (the pages door). */
+export const DOOR_KINDS: Readonly<Record<string, "purchase_order" | "sales_order" | "customer" | "supplier">> = {
+  PurchaseOrder: "purchase_order",
+  SalesOrder: "sales_order",
+  Customer: "customer",
+  Supplier: "supplier",
+};
+
+export type DoorKey = { kind: "purchase_order" | "sales_order" | "customer" | "supplier"; h?: string; record?: string };
+
+/**
+ * Where a record's page over the business tables is read from: the door link the server
+ * gave (`/order?kind=..&h=..`, `/account?kind=..&h=..`), else the record's own id for a
+ * type the door has pages for; null for anything else (the record's own page).
+ */
+export function doorKey(href: string | null | undefined, type: string, objectId: string): DoorKey | null {
+  const m = /^\/(order|account)\?(.*)$/.exec(href ?? "");
+  if (m) {
+    const q = new URLSearchParams(m[2]);
+    const kind = Object.values(DOOR_KINDS).find((k) => k === q.get("kind"));
+    const h = q.get("h") ?? "";
+    if (kind && h && (m[1] === "order") === (kind === "purchase_order" || kind === "sales_order")) return { kind, h };
+    return null;
+  }
+  const kind = DOOR_KINDS[type];
+  return kind && objectId.startsWith(`${type}:`) && objectId.length <= 700 ? { kind, record: objectId } : null;
+}
+
 /** The app route that opens a cited source. */
 export function sourceHref(handle: string): string {
   return `/source?handle=${encodeURIComponent(handle)}`;

@@ -94,7 +94,9 @@
     "portal_write": {
       "label": "Customer Portal entry",
       "operations": {
-        "sales_order_set_customer_po": {"require_precondition": "prior"}
+        "sales-order.update": {"require_precondition": "updated_at"},
+        "purchase-order.update": {"require_precondition": "updated_at"},
+        "activity.note": {}
       },
       "deny_term_classes": ["money", "price", "credit", "new_party"]
     },

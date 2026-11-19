@@ -37,7 +37,11 @@ Environment=PLX_MODEL_LEDGER=/var/lib/plx-workbench/model-calls.jsonl
 Environment=PLX_AUTOPILOT_DRAFT_MODEL=opus
 Environment=PLX_CHAT_ASK_CLAUDE_HOME=/var/lib/plx-autopilot/claude-home
 ExecStart=/usr/bin/env python3 -m operator_api serve --bind 127.0.0.1 --unix-socket /run/plx-api-%i/api.sock $PLX_API_ARGS
-Restart=on-failure
+# the serving unit's restart policy (plx-release refuses the switch on any difference:
+# a "differs in: Restart" mismatch made every deploy restart the API cold)
+Restart=always
+RestartSteps=6
+RestartMaxDelaySec=2min
 RestartSec=3
 # SIGTERM: the requests under way end (60 s at most), then the workers (20 s)
 TimeoutStopSec=100

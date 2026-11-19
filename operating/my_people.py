@@ -6,8 +6,10 @@ Memory page: what the Workbench knows of who they deal with, beside what it reme
   ``DAYS`` days, ranked by how much they wrote to it (a message they sent counts
   ``SENT_WEIGHT``, one received counts one), newest contact breaking ties; with the
   counts, the last contact's day and subject, and whether the address is inside the
-  company. Automated senders (no-reply, notifications, mailer daemons) and mailings
-  (``inbox_triage.bulk_senders``: bulk mail from an address they never wrote to) are no one.
+  company. Automated senders (no-reply, notifications, mailer daemons), mailings
+  (``inbox_triage.bulk_senders``: bulk mail from an address they never wrote to) and anyone
+  outside the company they never wrote to (a service's codes, bills and invitations) are
+  no one.
 * **Ongoing threads** (``threads_of``): a subject (``Re:``/``Fwd:`` taken off) with mail
   both ways in the last ``THREAD_DAYS`` days, newest first, saying whose turn it is: the
   last message came to them (``yours``: they owe the reply) or went from them
@@ -142,8 +144,11 @@ def people_and_threads(people: Any, me: str, rows: Sequence[Mapping[str, Any]], 
         t["in" if row.get("in") else "out"] += 1
         if t["last_at"] is None or at > t["last_at"]:
             t["last_at"], t["last_in"] = at, bool(row.get("in"))
-    ranked = sorted(who.values(), key=lambda p: (-(p["sent"] * SENT_WEIGHT + p["received"]),
-                                                 -p["last_at"].timestamp(), p["address"]))
+    # someone outside the company they never wrote to is a service (a sign-up code, a bill,
+    # an invitation), not someone they work with; a colleague counts either way
+    ranked = sorted((p for p in who.values() if p["sent"] or p["inside"]),
+                    key=lambda p: (-(p["sent"] * SENT_WEIGHT + p["received"]),
+                                   -p["last_at"].timestamp(), p["address"]))
     out_people = [{**p, "last_at": p["last_at"].isoformat()} for p in ranked[:most_people]]
     out_threads = []
     for t in sorted(talks.values(), key=lambda t: -t["last_at"].timestamp()):

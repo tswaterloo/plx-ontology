@@ -153,7 +153,7 @@ import re
 import secrets
 import sqlite3
 import threading
-from typing import Any, Callable, Iterable, Iterator, Mapping, MutableMapping, Sequence
+from typing import Any, Callable, Collection, Iterable, Iterator, Mapping, MutableMapping, Sequence
 
 from ontology import identifiers
 from ontology.json_contract import validate
@@ -2425,14 +2425,22 @@ class EvidenceTools:
         prose = bool(words) and not self._names_identifier(query)
         relaxed: list[str] = []
         if tokens:
+            # Every token's objects, intersected: the rarest token's read through the
+            # word index, each next one's only among the objects still in (the
+            # intersection is the same; a common word, "task" or "log" over a big
+            # library, is never read across the store: 30-45 s of 2-5,000-row index
+            # reads live, past the call's limit). None left: no other token is read.
             matched: set[str] | None = None
-            for token in tokens:
-                hits, token_cut = self._text_hits(scope, token, families, snippets)
+            for token in self._rarest_first(tokens):
+                hits, token_cut = self._text_hits(scope, token, families, snippets,
+                                                  within=matched)
                 cut |= token_cut
                 matched = hits if matched is None else matched & hits
                 if worded is not None and words:
                     for oid in hits:
                         worded[oid] = worded.get(oid, 0.0) + 1 / len(tokens)
+                if not matched:
+                    break
             out |= matched or set()
             text_hits: set[str] = set()
             if prose:
@@ -2793,8 +2801,30 @@ class EvidenceTools:
             return None
         return list(merge_runs(run for runs in spans if runs is not None for run in runs))
 
+    def _rarest_first(self, tokens: Sequence[str]) -> list[str]:
+        """``tokens`` in the order of the matches the store's value word index is
+        estimated to hold for each (fewest first; ``word_estimate``), as given where it
+        cannot say."""
+        estimate = getattr(self.store, "word_estimate", None)
+        if estimate is None or len(tokens) < 2:
+            return list(tokens)
+        sized = []
+        for at, token in enumerate(tokens):
+            terms = query_terms([token])
+            guess = None
+            if terms:
+                term = terms[0]
+                try:
+                    guess = estimate("value_text", '"' + term.replace('"', '""') + '"'
+                                     + ("" if any(c.isdigit() for c in term) else "*"))
+                except Exception:  # noqa: BLE001 - no estimate: the order as given
+                    guess = None
+            sized.append((float("inf") if guess is None else guess, at, token))
+        return [token for _guess, _at, token in sorted(sized)]
+
     def _text_hits(self, scope: Any, token: str, families: Sequence[str],
-                   snippets: dict[str, dict[str, Any]]) -> tuple[set[str], bool]:
+                   snippets: dict[str, dict[str, Any]], *,
+                   within: Collection[str] | None = None) -> tuple[set[str], bool]:
         """Objects of ``families`` holding a text or identifier value that contains
         ``token``, read as every value row is (live at T, held, gated). The rows are
         read in the families' audiences only, so another family's row never takes a
@@ -2814,6 +2844,21 @@ class EvidenceTools:
                                        f"AND {tt._visible_value('v', scope.gate)}")
         terms = query_terms([token])
         rows = None
+        if within is not None:
+            # only the objects another token found (``_query_documents``): their values
+            # read by object, held to the substring match alone (as a store without the
+            # word index reads every value), never the index's matches across the store
+            if not within:
+                return set(), False
+            params["within"] = json.dumps(sorted(within))
+            rows = self.store.conn.execute(
+                f"""SELECT v.object_id, v.value, v.l1_handle, v.field_path, o.audience_key
+                    FROM object_values v JOIN objects o ON o.object_id = v.object_id
+                    WHERE v.object_id IN (SELECT value FROM json_each(:within))
+                    AND v.value_type IN ('text', 'identifier') AND v.value LIKE :pattern
+                    ESCAPE '\\' AND {visible}
+                    ORDER BY v.object_id, v.property LIMIT :cap""", params).fetchall()
+            terms = []
         if terms:
             term = terms[0]
             params["words"] = ('"' + term.replace('"', '""') + '"'

@@ -229,6 +229,21 @@ class AlarmPassTest(unittest.TestCase):
             status = self.run_at(fake, minutes)
         self.assertNotIn("pg_idle_in_transaction", [i["key"] for i in status["open"]])
 
+    def test_connections_alarm_at_160_of_200_and_name_who_holds_them(self) -> None:
+        """Owner 11-18: the alarm is at 160 (the box reached 187 and 200 of 200 that day)."""
+        def pg(clients, holders=None):
+            got = {"max": 200, "clients": clients, "idle": clients - 5, "idle_in_transaction": 0,
+                   "longest_idle_in_transaction_minutes": None}
+            if holders is not None:
+                got["holders"] = holders
+            return Fake(pg=got)
+        self.assertNotIn("pg_connections", {i["key"] for i in self.run_at(pg(159))["open"]})
+        status = self.run_at(pg(160, [("plx-search", 90), ("plx-workbench", 40), ("plx-api", 9)]),
+                             minutes=5)
+        line = {i["key"]: i["line"] for i in status["open"]}["pg_connections"]
+        self.assertEqual(line, "Postgres: 160 of 200 connections (155 idle; most: plx-search 90, "
+                               "plx-workbench 40, plx-api 9)")
+
     def test_memory_opens_only_when_low_for_five_minutes(self) -> None:
         fake = Fake(mem_gb=4.0)
         status = self.run_at(fake, 0)

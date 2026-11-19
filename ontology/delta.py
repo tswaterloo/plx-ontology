@@ -254,10 +254,18 @@ class Base:
             self.conn = _ro(self.path)
         meta = {r["key"]: r["value"] for r in self.conn.execute(
             "SELECT key, value FROM store_meta WHERE key IN ('content_digest', "
-            "'source_freshness', 'built_at')")}
+            "'source_freshness', 'built_at', 'relation_completeness')")}
         self.digest = meta.get("content_digest")
         self.built_at = meta.get("built_at")
         self.freshness = json.loads(meta.get("source_freshness") or "{}")
+        # source family -> the relations the generation's freshness was judged over (its
+        # bound relations, ``Projector.relation_completeness``); None when not recorded
+        try:
+            judged = json.loads(meta.get("relation_completeness") or "null")
+        except ValueError:
+            judged = None
+        self.bound = ({source: frozenset(rels) for source, rels in judged.items()
+                       if isinstance(rels, dict)} if isinstance(judged, dict) else None)
 
     def close(self) -> None:
         if self._pool is not None:
@@ -1034,22 +1042,79 @@ def discover(mirror: Path, state_dir: Path, base: Base, state: State, plan: "Pla
     opened: everything its capture committed by then is found), or, for mail skipped,
     when it would have (:func:`cycle_reads`)."""
     read_from = report.setdefault("read_from", {})
-    read_from["portal_api"] = _now()
+    refreshed = report.setdefault("refreshed_at", {})
+    from ontology import project
+
+    def began(source: str, opener: Callable[[], Any]) -> None:
+        # the capture's own last refresh from its system, read before its scan begins
+        refreshed[source] = capture_refreshed(source, opener, base.bound)
+        read_from[source] = _now()
+    began("portal_api", lambda: project.MirrorCaptures(mirror))
     added = {"portal_api": portal_changes(mirror, base, state, plan)}
-    read_from["graph_mail"] = _now()
+    began("graph_mail", lambda: project.MailCaptures(state_dir))
     if unavailable is None:
         added["graph_mail"] = mail_changes(state_dir / "mail-capture" / "capture.db",
                                            base, state, exclusion)
     else:   # no people-exclusion guard: mail is never read (fail closed)
         report["mail_skipped"] = unavailable
     for family, path in stores.items():
-        read_from[family] = _now()
+        began(family, lambda family=family, path=path: project.capture_source(family, path))
         added[family] = store_changes(family, path, base, state)
     drive, lists = sharepoint_paths(state_dir)
     if drive.is_file() or lists.is_file():
-        read_from["sharepoint"] = _now()
+        began("sharepoint", lambda: project.SharePointCaptures(state_dir))
         added["sharepoint"] = sharepoint_changes(drive, lists, base, state)
     return added
+
+
+def capture_refreshed(source: str, opener: Callable[[], Any],
+                      bound: Mapping[str, Any] | None) -> str | None:
+    """When ``source``'s capture last refreshed from its source system, as a full build
+    states it (``Projector.freshness``: the stalest last refresh of the relations the
+    generation judged, ``bound``; every described one when it records none), read from
+    the live capture store (``describe``; mail without its whole-capture listing check,
+    which scans every message). A delta cycle's read reaches no further than this into
+    what the source holds: a capture that stopped refreshing (mail's 10 h outage, 11-12)
+    keeps its own old time however recently the cycle read the store. None when the store
+    cannot be opened or states no refresh time (the served freshness then does not move)."""
+    from ontology.store import instant
+    try:
+        with contextlib.closing(opener()) as captures:
+            described = (_mail_refreshes(captures) if source == "graph_mail"
+                         else captures.describe())
+    except Exception:  # noqa: BLE001 - not readable: no capture time
+        return None
+    relations = described.get("relations") if isinstance(described, Mapping) else None
+    if not isinstance(relations, Mapping):
+        return None
+    judged = (bound or {}).get(source)
+    times = []
+    for relation, state in relations.items():
+        if judged is not None and relation not in judged:
+            continue
+        at = state.get("last_refresh_at") if isinstance(state, Mapping) else None
+        if not at:
+            continue
+        try:
+            times.append(instant(at))
+        except Exception:  # noqa: BLE001 - an unreadable time: no capture time
+            return None
+    return min(times) if times else None
+
+
+def _mail_refreshes(captures: Any) -> dict[str, Any]:
+    """The mail capture's refresh time as ``MailCaptures.describe`` states it (the stalest
+    run of a folder it still reads: a folder with a terminal reason is never read again),
+    without describe's whole-capture listing check, which scans every message: read here
+    from the capture's own snapshot connection, so the derivation's code is not touched."""
+    from integrations.capture_mail import terminal_reason
+    runs = [row["last_run_at"] for row in captures._conn.execute(
+        "SELECT reason, last_run_at FROM folders").fetchall()
+        if row["last_run_at"] and not terminal_reason(row["reason"])]
+    from ontology.project import NOTICE_REFERENCES, NOTICE_RELATION
+    state = {"last_refresh_at": min(runs) if runs else None}
+    return {"relations": {name: dict(state) for name in (
+        "messages", "attachments", "people", NOTICE_RELATION, NOTICE_REFERENCES)}}
 
 
 # What a cycle read of each source, kept in its layer's ``store_meta`` (``READS_KEY``)
@@ -1068,7 +1133,8 @@ def cycle_reads(report: Mapping[str, Any], left_open: Mapping[str, int]
     layer or an earlier one), ``capped`` (``left`` records stay open for later cycles: the
     cycle cap, a mailbox the guard could not decide) or ``skipped`` (not read at all,
     ``reason``). A source not scanned (no capture store, a fold, a re-derivation check) is
-    not named: nothing is said of it."""
+    not named: nothing is said of it. ``refreshed_at``: the capture's own last refresh
+    from its system when the scan began (``capture_refreshed``), None when unknown."""
     out: dict[str, dict[str, Any]] = {}
     for source, at in (report.get("read_from") or {}).items():
         if source not in SOURCES or not isinstance(at, str):
@@ -1080,6 +1146,10 @@ def cycle_reads(report: Mapping[str, Any], left_open: Mapping[str, int]
         left = max(int(left_open.get(source) or 0), 0)
         out[source] = {"read_from": at, "state": "capped" if left else "complete",
                        "left": left}
+    for source, entry in out.items():
+        # the capture's own last refresh, read before the scan (``capture_refreshed``)
+        stamp = (report.get("refreshed_at") or {}).get(source)
+        entry["refreshed_at"] = stamp if isinstance(stamp, str) else None
     return out
 
 

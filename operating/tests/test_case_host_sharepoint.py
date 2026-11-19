@@ -1820,6 +1820,15 @@ NOTE = "01NOTE"
 NOTE_PO = "PO100236"
 
 
+def _without_lag(value):
+    """``value`` without its ``lag_seconds`` entries (wall-clock seconds since a capture)."""
+    if isinstance(value, dict):
+        return {k: _without_lag(v) for k, v in value.items() if k != "lag_seconds"}
+    if isinstance(value, list):
+        return [_without_lag(v) for v in value]
+    return value
+
+
 class StoredTextLookupTests(SharePointHostCase):
     """An identifier question reads
     the text the capture stored, through an index kept beside the store, and never
@@ -1970,6 +1979,54 @@ class StoredTextLookupTests(SharePointHostCase):
                 self.assertIsNotNone(entry["why"], handle)   # unsearched is never silent
         self.assertTrue({"extracted", "extracted_ocr"} <= statuses, statuses)
 
+    def test_a_big_bring_up_reads_in_worker_processes_the_entries_one_reading_makes(self):
+        # The files' text read in spawned workers (a bring-up of many files) makes the
+        # entries a reading in this process makes, every file once.
+        from operating import case_tools_host as host
+        pools = []
+        real = host._entry_pool
+
+        def counted(files):
+            pool = real(files)
+            pools.append(pool)
+            return pool
+        with mock.patch.object(host, "ENTRY_POOL_MIN_FILES", 1), \
+                mock.patch.object(host, "_entry_pool", side_effect=counted):
+            self.test_the_index_names_what_a_fresh_reading_of_every_captured_file_names()
+        self.assertTrue(pools and all(p is not None for p in pools), pools)
+
+    def test_a_bring_up_from_a_script_without_a_main_guard_ends(self):
+        # Spawned workers import the parent's __main__: run by path and unguarded, each
+        # ran the script again and waited on the lock its parent held, the parent on them
+        # (live 11-18). Such a process reads here instead, and the bring-up ends.
+        import signal
+        import subprocess
+        import sys
+        repo = Path(__file__).resolve().parents[2]
+        script = self.root / "unguarded_bring_up.py"
+        script.write_text(
+            "from pathlib import Path\n"
+            "from integrations.capture_sharepoint import SharePointCaptureStore\n"
+            "from operating import case_tools_host as c\n"
+            "c.ENTRY_POOL_MIN_FILES = 1\n"
+            f"s = SharePointCaptureStore.open_read_only(Path({str(self.state)!r}))\n"
+            "lookup = c._shared_lookup(s)\n"
+            "print(lookup.sync(s, wait=True), lookup.stamp() == c._store_stamp(s),\n"
+            "      c._entry_pool(10) is None, lookup.private)\n")
+        env = {k: v for k, v in os.environ.items() if k != "PLX_WORKBENCH_API_KEY"}
+        env["PYTHONPATH"] = str(repo)
+        run = subprocess.Popen([sys.executable, str(script)], cwd=self.root, env=env,
+                               stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+                               start_new_session=True)
+        try:
+            out, err = run.communicate(timeout=120)
+        except subprocess.TimeoutExpired:
+            os.killpg(run.pid, signal.SIGKILL)   # the parent and every worker it spawned
+            run.communicate()
+            self.fail("the bring-up never ended (workers ran the script again)")
+        self.assertEqual(run.returncode, 0, err)
+        self.assertEqual(out.split(), ["True", "True", "True", "False"], err)
+
     def test_a_file_without_stored_text_is_a_text_not_read_gap_never_read_now(self):
         note = self.handle(NOTE)
         stored = self.store.current(DRIVE, NOTE)["text_sha256"]
@@ -2034,6 +2091,58 @@ class StoredTextLookupTests(SharePointHostCase):
             self.assertEqual(conn.execute("SELECT value FROM meta WHERE key = 'format'")
                              .fetchone()[0], "plx-sharepoint-lookup/v1")
             conn.close()
+
+    def test_a_kept_lookup_with_broken_pages_is_made_anew_where_every_process_shares_it(self):
+        # A file whose pages are broken past its header (the bring-up reads "database
+        # disk image is malformed"): made anew in its own place under its lock, once, so
+        # the next process reads it as kept, never a private lookup read anew per process.
+        from operating import case_tools_host as host
+        with self.new_process():
+            self.ask(EMPLOYEE, "PO999999")
+        path = self.kept_index()
+        conn = sqlite3.connect(path)
+        with conn:
+            before = conn.execute("SELECT value FROM meta WHERE key = 'generation'").fetchone()[0]
+            conn.execute("UPDATE meta SET value = 'older' WHERE key = 'stamp'")   # behind
+        conn.close()
+        real, calls = host._sync_files, []
+
+        def broken_once(store, conn):
+            calls.append(1)
+            if len(calls) == 1:
+                raise sqlite3.DatabaseError("database disk image is malformed")
+            return real(store, conn)
+        private = list(host._PRIVATE_DIRS)
+        with self.new_process(), mock.patch.object(host, "_sync_files", side_effect=broken_once):
+            answer = self.ask(EMPLOYEE, NOTE_PO)
+        self.assertEqual([d["citation"] for d in answer["documents"]], [self.handle(NOTE)])
+        self.assertEqual(len(calls), 2)
+        self.assertEqual(host._PRIVATE_DIRS, private)   # no process-own lookup made
+        conn = sqlite3.connect(path)
+        kept = dict(conn.execute("SELECT key, value FROM meta"))
+        conn.close()
+        self.assertNotEqual(kept["generation"], before)   # made anew in its own place
+        with self.new_process():   # the next process reads it as kept, not made again
+            again = self.ask(EMPLOYEE, NOTE_PO)
+        self.assertEqual([d["citation"] for d in again["documents"]], [self.handle(NOTE)])
+        self.assertEqual(host._PRIVATE_DIRS, private)
+        conn = sqlite3.connect(path)
+        self.assertEqual(conn.execute("SELECT value FROM meta WHERE key = 'generation'")
+                         .fetchone()[0], kept["generation"])
+        conn.close()
+        # locked or I/O (an OperationalError) is no broken file: left as it is
+        conn = sqlite3.connect(path)
+        with conn:
+            conn.execute("UPDATE meta SET value = 'older' WHERE key = 'stamp'")
+        conn.close()
+        held = path.stat().st_ino
+        store = SharePointCaptureStore.open_read_only(self.state)
+        self.addCleanup(store.close)
+        with mock.patch.dict(host._LOOKUPS, clear=True), mock.patch.object(
+                host, "_sync_files", side_effect=sqlite3.OperationalError("disk I/O error")):
+            with self.assertRaises(sqlite3.OperationalError):
+                host._shared_lookup(store).sync(store, wait=True)
+        self.assertEqual(path.stat().st_ino, held)
 
     def test_every_one_of_sixty_new_files_is_indexed_once(self):
         # Cardinality: N=1, 10 and 60 files captured since the index was kept are each
@@ -2108,7 +2217,9 @@ class StoredTextLookupTests(SharePointHostCase):
                 first = self.ask(EMPLOYEE, "PO999999")
             for answer in (first, expected):
                 answer.get("meta", {}).pop("as_known_at", None)
-            self.assertEqual(first, expected)
+            # a stale source's lag is counted from the clock when each was asked: two asks
+            # a second apart differ there only (flaked 1 of 2 on a loaded box, 11-18)
+            self.assertEqual(_without_lag(first), _without_lag(expected))
 
     def test_a_batch_reader_starts_no_warm_up_and_reads_the_index_when_asked(self):
         # 2026-11-07: every proactive engine worker started the warm-up, which (its kept
@@ -2483,7 +2594,9 @@ class FileClearanceTests(SharePointHostCase):
 
     scanned = False
     SCRATCH = "01SCRATCH"
-    QC_DOC = "01QCDOC"   # a BATCH COA (access.ts@1d3eaf2:88-93): admins and QC staff only
+    # A BATCH COA. The Portal limits it to admins and QC staff (access.ts@1d3eaf2:88-93);
+    # the Workbench does not (its class alone decides), so every reader here is served it.
+    QC_DOC = "01QCDOC"
     ITEMS = ("01FILEB", "01OPEN", SCRATCH, QC_DOC)
 
     def seed(self):
@@ -2594,7 +2707,8 @@ class FileClearanceTests(SharePointHostCase):
 
     def test_a_finance_reader_is_served_a_finance_category_file(self):
         served = self.served(self.employee("STAFF", "Finance"))
-        self.assertEqual(served, {self.handle(i) for i in ("01FILEB", "01OPEN", self.SCRATCH)})
+        self.assertEqual(served, {self.handle(i) for i in ("01FILEB", "01OPEN", self.SCRATCH,
+                                                           self.QC_DOC)})
 
     def test_an_admin_outside_finance_and_an_unknown_department_are_refused(self):
         # The last reader: Entra still says Finance, the Portal membership was removed.
@@ -2602,26 +2716,26 @@ class FileClearanceTests(SharePointHostCase):
                                         ("STAFF", None, None), ("STAFF", "Finance", frozenset())):
             with self.subTest(role=role, department=department, codes=codes):
                 server = self.employee(role, department, portal_codes=codes)
-                admin = {self.handle(self.QC_DOC)} if role == "ADMIN" else set()
-                self.assertEqual(self.served(server),
-                                 {self.handle(i) for i in ("01OPEN", self.SCRATCH)} | admin)
+                # Refused the Finance file only; the QC document is a business document.
+                self.assertEqual(self.served(server), {
+                    self.handle(i) for i in ("01OPEN", self.SCRATCH, self.QC_DOC)})
                 self.assert_no_confident_absence(server)
 
     def test_a_staff_scratch_file_is_served_to_its_owner_only(self):
         served = self.served(self.employee("SUPER_ADMIN", "Executive", "cmuser0000002"))
         self.assertEqual(served, {self.handle(i) for i in ("01FILEB", "01OPEN", self.QC_DOC)})
 
-    def test_a_batch_qc_document_is_served_to_admins_and_quality_staff_only(self):
-        # access.ts@1d3eaf2:88-93: the BATCH COA under Batches/ reaches an admin or a
-        # Portal-confirmed QUALITY/QA/QC member only, on every read path.
-        files = {self.handle(i) for i in ("01FILEB", "01OPEN", self.SCRATCH)}
-        qc = self.handle(self.QC_DOC)
-        for role, department, codes, expected in (
-                ("ADMIN", "Operations", None, files - {self.handle("01FILEB")} | {qc}),
-                ("STAFF", "Quality Control", None, files - {self.handle("01FILEB")} | {qc}),
-                ("MANAGER", "Operations", None, files - {self.handle("01FILEB")}),
-                ("STAFF", "Quality", frozenset(), files - {self.handle("01FILEB")}),
-                ("STAFF", None, frozenset({"QC"}), files - {self.handle("01FILEB")})):
+    def test_a_batch_qc_document_is_served_to_every_employee_its_class_allows(self):
+        # Decision 2026-11-17 (permissions simplified): the BATCH COA under Batches/ is a
+        # business document; no admin or QUALITY/QA/QC membership is needed, on every read
+        # path. The Finance file beside it stays refused to these readers.
+        expected = {self.handle(i) for i in ("01OPEN", self.SCRATCH, self.QC_DOC)}
+        for role, department, codes in (
+                ("ADMIN", "Operations", None),
+                ("STAFF", "Quality Control", None),
+                ("MANAGER", "Operations", None),
+                ("STAFF", "Quality", frozenset()),
+                ("STAFF", None, frozenset({"QC"}))):
             with self.subTest(role=role, department=department, codes=codes):
                 self.assertEqual(self.served(self.employee(role, department,
                                                            portal_codes=codes)), expected)

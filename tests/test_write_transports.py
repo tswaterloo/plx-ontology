@@ -12,6 +12,7 @@ from __future__ import annotations
 import base64
 import json
 import os
+from pathlib import Path
 import unittest
 from unittest import mock
 
@@ -212,6 +213,187 @@ class Transports(Base):
         row = ex.run(item("live2", **planner), NOW, approval)[0]
         self.assertEqual(row["status"], "unavailable")
         self.assertEqual(len(send.calls), 2)
+
+
+class FakePortal:
+    """The Portal's staff routes that take a workbench_write key (TASK-5101), in memory as
+    the handlers at plx-customer-portal staging a8b4b92 behave: a ``Bearer plx_`` key, the
+    route's own body, no version check and no Idempotency-Key replay (both asked of the
+    Portal team). Answers like ``urllib_sender``."""
+
+    KEY = "plx_synthetic_workbench_key"
+
+    def __init__(self):
+        self.orders = {"so_9": {"poReference": None, "notes": None, "status": "DRAFT"}}
+        self.notes, self.releases, self.calls = [], [], []
+
+    def __call__(self, method, url, headers, body, timeout, max_bytes):
+        self.calls.append((method, url, dict(headers), body))
+        if headers.get("Authorization") != f"Bearer {self.KEY}":
+            return 401, {}, b'{"error":"Unauthorized"}'
+        path = url.split("https://portal-write.test", 1)[1]
+        data = json.loads(body) if body else {}
+        parts = path.strip("/").split("/")
+        if method == "PATCH" and parts[:3] == ["api", "mrp", "sales-orders"]:
+            order = self.orders.get(parts[3])
+            if order is None:
+                return 404, {}, b'{"error":"Not found"}'
+            # the handler reads its own header fields; anything else is not applied
+            order.update({k: v for k, v in data.items()
+                          if k in ("poReference", "notes", "requiredDate", "status")})
+            return 200, {}, json.dumps({"id": parts[3], "status": order["status"]}).encode()
+        if method == "POST" and parts[:2] == ["api", "activity"] and parts[-1] == "note":
+            self.notes.append((parts[2], parts[3], data["content"]))
+            return 201, {}, json.dumps({"id": f"n{len(self.notes)}"}).encode()
+        if method == "POST" and parts[-1] == "ship-releases":
+            self.releases.append((parts[3], data))
+            return 201, {}, json.dumps({"id": f"r{len(self.releases)}"}).encode()
+        return 404, {}, b'{"error":"Not found"}'
+
+
+PORTAL = {guard.WRITES_FLAG: "portal", guard.PORTAL_URL_ENV: "https://portal-write.test",
+          "PORTAL_WRITE_KEY": FakePortal.KEY, aw.APPROVED_ENV: "portal_write"}
+SEEN = "2026-11-18T14:00:00+00:00"
+
+
+def portal_item(n, operation, target, payload, precondition=None):
+    write = {"system": "portal", "operation": operation, "target": target,
+             "payload": payload}
+    if precondition:
+        write["precondition"] = precondition
+    return item(n, write=write)
+
+
+class Portal(Base):
+    """The Portal adapter on the Portal's real staff routes against a fake of them, end to
+    end through the executor, the transport and the guard (injected-transport)."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.portal = FakePortal()
+        self.env = dict(PORTAL)
+        self.transport = wt.PortalWriteTransport(self.env, send=self.portal)
+        self.ex = self.executor(self.env, portal_write=wa.PortalAdapter(
+            self.transport, environ=self.env))
+        self.approval = aw.Approval(by=(OWNER,), confirmed_live=True)
+
+    def test_an_order_edit_a_note_and_a_release_go_to_the_routes_and_the_edit_undoes(self):
+        edit = portal_item("p1", "sales-order.update", {"id": "so_9"},
+                           {"poReference": "PO-1"},
+                           {"updated_at": SEEN, "prior": {"poReference": None}})
+        row = self.ex.run(edit, NOW, self.approval)[0]
+        self.assertEqual((row["mode"], row["status"]), ("live", "done"), row)
+        self.assertEqual(self.ex.run(edit, NOW, self.approval)[0]["status"], "duplicate")
+        method, url, headers, body = self.portal.calls[0]
+        self.assertEqual((method, url), ("PATCH",
+                                         "https://portal-write.test/api/mrp/sales-orders/so_9"))
+        self.assertEqual(headers["Idempotency-Key"], row["key"])
+        self.assertNotIn("If-Match", headers)
+        # the version as read goes along (the Portal is asked to check it)
+        self.assertEqual(json.loads(body), {"poReference": "PO-1", "expectedUpdatedAt": SEEN})
+        self.assertEqual(self.portal.orders["so_9"]["poReference"], "PO-1")
+        self.assertEqual(self.ex.undo(row["key"], NOW)["status"], "done")
+        self.assertIsNone(self.portal.orders["so_9"]["poReference"])
+        note = portal_item("p2", "activity.note", {"record_type": "sales_order",
+                                                   "record_id": "so_9"},
+                           {"content": "Customer confirmed the dock time."})
+        self.assertEqual(self.ex.run(note, NOW, self.approval)[0]["status"], "done")
+        self.assertEqual(self.portal.notes, [("sales_order", "so_9",
+                                              "Customer confirmed the dock time.")])
+        # a quantity travels as an exact JSON number, never a float or a string
+        release = portal_item("p3", "ship-release.create", {"order_id": "fm_1"},
+                              {"customerLocationId": "loc_1", "lines": [
+                                  {"orderLineRef": "ol_1", "productId": "p_1",
+                                   "qtyAuthorized": "12.5", "uom": "CS"}]})
+        shown = self.ex.run(release, NOW, self.approval)[0]
+        if shown["status"] == "not_routine":
+            shown = self.ex.run(release, NOW, aw.Approval(
+                by=(OWNER,), confirmed_live=True, acknowledged=tuple(shown["reasons"])))[0]
+        self.assertEqual(shown["status"], "done", shown)
+        self.assertIn(b'"qtyAuthorized":12.5', self.portal.calls[-1][3])
+        self.assertIsNone(wa.PortalAdapter(environ=self.env).undo_request(
+            release["body"]["prepared"]["write"], {"method": "POST", "body": {}}))
+
+    def test_closed_unconfigured_off_route_or_asked_route_sends_nothing(self):
+        route = "https://portal-write.test/api/mrp/sales-orders/so_9"
+        for env, why in (({**self.env, guard.WRITES_FLAG: "bc"}, "not opened"),
+                         ({**self.env, guard.PORTAL_URL_ENV: ""}, "address"),
+                         ({**self.env, guard.PORTAL_URL_ENV: "https://h.test:8443"}, "address"),
+                         ({**self.env, guard.PORTAL_URL_ENV: f"https://{guard.BC_HOST}"},
+                          "address"),
+                         ({**self.env, "PORTAL_WRITE_KEY": ""}, "key"),
+                         ({**self.env, "PORTAL_WRITE_KEY": "pk-reporting"}, "workbench_write")):
+            with self.subTest(why):
+                t = wt.PortalWriteTransport(env, send=self.portal)
+                self.assertTrue(any(why in m for m in t.missing()), t.missing())
+                self.assertEqual(t({"method": "PATCH", "url": route[25:],
+                                    "body": {"notes": "x"}}, "k" * 64)[0], 403)
+        self.assertEqual(self.portal.calls, [])
+        key = {"Idempotency-Key": "k" * 64}
+        base = "https://portal-write.test"
+        bad = [(("PATCH", route), {}),                                # no idempotency key
+               (("PATCH", route), {**key, "If-Match": '"1"'}),
+               (("DELETE", route), key),                              # never a delete
+               (("GET", route), key),
+               (("PUT", route), key),
+               (("POST", route), key),
+               (("PATCH", base + "/api/mrp/purchase-orders/line-items"), key),
+               (("PATCH", "https://evil.test/api/mrp/sales-orders/so_9"), key),
+               (("PATCH", route + "?x=1"), key),
+               (("PATCH", route.replace("so_9", "so%2F9")), key),
+               (("PATCH", base + "/api/mrp/sales-orders/so_9/lines"), key),
+               (("POST", base + "/api/mrp/quality/records/q1/sign"), key),
+               (("POST", base + "/workbench/v1/records/app_customer"), key),
+               # an asked route is closed until the owner names it
+               (("POST", base + "/api/operations/customers/c1/contacts"), key)]
+        for (method, url), headers in bad:
+            with self.subTest(method=method, url=url, headers=headers):
+                with self.assertRaises(guard.ReadOnlyGuardError):
+                    guard.check_write_request(method, url, headers,
+                                              None if method in ("DELETE", "GET") else b"{}",
+                                              environ=self.env)
+        opened = {**self.env, guard.PORTAL_ROUTES_ENV: "customer-contact.create"}
+        self.assertEqual(guard.check_write_request(
+            "POST", base + "/api/operations/customers/c1/contacts", key, b"{}",
+            environ=opened), "portal")
+        # the Idempotency-Key header is the Portal's only: Graph and BC keep their set
+        with self.assertRaises(guard.ReadOnlyGuardError):
+            guard.check_write_request("PATCH", "https://graph.microsoft.com/v1.0/planner/"
+                                      "tasks/t1", {**key}, b"{}",
+                                      environ={guard.WRITES_FLAG: "planner"})
+        # every adapter route is a guard shape, and the other way round
+        adapter = wa.PortalAdapter(environ=opened)
+        shapes = {r for r, _m, _p in guard.PORTAL_WRITE_SHAPES}
+        self.assertEqual(shapes, set(wa.PORTAL_ROUTES))
+        self.assertEqual(guard.PORTAL_LISTED,
+                         {k for k, v in wa.PORTAL_ROUTES.items() if not v.get("asked")})
+        for op, spec in wa.PORTAL_ROUTES.items():
+            ids = {k: "x1" for k in spec["target"]}
+            self.assertEqual(guard.write_shape(spec["method"], base + spec["path"].format(
+                **ids), {**opened, guard.PORTAL_ROUTES_ENV: ",".join(wa.PORTAL_ROUTES)}),
+                "portal", op)
+        self.assertTrue(adapter.operations)
+
+    def test_cardinality_and_a_contacts_address_is_cleared(self):
+        # every note written once or held by the approver's rate limit: none lost or doubled
+        for n in (1, 10, 60):
+            before = len(self.portal.notes)
+            got = [self.ex.run(portal_item(f"c{n}-{i}", "activity.note",
+                                           {"record_type": "sales_order",
+                                            "record_id": f"so_{n}_{i}"},
+                                           {"content": f"Note {n}-{i}"}), NOW,
+                               self.approval)[0] for i in range(n)]
+            self.assertLessEqual({r["status"] for r in got}, {"done", "rate_limited"})
+            done = [r for r in got if r["status"] == "done"]
+            self.assertEqual(len(self.portal.notes) - before, len(done))
+            self.assertEqual(len({r["key"] for r in done}), len(done))
+            self.assertTrue(done)
+        texts = [n[2] for n in self.portal.notes]
+        self.assertEqual(len(texts), len(set(texts)))
+        adapter = wa.PortalAdapter(environ=self.env)
+        self.assertEqual(adapter.people({"payload": {"email": "dana@example.com",
+                                                     "name": "Dana"}}),
+                         ["dana@example.com"])
 
 
 if __name__ == "__main__":

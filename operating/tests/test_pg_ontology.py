@@ -9,6 +9,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 import io
 import json
+import re
 import sqlite3
 import tempfile
 import unittest
@@ -754,6 +755,9 @@ class OntologyLoadTests(unittest.TestCase):
         import shutil
         store = Path(self.tmp.name) / "chunk-runs.sqlite"
         shutil.copyfile(self.store, store)
+        # the class's database holds the class's store again after (the next test reads it)
+        self.addCleanup(ontology_load.load, self.store, self.dsn, workers=1, replace=True,
+                        log=io.StringIO())
         with closing(sqlite3.connect(store)) as lite:
             picks = {fam: [r[0] for r in lite.execute(
                 "SELECT object_id FROM objects WHERE audience_key LIKE ? ORDER BY object_id "
@@ -829,6 +833,135 @@ class OntologyLoadTests(unittest.TestCase):
         with mock.patch.object(chunk_families, "runs_for", side_effect=AssertionError):
             self.assertEqual(found("quillfeather pallets"), [handle[picks["mail"][1]]])
         self.assertTrue(later)
+
+    def test_value_rows_numbered_by_the_readers_field_order_are_the_views_rows(self):
+        """``PgStoreReader.numbered_values`` and ``value_word_join`` number value rows by
+        the field order written into the statement (``numbered_sql``: the view re-ran its
+        window over every field once per candidate, seconds per plx.search slice live):
+        the same rows, numbers and order as ``object_values_numbered`` for every row
+        number and word match; a number of no row (a place past the order, a source with
+        no such cell) reads nothing."""
+        from unittest import mock
+        from operating.pg import ontology_load, ontology_reader
+        ontology_load.load(self.store, self.dsn, workers=1, replace=True, log=io.StringIO())
+        with mock.patch.dict("os.environ", {"PLX_ONTOLOGY_PG": "only"}):
+            reader = ontology_reader.PgStoreReader.open(self.dsn)
+        self.addCleanup(reader.close)
+        self.assertTrue(reader.words_loaded())
+        numbered, where = reader.numbered_values
+        self.assertNotIn("object_values_numbered", numbered + reader.value_word_join)
+        cols = "v.row_no, v.object_id, v.property, v.field_path, v.value, v.markings"
+        with reader.lock:
+            view = [tuple(r) for r in reader.conn.execute(
+                f"SELECT {cols} FROM object_values_numbered v ORDER BY v.row_no")]
+        self.assertGreater(len(view), 100)
+        ids = [r[0] for r in view]
+        top = max(ids) & 1048575
+        missing = [(ids[0] >> 20 << 20) | (top + 1), ((max(ids) >> 20) + 999) << 20 | 1]
+        for n in (1, 10, 60, len(ids)):
+            for at in range(0, len(ids), n):
+                part = ids[at:at + n]
+                with reader.lock:
+                    got = [tuple(r) for r in reader.conn.execute(
+                        f"SELECT {cols} FROM {numbered} WHERE {where} ORDER BY v.row_no",
+                        {"ids": json.dumps(part + missing)})]
+                self.assertEqual(got, view[at:at + n], (n, at))
+                if n < len(ids) and at > 300:
+                    break
+        with reader.lock:
+            lite_terms = [r[0] for r in reader.conn.execute(
+                "SELECT DISTINCT value FROM object_values_numbered WHERE value_type = 'text' "
+                "LIMIT 30")]
+        words = sorted({w.lower() for t in lite_terms for w in re.findall(r"[A-Za-z]{4,}", t)})
+        self.assertTrue(words)
+        for word in words[:25]:
+            sql = (f"SELECT {cols} FROM {{join}} WHERE value_text MATCH :q ORDER BY v.row_no")
+            with reader.lock:
+                want = [tuple(r) for r in reader.conn.execute(
+                    sql.format(join=ontology_reader.VALUE_WORD_JOIN), {"q": f'"{word}"*'})]
+                got = [tuple(r) for r in reader.conn.execute(
+                    sql.format(join=reader.value_word_join), {"q": f'"{word}"*'})]
+            self.assertEqual(got, want, word)
+            self.assertTrue(want, word)
+        # an order no subscript can name: the view, as before
+        self.assertEqual(ontology_reader.numbered_sql({0: 1}),
+                         ("object_values_numbered", None))
+
+    def test_a_query_of_several_words_reads_the_rarest_by_index_and_the_rest_among_its_objects(self):
+        """plx.documents' value pass of a query of several words: the documents whose values
+        hold every word (each word in a value of its own counts), read as the rarest word's
+        index matches and each other word only among the objects still in; a word none
+        holds ends the pass (the common words' index is never read); a document holding
+        only some of the words is not listed by it."""
+        from unittest import mock
+        from ontology.types import Actor
+        from operating import ontology_tools as ot
+        from operating import ontology_tools_evidence as ev
+        from operating.pg import ontology_load, ontology_reader
+        import shutil
+        store = Path(self.tmp.name) / "rarest.sqlite"
+        shutil.copyfile(self.store, store)
+        # the class's database holds the class's store again after (the next test reads it)
+        self.addCleanup(ontology_load.load, self.store, self.dsn, workers=1, replace=True,
+                        log=io.StringIO())
+        with closing(sqlite3.connect(store)) as lite:
+            rows = lite.execute(
+                "SELECT v.object_id, v.row_no, v.l1_handle FROM object_values_numbered v "
+                "JOIN objects o ON o.object_id = v.object_id WHERE o.audience_key LIKE "
+                "'mail:%' AND v.value_type = 'text' AND v.superseded_at IS NULL "
+                "ORDER BY v.object_id, v.row_no").fetchall()
+            cells: dict[str, list] = {}
+            for oid, row_no, handle in rows:
+                cells.setdefault(oid, []).append((row_no, handle))
+            both, one = [oid for oid, c in cells.items() if len(c) >= 2][:2]
+            # words in two values of one document; the rare one alone in another's
+            lite.execute("UPDATE value_cells SET value = 'common zorvexa report' "
+                         "WHERE rowid = ?", (cells[both][0][0],))
+            lite.execute("UPDATE value_cells SET value = 'about quillonite' "
+                         "WHERE rowid = ?", (cells[both][1][0],))
+            lite.execute("UPDATE value_cells SET value = 'zorvexa only here' "
+                         "WHERE rowid = ?", (cells[one][0][0],))
+            # a common word: in a value of most other documents
+            for oid, held in list(cells.items()):
+                if oid not in (both, one):
+                    lite.execute("UPDATE value_cells SET value = 'weekly report' "
+                                 "WHERE rowid = ?", (held[0][0],))
+            lite.commit()
+        ontology_load.load(store, self.dsn, workers=1, replace=True, log=io.StringIO())
+        import psycopg
+        with psycopg.connect(self.dsn, autocommit=True) as pg:
+            pg.execute("ANALYZE ontology.value_cells")   # the words' statistics
+        with mock.patch.dict("os.environ", {"PLX_ONTOLOGY_PG": "only"}):
+            reader = ontology_reader.PgStoreReader.open(self.dsn)
+        self.addCleanup(reader.close)
+        policy = ot.ReadPolicy("plx", {"mail:*": {"r"}, "sharepoint:*": {"r"}})
+        tools = ev.EvidenceTools(ot.OntologyTools(
+            reader, policy, grammar=ot.default_grammar(), item_gate=lambda _a, _h: True))
+        actor = Actor("plx", frozenset({"r"}))
+        read = []
+        real = reader.word_rows
+
+        def counted(table, words, *a, **k):
+            read.append((table, words))
+            return real(table, words, *a, **k)
+
+        def found(query):
+            read.clear()
+            with mock.patch.object(reader, "word_rows", side_effect=counted):
+                result = tools.call("plx.documents", {"query": query,
+                                                      "sources": ["graph_mail"]}, actor)
+            self.assertNotIn("error", result, result)
+            return {d["citation"] for d in result["documents"]}
+
+        self.assertIn(cells[both][0][1], found("zorvexa quillonite"))
+        self.assertNotIn(cells[one][0][1], found("zorvexa quillonite"))
+        self.assertIn(cells[one][0][1], found("zorvexa"))
+        # the rarer word first: "report" (in many values) is never read through the index
+        found("report quillonite")
+        self.assertEqual([w for t, w in read if t == "value_text"], ['"quillonite"*'])
+        # a word no value holds: the pass ends there, the common word unread
+        self.assertEqual(found("report xyzzyplughq"), set())
+        self.assertNotIn('"report"*', [w for t, w in read if t == "value_text"])
 
 
 if __name__ == "__main__":

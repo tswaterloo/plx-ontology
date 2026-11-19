@@ -135,7 +135,16 @@ class StatusTest(_Versions):
             release.set()
             ds._SERVING[str(self.state)].join(10)
             self.assertEqual(ds.served(self.state)["stale"], ["truth-check"])
-        self.assertEqual(len(reads), 1)
+            # past its time: the status known at once, never waited on while read again
+            release.clear()
+            when, kept = ds._SERVED[str(self.state)]
+            ds._SERVED[str(self.state)] = (when - ds.SERVED_TTL - 1, kept)
+            started = _time.monotonic()
+            self.assertEqual(ds.served(self.state)["stale"], ["truth-check"])
+            self.assertLess(_time.monotonic() - started, 0.15)
+            release.set()
+            ds._SERVING[str(self.state)].join(10)
+        self.assertEqual(len(reads), 2)
 
 
 class InboxCodeTest(_Versions):

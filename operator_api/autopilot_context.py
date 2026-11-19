@@ -185,7 +185,9 @@ class DraftContext:
             body = f"{row.get('subject') or ''} {row.get('text') or ''}"
             shared = mem._coverage(terms, body) if terms else 0.0
             if row["kind"] in ("instruction", "preference"):
-                keep = bool(_WRITING.search(body)) or shared >= WORDS_SHARED
+                # a standing preference ("always ...", "never mention Y to Z") holds for
+                # every draft of theirs: kept whatever the message says (owner 11-18)
+                keep = True
             else:
                 keep = bool(records & set(row.get("records") or ())) or shared >= WORDS_SHARED
             if keep:
@@ -220,7 +222,11 @@ class DraftContext:
             return []
         text = f"{event.get('subject') or ''} {event.get('text') or ''}"
         rows = self._memory(mem.KeyReader(key), text, _records(work, event))
-        return [" ".join(f"{r.get('subject') or ''} {r.get('text') or ''}".split())[:400]
+        # a preference or instruction carries its id (``autopilot_drafter.PREFERENCE``): the
+        # model names the ones it followed, shown on the draft as applied
+        return [(f"[pref {int(r['id'])}] " if r.get("kind") in ("instruction", "preference")
+                 and type(r.get("id")) is int else "")
+                + " ".join(f"{r.get('subject') or ''} {r.get('text') or ''}".split())[:400]
                 for r in rows]
 
     def for_draft(self, owner: str, autopilot: str, work: Mapping[str, Any],
@@ -228,6 +234,7 @@ class DraftContext:
         """(the work with the person's memory and template applied, ``used`` or None when
         nothing was kept)."""
         out = dict(work)
+        followed = out.pop("memory_followed", None) or ()
         key = self._key(owner)
         if not key:
             return out, None
@@ -253,6 +260,10 @@ class DraftContext:
                     if changed is not None:
                         out[name] = changed
                         used_template = got[0]
+        # the preferences the model followed writing the reply (``memory_followed``: only
+        # ids of this person's own rows read here)
+        mine = {int(r["id"]) for r in kept}
+        applied += [i for i in followed if type(i) is int and i in mine and i not in applied]
         related = [int(r["id"]) for r in kept if int(r["id"]) not in applied]
         if not applied and not related and used_template is None:
             return out, None
@@ -363,8 +374,167 @@ def factory(environ: Optional[Mapping[str, str]] = None) -> Optional[Callable[[]
 
 
 def register(environ: Optional[Mapping[str, str]] = None) -> None:
-    from operating import autopilot
+    from operating import autopilot, autopilot_drafter
     autopilot.DRAFT_CONTEXT_FACTORY = factory(environ)
+    autopilot_drafter.LOOKUP_FACTORY = lookup_factory(environ)
+
+
+# ----------------------------------------------------------------------------- lookups
+# A reply draft looks facts up with the Simple Ask's tools (plx.sql, plx.search, plx.open)
+# through the permission door AS the person it is drafted for.
+# It runs only for a
+# person the readers file names (their identity claims, as the app's sign-in gives them),
+# with the session secret the host ticket is signed with; anything missing: no lookup (the
+# draft is the one plain call, as before). Only for a reply every reader of which is the
+# company's own (``operating.autopilot.ours_only``).
+READERS_ENV = "PLX_AUTOPILOT_READERS_FILE"     # {"<person oid>": {uid, email, entraTenantId, entraObjectId}}
+HOST_CONFIG_ENV = "PLX_AUTOPILOT_HOST_CONFIG"
+HOST_STATE_ENV = "PLX_AUTOPILOT_HOST_STATE"
+CLAIMS = ("uid", "email", "entraTenantId", "entraObjectId")
+# the whole session, killed past it; then the plain call writes the reply from what is
+# known (``autopilot_drafter.LOOKUP_GAP``), both inside the cycle's draft wait (160 s)
+LOOKUP_SECONDS = 100
+LOOKUP_BUDGET = 70            # research ends before it (the gate's budget)
+LOOKUP_STEPS = 10
+LOOKUP_TURNS = 16
+# a job finds the record and its ids before it proposes (``operating.autopilot_jobs``): more
+# steps; it runs on the jobber's pool, so a cycle defers its event while it runs
+JOB_SECONDS = 240
+JOB_BUDGET = 180
+JOB_STEPS = 18
+JOB_TURNS = 30
+
+
+def readers(path: Any) -> dict[str, dict[str, str]]:
+    """The readers file: each person id with its four claims, the object id the same as
+    the key; an entry that is not exactly that is left out ({} when unreadable)."""
+    import json
+    try:
+        raw = json.loads(Path(path).read_text(encoding="utf-8"))
+    except (OSError, ValueError, TypeError):
+        return {}
+    out: dict[str, dict[str, str]] = {}
+    for oid, claims in (raw.items() if isinstance(raw, dict) else ()):
+        if isinstance(claims, dict) and set(claims) == set(CLAIMS) and all(
+                isinstance(claims[k], str) and claims[k].strip() for k in CLAIMS) \
+                and claims["entraObjectId"].lower() == str(oid).lower():
+            out[str(oid).lower()] = {k: claims[k].strip() for k in CLAIMS}
+    return out
+
+
+def _homed(spawn: Any, home: str) -> Any:
+    """``spawn`` with the model process on the autopilot's own config home (never the
+    operator's login: ``chat_ask_model.credential_path_safe``)."""
+    def run(argv: list, cwd: str, env: dict, timeout: Any, **options: Any) -> Any:
+        return spawn(argv, cwd, {**env, "HOME": home,
+                                 "CLAUDE_CONFIG_DIR": os.path.join(home, ".claude")},
+                     timeout, **options)
+    run.stops = getattr(spawn, "stops", False)       # type: ignore[attr-defined]
+    run.feeds = getattr(spawn, "feeds", False)       # type: ignore[attr-defined]
+    return run
+
+
+class Lookup:
+    """One tool session per draft as its person (``operating.autopilot_drafter.Writer``)."""
+
+    def __init__(self, environ: Mapping[str, str]) -> None:
+        from operating import autopilot_drafter as ad, chat_ask_model as cm
+        from operating.session_identity import session_secret
+        self.secret = session_secret(environ)
+        self.config = Path(str(environ.get(HOST_CONFIG_ENV) or ""))
+        self.state = Path(str(environ.get(HOST_STATE_ENV) or ""))
+        self.readers = readers(environ.get(READERS_ENV) or "")
+        self.model = str(environ.get(ad.MODEL_ENV) or "").strip()
+        self.binary = environ.get(cm.BINARY_ENV) or cm.BINARY
+        self.home = environ.get(cm.HOME_ENV) or cm.CLAUDE_HOME
+        self.graph = {n: environ[n] for n in _graph_env() if environ.get(n)}
+
+    def run(self, owner: str, prompt: str, *, tools: Sequence[Any] = (),
+            job: bool = False) -> Optional[tuple[str, list[str]]]:
+        """(the session's final text, the texts the tools returned) or None: no session
+        for ``owner`` (not in the readers file, no secret, no host, an unsafe home).
+        ``tools``: local tools the session gets beside the read tools (an autopilot job's
+        proposal tools, ``operating.autopilot_jobs``); ``job``: the job's system prompt
+        and its longer limits (``JOB_*``)."""
+        import json
+        from operating import agent_session, chat_ask_model as cm, model_ledger
+        from operating.card_text import masked_spawn
+        from operating.ontology_tools_traverse import FACTS_KEEPER_ENV
+        from . import simple_ask
+        claims = self.readers.get(str(owner or "").lower())
+        if not (claims and self.secret and self.model and self.config.is_file()
+                and self.state.is_dir() and cm.credential_path_safe(self.binary, self.home)):
+            return None
+        config = json.loads(self.config.read_text(encoding="utf-8"))
+        extra = dict(self.graph) if config.get("entra_directory") else {}
+        extra[FACTS_KEEPER_ENV] = "0"
+        host = agent_session.ReaderHost(self.state, self.config, claims, self.secret,
+                                        tenant=str(config.get("tenant") or "plx"),
+                                        extra_env=extra, agent=simple_ask.AGENT)
+        agent = agent_session.ClaudeCodeAgent(
+            binary=self.binary, model=self.model,
+            timeout=JOB_SECONDS if job else LOOKUP_SECONDS,
+            max_turns=JOB_TURNS if job else LOOKUP_TURNS,
+            spawn=masked_spawn(_homed(agent_session._spawn, self.home)),
+            budget_seconds=JOB_BUDGET if job else LOOKUP_BUDGET,
+            max_steps=JOB_STEPS if job else LOOKUP_STEPS, aliases=False,
+            end_at_gate=False, prefetch=False, helpers=0,
+            extra_args=["--system-prompt", job_system_prompt() if job else system_prompt()])
+        if tools:
+            agent.local_tools = {**agent.local_tools, **{t.spec["name"]: t for t in tools}}
+        import time
+        started = time.monotonic()
+        try:
+            ran = agent.run(prompt, host)
+        finally:
+            close = getattr(host, "close", None)
+            if close is not None:
+                close()
+        turns, tokens = model_ledger.usage_of({"num_turns": ran.usage.get("num_turns"),
+                                               "usage": ran.usage})
+        model_ledger.record("autopilot_job" if job else "autopilot_draft", prompt=prompt,
+                            ok=bool(ran.final_text),
+                            turns=turns, tokens=tokens, seconds=time.monotonic() - started)
+        looked = [str(e.get("result")) for e in ran.events
+                  if e.get("type") == "tool_call" and e.get("name") in simple_ask.TOOLS
+                  and not e.get("is_error") and e.get("result") is not None]
+        return str(ran.final_text or ""), looked
+
+
+def _graph_env() -> tuple[str, ...]:
+    from operating import agent_session
+    return tuple(agent_session.GRAPH_ENV)
+
+
+def system_prompt() -> str:
+    """The Simple Ask's data dictionary and method, for a session that drafts a reply."""
+    from . import simple_ask
+    text = simple_ask.system_prompt()
+    return text.replace("You answer PLX employees' questions about PLX's own business records.",
+                        "You look up PLX's own business records to draft a reply for a PLX "
+                        "employee; the task says what to answer and in what form.", 1)
+
+
+def job_system_prompt() -> str:
+    """The Simple Ask's data dictionary and method, for a session that prepares the system
+    work an event calls for (``operating.autopilot_jobs``)."""
+    from . import simple_ask
+    text = simple_ask.system_prompt()
+    return text.replace("You answer PLX employees' questions about PLX's own business records.",
+                        "You look up PLX's own business records to prepare, for a PLX "
+                        "employee, the system changes an event calls for; the task says "
+                        "how. Each change is only proposed: the person confirms it.", 1)
+
+
+def lookup_factory(environ: Optional[Mapping[str, str]] = None
+                   ) -> Optional[Callable[[], Any]]:
+    """``autopilot_drafter.LOOKUP_FACTORY`` for this process: None without a readers file
+    or a session secret (no lookup is ever started)."""
+    from operating.session_identity import session_secret
+    env = dict(os.environ if environ is None else environ)
+    if not env.get(READERS_ENV) or not session_secret(env):
+        return None
+    return lambda: Lookup(env)
 
 
 # The autopilot units read the host's plx.env through this allowlist only (review of

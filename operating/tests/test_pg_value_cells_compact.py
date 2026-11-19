@@ -192,7 +192,11 @@ class ValueCellsCompactTests(unittest.TestCase):
     def test_readers_read_the_same_rows_through_fill_writes_resume_swap_undo_and_finish(self):
         from operating.pg import value_cells_compact as vc
         catalog = self.catalog()
-        self.assertEqual(len(catalog["indexes"]), 4, catalog)
+        # the served table's indexes, each carried through the swap (``catalog`` compared
+        # after it): key, words, by field, document names, and 0039's date index
+        self.assertEqual([name for name, _ in catalog["indexes"]], [
+            "value_cells_by_field", "value_cells_dates", "value_cells_doc_names",
+            "value_cells_pkey", "value_cells_words"], catalog)
         cards = iter((1, 10, 60))
 
         class Stop(Exception):

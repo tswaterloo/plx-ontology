@@ -19,6 +19,8 @@ from . import models as m
 from .auth import Reader
 from .errors import UserFacing
 
+from .page_core import ENRICH_PRIORITY
+
 BRIEF_TIMEOUT_SECONDS = 90
 # A finished week is kept for its reader (``WeeklyArchive``) once read whole, so it is read
 # with a longer budget than a live brief's: cut at 15 s it was never kept and every visit
@@ -552,7 +554,7 @@ class BriefsMixin:
         return m.MyActionItems(person=person, items=raw)
 
     def approvals_queue(self, reader: Reader) -> m.ApprovalsQueue:
-        raw = self._brief_run(reader, lambda view: approvals_of(view))
+        raw = self._brief_run(reader, lambda view: approvals_of(view), priority=ENRICH_PRIORITY)
         if raw is None:
             raise alerts_not_read()
         for group in raw["groups"]:
@@ -574,7 +576,7 @@ class BriefsMixin:
         return None
 
     def reply_triage(self, reader: Reader) -> m.ReplyTriage:
-        raw = self._brief_run(reader, lambda view: replies_of(view))
+        raw = self._brief_run(reader, lambda view: replies_of(view), priority=ENRICH_PRIORITY)
         if raw is None:
             raise alerts_not_read()
         for line in raw["lines"]:
@@ -734,8 +736,10 @@ class BriefsMixin:
                                 managers={o: v for o, v in kept["managers"].items()
                                           if not gone(o)})
 
-    def _brief_run(self, reader: Reader, job: Any) -> Any:
-        return self.reads.run(reader, job, timeout=BRIEF_TIMEOUT_SECONDS)  # type: ignore
+    def _brief_run(self, reader: Reader, job: Any, *, priority: int = 0) -> Any:
+        # an old-engine enrichment read (``ENRICH_PRIORITY``) is a long read
+        return self.reads.run(reader, job, timeout=BRIEF_TIMEOUT_SECONDS,  # type: ignore
+                              priority=priority, long=priority >= ENRICH_PRIORITY)
 
     def meeting_brief(self, reader: Reader, object_type: str, object_id: str) -> m.Brief:
         if object_type not in br.MEETING_TYPES + br.PARTY_TYPES \

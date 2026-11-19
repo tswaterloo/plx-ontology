@@ -410,6 +410,15 @@ def _alive(conn: Any) -> bool:
         return not getattr(conn, "closed", False)
     return alive(conn)
 
+def _idle_kept_max() -> int:
+    """Idle connections one index keeps (``pool.idle_kept_max``; no psycopg: its default)."""
+    try:
+        from operating.pg import pool as pg_pool
+    except ImportError:
+        return 2
+    return pg_pool.idle_kept_max()
+
+
 class PgEntityIndex:
     """``search.entities`` in Postgres (pg_trgm + unaccent), one connection reused.
 
@@ -451,8 +460,14 @@ class PgEntityIndex:
         self._connect = connect
         # A few connections, each lent to one lookup at a time: one process's read, Ask
         # and warm workers look up at once instead of queueing behind one connection.
-        self._idle: list[Any] = []
+        self._idle: list[Any] = []   # (connection, idle since): closed after pool.idle_keep_seconds
         self._lock = threading.Lock()                 # guards the idle list only
+        try:
+            from operating.pg import pool as pg_pool
+        except ImportError:   # psycopg not installed: no Postgres connection is ever kept
+            pg_pool = None
+        if pg_pool is not None:
+            pg_pool.reap_idle(self._reap)
         self._slots = threading.BoundedSemaphore(self.CONNECTIONS)
         self.exclusion = exclusion            # None: operating.pg.permissions.load_exclusion()
         self._scope_cache = scope_cache
@@ -464,7 +479,9 @@ class PgEntityIndex:
         else:
             import psycopg
             conn = psycopg.connect(self.dsn, autocommit=True,
-                                   connect_timeout=self.CONNECT_TIMEOUT_S)
+                                   connect_timeout=self.CONNECT_TIMEOUT_S,
+                                   application_name=(os.environ.get("PGAPPNAME")
+                                                     or "plx-entities")[:63])
         try:
             conn.execute("SELECT set_config('default_transaction_read_only', 'on', false),"
                          " set_config('statement_timeout', %s, false)",
@@ -486,7 +503,7 @@ class PgEntityIndex:
             conn = None
             with self._lock:
                 while self._idle and conn is None:
-                    conn = self._idle.pop()
+                    conn = self._idle.pop()[0]
                     if not _alive(conn):   # closed, or its server went away (a restart)
                         try:
                             conn.close()
@@ -504,7 +521,11 @@ class PgEntityIndex:
                     pass
                 raise
             with self._lock:
-                self._idle.append(conn)
+                kept = len(self._idle) < _idle_kept_max()
+                if kept:
+                    self._idle.append((conn, time.monotonic()))
+            if not kept:
+                conn.close()
             return result
         finally:
             self._slots.release()
@@ -518,10 +539,17 @@ class PgEntityIndex:
                 return cur.fetchall()
         return self._locked(go)
 
+    def _reap(self, now: float) -> None:
+        """Close the connections idle past ``pool.idle_keep_seconds``."""
+        from operating.pg import pool as pg_pool
+        with self._lock:
+            self._idle, gone = pg_pool.expired(self._idle, now)
+        pg_pool.close_quietly(gone)
+
     def close(self) -> None:
         with self._lock:
             idle, self._idle = self._idle, []
-        for conn in idle:
+        for conn, _since in idle:
             conn.close()
 
     def scope(self, policy: Any, actor: Any) -> Any:

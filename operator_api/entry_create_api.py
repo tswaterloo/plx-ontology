@@ -60,9 +60,11 @@ REFUSED = {
 
 
 # the sandbox company the desk's BC header entries go to (the same setting as the
-# autopilot's BC adapter); a company whose name says PHSI is never written
+# autopilot's BC adapter)
 SANDBOX_COMPANY = "PLX_AUTOPILOT_BC_COMPANY_ID"
-NEVER_COMPANY = re.compile(r"\bPHSI\b", re.I)
+# Vince 11-18: every company is written (PLX Consol / PHSI Group included): nothing
+# matches (kept so the desk's check stays in one place)
+NEVER_COMPANY = re.compile(r"(?!)")
 BC_OPERATION = {"order": "sales_order_create", "purchase_order": "purchase_order_create"}
 
 

@@ -368,7 +368,15 @@ def decode_audience(key: Any, every: Sequence[str]) -> tuple[str, ...] | None:
     bits = int(found.group(1), 16)
     if bits >> len(ordered):
         return None
-    chosen = tuple(m for i, m in enumerate(ordered) if bits >> i & 1)
+    # the set bits only (a key names a few of hundreds of mailboxes; a staff policy decodes
+    # thousands of keys: walking every mailbox for each was 1.7 s of each read, 11-18)
+    picked = []
+    rest = bits
+    while rest:
+        low = rest & -rest
+        picked.append(ordered[low.bit_length() - 1])
+        rest ^= low
+    chosen = tuple(picked)
     if len(chosen) < 2 or _check(chosen) != found.group(2):
         return None
     return chosen

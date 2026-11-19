@@ -102,7 +102,9 @@ def connect(target: str | None = None) -> Any:
     """A connection that gives up on a dead server in 5 s and on any statement after
     ``STATEMENT_TIMEOUT_MS`` (the retrievers' own connections and the main one alike)."""
     import psycopg
+    from operating.pg.pool import app_name
     return psycopg.connect(target or default_dsn(), autocommit=True, connect_timeout=5,
+                           application_name=app_name("plx-search"),
                            options=f"-c statement_timeout={STATEMENT_TIMEOUT_MS}")
 
 
@@ -110,9 +112,45 @@ def connect(target: str | None = None) -> Any:
 # another: seven connects per search. Connections are now kept per database and lent to
 # one reader at a time; one comes back only idle and clean (``RESET ALL``: every session
 # setting a job made is undone, the connection's own limits stay), else it is closed.
+# An idle one is closed after ``pool.idle_keep_seconds`` (``_reap``): a host kept warm or
+# spare holds no server slot for the connections its last search used.
 POOL_IDLE_KEPT = 16
-_IDLE: dict[str, list[Any]] = {}
+_IDLE: dict[str, list[tuple[Any, float]]] = {}   # target -> [(connection, idle since)]
 _IDLE_LOCK = threading.Lock()
+_REAPING: list[bool] = []
+
+
+_INHERITED: list[Any] = []
+
+
+def _forget_inherited() -> None:
+    """A forked child never lends, closes or frees its parent's kept connections (each would
+    end the parent's session: the socket is shared); they are held, unused, for its life."""
+    global _IDLE_LOCK
+    _INHERITED.extend(_IDLE.values())
+    _IDLE.clear()
+    _REAPING.clear()
+    _IDLE_LOCK = threading.Lock()
+
+
+if hasattr(os, "register_at_fork"):
+    os.register_at_fork(after_in_child=_forget_inherited)
+
+
+def pool_idle_kept() -> int:
+    from operating.pg import pool
+    return pool.idle_kept_max()
+
+
+def _reap(now: float) -> None:
+    """Close every kept connection idle past ``pool.idle_keep_seconds``."""
+    from operating.pg import pool
+    gone: list[Any] = []
+    with _IDLE_LOCK:
+        for target, idle in list(_IDLE.items()):
+            _IDLE[target], out = pool.expired(idle, now)
+            gone += out
+    pool.close_quietly(gone)
 
 
 class _Borrowed:
@@ -125,7 +163,7 @@ class _Borrowed:
     def __enter__(self) -> Any:
         with _IDLE_LOCK:
             idle = _IDLE.get(self.target) or []
-            conn = idle.pop() if idle else None
+            conn = idle.pop()[0] if idle else None
         if conn is not None and getattr(conn, "closed", True):
             conn = None
         self.conn = conn if conn is not None else connect(self.target)
@@ -156,9 +194,14 @@ def _give_back(target: str, conn: Any) -> bool:
         return False
     with _IDLE_LOCK:
         idle = _IDLE.setdefault(target, [])
-        if len(idle) >= POOL_IDLE_KEPT:
+        if len(idle) >= min(POOL_IDLE_KEPT, pool_idle_kept()):
             return False
-        idle.append(conn)
+        idle.append((conn, time.monotonic()))
+        start = not _REAPING
+        _REAPING[:] = [True]
+    if start:
+        from operating.pg import pool
+        pool.reap_idle(_reap)
     return True
 
 

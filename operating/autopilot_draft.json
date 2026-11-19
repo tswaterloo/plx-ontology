@@ -1,7 +1,68 @@
 {
  "schema": "plx-autopilot-draft/v1",
- "note": "Draft mode (operating/autopilot.py load_draft): per person, the workflows the autopilot prepares for them before their replay gate passed, so prepared items reach their approvals desk now. Draft only prepares: each item waits for its owner's accept; a send or write still goes through the write path's gates and the owner's confirm, unchanged. other_external is never in draft (no rule reaches the bar). An unknown workflow refuses the whole file.",
+ "note": "Draft mode (operating/autopilot.py load_draft): per person, the workflows the autopilot prepares for them before their replay gate passed, so prepared items reach their approvals desk now. Draft only prepares: each item waits for its owner's accept; a send or write still goes through the write path's gates and the owner's confirm, unchanged. other_external is never in draft (no rule reaches the bar). An unknown workflow refuses the whole file. 2026-11-18 Drafts on for the owner and Vince, mail and Teams (every workflow; other_external too, for these two only: never_list_exempt, DRAFT_NEVER still refuses it for anyone else).",
  "people": {
-  "vince@petrasoap.com": ["internal_approval", "mc_question", "teams_chat"]
- }
+  "vince@petrasoap.com": [
+   "ap_supplier_invoice",
+   "ar_collections",
+   "ar_invoice_send",
+   "cash_remittance",
+   "coa_cert_doc_request",
+   "customer_order_intake",
+   "customer_status_inquiry",
+   "external_approval",
+   "internal_approval",
+   "label_artwork",
+   "mail_thread",
+   "mc_question",
+   "meeting_admin",
+   "other_external",
+   "other_internal",
+   "production_materials_internal",
+   "purchase_order_to_supplier",
+   "qc_hold_release_internal",
+   "quote_pricing",
+   "reporting",
+   "rnd_sample_project",
+   "rnd_status_update",
+   "routine_update",
+   "shipping_freight",
+   "supplier_eta_receiving",
+   "teams_chat",
+   "teams_group"
+  ],
+  "tanush@petrasoap.com": [
+   "ap_supplier_invoice",
+   "ar_collections",
+   "ar_invoice_send",
+   "cash_remittance",
+   "coa_cert_doc_request",
+   "customer_order_intake",
+   "customer_status_inquiry",
+   "external_approval",
+   "internal_approval",
+   "label_artwork",
+   "mail_thread",
+   "mc_question",
+   "meeting_admin",
+   "other_external",
+   "other_internal",
+   "production_materials_internal",
+   "purchase_order_to_supplier",
+   "qc_hold_release_internal",
+   "quote_pricing",
+   "reporting",
+   "rnd_sample_project",
+   "rnd_status_update",
+   "routine_update",
+   "shipping_freight",
+   "supplier_eta_receiving",
+   "teams_chat",
+   "teams_group"
+  ]
+ },
+ "never_list_exempt": [
+  "vince@petrasoap.com",
+  "tanush@petrasoap.com"
+ ]
 }

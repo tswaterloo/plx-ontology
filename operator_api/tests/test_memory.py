@@ -413,6 +413,47 @@ class OwnWords(MemoryCase):
         texts = [t for _i, t in told]
         self.assertIn("From now on sign off with Cheers", texts)
 
+    def test_the_asks_remember_tool_keeps_corrects_and_forgets_only_their_own(self):
+        """``plx.remember``: an Autopilot rule kept from the person's words reaches the
+        stated rules the Autopilot obeys and is said back exactly; forgetting it removes
+        the rule; nobody else's item is touched; every memory refusal holds."""
+        from operating import learning
+        from operator_api.assistant_tools import AssistantToolsMixin
+        ana, ben = reader("ana"), reader("ben")
+        rules = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, rules)
+        self.store.stated = lambda who, item, text: learning.set_stated(
+            rules, learning.person_id(who.key), item, text)
+        self.addCleanup(setattr, self.store, "stated", None)
+        backend = type("B", (AssistantToolsMixin,), {"memory": self.store})()
+
+        def tool(who):
+            return {t.spec["name"]: t for t in backend.assistant_tools(who)}["plx.remember"]
+
+        def skips():
+            open_ = type("G", (), {"available": True, "clear": lambda self, p: True})()
+            return learning.Lessons.load(rules, {}, open_).stated_skip(
+                learning.person_id(ana.key), {"sender": "hello@news.example"})
+        kept = tool(ana).call({"action": "save", "kind": "instruction",
+                               "text": "Stop drafting replies to hello@news.example"})
+        self.assertEqual(kept["autopilot"],
+                         ["Autopilot drafts nothing for messages from hello@news.example"])
+        self.assertIsNotNone(skips())
+        plain = tool(ana).call({"action": "save", "kind": "preference",
+                                "text": "Keep answers short."})
+        self.assertIsNone(plain["autopilot"])
+        self.assertIn("not_kept", tool(ben).call({"action": "forget", "id": kept["kept"]}))
+        self.assertEqual({i["id"] for i in tool(ana).call({"action": "list"})["items"]},
+                         {kept["kept"], plain["kept"]})
+        self.assertEqual(tool(ana).call({"action": "forget", "id": kept["kept"]})["forgotten"],
+                         kept["kept"])
+        self.assertIsNone(skips())
+        viewing = reader("ana")
+        viewing.session.view_as = True
+        self.assertEqual(backend.assistant_tools(viewing), [])    # never in their name
+        self.assertIn("not_kept", tool(ana).call(
+            {"action": "save", "text": "Always mention the invoice total of $4,200."}))
+
     def test_refusals_say_why_and_keep_nothing(self):
         ana, ben = reader("ana"), reader("ben")
         mine, _ = self.store.write(ana, kind="fact", text="Kestrel orders ship Tuesdays.")
@@ -496,6 +537,42 @@ class Routes(MemoryCase):
         self.assertEqual(self.client("ana", lambda r: None, oid).get(
             "/api/memory/people").json(),
                          {"available": False, "reading": False, "people": [], "threads": []})
+
+    def test_people_are_worked_out_once_per_read_of_your_mail(self):
+        """11-18 staff walk: /api/memory/people took 10-12 s on every Home, working the
+        same kept mail read out again each time. Once per read of the reader's mail: a new
+        read (a new mail list) is worked out again, another reader never gets theirs."""
+        from unittest import mock
+        from operating import my_people
+        oid, other = "33333333-3333-4333-8333-333333333333", \
+            "44444444-4444-4444-8444-444444444444"
+
+        class People:
+            unavailable, internal = False, ("plx.example",)
+
+            def __init__(self, o):
+                self.directory = {"me@plx.example": o}
+
+            def identity_clear(self, who):
+                return True
+        reads = {oid: (People(oid), []), other: (People(other), [])}
+        history = lambda reader: reads[str(reader.session.subject_oid).lower()]  # noqa: E731
+        worked = []
+        real = my_people.people_and_threads
+
+        def counted(people, me, rows, **kw):
+            worked.append(me)
+            return real(people, me, rows, **kw)
+        with mock.patch.object(my_people, "people_and_threads", counted):
+            c = self.client("ana", history, oid)
+            for _ in range(3):
+                self.assertTrue(c.get("/api/memory/people").json()["available"])
+            self.assertEqual(worked, [oid])
+            reads[oid] = (People(oid), [])               # their mail read again
+            c.get("/api/memory/people")
+            self.assertEqual(worked, [oid, oid])
+            self.client("ben", history, other).get("/api/memory/people")
+            self.assertEqual(worked, [oid, oid, other])
 
     def test_a_cold_mailbox_says_reading_and_never_holds_the_request(self):
         import threading

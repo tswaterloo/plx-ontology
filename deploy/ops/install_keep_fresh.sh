@@ -22,9 +22,13 @@
 #     plx-expiry.timer           daily 06:20 UTC  credential expiry list (alarm within 30 days)
 #     plx-answer-bank.timer      10 min after the last build: the questionnaire answer bank for the
 #                                company (Templates), decided per reader at read; capture read-only
+#     plx-qbank-refresh.timer    daily 02:30 ET   Ask question bank: every item's truth re-read from the served
+#                                data (evals/qbank; plx_eval, read-only; writes only QBANK_DIR)
 #     plx-labour.timer           daily 05:40 ET   labour-hours build (department and week totals; capture read-only)
 #     plx-doc-style.timer        daily 04:50 ET   each person's document templates re-learned from what they
 #                                sent (Templates "learned from your documents"; capture read-only)
+#     plx-learning.timer         hourly :17       what each person's replies and edits of drafts teach their
+#                                next Autopilot drafts (operating/learning.py; stores read-only)
 #     plx-spark-health.timer     every 10 min     the Sparks' health for the worker that sends suites and
 #                                embedding passes there (operating/spark_worker.py; local fallback)
 #     plx-autopilot-follow.timer 5 min after the last cycle, and .path on each delta publish:
@@ -47,10 +51,10 @@ dry=0; [ "${1:-}" = "--dry-run" ] && dry=1
 render=$here/../render.py
 tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT
 MOVED_USER_UNITS="plx-sheet-readings plx-system-activity plx-team-activity plx-work-graph"
-SYS_UNITS="plx-sheet-readings plx-system-activity plx-team-activity plx-work-graph plx-proactive-whole plx-backup plx-restore-test plx-ops-health plx-ops-memory plx-expiry plx-autopilot-follow plx-autopilot-fast plx-labour plx-doc-style plx-write-readiness plx-spark-health plx-ask-canary plx-exclusion-leak plx-bare-mentions plx-own-issued plx-people-excluded plx-answer-bank plx-business-views plx-business-comms-recheck"
+SYS_UNITS="plx-sheet-readings plx-system-activity plx-team-activity plx-work-graph plx-proactive-whole plx-backup plx-restore-test plx-ops-health plx-ops-memory plx-expiry plx-autopilot-follow plx-autopilot-fast plx-labour plx-doc-style plx-learning plx-write-readiness plx-spark-health plx-ask-canary plx-exclusion-leak plx-bare-mentions plx-own-issued plx-people-excluded plx-answer-bank plx-business-views plx-alerts plx-business-comms-recheck plx-source-coverage plx-qbank-refresh"
 SYS_PATHS="plx-autopilot-follow plx-autopilot-fast"   # also started by a .path unit
 SYS_DAEMONS="plx-autopilot-fast-serve"                 # a service that runs continuously
-SYS_AFTER="plx-alerts"                                 # started by another unit (OnSuccess=)
+SYS_AFTER=""                                           # started only by another unit (OnSuccess=)
 
 python3 "$render" --out "$tmp/sys" >/dev/null
 # systemd-analyze verify: a non-zero exit is a failure unless every line it printed is a
@@ -79,7 +83,7 @@ for f in "$tmp"/sys/plx-{sheet-readings,system-activity,team-activity,work-graph
 done
 [ $dry = 1 ] && { echo "dry run: rendered and verified, nothing installed"; exit 0; }
 
-mkdir -p "$HOME/.config/systemd/user" "$HOME/.local/bin" "$PLX_STATE/work-graph" "$PLX_STATE/labour"
+mkdir -p "$HOME/.config/systemd/user" "$HOME/.local/bin" "$PLX_STATE/work-graph" "$PLX_STATE/labour" "$PLX_STATE/learning"
 # these were user units until 11-15 (now system units): the old ones go (the user manager
 # itself is only reloaded, never restarted: it runs other jobs)
 changed=0

@@ -5,14 +5,14 @@ import { ArrowUpRight, Bookmark, Check, Copy, MessageCircle, MoreHorizontal } fr
 import Link from "next/link";
 import { Related } from "@/components/related";
 import { useEffect, useState } from "react";
-import { getObject, getObjectSection, mergeSection } from "@/lib/api";
+import { bizPage, getObject, getObjectSection, mergeSection } from "@/lib/api";
 import { cn } from "@/lib/cn";
 import { draftText } from "@/components/proactive-suggestions";
-import { businessToday, formatDate, objectHref, readable, recordLabel, typeLabel } from "@/lib/format";
+import { businessToday, doorKey, formatDate, money, objectHref, readable, recordLabel, safeHref, typeLabel } from "@/lib/format";
 import { factMap, receivedOf, recordHead } from "@/lib/record";
 import { toggleSaved, useSaved } from "@/lib/saved";
 import { briefingKind } from "@/lib/status";
-import type { ActionResult, BriefingItem, CardActionOffer, LatePo, ObjectPage, ProactiveSuggestion, Source, SuggestionDraft, TrailStep } from "@/lib/types";
+import type { ActionResult, BizCell, BizPage, BriefingItem, CardActionOffer, LatePo, ObjectPage, ProactiveSuggestion, Source, SuggestionDraft, TrailStep } from "@/lib/types";
 import { AlertFired } from "./alert-fired";
 import { ActionDialog } from "./card-actions";
 import { SourceChip } from "./source-chip";
@@ -310,7 +310,7 @@ function Actions({ card, state, onDone }: { card: ProactiveSuggestion; state?: A
 }
 
 /** What the header says under the title: how late, and whether the supplier has given a date. Words and glyph in the status colour, as text, no pill. */
-function Facts({ row, page }: { row: QueueRow; page: ObjectPage | null }) {
+function Facts({ row, trailEta, trailRead }: { row: QueueRow; trailEta?: string | null; trailRead: boolean }) {
   const out: React.ReactNode[] = [];
   if (row.days != null && row.status === "late")
     out.push(
@@ -327,7 +327,6 @@ function Facts({ row, page }: { row: QueueRow; page: ObjectPage | null }) {
     );
   else if (row.item) out.push(<span key="kind">{briefingKind(row.item.event_type, { amountSuspect: !!row.item.amount_suspect, fallbackLabel: row.item.label }).label}</span>);
   const eta = row.suggestion?.eta;
-  const trailEta = page?.trail?.trails?.[0]?.eta?.state;
   if (eta?.answer === "yes" || trailEta === "confirmed")
     out.push(
       <span key="eta" className="inline-flex items-center gap-1.5 font-medium text-ok">
@@ -337,7 +336,7 @@ function Facts({ row, page }: { row: QueueRow; page: ObjectPage | null }) {
     );
   // "no date" only once the PO's trail is read: the quick first read carries none, and a
   // confirmed date found a moment later must never follow a "no date" claim
-  else if (eta || trailEta || (row.status === "late" && !!page && (page.trail != null || !!page.complete)))
+  else if (eta || trailEta || (row.status === "late" && trailRead))
     out.push(
       <span key="eta" className="inline-flex items-center gap-1.5 text-muted">
         <OpenRing size={14} tone="neutral" />
@@ -346,6 +345,40 @@ function Facts({ row, page }: { row: QueueRow; page: ObjectPage | null }) {
     );
   if (!out.length) return null;
   return <div className="mt-2 flex flex-wrap items-center gap-x-5 gap-y-1 text-[13px] leading-5">{out}</div>;
+}
+
+/** A door page's cell as words (money, a day or text; nothing for a restricted one). */
+function cellText(c: BizCell): string {
+  if (c.hidden) return "";
+  if (c.money) return money(c.money);
+  if (c.day) return formatDate(c.day, { short: true });
+  return c.number ?? c.text ?? "";
+}
+
+/** Received against ordered from a door order page's lines: in one unit, the sums; else the lines still short. */
+export function doorReceived(page: BizPage): { got: string; of: string; uom: string; pct: number | null; lines?: number } | null {
+  const lines = page.sections.find((x) => x.key === "lines");
+  if (!lines || !lines.rows.length) return null;
+  const at = (name: string) => lines.columns.indexOf(name);
+  const [o, r, u] = [at("Ordered"), at("Received"), at("Unit")];
+  if (o < 0 || r < 0) return null;
+  const num = (c: BizCell | undefined) => (c && !c.hidden && c.number != null && Number.isFinite(Number(c.number)) ? Number(c.number) : null);
+  const rows: { a: number; b: number; uom: string }[] = [];
+  for (const x of lines.rows) {
+    const a = num(x[r]);
+    const b = num(x[o]);
+    if (a == null || b == null) return null;
+    rows.push({ a, b, uom: (u >= 0 ? x[u]?.text ?? "" : "").toLowerCase() });
+  }
+  const units = new Set(rows.map((x) => x.uom));
+  const fmt = (n: number) => n.toLocaleString("en-US", { maximumFractionDigits: 3 });
+  if (units.size > 1) {
+    const short = rows.filter((x) => x.a < x.b).length;
+    return short ? { got: "Partly", of: "", uom: "", pct: null, lines: short } : { got: "All", of: "", uom: "", pct: 100 };
+  }
+  const a = rows.reduce((t, x) => t + x.a, 0);
+  const b = rows.reduce((t, x) => t + x.b, 0);
+  return { got: fmt(a), of: fmt(b), uom: [...units][0], pct: b > 0 ? Math.round((a / b) * 100) : null };
 }
 
 export function TodayDetail({
@@ -360,46 +393,77 @@ export function TodayDetail({
   className?: string;
 }) {
   const [page, setPage] = useState<ObjectPage | null>(null);
+  // the record's page over the business tables (the pages door): read first, in well under
+  // a second; the record's own page only when the door has none for it
+  const [door, setDoor] = useState<BizPage | null>(null);
+  const [trailOnly, setTrailOnly] = useState<ObjectPage["trail"] | null>(null);
   const [failed, setFailed] = useState(false);
   const saved = useSaved();
+  const key = doorKey(row.href, row.type, row.objectId);
+  const keyText = key ? `${key.kind}|${key.h ?? ""}|${key.record ?? ""}` : "";
 
   useEffect(() => {
     const c = new AbortController();
     setPage(null);
+    setDoor(null);
+    setTrailOnly(null);
     setFailed(false);
     // no wait without an end: past the record limit the pane says it didn't load (a later answer still shows)
     const limit = setTimeout(() => !c.signal.aborted && setFailed(true), RECORD_LIMIT_MS);
-    getObject(row.type, row.objectId, c.signal, true)
-      .then((p) => {
-        if (c.signal.aborted) return;
-        clearTimeout(limit);
-        setFailed(false);
-        // the briefing already read this PO's trail: shown at once, then the page's own
-        const withTrail = !p.trail && row.item?.trail ? ({ ...p, trail: row.item.trail } as ObjectPage) : p;
-        setPage(withTrail);
-        // a page read whole already holds its trail: no second request
-        if (!p.complete && /^(PurchaseOrder|SalesOrder)$/.test(row.type))
-          getObjectSection("trail", row.type, row.objectId, c.signal)
-            .then((s) => !c.signal.aborted && s.trail && setPage((cur) => (cur ? mergeSection(cur, s) : cur)))
-            .catch(() => undefined);
-      })
-      .catch(() => !c.signal.aborted && setFailed(true));
+    const trailOf = /^(PurchaseOrder|SalesOrder)$/.test(row.type) && row.objectId.startsWith(`${row.type}:`);
+    const own = () =>
+      getObject(row.type, row.objectId, c.signal, true)
+        .then((p) => {
+          if (c.signal.aborted) return;
+          clearTimeout(limit);
+          setFailed(false);
+          // the briefing already read this PO's trail: shown at once, then the page's own
+          const withTrail = !p.trail && row.item?.trail ? ({ ...p, trail: row.item.trail } as ObjectPage) : p;
+          setPage(withTrail);
+          // a page read whole already holds its trail: no second request
+          if (!p.complete && trailOf)
+            getObjectSection("trail", row.type, row.objectId, c.signal)
+              .then((s) => !c.signal.aborted && s.trail && setPage((cur) => (cur ? mergeSection(cur, s) : cur)))
+              .catch(() => undefined);
+        })
+        .catch(() => !c.signal.aborted && setFailed(true));
+    const k = keyText ? doorKey(row.href, row.type, row.objectId) : null;
+    if (!k) own();
+    else
+      bizPage(k.kind, { h: k.h, record: k.record }, c.signal).then(
+        (p) => {
+          if (c.signal.aborted) return;
+          clearTimeout(limit);
+          setDoor(p);
+          // the evidence trail is the old engine's: read after, never waited on
+          if (trailOf && !row.item?.trail)
+            getObjectSection("trail", row.type, row.objectId, c.signal)
+              .then((s) => !c.signal.aborted && setTrailOnly(s.trail ?? { trails: [] } as unknown as ObjectPage["trail"]))
+              .catch(() => undefined);
+        },
+        () => !c.signal.aborted && own(),
+      );
     return () => {
       clearTimeout(limit);
       c.abort();
     };
-  }, [row.type, row.objectId, row.item?.trail]);
+  }, [row.type, row.objectId, row.href, keyText, row.item?.trail]);
 
   const head = page ? recordHead(page) : null;
   const s = row.suggestion;
-  const trail = page?.trail?.trails?.[0] ?? row.item?.trail?.trails?.[0];
+  const trail = (page?.trail ?? trailOnly)?.trails?.[0] ?? row.item?.trail?.trails?.[0];
   const steps = (trail?.steps ?? []).filter((x) => x.kind !== "verdict");
   const supplierRef = (page?.related ?? []).find((r) => /^(Supplier|Vendor)$/.test(r.type));
-  const who = row.counterpart ?? supplierRef?.label ?? null;
+  const doorParty = door?.facts.find((f) => f.label === "Supplier" || f.label === "Customer")?.value ?? null;
+  const partyHref = supplierRef ? objectHref(supplierRef.type, supplierRef.object_id) : safeHref(doorParty?.href);
+  const who = row.counterpart ?? supplierRef?.label ?? doorParty?.text ?? null;
+  const loaded = !!page || !!door;
   const next = s?.action ?? row.item?.next_action ?? null;
   const action = next ? stepWords(next.rule, next.text, who) : null;
   const missing = (s?.missing ?? []).length ? (s?.missing ?? []) : (page?.not_found ?? []).map((n) => readable(n.what));
-  const facts = (head?.keyFacts ?? []).filter((f) => f.value);
+  const facts: { label: string; value: string; href?: string | null; status?: string | null }[] = door
+    ? door.facts.map((f) => ({ label: f.label, value: cellText(f.value), href: safeHref(f.value.href) })).filter((f) => f.value)
+    : (head?.keyFacts ?? []).filter((f) => f.value).map((f) => ({ label: f.label, value: f.value, status: f.status, href: f.label === "Supplier" && supplierRef ? objectHref(supplierRef.type, supplierRef.object_id) : null }));
   const sources = [...(row.late?.sources ?? row.item?.sources ?? [])].filter((x, i, all) => all.findIndex((y) => sourceKey(y) === sourceKey(x)) === i);
   const related = (page?.related ?? []).filter((r) => !/^(Supplier|Vendor)$/.test(r.type));
   const timeline = page?.timeline ?? [];
@@ -410,9 +474,10 @@ export function TodayDetail({
 
   // the figures: total and received from the record; the dates from the order and its need
   const f = page ? factMap(page.facts) : null;
-  const total = head?.stats.find((x) => x.label === "Total");
-  const got = receivedOf(trail);
-  const ordered = dayOf(f?.get("order_date")?.value ?? f?.get("document_date")?.value);
+  const doorTotal = door?.facts.find((x) => x.label.startsWith("Total") && x.value.money);
+  const total = doorTotal ? { label: doorTotal.label, value: money(doorTotal.value.money), caption: undefined } : head?.stats.find((x) => x.label === "Total");
+  const got = door ? doorReceived(door) : receivedOf(trail);
+  const ordered = dayOf(door ? door.facts.find((x) => x.label === "Ordered")?.value.day : f?.get("order_date")?.value ?? f?.get("document_date")?.value);
   const needDay = dayOf(row.late?.due_date ?? null) ?? dayOf(/needed-by date (\d{4}-\d{2}-\d{2})|requested-by date (\d{4}-\d{2}-\d{2})/.exec(trail?.verdict ?? "")?.slice(1).find(Boolean));
   const isPo = row.type === "PurchaseOrder";
 
@@ -456,25 +521,25 @@ export function TodayDetail({
                 <div className="flex flex-wrap items-baseline gap-x-2.5">
                   <h2 className="text-[24px] leading-[30px] font-semibold tracking-[-0.025em]">{row.title}</h2>
                   {who &&
-                    (supplierRef ? (
-                      <Link href={objectHref(supplierRef.type, supplierRef.object_id)} className="text-[17px] leading-[22px] tracking-[-0.01em] text-muted hover:text-fg">
+                    (partyHref ? (
+                      <Link href={partyHref} className="text-[17px] leading-[22px] tracking-[-0.01em] text-muted hover:text-fg">
                         {who}
                       </Link>
                     ) : (
                       <span className="text-[17px] leading-[22px] tracking-[-0.01em] text-muted">{who}</span>
                     ))}
                 </div>
-                <Facts row={row} page={page} />
+                <Facts row={row} trailEta={trail?.eta?.state} trailRead={page?.trail != null || !!page?.complete || trailOnly != null} />
               </div>
             </header>
 
             {row.item && row.group !== "po_late" && <AlertFired item={row.item} />}
 
-            {(page || !failed) && (
+            {(loaded || !failed) && (
               <section className="space-y-6" data-testid="detail-stats">
-                {page ? (
+                {loaded ? (
                   <div className="grid grid-cols-2 gap-6 empty:hidden sm:grid-cols-[auto_auto_1fr] sm:gap-10">
-                    {total && <Figure label="Total" value={total.value} unit={total.caption} />}
+                    {total && <Figure label={total.label} value={total.value} unit={total.caption} />}
                     {got && (
                       <Figure label="Received" value={got.lines ? got.got : `${got.got} of ${got.of}`} unit={got.lines ? `${got.lines} lines short` : got.uom}>
                         {got.pct != null && (
@@ -498,7 +563,7 @@ export function TodayDetail({
                     ))}
                   </div>
                 )}
-                {isPo && page && <OrderLine ordered={ordered} needed={needDay} daysLate={row.status === "late" ? row.days : null} />}
+                {isPo && loaded && <OrderLine ordered={ordered} needed={needDay} daysLate={row.status === "late" ? row.days : null} />}
               </section>
             )}
 
@@ -540,17 +605,17 @@ export function TodayDetail({
           <aside className="min-w-0 space-y-7 border-t border-border bg-[color-mix(in_srgb,var(--surface)_70%,var(--bg))] px-6 py-6 sm:px-8 xl:border-t-0 xl:border-l xl:px-6 xl:pt-7" aria-label="Details">
             <section>
               <SectionTitle>Details</SectionTitle>
-              {page ? (
+              {loaded ? (
                 <dl>
                   {facts.map((x) => (
                     <Property key={x.label} label={x.label}>
-                      {x.label === "Supplier" && supplierRef ? (
-                        <Link href={objectHref(supplierRef.type, supplierRef.object_id)} className="hover:underline">
+                      {x.href ? (
+                        <Link href={x.href} className="hover:underline">
                           {x.value}
                         </Link>
                       ) : x.status && x.status !== "neutral" ? (
                         <span>
-                          <StatusGlyph status={x.status} size={12} className="mr-1.5 inline-block align-[-1px]" />
+                          <StatusGlyph status={x.status as Parameters<typeof StatusGlyph>[0]["status"]} size={12} className="mr-1.5 inline-block align-[-1px]" />
                           {x.value}
                         </span>
                       ) : (

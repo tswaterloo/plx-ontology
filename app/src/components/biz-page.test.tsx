@@ -12,7 +12,7 @@ vi.mock("next/navigation", () => ({
 }));
 vi.mock("@/lib/api", async (orig) => ({ ...(await orig<typeof import("@/lib/api")>()), bizPage: api.bizPage }));
 
-import { BizRecordPage } from "./biz-page";
+import { BizOrObject, BizRecordPage } from "./biz-page";
 
 const CHAIN: BizPage = {
   kind: "chain",
@@ -76,5 +76,21 @@ describe("BizRecordPage", () => {
     show();
     expect(await screen.findByText(/doesn.t name a record/)).toBeTruthy();
     expect(api.bizPage).not.toHaveBeenCalled();
+  });
+});
+
+describe("BizOrObject (a record link of a type the door has pages for)", () => {
+  it("opens the door page of the row the record was read into", async () => {
+    api.bizPage.mockResolvedValue({ ...CHAIN, kind: "supplier", title: "EZ Chemicals" });
+    render(<BizOrObject kind="supplier" record="Supplier:bc.vendors:1" title="Supplier" fallback={<p>own page</p>} />);
+    expect(await screen.findByRole("heading", { name: "EZ Chemicals" })).toBeTruthy();
+    expect(api.bizPage).toHaveBeenCalledWith("supplier", { record: "Supplier:bc.vendors:1" }, expect.anything());
+    expect(screen.queryByText("own page")).toBeNull();
+  });
+
+  it("shows the record's own page when the door has none (off, not found, not readable)", async () => {
+    api.bizPage.mockRejectedValue(new ApiError(404, "pages_off"));
+    render(<BizOrObject kind="supplier" record="Supplier:bc.vendors:1" title="Supplier" fallback={<p>own page</p>} />);
+    expect(await screen.findByText("own page")).toBeTruthy();
   });
 });

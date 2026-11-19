@@ -291,6 +291,11 @@ class ModelExtractor:
         self.spawn, self.timeout = spawn, timeout
 
     def __call__(self, transcript: Mapping[str, Any]) -> list[dict[str, Any]]:
+        from integrations.freightcom_rule import names as names_freightcom
+        # No Freightcom data reaches a model. A transcript naming it
+        # anywhere (title, people, notes or any line) is never sent; the rule items stay.
+        if names_freightcom(dict(transcript)):
+            return []
         from .query_understanding import ClaudeUnderstander
         understander = ClaudeUnderstander(spawn=self.spawn)
         from .card_text import mask_served

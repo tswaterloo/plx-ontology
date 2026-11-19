@@ -72,7 +72,7 @@ class Backend(be.WorkspaceBackend):
     asked: list = []
     policy_threads: list = []
 
-    def _brief_run(self, reader, job):
+    def _brief_run(self, reader, job, **_kw):
         return job(self.view())
 
     def view(self):
@@ -451,6 +451,9 @@ class Owner(unittest.TestCase):
             self.assertEqual(self.client(oid).get("/api/workload/grants").status_code, 403)
         self.assertEqual(self.client(login=False).get("/api/workload/grants").status_code, 401)
         self.backend.owner = True
+        # /api/me queues a background policy decision (_warm_access); stub it so only the
+        # grant sheet's own owner check is measured
+        self.backend._warm_access = lambda reader: False
         self.backend.policy_threads.clear()
         found = self.client(OWNER).get("/api/workload/grants")
         self.assertEqual(found.status_code, 200, found.text)

@@ -55,6 +55,15 @@ describe("simple Ask answer", () => {
     expect(sourceCount(simple.cited)).toBe(3);
   });
 
+  it("links each file the answer made for download under its own name", () => {
+    const doc = { name: "Late POs.docx", kind: "docx" as const, size: 2048, download_url: "/api/instruct/files/f_0123456789abcdef01234567" };
+    render(<AnswerCard turn={{ id: "t", question: "q", phase: "done", streamed: "", answer: { ...simple, documents: [doc] } }} />);
+    const link = screen.getByText("Late POs.docx");
+    expect(link.getAttribute("href")).toBe(doc.download_url);
+    expect(link.getAttribute("download")).toBe("Late POs.docx");
+    expect(screen.getByTestId("simple-documents")).toHaveTextContent("2 KB");
+  });
+
   it("an answer from the other path keeps the full card", () => {
     const { cited: _gone, ...full } = simple;
     void _gone;

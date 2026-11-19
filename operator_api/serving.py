@@ -6,7 +6,7 @@ re-exported there."""
 
 from __future__ import annotations
 
-from concurrent.futures import Future, TimeoutError as FutureTimeout
+from concurrent.futures import CancelledError, Future, TimeoutError as FutureTimeout
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 import contextvars
@@ -14,6 +14,7 @@ import json
 import logging
 import os
 from pathlib import Path
+import collections
 import queue
 import re
 import threading
@@ -47,9 +48,16 @@ ASK_WORKERS = 2
 # two workers busy, so 4.5 GB a worker left a 20 GB-available box at one worker, and an
 # Ask's own reads (``fan_out``) never had a second to spread over. 3.0 keeps a margin
 # over that and still gives such a box two. Agent sessions are admitted on their own
-# (``SessionSlots``, ``ASK_SESSION_GB`` each).
-ASK_WORKER_GB = 3.0
-ASK_MEMORY_FLOOR_GB = 12.0
+# (``SessionSlots``, ``ASK_SESSION_GB`` each). 2026-11-18: the live API started one worker
+# of four at 15-16 GB available (3.0 a worker over a 12 GB floor), so a second person's
+# question waited. Measured on the live API: its main process (every worker's runtime, a
+# thread each) 0.55 GB with two workers idle and 1.9-3.3 GB at the daily peaks of
+# 11-09..11-17 with four workers busy; the memory an Ask grows by is its agent session's
+# tool host and model CLI, which ``SessionSlots`` admits on its own above
+# ``ASK_SESSION_FLOOR_GB``. So a worker reserves 1.0 GB above that same 8 GB floor: 15 GB
+# available starts four. The API's MemoryMax (20G, peak seen 13.6 GB) stays the cap.
+ASK_WORKER_GB = 1.0
+ASK_MEMORY_FLOOR_GB = 8.0
 ASK_WORKERS_MOST = 4
 WARM_HOSTS = 1
 
@@ -323,6 +331,11 @@ WARM_PRIORITY = 2
 # section kind: m.PAGE_SECTIONS). None started or up (tests, start-up, a slot gone): the
 # read worker reads them, as before.
 SECTION_WORKERS = 4
+# The access workers: the kept pages' access checks and every read through the door
+# (``page_sql``: Home, alerts, late list, record pages) on one queue, each its own runtime
+# and thread (~0.5 GB each). One serialised every reader's checks and door reads: Home
+# 2.3-4 s warm, 7-13 s cold, 40-60 jobs queued behind each other (11-18 walk).
+ACCESS_WORKERS = 2
 SECTION_START_SECONDS = 300   # how long the API waits for the pool before it serves
 PREWARM_SECONDS = 60          # the known readers' policies decided before it serves
 # The readers' kept pages on disk (``page_store``) and the attachment page counts, in the
@@ -404,6 +417,11 @@ CARD_WORDS_KEPT = 20000
 KNOWN_READERS_FILE = "known-readers.json"
 KNOWN_READERS = 8
 GENERATION_POLL_SECONDS = 10   # a delta layer, generation or inbox change read ahead
+# A recent reader's page door is decided again this often (``_keep_doors``), inside the
+# door's own age limit (``ontology_tools_sql.DOOR_MAX_AGE_SECONDS``, 120 s), for readers
+# seen within DOOR_KEEP_RECENT_SECONDS: their next page never waits on deciding it.
+DOOR_KEEP_SECONDS = 90
+DOOR_KEEP_RECENT_SECONDS = 8 * 3600
 FLIGHT_SECONDS = 120   # how long a read waits for the same read in progress elsewhere
 ORIGINAL_READS = 4             # captured-original reads through a reader's host at once
 ORIGINAL_READS_PER_READER = 2
@@ -726,8 +744,11 @@ class ReaderCache:
 
     def put(self, key: Optional[tuple], value: Any,
             seconds: float = READER_CACHE_SECONDS, *, durable: bool = True) -> None:
-        """``durable`` False: kept in memory only (a read a time limit cut short)."""
-        if key is None:
+        """``durable`` False: kept in memory only (a read a time limit cut short). A value
+        read for a request that was dropped meanwhile (``call_limits.cancelled``: its
+        statements may have stopped early) is never kept."""
+        from operating.call_limits import cancelled
+        if key is None or cancelled():
             return
         self._hold(key, value, seconds, time.monotonic())
         if self.store is not None:
@@ -750,6 +771,72 @@ class ReaderCache:
 
 # ---- the owner thread: every workspace call runs on it ----------------------------------
 
+# A long read (``long=True`` on ``Worker.run``/``submit``: Home's reads over the old alert
+# engine, 35-110 s cold each, 11-18): on a queue several workers share, long reads run on
+# all but one of them at once, so one worker always stays free for the short page reads
+# (a record, Meetings, My work): 11-18 walk, three long Home reads held all three read
+# workers and Meetings waited 47 s behind them. Opt-in per job, never by priority: the Ask
+# pool's jobs (priority 1) run side by side as before. One worker alone: no cap.
+class _LongSlots:
+    """The long reads of one shared job queue: workers looping on it, long reads running,
+    and the long reads taken while every slot was busy (parked, oldest first: the worker
+    that frees a slot runs the next one; no polling)."""
+
+    def __init__(self) -> None:
+        self.lock = threading.Lock()
+        self.workers = 0
+        self.running = 0
+        self.parked: "collections.deque[tuple[int, int, Any]]" = collections.deque()
+
+    def take(self, entry: tuple[int, int, Any]) -> bool:
+        """A slot for ``entry`` (True: run it now), else it is parked."""
+        with self.lock:
+            if self.running < max(1, self.workers - 1):
+                self.running += 1
+                return True
+            self.parked.append(entry)
+            return False
+
+    def give(self) -> Optional[tuple[int, int, Any]]:
+        """The slot back, or kept for the next parked long read (returned: run it)."""
+        with self.lock:
+            while self.parked:
+                entry = self.parked.popleft()
+                if not entry[2][0].done():
+                    return entry
+            self.running = max(0, self.running - 1)
+            return None
+
+    def join(self, n: int) -> list[tuple[int, int, Any]]:
+        """``n`` workers more (or fewer); the last one leaving takes every parked read."""
+        with self.lock:
+            self.workers = max(0, self.workers + n)
+            if self.workers:
+                return []
+            left, self.parked = list(self.parked), collections.deque()
+            return left
+
+
+_SLOTS_LOCK = threading.Lock()
+
+
+def peers(jobs: Any) -> list["Worker"]:
+    """The workers looping on (made for) the job queue ``jobs``."""
+    with _SLOTS_LOCK:
+        got = getattr(jobs, "plx_workers", None)
+        if got is None:
+            got = jobs.plx_workers = []
+        return got
+
+
+def _slots(jobs: Any) -> _LongSlots:
+    with _SLOTS_LOCK:
+        got = getattr(jobs, "plx_long_slots", None)
+        if got is None:
+            got = jobs.plx_long_slots = _LongSlots()
+        return got
+
+
 class Worker:
     """One owner thread: the thread that built a case runtime runs every workspace call
     over it (the runtime's and the workspaces' SQLite connections are bound to it, as in
@@ -764,73 +851,126 @@ class Worker:
         self.jobs: "queue.PriorityQueue[tuple[int, int, Any]]" = \
             jobs if jobs is not None else queue.PriorityQueue()
         self.cache: dict[str, Any] = {}
+        # the readers (``cache`` keys) a job has finished for: their workspace and policy
+        # are decided here (a first job decides them; ``page_sql``'s cold budget)
+        self.served: set[str] = set()
         self.stopped = threading.Event()
         # what every job runs inside (a page read: ``page_build``, its mail gates
         # memoized per tool call); nothing for an Ask
         self.scope: Callable[[], Any] = _no_scope
         self.running = 0                       # jobs running now (read by the warm-up)
         self.last_done = time.monotonic()      # when the last one ended
+        mates = peers(self.jobs)
+        with _SLOTS_LOCK:
+            mates.append(self)
+
+    def warm_for(self, reader: Any) -> bool:
+        """A job finished for ``reader`` on every worker of this queue (its workspace and
+        policy decided on whichever one takes the next job)."""
+        principals = getattr(getattr(reader, "session", None), "principals", None)
+        if principals is None:
+            return False
+        key = ",".join(sorted(principals))
+        every = peers(self.jobs)
+        with _SLOTS_LOCK:
+            mates = [w for w in every if not w.stopped.is_set()] or [self]
+        return all(key in w.served for w in mates)
 
     def _workspace(self, session: Any) -> Any:
         key = ",".join(sorted(session.principals))
         view = self.cache.get(key)
         if view is None:
             if len(self.cache) >= MAX_WORKSPACES:
-                self.cache.pop(next(iter(self.cache))).close()
+                gone = next(iter(self.cache))
+                self.served.discard(gone)
+                self.cache.pop(gone).close()
             view = self.cache[key] = self.objects_for(session)
         view.bind(session)
         return view
 
     def submit(self, reader: Reader, job: Callable[[Any], Any], *, priority: int = 0,
-               deadline: Optional[float] = None) -> Future:
+               deadline: Optional[float] = None, cancel: Any = None,
+               long: bool = False) -> Future:
         """``deadline``: the monotonic second by which nobody waits for the job's result
-        any more; the job's store statements past it are interrupted (``_bounded_job``)."""
-        return submit(self.jobs, self.stopped, reader, job, priority, deadline)
+        any more; the job's store statements past it are interrupted (``_bounded_job``).
+        ``cancel`` (``call_limits.Cancel``): the request that waits for it; once set, the
+        job's statements are cut as at its deadline. ``long``: a long read (``_LongSlots``:
+        on all but one of the workers sharing the queue)."""
+        return submit(self.jobs, self.stopped, reader, job, priority, deadline, cancel,
+                      long=long)
 
     def run(self, reader: Reader, job: Callable[[Any], Any], timeout: float = 120,
-            priority: int = 0) -> Any:
+            priority: int = 0, long: bool = False) -> Any:
         """The job's result within ``timeout`` seconds, else ``workbench_busy``. A job
         still running then ends at its next store statement (it is interrupted at that
         deadline), so the worker is free for the next reader's job instead of finishing
         a read nobody waits for."""
-        from operating.call_limits import SQL_GRACE
+        from operating.call_limits import SQL_GRACE, current_cancel
         timeout = read_budget(timeout)
+        # the request waiting (``call_limits.Cancel``, set when its connection closes):
+        # a job still queued then is dropped, one running has its statements cut
+        cancel = current_cancel()
         future = self.submit(reader, job, priority=priority,
-                             deadline=time.monotonic() + timeout + SQL_GRACE)
+                             deadline=time.monotonic() + timeout + SQL_GRACE, cancel=cancel,
+                             long=long)
+        token = cancel.add(future.cancel) if cancel is not None else None
         try:
             return future.result(timeout=timeout)
         except FutureTimeout:
             future.cancel()
             raise TimeoutError("workbench_busy") from None
+        except CancelledError:
+            raise TimeoutError("workbench_busy") from None   # nobody reads this answer
+        except Exception:
+            if cancel is not None and cancel.is_set():
+                raise TimeoutError("workbench_busy") from None   # cut: nobody reads it
+            raise
+        finally:
+            if cancel is not None:
+                cancel.remove(token)
 
     def loop(self, until: Callable[[], bool] = lambda: False) -> None:
         """Run jobs on this (the owner) thread until ``stop`` or ``until()``."""
+        slots = _slots(self.jobs)
+        slots.join(1)
         try:
             while not self.stopped.is_set() and not until():
                 try:
-                    _, _, item = self.jobs.get(timeout=0.2)
+                    entry = self.jobs.get(timeout=0.2)
                 except queue.Empty:
                     continue
-                if item is None:
+                if entry[2] is None:
                     self.jobs.put((-1, 0, None))   # wake the next worker on this queue
                     break
-                future, reader, job = item
-                if not future.set_running_or_notify_cancel():
-                    continue
-                self.running += 1
-                try:
-                    with self.scope():
-                        future.set_result(_profiled(job, self._workspace(
-                            reader.session), future))
-                except BaseException as error:  # noqa: BLE001 - handed to the route
-                    future.set_exception(error)
-                finally:
-                    self.running -= 1
-                    self.last_done = time.monotonic()
+                if getattr(entry[2][0], "plx_long", False) and not slots.take(entry):
+                    continue   # parked: the worker freeing a long slot runs it
+                while entry is not None:
+                    self._run_one(entry[2])
+                    entry = slots.give() if getattr(entry[2][0], "plx_long", False) \
+                        else None
         finally:
+            for entry in slots.join(-1):
+                future = entry[2][0]
+                if future.set_running_or_notify_cancel():
+                    future.set_exception(LookupError("backend_stopped"))
             self.stopped.set()
             while self.cache:
                 self.cache.pop(next(iter(self.cache))).close()
+
+    def _run_one(self, item: tuple) -> None:
+        future, reader, job = item
+        if not future.set_running_or_notify_cancel():
+            return
+        self.running += 1
+        try:
+            with self.scope():
+                future.set_result(_profiled(job, self._workspace(reader.session), future))
+            self.served.add(",".join(sorted(reader.session.principals)))
+        except BaseException as error:  # noqa: BLE001 - handed to the route
+            future.set_exception(error)
+        finally:
+            self.running -= 1
+            self.last_done = time.monotonic()
 
     def stop(self) -> None:
         self.stopped.set()
@@ -867,12 +1007,13 @@ def _bounded_job(future: Future, job: Callable[[Any], Any], view: Any) -> Any:
     """``job(view)`` with the store statements it runs past its future's deadline (the
     route stopped waiting: ``Worker.run``) interrupted, so it ends there with an error
     nobody reads rather than holding the worker; none: unbounded, as before."""
+    from operating.call_limits import cancel_scope, sql_deadline
     deadline = getattr(future, "plx_deadline", None)
-    if deadline is None:
-        return job(view)
-    from operating.call_limits import sql_deadline
-    with sql_deadline(deadline):
-        return job(view)
+    with cancel_scope(getattr(future, "plx_cancel", None)):
+        if deadline is None:
+            return job(view)
+        with sql_deadline(deadline):
+            return job(view)
 
 
 _SEQ = iter(range(1, 1 << 62))
@@ -884,12 +1025,17 @@ STARTED = time.monotonic()   # this process's start, as the warm-up's log states
 
 def submit(jobs: "queue.PriorityQueue", stopped: threading.Event, reader: Reader,
            job: Callable[[Any], Any], priority: int,
-           deadline: Optional[float] = None) -> Future:
-    """Queue ``job``; its ``deadline`` is on the future before any worker can take it
-    (API-001: a worker that takes it at once still bounds its statements)."""
+           deadline: Optional[float] = None, cancel: Any = None, *,
+           long: bool = False) -> Future:
+    """Queue ``job``; its ``deadline`` and ``cancel`` are on the future before any worker
+    can take it (API-001: a worker that takes it at once still bounds its statements)."""
     future: Future = Future()
     if deadline is not None:
         future.plx_deadline = deadline   # type: ignore[attr-defined]
+    if cancel is not None:
+        future.plx_cancel = cancel   # type: ignore[attr-defined]
+    if long:
+        future.plx_long = True   # type: ignore[attr-defined]
     if stopped.is_set():
         future.set_exception(LookupError("backend_stopped"))
         return future

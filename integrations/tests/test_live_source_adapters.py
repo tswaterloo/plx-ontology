@@ -919,7 +919,7 @@ class ClosedGrammarTests(unittest.TestCase):
              "freightcom_id": "fc-Test_1", "amazon_shipment_id": "FBA1TEST0001",
              "bc_company_name": "My Company", "meeting_id": "AAMkAD-_=1",
              "planner_id": "AAMkAD-_=1", "plx_api_set": "plxPostedSalesInvoices",
-             "vendor_numeric_id": "4242", "shopify_version": "2025-10",
+             "vendor_numeric_id": "4242", "shopify_version": "2025-10", "list_item_id": "12",
              "granola_note_id": "not_1d3tmYTlCICgjy"}
     # External operations whose closed query grammar requires parameters
     # (live_source_grammar.SP_QUERIES): a valid query, so only the path is under test.
@@ -999,6 +999,7 @@ class ClosedGrammarTests(unittest.TestCase):
                      "u!aHR0cHM6Ly94LmNvbR"),
         "freightcom_id": ("-a", "a.b", "a b", "a:b", "x" * 65),
         "vendor_numeric_id": ("4x", "-1", "1.5", "1" * 21),
+        "list_item_id": ("0", "01", "-1", "1.5", "1" * 13, "12/fields"),
         "shopify_version": ("latest", "2025-05", "2025-1", "unstable"),
         "granola_note_id": ("12345", "not_", "not_/x", "NOT_1d3tmYTlCICgjy"),
         "amazon_shipment_id": ("fba1test0001", "FBA12", "XBA1TEST0001", "FBA1TEST-001",

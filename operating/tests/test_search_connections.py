@@ -86,6 +86,43 @@ class CoverageTests(unittest.TestCase):
         self.assertEqual(len(reads), 1)
         self.assertEqual(got, [{"Email": "2026-11-12T04:09:33+00:00"}] * 5)
 
+    def test_a_page_never_waits_on_a_slow_scan_of_the_index(self):
+        """Served 11-18: the scan takes 15 s, past its old 5 s statement limit, so every
+        page's freshness waited 5 s every 10 minutes for nothing ({}): the late list's
+        first read per reader took 9-11 s. A page now waits at most WAIT_SECONDS for the
+        first read, then claims nothing; the read ends in the background and the next page
+        shows it; a read past CACHE_SECONDS is shown at once while the next is read."""
+        import threading
+        import time
+        from operating.search import coverage
+        coverage._CACHE.clear()
+        self.addCleanup(coverage._CACHE.clear)
+        release = threading.Event()
+        answer = {"Email": "2026-11-18T18:48:08+00:00"}
+
+        def slow(target):
+            release.wait(10)
+            return dict(answer)
+        with mock.patch.object(coverage, "_read", side_effect=slow):
+            t0 = time.monotonic()
+            self.assertEqual(coverage.coverage("postgresql:///none", wait=0.2), {})
+            self.assertLess(time.monotonic() - t0, 1.0)
+            release.set()
+            for _ in range(100):
+                if coverage._CACHE:
+                    break
+                time.sleep(0.02)
+            self.assertEqual(coverage.coverage("postgresql:///none"), answer)
+            # past its time: the kept read at once, the next one in the background
+            release.clear()
+            when, kept = coverage._CACHE["postgresql:///none"]
+            coverage._CACHE["postgresql:///none"] = (when - coverage.CACHE_SECONDS - 1, kept)
+            t0 = time.monotonic()
+            self.assertEqual(coverage.coverage("postgresql:///none"), answer)
+            self.assertLess(time.monotonic() - t0, 0.2)
+            self.assertIn("postgresql:///none", coverage._READING)
+            release.set()
+
     def test_pages_asking_at_once_share_one_first_read_of_the_marked_documents(self):
         """The documents marked beyond a reader (every page's file filter, a 6 s read on a
         cold process) are read once for the pages asking at once; an unreadable set is

@@ -218,6 +218,32 @@ ALLOWED_HOSTS = frozenset({GRAPH_HOST, LOGIN_HOST, BC_HOST, LWA_HOST, *grammar.E
 GRAPH_SCOPE = "https://graph.microsoft.com/.default"
 BC_SCOPE = "https://api.businesscentral.dynamics.com/.default"
 ALLOWED_SCOPES = frozenset({GRAPH_SCOPE, BC_SCOPE})
+# A person's own Teams sign-in (``integrations.teams_delegated``, Vince 11-18): the
+# authorization-code exchange and its refresh on the approved-action app, for exactly these
+# delegated scopes (post to chats and channels) and nothing else: a post is not recalled
+# from the Workbench, so no read-write scope on the person's chats is ever asked for.
+TEAMS_DELEGATED_SCOPE = ("offline_access https://graph.microsoft.com/ChatMessage.Send "
+                         "https://graph.microsoft.com/ChannelMessage.Send")
+DELEGATED_FORMS = {
+    "authorization_code": frozenset({"grant_type", "client_id", "client_secret", "code",
+                                     "redirect_uri", "code_verifier", "scope"}),
+    "refresh_token": frozenset({"grant_type", "client_id", "client_secret", "refresh_token",
+                                "scope"}),
+}
+_REDIRECT = re.compile(r"^https://[A-Za-z0-9.-]{1,253}(?::\d{1,5})?/api/teams/callback$")
+
+
+def delegated_form_ok(form: Any) -> bool:
+    """Whether a token POST's form is exactly one of ``DELEGATED_FORMS`` for
+    ``TEAMS_DELEGATED_SCOPE`` (an authorization code only back to a Workbench callback)."""
+    if not isinstance(form, Mapping):
+        return False
+    keys = DELEGATED_FORMS.get(str(form.get("grant_type")))
+    return (keys is not None and set(form) == keys
+            and all(isinstance(v, str) and v and len(v) <= 8192 for v in form.values())
+            and form["scope"] == TEAMS_DELEGATED_SCOPE
+            and (form["grant_type"] != "authorization_code"
+                 or _REDIRECT.fullmatch(form["redirect_uri"]) is not None))
 # Action-like path tokens. Graph actions are POSTs, so the GET-only rule
 # already blocks them; this list is defence in depth against a method mistake.
 DENIED_PATH_TOKENS = frozenset({
@@ -905,6 +931,8 @@ def check_request(method: str, url: str, *, body: Mapping[str, str] | None = Non
             raise ReadOnlyGuardError("only the OAuth token POST is permitted")
         if _TENANT.fullmatch(match[1]) is None:
             raise ReadOnlyGuardError("token tenant invalid")
+        if delegated_form_ok(body):
+            return host            # a person's own Teams sign-in (``TEAMS_DELEGATED_SCOPE``)
         if (not isinstance(body, Mapping) or body.get("grant_type") != "client_credentials"
                 or body.get("scope") not in ALLOWED_SCOPES
                 or set(body) != {"grant_type", "scope", "client_id", "client_secret"}):
@@ -1267,6 +1295,15 @@ def _refuse_non_read_send(method: str, url: str, body: bytes | None) -> None:
                 and all(len(v) == 1 for v in form.values())
                 and form["grant_type"] == ["client_credentials"]
                 and form["scope"][0] in ALLOWED_SCOPES):
+            return
+        try:
+            delegated = parse_qs((body or b"").decode("ascii"), keep_blank_values=True,
+                                 strict_parsing=True, max_num_fields=7)
+        except (UnicodeDecodeError, ValueError):
+            delegated = {}
+        if (match is not None and _TENANT.fullmatch(match[1]) is not None
+                and all(len(v) == 1 for v in delegated.values())
+                and delegated_form_ok({k: v[0] for k, v in delegated.items()})):
             return
     if method == "POST" and host == GRAPH_HOST and parts.path == GRAPH_BATCH_PATH \
             and not parts.query:
@@ -1679,6 +1716,10 @@ ACTION_PATHS = (
      frozenset({"comment", "toRecipients"})),
     (re.compile(r"/v1\.0/chats/19:[A-Za-z0-9_.-]{1,200}@(?:thread\.v2|unq\.gbl\.spaces)"
                 r"/messages"), frozenset({"body"})),
+    # a channel post as the person (``TeamsAdapter`` on their delegated token)
+    (re.compile(r"/v1\.0/teams/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"
+                r"/channels/19:[A-Za-z0-9_.-]{1,200}@thread\.(?:tacv2|skype)/messages"),
+     frozenset({"body"})),
 )
 MAX_ACTION_BODY_BYTES = 64_000
 # A new email or a reply may carry files (a filled form sent back): each a Graph
@@ -1703,8 +1744,13 @@ _ATTACHING_PATHS = (r"/v1\.0/users/[^/]+/sendMail", r"/v1\.0/users/[^/]+/message
 # hold ``%20`` for a space, nothing else encoded), the one query an upload carries, and
 # the closed set of request headers. Re-checked by shape and flag inside the sender.
 WRITES_FLAG = "PLX_WRITES_LIVE_SYSTEMS"
-WRITE_SYSTEMS = frozenset({"planner", "calendar", "sharepoint", "bc"})
+WRITE_SYSTEMS = frozenset({"planner", "calendar", "sharepoint", "bc", "portal"})
 WRITE_HEADERS = frozenset({"content-type", "if-match", "prefer"})
+# The Portal's staff routes a workbench_write key may call (``PORTAL_WRITE_SHAPES``) live on
+# the host the owner names (``PORTAL_URL_ENV``, https, no port, path or query); each request
+# carries the executor's idempotency key (asked of the Portal to honour on creates).
+PORTAL_URL_ENV = "PORTAL_WRITE_URL"
+PORTAL_HEADERS = WRITE_HEADERS | {"idempotency-key"}
 MAX_WRITE_BODY_BYTES = 4 * 1024 * 1024 + 1024
 _W_ID = r"[A-Za-z0-9_-]{1,120}"
 _W_EVENT = r"[A-Za-z0-9_=-]{1,400}"
@@ -1738,6 +1784,10 @@ WRITE_SHAPES = (
      UPLOAD_QUERY),
     ("sharepoint", "DELETE", GRAPH_HOST,
      re.compile(rf"/v1\.0/drives/{_W_DRIVE}/items/{_W_DRIVE}"), None),
+    # a document's edit: its whole new content over the version read (If-Match required,
+    # ``check_write_request``), and the same shape puts the prior bytes back as its undo
+    ("sharepoint", "PUT", GRAPH_HOST,
+     re.compile(rf"/v1\.0/drives/{_W_DRIVE}/items/{_W_DRIVE}/content"), None),
     ("bc", "POST", BC_HOST, re.compile(rf"{_W_BC_ROOT}/{_W_BC_DOC}"), None),
     ("bc", "POST", BC_HOST,
      re.compile(rf"{_W_BC_ROOT}/{_W_BC_DOC}\({_W_GUID}\)/{_W_BC_LINES}"), None),
@@ -1751,6 +1801,65 @@ WRITE_SHAPES = (
     ("bc", "DELETE", BC_HOST,
      re.compile(rf"{_W_BC_ROOT}/{_W_BC_DOC}\({_W_GUID}\)/{_W_BC_LINES}\({_W_GUID}\)"), None),
 )
+_W_PID = r"[A-Za-z0-9_-]{1,64}"
+# The Portal's own staff routes a ``workbench_write`` key may call (TASK-5101,
+# portal/src/lib/auth/workbench-write-routes.ts on plx-customer-portal staging a8b4b92),
+# the same ones ``autopilot_write_adapters.PORTAL_ROUTES`` builds: POST/PATCH only (no
+# DELETE, no GET), on the host ``PORTAL_URL_ENV`` names. (route id, method, path)
+PORTAL_WRITE_SHAPES = (
+    ("sales-order.update", "PATCH", re.compile(rf"/api/mrp/sales-orders/{_W_PID}")),
+    # line-items is the sibling static route, session-only
+    ("purchase-order.update", "PATCH",
+     re.compile(rf"/api/mrp/purchase-orders/(?!line-items$){_W_PID}")),
+    ("ship-release.create", "POST", re.compile(rf"/api/mrp/orders/{_W_PID}/ship-releases")),
+    ("ship-release.update", "PATCH",
+     re.compile(rf"/api/mrp/orders/{_W_PID}/ship-releases/{_W_PID}")),
+    ("activity.note", "POST", re.compile(rf"/api/activity/{_W_PID}/{_W_PID}/note")),
+    # asked of the Portal team: open only once the owner names them (PORTAL_ROUTES_ENV)
+    ("customer-contact.create", "POST",
+     re.compile(rf"/api/operations/customers/{_W_PID}/contacts")),
+    ("customer-contact.update", "PUT",
+     re.compile(rf"/api/operations/customers/{_W_PID}/contacts/{_W_PID}")),
+    ("customer-location.create", "POST",
+     re.compile(rf"/api/operations/customers/{_W_PID}/locations")),
+    ("customer-location.update", "PUT",
+     re.compile(rf"/api/operations/customers/{_W_PID}/locations/{_W_PID}")),
+)
+PORTAL_LISTED = frozenset({"sales-order.update", "purchase-order.update", "ship-release.create",
+                           "ship-release.update", "activity.note"})
+PORTAL_ROUTES_ENV = "PLX_PORTAL_WRITE_ROUTES"
+
+
+def portal_route(method: str, path: str, environ: Mapping[str, str]) -> str | None:
+    """The Portal route id ``method path`` is (one on the key's list, or an asked one the
+    owner named in ``PORTAL_ROUTES_ENV``), or None."""
+    named = {n.strip() for n in str(environ.get(PORTAL_ROUTES_ENV) or "").split(",")}
+    for route, verb, pattern in PORTAL_WRITE_SHAPES:
+        if verb == method and pattern.fullmatch(path) and (
+                route in PORTAL_LISTED or route in named):
+            return route
+    return None
+
+
+def portal_write_host(environ: Mapping[str, str]) -> str | None:
+    """The Portal write API's host (``PORTAL_URL_ENV``: ``https://host`` exactly), or None
+    when unset or anything else (a port, a path, a query, credentials, a Graph or BC host)."""
+    raw = str(environ.get(PORTAL_URL_ENV) or "").strip()
+    try:
+        parts = urlsplit(raw)
+        port = parts.port
+    except ValueError:
+        return None
+    host = (parts.hostname or "").lower()
+    if parts.scheme != "https" or port is not None or parts.username or parts.password \
+            or parts.path not in ("", "/") or parts.query or parts.fragment \
+            or not re.fullmatch(r"[a-z0-9-]{1,63}(?:\.[a-z0-9-]{1,63}){1,6}", host) \
+            or host in (GRAPH_HOST, BC_HOST):
+        return None
+    return host
+
+
+REPLACE_PATH = re.compile(rf"/v1\.0/drives/{_W_DRIVE}/items/{_W_DRIVE}/content")
 
 
 def writes_enabled(environ: Mapping[str, str]) -> frozenset[str]:
@@ -1759,8 +1868,10 @@ def writes_enabled(environ: Mapping[str, str]) -> frozenset[str]:
     return frozenset(n for n in names if n in WRITE_SYSTEMS)
 
 
-def write_shape(method: str, url: str) -> str | None:
-    """The system whose approved write shape ``method url`` is, or None."""
+def write_shape(method: str, url: str, environ: Mapping[str, str] | None = None
+                ) -> str | None:
+    """The system whose approved write shape ``method url`` is, or None (a Portal shape
+    only on the host ``environ`` names, ``portal_write_host``)."""
     if not isinstance(method, str) or not isinstance(url, str) or len(url) > 2048:
         return None
     try:
@@ -1780,6 +1891,10 @@ def write_shape(method: str, url: str) -> str | None:
             if "%20" in path and not (system == "sharepoint" and verb == "PUT"):
                 return None
             return system
+    env = os.environ if environ is None else environ
+    if host == portal_write_host(env) and not parts.query and "%" not in path \
+            and portal_route(method, path, env) is not None:
+        return "portal"
     return None
 
 
@@ -1789,7 +1904,7 @@ def check_write_request(method: str, url: str, headers: Mapping[str, str],
     """Validate one approved write before I/O (the system it writes); raise
     ``ReadOnlyGuardError``. Never a Teams posting URL from the MC go-live settings."""
     env = os.environ if environ is None else environ
-    system = write_shape(method, url)
+    system = write_shape(method, url, env)
     if system is None:
         raise ReadOnlyGuardError("write: not one of the approved write shapes")
     if system not in writes_enabled(env):
@@ -1798,9 +1913,22 @@ def check_write_request(method: str, url: str, headers: Mapping[str, str],
         if teams.strip() and teams.strip() in url:
             raise ReadOnlyGuardError("MC_GO_LIVE_TEAMS_* URLs are never called")
     if not isinstance(headers, Mapping) or any(
-            not isinstance(k, str) or k.lower() not in WRITE_HEADERS or not isinstance(v, str)
+            not isinstance(k, str) or not isinstance(v, str)
+            or k.lower() not in (PORTAL_HEADERS if system == "portal" else WRITE_HEADERS)
             or "\r" in v or "\n" in v or len(v) > 400 for k, v in headers.items()):
         raise ReadOnlyGuardError("write: a header outside the closed set")
+    if system == "sharepoint" and method == "PUT" and REPLACE_PATH.fullmatch(
+            urlsplit(url).path) and not any(
+            k.lower() == "if-match" and v.strip() and v.strip() != "*"
+            for k, v in headers.items()):
+        # a replace never overwrites blind: only over the exact version read
+        raise ReadOnlyGuardError("write: a document replace needs If-Match (its eTag as read)")
+    if system == "portal":
+        named = {k.lower(): v.strip() for k, v in headers.items()}
+        if not re.fullmatch(r"[A-Za-z0-9_-]{16,128}", named.get("idempotency-key", "")):
+            raise ReadOnlyGuardError("write: a Portal write carries its Idempotency-Key")
+        if "if-match" in named or "prefer" in named:
+            raise ReadOnlyGuardError("write: a Portal route takes no If-Match or Prefer")
     if method == "DELETE":
         if body:
             raise ReadOnlyGuardError("write: DELETE carries no body")

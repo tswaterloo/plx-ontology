@@ -38,7 +38,7 @@ import os
 import signal
 import threading
 import time
-from typing import Any, Iterator, Mapping
+from typing import Any, Callable, Iterator, Mapping
 
 LIMITS_ENV = "PLX_TOOL_CALL_LIMITS"        # "on": the default limits
 DEADLINE_ENV = "PLX_TOOL_CALL_DEADLINE"    # wall-clock second every call must end by
@@ -144,14 +144,145 @@ _SQL_DEADLINE: ContextVar[float | None] = ContextVar("plx_sql_deadline", default
 
 def _past_deadline() -> int:
     deadline = _SQL_DEADLINE.get()
-    return int(deadline is not None and time.monotonic() >= deadline)
+    return int(cancelled() or (deadline is not None and time.monotonic() >= deadline))
 
 
 def seconds_left() -> float | None:
     """Seconds before this thread's SQL deadline (``sql_deadline``: a bounded call's
-    limit); None when no deadline is set."""
+    limit); None when no deadline is set; 0 once the work's ``Cancel`` is set (nobody
+    waits for it any more), whatever the deadline."""
+    if cancelled():
+        return 0.0
     deadline = _SQL_DEADLINE.get()
     return None if deadline is None else deadline - time.monotonic()
+
+
+# ---- request-scoped cancellation ---------------------------------------------------
+# A read a person's request waits for (the app's server: ``operator_api.serving.Worker.run``)
+# carries that request's ``Cancel``; the request's connection closing (the browser left or
+# reloaded) sets it. From then on the work's thread has no time left (``seconds_left`` 0,
+# a SQLite statement interrupted at its next progress check) and a Postgres statement under
+# way is cancelled on the server (``on_cancel``: ``PgCompatConnection.execute``), so the
+# worker is free for the next reader instead of finishing a read nobody will see. Work no
+# request owns (a shared read others join, the warm-up, a kept page's refresh) has none.
+
+
+class Cancel:
+    """Set once nobody waits for the work any more. ``set`` is idempotent and calls each
+    canceller registered then (``on_cancel``) once, on its own thread (a Postgres cancel
+    is a network round trip, never run on the server's event loop). A canceller under way
+    is waited for by its statement's ``on_cancel`` before the statement's connection is
+    let go (``settled``), so a late cancel never lands on the next statement there."""
+
+    def __init__(self) -> None:
+        self._event = threading.Event()
+        self._lock = threading.Lock()
+        self._calls: dict[int, Callable[[], Any]] = {}
+        self._fired: dict[int, threading.Event] = {}
+        self._next = 0
+
+    def is_set(self) -> bool:
+        return self._event.is_set()
+
+    def set(self) -> None:
+        with self._lock:
+            if self._event.is_set():
+                return
+            self._event.set()
+            calls = [(call, self._fired.setdefault(token, threading.Event()))
+                     for token, call in self._calls.items()]
+            self._calls.clear()
+        if calls:
+            threading.Thread(target=_call_all, args=(calls,), name="request-cancel",
+                             daemon=True).start()
+
+    def add(self, call: Callable[[], Any]) -> int | None:
+        """Register ``call``; None (not registered) when already set."""
+        with self._lock:
+            if self._event.is_set():
+                return None
+            self._next += 1
+            self._calls[self._next] = call
+            return self._next
+
+    def remove(self, token: int | None) -> "threading.Event | None":
+        """Unregister ``token``; the event its canceller sets once made, when ``set``
+        already started it (None: never fired, nothing to wait for)."""
+        if token is None:
+            return None
+        with self._lock:
+            self._calls.pop(token, None)
+            return self._fired.pop(token, None)
+
+
+# how long a statement's end waits for its own cancel under way to be made (a Postgres
+# cancel's own connect timeout is 5 s); past it the connection is not reused (``settle``)
+CANCEL_SETTLE_SECONDS = 6.0
+
+
+def _call_all(calls: list) -> None:
+    for call, done in calls:
+        try:
+            call()
+        except Exception:  # noqa: BLE001 - a cancel that fails leaves the statement's own limit
+            pass
+        finally:
+            done.set()
+
+
+_CANCEL: ContextVar["Cancel | None"] = ContextVar("plx_cancel", default=None)
+
+
+def current_cancel() -> "Cancel | None":
+    return _CANCEL.get()
+
+
+def cancelled() -> bool:
+    """The work this thread runs was cancelled (``Cancel``)."""
+    cancel = _CANCEL.get()
+    return cancel is not None and cancel.is_set()
+
+
+@contextmanager
+def cancel_scope(cancel: "Cancel | None") -> Iterator[None]:
+    """Run the block as work owned by ``cancel``; None: owned by no request (a read
+    others share, kept for the next request, is never cut by the one that started it)."""
+    token = _CANCEL.set(cancel)
+    try:
+        yield
+    finally:
+        _CANCEL.reset(token)
+
+
+@contextmanager
+def on_cancel(call: Callable[[], Any],
+              settle: Callable[[bool], Any] | None = None) -> Iterator[None]:
+    """Run the block (one store statement) with ``call`` (its server-side cancel) made
+    when this thread's work is cancelled meanwhile; already cancelled: the statement is
+    not started (``sqlite3.OperationalError("interrupted")``, as a deadline's).
+
+    A cancel made for the block is waited for before the block's end returns (the cancel
+    is sent from another thread and reaches the server a moment later: let go at once,
+    the connection's next statement, another reader's, was cancelled in its place; review
+    of a4577dca1e, 51 in 300), then ``settle(made)`` runs, still holding the connection:
+    it absorbs a cancel that arrived after the statement ended (``made`` False: the cancel
+    did not finish in ``CANCEL_SETTLE_SECONDS``; the connection must not be reused)."""
+    cancel = _CANCEL.get()
+    if cancel is None:
+        yield
+        return
+    token = cancel.add(call)
+    if token is None:
+        import sqlite3
+        raise sqlite3.OperationalError("interrupted")
+    try:
+        yield
+    finally:
+        fired = cancel.remove(token)
+        if fired is not None:
+            made = fired.wait(CANCEL_SETTLE_SECONDS)
+            if settle is not None:
+                settle(made)
 
 
 def interruptible(conn: Any) -> None:

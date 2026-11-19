@@ -168,6 +168,41 @@ class Classify(unittest.TestCase):
             with self.subTest(bad=bad), self.assertRaises(ap.RegistryInvalid):
                 ap.validate_registry(raw)
 
+    def test_a_malformed_any_of_refuses_the_whole_registry(self):
+        good = ap.load_registry()
+        for bad in ([], {"to_me": True}, [{}], [{"sender_is": "x"}],
+                    [{"answers_sender": [0, 2]}], [{"any_of": [{"to_me": True}]}],
+                    [{"usual_answerer": [0, 0.5]}], [{"usual_answerer": [1, 0]}],
+                    [{"usual_answerer": [1, 1.5]}], [{"usual_answerer": [True, 0.5]}],
+                    [{"usual_answerer": "1"}], [{"usual_answerer": [1]}]):
+            raw = json.loads(json.dumps(good))
+            raw["autopilots"][0]["when"] = {"any_of": bad}
+            with self.subTest(bad=bad), self.assertRaises(ap.RegistryInvalid):
+                ap.validate_registry(raw)
+
+    def test_shipped_teams_rule_answers_a_direct_question_whoever_asks(self):
+        """Grade 2026-11-18: six real direct questions in one-to-one chats got no draft
+        because the person had answered the sender under 9 times in 10 (or never had a
+        message from them). A question put to the person (``to_me``: a one-to-one chat or
+        an @mention) needs a reply whatever the sender record; a group message not naming
+        them is never this rule's; no ask, a closing line or a PO: nothing."""
+        rule = next(a for a in ap.load_registry()["autopilots"] if a["id"] == "teams_reply")
+        base = {"object_type": "TeamsChatMessage", "asks": True, "closing": False,
+                "intents": [], "side": "internal", "engaged": True, "correspondent": True}
+        for history in ([0, 0], [5, 3], [99, 80], [98, 2], [10, 10]):
+            with self.subTest(history=history):
+                direct = {**base, "to_me": True, "sender_answered": history,
+                          "sender_history": history}
+                self.assertTrue(autopilot_queue.matches(rule["when"], direct))
+                for group in ({**direct, "to_me": False, "unaddressed": True},
+                              {**direct, "to_me": False}):
+                    self.assertFalse(autopilot_queue.matches(rule["when"], group))
+        for off in ({"asks": False}, {"closing": True}, {"intents": ["customer_po"]},
+                    {"object_type": "Email"}):
+            with self.subTest(off=off):
+                self.assertFalse(autopilot_queue.matches(
+                    rule["when"], {**base, "to_me": True, **off}))
+
 
 class Engine(Fixture):
     def test_customer_po_prepares_a_confirmation_with_the_promise_date_once(self):
@@ -580,6 +615,52 @@ class Engine(Fixture):
         self.assertEqual({i["item_id"] for i in q.items(states=("done",))}, {"teams", "meeting"})
 
 
+class RecurringWork(Fixture):
+    def test_due_recurring_work_reaches_its_job_live_only_and_a_failure_stops_nothing(self):
+        """The live cycle (a queue in ``autopilot/``, the prepare gate ``SwitchGate``) adds
+        the person's due recurring work (``recurring_work.due_events``) and only the
+        ``job_recurring`` autopilot takes it; a replay's queue or gate never reads it; a
+        failing read is counted and the cycle goes on."""
+        from operating import recurring_work as rw
+        msg = self.message(1, "Thanks.", subject="Hello")
+        path = self.dir / "s.sqlite"
+        self.w.build(path)
+        due = {"event_id": "rec-1", "event_type": "record.due", "object_id": msg,
+               "object_type": "RecurringJob", "at": ap._iso(NOW), "status": "recurring",
+               "owner_hint": OURS_OID, "audience": f"mail:{OURS_OID}", "handles": [],
+               "subject": "Your weekly work", "fields": {"title": "Your weekly work"}}
+        gate = autopilot_engine.SwitchGate(None, {OURS_OID: frozenset({"routine_update"})})
+        asked = []
+
+        def run(folder: str, gate, found):
+            st = pe._Store(path, threads=1)
+            q = ap.Queue(self.dir / folder / ap.QUEUE_FILE)
+            try:
+                with mock.patch.object(rw, "due_events", side_effect=found) as called:
+                    out = ap.run_cycle(st, q, [], people=people(), environ=self.env, now=NOW,
+                                       gate=gate)
+                asked.append(called.call_count)
+                return out
+            finally:
+                st.close()
+                q.close()
+        live = run("autopilot", gate, lambda *a, **k: [due])
+        self.assertEqual(live["status"], "complete")
+        self.assertEqual(live["skipped"].get("job_recurring:job_model_off"), 1)
+        self.assertIsInstance(live["recurring_seconds"], float)    # the scan's cost, timed
+        self.assertEqual(asked[-1], 1)
+        self.assertEqual(run("replay", gate, lambda *a, **k: [due])["events_new"], 0)
+        replay_gate = run("other/autopilot", lambda *a: True, lambda *a, **k: [due])
+        self.assertEqual(replay_gate["events_new"], 0)
+        self.assertEqual(asked[-2:], [0, 0])
+
+        def broken(*a, **k):
+            raise OSError("unreadable")
+        failed = run("autopilot", gate, broken)
+        self.assertEqual((failed["status"], failed["skipped"].get("recurring_unreadable")),
+                         ("complete", 1))
+
+
 class AnsweredInChat(unittest.TestCase):
     """Live 11-13..17: 304 of 388 Teams reply items were prepared after the person had
     already answered in the chat (the item was only closed by that answer). A message the
@@ -895,6 +976,10 @@ class Kinds(Fixture):
         order = self.order("PO-9")
         lot = w.obj("Batch", {"lot_number": "L-1", "quality_status": "Rejected",
                               "order_list": "SO-7001", "tested_by": "QA"})
+        # a lot on hold that holds up no open order: nothing to decide, no item (11-18
+        # owner walk: ten "0 open order(s) affected" items)
+        idle = w.obj("Batch", {"lot_number": "L-2", "quality_status": "On-Hold",
+                               "tested_by": "QA"})
         meeting = w.obj("Meeting", {"mailbox": OURS_OID, "subject": "Review",
                                     "organizer": json.dumps({"address": OURS}),
                                     "attendees": json.dumps([{"address": OUTSIDE}]),
@@ -920,7 +1005,7 @@ class Kinds(Fixture):
         w.link("Email.sent_by_supplier", pay, supplier)
         self.env[autopilot_queue.ROLES_ENV] = str(self.dir / "roles.json")
         (self.dir / "roles.json").write_text(json.dumps({"roles": {"quality": [OURS_OID]}}))
-        summary = self.cycle([task, bare, lot, meeting, delay, pay])
+        summary = self.cycle([task, bare, lot, idle, meeting, delay, pay])
         # supplier delay and payment questions are off until payables data exists; a task
         # naming no record makes no item (it would only restate itself)
         self.assertEqual(summary["prepared"], {"task_assigned": 1, "qc_hold": 1,
@@ -928,6 +1013,21 @@ class Kinds(Fixture):
         items = {i["autopilot"]: i["body"]["prepared"] for i in self.queue().items()}
         self.assertEqual([a["order_number"] for a in items["qc_hold"]["affected"]],
                          ["SO-7001"])
+        self.assertEqual(items["qc_hold"]["summary"], "Lot L-1 is rejected; it holds up 1 "
+                         "open order.")
+        self.assertEqual(items["qc_hold"]["gaps"], [])
+        # an item made earlier for a lot holding up no open order closes at the next cycle;
+        # the one holding up an order stays open
+        q = self.queue()
+        (held,) = [i for i in q.items() if i["autopilot"] == "qc_hold"]
+        with q.conn:
+            q.add_item({**held, "item_id": "ap_old_qc", "event_id": "ev-old-qc",
+                        "body": {**held["body"], "prepared": {**held["body"]["prepared"],
+                                                              "affected": []}}})
+        self.cycle([])
+        left = {i["item_id"]: i["state"] for i in self.queue().items(states=("open", "done"))
+                if i["autopilot"] == "qc_hold"}
+        self.assertEqual(left, {held["item_id"]: "open", "ap_old_qc": "done"})
         self.assertTrue(items["task_assigned"]["answer"])
         eta = items["supplier_eta"]
         self.assertEqual((eta["eta"]["stated"], eta["eta"]["slip_days"]), ("2026-11-20", 31))

@@ -170,7 +170,8 @@ def _resolved_rows(rows: Sequence[Any], v: Any, name: str, reader: Any, write: A
     needs; a row read from an excluded person's record is dropped, a column only read from
     one is emptied."""
     ids = {o for r in rows for o in (*r.objects, *r.reads,
-                                     *(i for c in r.col_reads.values() for i in c))}
+                                     *(i for c in r.col_reads.values() for i in c),
+                                     *(i for c in r.col_names.values() for i in c))}
     held = _versions(reader, sorted(ids))
     gone = excluded_objects(write, ids)
     out = []
@@ -202,6 +203,15 @@ def _resolved_rows(rows: Sequence[Any], v: Any, name: str, reader: Any, write: A
                           "blocked": cblocked or any(not (isinstance(k, str) and k)
                                                      for k in ck)}
             col_objects[col] = sorted(reads)
+        for col, named in sorted(row.col_names.items()):
+            # a cell naming a record no value was read from: only its exclusion matters
+            if gone.intersection(named):
+                notes["people_excluded_cells"] += 1
+                row.values[col] = None
+                row.cites.pop(col, None)
+                col_objects.pop(col, None)
+                continue
+            col_objects[col] = sorted(set(col_objects.get(col, ())) | set(named))
         cols = (json.dumps(row.col_marks, sort_keys=True), json.dumps(needs, sort_keys=True))
         if v.fill is None:   # a curated view's systems: its copies' (never a comms table's)
             row.values.setdefault(_bv().SYSTEMS_COL, ",".join(row.systems) or None)
@@ -317,13 +327,15 @@ def build_view(name: str, reader: Any, write: Any, *, as_of: dt.date,
 
 def sweep_leftovers(write: Any) -> list[str]:
     """Drop every ``_next`` table a stopped build left in the schema (a build killed
-    between its chunk commits and its swap: the time limit's SIGKILL, a lost connection).
-    Only under the one-build lock (``REFRESH_LOCK``): no other build owns them."""
+    between its chunk commits and its swap: the time limit's SIGKILL, a lost connection),
+    and a communications build's stage (``<view>_next_stage``, ``_next_stage_text``: its
+    readers commit them). Only under the one-build lock (``REFRESH_LOCK``): no other build
+    owns them."""
     S = _bv().SCHEMA
     got = [r[0] for r in write.execute(
         "SELECT c.relname FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace "
-        "WHERE n.nspname = %s AND c.relkind = 'r' AND c.relname LIKE '%%\\_next' "
-        "ORDER BY 1", (S,))]
+        "WHERE n.nspname = %s AND c.relkind = 'r' AND c.relname ~ "
+        "'_next(_stage(_text)?)?$' ORDER BY 1", (S,))]
     for t in got:
         write.execute(f'DROP TABLE IF EXISTS {S}."{t}"')
     return got

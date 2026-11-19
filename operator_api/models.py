@@ -691,10 +691,20 @@ class AnswerPayload(_Model):
     attachments: list[AskAttachmentNote] = Field(
         default_factory=list, json_schema_extra=_optional,
         description="The question's attachments: what was read and what was not, and why.")
+    prepared: list[str] = Field(
+        default_factory=list, json_schema_extra=_optional,
+        description="Changes the answer prepared (plx.prepare_write, plx.edit_document), "
+                    "by id: each is done only after the person confirms it "
+                    "(GET /api/prepared/{id}, then its confirm).")
     drafts: list[AskDraft] = Field(
         default_factory=list, json_schema_extra=_optional,
         description="Emails and actions the question asked to have drafted; each is done "
                     "only from its preview with your explicit confirm.")
+    documents: list["AskDocument"] = Field(
+        default_factory=list, json_schema_extra=_optional,
+        description="Files the answer made for you (plx.make_document): each kept for you "
+                    "only, downloaded from its link; sent or saved only through a prepared "
+                    "change you confirm.")
     instruction: Optional["InstructPart"] = Field(
         None, json_schema_extra=_optional,
         description="When the box was told to do something: its question, exact writes, "
@@ -3537,12 +3547,20 @@ class AutopilotSuspension(_Model):
 
 
 class AutopilotDraftChoice(_Model):
-    """Work the autopilot prepares for you only once you switch it on yourself: a draft or
-    a prepared action waiting in My work for your confirm. Nothing is sent or written by
-    itself."""
+    """Work the autopilot prepares for you: a draft or a prepared action waiting in My work
+    for your confirm. On when you switched it on yourself or the owner's Draft file turned
+    it on for you; your own off or pause wins over the Draft file. Nothing is sent or
+    written by itself."""
     choice: str
     label: str
-    on: bool = Field(description="You switched it on (and did not pause).")
+    on: bool = Field(description="Some or all of it is prepared for you now (not switched "
+                     "off or paused by you).")
+    partly: bool = Field(False, json_schema_extra=_optional, description="On for only some "
+                         "of its workflows (the owner's Draft file turned on part of it).")
+    by_owner: bool = Field(False, json_schema_extra=_optional, description="On because the "
+                           "owner's Draft file turned it on for you, not your own switch.")
+    since: Optional[str] = Field(None, json_schema_extra=_optional, description="When you "
+                                 "switched it on yourself (absent when set by the owner).")
 
 
 class AutopilotOptIn(_Model):
@@ -3571,6 +3589,10 @@ class AutopilotDraftsPerson(_Model):
     person: str
     choice: str
     label: str
+    by_owner: bool = Field(False, json_schema_extra=_optional, description="On through the "
+                           "owner's Draft file, not the person's own switch.")
+    partly: bool = Field(False, json_schema_extra=_optional, description="On for only some "
+                         "of the choice's workflows.")
 
 
 class AutopilotGateNotice(_Model):
@@ -3638,6 +3660,9 @@ class AutopilotArea(_Model):
         "ignored / waiting per prepared item this reader may see (counts only); absent when "
         "nothing was prepared.")
     notes: list[str] = Field(default_factory=list)
+    checked_at: Optional[str] = Field(None, json_schema_extra=_optional, description=(
+        "When the live feed last looked for new mail and chats (absent when it has not "
+        "run on this server)."))
     known_workflows: list[str] = Field(default_factory=list, description=(
         "every workflow the autopilot knows (``operating.workflows``), scored or not: the "
         "workflow filter offers them before any is scored or prepared"))
@@ -3664,15 +3689,41 @@ class AutopilotLineRequest(_Model):
                       "reply to a \"your call\" card is written from it.")
 
 
+class AutopilotOption(_Model):
+    """One choice on a "your call" card and the reply written for it."""
+    label: str = ""
+    reply: str
+
+
+class AutopilotJob(_Model):
+    """One system change an autopilot proposed from an event (``operating.autopilot_jobs``):
+    nothing is prepared or written until you review it (``POST .../jobs/{index}/prepare``
+    reads the record from its system and makes the change you confirm in two steps)."""
+    index: int
+    tool: Literal["plx.prepare_write", "plx.edit_document"]
+    system: str = Field("", description="bc, portal, mc, planner, calendar or sharepoint.")
+    operation: str = ""
+    reason: str = Field("", description="Why, in one line, as the model put it.")
+    target: dict[str, Any] = Field(default_factory=dict)
+    change: dict[str, Any] = Field(default_factory=dict)
+    prepared_id: Optional[str] = Field(None, description="Set once you reviewed it: the "
+                                       "prepared change (``/api/prepared/{id}``).")
+    state: Optional[str] = Field(None, description="The prepared change's state once "
+                                 "reviewed (prepared, confirmed, dismissed, ...).")
+
+
 class AutopilotPrepared(_Model):
-    """One thing prepared for you to answer: who wrote, what they wrote, and either the
-    reply (to edit, confirm, copy or open in Outlook) or the question only you can answer."""
+    """One thing prepared for you: who wrote, what they wrote, and either the reply (to
+    edit, confirm, copy or open in Outlook), the question only you can answer, or the system
+    changes the event calls for (``job``: each reviewed and confirmed on its own)."""
     item_id: str
     sender: str
-    channel: Literal["mail", "teams"]
+    channel: Literal["mail", "teams", "system"]
     subject: str = ""
     message: str = Field("", description="What they wrote, as far as the item keeps it.")
-    kind: Literal["reply", "your_call"]
+    kind: Literal["reply", "your_call", "job"]
+    summary: str = Field("", description="On a job: what the event asks to be done.")
+    jobs: list[AutopilotJob] = Field(default_factory=list)
     to: list[str] = Field(default_factory=list)
     cc: list[str] = Field(default_factory=list)
     body: str = Field("", description="The reply as it stands now (your edit when you made "
@@ -3680,6 +3731,16 @@ class AutopilotPrepared(_Model):
     edited: bool = False
     ask: str = ""
     facts: list[str] = Field(default_factory=list)
+    options: list[AutopilotOption] = Field(
+        default_factory=list, description="On a \"your call\" card: the replies written for "
+        "each choice you could make; pick one to edit and confirm.")
+    used_for_draft: Optional[AutopilotDraftUse] = Field(
+        None, description="Your preferences and memory the draft applied (and those read "
+        "but not applied), and its template.")
+    learned: list[str] = Field(
+        default_factory=list, description="On a draft you edited: what your edit changed, "
+        "as the Workbench learns it for your next drafts (greeting, sign-off, length, a "
+        "sentence you add or take out).")
     created_at: str
 
 
@@ -4057,6 +4118,11 @@ class MemoryItem(_Model):
     due: Optional[str] = Field(None, description="A commitment's due day (YYYY-MM-DD, US "
                                "Eastern) as its words say it, read against when it was said; "
                                "None when they name no day.")
+    autopilot: list[str] = Field(
+        default_factory=list, json_schema_extra=_optional,
+        description="What the Autopilot does because of it, in plain words (no draft for a "
+                    "sender or side, who your email drafts copy or never copy); empty when "
+                    "it states no such rule.")
 
 
 class MemoryItems(_Model):
@@ -4546,6 +4612,14 @@ class EntryConfirm(_Model):
     currency: Optional[str] = Field(None, max_length=8)
 
 
+class AskDocument(_Model):
+    """A file the Ask made for you: its name, kind, size and download link."""
+    name: str
+    kind: Literal["docx", "xlsx", "pdf"]
+    size: int
+    download_url: str
+
+
 class InstructDocument(_Model):
     """A document made as a file, and its upload to SharePoint as a draft you approve
     (``/api/instruct/uploads/{upload_id}``)."""
@@ -4665,6 +4739,102 @@ class InstructPart(_Model):
     template: Optional["TemplateFilled"] = Field(None, json_schema_extra=_optional,
                                                  description="A saved template filled "
                                                  "from the record the line names.")
+
+
+class PreparedChange(_Model):
+    field: str
+    before: Any = None
+    after: Any = None
+
+
+class PreparedAttachment(_Model):
+    """A file an email carries: its name and size, opened from
+    ``/api/instruct/files/{file_id}`` (a file your Ask made for you)."""
+    name: Optional[str] = None
+    size: Optional[int] = None
+    file_id: Optional[str] = None
+
+
+class PreparedMessage(_Model):
+    """A mail or Teams message as it is sent: sender, recipients, subject, the full body
+    and the files attached."""
+    sender: Optional[str] = None
+    to: list[str] = Field(default_factory=list)
+    cc: list[str] = Field(default_factory=list)
+    subject: Optional[str] = None
+    body: Optional[str] = None
+    attachments: list[PreparedAttachment] = Field(default_factory=list,
+                                                  json_schema_extra=_optional)
+
+
+class PreparedTarget(_Model):
+    """One action exactly as the executor runs it: every field it builds the request
+    from (``prepared_writes.shown_action``); ``record`` is the record's name as read from
+    the system (None: a new record or a message); ``company`` the BC company the request
+    goes to (``{"id", "name"}``: its id and BC's name for it; BC actions only)."""
+    kind: Optional[str] = None
+    system: Optional[str] = None
+    operation: Optional[str] = None
+    target: Any = None
+    record: Optional[str] = None
+    company: Any = None
+    fields: Any = None
+    people: list[str] = Field(default_factory=list)
+    condition: Any = None
+    decision: Optional[str] = None
+    message: Optional[PreparedMessage] = None
+
+
+class PreparedOutcome(_Model):
+    kind: Optional[str] = None
+    status: Optional[str] = None
+    mode: Optional[str] = None
+    reasons: Optional[list[str]] = None
+    key: Optional[str] = None
+
+
+class PreparedWrite(_Model):
+    """A change Ask or an autopilot prepared in a business system for the person
+    (``operating.prepared_writes``): nothing is written before their two-step confirm.
+    ``live``/``missing``/``acknowledge``/``preview_hash`` come with a preview only."""
+    prepared_id: str
+    state: Literal["prepared", "confirmed", "dismissed", "undone", "expired", "not_run"]
+    origin: Optional[str] = None
+    expires: Optional[str] = None
+    title: Optional[str] = None
+    reason: Optional[str] = None
+    citations: list[str] = Field(default_factory=list)
+    actions: list[PreparedTarget] = Field(default_factory=list)
+    diff: list[PreparedChange] = Field(default_factory=list)
+    undo: list[str] = Field(default_factory=list)
+    outcome: list[PreparedOutcome] = Field(default_factory=list)
+    live: Optional[bool] = None
+    missing: list[str] = Field(default_factory=list)
+    acknowledge: list[str] = Field(default_factory=list)
+    preview_hash: Optional[str] = None
+
+
+class TeamsConnection(_Model):
+    """Your own Teams sign-in (so a Teams reply you confirm posts as you): never the token."""
+    connected: bool
+    scopes: list[str] = Field(default_factory=list)
+    connected_at: Optional[str] = None
+    used_at: Optional[str] = None
+    missing: list[str] = Field(default_factory=list, description="What this server still "
+                               "lacks for a sign-in (empty: you can connect).")
+
+
+class TeamsConnectStart(_Model):
+    url: str = Field(description="The Microsoft sign-in address to open.")
+
+
+class PreparedWrites(_Model):
+    items: list[PreparedWrite] = Field(default_factory=list)
+
+
+class PreparedConfirmRequest(_Model):
+    preview_hash: str = Field(min_length=64, max_length=64)
+    confirm: bool
 
 
 class UploadPreview(_Model):

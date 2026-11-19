@@ -72,6 +72,13 @@ describe("Needs you (owner)", () => {
     expect(screen.queryByText("No decision, approval or blocked item waits on you.")).toBeNull();
   });
 
+  it("shows the other rows while the approvals queue is still read, never calling it unread", () => {
+    render(<NeedsMeList sources={{ ...all, approvals: undefined }} />);
+    expect(screen.queryByTestId("needs-me-unread")).toBeNull();
+    expect(screen.queryByText("2 approvals waiting on Sam")).toBeNull();
+    expect(screen.getAllByRole("listitem").length).toBeGreaterThan(0);
+  });
+
   it("draws nothing when every source was read and nothing waits, no heading and no zero counts", () => {
     const { container } = render(<NeedsMeList sources={{ me, autopilot: { ...area, items: [] }, writes: [], approvals: { ...approvals, groups: [] } }} />);
     expect(container).toBeEmptyDOMElement();

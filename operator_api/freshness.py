@@ -299,7 +299,7 @@ def with_search_coverage(sources: Sequence[m.FreshnessSource]) -> list[m.Freshne
         from operating.search import coverage, plug
         if not plug.enabled():
             return list(sources)
-        found = coverage.coverage()
+        found = coverage.coverage(wait=0)   # never waited on: read in the background
     except Exception:  # noqa: BLE001 - nothing is claimed about search
         return list(sources)
     return [s.model_copy(update={"searchable_to": found[s.system]})

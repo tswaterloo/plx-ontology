@@ -395,6 +395,176 @@ class AccountScope(ta.Fixture):
                                                        "sender": OUTSIDE}, "x"), [])
 
 
+class Lookup:
+    """The tool session stand-in: answers ``answer`` with what its tools "returned"."""
+
+    def __init__(self, answer: dict, looked=(), *, none: bool = False) -> None:
+        self.answer, self.looked, self.none, self.runs = answer, list(looked), none, []
+
+    def run(self, owner, prompt):
+        self.runs.append((owner, prompt))
+        return None if self.none else (json.dumps(self.answer), self.looked)
+
+
+class DraftsLookUpAndOffer(unittest.TestCase):
+    """Grade 2026-11-18: drafts sent everything not in the thin notes to "your call", with
+    facts lines saying nothing was found. The model replies by default and may read the
+    records as the person (tools: only when the caller says every reader is ours); a
+    figure stands only if the material or what the tools returned holds it; a your-call
+    card carries a checked reply per choice."""
+
+    def writer(self, lookup=None, answer=None):
+        model = Model(answer=answer or {"kind": "reply", "reply": "Not yet, today."})
+        return ad.Writer("opus", binary=BIN, home=HOME, seconds=5, per_cycle=4,
+                         call=model, lookup=lookup), model
+
+    def test_a_figure_the_tools_read_stands_and_one_nobody_read_withholds(self):
+        m = material(channel="teams", sender="Jo", text="Did lot 4417 ship?", account=[])
+        said = {"kind": "reply", "reply": "Yes, lot 4417 shipped 2026-11-12, 36 pallets."}
+        read = Lookup(said, ['{"rows": [["4417", "2026-11-12", 36]]}'])
+        w, model = self.writer(read)
+        got, why = w.write(m, {**EVENT, "sender": COLLEAGUE}, People(), "owner-1", tools=True)
+        self.assertEqual((got.kind, why), ("reply", ""), why)
+        self.assertEqual((len(read.runs), model.prompts), (1, []))
+        self.assertIn("plx.sql", read.runs[0][1])
+        self.assertEqual(read.runs[0][0], "owner-1")
+        # the same answer when the tools read other figures: withheld
+        w, _ = self.writer(Lookup(said, ['{"rows": [["4417", "2026-11-13", 30]]}']))
+        self.assertEqual(w.write(m, EVENT, People(), "o", tools=True),
+                         (None, "figure_not_in_material"))
+        # tools not allowed (an outside reader): the plain call, never the session
+        idle = Lookup(said, ['{"rows": [["4417", "2026-11-12", 36]]}'])
+        w, model = self.writer(idle, answer=said)
+        self.assertEqual(w.write(m, EVENT, People(), "o"), (None, "figure_not_in_material"))
+        self.assertEqual((idle.runs, len(model.prompts)), ([], 1))
+        self.assertNotIn("plx.sql", model.prompts[0])
+        # no session for this person (not in the readers file): the plain call
+        w, model = self.writer(Lookup(said, none=True), answer={"kind": "none"})
+        self.assertEqual(w.write(m, EVENT, People(), "o", tools=True), (None, "nothing_useful"))
+        self.assertEqual(len(model.prompts), 1)
+
+    def test_a_look_up_that_ends_with_no_answer_still_drafts_with_the_gap_flagged(self):
+        """Grade 2026-11-18: a look-up killed at its limit (or ending with no answer) left
+        the message with nothing. Now the plain call writes the reply from what is known,
+        told the look-up did not finish; a reply naming what is being checked is a reply,
+        a bare "thanks, I'll look into it" still is not."""
+        m = material(channel="teams", sender="Jo", text="Did lot 4417 ship? And the COA?",
+                     account=[])
+        flagged = {"kind": "reply", "reply": "COA is attached; checking on the 4417 ship date."}
+        for final in ("", "the session was cut off", "{not json"):
+            with self.subTest(final=final):
+                cut = Lookup({}, [])
+                cut.run = lambda owner, prompt, f=final: (f, [])
+                w, model = self.writer(cut, answer=flagged)
+                got, why = w.write(m, EVENT, People(), "o", tools=True)
+                self.assertEqual((got.kind, got.text, why), ("reply", flagged["reply"], ""))
+                self.assertEqual(len(model.prompts), 1)
+                self.assertIn("did not finish", model.prompts[0])
+                self.assertNotIn("plx.sql", model.prompts[0])
+        for hollow in ("Thanks, I'll look into it.", "Thank you for the update.",
+                       "Hi Jo, thanks. I will check on it and get back."):
+            w, _ = self.writer(Lookup({"kind": "reply", "reply": hollow}))
+            self.assertEqual(w.write(m, EVENT, People(), "o", tools=True),
+                             (None, "nothing_useful"), hollow)
+        # a session that answered: no second call, no gap note
+        w, model = self.writer(Lookup(flagged))
+        self.assertEqual(w.write(m, EVENT, People(), "o", tools=True)[1], "")
+        self.assertEqual(model.prompts, [])
+
+    def test_the_model_is_told_the_standing_preferences_and_only_their_ids_come_back(self):
+        m = material(channel="teams", sender="Kim", text="Can you confirm the order?",
+                     account=[])
+        m = ad.Material(**{**m.__dict__, "style": ["[pref 7] Never mention pricing to Kim.",
+                                                   "Keeps replies short."]})
+        said = {"kind": "reply", "reply": "Confirmed, it ships this week.",
+                "followed": [7, 8, True, "7", -7]}
+        w, model = self.writer(answer=said)
+        got, why = w.write(m, EVENT, People(), "o")
+        self.assertEqual((got.kind, got.followed, why), ("reply", [7], ""))
+        self.assertIn("standing preference", model.prompts[0])
+        self.assertIn("[pref 7] Never mention pricing to Kim.", model.prompts[0])
+        # no preference given: no note, nothing followed whatever the model says
+        plain = ad.Material(**{**m.__dict__, "style": ["Keeps replies short."]})
+        w, model = self.writer(answer=said)
+        got, _ = w.write(plain, EVENT, People(), "o")
+        self.assertEqual(got.followed, [])
+        self.assertNotIn("standing preference", model.prompts[0])
+
+    def test_what_the_tools_returned_is_screened_like_the_prompt(self):
+        m = material(channel="teams", sender="Jo", text="Any news on the order?", account=[])
+        said = {"kind": "reply", "reply": "It went out this morning."}
+        for looked, why in (([PAYSTUB], "pay_or_hr"),
+                            (["From: barred@synth-tenant.example re the order"],
+                             "excluded_in_thread"),
+                            (["Booked with Freightcom, pickup at 3"], "freightcom")):
+            with self.subTest(why=why):
+                w, _ = self.writer(Lookup(said, looked))
+                got, got_why = w.write(m, EVENT, People(barred={"barred@synth-tenant.example"}),
+                                       "o", tools=True)
+                self.assertIsNone(got)
+                self.assertEqual(got_why, why)
+
+    def test_a_your_call_card_offers_checked_replies_and_no_empty_facts(self):
+        card = {"kind": "your_call", "ask": "Take 2% off SO-7001 if they order both?",
+                "facts": ["Open order SO-7001, due 2026-10-30.",
+                          "No records found for a second order.",
+                          "Could not find a price list on file"],
+                "options": [{"label": "Yes", "reply": "Yes, 2% off SO-7001 if you take both."},
+                            {"label": "Yes, 15%", "reply": "We can do 15% off."},
+                            {"label": "No", "reply": "Sorry, SO-7001 stays at list price."},
+                            {"label": "bad", "reply": 7}, "junk"]}
+        w, _ = self.writer(answer=card)
+        got, why = w.write(material(), EVENT, People(), "o")
+        self.assertEqual((got.kind, why), ("your_call", ""))
+        self.assertEqual(got.facts, ["Open order SO-7001, due 2026-10-30."])
+        # "15%" is in no material: that option is dropped, the others kept
+        self.assertEqual([o["label"] for o in got.options], ["Yes", "No"])
+        self.assertIsNone(ad.parse(json.dumps({**card, "options": "x"})))
+
+    def test_the_pool_answers_pending_then_the_draft(self):
+        import threading
+        gate = threading.Event()
+
+        class Slow(Model):
+            def __call__(self, argv, **kw):
+                gate.wait(5)
+                return super().__call__(argv, **kw)
+        model = Slow("Not yet, I will look at it today.")
+        w = ad.Writer("opus", binary=BIN, home=HOME, seconds=5, per_cycle=4, call=model,
+                      parallel=2)
+        self.addCleanup(w.close)
+        m = material()
+        self.assertEqual(w.write(m, EVENT, People(), "o", key="k1"), (None, "draft_pending"))
+        self.assertEqual(w.write(m, EVENT, People(), "o", key="k1"), (None, "draft_pending"))
+        self.assertEqual(w.pending(), ["k1"])
+        gate.set()
+        w.wait(5)
+        got, why = w.write(m, EVENT, People(), "o", key="k1")
+        self.assertEqual((got.text, why, w.pending(), len(model.prompts)),
+                         ("Not yet, I will look at it today.", "", [], 1))
+        # a screened message never reaches the pool
+        self.assertEqual(w.write(m, {**EVENT, "cleared": False}, People(), "o", key="k2"),
+                         (None, "not_cleared"))
+        self.assertEqual(w.pending(), [])
+
+    def test_only_a_reply_every_reader_of_which_is_ours_may_read_the_records(self):
+        ours = {"p1": ["vince@synth-tenant.example"], "p2": [COLLEAGUE]}
+        mail_in = {"side": "internal", "channel": "mail", "sender": COLLEAGUE,
+                   "to": ["vince@synth-tenant.example"], "cc": []}
+        self.assertTrue(ap.ours_only(mail_in, ours))
+        for bad in ({"cc": [OUTSIDE]}, {"to": [OUTSIDE]}, {"side": "customer"},
+                    {"side": None}, {"sender": None}, {"to": [None]}):
+            with self.subTest(bad=bad):
+                self.assertFalse(ap.ours_only({**mail_in, **bad}, ours))
+        self.assertFalse(ap.ours_only(mail_in, {}))
+        chat = {"side": "internal", "channel": "teams", "outside": []}
+        self.assertTrue(ap.ours_only(chat, ours))
+        for bad in ({"outside": ["guest#EXT#@x.example"]}, {"outside": None},
+                    {"unaddressed": True}, {"side": "unknown"}):
+            with self.subTest(bad=bad):
+                self.assertFalse(ap.ours_only({**chat, **bad}, ours))
+
+
 class LiveCycle(ta.Fixture):
     """In the live queue a reply item carries the model's draft or is not made at all; a
     replay's queue keeps the handler's work and never calls a model."""
@@ -463,6 +633,29 @@ class LiveCycle(ta.Fixture):
         self.assertTrue(kept.get("sender"))
         self.assertLessEqual(set(kept), set(ap.CARD_EVENT))
 
+    def test_cardinality_every_draft_is_written_in_the_same_cycle_on_the_pool(self):
+        """Latency (grade 2026-11-18): at most 4 draft calls a cycle, one at a time, left
+        the rest a whole cycle behind (p95 ~18 min). The calls run on a bounded pool and
+        each event is prepared in the cycle that took it: no row lost or doubled."""
+        for n in (1, 10, 60):
+            with self.subTest(n=n):
+                self.setUp()
+                msgs = [self.message(700 + i, f"Could you send me the status of SO-1? {i}")
+                        for i in range(n)]
+                model = Model("Hi,\n\nSO-1 is open; I will send the ship date today.")
+                writer = ad.Writer("opus", binary=BIN, home=HOME, seconds=5, per_cycle=n,
+                                   call=model, parallel=4)
+                self.addCleanup(writer.close)
+                out, items = self.live(msgs, writer, f"n{n}.sqlite")
+                # one person's hourly cap (30) holds: the rest wait, none lost
+                made = min(n, 30)
+                self.assertEqual(out["prepared"], {"customer_request": made}, out["skipped"])
+                self.assertEqual(out["skipped"].get("customer_request:rate_limited", 0),
+                                 n - made)
+                self.assertEqual(len({i["event_id"] for i in items}), made)
+                self.assertEqual(len(model.prompts), made)     # no call past the cap
+                self.assertFalse(out["skipped"].get("draft_busy"))
+
     def test_a_dry_run_writes_nothing_and_sends_nothing(self):
         msg = self.message(65, "Could you send me the status of SO-1? Thanks")
         path = self.dir / "d.sqlite"
@@ -484,6 +677,62 @@ class LiveCycle(ta.Fixture):
         self.assertFalse(queue_path.parent.exists())
         after = sorted(p for p in self.dir.rglob("*") if p.is_file())
         self.assertEqual([p for p in after if p not in before and "ledger" not in str(p)], [])
+
+    def test_a_dry_run_card_shows_the_replies_it_offers(self):
+        # a grade reads a "your call" card as the person sees it: the ask, the facts and
+        # the checked replies they pick from (the 11-18 grade's rows had no options)
+        msg = self.message(67, "Could you send me the status of SO-1? Thanks")
+        path = self.dir / "o.sqlite"
+        self.w.build(path)
+        st = pe._Store(path, threads=1)
+        card = {"kind": "your_call", "ask": "Promise a ship date for SO-1?",
+                "facts": ["SO-1 is open."],
+                "options": [{"label": "Yes", "reply": "SO-1 ships this week."},
+                            {"label": "Not yet", "reply": "SO-1 is open; I'll confirm a date."}]}
+        model = Model(answer=card)
+        queue_path = self.dir / "dryo" / "autopilot" / ap.QUEUE_FILE
+        try:
+            with mock.patch.object(ad, "from_environ", lambda _e: ad.Writer(
+                    "opus", binary=BIN, home=HOME, seconds=5, per_cycle=4, call=model)):
+                reg = ap.load_registry()
+                reg = {**reg, "autopilots": [a for a in reg["autopilots"]
+                                             if a["id"] == "customer_request"]}
+                rows = ap.dry_drafts(st, reg, ta.people(), [msg], queue_path,
+                                     environ={**self.env, ad.MODEL_ENV: "opus"})
+        finally:
+            st.close()
+        cards = [r for r in rows if r.get("kind") == "your_call"]
+        self.assertTrue(cards, rows)
+        self.assertEqual([[o["label"] for o in r["options"]] for r in cards],
+                         [["Yes", "Not yet"]] * len(cards))
+
+    def test_a_dry_run_reads_the_live_queues_history_from_a_copy_and_never_writes_it(self):
+        # the rules a live cycle matches read the reader's history in the live queue
+        # (engagement, how they answer the sender): a grade reads it too, from a copy
+        import hashlib
+        msg = self.message(66, "Could you send me the status of SO-1? Thanks")
+        path = self.dir / "e.sqlite"
+        self.w.build(path)
+        st = pe._Store(path, threads=1)
+        queue_path = self.dir / "live" / "autopilot" / ap.QUEUE_FILE
+        ap.Queue(queue_path).close()
+        digest = hashlib.sha256(queue_path.read_bytes()).hexdigest()
+        read: list[Path] = []
+        real = ap._engage
+
+        def engage(queue, event, window):
+            read.append(queue.path)
+            return real(queue, event, window)
+        try:
+            with mock.patch.object(ap, "_engage", engage), \
+                    mock.patch.object(ad, "from_environ", lambda _e: None):
+                ap.dry_drafts(st, ap.load_registry(), ta.people(), [msg], queue_path,
+                              environ=self.env)
+        finally:
+            st.close()
+        self.assertTrue(read)
+        self.assertTrue(all(p != queue_path and not p.exists() for p in read), read)
+        self.assertEqual(hashlib.sha256(queue_path.read_bytes()).hexdigest(), digest)
 
     def test_a_replay_queue_never_calls_the_model(self):
         msg = self.message(63, "Could you send me the status of SO-1? Thanks")
@@ -548,3 +797,26 @@ class ReaderAndSenderTests(unittest.TestCase):
     def test_only_the_handlers_nothing_found_skip_lets_the_model_decide(self):
         from operating import autopilot_engine as ae
         self.assertEqual(ae.MODEL_DECIDES, frozenset({"nothing_to_prepare"}))
+
+
+class PersonStyle(unittest.TestCase):
+    """The person's learned style reaches the model from whichever of their addresses has a
+    mailbox the style is read from (graded 11-18: the owner of two addresses whose first,
+    an alias, gives none got no style at all)."""
+
+    def test_the_style_of_any_of_the_persons_addresses_is_used(self):
+        import time
+        asked: list[str] = []
+
+        def style(address):
+            asked.append(address)
+            return {"rules": ["Sign off with V."]} if address == "vince@co.example" else None
+        held = {"provider": None, "made": time.monotonic(), "style": style}
+        queue = ap._DryQueue(Path("/nonexistent/autopilot/autopilot.sqlite"))
+        got = ap._writing_style(queue, held, "oid-v", ["alias@co.example", "vince@co.example"],
+                                {}, {})
+        self.assertEqual(got, ["Sign off with V."])
+        self.assertEqual(asked, ["alias@co.example", "vince@co.example"])
+        # nobody's style: none, and a failing read is no style (never a crash)
+        held["style"] = lambda _a: (_ for _ in ()).throw(OSError("unreadable"))
+        self.assertEqual(ap._writing_style(queue, held, "oid-v", ["a@co.example"], {}, {}), [])

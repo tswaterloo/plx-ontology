@@ -2,13 +2,17 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
+import shutil
 import subprocess
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 from tools import import_graph as graph_mod
+from tools import symbol_impact
 
 
 from tests.import_graph_tree import TREE, write_tree  # noqa: F401
@@ -250,6 +254,55 @@ INIT_CHAIN = {
     "tests/test_leaf.py": "import lib.sub.leaf\n",
     "tests/test_unrelated.py": "import os\n",
 }
+
+
+class DiskCacheTests(unittest.TestCase):
+    """The parses kept across processes: exact by content, and an entry that is torn, belongs
+    to another key or sits in a directory others may write never changes a graph."""
+
+    def setUp(self) -> None:
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.root = write_tree(Path(tmp.name) / "tree", TREE)
+        self.cache = Path(tmp.name) / "cache"
+        patcher = mock.patch.dict(os.environ, {"PLX_SELECTOR_CACHE": str(self.cache)})
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self.addCleanup(graph_mod._built.clear)
+
+    def fresh(self) -> dict:
+        graph_mod._built.clear()  # as a new process: only the disk cache is left
+        return graph_mod.build(self.root)
+
+    def entries(self) -> list[Path]:
+        return sorted(p for p in self.cache.glob("*/*") if not p.name.startswith("."))
+
+    def test_a_warm_cache_gives_the_same_graph_and_units_and_an_edit_is_parsed_again(self) -> None:
+        cold = self.fresh()
+        cold_units = symbol_impact.index(self.root, cold)
+        self.assertGreaterEqual(len(self.entries()), 2 * len(cold))
+        warm = self.fresh()
+        self.assertEqual(warm, cold)
+        self.assertEqual(symbol_impact.index(self.root, warm), cold_units)
+        (self.root / "pkg/helper.py").write_text("import pkg.lazy\n\ndef assist():\n    return 1\n")
+        edited = self.fresh()
+        self.assertIn("pkg.lazy", edited["pkg.helper"].imports)
+        self.assertNotEqual(symbol_impact.index(self.root, edited)["pkg.helper"], cold_units["pkg.helper"])
+        self.assertEqual({n: m for n, m in edited.items() if n != "pkg.helper"},
+                         {n: m for n, m in cold.items() if n != "pkg.helper"})
+
+    def test_a_torn_or_swapped_entry_and_a_directory_others_may_write_are_not_trusted(self) -> None:
+        cold = self.fresh()
+        entries = self.entries()
+        first = entries[0].read_bytes()
+        for i, entry in enumerate(entries[1:]):  # every other entry torn, the rest another key's
+            entry.write_bytes(b"torn" if i % 2 else first)
+        self.assertEqual(self.fresh(), cold)
+        shutil.rmtree(self.cache)
+        self.cache.mkdir(mode=0o700)
+        self.cache.chmod(0o770)
+        self.assertEqual(self.fresh(), cold)
+        self.assertEqual(self.entries(), [])
 
 
 class PackageInitChainTests(unittest.TestCase):

@@ -174,6 +174,10 @@ def install(dsn: str, schema: str | None = None) -> list[str]:
                     continue
                 create(write, v, schema)
                 made.append(f"{guarded_schema(schema)}.{name}")
+            # the generic door (``generic_views``): the catalog, and records/record_links
+            # once ``generic_records`` built them
+            from operating.pg import generic_views
+            made += generic_views.make_views(write, schema)
     return made
 
 

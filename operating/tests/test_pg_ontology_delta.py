@@ -1900,9 +1900,153 @@ class ServedReadsTests(unittest.TestCase):
         for bad in ("not json", "[1]", json.dumps({"portal_api": "x"})):
             self.assertEqual(merge_reads(bad, {"teams": read("t3")}, settled=True),
                              {"teams": {**read("t3"), "reason": None,
-                                        "served_through": "t3"}})
+                                        "served_through": "t3", "captured_through": None}})
+        # captured_through: the earlier of the read's start and the capture's own refresh
+        stamps = lambda at, refreshed: {"read_from": at, "state": "complete", "left": 0,
+                                        "refreshed_at": refreshed}
+        got = merge_reads(None, {"teams": stamps("2026-11-18T10:00:00.000000Z",
+                                                 "2026-11-17T08:00:00.000000Z"),
+                                 "bc": stamps("2026-11-18T10:00:00.000000Z",
+                                              "2026-11-18T11:00:00.000000Z"),
+                                 "mc": stamps("2026-11-18T10:00:00.000000Z", "garbage")},
+                          settled=True)
+        self.assertEqual({s: e["captured_through"] for s, e in got.items()},
+                         {"teams": "2026-11-17T08:00:00.000000Z",
+                          "bc": "2026-11-18T10:00:00.000000Z", "mc": None})
         self.assertEqual(merge_reads(None, {"teams": {"state": "complete"}, "x": 3},
                                      settled=True), {})
+
+    def test_the_served_freshness_follows_the_served_position(self):
+        """11-18: mail, Teams and SharePoint were read in full every cycle, yet store_meta
+        freshness kept their last full-build times (Nov 13 / 10 / 6), so every answer said
+        the mail was 5 days stale. A served position newer than an entry moves it up; a
+        capped read marks it partial; nothing older, no copy served while the source was
+        out, no source without an entry and no unreadable value is touched."""
+        import datetime as dt
+        import psycopg
+        from operating.pg import ontology_delta
+        from ontology.delta import READS_KEY
+        try:
+            name, dsn = pg_testdb.create_db()
+        except Exception as exc:  # noqa: BLE001 - no local server
+            self.skipTest(f"no test database: {type(exc).__name__}")
+        self.addCleanup(pg_testdb.drop_db, name)
+        now = dt.datetime.now(dt.timezone.utc)
+        at = lambda hours: (now - dt.timedelta(hours=hours)).isoformat()
+        old = at(24 * 5)
+        held = [{"source": "graph_mail", "captured_at": old, "lag_seconds": 444931,
+                 "completeness": "complete", "stale": True},
+                {"source": "sharepoint", "captured_at": old, "completeness": "partial",
+                 "stale": True, "served_from": "persisted_capture", "label": "copy"},
+                {"source": "teams", "captured_at": at(0.1), "completeness": "complete",
+                 "stale": False},
+                {"source": "portal_api", "captured_at": None, "completeness": "unknown",
+                 "stale": False},
+                {"source": "brain", "captured_at": None, "completeness": "unknown",
+                 "stale": False}]
+        with psycopg.connect(dsn, autocommit=True) as pg:
+            pg.execute("CREATE SCHEMA ontology")
+            pg.execute("CREATE TABLE ontology.store_meta (key text PRIMARY KEY, value text)")
+            pg.execute("CREATE TABLE ontology.load_state (name text PRIMARY KEY)")
+            pg.execute("INSERT INTO ontology.store_meta VALUES ('freshness', %s)",
+                       (json.dumps(held),))
+
+        def fresh():
+            with psycopg.connect(dsn) as pg:
+                value = pg.execute("SELECT value FROM ontology.store_meta WHERE key = "
+                                   "'freshness'").fetchone()[0]
+            try:
+                return {e["source"]: e for e in json.loads(value)}
+            except ValueError:
+                return value
+        read = lambda hours, state="complete", left=0: {"read_from": at(hours),
+                                                        "state": state, "left": left,
+                                                        "refreshed_at": at(hours + 0.01)}
+        ontology_delta.note_reads(dsn, {"graph_mail": read(1), "sharepoint": read(1),
+                                        "teams": read(2), "portal_api": read(3)}, [])
+        ontology_delta.note_reads(dsn, {"portal_api": read(0.5, "capped", 7)}, [])
+        got = fresh()
+        self.assertEqual(got["graph_mail"]["captured_at"], at(1.01))
+        self.assertFalse(got["graph_mail"]["stale"])
+        self.assertTrue(3500 <= got["graph_mail"]["lag_seconds"] <= 3700)
+        self.assertEqual(got["graph_mail"]["completeness"], "complete")
+        # capped now: the last complete read's position, and partial
+        self.assertEqual((got["portal_api"]["captured_at"], got["portal_api"]["completeness"]),
+                         (at(3.01), "partial"))
+        for kept in ("sharepoint", "teams", "brain"):     # a copy, a newer entry, no read
+            self.assertEqual(got[kept], {e["source"]: e for e in held}[kept])
+        with psycopg.connect(dsn, autocommit=True) as pg:
+            pg.execute("UPDATE ontology.store_meta SET value = 'not json' WHERE key = "
+                       "'freshness'")
+        ontology_delta.note_reads(dsn, {"graph_mail": read(0.2)}, [])
+        self.assertEqual(fresh(), "not json")
+        with psycopg.connect(dsn) as pg:                  # the served position still moved
+            reads = json.loads(pg.execute("SELECT value FROM ontology.store_meta WHERE key "
+                                          "= %s", (READS_KEY,)).fetchone()[0])
+        self.assertEqual(reads["graph_mail"]["served_through"], at(0.2))
+
+    def test_a_dead_capture_stays_stale_however_recent_the_read(self):
+        """Review 201871e7b7: a cycle reads the unchanged store of a capture that stopped
+        (mail's 10 h outage, 11-12) completely every few minutes; the served freshness
+        is the earlier of that read and the capture's own last refresh from its system,
+        so a capture last refreshed 40 h ago stays 40 h old and stale. A read stating no
+        refresh time moves nothing. A capped read marks the source partial, and a later
+        complete read puts back the generation's own completeness."""
+        import datetime as dt
+        import psycopg
+        from operating.pg import ontology_delta
+        try:
+            name, dsn = pg_testdb.create_db()
+        except Exception as exc:  # noqa: BLE001 - no local server
+            self.skipTest(f"no test database: {type(exc).__name__}")
+        self.addCleanup(pg_testdb.drop_db, name)
+        now = dt.datetime.now(dt.timezone.utc)
+        at = lambda hours: (now - dt.timedelta(hours=hours)).strftime(
+            "%Y-%m-%dT%H:%M:%S.%fZ")
+        held = [{"source": s, "captured_at": at(48), "lag_seconds": 48 * 3600,
+                 "completeness": "complete", "stale": True}
+                for s in ("graph_mail", "teams", "portal_api", "sharepoint")]
+        judged = {"graph_mail": {"messages": {"completeness": "complete"}},
+                  "teams": {"chatMessages": {"completeness": "complete"},
+                            "channelMessages": {"completeness": "partial"}},
+                  "portal_api": {"purchase_orders": {"completeness": "complete"}}}
+        with psycopg.connect(dsn, autocommit=True) as pg:
+            pg.execute("CREATE SCHEMA ontology")
+            pg.execute("CREATE TABLE ontology.store_meta (key text PRIMARY KEY, value text)")
+            pg.execute("CREATE TABLE ontology.load_state (name text PRIMARY KEY)")
+            pg.execute("INSERT INTO ontology.store_meta VALUES ('freshness', %s), "
+                       "('relation_completeness', %s)", (json.dumps(held), json.dumps(judged)))
+
+        def fresh():
+            with psycopg.connect(dsn) as pg:
+                return {e["source"]: e for e in json.loads(pg.execute(
+                    "SELECT value FROM ontology.store_meta WHERE key = 'freshness'"
+                ).fetchone()[0])}
+        read = lambda hours, refreshed, state="complete", left=0: {
+            "read_from": at(hours), "state": state, "left": left, "refreshed_at": refreshed}
+        ontology_delta.note_reads(dsn, {
+            "graph_mail": read(1 / 6, at(40)),      # dead capture, read 10 min ago
+            "teams": read(1 / 6, at(0.5)),          # live capture
+            "portal_api": read(1 / 6, None),        # no refresh time known
+            "sharepoint": read(1 / 6, at(0.2), "capped", 3)}, [])
+        got = fresh()
+        mail = got["graph_mail"]
+        self.assertEqual(mail["captured_at"], at(40))
+        self.assertTrue(mail["stale"])
+        self.assertTrue(40 * 3600 - 60 <= mail["lag_seconds"] <= 40 * 3600 + 60, mail)
+        self.assertEqual((got["teams"]["captured_at"], got["teams"]["stale"]), (at(0.5), False))
+        self.assertEqual(got["portal_api"]["captured_at"], at(48))    # nothing moved
+        self.assertEqual((got["sharepoint"]["captured_at"], got["sharepoint"]["completeness"]),
+                         (at(48), "partial"))
+        # a capped read, then a complete one: partial, then the generation's own again
+        ontology_delta.note_reads(dsn, {"portal_api": read(0.1, at(0.12), "capped", 2)}, [])
+        self.assertEqual(fresh()["portal_api"]["completeness"], "partial")
+        ontology_delta.note_reads(dsn, {"portal_api": read(0.05, at(0.06)),
+                                        "teams": read(0.05, at(0.06))}, [])
+        got = fresh()
+        self.assertEqual((got["portal_api"]["completeness"], got["portal_api"]["captured_at"]),
+                         ("complete", at(0.06)))
+        self.assertEqual(got["teams"]["completeness"], "partial")   # as the build judged it
 
     def test_a_layer_over_one_postgres_refused_does_not_settle(self):
         from operating.pg import ontology_delta

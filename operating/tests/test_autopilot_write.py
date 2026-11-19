@@ -113,6 +113,21 @@ class Base(unittest.TestCase):
         return aw.Executor(self.state, environ=env, adapters=found,
                            guard=guard() if g is None else g, rules_path=rules)
 
+    def probe_bc(self, env: dict, names: dict, now: datetime = NOW) -> None:
+        """A readiness probe on record that found the BC companies ``names`` (id -> BC's
+        name) in the executor's environment, with the write role on the token."""
+        import base64
+        from operating import autopilot_write_readiness as rd
+        env = {"PLX_AUTOPILOT_BC_COMPANY_ID": BC_COMPANY,
+               "PLX_BC_SANDBOX_ENVIRONMENT": "Sandbox2", **env}
+        bearer = "fixture." + base64.urlsafe_b64encode(json.dumps(
+            {"roles": [rd.BC_ROLE]}).encode()).decode().rstrip("=") + ".fixture"
+        found = rd.probe(self.state, env, now=now, graph_token=lambda: bearer,
+                         bc_token=lambda: bearer,
+                         bc_get=lambda _url, _bearer: {"value": [
+                             {"id": k, "name": v} for k, v in names.items()]})
+        rd.record(self.state, found, env)
+
     def fresh_run(self, judged: int = 15, matched: int = 14, *,
                   start: str = "2026-11-06T07:00:00Z", end: str = "2026-11-10T07:00:00Z",
                   status: str = "complete",

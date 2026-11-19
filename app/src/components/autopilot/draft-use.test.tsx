@@ -16,7 +16,7 @@ describe("DraftUse", () => {
       />,
     );
     const applied = screen.getByTestId("draft-use-applied");
-    expect(within(applied).getByText("Used for this draft")).toBeTruthy();
+    expect(within(applied).getByText("Applied")).toBeTruthy();
     expect(within(applied).getByText("Sign off with Best, Sam")).toBeTruthy();
     expect(within(applied).queryByText(/Freightcom/)).toBeNull();
     const related = screen.getByTestId("draft-use-related");

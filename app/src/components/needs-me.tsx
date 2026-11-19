@@ -29,7 +29,8 @@ export interface NeedsSources {
   me: Me | null;
   autopilot: AutopilotArea | null;
   writes: WriteIntentView[] | null;
-  approvals: ApprovalsQueue | null;
+  /** undefined while the queue is still being read (it fills in later; never "couldn't read") */
+  approvals?: ApprovalsQueue | null;
 }
 
 const KIND_WORD: Record<NeedKind, string> = { decide: "Decide", approve: "Approve", blocked: "Blocked" };
@@ -81,7 +82,7 @@ export function needsOf(s: NeedsSources, now = new Date()): { needs: Need[]; unr
         needs.push({ key: `ag:${g.waiting_on}`, kind: "blocked", title: `${plural(g.count, "approval")} waiting on ${who}`, detail: `${oldest}${drafted ? "; a nudge is drafted on Team" : "; no nudge drafted yet"}`, href: "/team#approvals", rank: -g.oldest_days });
       }
     }
-  } else unread.push("the approvals queue");
+  } else if (s.approvals === null) unread.push("the approvals queue");
   const order: NeedKind[] = ["decide", "approve", "blocked"];
   needs.sort((a, b) => order.indexOf(a.kind) - order.indexOf(b.kind) || a.rank - b.rank);
   return { needs, unread };
@@ -150,17 +151,21 @@ export function NeedsMeList({ sources }: { sources: NeedsSources }) {
 /** The owner's "Needs you" on My work; nothing at all for any other reader. */
 export function NeedsMe() {
   const [sources, setSources] = useState<NeedsSources | null>(null);
+  // the approvals queue is read on its own: the list shows without waiting for it (its
+  // first read can take a minute on a cold server) and gains its rows when it lands
+  const [approvals, setApprovals] = useState<ApprovalsQueue | null | undefined>(undefined);
   useEffect(() => {
     const ctl = new AbortController();
     const soft = <T,>(p: Promise<T>) => p.then((v) => v, () => null);
-    Promise.all([soft(getMe(ctl.signal)), soft(getAutopilot(ctl.signal)), soft(getWrites(ctl.signal).then((l) => l.items)), soft(getApprovals(ctl.signal))]).then(
-      ([me, autopilot, writes, approvals]) => {
-        if (!ctl.signal.aborted) setSources({ me, autopilot, writes, approvals });
+    Promise.all([soft(getMe(ctl.signal)), soft(getAutopilot(ctl.signal)), soft(getWrites(ctl.signal).then((l) => l.items))]).then(
+      ([me, autopilot, writes]) => {
+        if (!ctl.signal.aborted) setSources({ me, autopilot, writes });
       },
     );
+    soft(getApprovals(ctl.signal)).then((a) => !ctl.signal.aborted && setApprovals(a));
     return () => ctl.abort();
   }, []);
   // the owner is the server's word (the autopilot area's owner flag); unknown is not the owner
   if (!sources?.autopilot?.owner) return null;
-  return <NeedsMeList sources={sources} />;
+  return <NeedsMeList sources={{ ...sources, approvals }} />;
 }

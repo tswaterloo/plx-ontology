@@ -3,7 +3,10 @@
 import { useState } from "react";
 import { Button } from "@/components/ui/button";
 import { ErrorNotice } from "@/components/ui/notice";
-import { decideAutopilotItem, replyFromLine, type PreparedItem } from "@/lib/api";
+import { decideAutopilotItem, replyFromLine, saveMemory, type PreparedItem } from "@/lib/api";
+import { DraftUse, draftUseOf } from "@/components/autopilot/draft-use";
+import { JobCard } from "@/components/autopilot/job";
+import { cn } from "@/lib/cn";
 import { plainError } from "@/lib/errors";
 import { formatDateTime } from "@/lib/format";
 import { personName, workflowLabel } from "@/lib/autopilot";
@@ -23,10 +26,11 @@ export function scoreOf(c: { accepted: number; edited: number; rejected: number 
   return { settled, kept, off: settled >= 10 && kept * 5 < settled };
 }
 
-function Card({ item, onGone, onChanged }: { item: PreparedItem; onGone: (id: string) => void; onChanged: () => void }) {
+function Card({ item, linked, onGone, onChanged }: { item: PreparedItem; linked?: boolean; onGone: (id: string) => void; onChanged: () => void }) {
   const [text, setText] = useState(item.body);
   const [editing, setEditing] = useState(false);
   const [line, setLine] = useState("");
+  const [pref, setPref] = useState("");
   const [token, setToken] = useState<string | null>(null);
   const [note, setNote] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -57,12 +61,19 @@ function Card({ item, onGone, onChanged }: { item: PreparedItem; onGone: (id: st
         return;
       }
       if (out.decision?.sent) onGone(item.item_id);
+      else if (out.state === "waiting") setNote("Not sent: the send was refused or failed. It stays here to confirm again.");
       else setNote("Confirmed. Nothing was sent: this is not switched on for sending yet.");
     });
   const copy = () => run(async () => void (await navigator.clipboard.writeText(text)));
+  const keep = () =>
+    run(async () => {
+      await saveMemory({ kind: "preference", text: pref.trim() });
+      setPref("");
+      setNote("Saved as your preference: your next drafts follow it. Change or remove it in Memory.");
+    });
   const haveReply = text.trim() !== "";
   return (
-    <li className="space-y-2 py-4" data-testid="prepared-item">
+    <li id={`prepared-${item.item_id}`} className={cn("space-y-2 py-4", linked && "border-l-2 border-accent pl-3")} data-testid="prepared-item">
       <div className="flex flex-wrap items-baseline gap-x-3">
         <span className="text-[13px] font-medium">{item.sender || "Someone"}</span>
         {item.subject && <span className="text-[12px] text-muted">{item.subject}</span>}
@@ -79,8 +90,17 @@ function Card({ item, onGone, onChanged }: { item: PreparedItem; onGone: (id: st
               ))}
             </ul>
           )}
+          {(item.options ?? []).length > 0 && (
+            <div className="flex flex-wrap gap-2" aria-label="Answers">
+              {(item.options ?? []).map((o) => (
+                <Button key={o.reply} size="sm" variant="outline" disabled={busy} onClick={() => setText(o.reply)}>
+                  {o.label || "This one"}
+                </Button>
+              ))}
+            </div>
+          )}
           <label className="block text-[12px] text-muted">
-            What do you want to say?
+            {(item.options ?? []).length > 0 ? "Other: answer in a few words" : "What do you want to say?"}
             <input value={line} maxLength={1000} onChange={(e) => setLine(e.target.value)} className="mt-1 h-8 w-full rounded-lg border border-border bg-bg px-2 text-[13px] text-fg" />
           </label>
           <Button size="sm" disabled={busy || !line.trim()} onClick={() => void write()}>
@@ -109,19 +129,45 @@ function Card({ item, onGone, onChanged }: { item: PreparedItem; onGone: (id: st
           </div>
         </>
       )}
+      <DraftUse use={draftUseOf(item)} />
+      {(item.learned ?? []).length > 0 && (
+        <p className="max-w-[46rem] text-[12px] text-muted" data-testid="draft-learned">
+          Learned from your edit: {(item.learned ?? []).join("; ")}
+        </p>
+      )}
+      <div className="flex max-w-[46rem] flex-wrap items-end gap-2">
+        <label className="min-w-[16rem] flex-1 text-[12px] text-muted">
+          Save as a preference (for example: never mention prices to Kim)
+          <input value={pref} maxLength={1000} onChange={(e) => setPref(e.target.value)} className="mt-1 h-8 w-full rounded-lg border border-border bg-bg px-2 text-[13px] text-fg" />
+        </label>
+        <Button size="sm" variant="outline" disabled={busy || !pref.trim()} onClick={() => void keep()}>
+          Save
+        </Button>
+      </div>
       {note && <p className="text-[12px] text-muted">{note}</p>}
       {error && <ErrorNotice message={error} />}
     </li>
   );
 }
 
-export function PreparedView({ items, onGone, onChanged }: { items: PreparedItem[]; onGone: (id: string) => void; onChanged: () => void }) {
-  if (items.length === 0) return <p className="py-6 text-[13px] text-muted">Nothing is prepared for you right now.</p>;
+/** Why the list is empty: nothing switched on, or on and nothing new as of the feed's last look. */
+export function emptyWords(area: Pick<Area, "my_drafts" | "checked_at">): string {
+  if (!(area.my_drafts ?? []).some((c) => c.on)) return "Nothing is prepared for you: nothing is switched on above.";
+  if (!area.checked_at) return "On. Nothing new for you yet.";
+  return `On. Nothing new for you as of ${formatDateTime(area.checked_at)}.`;
+}
+
+export function PreparedView({ items, empty, linked, onGone, onChanged }: { items: PreparedItem[]; empty: string; linked?: string | null; onGone: (id: string) => void; onChanged: () => void }) {
+  if (items.length === 0) return <p className="py-6 text-[13px] text-muted" data-testid="prepared-empty">{empty}</p>;
   return (
     <ul className="divide-y divide-border" aria-label="Prepared for me">
-      {items.map((i) => (
-        <Card key={i.item_id} item={i} onGone={onGone} onChanged={onChanged} />
-      ))}
+      {items.map((i) =>
+        i.kind === "job" ? (
+          <JobCard key={i.item_id} item={i} linked={i.item_id === linked} />
+        ) : (
+          <Card key={i.item_id} item={i} linked={i.item_id === linked} onGone={onGone} onChanged={onChanged} />
+        ),
+      )}
     </ul>
   );
 }
@@ -143,7 +189,11 @@ export function EveryoneView({ area }: { area: Area }) {
             {who.map((w) => (
               <li key={`${w.person}/${w.choice}`} className="flex gap-3 py-1.5 text-[13px]">
                 <span>{personName(area, w.person)}</span>
-                <span className="text-muted">{w.label}</span>
+                <span className="text-muted">
+                  {w.label}
+                  {w.partly ? ", partly" : ""}
+                  {w.by_owner ? ", set by the owner" : ""}
+                </span>
               </li>
             ))}
           </ul>

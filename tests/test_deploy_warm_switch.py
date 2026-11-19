@@ -590,6 +590,20 @@ class CaddyfileRouting(unittest.TestCase):
         for text in (unit, rest, stop):   # the drain (60 s) and the joins (20 s) fit
             self.assertIn("TimeoutStopSec=100", text)
         self.assertNotRegex(unit, r"(?m)^\[Install\]")
+        # every setting plx-release compares (PARITY) is the same in both units' own files:
+        # 11-14..11-18 the template said Restart=on-failure, plx-api Restart=always, and every
+        # deploy restarted the API cold ("differs in: Restart")
+        parity = set(re.search(r'PARITY="([^"]*)"', TOOL.read_text()).group(1).split())
+
+        def settings(text: str) -> dict:
+            got: dict = {}
+            for line in text.splitlines():
+                key, eq, value = line.partition("=")
+                if eq and key in parity and key != "ExecStart":
+                    got.setdefault(key, []).append(value.strip())
+            got.setdefault("Slice", ["system.slice"])   # a service's default
+            return got
+        self.assertEqual(settings(rest), settings(unit))
         tool = TOOL.read_text()
         self.assertIn("STANDBY=${PLX_API_STANDBY:-standby}", tool)
         self.assertIn("/run/plx-api-$STANDBY/api.sock", tool)

@@ -66,7 +66,7 @@ export function DraftUse({ use }: { use: DraftUseData | null }) {
           {template.doc_type ? <span className="text-muted"> ({template.doc_type.replaceAll("_", " ")})</span> : null}
         </p>
       )}
-      <Entries label="Used for this draft" entries={memory} testId="draft-use-applied" />
+      <Entries label="Applied" entries={memory} testId="draft-use-applied" />
       <Entries label="Related, not applied" entries={related} testId="draft-use-related" />
     </div>
   );

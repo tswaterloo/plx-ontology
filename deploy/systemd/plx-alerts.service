@@ -1,13 +1,18 @@
-# PLX Workbench alerts: one run of `python3 -m operating.pg.alerts run` after each business
-# views refresh (plx-business-views.service names this unit in OnSuccess=; no timer of its
-# own). Runs every SQL alert rule over schema biz for the business day and records what
-# opened, stayed open and cleared in the alerts table (pages read it through the guarded
-# biz_page.alerts view). Reads schema biz and, read-only, the mail capture (the mailbox
+# PLX Workbench alerts: one run of `python3 -m operating.pg.alerts run`, every 15 minutes
+# (plx-alerts.timer) and after each business views refresh (plx-business-views.service names
+# this unit in OnSuccess=). Runs every SQL alert rule over schema biz for the business day and
+# records what opened, stayed open and cleared in the alerts table (pages read it through the
+# guarded biz_page.alerts view). Reads schema biz and, read-only, the mail capture (the mailbox
 # owners' addresses, for the mail rules); writes only the alerts table. A rule that fails
-# leaves its earlier alerts as they were. One run takes well under a minute; capped at 10 min.
+# leaves its earlier alerts as they were. One run takes ~30 s; capped at 10 min; one at a time
+# (an advisory lock: a second leaves at once).
+# Not ordered after plx-business-views: a views rebuild runs up to ~80 min, and a
+# start ordered behind it left every alert "unavailable" (older than alerts.STALE_MINUTES).
+# The user is the business schema's owner (it makes the guarded biz_page.alerts view): never
+# the API's role, which may not create there.
 [Unit]
-Description=PLX alerts over the business views (one run, after each refresh)
-After=postgresql.service plx-business-views.service
+Description=PLX alerts over the business views (one run)
+After=postgresql.service
 
 [Service]
 Type=oneshot
@@ -25,10 +30,7 @@ Environment=PGAPPNAME=%N
 Environment=PLX_ONTOLOGY_PG=only
 ExecCondition=/bin/sh -c '/data/venv/bin/python3 -c "import ontology.window_lock" 2>/dev/null || exit 0; exec /data/venv/bin/python3 -m ontology.window_lock check delta'
 ExecStart=/data/venv/bin/python3 -m operating.pg.alerts run
-Nice=19
-CPUWeight=20
-IOWeight=20
-IOSchedulingClass=idle
+# not niced or IO-idled (no throttling): Home's alerts wait on this run
 MemoryHigh=1500M
 MemoryMax=2G
 TimeoutStartSec=10min

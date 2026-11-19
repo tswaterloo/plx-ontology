@@ -23,9 +23,22 @@ from operating import ontology_tools as ot
 from operating import ontology_tools_business as tb
 from operating import ontology_tools_table as tt
 from operating.claim_checks_values import returned_evidence
+from operating.pg import business_staff as bs
 from operating.pg import business_views as bv
 from operating.tests import test_ontology_tools_table as tab
 from tests import test_ontology_tools_evidence as ev
+
+# the disk guard's floor (PLX_BIZ_MIN_FREE_GB) is the served host's: a test host's free
+# space is not what these tests are about (the guard's own test sets the floor back)
+_NO_FLOOR = mock.patch.dict(os.environ, {"PLX_BIZ_MIN_FREE_GB": "0"})
+
+
+def setUpModule():
+    _NO_FLOOR.start()
+
+
+def tearDownModule():
+    _NO_FLOOR.stop()
 
 AR = "RelSageArOpenDocument"
 MONEY = {p: "money" for p in ("subtotal", "total_tax", "total_amount", "remaining_amount",
@@ -132,6 +145,23 @@ for _lt in DOMAIN["link_types"]:
     _lt.update(name=_lt["id"].split(".", 1)[1],
                cardinality="1:1" if _lt["id"].endswith("same_record_as") else "N:1")
 SCHEMA = ot.SchemaView.from_documents([DOMAIN])
+ORG_USER = "00000000-0000-4000-8000-000000000001"   # the one person the org capture lists
+
+
+def org_capture(state_dir):
+    """The org capture's store (``PLX_STATE_DIR``) holding ORG_USER, as the staff view reads
+    it (the columns ``capture_org.current_rows`` reads)."""
+    import sqlite3
+    from pathlib import Path
+    from integrations.capture_org import DB_FILE, ORG_KIND_NAME, STORE_DIR
+    (Path(state_dir) / STORE_DIR).mkdir(parents=True, exist_ok=True)
+    with sqlite3.connect(Path(state_dir) / STORE_DIR / DB_FILE) as db:
+        db.execute("CREATE TABLE versions (kind TEXT, superseded_at TEXT, "
+                   "missing_from_source_since TEXT, payload TEXT)")
+        db.execute("INSERT INTO versions VALUES (?, NULL, NULL, ?)", (ORG_KIND_NAME, json.dumps(
+            {"row": {"object_id": ORG_USER, "upn": "clerk@example-plx.com",
+                     "display_name": "Org Clerk", "job_title": "Clerk",
+                     "manager_object_id": None, "manager_state": "none"}})))
 FULL, OPS = tab.FULL, tab.OPS
 AS_OF = dt.date(2026, 11, 17)
 SECRET = ("4444.44", "SECRET-FIN", "777.77", "GONE-1", "Gone Co")
@@ -328,6 +358,9 @@ def build():
     lead_b = cust(s, "portal.sage_ar_customer", "lead", "Lead Co", "LEAD")
     s.link("tw-lead", "Customer.same_record_as", lead_a, lead_b, "lead")
     party_fixture(s)
+    # one served staff Person, the one the org capture fixture (``org_capture``) lists
+    s.obj(bs.person_id(ORG_USER), "graph_mail:staff", "graph-mail://people/org-user",
+          "gold_etl_from_fm")
     gone = cust(s, "portal.sage_ar_customer", "gone", "Gone Co", "GONE")
     doc(s, "d1", acme_s, "INV-1", "100.10", "CAD", due="20261001")   # 47 days late
     doc(s, "d2", acme_s, "INV-2", "300.00", "USD", due="20261201")   # not yet due
@@ -441,14 +474,37 @@ def build():
     s.link("tw-pdr", "PurchaseOrder.same_record_as", pdr, bc_dr, "verified")
     for n, day in ((1, "2026-12-02"), (10, "2026-12-03"), (60, "2026-12-04")):
         purchase(s, f"pb{n}", f"PO-B{n}", None, day, [("1", "0")] * n)
+    # Portal headers left at 0 until costed (served 11-18: 81 of 109 open POs): worth their
+    # priced lines (PO-LN; one line finance-marked: the sum is that line's class too); a
+    # header stating more than its lines (tax, freight) keeps its own total (PO-HL); a line
+    # without a price leaves no lines total (PO-NP, still 0)
+    for key, number, total, priced in (
+            ("pln", "PO-LN", ("0", "CAD"), (("12.50", "[]"), ("100.00", '["finance"]'))),
+            ("phl", "PO-HL", ("130.00", "CAD"), (("100.00", "[]"),)),
+            ("pnp", "PO-NP", ("0", "CAD"), (("40.00", "[]"), (None, "[]")))):
+        head = purchase(s, key, number, sup, "2026-12-20", [], status="Complete", total=total)
+        for i, (amount, marks) in enumerate(priced):
+            values = {"ordered_quantity": "1", "received_quantity": "1",
+                      "item_code": f"RM-{key}-{i}"}
+            if amount is not None:
+                values["line_total"] = (amount, "CAD")
+            ln = obj(s, "PurchaseOrderLine", "portal.app_purchase_order_line", f"{key}-{i}",
+                     values, markings=marks)
+            s.link(f"pl-{key}-{i}", "PurchaseOrderLine.line_of", ln, head, "verified")
     vend = obj(s, "RelSageApVendor", "gen.sage.ap_vendor", "cro", {"vendname": "Croda Canada"})
     s.link("vs-cro", "RelSageApVendor.portal_supplier_by_sage_id", vend, sup, "verified")
     # one supplier held by the Portal, FileMaker and BC under other codes: the BC copy's
     # lead link names it alone (same_name); a lead link between differently named suppliers
     # joins nothing
+    # BC states a blank option as its XML escape (_x0020_): no blocked flag, never shown
     sup_bc = obj(s, "Supplier", "bc.vendors", "cro", {"name": "Croda Canada",
-                                                       "code": "V06120"})
+                                                       "code": "V06120",
+                                                       "bc_blocked": "_x0020_"})
     s.link("ld-sup", "Supplier.same_record_as", sup_bc, sup, "lead")
+    # BC's payment vendor beside the purchasing one (served: "EZ CHEMICALS (EFT)" V02120
+    # and "EZ Chemicals" V07080): no link joins them, so two accounts, never merged
+    obj(s, "Supplier", "bc.vendors", "croeft", {"name": "CRODA CANADA (EFT)",
+                                                "code": "V09990"})
     other = obj(s, "Supplier", "portal.app_supplier", "oth", {"name": "Other Chem", "code": "CRO"})
     obj(s, "Supplier", "portal.app_supplier", "fc", {"name": "FreightCom Inc", "code": "FC1"})
     s.link("ld-oth", "Supplier.same_record_as", other, sup_fm, "lead")
@@ -566,6 +622,13 @@ class BusinessViews(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         from operating.tests import pg_store_mode
+        import tempfile
+        cls._org_dir = tempfile.TemporaryDirectory()
+        cls.addClassCleanup(cls._org_dir.cleanup)
+        org_capture(cls._org_dir.name)
+        env = mock.patch.dict(os.environ, {"PLX_STATE_DIR": cls._org_dir.name})
+        env.start()
+        cls.addClassCleanup(env.stop)
         cls.store = build()
         cls.dsn = pg_store_mode._load("", cls.store.conn)
         import psycopg
@@ -1085,8 +1148,8 @@ class BusinessViews(unittest.TestCase):
     def test_purchase_orders_once_with_the_late_verdict(self):
         rows = self.po_rows()
         self.assertEqual(sorted(rows), ["PO-1", "PO-2", "PO-3", "PO-B1", "PO-B10", "PO-B60",
-                                        "PO-DUPA", "PO-DUPB", "PO-FIN", "PO100-DR",
-                                        "PO100-RC"])
+                                        "PO-DUPA", "PO-DUPB", "PO-FIN", "PO-HL", "PO-LN",
+                                        "PO-NP", "PO100-DR", "PO100-RC"])
 
         def got(n, *cols):
             return tuple(rows[n]["values"][c]["value"] for c in cols)
@@ -1106,7 +1169,8 @@ class BusinessViews(unittest.TestCase):
         self.assertNotIn("PO-FIN", json.dumps(self.po_rows(OPS)))
         out = self.call({"view": "purchase_orders",
                          "measures": [{"fn": "sum", "field": "total"}]})
-        self.assertEqual(self.sums(out), {"CAD": "500", "USD": "70"})
+        # PO-LN worth its lines 112.50, PO-HL its own header 130
+        self.assertEqual(self.sums(out), {"CAD": "742.5", "USD": "70"})
         lines = self.call({"view": "purchase_order_lines", "group_by": ["po_number"],
                            "measures": [{"fn": "count"}], "limit": 200})
         counts = {self.text(g["key"]["po_number"]): g["measures"][0]["value"]
@@ -1115,6 +1179,38 @@ class BusinessViews(unittest.TestCase):
                                                      "PO-GONE")},
                          {"PO-1": "1", "PO-B1": "1", "PO-B10": "10", "PO-B60": "60",
                           "PO-GONE": None})
+
+    def test_a_zeroed_header_is_worth_its_lines_said_as_such(self):
+        """Served 11-18: 81 of 109 open Portal POs state a header total of 0 while their
+        lines are priced (the page said Total $0). No copy stating a total above 0: the
+        lines' sum, total_basis 'lines'; a header's own total stands beside a lines total
+        that differs; one unpriced line leaves no lines total; a reader without a priced
+        line's marking never reads the lines-derived amounts."""
+        cols = ["po_number", "total", "total_basis", "lines_total"]
+
+        def rows(actor):
+            out = self.call({"view": "purchase_orders", "select": cols, "where": [
+                {"field": "po_number", "op": "in", "value": ["PO-LN", "PO-HL", "PO-NP"]}]},
+                actor)
+            return {self.text(r["values"]["po_number"]["value"]): {
+                c: r["values"][c] for c in cols[1:]} for r in out["rows"]}
+
+        def v(cell):
+            return None if cell is None else cell.get("value")
+        got = rows(FULL)
+        self.assertEqual({k: (v(x["total"]), v(x["total_basis"]), v(x["lines_total"]))
+                          for k, x in got.items()},
+                         {"PO-LN": ("112.5", "lines", "112.5"),
+                          "PO-HL": ("130", "header", "100"),
+                          "PO-NP": ("0", "header", None)})
+        # a reader without the finance line never reads its sum, nor a part of it (the
+        # order's status is read from its lines too: the row is that line's class)
+        ops = rows(OPS)
+        self.assertEqual(sorted(ops), ["PO-HL", "PO-NP"])
+        self.assertEqual(v(ops["PO-HL"]["total"]), "130")
+        self.assertNotIn("112.5", json.dumps(ops))
+        sup = self.rows_of("suppliers", ["name", "blocked"])
+        self.assertIn({"name": "Croda Canada", "blocked": None}, sup)
 
     def test_copy_still_open_in_bc_is_a_receipt_note_of_its_readers(self):
         """Reproduced served case (BC PO100040, posted from Portal PO4166 which received
@@ -1265,7 +1361,14 @@ class BusinessViews(unittest.TestCase):
         import psycopg
         with psycopg.connect(self.dsn) as c:
             for name, v in bv.VIEWS.items():
-                if v.fill is None:   # a comms table: its own rule, its own parity tests
+                if name == "staff":
+                    # the org chart: its own rule (the org:chart key stands for the Persons'
+                    # mail keys; operating.tests.test_business_staff), rows only that key
+                    keys = {tuple(k) for (k,) in c.execute(
+                        "SELECT a.audience_keys FROM biz.staff t JOIN biz.access_classes a "
+                        "ON a.id = t.access_class")}
+                    self.assertEqual(keys, {("org:chart",)})
+                elif v.fill is None:   # a comms table: its own rule, its own parity tests
                     self.assert_classes_cover_inputs(c, name)
 
     def assert_classes_cover_inputs(self, c, name):
@@ -1338,10 +1441,49 @@ class BusinessViews(unittest.TestCase):
                 c.execute("DROP TABLE IF EXISTS ontology.change_feed, ontology.change_cycles, "
                           "ontology.change_cursors")
 
+    def test_views_built_side_by_side_are_the_views_built_one_by_one(self):
+        """11-18 live: a refresh built every stale view one after the other, 29 min a run, so
+        the 30-minute timer never rested. Built in 3 processes (longest first) the tables
+        hold exactly the rows the one-by-one build made, every view reported once."""
+        import psycopg
+        from operating.pg import business_views_parallel as par
+        names = ["customers", "sales_invoices", "sales_orders", "products", "suppliers",
+                 "purchase_orders", "staff"]
+
+        def dump():
+            with psycopg.connect(self.dsn) as c:
+                return {n: sorted(map(repr, c.execute(
+                    f"SELECT * FROM {bv.SCHEMA}.{n}").fetchall())) for n in names}
+        before = dump()
+        self.assertTrue(all(before.values()), {n: len(v) for n, v in before.items()})
+        seconds = {"sales_orders": 270, "customers": 16, "products": 7}
+        got = par.build(self.dsn, names, schema=SCHEMA, as_of=AS_OF, seconds=seconds,
+                        workers=3)
+        self.assertEqual(sorted(g["view"] for g in got), sorted(names))
+        self.assertEqual(dump(), before)
+
+    def test_side_by_side_plan_and_workers_setting(self):
+        from operating.pg import business_views_parallel as par
+        names = ["a", "b", "c", "d", "e"]
+        groups = par.plan(names, {"a": 1, "b": 400, "c": 300, "d": 200, "e": None}, 3)
+        # e (never timed) alone, then longest first to the least loaded group (b 400 + a 1
+        # beside c 300 + d 200); each group keeps the refresh's order
+        self.assertEqual(groups, [["e"], ["a", "b"], ["c", "d"]])
+        self.assertEqual(sorted(sum(groups, [])), names)
+        self.assertEqual(par.plan(["x"], {}, 4), [["x"]])
+        for raw, want in (("", par.VIEW_WORKERS_DEFAULT), ("6", 6)):
+            with mock.patch.dict(os.environ, {"PLX_BIZ_VIEW_WORKERS": raw}):
+                self.assertEqual(par.view_workers(), want)
+        for raw in ("0", "-2", "many"):
+            with mock.patch.dict(os.environ, {"PLX_BIZ_VIEW_WORKERS": raw}), \
+                    self.assertRaisesRegex(RuntimeError, "PLX_BIZ_VIEW_WORKERS"):
+                par.view_workers()
+
     def test_suppliers_once(self):
         out = self.call({"view": "suppliers", "select": ["name"]})
         self.assertEqual([(self.text(r["values"]["name"]["value"]), r["copies"])
-                          for r in out["rows"]], [("Croda Canada", 3), ("Other Chem", 1)])
+                          for r in out["rows"]], [("Croda Canada", 3),
+                                                  ("CRODA CANADA (EFT)", 1), ("Other Chem", 1)])
 
     def test_supplier_balances_and_invoices(self):
         out = self.call({"view": "supplier_balances",

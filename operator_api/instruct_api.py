@@ -1026,7 +1026,8 @@ class InstructMixin(ia.InstructAssistMixin):
                                            list(last.get("reasons") or ()))
         return self.upload_preview(reader, upload_id)
 
-    def instruct_file(self, reader: Reader, file_id: str) -> tuple[bytes, str]:
+    def instruct_file(self, reader: Reader, file_id: str) -> tuple[bytes, str, str]:
+        """(bytes, kind, file name) of a file made for the reader; 404 for any other."""
         data = self._uploads().file(reader.key, file_id)
         if data is None:
             raise UserFacing("not_found", "That file is not one of yours.", 404)
@@ -1039,7 +1040,8 @@ class InstructMixin(ia.InstructAssistMixin):
         named = next((r["people"] for r in rows if r.get("people")), ())
         if named and (guard is None or any(_excluded_address(guard, str(a)) for a in named)):
             raise UserFacing("not_found", "That file can't be opened now.", 404)
-        return data, rows[-1]["kind"] if rows else "docx"
+        kind = rows[-1]["kind"] if rows else "docx"
+        return data, kind, str(rows[-1].get("name") or "") if rows else f"{file_id}.{kind}"
 
 
 __all__ = ["InstructMixin", "REFUSED"]

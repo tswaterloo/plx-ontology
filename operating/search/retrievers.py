@@ -299,6 +299,9 @@ def _db(conn: Any) -> str:
     return f"{getattr(info, 'host', '')}:{getattr(info, 'port', '')}/{getattr(info, 'dbname', '')}"
 
 
+STATS_SAMPLE_PERCENT = 0.1   # of search.chunks' blocks read for a scope's (N, avgdl)
+
+
 class _Stats:
     """(row count, mean document length) of a reader's readable rows, kept 5 minutes
     per scope: the BM25 corpus is what the reader may read, so a hidden row's words
@@ -316,11 +319,18 @@ class _Stats:
             hit = self._cache.get(key)
             if hit is not None and now - hit[0] < 300:
                 return hit[1], hit[2]
-        # A 2 % block sample (scaled): a full count reads every row of a large table.
+        # A block sample (scaled): a full count reads every row of a large table. Small
+        # (STATS_SAMPLE_PERCENT): ``length(tsv)`` reads each sampled row's TOASTed tsv, and
+        # 2 % of 9.6M rows was 530k buffers, ~20 s cold, past the list's 3 s statement
+        # limit: every new session's first search ranked without bm25, and a cancelled
+        # sample keeps nothing (live 11-18). 0.1 %: ~9.7k rows, ~0.9 s cold; N within
+        # 1.5 % of the 2 % sample over all rows, 5-16 % per kind, avgdl within 1-5 %
+        # (BM25 reads N only through log(N / df)); a small scope is counted exactly below.
         row = conn.execute(
             f"SELECT count(*), coalesce(avg(length(c.tsv)), 1) FROM search.chunks c "
-            f"TABLESAMPLE SYSTEM (2) REPEATABLE (7) WHERE {PERM} {KINDS}", scope).fetchone()
-        n, avgdl = int(row[0]) * 50, float(row[1] or 1.0)
+            f"TABLESAMPLE SYSTEM ({STATS_SAMPLE_PERCENT}) REPEATABLE (7) "
+            f"WHERE {PERM} {KINDS}", scope).fetchone()
+        n, avgdl = int(row[0] * 100 / STATS_SAMPLE_PERCENT), float(row[1] or 1.0)
         if n < 5000:   # small: count exactly
             row = conn.execute(
                 f"SELECT count(*), coalesce(avg(length(c.tsv)), 1) FROM search.chunks c "

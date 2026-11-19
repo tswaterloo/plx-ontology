@@ -295,6 +295,8 @@ TYPES: dict[str, ParamType] = {t.name: t for t in (
     # Graph ids in the shared Graph id grammar (an id outside it is never addressed).
     ParamType("meeting_id", _rx(_MAIL_ID), _SEG, lambda v: v),
     ParamType("planner_id", _rx(_MAIL_ID), _SEG, lambda v: v),
+    ParamType("list_item_id", _rx(re.compile(r"[1-9][0-9]{0,11}")), r"[1-9][0-9]{0,11}",
+              lambda v: v),
     ParamType("vendor_numeric_id", _rx(re.compile(r"[0-9]{1,20}")), r"[0-9]{1,20}", lambda v: v),
     ParamType("shopify_version", _rx(re.compile(r"20[0-9]{2}-(?:01|04|07|10)")),
               r"20[0-9]{2}-(?:01|04|07|10)", lambda v: v),
@@ -317,6 +319,9 @@ TEMPLATES: dict[str, tuple[str, str]] = {
     # records them so a distribution list's address is decided offline (GET only).
     "graph.groups": (GRAPH, "/v1.0/groups"),
     "graph.user": (GRAPH, "/v1.0/users/{user:user_ref}"),
+    # A user's manager (``$select=id``; 404 when none): the org chart capture
+    # (integrations.capture_org), User.Read.All.
+    "graph.user_manager": (GRAPH, "/v1.0/users/{user:user_id}/manager"),
     # An employee's transitive group membership, cast to groups (directory
     # roles and administrative units excluded): integrations.graph_directory.
     # GET; ``getMemberGroups``/``checkMemberGroups`` are POSTs and never used.
@@ -457,6 +462,11 @@ TEMPLATES: dict[str, tuple[str, str]] = {
     "graph.planner_plan_buckets": (GRAPH, "/v1.0/planner/plans/{plan:planner_id}/buckets"),
     "graph.planner_plan_tasks": (GRAPH, "/v1.0/planner/plans/{plan:planner_id}/tasks"),
     "graph.planner_task_details": (GRAPH, "/v1.0/planner/tasks/{task:planner_id}/details"),
+    # A prepared write's "before" (operating/prepared_read.py): one Planner task and one
+    # SharePoint list item's columns, read as they are now, right before an edit of them.
+    "graph.planner_task": (GRAPH, "/v1.0/planner/tasks/{task:planner_id}"),
+    "graph.list_item_fields": (GRAPH, "/v1.0/sites/{site:site_id}/lists/{list:guid}/items/"
+                               "{item:list_item_id}/fields"),
     "bc.companies": (BC, _BC + "/companies"),
     # The API v2.0 schema document (CSDL XML; ``SourceApi.get_document``, no query).
     "bc.metadata": (BC, _BC + "/$metadata"),

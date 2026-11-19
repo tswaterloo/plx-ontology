@@ -1,0 +1,10 @@
+[Unit]
+Description=PLX source coverage check, every 6 hours
+
+[Timer]
+OnBootSec=30min
+OnUnitActiveSec=6h
+RandomizedDelaySec=5min
+
+[Install]
+WantedBy=timers.target

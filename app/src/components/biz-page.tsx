@@ -112,29 +112,61 @@ export function BizRecordPage({ allowed, fallbackTitle }: { allowed: readonly Bi
         ) : !page ? (
           <Pending label={`Reading ${fallbackTitle.toLowerCase()}`} page onRetry={retry} />
         ) : (
-          <article data-testid="biz-page">
-            {page.subtitle && <p className="text-[12px] text-muted">{page.subtitle}</p>}
-            {page.facts.length > 0 && (
-              <dl className="mt-4 grid grid-cols-[max-content_1fr] gap-x-6 gap-y-1.5 text-[13px] sm:grid-cols-[max-content_1fr_max-content_1fr]">
-                {page.facts.map((f) => (
-                  <div key={f.label} className="contents">
-                    <dt className="text-muted">{f.label}</dt>
-                    <dd>
-                      <Cell c={f.value} />
-                    </dd>
-                  </div>
-                ))}
-              </dl>
-            )}
-            {page.sections.map((s) => (
-              <Section key={s.key} s={s} />
-            ))}
-            <p className="mt-8 text-[12px] text-muted" data-testid="biz-sources">
-              {page.sources}
-            </p>
-          </article>
+          <BizArticle page={page} />
         )}
       </div>
+    </div>
+  );
+}
+
+/** A record page's body: its header facts, each section, one Sources line. */
+export function BizArticle({ page }: { page: Page }) {
+  return (
+    <article data-testid="biz-page">
+      {page.subtitle && <p className="text-[12px] text-muted">{page.subtitle}</p>}
+      {page.facts.length > 0 && (
+        <dl className="mt-4 grid grid-cols-[max-content_1fr] gap-x-6 gap-y-1.5 text-[13px] sm:grid-cols-[max-content_1fr_max-content_1fr]">
+          {page.facts.map((f) => (
+            <div key={f.label} className="contents">
+              <dt className="text-muted">{f.label}</dt>
+              <dd>
+                <Cell c={f.value} />
+              </dd>
+            </div>
+          ))}
+        </dl>
+      )}
+      {page.sections.map((s) => (
+        <Section key={s.key} s={s} />
+      ))}
+      <p className="mt-8 text-[12px] text-muted" data-testid="biz-sources">
+        {page.sources}
+      </p>
+    </article>
+  );
+}
+
+/**
+ * A record link (`/object/<type>/<id>`) of a type the business tables have pages for: the
+ * page of the row the record was read into (one door read, well under a second), else, when
+ * the door has none (switched off, no such row, a reader who may not read it, unavailable),
+ * the record's own page.
+ */
+export function BizOrObject({ kind, record, title, fallback }: { kind: BizKind; record: string; title: string; fallback: React.ReactNode }) {
+  const [page, setPage] = useState<Page | null>(null);
+  const [none, setNone] = useState(false);
+  useEffect(() => {
+    setPage(null);
+    setNone(false);
+    const ctl = new AbortController();
+    bizPage(kind, { record }, ctl.signal).then(setPage, () => !ctl.signal.aborted && setNone(true));
+    return () => ctl.abort();
+  }, [kind, record]);
+  if (none) return <>{fallback}</>;
+  return (
+    <div className="flex min-h-0 flex-1 flex-col bg-list">
+      <Toolbar heading title={page?.title ?? title} />
+      <div className="w-full max-w-[960px] overflow-y-auto px-6 py-5">{page ? <BizArticle page={page} /> : <Pending label={`Reading ${title.toLowerCase()}`} page />}</div>
     </div>
   );
 }

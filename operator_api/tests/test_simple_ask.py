@@ -188,7 +188,8 @@ class SessionTest(unittest.TestCase):
         once, a currency column named beside its amount) and still names every column of
         every view with its meaning, each money column with its currency column."""
         from operating import ontology_tools_sql as sql
-        system = sa.system_prompt()
+        with mock.patch.object(sql, "served_views", return_value=None):
+            system = sa.system_prompt()
         for view, entry in sql._dictionary().items():
             self.assertIn(f"- {view}: {entry['about']}", system)
             for column, doc in entry["columns"].items():
@@ -197,6 +198,42 @@ class SessionTest(unittest.TestCase):
                 else:
                     self.assertIn(f"    {column}: {doc}", system, (view, column))
         self.assertEqual(system.count("    handle: "), 1)
+
+    def test_the_prompt_lists_only_the_views_the_served_schema_holds(self):
+        """A view not served now (the mail and Teams tables, records before their build)
+        is not in the prompt, nor are the generic views' rule and catalog while records is
+        not served; where the served schema cannot be read every view is listed."""
+        from operating import ontology_tools_sql as sql
+        views = list(sql._dictionary())
+        some = frozenset(v for v in views if v not in ("emails", "teams_messages", "records",
+                                                         "record_types", "record_links"))
+        with mock.patch.object(sql, "served_views", return_value=some), \
+                mock.patch.object(sql, "catalog_lines", return_value=["- bc: X (y)"]):
+            system = sa.system_prompt()
+        for view in views:
+            self.assertEqual(f"- {view}: " in system, view in some, view)
+        self.assertNotIn("EVERY other captured record", system)
+        self.assertNotIn("- bc: X (y)", system)
+        self.assertIn(sql.RULES_BASE + sql.RULES_TAIL, system)
+        with mock.patch.object(sql, "served_views", return_value=some | {"records"}), \
+                mock.patch.object(sql, "catalog_lines", return_value=["- bc: X (y)"]):
+            system = sa.system_prompt()
+        self.assertIn(sql.RULES, system)
+        self.assertIn("- bc: X (y)", system)
+        self.assertIn("- records: ", system)
+        with mock.patch.object(sql, "served_views", return_value=None):
+            system = sa.system_prompt()
+        for view in views:
+            self.assertIn(f"- {view}: ", system)
+        # the served schema read: a view it lacks is not served; a failing read is None
+        pg = mock.Mock()
+        pg.execute.return_value.fetchall.return_value = [("customers",)]
+        sql._SERVED.clear()
+        self.assertEqual(sql.served_views(("customers", "emails"), pg), {"customers"})
+        sql._SERVED.clear()
+        pg.execute.side_effect = RuntimeError("down")
+        self.assertIsNone(sql.served_views(("customers", "emails"), pg))
+        sql._SERVED.clear()
 
     def test_the_prompt_offers_record_search_only_where_plx_search_serves_it(self):
         """The method's plx.search line follows plx.search's contract: the records leg
@@ -240,7 +277,11 @@ class SessionTest(unittest.TestCase):
         self.assertIn("Prefers CAD totals.", told)
         self.assertLess(told.index("Prefers CAD totals."), told.index("Question: Invoices?"))
         self.assertNotIn("remember", sa.task("Invoices?"))
-        self.assertLessEqual(agent.timeout, 180)
+        # the session ends inside the API's wait for it, its research budget before that
+        from operator_api import serving
+        self.assertLess(agent.timeout, serving.ASK_TIMEOUT_SECONDS)
+        self.assertLess(sa.BUDGET_SECONDS, agent.timeout)
+        self.assertGreaterEqual(sa.MAX_STEPS, 25)
 
     def test_model_and_effort_are_one_setting_read_as_the_session_starts(self):
         for env, want in (({}, ("claude-sonnet-5-5", "low")),

@@ -1,4 +1,4 @@
-"""Land module list: smoke + extra minus known red; modules slower than SHARD_S (from timings)
+"""Land module list: smoke (unless NOSMOKE=1) + extra (ALL: every test module) minus known red; modules slower than SHARD_S (from timings)
 split into their TestCase classes (exactly what unittest's module loader would run), so one slow
 module no longer sets the pace. Run with cwd = the merged tree. Prints one id per line."""
 import json, os, pathlib, subprocess, sys
@@ -11,8 +11,14 @@ try: timings = json.loads(pathlib.Path(os.environ.get("LAND_TIMINGS", "/data/scr
 except Exception: pass
 kr = pathlib.Path("tools/KNOWN-RED.md")
 red = known_red(kr.read_text()) if kr.is_file() else set()
-smoke = [l.partition("#")[0].strip() for l in pathlib.Path("tools/smoke-tests.txt").read_text().splitlines()]
-want = {m for m in [*smoke, *sys.argv[1:]] if m}
+# the smoke set is the lander's (every landing runs it)
+smoke = [] if os.environ.get("NOSMOKE") == "1" else \
+    [l.partition("#")[0].strip() for l in pathlib.Path("tools/smoke-tests.txt").read_text().splitlines()]
+args = sys.argv[1:]
+if "ALL" in args:   # tools/affected_tests.py could not bound the change: every test module
+    from tools.main_ci import discover
+    args = [m for m in args if m != "ALL"] + discover(".")
+want = {m for m in [*smoke, *args] if m}
 missing = sorted(m for m in want if not pathlib.Path(m.split(".")[0] if False else m.replace(".", "/") + ".py").is_file()
                  and not pathlib.Path(".".join(m.split(".")[:-1]).replace(".", "/") + ".py").is_file())
 if missing: print(f"skipped modules that do not exist in the tree: {missing}", file=sys.stderr)

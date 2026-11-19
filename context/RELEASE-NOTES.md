@@ -7,6 +7,21 @@ break the last one.
 Template:
 
 ```
+## v0.22 (2026-11-19)
+Changed:
+- Autopilot drafts by default with question cards, looks things up as the person, learns from edits and applies saved preferences; chat drafts read the chat and the person's own replies as style.
+- Autopilot jobs propose changes to business systems on the person's item; each is reviewed in the prepared-writes desk and confirmed in two steps, with Teams replies posting as the person after a one-time connect and Portal before-values shown by field name.
+- Autopilot gets a recurring-work finder, names near-miss write fields, and has one on/off rule for the page and the feed.
+- Ask and Autopilot share one write path.
+- The assistant can steer Autopilot from chat, manage Memory and templates from Ask, and make Word, Excel and PDF files that it attaches or saves after you confirm.
+- Ask knows the org chart, meetings and transcripts, states the true mail age, and staff see their own Teams chats and every purchase order.
+- A question bank of 6,631 questions with database-checked answers, a held-out split and a nightly refresh measures Ask.
+- Pages are faster: dropped requests stop their work, record links and the side panel use the fast pages, purchase order totals come from lines, Home is quick on return visits, and updates switch over warm.
+- Alerts run on their own 15-minute timer; Ask runs on four workers, idle database connections close, and a busy notice replaces errors when the database is full.
+- Owed totals are right for staff, and quality lots with no orders no longer ask for a decision.
+- Email and Teams tables build on all cores with flat memory.
+- The people exclusion is re-checked at send; documents made in Ask are checked, and view-as and canary sessions get no write tool.
+
 ## v0.21 (2026-11-18)
 Changed:
 - Staff see business records company-wide and only their own mail, chats, OneDrive and calendar; people on the exclusion list are denied everywhere, and a check that cannot decide refuses.

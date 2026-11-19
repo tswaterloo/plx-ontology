@@ -1,0 +1,12 @@
+{
+ "schema": "plx-live-source-audience/v1",
+ "tenant": "plx",
+ "note": "EXAMPLE ONLY, not a PLX-confirmed grant: the org chart capture principal (integrations/capture_org.py CAPTURE_PRINCIPAL) and the host capture principal read the captured directory rows (mail:directory). Who sees a person's title, department and manager in the product is the staff Person's own audience (ontology/people_directory.py), never this grant. Default deny.",
+ "default_classification": "confidential",
+ "audiences": {
+  "mail:directory": ["svc:org-capture", "svc:workbench-host"]
+ },
+ "classifications": {
+  "mail:directory": "restricted"
+ }
+}

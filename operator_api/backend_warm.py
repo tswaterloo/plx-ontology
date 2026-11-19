@@ -42,6 +42,25 @@ from .backend_common import (
 )
 
 
+def prewarm_shared_reads() -> None:
+    """The process-wide reads every reader's first page waits on, read once at start in
+    the background (11-18 profile, a fresh API: the documents marked beyond a reader, 10 s;
+    the search index's coverage, 15 s): the first reader to sign in finds them read."""
+    try:
+        from operating.search import coverage, document_marks
+        if document_marks.enabled():
+            document_marks.withheld_set(())
+            coverage.coverage(wait=0)
+    except Exception:  # noqa: BLE001 - read again on first use, as without this
+        logging.getLogger("operator_api").info("shared reads not prewarmed")
+
+
+# a sign-in's access-worker policy decision (``WarmMixin._warm_access``): after every
+# live check queued, asked at most once a minute per reader
+ACCESS_WARM_PRIORITY = 5
+ACCESS_WARM_SECONDS = 60.0
+
+
 class WarmMixin:
     """Worker pools, known readers, warming and the served data's freshness."""
 
@@ -100,6 +119,9 @@ class WarmMixin:
         # the readers' access state for a kept page (``_access_later``) on its own worker,
         # so a long read on every read worker never holds it up (None: on the read queue)
         self.access_worker: Optional[Worker] = None
+        # the access workers' one queue (``add_access_worker``: ``ACCESS_WORKERS`` of them)
+        self.access_jobs: "queue.PriorityQueue" = queue.PriorityQueue()
+        self._access_started = False
         self.ask_jobs: "queue.PriorityQueue" = queue.PriorityQueue()
         self.ask_stopped = threading.Event()
         self.ask_workers: list[Worker] = []
@@ -166,17 +188,28 @@ class WarmMixin:
         return worker
 
     def add_access_worker(self, objects_for: Callable[[Any], Any]) -> Worker:
-        """The access worker (its own runtime and queue, built by the caller on the thread
-        that runs its ``loop``): the known readers' policies decided on it first
-        (``prewarm_policies``), then every kept page's access check runs on it; it stops
-        with the owner thread's."""
-        worker = Worker(objects_for)
+        """An access worker (its own runtime, built by the caller on the thread that runs
+        its ``loop``), on the access workers' one queue (``access_jobs``): the known
+        readers' policies decided on it first (``prewarm_policies``), then it takes the
+        kept pages' access checks and the door's reads with the others; it stops with the
+        owner thread's. The first one up serves alone until the next is."""
+        worker = Worker(objects_for, self.access_jobs)
         worker.stopped = self.reads.stopped
         worker.scope = page_scope
+        with self._lock:
+            first = not self._access_started
+            self._access_started = True
+        if first:
+            threading.Thread(target=prewarm_shared_reads, name="shared-reads-warm",
+                             daemon=True).start()
         self.prewarm_policies(worker=worker)
-        self.access_worker = worker
-        threading.Thread(target=self._keep_access_open, args=(worker,),
-                         name="access-inputs", daemon=True).start()
+        with self._lock:
+            opened = self.access_worker is None
+            if opened:
+                self.access_worker = worker
+        if opened:
+            threading.Thread(target=self._keep_access_open, args=(worker,),
+                             name="access-inputs", daemon=True).start()
         return worker
 
     def _touch_access(self, worker: Worker) -> int:
@@ -583,8 +616,35 @@ class WarmMixin:
 
     # ---- me ---------------------------------------------------------------------------
 
+    def _warm_access(self, reader: Reader) -> bool:
+        """A reader not yet decided on the access worker (one who signed in after it
+        started: ``prewarm_policies`` decides the known ones there at start): their
+        workspace and read policy decided there now, behind every live check, so their
+        first page read through the door (Home's late POs, a record page) never pays it
+        (11-18: 2.7 s of the policy's first decision). False when nothing was queued."""
+        worker = getattr(self, "access_worker", None)
+        if worker is None or worker.stopped.is_set() or getattr(
+                reader.session, "view_as", False):
+            return False
+        key = ",".join(sorted(reader.session.principals))
+        now = time.monotonic()
+        with self._lock:
+            asked = self.__dict__.setdefault("_access_warmed", {})
+            if key in worker.cache or now - asked.get(key, -ACCESS_WARM_SECONDS) \
+                    < ACCESS_WARM_SECONDS:
+                return False
+            asked[key] = now
+
+        def decide(view: Any) -> None:
+            from .backend import page_key
+            with view._request():
+                page_key(view, ("policy",))
+        worker.submit(reader, decide, priority=ACCESS_WARM_PRIORITY)
+        return True
+
     def me(self, reader: Reader) -> m.Me:
         self.warm(reader)   # every app load asks who is reading: read ahead for them
+        self._warm_access(reader)
         self._prewarm_agent(reader)
         self.remember_reader(reader)
         s = reader.session

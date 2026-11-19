@@ -118,6 +118,64 @@ def replies_in_threads(st: Any, wants: Iterable[tuple[str, str, frozenset]],
     return out
 
 
+def teams_replies(st: Any, people: Any, wants: Iterable[tuple[str, str, str]],
+                  *, days: int = REPLY_DAYS) -> dict[tuple[str, str, str],
+                                                    Optional[tuple[str, str, str]]]:
+    """(conversation, after, person) -> (message id, sent at, text) of the person's first
+    Teams message in that chat or channel thread after ``after`` (within ``days``), None
+    when there is none: what an edit of a Teams draft is read from (the person's sent
+    message, in the app or in Teams). One pass over the Teams messages of the window."""
+    import bisect
+    from . import autopilot as ap
+    from . import autopilot_events as ev
+    from . import autopilot_records as ar
+    from .proactive_ops import declared_sources
+    wants = list(dict.fromkeys(w for w in wants if w[0] and L.instant(w[1])))
+    out: dict = {w: None for w in wants}
+    if not wants:
+        return out
+    directory, _a, _d = ap._people_maps(people)
+    text_props = tuple(dict.fromkeys(
+        p for ps in declared_sources()["ask_text"].values() for p in ps))
+    convs = {c for c, _a2, _p in wants}
+    lo = min(L.instant(a) for _c, a, _p in wants)
+    hi = max(L.instant(a) for _c, a, _p in wants) + timedelta(days=days)
+    sent: dict[tuple[str, str], list[tuple[datetime, str, Mapping[str, Any]]]] = {}
+    for otype in ev.TEAMS_TYPES:
+        dated = ev._dated(st, otype, "created_at")
+        ids = [o for _t, o in dated[bisect.bisect_right(dated, (lo, "\uffff")):
+                                    bisect.bisect_right(dated, (hi, "\uffff"))]]
+        for start in range(0, len(ids), 2000):
+            chunk = ids[start:start + 2000]
+            typed = ar._types(st, chunk)
+            rows = ar._read(st, [o for o in chunk if typed.get(o, ("", ""))[1] in convs
+                                 or o.split(":", 1)[0] == "TeamsChannelMessage"],
+                            ("created_at", "from", "deleted_at", "reply_to_id") + text_props)
+            for oid, r in rows.items():
+                aud = typed[oid][1]
+                conv = ev.teams_thread(aud, oid, ar._v(r, "reply_to_id")) \
+                    if aud.startswith("teams:channel:") else aud
+                at = L.instant(ar._v(r, "created_at"))
+                if conv in convs and at is not None and not ar._v(r, "deleted_at"):
+                    who = ev.teams_sender(ar._v(r, "from"), directory)
+                    sent.setdefault((conv, who), []).append((at, oid, r))
+    chosen: dict[tuple[str, str, str], tuple[datetime, str, Mapping[str, Any]]] = {}
+    for conv, after, person in wants:
+        begin = L.instant(after)
+        got = [x for x in sent.get((conv, person), ())
+               if begin < x[0] <= begin + timedelta(days=days)]
+        if got:
+            chosen[(conv, after, person)] = min(got, key=lambda x: (x[0], x[1]))
+    bodies = ev.teams_bodies(st, [h for _at, _o, r in chosen.values()
+                                  for h in ev._handles_of(r)[:1]])
+    for want, (at, oid, r) in chosen.items():
+        handle = (ev._handles_of(r) or [""])[0]
+        text = bodies.get(handle) or next(
+            (ar._v(r, p) for p in text_props if ar._v(r, p)), "")
+        out[want] = (oid, L._iso(at), str(text or ""))
+    return out
+
+
 def _body(st: Any, oid: str) -> Optional[str]:
     from .mail_text import joined_chunks
     try:
@@ -160,9 +218,10 @@ def item_signals(items: Iterable[Mapping[str, Any]], events: Mapping[str, Mappin
         reply = None
         if item.get("state") == "done" or item.get("_judge"):
             mail = (channel or event.get("channel") or happened.get("channel") or "mail") == "mail"
-            reply = reply_of(item, event) if mail and (channel == "mail" or draft is None
-                                                       and event.get("conversation_id")) \
-                else None
+            teams = (channel or event.get("channel") or happened.get("channel")) == "teams"
+            reply = reply_of(item, event) if (mail or teams) and (
+                channel in ("mail", "teams") or draft is None
+                and event.get("conversation_id")) else None
         if reply is not None and not draft:
             # their own reply to an item that had no draft: a few-shot example of how they
             # answer this kind of mail (``learning_fewshot``), and an item acted on
@@ -232,8 +291,20 @@ def from_queue(queue_path: Path, st: Any, people: Any, *, now: datetime
             "conversation_id") and _draft_body((i.get("body") or {}).get(
                 "prepared") or {})[1] in ("mail", None)])
 
+    # a Teams item's reply: the person's own next message in the chat (or channel thread)
+    def teams_want(item: Mapping[str, Any], event: Mapping[str, Any]) -> tuple:
+        return (str(event.get("conversation_id") or ""), str(event.get("at") or ""),
+                str(item["owner"]))
+
+    chats = teams_replies(st, people, [
+        teams_want(i, events.get(i["event_id"]) or {}) for i in items
+        if i.get("state") == "done" and (events.get(i["event_id"]) or {}).get(
+            "channel") == "teams"])
+
     def reply_of(item: Mapping[str, Any], event: Mapping[str, Any]
                  ) -> Optional[tuple[str, str, str]]:
+        if event.get("channel") == "teams":
+            return chats.get(teams_want(item, event))
         return found.get(want(item, event))
 
     return item_signals(items, events, reply_of=reply_of, now=now)

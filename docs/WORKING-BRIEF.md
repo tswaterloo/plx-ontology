@@ -59,5 +59,9 @@ Trim per employee on every view.
 ## Commands
 - Land through the batch lander: queue `branch|sha|modules|message`.
   Mock demo `tools/demo.sh` (demo data, prints the URL, Ctrl-C stops it). Load flakes: `tools/FLAKY.md`.
+- Spark runs: `deploy/spark/spark_test.sh <sha> --affected <base> [-t <module>]...` (selection computed once per
+  tree; an id that passed on the same tree is not re-run; no smoke set unless `SPARK_SMOKE=1`); `--status` shows
+  the slot queue, `--no-wait` exits 75 instead of waiting; "red on main too?":
+  `python3 tools/run_cache.py base-known --base origin/main <module>...` (from recorded results, runs nothing).
 - Tests go through `tools/testslot.py`; type check `python3 tools/typecheck.py` (baseline file); whole suite `python3 tools/main_ci.py`; `python3 tools/affected_tests.py --base <base>`;
   app `cd app && npm test && npm run typecheck`; Python `python3 -m unittest <module>`.

@@ -233,11 +233,13 @@ class CreateToTheWriteDesk(DeskBase):
         (again,) = self.writes(self.ana)
         self.assertEqual(again["intent_id"], w["intent_id"])
 
-    def test_no_sandbox_a_phsi_company_or_an_unopened_party_is_refused(self):
-        self.companies[SANDBOX_CO] = "PHSI Group"
-        (w,) = self.writes(self.ana)
-        self.assertEqual(w["status"], "refused")
-        self.assertIn("never written", " ".join(w["problems"]))
+    def test_no_sandbox_or_an_unopened_party_is_refused_any_company_is_written(self):
+        # Vince 11-18: every company, PHSI Group (BC calls it "PLX Consol") included
+        for phsi in ("PHSI Group", "PLX Consol"):
+            self.companies[SANDBOX_CO] = phsi
+            (w,) = self.writes(self.ana)
+            self.assertEqual(w["status"], "prepared", phsi)
+        held = len(self.backend._wdesk()._rows())
         self.companies[SANDBOX_CO] = "PLX Sandbox"
         for env in ("", "Production", "production"):
             self.backend.writes_environ = {**self.backend.writes_environ,
@@ -252,7 +254,7 @@ class CreateToTheWriteDesk(DeskBase):
         self.assertEqual(w["status"], "refused")
         self.assertIn("record you cannot open", " ".join(w["problems"]))
         self.assertNotIn("C100", " ".join(w["problems"]))
-        self.assertEqual(self.backend._wdesk()._rows(), [])     # nothing put on the desk
+        self.assertEqual(len(self.backend._wdesk()._rows()), held)  # nothing more put on it
 
     def test_a_customer_that_is_a_check_is_refused_and_no_grant_offers_nothing(self):
         (w,) = self.writes(self.ana, "create an order from this PO: PO 88123\n"

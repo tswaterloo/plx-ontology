@@ -19,6 +19,7 @@ from __future__ import annotations
 import datetime as dt
 import json
 import os
+import re
 import unittest
 from unittest import mock
 
@@ -29,6 +30,18 @@ from operating.pg import business_views as bv
 from operating.pg import people_excluded, sql_views
 from operating.tests import test_table_mail_parity as tmp
 from tests import test_ontology_tools_evidence as ev
+
+# the disk guard's floor (PLX_BIZ_MIN_FREE_GB) is the served host's: a test host's free
+# space is not what these tests are about (the guard's own test sets the floor back)
+_NO_FLOOR = mock.patch.dict(os.environ, {"PLX_BIZ_MIN_FREE_GB": "0"})
+
+
+def setUpModule():
+    _NO_FLOOR.start()
+
+
+def tearDownModule():
+    _NO_FLOOR.stop()
 
 READERS = (tmp.NARROW, tmp.MID, tmp.OWNER)
 # the stored envelope of mail a mailing platform sent (its bounce host and DKIM signer)
@@ -316,33 +329,43 @@ class EmailsThroughTheDoor(unittest.TestCase):
         whole set for each row: the 11-18 cm_flag statement sat 90 min over 3.3M mails)."""
         import psycopg
         found: list[tuple[str, str]] = []
+        readers: list[_Explaining] = []
+
+        def connect():   # the build's row readers' connections are planned too
+            readers.append(_Explaining(psycopg.connect(self.dsn, autocommit=True), found))
+            return readers[-1]
         with psycopg.connect(self.dsn, autocommit=True) as pg:
             probe = _Explaining(pg, found)
             bc.refresh_changed(probe, "emails", {"ver": 0, "link": 0})
-            with pg.transaction(force_rollback=True):
-                cols = ", ".join(f'"{n}" {t}' for n, t in bc.columns(bv.VIEWS["emails"]))
-                pg.execute(f"CREATE TABLE {bv.SCHEMA}.emails_probe ({cols})")
-                at = len(probe.seen)
-                bc.fill(bc.SPECS["emails"], probe, "emails_probe")
-                built = pg.execute(f"SELECT * FROM {bv.SCHEMA}.emails_probe").fetchall()
-                served = pg.execute(f"SELECT * FROM {bv.SCHEMA}.emails").fetchall()
-                left = pg.execute("SELECT to_regclass(%s)", (
-                    f"{bv.SCHEMA}.emails_probe_stage",)).fetchone()[0]
+            try:
+                with pg.transaction(force_rollback=True):
+                    cols = ", ".join(f'"{n}" {t}' for n, t in bc.columns(bv.VIEWS["emails"]))
+                    pg.execute(f"CREATE TABLE {bv.SCHEMA}.emails_probe ({cols})")
+                    at = len(probe.seen)
+                    bc.fill(bc.SPECS["emails"], probe, "emails_probe", connect=connect)
+                    built = pg.execute(f"SELECT * FROM {bv.SCHEMA}.emails_probe").fetchall()
+                    served = pg.execute(f"SELECT * FROM {bv.SCHEMA}.emails").fetchall()
+                    left = [pg.execute("SELECT to_regclass(%s)", (f"{bv.SCHEMA}.{n}",)
+                                       ).fetchone()[0] for n in bc.stage_names("emails_probe")]
+            finally:   # the readers commit the stage: the rolled-back probe leaves it
+                bc.drop_stage(pg, "emails_probe")
         self.assertGreater(probe.planned, 20, "the statements were planned")
         self.assertTrue(any("cm_flag" in sql for sql, _ in probe.seen), "the flags ran")
+        seen = probe.seen[at:] + [x for r in readers for x in r.seen]
+        self.assertTrue(any(re.match(r"\s*with r as materialized", sql, re.I)
+                            for r in readers for sql, _ in r.seen), "the rows were planned")
         self.assertEqual(found, [], "a subplan reads a table per row")
         # the build writes each row of its table ONCE (11-18: every whole-table UPDATE in
         # the build's one transaction left a dead copy: /data fell 1.7 GB a minute)
-        import re
-        target = re.compile(rf"\b{bv.SCHEMA}\.emails_probe(_stage)?\b")
-        rewrites = [sql[:120] for sql, _ in probe.seen[at:] if re.match(
+        target = re.compile(rf"\b{bv.SCHEMA}\.emails_probe(_stage(_text)?)?\b")
+        rewrites = [sql[:120] for sql, _ in seen if re.match(
             r"\s*(update|delete)\b", sql, re.I) and target.search(sql)]
         self.assertEqual(rewrites, [], "a build statement rewrites rows it wrote")
         writes = [sql for sql, _ in probe.seen[at:] if re.match(
             rf"\s*insert into {bv.SCHEMA}\.emails_probe\b", sql, re.I)]
         self.assertTrue(writes and all(" s.sn > " in w for w in writes),
                         "the table is written from the stage, by row number ranges")
-        self.assertIsNone(left, "the stage is dropped")
+        self.assertEqual(left, [None, None], "the stage is dropped")
         self.assertEqual(sorted(map(repr, built)), sorted(map(repr, served)),
                          "the build's rows, every column")
 
@@ -368,7 +391,7 @@ class EmailsThroughTheDoor(unittest.TestCase):
         with psycopg.connect(self.dsn, autocommit=True) as pg:
             before = sorted(map(repr, pg.execute(f"SELECT * FROM {table}").fetchall()))
         def low_at_the_write(path):   # room for the stage, then short before the write
-            return (44 if "writing the table" in steps[-1] else 400) * 1024 ** 3
+            return (24 if "writing the table" in steps[-1] else 400) * 1024 ** 3
         steps = [""]
         guard = bc._disk_guard
 
@@ -394,6 +417,100 @@ class EmailsThroughTheDoor(unittest.TestCase):
         with mock.patch.dict(os.environ, {"PLX_BIZ_MIN_FREE_GB": "lots"}), \
                 self.assertRaisesRegex(RuntimeError, "PLX_BIZ_MIN_FREE_GB"):
             bc._min_free_bytes()
+
+    def _ranges(self, n):
+        """``CHUNK`` patched so the store's versions make about ``n`` ranges."""
+        import psycopg
+        with psycopg.connect(self.dsn, autocommit=True) as pg:
+            top = int(bc.marks(pg)["ver"])
+        return mock.patch.object(bc, "CHUNK", max(1, top // n + 1))
+
+    def test_the_rows_are_read_by_many_connections_and_match_one(self):
+        """Every core reads the rows (owner 11-18: the row read sat on one core ~1 h): the
+        version ranges are taken from one queue by ``PLX_BIZ_READ_WORKERS`` connections at
+        once. The table built so is the served one row for row, every column (no row lost
+        or doubled across ranges or readers); more than one connection read ranges; a
+        worker count that is not a whole number of 1 or more is refused."""
+        import threading
+        import time
+        import psycopg
+        table = f"{bv.SCHEMA}.emails"
+        with psycopg.connect(self.dsn, autocommit=True) as pg:
+            before = sorted(map(repr, pg.execute(f"SELECT * FROM {table}").fetchall()))
+        readers, real = [], bc._rows_sql
+
+        def rows_sql(*args, **kwargs):   # which reader read a range (each a moment)
+            readers.append(threading.get_ident())
+            time.sleep(0.05)
+            return real(*args, **kwargs)
+        with self._ranges(12), mock.patch.object(bc, "_rows_sql", rows_sql), \
+                mock.patch.dict(os.environ, {"PLX_BIZ_READ_WORKERS": "4"}):
+            got = bv.build(self.dsn, ["emails"], schema=self.compiled)
+        self.assertGreaterEqual(len(readers), 10, "the versions were read in ranges")
+        self.assertGreater(len(set(readers)), 1, "more than one connection read rows")
+        self.assertLessEqual(len(set(readers)), 4)
+        with psycopg.connect(self.dsn, autocommit=True) as pg:
+            after = sorted(map(repr, pg.execute(f"SELECT * FROM {table}").fetchall()))
+            for n in bc.stage_names("emails_next"):
+                self.assertIsNone(pg.execute("SELECT to_regclass(%s)", (
+                    f"{bv.SCHEMA}.{n}",)).fetchone()[0], n)
+        self.assertEqual(got[0]["rows"], len(before))
+        self.assertEqual(after, before, "every row, every column")
+        for raw in ("0", "-2", "lots", "1.5"):
+            with self.subTest(raw=raw), \
+                    mock.patch.dict(os.environ, {"PLX_BIZ_READ_WORKERS": raw}), \
+                    self.assertRaisesRegex(RuntimeError, "PLX_BIZ_READ_WORKERS"):
+                bc.read_workers()
+        with mock.patch.dict(os.environ, {"PLX_BIZ_READ_WORKERS": ""}):
+            self.assertEqual(bc.read_workers(), max(1, os.cpu_count() or 1))
+
+    def test_the_build_refresh_and_recheck_commands_never_lower_their_priority(self):
+        """A build, refresh or recheck runs at full speed (the unit bounds its
+        memory, the build its disk); the commands never renice themselves."""
+        def niced(_inc):
+            raise AssertionError("a command lowered its priority")
+        with mock.patch("os.nice", side_effect=niced), \
+                mock.patch.object(bv, "refresh", return_value={}), \
+                mock.patch.object(bv, "_stop_on_term"), \
+                mock.patch.object(bc, "recheck_all", return_value=[]), \
+                mock.patch("builtins.print"):
+            self.assertEqual(bv.main(["refresh", "--dsn", self.dsn]), 0)
+            self.assertEqual(bc.main(["recheck", "--dsn", self.dsn]), 0)
+
+    def test_a_reader_failing_stops_the_build_and_leaves_no_stage(self):
+        """One reader failing mid-way (here: the disk floor before its range) stops the
+        others and the build: no ``emails_next`` and none of the stage its readers
+        committed is left, the served table untouched. A stage a killed build left is
+        swept by the next refresh."""
+        import psycopg
+        table = f"{bv.SCHEMA}.emails"
+        with psycopg.connect(self.dsn, autocommit=True) as pg:
+            before = sorted(map(repr, pg.execute(f"SELECT * FROM {table}").fetchall()))
+        guard, seen = bc._disk_guard, []
+
+        def step(write, path, at, need=0):
+            seen.append(at)
+            if at.startswith("versions") and len([s for s in seen if s.startswith(
+                    "versions")]) == 3:
+                raise RuntimeError(f"disk below the floor, build stopped before {at}")
+            return guard(write, path, at, need)
+        with self._ranges(12), mock.patch.object(bc, "_disk_guard", step), \
+                mock.patch.dict(os.environ, {"PLX_BIZ_READ_WORKERS": "4"}), \
+                self.assertRaisesRegex(RuntimeError, "views not built.*stopped before versions"):
+            bv.build(self.dsn, ["emails"], schema=self.compiled)
+        self.assertNotIn("the mail flags", seen, "nothing ran after the readers")
+        with psycopg.connect(self.dsn, autocommit=True) as pg:
+            for left in ("emails_next", *bc.stage_names("emails_next")):
+                self.assertIsNone(pg.execute("SELECT to_regclass(%s)", (
+                    f"{bv.SCHEMA}.{left}",)).fetchone()[0], left)
+            self.assertEqual(sorted(map(repr, pg.execute(
+                f"SELECT * FROM {table}").fetchall())), before)
+            # a killed build's committed stage (no unwinding ran): the sweep drops it
+            for n in bc.stage_names("emails_next"):
+                pg.execute(f"CREATE UNLOGGED TABLE {bv.SCHEMA}.{n} (x int)")
+            swept = bv.sweep_leftovers(pg)
+            self.assertEqual(sorted(swept), sorted(bc.stage_names("emails_next")))
+            self.assertIsNotNone(pg.execute("SELECT to_regclass(%s)", (table,)).fetchone()[0])
 
     def test_refresh_in_place_reads_the_same_rows_and_drops_a_removed_one(self):
         import psycopg
@@ -746,7 +863,8 @@ class EmailsThroughTheDoor(unittest.TestCase):
         # and no registered tool reaches them: the AI's tools are plx.sql and the AI views
         table: dict = {}
         ts.register(table, self.tool().base)
-        self.assertEqual(sorted(table), sorted([ts.TOOL_NAME, ts.COMMS_SEARCH, ts.COMMS_OPEN]))
+        self.assertEqual(sorted(table), sorted([ts.TOOL_NAME, ts.COMMS_SEARCH, ts.COMMS_OPEN,
+                                                ts.RECORDS_SEARCH]))
 
     def test_an_opened_item_is_kept_as_read_text_the_figure_check_binds(self):
         """plx.open of a mail item keeps its text as a plx.read's is kept (whole, or the
@@ -819,6 +937,71 @@ class EmailsThroughTheDoor(unittest.TestCase):
         self.assertIn(hit, self.handles(tmp.OWNER))
         self.assertIn(hit, self.found(tmp.OWNER, query="agreed"))
 
+    def test_the_text_check_pages_its_handles_and_decides_the_same(self):
+        """The Freightcom text check holds a page of handles at a time (11-18: the served
+        mail read through one process took the build past its 8 GB): pages of 2, in this
+        process or over a pool whose workers read the text over their own connections (this
+        process then never reads a body), decide every handle as one pass does, none lost or
+        doubled; a handle whose text is not indexed is undecided (NULL), never cleared."""
+        import psycopg
+        table = f"{bv.SCHEMA}.emails"
+
+        class Counting:
+            def __init__(self, pg):
+                self._pg, self.pages, self.texts = pg, 0, 0
+
+            def __getattr__(self, name):
+                return getattr(self._pg, name)
+
+            def execute(self, sql, params=None):
+                self.pages += sql.startswith("SELECT handle, array_agg")
+                self.texts += sql == bc.TEXT_SQL
+                return self._pg.execute(sql, params)
+        with psycopg.connect(self.dsn, autocommit=True) as pg:
+            bare = pg.execute(f"SELECT handle FROM {table} WHERE ai_ok IS NOT FALSE "
+                              "ORDER BY handle LIMIT 1").fetchone()[0]
+            fields = pg.execute("SELECT * FROM ontology.text_fields WHERE version_handle = %s",
+                                (bare,)).fetchall()
+            chunks = pg.execute("SELECT c.* FROM ontology.text_chunks c JOIN "
+                                "ontology.text_fields f ON f.field_id = c.field_id WHERE "
+                                "f.version_handle = %s", (bare,)).fetchall()
+            self.assertTrue(fields and chunks)
+            # committed: the pool's workers read over their own connections
+            pg.execute("DELETE FROM ontology.text_chunks c USING ontology.text_fields f WHERE "
+                       "f.field_id = c.field_id AND f.version_handle = %s", (bare,))
+            pg.execute("DELETE FROM ontology.text_fields WHERE version_handle = %s", (bare,))
+            try:
+                want = pg.execute(f"SELECT count(DISTINCT handle) FROM {table} WHERE ai_ok IS "
+                                  "NOT FALSE").fetchone()[0]
+
+                def verdicts():
+                    rows = pg.execute("SELECT handle, ok FROM cm_ai").fetchall()
+                    self.assertEqual(len(rows), want, "every handle once")
+                    return dict(rows)
+                bc._ai_verdicts(pg, table, "true")
+                one = verdicts()
+                self.assertIsNone(one[bare], "no text indexed: undecided")
+                self.assertIn(True, one.values())
+                for pool_min in (10 ** 9, 0):
+                    probe = Counting(pg)
+                    with self.subTest(pool=pool_min == 0), \
+                            mock.patch.multiple(bc, TEXT_BATCH=2, FLAG_POOL_MIN=pool_min,
+                                                FLAG_WORKERS=2):
+                        bc._ai_verdicts(probe, table, "true")
+                        self.assertEqual(verdicts(), one)
+                        self.assertGreaterEqual(probe.pages, (want + 1) // 2, "paged by 2")
+                        if pool_min == 0:
+                            self.assertEqual(probe.texts, 0, "the workers read the text")
+                        else:
+                            self.assertGreater(probe.texts, 0)
+            finally:
+                for f in fields:
+                    pg.execute("INSERT INTO ontology.text_fields VALUES (" + ", ".join(
+                        ["%s"] * len(f)) + ")", f)
+                for c in chunks:
+                    pg.execute("INSERT INTO ontology.text_chunks VALUES (" + ", ".join(
+                        ["%s"] * len(c)) + ")", c)
+
     def test_the_nightly_recheck_decides_a_text_written_under_an_older_field(self):
         """``python3 -m operating.pg.business_comms recheck`` (the nightly unit): a row
         left undecided whose text sits under a field the refresh's text mark has passed is
@@ -839,7 +1022,10 @@ class EmailsThroughTheDoor(unittest.TestCase):
             with contextlib.redirect_stdout(out):
                 self.assertEqual(bc.main(["recheck", "--dsn", self.dsn]), 0)
             got = [json.loads(line) for line in out.getvalue().splitlines()]
-            self.assertEqual({g["view"] for g in got}, {"emails", "teams_messages"})
+            self.assertEqual({g["view"] for g in got}, set(bc.SPECS))
+            # tables this fixture never built are skipped and say so
+            self.assertTrue({"meetings", "meeting_transcripts"} <= {
+                g["view"] for g in got if g.get("skipped") == "not built"}, got)
             mail = next(g for g in got if g["view"] == "emails")
             self.assertLess(mail["undecided"], mail["undecided_before"])
             self.assertTrue(pg.execute(f"SELECT ai_ok FROM {table} WHERE handle = %s",

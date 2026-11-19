@@ -32,6 +32,7 @@ from __future__ import annotations
 
 from contextlib import closing
 import argparse
+import datetime as dt
 import json
 import os
 from pathlib import Path
@@ -213,7 +214,10 @@ def merge_reads(held: Any, incoming: Any, *, settled: bool) -> dict[str, dict[st
     a capped, skipped or unsettled read, or a state not known here, keeps the earlier
     ``served_through`` and says why (``state``: ``waiting`` when unsettled, ``unknown`` for
     an unknown state). An older cycle's read never moves a newer one back. Unreadable
-    input counts as nothing held or nothing read."""
+    input counts as nothing held or nothing read. ``captured_through``, set with
+    ``served_through``: the earlier of it and the capture's own last refresh from its
+    system when that read began (``refreshed_at``; unknown: None), how far into what the
+    source holds the served data reaches (the served freshness, ``advance_freshness``)."""
     try:
         out = json.loads(held) if isinstance(held, str) else {}
     except ValueError:
@@ -227,9 +231,15 @@ def merge_reads(held: Any, incoming: Any, *, settled: bool) -> dict[str, dict[st
             continue
         state = entry.get("state")
         through = before.get("served_through")
+        captured = before.get("captured_through")
         if state == "complete":
             if settled:
                 through = entry["read_from"]
+                # how far into what the source holds that reaches: never past the
+                # capture's own last refresh (unknown: no capture time)
+                stamp = _instant(entry.get("refreshed_at"))
+                captured = (None if stamp is None else entry["refreshed_at"]
+                            if stamp < _instant(through) else through)
             else:
                 state = "waiting"
         elif state not in READ_STATES:
@@ -239,12 +249,90 @@ def merge_reads(held: Any, incoming: Any, *, settled: bool) -> dict[str, dict[st
         out[source] = {"read_from": entry["read_from"], "state": state,
                        "left": left if isinstance(left, int) and left > 0 else 0,
                        "reason": reason if isinstance(reason, str) else None,
-                       "served_through": through if isinstance(through, str) else None}
+                       "served_through": through if isinstance(through, str) else None,
+                       "captured_through": captured if isinstance(captured, str) else None}
     return out
 
 
+def _instant(value: Any) -> dt.datetime | None:
+    if not isinstance(value, str) or not value:
+        return None
+    try:
+        at = dt.datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return at if at.tzinfo is not None else at.replace(tzinfo=dt.timezone.utc)
+
+
+def advance_freshness(held: Any, reads: Mapping[str, Any],
+                      now: dt.datetime | None = None, judged: Any = None) -> str | None:
+    """``ontology.store_meta`` ``freshness`` with each source's capture time moved up to its
+    ``captured_through`` (``merge_reads``: the earlier of how far the served data reaches
+    into the capture and the capture's own last refresh from its system) when that is
+    newer; None when nothing moves or ``held`` is unreadable.
+
+    A layer states a family's capture time only from a complete read, so a family capped
+    every cycle (mail, Teams, SharePoint on 11-18) kept the time of its last complete read
+    and every answer called the mail capture 5 days stale while the served data reached
+    to the hour. Moved: ``captured_at``, ``lag_seconds`` (its age now) and an age-only
+    ``stale`` (re-judged by the build's default bound; readers re-judge it again against
+    their own). Never past the capture's own refresh: a capture that stopped (mail's
+    10 h outage, 11-12) stays as old as it is however often a cycle reads its unchanged
+    store, and a read stating no refresh time moves nothing. ``completeness`` is
+    ``partial`` while the source's newest read is not complete, and back to the
+    generation's own (``judged``, ``relation_completeness``: complete only when every
+    relation it judged is) once a later read is complete and in Postgres. Never moved
+    back; an entry served from a copy while the source was out (``served_from``) keeps its
+    own facts; a source without an entry gets none."""
+    try:
+        entries = json.loads(held) if isinstance(held, str) else None
+    except ValueError:
+        return None
+    if not isinstance(entries, list):
+        return None
+    try:
+        judged = json.loads(judged) if isinstance(judged, str) else judged
+    except ValueError:
+        judged = None
+    from ontology.project import STALE_AFTER_SECONDS
+    now = now or dt.datetime.now(dt.timezone.utc)
+    out, moved = [], False
+    for entry in entries:
+        read = reads.get(entry.get("source")) if isinstance(entry, dict) else None
+        through = _instant(read.get("captured_through")) if isinstance(read, Mapping) else None
+        if not isinstance(read, Mapping) or entry.get("served_from") not in (None, "none"):
+            out.append(entry)
+            continue
+        new = dict(entry)
+        held_at = _instant(entry.get("captured_at"))
+        if through is not None and (held_at is None or held_at < through):
+            lag = max(0, int((now - through).total_seconds()))
+            new.update(captured_at=read["captured_through"], lag_seconds=lag,
+                       stale=lag > STALE_AFTER_SECONDS)
+        if read.get("state") != "complete":
+            new["completeness"] = "partial"
+        elif read.get("served_through") == read.get("read_from"):
+            own = _judged_completeness(judged, entry.get("source"))
+            if own is not None:
+                new["completeness"] = own
+        moved = moved or new != entry
+        out.append(new)
+    return json.dumps(out) if moved else None
+
+
+def _judged_completeness(judged: Any, source: Any) -> str | None:
+    """A source's completeness as the generation judged it (``relation_completeness``:
+    ``complete`` only when every relation is); None when it records none."""
+    relations = judged.get(source) if isinstance(judged, Mapping) else None
+    if not isinstance(relations, Mapping) or not relations:
+        return None
+    return "complete" if all(isinstance(r, Mapping) and r.get("completeness") == "complete"
+                             for r in relations.values()) else "partial"
+
+
 def _note_reads(cur: Any, reads: Any, settled: bool) -> int:
-    """``merge_reads`` into ``ontology.store_meta`` (the row held for update); the sources
+    """``merge_reads`` into ``ontology.store_meta`` (the row held for update), and each
+    source's freshness moved up to what is served (``advance_freshness``); the sources
     noted."""
     from ontology.delta import READS_KEY
     if not reads:
@@ -256,6 +344,15 @@ def _note_reads(cur: Any, reads: Any, settled: bool) -> int:
     cur.execute("INSERT INTO ontology.store_meta (key, value) VALUES (%s, %s) ON CONFLICT "
                 "(key) DO UPDATE SET value = excluded.value",
                 (READS_KEY, json.dumps(merged, sort_keys=True)))
+    cur.execute("SELECT value FROM ontology.store_meta WHERE key = 'freshness' FOR UPDATE")
+    row = cur.fetchone()
+    cur.execute("SELECT value FROM ontology.store_meta WHERE key = 'relation_completeness'")
+    judged = cur.fetchone()
+    fresh = advance_freshness(row[0] if row else None, merged,
+                              judged=judged[0] if judged else None)
+    if fresh is not None:
+        cur.execute("UPDATE ontology.store_meta SET value = %s WHERE key = 'freshness'",
+                    (fresh,))
     return len(reads)
 
 

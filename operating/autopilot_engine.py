@@ -247,8 +247,17 @@ def _recipient_lessons(learned: Any, owner: str) -> dict[str, str]:
             if isinstance(a, str) and v in ("never", "to", "cc")}
 
 
+def _stated_cc(learned: Any, owner: str, event: Mapping[str, Any]) -> list[str]:
+    """The addresses ``owner`` said to copy on their email drafts to the event's side
+    (``learning.Lessons.stated_cc``); none when the lessons carry none or reading fails."""
+    fn = getattr(learned, "stated_cc", None) if learned else None
+    got = _learned_call(fn, owner, event.get("side"), default=[]) if callable(fn) else []
+    return [str(a).lower() for a in got if isinstance(a, str) and "@" in a] \
+        if isinstance(got, list) else []
+
+
 def _recipients(work: Mapping[str, Any], event: Mapping[str, Any], owner: str, people: Any,
-                learned: Mapping[str, str]) -> dict[str, Any]:
+                learned: Mapping[str, str], add_cc: Sequence[str] = ()) -> dict[str, Any]:
     """``work`` with every email draft's To and Cc decided for ``owner`` by
     ``assist.resolve_reply`` (the people exclusion, the owner's own addresses, their learned
     lessons, ``assist.REPLY_ALL_MAX``) from what the handler proposed: the first To first
@@ -268,8 +277,11 @@ def _recipients(work: Mapping[str, Any], event: Mapping[str, Any], owner: str, p
             return draft
         to = [t.get("address") if isinstance(t, Mapping) else t for t in draft.get("to") or ()]
         cc = [t.get("address") if isinstance(t, Mapping) else t for t in draft.get("cc") or ()]
+        thread = {str(a).lower() for a in [*to, *cc] if isinstance(a, str)}
+        asked = [a for a in add_cc if a not in thread]
         try:
-            got = assist.resolve_reply(sender=to[0] if to else None, to=to[1:], cc=cc,
+            got = assist.resolve_reply(sender=to[0] if to else None, to=to[1:],
+                                       cc=[*asked, *cc],
                                        me=owner, people=people, learned=learned,
                                        source=draft.get("source") or cite)
         except assist.AssistRefused as refused:
@@ -278,6 +290,9 @@ def _recipients(work: Mapping[str, Any], event: Mapping[str, Any], owner: str, p
         if not got.to and not got.ask:
             gaps.append("recipients_withheld" if got.withheld else "recipients_unresolved")
             return None
+        for address in asked:
+            if got.basis.get(address) == "cc":
+                got.basis[address] = "stated_cc"
         new = {k: v for k, v in draft.items() if k not in ("to", "cc", "source")}
         new["to"] = [{"address": a} for a in got.to]
         if got.cc:
@@ -400,6 +415,8 @@ DRAFT_SCHEMA = "plx-autopilot-draft/v1"
 # never prepared in draft, whatever the config says: no rule reaches the gate's bar on it
 # (dev ceiling ~75-81%, 2026-11-11) and a wrong external reply costs the most
 DRAFT_NEVER = frozenset({"other_external"})
+# the draft file's list of the people a DRAFT_NEVER workflow may be in draft for (2026-11-18); everyone else: the whole file is refused
+DRAFT_NEVER_FOR = "never_list_exempt"
 
 
 def load_draft(environ: Mapping[str, str] | None = None) -> dict[str, list[str]]:
@@ -418,11 +435,17 @@ def load_draft(environ: Mapping[str, str] | None = None) -> dict[str, list[str]]
             return {}
         from . import workflows as wf
         known = wf.names()
+        # Named one by one; anything else refuses the file
+        allowed = raw.get(DRAFT_NEVER_FOR, [])
+        if not isinstance(allowed, list) or not all(isinstance(a, str) for a in allowed):
+            return {}
+        allowed = {a.strip().lower() for a in allowed}
         out: dict[str, list[str]] = {}
         for who, flows in (raw.get("people") or {}).items():
             if not isinstance(flows, list) or not all(isinstance(f, str) for f in flows):
                 return {}
-            if any(f not in known or f in DRAFT_NEVER for f in flows):
+            exempt = str(who).strip().lower() in allowed
+            if any(f not in known or (f in DRAFT_NEVER and not exempt) for f in flows):
                 return {}
             out[str(who).strip().lower()] = sorted(set(flows))
         return out
@@ -461,41 +484,51 @@ def with_draft(gate: Callable[..., bool], drafted: Mapping[str, frozenset[str]]
 class SwitchGate:
     """The live prepare gate (follow and fast; owner walk 2026-11-17: 509 items prepared by
     role membership for 16 people, none of whom asked, 0 used): a workflow is prepared for
-    a person only when that person switched its drafts on themselves
-    (``autopilot_write.drafts_on`` over the write path's audit journal, re-read whenever
-    the file changes, so a switch takes effect at the next cycle) or it is in Draft for
-    them (``autopilot_draft.json``: the owner's own items). The replay gate no longer
-    decides what is prepared; it still decides what may be performed (``write_state``).
-    No journal, an unreadable or broken one: only Draft (fail closed)."""
+    a person when that person switched its drafts on themselves or it is in Draft for them
+    (``autopilot_draft.json``), and they did not switch it off or pause themselves: the
+    person's own word wins over the Draft file (``autopilot_write.prepared_for``, the rule
+    the Autopilot page shows). The write path's audit journal is re-read whenever the file
+    changes, so a switch takes effect at the next cycle. The replay gate no longer decides
+    what is prepared; it still decides what may be performed (``write_state``). No journal
+    yet: only Draft. A journal that cannot be read: nothing at all (fail closed: a
+    person's own off in it cannot be told apart)."""
 
     def __init__(self, journal_path: Optional[Path],
                  drafted: Mapping[str, frozenset[str]]) -> None:
         self.path = Path(journal_path) if journal_path else None
         self.drafted = {str(k).lower(): frozenset(v) for k, v in drafted.items()}
         self._stamp: Any = None
-        self._on: dict[str, frozenset[str]] = {}
+        self._on: dict[str, frozenset[str]] = self._read([])
+
+    def _read(self, rows: Any) -> dict[str, frozenset[str]]:
+        from . import autopilot_write as aw
+        return {who: frozenset(flows) for who, flows in
+                aw.prepared_for(rows, self.drafted, DRAFT_NEVER).items() if flows}
 
     def switched(self) -> dict[str, frozenset[str]]:
-        """person -> workflows on (their own switch, else Draft), read now."""
-        if self.path is not None:
-            try:
-                st = self.path.stat()
-                stamp = (st.st_mtime_ns, st.st_size)
-            except OSError:
-                stamp = None
-            if stamp != self._stamp:
-                self._stamp, self._on = stamp, {}
-                if stamp is not None:
-                    from . import autopilot_write as aw
-                    from .card_actions import Journal, JournalBroken
-                    try:
-                        self._on = aw.drafts_on(Journal(self.path).rows())
-                    except (OSError, ValueError, JournalBroken):
-                        self._on = {}
-        out = dict(self.drafted)
-        for who, flows in self._on.items():
-            out[who] = frozenset(out.get(who, frozenset()) | flows)
-        return out
+        """person -> workflows on (``autopilot_write.prepared_for``), read now."""
+        if self.path is None:
+            return self._on
+        try:
+            st = self.path.stat()
+            stamp: Any = (st.st_mtime_ns, st.st_size)
+        except FileNotFoundError:
+            stamp = "absent"
+        except OSError:
+            stamp = None
+        if stamp != self._stamp or stamp is None:
+            self._stamp = stamp
+            if stamp == "absent":
+                self._on = self._read([])
+            elif stamp is None:
+                self._on = {}
+            else:
+                from .card_actions import Journal, JournalBroken
+                try:
+                    self._on = self._read(Journal(self.path).rows())
+                except (OSError, ValueError, JournalBroken):
+                    self._on = {}
+        return self._on
 
     @property
     def passed(self) -> dict[str, list[str]]:
@@ -626,9 +659,10 @@ def shown_item(item: Mapping[str, Any]) -> dict[str, Any]:
         body["happened"] = happened
     if isinstance(prepared.get("your_call"), Mapping):
         # what the card keeps to write the reply from (the thread, the screens' event) is
-        # the server's; the person is shown the question and its facts
+        # the server's; the person is shown the question, its facts and the replies
+        # written for each choice
         prepared["your_call"] = {k: v for k, v in prepared["your_call"].items()
-                                 if k in ("ask", "facts")}
+                                 if k in ("ask", "facts", "options")}
     if "prepared" in body:
         body["prepared"] = prepared
     return {**item, "title": title, "body": body}
@@ -658,6 +692,14 @@ def _prepare(st: Any, ap: Mapping[str, Any], event: Mapping[str, Any], as_of: da
             work = {"kind": "reply", "summary": "Reply to " + sender_label(
                 event.get("sender"), event.get("sender_name"))
                 + f": {str(event.get('subject') or '')[:100]}"}
+        if ap.get("draft") == "job" and isinstance(work, dict) and not work.get("skip"):
+            # what the model reads of the event (``autopilot_jobs.described``), read under
+            # this ``ctx``: the message's whole body is the item's own record
+            from .autopilot_work import body_text, linked_handles
+            work["material"] = {"text": body_text(ctx, event)
+                                if event.get("event_type") == "message.received"
+                                else str(event.get("text") or ""),
+                                "linked": linked_handles(ctx, event)}
         if ap.get("draft") == "model" and isinstance(work, dict) and not work.get("skip"):
             # what the model writes the reply from (``autopilot_drafter``), read under
             # this ``ctx``: its records' audiences and markings are the item's
@@ -751,10 +793,13 @@ def _owner_mailed_in_thread(st: Any, queue: Queue, item: Mapping[str, Any],
 
 
 def settle(st: Any, queue: Queue, registry: Mapping[str, Any], people: Any, *,
-           now: datetime) -> Counter:
+           now: datetime, decided: Optional[Mapping[str, Mapping[str, Any]]] = None) -> Counter:
     """Mark open items done from evidence (module doc). A check that fails leaves its item
     open; the failures are counted per rule, written to the queue's meta
-    (``SETTLE_ERRORS``, the ``autopilot_settle_errors`` ops alarm reads it) and printed."""
+    (``SETTLE_ERRORS``, the ``autopilot_settle_errors`` ops alarm reads it) and printed.
+    ``decided``: the Workbench's last decision per item (``autopilot_outcomes.
+    read_decisions``); a job item the person closed there (every proposed change
+    confirmed, dismissed or undone: ``closed`` ``person_decided``) is done."""
     done: Counter = Counter()
     errors: Counter = Counter()
     last_error = ""
@@ -813,10 +858,20 @@ def settle(st: Any, queue: Queue, registry: Mapping[str, Any], people: Any, *,
                 q = reader.asked(*key) if key else None
                 if q and (q["answered_at"] or q["withdrawn_at"]):
                     reason = "question_answered"
+            elif rule == "person_decided":
+                if ((decided or {}).get(item["item_id"]) or {}).get("closed") == \
+                        "person_decided":
+                    reason = "person_decided"
             elif rule == "batch_released" and oid:
-                r = _read(st, [oid], ("quality_status",)).get(oid)
-                if r and _v(r, "quality_status") == "Released":
-                    reason = "batch_released"
+                prepared = item["body"].get("prepared") or {}
+                if "affected" in prepared and not prepared["affected"]:
+                    # a lot holding up no open order needs no one (``h_qc`` makes no item
+                    # for one): an item made for one before that closes
+                    reason = "no_open_order_held"
+                else:
+                    r = _read(st, [oid], ("quality_status",)).get(oid)
+                    if r and _v(r, "quality_status") == "Released":
+                        reason = "batch_released"
         except (sqlite3.Error, ValueError) as exc:
             # the item stays open; the failure is counted, never silent
             errors[f"{rule}:{happened.get('channel') or '-'}"] += 1

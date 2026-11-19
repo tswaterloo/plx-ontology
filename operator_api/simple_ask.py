@@ -52,9 +52,12 @@ _MODEL_NAME = re.compile(r"[a-z][a-z0-9.\-]{1,63}")
 AGENT = "plx.agent.ask"
 TOOLS = ("plx.sql", "plx.search", "plx.open")
 # The session's hard cap; its research budget (``deep_investigation.Budget``) ends the
-# tool calls well before it, so the model always has time to write the reply.
-SECONDS = 180
-BUDGET_SECONDS = 175
+# tool calls well before it, so the model always has time to write the reply. A question
+# one query answers is answered at once (the method says so); one that explores several
+# record types has room to (11-18 ceiling: plain Claude + SQL p95 245 s, median 8 queries;
+# 180 s cut the exploring ones). Inside the API's own wait (``serving.ASK_TIMEOUT_SECONDS``).
+SECONDS = 480
+BUDGET_SECONDS = 450
 MAX_STEPS = 40
 MAX_TURNS = 60
 UNVERIFIED = " (unverified)"
@@ -123,6 +126,10 @@ def system_prompt() -> str:
     from operating import ontology_tools_sql as sql
 
     views = sql._dictionary()
+    # only the views the served schema holds now (``served_views``; not known: all)
+    served = sql.served_views(tuple(views))
+    if served is not None:
+        views = {name: entry for name, entry in views.items() if name in served}
     # a column every view (or all but a few) states with the same words is said once; a
     # money column's currency column is named beside it, never a line of its own
     shared: dict[str, str] = {}
@@ -147,8 +154,67 @@ def system_prompt() -> str:
             if f"{column}_currency" in cols:
                 doc += f" [its currency: {column}_currency]"
             lines.append(f"    {column}: {doc}")
-    lines += ["", "Query rules: " + sql.RULES, "", METHOD.replace("{search}", search_line())]
+    generic = served is None or "records" in served
+    types = sql.catalog_lines() if generic else []
+    if types:
+        lines += ["", "Record types in records.type, by system (type (plain name; label and "
+                  "date fields; 'in <view>': that view holds its records, not records)); "
+                  "plx.sql {\"describe\": \"<Type>\"} for a type's fields:"]
+        lines += types
+    rules = sql.RULES if generic else sql.RULES_BASE + sql.RULES_TAIL
+    lines += ["", "Query rules: " + rules, "", METHOD.replace("{search}", search_line()),
+              "", WRITE_RULE]
     return "\n".join(lines)
+
+
+# the one line on writes (the same for every reader: the prompt stays cached); the tools
+# themselves are bound to the reader (``write_tools``) and only prepare
+WRITE_RULE = ("When the person asks you to do, change, create, send, approve or update "
+              "something, call plx.prepare_write (plx.edit_document for a SharePoint or "
+              "OneDrive document's own text or cells) with what you read: nothing is done "
+              "until the person confirms it in the app. Say it is prepared for their "
+              "confirm, never that it is done; if it is refused, say why in their words.")
+PREPARE_TOOLS = ("plx.prepare_write", "plx.edit_document")
+
+
+def write_tools(backend: Any, reader: Any) -> list[Any]:
+    """The reader's write tools (``backend.prepared_tools``: ``plx.prepare_write`` and
+    ``plx.edit_document`` bound to them) and assistant tools (``backend.assistant_tools``:
+    their memory, templates and documents, ``operator_api.assistant_tools``), none when the
+    backend has none or they cannot be made (the Ask never fails for them)."""
+    out: list[Any] = []
+    for hook in ("prepared_tools", "assistant_tools"):
+        make = getattr(backend, hook, None)
+        if not callable(make):
+            continue
+        try:
+            out += list(make(reader))
+        except Exception:  # noqa: BLE001 - no such tools: the Ask still answers
+            logging.getLogger("operator_api.ask").warning(json.dumps(
+                {f"ask_{hook}_failed": True}))
+    return out
+
+
+def _bind(agent: Any, tools: Sequence[Any]) -> Any:
+    if tools and hasattr(agent, "local_tools"):
+        agent.local_tools = {**agent.local_tools, **{t.spec["name"]: t for t in tools}}
+    return agent
+
+
+def prepared_ids(events: Sequence[Mapping[str, Any]]) -> list[str]:
+    """The prepared changes the session's write tools answered (their ids, in order)."""
+    out: list[str] = []
+    for event in events:
+        # the catalog name, or Claude Code's mcp__<server>__plx_prepare_write spelling
+        name = str(event.get("name") or "").split("__")[-1].replace(".", "_")
+        if event.get("type") != "tool_call" or event.get("is_error") or name not in {
+                t.replace(".", "_") for t in PREPARE_TOOLS}:
+            continue
+        result = _parsed(event.get("result"))
+        pid = result.get("prepared_id") if isinstance(result, Mapping) else None
+        if isinstance(pid, str) and pid.startswith("pw_") and pid not in out:
+            out.append(pid)
+    return out
 
 
 # The task is one argv string (Linux caps one at 128 KiB): the attached files' text in it
@@ -841,12 +907,13 @@ def host_for(asker: Any, session: Any) -> Any:
     return _Catalogued(host, (str(asker.host_config), AGENT, claims["entraObjectId"]))
 
 
-def agent_for(asker: Any, on_line: Callable[[str], None] = lambda line: None) -> Any:
+def agent_for(asker: Any, on_line: Callable[[str], None] = lambda line: None,
+              tools: Sequence[Any] = ()) -> Any:
     """The simple agent: ``settings()``'s model at its effort (read here, as the session
     starts), its whole system prompt ``system_prompt()``, the reply streamed as it is
     written."""
     if getattr(asker, "_agent_for", None) is not None:
-        return asker._agent_for(on_line)
+        return _bind(asker._agent_for(on_line), tools)
     from operating import agent_session as runner
     from operating.card_text import masked_spawn
     from .agent_ask import host_helpers
@@ -860,15 +927,16 @@ def agent_for(asker: Any, on_line: Callable[[str], None] = lambda line: None) ->
         end_at_gate=False, prefetch=False, helpers=host_helpers(),
         extra_args=["--include-partial-messages", "--system-prompt", system_prompt()])
     agent.effort = level
-    return agent
+    return _bind(agent, tools)
 
 
 def run(asker: Any, session: Any, question: str, history: Sequence[Any] = (),
         emit: Callable[[str, Mapping[str, Any]], None] = lambda kind, data: None,
         cancel: Optional[threading.Event] = None, memory: Memory = "", *,
         files: Sequence[Any] = (), context: Sequence[str] = (),
-        conversation: Optional[str] = None) -> SimpleRun:
-    """One question as the reader on the simple agent. ``emit``: ``("call", {"tool"})``
+        conversation: Optional[str] = None, tools: Sequence[Any] = ()) -> SimpleRun:
+    """One question as the reader on the simple agent. ``tools``: the reader's own write
+    tools (``write_tools``), bound to the session. ``emit``: ``("call", {"tool"})``
     as each call starts and ``("result", {"tool", "error"})`` as its result returns.
     ``files``: the person's attached files as read (``ask_attachments``): a figure their
     shown text states is the person's own, like one their question states.
@@ -907,10 +975,10 @@ def run(asker: Any, session: Any, question: str, history: Sequence[Any] = (),
 
     if host is None:
         ran = WARM.turn(asker, session, conversation, question, history, on_line, cancel,
-                        memory, files=files, context=context)
+                        memory, files=files, context=context, tools=tools)
     else:
         try:
-            agent = agent_for(asker, on_line)
+            agent = agent_for(asker, on_line, tools)
             if cancel is not None:
                 agent.cancel_event = cancel
             ran = agent.run(task(question, history, files=files, context=context,
@@ -1160,7 +1228,8 @@ class WarmSessions:
             each.close()
         return len(ended)
 
-    def prepare(self, asker: Any, session: Any, *, wait: bool = False) -> bool:
+    def prepare(self, asker: Any, session: Any, *, wait: bool = False,
+                tools: Sequence[Any] = ()) -> bool:
         """Make a session ready for this reader's next new conversation, in the background
         (``wait``: here), when they have fewer than ``spares_per_reader()`` and all readers
         fewer than ``SPARES_MOST``: their scope (``scope_digest``), their own host
@@ -1196,7 +1265,7 @@ class WarmSessions:
                     raise LookupError("unknown scope")
                 ready.digest = digest
                 host = host_for(asker, session)
-                opened = agent_for(asker).open_session(host, prestart=True)
+                opened = agent_for(asker, tools=tools).open_session(host, prestart=True)
                 ready.kept = _Kept(opened, host, digest, "")
                 with self._lock:
                     self._failed.pop(key, None)
@@ -1275,7 +1344,8 @@ class WarmSessions:
     def turn(self, asker: Any, session: Any, conversation: str, question: str,
              history: Sequence[Any], on_line: Callable[[str], None],
              cancel: Optional[threading.Event], memory: Memory = "", *,
-             files: Sequence[Any] = (), context: Sequence[str] = ()) -> Any:
+             files: Sequence[Any] = (), context: Sequence[str] = (),
+             tools: Sequence[Any] = ()) -> Any:
         """The turn's ``AgentRun``: on the conversation's kept session when it may
         continue, else on a new one (told the conversation so far and the person's memory,
         ``memory``: its text or a callable that reads it, read only when it is told)."""
@@ -1308,7 +1378,7 @@ class WarmSessions:
             if kept is None:
                 host = host_for(asker, session)   # ReaderRefused first
                 try:
-                    opened = agent_for(asker, on_line).open_session(host)
+                    opened = agent_for(asker, on_line, tools).open_session(host)
                 except BaseException:
                     close = getattr(host, "close", None)
                     if close is not None:
@@ -1317,7 +1387,7 @@ class WarmSessions:
                 kept = _Kept(opened, host, digest or "", question)
             kept.memory = told
             # the reader's next new conversation starts ready too (in the background)
-            self.prepare(asker, session)
+            self.prepare(asker, session, tools=tools)
         try:
             ran = kept.session.turn(prompt, on_line, cancel)
         except BaseException:
@@ -1348,7 +1418,7 @@ def ready(backend: Any, reader: Any) -> bool:
         asker = getattr(backend, "agent_ask", None)
         if not enabled() or asker is None or not asker.serves(reader.session):
             return False
-        return WARM.prepare(asker, reader.session)
+        return WARM.prepare(asker, reader.session, tools=write_tools(backend, reader))
     except Exception:  # noqa: BLE001 - a page never fails for a session not made ready
         return False
 
@@ -1361,7 +1431,12 @@ __all__ = ["ENV", "AGENT", "TOOLS", "WARM", "SimpleRun", "effort", "ready", "Str
 
 CALL_STEPS = {"plx.sql": "Querying the business records",
               "plx.search": "Searching mail, Teams and documents",
-              "plx.open": "Reading a message or document"}
+              "plx.open": "Reading a message or document",
+              "plx.prepare_write": "Preparing it for your confirm",
+              "plx.edit_document": "Preparing the document change",
+              "plx.remember": "Updating your memory",
+              "plx.template": "Reading your templates",
+              "plx.make_document": "Making the document"}
 TIMEOUT_WORDS = ("I ran out of time before I could finish checking this. "
                  "Ask again, or narrow the question (one customer, one month).")
 FAILED_WORDS = "The assistant could not work this question just now ({why}). Ask again shortly."
@@ -1371,6 +1446,7 @@ def answer_payload(ran: SimpleRun, question: str, conversation: str, latency_ms:
                    answer_id: str) -> Any:
     """The app's answer from one simple run: the gated reply as the direct answer, never
     blank (a stopped or failed session says so in words)."""
+    from . import assistant_tools
     from . import models as m
 
     text = ran.text.strip()
@@ -1389,6 +1465,8 @@ def answer_payload(ran: SimpleRun, question: str, conversation: str, latency_ms:
         hidden=m.Hidden(count=0), freshness=m.Freshness(as_of=ran.as_of),
         conversation_id=conversation, latency_ms=latency_ms,
         cited=[m.CitedTable(**t) for t in cited(ran.events)],
+        prepared=prepared_ids(ran.events),
+        documents=[m.AskDocument(**d) for d in assistant_tools.documents(ran.events)],
         assistant_unavailable=None if ran.text.strip() else (
             "timeout" if ran.stopped else ran.failure or "error"))
 
@@ -1456,7 +1534,8 @@ def ask(backend: Any, reader: Any, request: Any, conversation: str,
                 done.set_result(run(backend.agent_ask, reader.session, asked.question,
                                     request.history, emit, cancel, remembered,
                                     files=read, context=about(asked),
-                                    conversation=conversation))
+                                    conversation=conversation,
+                                    tools=write_tools(backend, reader)))
             finally:
                 backend._sessions.release()
         except BaseException as error:  # noqa: BLE001 - raised on the Ask's own thread

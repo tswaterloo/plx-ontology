@@ -34,6 +34,13 @@ path) and whether it ``walks`` a directory tree, which ``affected_tests.py`` rea
 the modules that read a changed data file. Everything is sorted, so the output is
 deterministic. ``build`` keeps its last few graphs for the process, keyed by every file's
 path and text, so repeated selections in one process parse the tree once.
+
+Across processes each file's parse is kept on disk (``DiskCache``), keyed by its text, the
+tree's module paths and this code's own text, so a selection or code map over a tree that
+differs in a few files from one seen before parses only those (a cold parse costs ~1.5 CPU-minutes). The cache lives in
+``$PLX_SELECTOR_CACHE`` (``off`` turns it off; default ``~/.cache/plx-selector``), must be a
+directory only its owner can write (else it is not used) and holds nothing but parses of the
+files' code; an entry that does not read back under its own key is a miss.
 """
 
 from __future__ import annotations
@@ -41,9 +48,14 @@ from __future__ import annotations
 import ast
 from dataclasses import dataclass, replace
 import gc
+import hashlib
 import os
 from pathlib import Path
+import pickle
+import stat
 import sys
+import tempfile
+import time
 
 SKIP_DIRS = frozenset({"__pycache__", "EVIDENCE", "node_modules", "venv", "env", "state", "outputs"})
 BUILT_KEEP = 4
@@ -112,21 +124,27 @@ def build(root: Path) -> dict[str, Module]:
 
 def _build(paths: dict[str, str], texts: dict[str, str]) -> dict[str, Module]:
     lookup = _Lookup(paths)
+    cache = DiskCache("graph", "\n".join(sorted(paths.values())))
     graph = {}
     literal_helpers: dict[str, set[str]] = {}
     imported: set[tuple[str, str]] = set()  # (module, name) another module takes from it
     for name, text in texts.items():
-        try:
-            tree = ast.parse(text)
-        except SyntaxError:
-            tree = ast.Module(body=[], type_ignores=[])
         package = name if paths[name].endswith("__init__.py") else name.rpartition(".")[0]
-        imports, from_names, dynamic, strings, walks, helpers, attributes = _edges(tree, package, lookup)
+        key = cache.key(name, package, text)
+        parsed = cache.get(key)
+        if parsed is None:
+            try:
+                tree = ast.parse(text)
+            except SyntaxError:
+                tree = ast.Module(body=[], type_ignores=[])
+            parsed = (*_edges(tree, package, lookup), _summary(tree), _public(tree))
+            cache.put(key, parsed)
+        imports, from_names, dynamic, strings, walks, helpers, attributes, doc, public = parsed
         imports.discard(name)
         literal_helpers[name] = helpers
         imported |= from_names | attributes
         graph[name] = Module(
-            name=name, path=paths[name], doc=_summary(tree), public=_public(tree),
+            name=name, path=paths[name], doc=doc, public=public,
             imports=tuple(sorted(imports)), from_names=tuple(sorted(from_names)),
             dynamic=dynamic, strings=tuple(sorted(strings)), walks=walks)
     # A literal-argument helper another module imports may be called with any name there.
@@ -134,6 +152,94 @@ def _build(paths: dict[str, str], texts: dict[str, str]) -> dict[str, Module]:
         if any((name, helper) in imported for helper in helpers):
             graph[name] = replace(graph[name], dynamic=True)
     return graph
+
+
+class DiskCache:
+    """Per-file parses shared by every process of this user (see the module docstring).
+
+    ``kind`` and ``scope`` (what else a parse depends on: the tree's module names) join the
+    Python version and the text of this file and of ``code`` (the caller's own source) in
+    every key, so a change to any of them misses. ``get`` returns None for a miss."""
+
+    PRUNE_DAYS = 14
+
+    def __init__(self, kind: str, scope: str, code: str = "") -> None:
+        self.dir = _cache_dir()
+        seed = hashlib.sha256()
+        for part in (kind, scope, sys.version, Path(__file__).read_text("utf-8"), code):
+            seed.update(part.encode("utf-8", "surrogatepass") + b"\0")
+        self.seed = seed.digest()
+        self.wrote = False
+
+    def key(self, *parts: str) -> str:
+        digest = hashlib.sha256(self.seed)
+        for part in parts:
+            digest.update(part.encode("utf-8", "surrogatepass") + b"\0")
+        return digest.hexdigest()
+
+    def get(self, key: str):
+        if self.dir is None:
+            return None
+        try:
+            with open(self.dir / key[:2] / key, "rb") as handle:
+                stored, value = pickle.load(handle)
+        except FileNotFoundError:
+            return None
+        except Exception:  # noqa: BLE001 - a torn or foreign entry is a miss, never a selection
+            return None
+        return value if stored == key else None
+
+    def put(self, key: str, value) -> None:
+        if self.dir is None:
+            return
+        try:
+            folder = self.dir / key[:2]
+            folder.mkdir(mode=0o700, exist_ok=True)
+            handle, temp = tempfile.mkstemp(dir=folder, prefix=".tmp-")
+            with os.fdopen(handle, "wb") as out:
+                pickle.dump((key, value), out, protocol=pickle.HIGHEST_PROTOCOL)
+            os.replace(temp, folder / key)
+        except OSError:
+            return
+        if not self.wrote:
+            self.wrote = True
+            _prune(self.dir, self.PRUNE_DAYS)
+
+
+def _cache_dir() -> Path | None:
+    """The cache directory, or None: turned off, not creatable, or writable by anyone else."""
+    setting = os.environ.get("PLX_SELECTOR_CACHE", "")
+    if setting.lower() in ("off", "0", "none"):
+        return None
+    base = os.environ.get("XDG_CACHE_HOME") or os.path.join(os.path.expanduser("~"), ".cache")
+    folder = Path(setting or os.path.join(base, "plx-selector"))
+    try:
+        folder.mkdir(mode=0o700, parents=True, exist_ok=True)
+        info = os.lstat(folder)
+    except OSError:
+        return None
+    if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid() or info.st_mode & 0o022:
+        return None
+    return folder
+
+
+def _prune(folder: Path, days: int) -> None:
+    """Drop entries written more than ``days`` ago, at most once a day (one still in use
+    is parsed again once)."""
+    stamp = folder / ".pruned"
+    try:
+        if time.time() - stamp.stat().st_mtime < 86400:
+            return
+    except OSError:
+        pass
+    try:
+        stamp.touch()
+        cutoff = time.time() - days * 86400
+        for entry in folder.glob("*/*"):
+            if entry.stat().st_mtime < cutoff:
+                entry.unlink(missing_ok=True)
+    except OSError:
+        return
 
 
 def dependencies(graph: dict[str, Module]) -> dict[str, set[str]]:

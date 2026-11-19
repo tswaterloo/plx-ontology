@@ -206,15 +206,18 @@ class ServingMixin:
         return m.SuggestResponse(query=q, suggestions=found, source=source,
                                  took_ms=int((time.perf_counter() - started) * 1000))
 
-    def biz_page(self, reader: Reader, kind: str, handle: str = "", chain: str = ""
-                 ) -> m.BizPage:
+    def biz_page(self, reader: Reader, kind: str, handle: str = "", chain: str = "",
+                 record: str = "") -> m.BizPage:
         """An account page (customer, chain, supplier) or an order page (PO, sales order)
-        from the business tables through the reader's door (switch ``PLX_PAGES_DOOR``)."""
+        from the business tables through the reader's door (switch ``PLX_PAGES_DOOR``).
+        ``record``: a record id instead of the handle (the page its row opens)."""
         from . import page_sql
-        if not page_sql.on():
+        if not page_sql.on(kind):
             raise errors.UserFacing("pages_off", "These record pages aren't switched on on "
                                     "this server yet.", 404)
         try:
+            if record and not handle and kind != "chain":
+                handle = page_sql.resolve(self, reader, kind, record)
             if kind in ("purchase_order", "sales_order"):
                 return page_sql.order(self, reader, kind, handle)
             return page_sql.account(self, reader, kind, handle=handle, chain=chain)
@@ -412,8 +415,11 @@ class ServingMixin:
         """Keep a fresh page under the access state it was read under: the same before and
         after the read (a state that changed or could not be read keeps nothing), with the
         inputs stamp taken before its read began (None: never current)."""
+        from operating.call_limits import cancelled
         if getattr(value, "stale_since", None) is not None or getattr(value, "reading", False):
             return   # never a page served stale (or one still being read) kept as fresh
+        if cancelled():
+            return   # read for a request dropped meanwhile: it may have stopped early
         status = getattr(value, "status", None)   # a record page's is an ObjectStatus
         if isinstance(status, str) and status in UNSERVABLE_STATUSES:
             return   # API-012: a page that could not be read is no last good page
@@ -522,8 +528,12 @@ class ServingMixin:
                 flights[key] = box
 
         def run() -> None:
+            from operating.call_limits import cancel_scope, current_cancel
             try:
-                box.set_result(read())
+                # a read others may join (and that keeps its page for the next request)
+                # is no one request's: the one that started it leaving never cuts it
+                with cancel_scope(None if key is not None else current_cancel()):
+                    box.set_result(read())
             except BaseException as error:  # noqa: BLE001 - handed to the requests
                 box.set_exception(error)
             finally:

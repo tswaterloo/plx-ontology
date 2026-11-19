@@ -34,20 +34,31 @@ READ = "plx.read"
 COMMS_SEARCH = "plx.sql_comms_search"   # ontology_tools_sql.COMMS_SEARCH
 COMMS_OPEN = "plx.sql_comms_open"
 COMMS_SOURCES = ("graph_mail", "teams")
+RECORDS_SEARCH = "plx.sql_records_search"   # ontology_tools_sql.RECORDS_SEARCH
+RECORDS = "records"     # the structured records of every system (``records_search``)
+# the one records leg error that is the search's own (the query itself is wrong); any
+# other (not served, busy, a failed or refused statement, timeout) leaves the other legs'
+# hits standing and is said as a gap
+RECORDS_OWN_ERRORS = frozenset({"invalid_input"})
 # the tables path gives way to the old one: not served here, or the business tables are
 # not built / mid-swap / behind the people exclusion (the old path keeps its own gates)
 FALLBACK = frozenset({"not_served", "not_ready"})
 # plx.open also reads the old way when the store refused the comms statement itself (a
 # missing grant: never an out-of-scope row, which the comms path answers as no comms row)
 OPEN_FALLBACK = FALLBACK | {"not_readable"}
-ALL_SOURCES = ("graph_mail", "sharepoint", "original", "teams")
+ALL_SOURCES = ("graph_mail", "sharepoint", "original", "teams", RECORDS)
 OPEN_MAX_CHARS = 20000
-CHECK_MAX_CHARS = 200_000
+CHECK_MAX_CHARS = 200_000  # a hit's full text checked for Freightcom up to this many chars
 CHECK_RESERVE_S = 2.0      # time kept back from the call's limit when checking full texts
 DEFAULT_LIMIT = 20
 
-_CONTRACT = json.loads((Path(__file__).with_name("ontology_tool_contracts.json"))
-                       .read_text(encoding="utf-8"))["tools"][TOOL_NAME]
+_TOOLS = json.loads((Path(__file__).with_name("ontology_tool_contracts.json"))
+                    .read_text(encoding="utf-8"))["tools"]
+_CONTRACT = _TOOLS[TOOL_NAME]
+# One plx.read window at most (its contract's own bound): the full-text check pages by
+# text_offset up to CHECK_MAX_CHARS. Asked for more in one read, plx.read refuses the call
+# (invalid_input), and every hit was left out unchecked (live 11-18: no document at all).
+CHECK_PAGE_CHARS: int = _TOOLS[READ]["input"]["properties"]["max_chars"]["maximum"]
 DESCRIPTION: str = _CONTRACT["description"]
 INPUT_SCHEMA: dict[str, Any] = _CONTRACT["input"]
 _OK = _CONTRACT["output"]["oneOf"][0]
@@ -55,8 +66,7 @@ _KEPT = frozenset(_OK["properties"]) - {"documents", "egress_withheld"}
 _HIT = frozenset(_OK["properties"]["documents"]["items"]["properties"])
 TOOL: dict[str, Any] = {"name": TOOL_NAME, "description": DESCRIPTION,
                         "inputSchema": INPUT_SCHEMA, "annotations": {"readOnlyHint": True}}
-_OPEN = json.loads((Path(__file__).with_name("ontology_tool_contracts.json"))
-                   .read_text(encoding="utf-8"))["tools"][OPEN_NAME]
+_OPEN = _TOOLS[OPEN_NAME]
 OPEN_TOOL: dict[str, Any] = {"name": OPEN_NAME, "description": _OPEN["description"],
                              "inputSchema": _OPEN["input"],
                              "annotations": {"readOnlyHint": True}}
@@ -118,42 +128,91 @@ def compact(result: Any) -> dict[str, Any]:
 
 def run(call_documents: Callable[[dict[str, Any]], Any], arguments: Any,
         call_read: Callable[[dict[str, Any]], Any] | None = None,
-        call_comms: Callable[[dict[str, Any]], Any] | None = None) -> dict[str, Any]:
+        call_comms: Callable[[dict[str, Any]], Any] | None = None,
+        call_records: Callable[[dict[str, Any]], Any] | None = None) -> dict[str, Any]:
     """One ``plx.search``: mail and Teams through ``call_comms`` (the host's internal
     ``plx.sql_comms_search`` for the session's reader: Freightcom is decided inside the
     guarded views on the full text, ``ai_ok``), files and originals through
     ``call_documents`` (its ``plx.documents``; with ``call_read`` each hit's full text is
     checked for Freightcom before the hit is shown). A participant searches mail only; a
     cursor continues the list it came from. Without ``call_comms``, or where the host does
-    not serve the mail tables (``not_served``), everything goes to ``plx.documents``."""
+    not serve the mail tables (``not_served``), everything goes to ``plx.documents``.
+    Records (``call_records``, the host's internal ``plx.sql_records_search``: the
+    structured records of every system through ``plx.sql``'s door, found by their label
+    words): searched with query words, never for a participant; where they are not served
+    or the search would read too much, the other hits stand and a gap says so."""
     try:
         wanted = arguments_for_documents(arguments)
     except ValueError as exc:
         return _error("invalid_input", str(exc))
-    if call_comms is None:
-        return _documents(call_documents, wanted, call_read)
     sources = list(wanted.get("sources") or ALL_SOURCES)
     cursor = wanted.get("cursor")
-    comms = [x for x in sources if x in COMMS_SOURCES]
-    docs = [] if wanted.get("participant") else [x for x in sources if x not in COMMS_SOURCES]
+    records = (call_records is not None and RECORDS in sources and bool(wanted.get("query"))
+               and not wanted.get("participant"))
+    sources = [x for x in sources if x != RECORDS]
+    comms = [x for x in sources if x in COMMS_SOURCES] if call_comms is not None else []
+    docs = [] if wanted.get("participant") and comms else [
+        x for x in sources if x not in comms]
     if isinstance(cursor, str):
-        comms, docs = (comms, []) if cursor.startswith("c1:") else ([], docs)
+        comms, docs, records = ((comms, [], False) if cursor.startswith("c1:") else
+                                ([], [], records) if cursor.startswith("r1:") else
+                                ([], docs, False))
+    if not (comms or docs or records):
+        if wanted.get("sources") and not sources:   # only records asked, none searchable
+            return _error("invalid_input", "records are searched by query words only")
+        docs = sources
     got = []
     if comms:
         one = call_comms({**{k: v for k, v in wanted.items() if k != "sources"},
                           "sources": comms})
         if isinstance(one, Mapping) and (one.get("error") or {}).get("code") in FALLBACK:
-            return _documents(call_documents, wanted, call_read)
-        one = compact(one)
+            comms, docs = [], [x for x in sources]
+        else:
+            one = compact(one)
+            if "error" in one:
+                return one
+            got.append(one)
+    if docs:
+        # every non-record source and none named: the documents search's own default
+        whole = not wanted.get("sources") and set(docs) == set(ALL_SOURCES) - {RECORDS}
+        one = _documents(call_documents, {k: v for k, v in wanted.items() if k != "sources"}
+                         if whole else {**wanted, "sources": docs}, call_read)
         if "error" in one:
             return one
         got.append(one)
-    if docs:
-        one = _documents(call_documents, {**wanted, "sources": docs}, call_read)
+    if records:
+        one = _records(call_records, wanted)
         if "error" in one:
             return one
         got.append(one)
     return _merged(got)
+
+
+def _records(call_records: Callable[[dict[str, Any]], Any], wanted: dict[str, Any]
+             ) -> dict[str, Any]:
+    """The records leg (``run``): its hits, or, where it could not run, none and a gap
+    saying why; only ``RECORDS_OWN_ERRORS`` are the search's. An answer that is no mapping
+    or a raised error is a gap too: the records leg never takes the other legs' hits."""
+    try:
+        one = call_records({k: v for k, v in wanted.items()
+                            if k in ("query", "since", "until", "limit", "cursor")})
+    except Exception as exc:  # noqa: BLE001 - one leg failing: a gap, never the search
+        one = {"error": {"code": "query_failed", "message": type(exc).__name__}}
+    if not isinstance(one, Mapping):
+        one = {"error": {"code": "query_failed", "message": "no answer"}}
+    error = one.get("error")
+    code = ((error.get("code") if isinstance(error, Mapping) else "query_failed")
+            if error is not None else None)
+    if code is not None and code not in RECORDS_OWN_ERRORS:
+        return {"documents": [], "searched": {"sources": [RECORDS]},
+                "gaps": [{"state": "inaccessible" if code != "not_served" else
+                          "not_ingested", "reason": code, "subject": "records",
+                          "detail": "the structured records were not searched: "
+                          + str((error if isinstance(error, Mapping) else {}).get(
+                              "message") or code)[:300]}],
+                "completeness": {"complete": False, "truncated": False, "returned": 0,
+                                 "reason": code}}
+    return compact(one)
 
 
 def _documents(call_documents: Callable[[dict[str, Any]], Any], wanted: dict[str, Any],
@@ -166,21 +225,14 @@ def _documents(call_documents: Callable[[dict[str, Any]], Any], wanted: dict[str
 
 def _full_text_checked(out: dict[str, Any], call_read: Callable[[dict[str, Any]], Any]
                        ) -> dict[str, Any]:
-    from operating import call_limits
     kept, named, unchecked = [], 0, 0
     for hit in out["documents"]:
-        left = call_limits.seconds_left()
         citation = hit.get("citation") if isinstance(hit, Mapping) else None
-        if not isinstance(citation, str) or (left is not None and left < CHECK_RESERVE_S):
+        verdict = _text_names_freightcom(call_read, citation) \
+            if isinstance(citation, str) else None
+        if verdict is None:
             unchecked += 1
-            continue
-        try:
-            got = call_read({"citation": citation, "max_chars": CHECK_MAX_CHARS})
-        except Exception:  # noqa: BLE001 - an unread text is never shown
-            got = None
-        if not isinstance(got, Mapping) or "error" in got:
-            unchecked += 1
-        elif _names_freightcom(got):
+        elif verdict:
             named += 1
         else:
             kept.append(hit)
@@ -190,6 +242,46 @@ def _full_text_checked(out: dict[str, Any], call_read: Callable[[dict[str, Any]]
     if unchecked:
         out["unchecked"] = unchecked
     return out
+
+
+def _text_names_freightcom(call_read: Callable[[dict[str, Any]], Any], citation: str
+                           ) -> bool | None:
+    """Whether ``citation``'s text, read by ``call_read`` (plx.read as the reader) in windows
+    of ``CHECK_PAGE_CHARS`` from its start up to ``CHECK_MAX_CHARS``, names Freightcom: any
+    field of any window's answer, or the windows' text joined (a name split across two
+    windows is found). None: not known (a read refused, failed or answered no window; the
+    call's time nearly spent): the hit is never shown."""
+    from operating import call_limits
+    pieces: list[str] = []
+    offset = 0
+    while True:
+        left = call_limits.seconds_left()
+        if left is not None and left < CHECK_RESERVE_S:
+            return None
+        wanted: dict[str, Any] = {"citation": citation, "max_chars": CHECK_PAGE_CHARS}
+        if offset:
+            wanted["text_offset"] = offset
+        try:
+            got = call_read(wanted)
+        except Exception:  # noqa: BLE001 - an unread text is never shown
+            return None
+        if not isinstance(got, Mapping) or "error" in got:
+            return None
+        if _names_freightcom(got):
+            return True
+        window = got.get("text_window")
+        content = got.get("content")
+        text = content.get("untrusted_text") if isinstance(content, Mapping) else None
+        if isinstance(text, str):
+            pieces.append(text)
+        following = window.get("next_offset") if isinstance(window, Mapping) else None
+        if offset and not isinstance(window, Mapping):
+            return None   # a window asked for and none answered: not known
+        if (not isinstance(following, int) or isinstance(following, bool)
+                or following <= offset or following >= CHECK_MAX_CHARS):
+            break
+        offset = following
+    return len(pieces) > 1 and _names_freightcom("".join(pieces))
 
 
 def _merged(results: list[dict[str, Any]]) -> dict[str, Any]:

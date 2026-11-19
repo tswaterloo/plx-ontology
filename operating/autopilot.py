@@ -81,8 +81,8 @@ from .autopilot_handlers import (
     HANDLERS, _meeting_extra, _roles, deciders, mc_project)
 from .autopilot_engine import (
     DRAFT_CONTEXT_SECONDS, OrderedFeed, _happened, _learned_call, _prepare, _recipient_lessons,
-    _recipients, _with_context, discover, draft_owners, event_queue_on, gate_from, item_roles,
-    load_draft, pay_or_hr, settle, with_draft, SwitchGate)
+    _recipients, _stated_cc, _with_context, discover, draft_owners, event_queue_on, gate_from,
+    item_roles, load_draft, pay_or_hr, settle, with_draft, SwitchGate)
 from .autopilot_reading import (
     _plain, _store, digest)
 from . import autopilot_engine, autopilot_handlers
@@ -97,6 +97,66 @@ def load_registry(path: Path | str | None = None) -> dict[str, Any]:
     """The registry, validated whole (module doc); anything unknown refuses it."""
     raw = json.loads(Path(path or REGISTRY_FILE).read_text(encoding="utf-8"))
     return validate_registry(raw)
+
+
+def _check_when(when: Any, name: str, *, nested: bool = False) -> None:
+    """An autopilot's ``when``: known conditions with readable values (``any_of``: a list of
+    one or more condition sets, each checked the same way, never nested again); anything
+    else is ``RegistryInvalid`` (fail closed)."""
+    if not isinstance(when, Mapping) or set(when) - set(CONDITIONS):
+        raise RegistryInvalid(f"registry_condition:{name}")
+    quiet = when.get("quiet_sender")
+    if quiet is not None and not (
+            isinstance(quiet, list) and len(quiet) == 3 and isinstance(quiet[0], int)
+            and quiet[0] >= 1 and isinstance(quiet[1], (int, float))
+            and 0 < quiet[1] <= 1 and isinstance(quiet[2], list)
+            and set(quiet[2]) <= {"internal", "customer", "supplier", "unknown"}):
+        raise RegistryInvalid(f"registry_condition:{name}")
+    share = when.get("answers_sender")
+    if share is not None and not (
+            isinstance(share, list) and len(share) == 2 and isinstance(share[0], int)
+            and share[0] >= 1 and isinstance(share[1], (int, float))
+            and 0 < share[1] <= 1):
+        raise RegistryInvalid(f"registry_condition:{name}")
+    turn = when.get("after_own_post")
+    if turn is not None and not (
+            isinstance(turn, list) and len(turn) == 2
+            and all(isinstance(x, int) and not isinstance(x, bool) and x >= 1
+                    for x in turn)):
+        raise RegistryInvalid(f"registry_condition:{name}")
+    usual = when.get("usual_answerer")
+    if usual is not None and not (
+            isinstance(usual, list) and len(usual) == 2 and isinstance(usual[0], int)
+            and not isinstance(usual[0], bool) and usual[0] >= 1
+            and isinstance(usual[1], (int, float)) and not isinstance(usual[1], bool)
+            and 0 < usual[1] <= 1):
+        raise RegistryInvalid(f"registry_condition:{name}")
+    cc_min = when.get("cc_min")
+    if cc_min is not None and not (isinstance(cc_min, int) and not isinstance(cc_min, bool)
+                                   and cc_min >= 1):
+        raise RegistryInvalid(f"registry_condition:{name}")
+    branches = when.get("any_of")
+    if branches is not None:
+        if nested or not isinstance(branches, list) or not branches or not all(
+                isinstance(b, Mapping) and b for b in branches):
+            raise RegistryInvalid(f"registry_condition:{name}")
+        for branch in branches:
+            _check_when(branch, name, nested=True)
+
+
+def _needs_ask(when: Mapping[str, Any]) -> bool:
+    """Whether a ``when`` (or one of its ``any_of`` sets) needs the message to ask."""
+    return when.get("asks") is True or any(
+        isinstance(b, Mapping) and b.get("asks") is True for b in when.get("any_of") or ())
+
+
+def conditions_of(when: Mapping[str, Any]) -> set[str]:
+    """Every condition a ``when`` names, those inside its ``any_of`` sets too."""
+    out = set(when)
+    for branch in when.get("any_of") or ():
+        if isinstance(branch, Mapping):
+            out |= set(branch)
+    return out
 
 
 def validate_registry(raw: Any) -> dict[str, Any]:
@@ -122,32 +182,7 @@ def validate_registry(raw: Any) -> dict[str, Any]:
         owner = ap.get("owner")
         if owner not in OWNER_RULES and not ROLE_OWNER.match(str(owner)):
             raise RegistryInvalid(f"registry_owner:{ap['id']}")
-        when = ap.get("when") or {}
-        if not isinstance(when, Mapping) or set(when) - set(CONDITIONS):
-            raise RegistryInvalid(f"registry_condition:{ap['id']}")
-        quiet = when.get("quiet_sender")
-        if quiet is not None and not (
-                isinstance(quiet, list) and len(quiet) == 3 and isinstance(quiet[0], int)
-                and quiet[0] >= 1 and isinstance(quiet[1], (int, float))
-                and 0 < quiet[1] <= 1 and isinstance(quiet[2], list)
-                and set(quiet[2]) <= {"internal", "customer", "supplier", "unknown"}):
-            raise RegistryInvalid(f"registry_condition:{ap['id']}")
-        share = when.get("answers_sender")
-        if share is not None and not (
-                isinstance(share, list) and len(share) == 2 and isinstance(share[0], int)
-                and share[0] >= 1 and isinstance(share[1], (int, float))
-                and 0 < share[1] <= 1):
-            raise RegistryInvalid(f"registry_condition:{ap['id']}")
-        turn = when.get("after_own_post")
-        if turn is not None and not (
-                isinstance(turn, list) and len(turn) == 2
-                and all(isinstance(x, int) and not isinstance(x, bool) and x >= 1
-                        for x in turn)):
-            raise RegistryInvalid(f"registry_condition:{ap['id']}")
-        cc_min = when.get("cc_min")
-        if cc_min is not None and not (isinstance(cc_min, int) and not isinstance(cc_min, bool)
-                                       and cc_min >= 1):
-            raise RegistryInvalid(f"registry_condition:{ap['id']}")
+        _check_when(ap.get("when") or {}, ap["id"])
         if ap.get("done_when") not in DONE_RULES:
             raise RegistryInvalid(f"registry_done:{ap['id']}")
         if not isinstance(ap.get("due_minutes"), int) or ap["due_minutes"] <= 0:
@@ -155,7 +190,11 @@ def validate_registry(raw: Any) -> dict[str, Any]:
         for flag in ("enabled", "fallback"):
             if flag in ap and not isinstance(ap[flag], bool):
                 raise RegistryInvalid(f"registry_{flag}:{ap['id']}")
-        if "draft" in ap and (ap["draft"] != "model" or ap["on"] != "message.received"):
+        if "draft" in ap and not (
+                (ap["draft"] == "model" and ap["on"] == "message.received")
+                or (ap["draft"] == "job" and ap["handler"] == "job")):
+            raise RegistryInvalid(f"registry_draft:{ap['id']}")
+        if ap["handler"] == "job" and ap.get("draft") != "job":
             raise RegistryInvalid(f"registry_draft:{ap['id']}")
         if ap["on"] == "record.due" and not isinstance(ap.get("params") or {}, Mapping):
             raise RegistryInvalid(f"registry_params:{ap['id']}")
@@ -390,7 +429,13 @@ def owners_of(rule: str, event: Mapping[str, Any], *, directory: Mapping[str, st
             return [], "owner_rule_mismatch"
         owner = handle_person(str(event.get("addressee") or ""), directory,
                               event.get("addressee_domains") or ())
-        return ([owner], None) if owner else ([], "addressee_unknown")
+        if not owner:
+            return [], "addressee_unknown"
+        # and whoever usually answers the addressee's questions (``MCQuestions.answerers``),
+        # each resolved the same way; one not resolved is left out, never guessed
+        more = [handle_person(str(a), directory, event.get("addressee_domains") or ())
+                for a in event.get("answerers") or ()]
+        return list(dict.fromkeys([owner, *(m for m in more if m)])), None
     if rule == "organizer":
         owner = str(event.get("mailbox") or "")
         if not owner or directory.get(str(event.get("organizer") or "")) != owner:
@@ -423,7 +468,8 @@ def run_cycle(st: Any, queue: Queue, ids: Iterable[str], *, people: Any,
               feed_lag: Mapping[str, timedelta] | None = None,
               read_work_log: bool = False, event_queue: bool = False,
               horizon: datetime | None = None, discover_store: Any = None,
-              due: bool = True, ask_judge: Any = None) -> dict[str, Any]:
+              due: bool = True, ask_judge: Any = None,
+              decided: Mapping[str, Mapping[str, Any]] | None = None) -> dict[str, Any]:
     """One cycle: type the changed records, store each event once, prepare the work of each
     new event every matching autopilot declares, settle items their evidence closed.
     ``only_owners``: prepare only for these people (a replay of one role); ``gate(owner,
@@ -515,6 +561,23 @@ def run_cycle(st: Any, queue: Queue, ids: Iterable[str], *, people: Any,
             events += ar.due_events(st, registry, as_of, people)
             from . import autopilot_payables as pay
             events += pay.due_events(st, registry, as_of, people)
+            # a person's recurring work no other autopilot prepares (``recurring_work``):
+            # live only, for the people the prepare gate passes its workflow for
+            spec = next((a for a in registry["autopilots"] if a["id"] == "job_recurring"
+                         and a.get("enabled") is not False), None)
+            if spec is not None and isinstance(gate, SwitchGate) and \
+                    queue.path.parent.name == "autopilot":
+                from . import recurring_work as rw
+                from . import workflows as _wf
+                flow = _wf.of_item("job_recurring", {})
+                began = time.monotonic()
+                try:
+                    events += rw.due_events(queue.path.parent.parent, st,
+                                            [o for o, f in gate.passed.items() if flow in f],
+                                            now)
+                except Exception:  # noqa: BLE001 - one source's failure never stops the cycle
+                    summary["skipped"]["recurring_unreadable"] += 1
+                summary["recurring_seconds"] = round(time.monotonic() - began, 2)
             # the customers' books and payment mail are read once a day (the slowest read
             # here after the R&D one); a customer's reminder is due at most once a week
             from . import autopilot_collections as ac
@@ -553,11 +616,16 @@ def run_cycle(st: Any, queue: Queue, ids: Iterable[str], *, people: Any,
             return _plain(summary)
     feed = ordered.events(int(limits["max_events_per_cycle"])) if ordered else \
         iter(queue.pending(int(limits["max_events_per_cycle"])))
-    answered_rule = any("answers_sender" in (a.get("when") or {})
+    answered_rule = any("answers_sender" in conditions_of(a.get("when") or {})
                         for a in registry.get("autopilots") or ())
     window = answer_window_hours() if answered_rule else None
-    asking = [a for a in registry["autopilots"] if (a.get("when") or {}).get("asks") is True]
+    asking = [a for a in registry["autopilots"] if _needs_ask(a.get("when") or {})]
     waiting: list[tuple[dict[str, Any], tuple[str, str, str]]] = []
+    # the live queue's model drafts run on the writer's pool (``autopilot_drafter.Writer``):
+    # an event waiting on its draft is handed back once the draft is done, in this cycle
+    drafting = queue.__dict__.setdefault("_draft_context", {})
+    drafting["parallel"] = queue.path.parent.name == "autopilot"
+    drafts_waiting: list[dict[str, Any]] = []
 
     def handle(event: dict[str, Any]) -> None:
         state, reason = _process(st, queue, event, registry, people=people,
@@ -566,6 +634,9 @@ def run_cycle(st: Any, queue: Queue, ids: Iterable[str], *, people: Any,
                                  only_owners=None if only_owners is None else set(only_owners),
                                  gate=gate, rate_by_event_hour=rate_by_event_hour,
                                  read_work_log=read_work_log, over=discover_store)
+        if state == "pending":
+            drafts_waiting.append(event)
+            return
         with queue.conn:
             queue.mark(event["event_id"], state, reason, stamp)
         if ordered:
@@ -586,19 +657,7 @@ def run_cycle(st: Any, queue: Queue, ids: Iterable[str], *, people: Any,
         if event is None:
             break
         _meeting_extra(st, event, domains)
-        if event.get("event_type") == "message.received" and event.get("mailbox") and \
-                event.get("at"):
-            event.update(queue.engagement(str(event["mailbox"]), event.get("conversation_id"),
-                                          str(event.get("sender") or ""), str(event["at"])))
-            event["sender_history"] = list(queue.reply_history(
-                str(event["mailbox"]), str(event.get("sender") or ""), str(event["at"])))
-            # read only when a rule asks for it (``answers_sender``): one more history
-            # read per message otherwise spent on every mail
-            event["sender_answered"] = list(queue.reply_history(
-                str(event["mailbox"]), str(event.get("sender") or ""), str(event["at"]),
-                horizon_hours=window, working=True)) if window and answered_rule else [0, 0]
-            event["own_posts"] = list(queue.own_posts(
-                str(event["mailbox"]), event.get("conversation_id"), str(event["at"])))
+        _engage(queue, event, window if answered_rule else None)
         who = _ask_wanted(queue, event, asking, now=now, live=read_work_log,
                           addresses_of=addresses_of) if ask_judge is not None else None
         if who is not None:
@@ -608,15 +667,66 @@ def run_cycle(st: Any, queue: Queue, ids: Iterable[str], *, people: Any,
             continue
         handle(event)
     judged()        # also after a partial cycle: an event taken from the feed is handled
+    def defer(event: dict[str, Any]) -> None:
+        with queue.conn:
+            queue.mark(event["event_id"], "deferred", "draft_busy", stamp)
+        if ordered:
+            ordered.settle(event["event_id"], "deferred", "draft_busy")
+
+    _drafts_done(drafting, drafts_waiting, handle, defer, started,
+                 float(limits["cycle_seconds"]) + DRAFT_WAIT_SECONDS, summary)
     if ordered:
         if ordered.unknown:
             summary["skipped"]["unknown_event_type"] += ordered.unknown
         ordered.close()
     summary["discover_seconds"] = round(discovered - started, 2)
     if settle_items:
-        summary["settled"] = settle(st, queue, registry, people, now=now)
+        summary["settled"] = settle(st, queue, registry, people, now=now, decided=decided)
     summary["seconds"] = round(time.monotonic() - started, 2)
     return _plain(summary)
+
+
+def _engage(queue: Queue, event: dict[str, Any], window: Any) -> None:
+    """What the rules read about a message's reader beside the message itself (the queue's
+    history up to the message's time): how engaged they are in the thread, how they answer
+    the sender, their own posts in it; ``window``: the working-hours horizon of
+    ``answers_sender`` (None: no rule reads it, not read)."""
+    if not (event.get("event_type") == "message.received" and event.get("mailbox")
+            and event.get("at")):
+        return
+    mailbox, sender, at = str(event["mailbox"]), str(event.get("sender") or ""), str(event["at"])
+    event.update(queue.engagement(mailbox, event.get("conversation_id"), sender, at))
+    event["sender_history"] = list(queue.reply_history(mailbox, sender, at))
+    # read only when a rule asks for it (``answers_sender``): one more history read per
+    # message otherwise spent on every mail
+    event["sender_answered"] = list(queue.reply_history(
+        mailbox, sender, at, horizon_hours=window, working=True)) if window else [0, 0]
+    event["own_posts"] = list(queue.own_posts(mailbox, event.get("conversation_id"), at))
+    if event.get("unaddressed"):
+        # a group message no one addressed: whether this member is the one who answers
+        # the sender there (``usual_answerer``)
+        event["answerer"] = list(queue.usual_answerer(
+            mailbox, sender, event.get("conversation_id"), at))
+
+
+def _history_copy(queue_path: Path, into: Path) -> Optional[Queue]:
+    """A private copy of the live queue (SQLite backup: consistent, the live file only read)
+    for ``dry_drafts`` to read the history a live cycle reads; None when there is none."""
+    path = Path(queue_path)
+    if not path.is_file():
+        return None
+    src = sqlite3.connect(f"{path.resolve().as_uri()}?mode=ro", uri=True, timeout=30)
+    try:
+        copy = into / "history" / QUEUE_FILE
+        copy.parent.mkdir(parents=True, exist_ok=True)
+        dst = sqlite3.connect(copy)
+        try:
+            src.backup(dst)
+        finally:
+            dst.close()
+    finally:
+        src.close()
+    return Queue(copy)
 
 
 def _reader_names(owner: str, addresses_of: Mapping[str, Any]) -> list[str]:
@@ -636,12 +746,14 @@ def _ask_wanted(queue: Queue, event: Mapping[str, Any], asking: Sequence[Mapping
     take, with no item for it yet and (live) not answered already. A verdict already cached
     is put on the event (``asks``) and None returned: no call."""
     if event.get("ask_check") != "model" or not event.get("asks") or \
-            event.get("unaddressed") or not event.get("to_me") or not event.get("cleared"):
+            not (event.get("to_me") or event.get("unaddressed")) or not event.get("cleared"):
         return None
     reader = str(event.get("mailbox") or "")
     message = str(event.get("message_id") or event.get("object_id") or "")
+    # only a rule the verdict decides (it takes the event as asking, not as asking nothing)
     rules = [a for a in asking if a.get("enabled") is not False and
-             a.get("on") == event.get("event_type") and matches(a.get("when") or {}, event)]
+             a.get("on") == event.get("event_type") and matches(a.get("when") or {}, event)
+             and not matches(a.get("when") or {}, {**event, "asks": False})]
     if not reader or not message or not rules:
         return None
     cached = queue.chat_ask(message, reader)
@@ -860,7 +972,7 @@ def _process(st: Any, queue: Queue, event: dict[str, Any], registry: Mapping[str
     if pay_or_hr(event):
         summary["skipped"]["pay_or_hr"] += 1       # never prepared, never shown
         return "skipped", "pay_or_hr"
-    deferred = False
+    deferred = pending = False
     reasons = []
     failed: list[str] = []     # handler failures and timeouts: the event is tried again
     for ap in registry["autopilots"]:
@@ -868,9 +980,14 @@ def _process(st: Any, queue: Queue, event: dict[str, Any], registry: Mapping[str
             continue
         if ap.get("enabled") is False:
             continue                       # switched off in the registry (``off_reason``)
+        if ap.get("draft") == "job" and queue.path.parent.name != "autopilot":
+            continue                       # a replay never starts a job session
         when = ap.get("when") or {}
-        if event.get("unaddressed") and "after_own_post" not in when:
-            continue    # a group message not addressed to the owner: only a turn rule answers it
+        if event.get("unaddressed") and not {"after_own_post", "usual_answerer"} & \
+                conditions_of(when):
+            # a group message not addressed to the owner: only a turn rule answers it (their
+            # own turn in the exchange, or the sender's question they usually answer)
+            continue
         box = str(event.get("mailbox") or "")
         role = when.get("mailbox_role")
         if role and box not in _role_members(role, roles, directory):
@@ -937,17 +1054,30 @@ def _process(st: Any, queue: Queue, event: dict[str, Any], registry: Mapping[str
                 summary["skipped"][f"{ap['id']}:answered_in_workbench"] += 1
                 continue
             learned = _lessons(queue)
+            drafting["learned"] = learned       # the model drafter's style (``_writing_style``)
             owner_roles = [r for r in roles if owner in _role_members(r, roles, directory)] \
                 if learned else []
-            left = _learned_call(learned.skip_reason, owner, owner_roles, ap["id"], event,
+            # a Teams message names its sender by object id: the stated rules name addresses
+            sender = str(event.get("sender") or "").lower()
+            asked = event if "@" in sender else {
+                **event, "sender_addresses": sorted(addresses_of.get(sender, ()))}
+            left = _learned_call(learned.skip_reason, owner, owner_roles, ap["id"], asked,
                                  default=None) if learned else None
             if left:
-                # the owner leaves items of this kind (or from this sender): a lesson with
-                # its evidence (``operating.learning``), never a guess
-                summary["skipped"][f"{ap['id']}:learned_left"] += 1
-                reasons.append("learned_left")
+                # A lesson with its
+                # evidence (``operating.learning``), never a guess
+                why = "stated_left" if str(left).startswith("stated_left") else "learned_left"
+                summary["skipped"][f"{ap['id']}:{why}"] += 1
+                reasons.append(why)
                 continue
-            if not queue.rate_take(owner, hour, int(limits["per_owner_per_hour"])):
+            # an event handed back with its draft written on the pool took its count when
+            # the draft started (``_drafts_done``)
+            # a job takes its own count once it proposed something (most events propose
+            # nothing: they never spend the person's hourly budget of drafts)
+            waited = (ap.get("draft") == "model" and _draft_running(drafting, event, owner)) \
+                or ap.get("draft") == "job"
+            if not waited and not queue.rate_take(owner, hour,
+                                                  int(limits["per_owner_per_hour"])):
                 summary["skipped"][f"{ap['id']}:rate_limited"] += 1
                 deferred = True
                 continue
@@ -975,6 +1105,12 @@ def _process(st: Any, queue: Queue, event: dict[str, Any], registry: Mapping[str
                 # none worth sending, no item (a replay scores the handler's work)
                 work, why = _model_draft(queue, drafting, summary, event, owner, work,
                                          people, addresses_of)
+                if why == "draft_pending":
+                    # the model writes it on the writer's pool: the cycle hands the event
+                    # back when it is done (``run_cycle``)
+                    summary["skipped"][f"{ap['id']}:draft_pending"] += 1
+                    pending = True
+                    continue
                 if why == "draft_busy":
                     summary["skipped"][f"{ap['id']}:draft_busy"] += 1
                     deferred = True
@@ -987,14 +1123,48 @@ def _process(st: Any, queue: Queue, event: dict[str, Any], registry: Mapping[str
                     summary["skipped"][f"{ap['id']}:{why}"] += 1
                     reasons.append(why)
                     continue
+            elif ap.get("draft") == "job":
+                # the system work the model proposes (``autopilot_jobs``; live queue only);
+                # no change proposed, no item
+                work, why = _model_job(queue, drafting, summary, event, owner, work, people,
+                                       addresses_of)
+                if why == "job_model_off":
+                    summary["skipped"][f"{ap['id']}:job_model_off"] += 1
+                    continue
+                if why is None and not queue.rate_take(f"job:{owner}", hour,
+                                                       int(limits["per_owner_per_hour"])):
+                    summary["skipped"][f"{ap['id']}:rate_limited"] += 1
+                    deferred = True
+                    continue
+                if why == "job_pending":
+                    summary["skipped"][f"{ap['id']}:job_pending"] += 1
+                    pending = True
+                    continue
+                if why == "job_busy":
+                    summary["skipped"][f"{ap['id']}:job_busy"] += 1
+                    deferred = True
+                    continue
+                if why == "job_failed":
+                    summary["skipped"][f"{ap['id']}:job_failed"] += 1
+                    failed.append(why)
+                    continue
+                if why:
+                    summary["skipped"][f"{ap['id']}:{why}"] += 1
+                    reasons.append(why)
+                    continue
             else:
                 work = {k: v for k, v in work.items() if k != "material"}
             # who each email draft goes to, decided for this owner on the one recipient
             # path (``assist.resolve_reply``), never as the handler wrote it
-            work = _recipients(work, event, owner, people,
-                               _recipient_lessons(learned, owner))
-            work, used = _with_context(_draft_context(queue, drafting), owner, ap["id"],
-                                       work, event)
+            used = None
+            if work.get("kind") != "job":      # a job holds no message to address or style
+                work = _recipients(work, event, owner, people,
+                                   _recipient_lessons(learned, owner),
+                                   _stated_cc(learned, owner, event))
+                work, used = _with_context(_draft_context(queue, drafting), owner, ap["id"],
+                                           work, event)
+            # the preferences the model said it followed are recorded only as ``used``
+            work = {k: v for k, v in work.items() if k != "memory_followed"}
             due = now + timedelta(minutes=int(ap["due_minutes"]))
             landed = _instant(event.get("seen_at") or event.get("landed_at") or event.get("at"))
             with queue.conn:
@@ -1021,9 +1191,40 @@ def _process(st: Any, queue: Queue, event: dict[str, Any], registry: Mapping[str
             summary["skipped"]["handler_failed_for_good"] += 1
             return "failed", why
         return "deferred", why
+    if pending:
+        return "pending", "draft_pending"
     if deferred:
         return "deferred", "rate_limited"
     return "processed", ",".join(sorted(set(reasons))) or None
+
+
+# how long past the cycle's own time its started drafts are waited for (one tool session's
+# limit: ``operator_api.autopilot_context.LOOKUP_SECONDS``), inside both units' start limits
+DRAFT_WAIT_SECONDS = 160
+
+
+def _drafts_done(drafting: Mapping[str, Any], waiting: list[dict[str, Any]],
+                 handle: Callable[[dict[str, Any]], None],
+                 defer: Callable[[dict[str, Any]], None], started: float, budget: float,
+                 summary: dict[str, Any]) -> None:
+    """Hand back the events whose drafts the pool writes as each is done, until the cycle's
+    time is spent; an event whose draft is still running then is deferred (``defer``,
+    ``draft_busy``): its call goes on, and the cycle that takes it again uses the result."""
+    pools = [p for p in (drafting.get("writer"), drafting.get("jobber")) if p is not None]
+    while waiting and pools:
+        left = budget - (time.monotonic() - started)
+        if left <= 0:
+            break
+        for pool in pools:
+            pool.wait(min(left, 5.0) / len(pools))
+        now_waiting = list(waiting)
+        waiting.clear()
+        for event in now_waiting:
+            handle(event)           # done: prepared; still running: back in ``waiting``
+    for event in waiting:
+        summary["skipped"]["draft_busy"] += 1
+        defer(event)
+    waiting.clear()
 
 
 # What a "your call" card keeps of its event: what the writer's screens read again when
@@ -1031,6 +1232,95 @@ def _process(st: Any, queue: Queue, event: dict[str, Any], registry: Mapping[str
 # pay or HR, Freightcom) and the reply's place.
 CARD_EVENT = ("object_id", "channel", "sender", "sender_name", "subject", "cleared",
               "audience", "records", "side", "to", "cc", "conversation_id", "intents")
+
+
+def _draft_key(event: Mapping[str, Any], owner: str) -> str:
+    return _digest("draft", event.get("event_id"), owner)
+
+
+def _draft_running(held: Mapping[str, Any], event: Mapping[str, Any], owner: str) -> bool:
+    writer = held.get("writer")
+    return bool(held.get("parallel")) and writer is not None and \
+        _draft_key(event, owner) in writer.pending()
+
+
+def _job_key(event: Mapping[str, Any], owner: str) -> str:
+    return _digest("job", event.get("event_id"), owner)
+
+
+def _job_running(held: Mapping[str, Any], event: Mapping[str, Any], owner: str) -> bool:
+    jobber = held.get("jobber")
+    return bool(held.get("parallel")) and jobber is not None and \
+        _job_key(event, owner) in jobber.pending()
+
+
+def _model_job(queue: Queue, held: dict[str, Any], summary: Mapping[str, Any],
+               event: Mapping[str, Any], owner: str, work: Mapping[str, Any], people: Any,
+               addresses_of: Mapping[str, Any]) -> tuple[dict[str, Any], Optional[str]]:
+    """(``work`` with the proposed changes, None) or (work, why there is no item):
+    ``job_model_off``, ``job_busy`` (this cycle's sessions are spent), ``job_pending`` (on
+    the pool), ``job_failed`` (tried again), ``no_system_work`` or a screen. The session
+    reads the records as ``owner`` whoever else is on the message: what it proposes is
+    shown to ``owner`` only and written only on their confirm (``autopilot_jobs``)."""
+    from . import autopilot_jobs as aj
+    material = work.get("material") if isinstance(work.get("material"), Mapping) else {}
+    out = {k: v for k, v in work.items() if k != "material"}
+    if held.get("job_cycle") is not summary:
+        held["job_cycle"] = summary
+        if "jobber" not in held:
+            held["jobber"] = aj.from_environ(os.environ)
+        if held["jobber"] is not None:
+            held["jobber"].new_cycle()
+    jobber = held.get("jobber")
+    if jobber is None:
+        return out, "job_model_off"
+    key = _job_key(event, owner) if held.get("parallel") else None
+    if jobber.busy and not (key and key in jobber.pending()):
+        return out, "job_busy"
+    text = str(material.get("text") or event.get("text") or "")
+    if not text.strip() and event.get("channel") == "teams":
+        from . import autopilot_chat as _chat_text
+        text = _chat_text.message_text(queue.path.parent.parent, event)
+    mine = sorted(addresses_of.get(owner) or ())
+    sent_to = {str(a).lower() for a in [*(event.get("to") or ()), *(event.get("cc") or ())]}
+    person = next((a for a in mine if a in sent_to), mine[0] if mine else owner)
+    linked = [str(h) for h in material.get("linked") or () if isinstance(h, str)]
+    got, why = jobber.run(event, owner, aj.described(event, text, linked), str(person),
+                          people, key=key)
+    if got is None:
+        return out, why
+    fields = event.get("fields") if isinstance(event.get("fields"), Mapping) else {}
+    post_to = str(fields.get("post_to") or "")
+    if post_to and got.brief and not got.proposals:
+        # a scheduled Teams post (``recurring_work.POST_KINDS``): the brief is the post,
+        # offered as a Teams draft into its chat, edited and sent only on the person's
+        # confirm (the reply path's own send)
+        out.update({"kind": "reply", "summary": got.summary or "Your Teams post is due",
+                    "teams_draft": {"channel": "teams", "conversation": post_to,
+                                    "reply_to": None, "body": got.brief, "post": False},
+                    "drafted_by": "model"})
+        return out, None
+    out.update({"kind": "job", "summary": got.summary, "jobs": got.proposals,
+                "drafted_by": "model"})
+    if got.brief:
+        out["brief"] = got.brief
+    return out, None
+
+
+def ours_only(event: Mapping[str, Any], addresses_of: Mapping[str, Any]) -> bool:
+    """Whether every reader of a reply to ``event`` is the company's own (the sender and
+    everyone it went to or copied are directory people's addresses, or for Teams a chat with
+    no outside member): only then may the draft read the records as its person, so a reply
+    never carries another party's records to an outside reader (an outside thread's draft
+    reads its own party's account lines only: ``autopilot_drafter.account_lines``). A
+    channel (members unknown) or anything unreadable: no."""
+    if event.get("side") != "internal":
+        return False
+    if event.get("channel") == "teams":
+        return event.get("outside") == [] and not event.get("unaddressed")
+    ours = {str(a).lower() for v in addresses_of.values() for a in (v or ())}
+    who = [event.get("sender"), *(event.get("to") or ()), *(event.get("cc") or ())]
+    return bool(ours) and all(isinstance(a, str) and a.lower() in ours for a in who)
 
 
 def _model_draft(queue: Queue, held: dict[str, Any], summary: Mapping[str, Any],
@@ -1055,27 +1345,44 @@ def _model_draft(queue: Queue, held: dict[str, Any], summary: Mapping[str, Any],
     writer = held.get("writer")
     if writer is None:
         return out, None if stands else "draft_model_off"
-    if writer.busy:
+    key = _draft_key(event, owner) if held.get("parallel") else None
+    if writer.busy and not (key and key in writer.pending()):
         return out, "draft_busy"
     mine = sorted(addresses_of.get(owner) or ())
     text = str(material.get("text") or event.get("text") or "")
+    if not text.strip():
+        # a chat message the fast feed took before the store's text index held it: its
+        # own text from the capture (``autopilot_chat.message_text``), screened as the rest
+        from . import autopilot_chat as _chat_text
+        text = _chat_text.message_text(queue.path.parent.parent, event)
     found = [str(work[k]["body"]) for k in ("draft", "teams_draft")
              if isinstance(work.get(k), Mapping) and work[k].get("body")]
     sent_to = {str(a).lower() for a in [*(event.get("to") or ()), *(event.get("cc") or ())]}
     own = next((a for a in mine if a in sent_to), mine[0] if mine else "")
+    from . import autopilot_chat
+    reader = (ad.name_in(text, own) or first_name(own) or "") if own else ""
     m = ad.Material(
-        reader=(ad.name_in(text, own) or first_name(own) or "") if own else "",
+        reader=reader,
         address=own, relation=ad.relation_of(event),
         channel="teams" if event.get("channel") == "teams" else "mail",
         sender=autopilot_engine.sender_label(event.get("sender"), event.get("sender_name")),
         subject=str(event.get("subject") or ""), text=text,
         lines=[f"What our records state: {b}" for b in found],
         account=[str(a) for a in material.get("account") or ()],
-        style=_writing_style(queue, held, owner, mine, event, out))
-    got, why = writer.write(m, event, people, owner)
+        style=_writing_style(queue, held, owner, mine, event, out),
+        # a chat's earlier messages and the person's own recent replies (the ceiling
+        # test's two inputs the one message lacked: ``autopilot_chat``)
+        thread=autopilot_chat.chat_thread(queue.path.parent.parent, event, owner, reader),
+        examples=autopilot_chat.reply_examples(queue.path.parent.parent, event, owner,
+                                               people, held)
+        if event.get("channel") == "teams" else [])
+    got, why = writer.write(m, event, people, owner, key=key,
+                            tools=ours_only(event, addresses_of))
     if got is None:
         return out, None if stands and why not in ("draft_failed",) else why
     out["message"] = {"text": text[:ad.MESSAGE_CHARS]}
+    if got.followed:
+        out["memory_followed"] = list(got.followed)    # recorded as ``used`` (``_with_context``)
     if got.kind == "your_call":
         # the answer is the person's to give: no hedging draft, a card asking for their
         # line (``autopilot_drafter.from_line`` writes the reply from it); the material is
@@ -1095,7 +1402,8 @@ def _model_draft(queue: Queue, held: dict[str, Any], summary: Mapping[str, Any],
                 autopilot_handlers._reply(event, [])
             out["draft"] = {**{k: v for k, v in base.items() if k != "copy_check"},
                             "body": ""}
-        out["your_call"] = {"ask": got.ask, "facts": got.facts, "material": m.kept(),
+        out["your_call"] = {"ask": got.ask, "facts": got.facts, "options": got.options,
+                            "material": m.kept(),
                             "event": {k: event[k] for k in CARD_EVENT if k in event}}
         out["drafted_by"] = "model"
         return out, None
@@ -1128,19 +1436,50 @@ def dry_drafts(st: Any, registry: Mapping[str, Any], people: Any, ids: Sequence[
     asks what the draft would be, not who switched it on). ``owners``: only these people
     (mailbox ids or addresses); ``force``: the autopilot that drafts an event no live rule
     matched (``matched: false``). One row per (event, owner): the draft or why not."""
+    import tempfile
+    with tempfile.TemporaryDirectory(prefix="plx-drafts-dry-") as tmp:
+        history = _history_copy(Path(queue_path), Path(tmp))
+        try:
+            return _dry_drafts(st, registry, people, ids, queue_path, history, owners=owners,
+                               force=force, environ=environ)
+        finally:
+            if history is not None:
+                history.close()
+
+
+def _dry_drafts(st: Any, registry: Mapping[str, Any], people: Any, ids: Sequence[str],
+                queue_path: Path, history: Optional[Queue], *, owners: set[str] | None,
+                force: str, environ: Mapping[str, str] | None) -> list[dict[str, Any]]:
+    """``dry_drafts`` over ``history``, a private copy of the live queue: each event gets
+    what a live cycle puts on it before the rules match (``_engage``; the chat-ask model's
+    verdict, ``_ask_wanted``/``_judge_asks``, cached only in the copy)."""
     from . import autopilot_drafter as ad
     environ = os.environ if environ is None else environ
     events, skipped = discover(st, ids, registry, people)
     directory, addresses_of, domains = _people_maps(people)
     roles = _roles(environ, Path(queue_path).parent)
     queue: Any = _DryQueue(Path(queue_path))
-    held: dict[str, Any] = {}
+    held: dict[str, Any] = {"learned": _lessons(queue)}
     now = _utcnow()
     seen = {str(e.get("object_id")) for e in events}
     out: list[dict[str, Any]] = [
         {"object_id": oid, "why": "no_event", "skipped": dict(skipped)}
         for oid in ids if oid not in seen]
+    asking = [a for a in registry["autopilots"] if _needs_ask(a.get("when") or {})]
+    answered_rule = any("answers_sender" in conditions_of(a.get("when") or {})
+                        for a in registry.get("autopilots") or ())
+    judge = None
+    if history is not None:
+        from .chat_ask_model import from_environ as chat_ask_judge
+        judge = chat_ask_judge(environ)
     for event in events:
+        if history is not None:
+            _engage(history, event, answer_window_hours() if answered_rule else None)
+            who = _ask_wanted(history, event, asking, now=now, live=False,
+                              addresses_of=addresses_of) if judge is not None else None
+            if who is not None:
+                _judge_asks(judge, history, [(event, who)], people, _iso(now),
+                            {"skipped": Counter()})
         base = {"object_id": event.get("object_id"), "sender": event.get("sender"),
                 "subject": event.get("subject"), "at": event.get("at")}
         if event.get("event_type") == "message.received" and not event.get("cleared"):
@@ -1183,13 +1522,21 @@ def dry_drafts(st: Any, registry: Mapping[str, Any], people: Any, ids: Sequence[
                 summary = {"skipped": Counter()}      # a new cycle per draft: never busy
                 work, why = _model_draft(queue, held, summary, event, owner,
                                          prepared["work"], people, addresses_of)
+                used = None
+                if not why:
+                    # as the live cycle: the person's memory and template, and the
+                    # preferences the model followed recorded as applied
+                    work, used = _with_context(_draft_context(queue, held), owner, ap["id"],
+                                               work, event)
+                    work = {k: v for k, v in work.items() if k != "memory_followed"}
                 body = (work.get("draft") or work.get("teams_draft") or {}).get("body") \
                     if not why else None
                 card = work.get("your_call") if not why else None
                 material = prepared["work"].get("material") or {}
-                out.append({**row, "why": why or "", "draft": body,
+                out.append({**row, "why": why or "", "draft": body, "used": used,
                             "kind": "your_call" if card else "reply" if body else "",
                             **({"ask": card["ask"], "facts": card["facts"],
+                                "options": list(card.get("options") or ()),
                                 "card": {"material": card["material"],
                                          "event": card["event"]}} if card else {}),
                             "message": str(material.get("text") or event.get("text") or ""),
@@ -1202,11 +1549,42 @@ def dry_drafts(st: Any, registry: Mapping[str, Any], people: Any, ids: Sequence[
     return out
 
 
+LEARNED_AT = 0.6     # a style lesson the model drafter is told (``operating.learning``)
+
+
+def learned_style(learned: Any, owner: str, event: Mapping[str, Any]) -> list[str]:
+    """The owner's style lessons learned from their own replies and edits of drafts
+    (``learning.Lessons``: greeting, sign-off, length, sentences they add or take out),
+    for this message's side and sender, each as "Learned from your replies: ...";
+    [] when there are none or the lessons cannot be read."""
+    from . import learning
+    try:
+        lessons = learned.of(owner) if learned else []
+    except Exception:  # noqa: BLE001 - unreadable lessons: none
+        return []
+    side = str(event.get("side") or "")
+    sender = learning.sender_key(str(event.get("sender") or "")) or ""
+    out: list[str] = []
+    for lesson in lessons:
+        key = str(lesson.key)
+        if lesson.kind != "style" or lesson.confidence < LEARNED_AT or not lesson.text:
+            continue
+        if key.startswith("side:") and not key.startswith(f"side:{side}:"):
+            continue
+        if key.startswith("sender:") and not (sender and key.startswith(f"sender:{sender}:")):
+            continue
+        line = f"Learned from their replies: {lesson.text}"
+        if line not in out:
+            out.append(line)
+    return out[:8]
+
+
 def _writing_style(queue: Queue, held: dict[str, Any], owner: str, mine: Sequence[str],
                    event: Mapping[str, Any], work: Mapping[str, Any]) -> list[str]:
     """How ``owner`` writes: their writing memory (the draft-context provider's
     ``writing``) and their learned style (``person_style``); [] when neither is known."""
     out: list[str] = []
+    out += learned_style(held.get("learned"), owner, event)
     provider = _draft_context(queue, held)
     writing = getattr(provider, "writing", None)
     if writing is not None:
@@ -1218,10 +1596,16 @@ def _writing_style(queue: Queue, held: dict[str, Any], owner: str, mine: Sequenc
         from . import person_style
         if "style" not in held:
             held["style"] = person_style.StyleSource(queue.path.parent.parent)
-        try:
-            got = held["style"](mine[0]) or {}
-        except Exception:  # noqa: BLE001 - no learned style: plain
-            got = {}
+        # the first of the person's addresses whose mailbox gives a style: an alias the
+        # exclusion does not decide gives none, and the person's own mailbox still does
+        got: Mapping[str, Any] = {}
+        for address in mine:
+            try:
+                got = held["style"](address) or {}
+            except Exception:  # noqa: BLE001 - no learned style: plain
+                got = {}
+            if got.get("rules"):
+                break
         out += [str(x) for x in got.get("rules") or ()][:8]
     return out
 
@@ -1324,9 +1708,13 @@ def main(argv: Sequence[str] | None = None) -> int:
     if a.command == "fast" and not a.state_dir:
         p.error("fast reads the capture stores of --state-dir")
     if a.command in ("supersede", "unsupersede"):
+        # only reply autopilots' notices: an approval, question, task, hold or meeting item
+        # is information or a decision elsewhere, never set aside as empty
+        replies = [x["id"] for x in load_registry(a.registry)["autopilots"]
+                   if x.get("done_when") == "owner_replied"]
         queue = Queue(a.queue)
         try:
-            out = queue.supersede_draftless(_iso(_utcnow()), a.apply) \
+            out = queue.supersede_draftless(_iso(_utcnow()), a.apply, replies) \
                 if a.command == "supersede" else {"applied": a.apply,
                                                   "items": queue.unsupersede(a.apply)}
         finally:
@@ -1568,10 +1956,13 @@ def _run(a: argparse.Namespace, registry: Mapping[str, Any], queue: "Queue") -> 
             now = _utcnow()
             ids, taken, read, batch = follow_ids(st, layers_at, queue, registry, now)
             from .chat_ask_model import from_environ as chat_ask_judge
+            from . import autopilot_outcomes as ao
             summary = run_cycle(st, queue, ids, people=people, registry=registry, gate=gate,
                                 now=now, read_work_log=True, event_queue=True,
                                 horizon=now - FOLLOW_HORIZON,
-                                ask_judge=chat_ask_judge(os.environ))
+                                ask_judge=chat_ask_judge(os.environ),
+                                decided=ao.read_decisions(Path(a.state_dir) / ao.DECISIONS_FILE)
+                                if a.state_dir else None)
             summary["read"] = read
             summary["workflows_on"] = {"owners": len(passed),
                                        "workflows": sorted({w for v in passed.values()

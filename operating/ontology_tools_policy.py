@@ -384,6 +384,8 @@ def reader_grants(owner: Any, policy: Any, actor: Actor, all_keys: Sequence[str]
         out = hit[2]
     else:
         keys = tuple(k for k in all_keys if policy.may_read(actor, k))
+        # keys only a business view's rows carry (no store object): decided the same way
+        keys += tuple(k for k in VIEW_ONLY_KEYS if k not in keys and policy.may_read(actor, k))
         held = policy.held_markings(actor)
         sets = tuple(s for s in store_ddl.MARKING_SETS if set(json.loads(s)) <= held)
         out = (keys, held, sets, policy.granted_sources(actor))
@@ -397,6 +399,9 @@ def reader_grants(owner: Any, policy: Any, actor: Actor, all_keys: Sequence[str]
 
 
 _GRANTS: dict[tuple[int, Any], tuple[Any, Any, Any]] = {}
+# Audience keys no store object holds, carried only by business view rows (``biz.staff``):
+# offered to every reader's policy beside the store's keys (``reader_grants``).
+VIEW_ONLY_KEYS = ("org:chart",)   # operating.staff_scope.ORG_CHART_KEY
 _GRANTS_LOCK = threading.Lock()
 MAX_GRANTS_KEPT = 64
 

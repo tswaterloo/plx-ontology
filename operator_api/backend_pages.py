@@ -29,9 +29,23 @@ def _marks_stamp(view: Any) -> Optional[str]:
     own = _own_stamp(document_marks._own_issued())
     if not got[0] and not got[1] and not own:
         return None
-    return hashlib.sha256(json.dumps([sorted(got[0]), sorted(got[1])]
-                                     + ([own] if own else [])).encode()
-                          ).hexdigest()[:16]
+    # one digest per (withheld set, PLX-issued stamp): the withheld set is the same object
+    # while the loaded marks are (``document_marks``: kept per reader marking set), and
+    # sorting and hashing a staff reader's thousands of ids on every access check cost
+    # ~11 s of CPU in one 3-visit walk (11-18 profile)
+    hit = _MARK_DIGESTS.get(id(got))
+    if hit is not None and hit[0] is got and hit[1] == own:
+        return hit[2]
+    digest = hashlib.sha256(json.dumps([sorted(got[0]), sorted(got[1])]
+                                       + ([own] if own else [])).encode()).hexdigest()[:16]
+    if len(_MARK_DIGESTS) >= 64:
+        _MARK_DIGESTS.clear()
+    _MARK_DIGESTS[id(got)] = (got, own, digest)
+    return digest
+
+
+# id(withheld set) -> (that set, the PLX-issued stamp, its digest) (``_marks_stamp``)
+_MARK_DIGESTS: dict[int, tuple] = {}
 
 
 _OWN_STAMPS: dict[frozenset, str] = {}

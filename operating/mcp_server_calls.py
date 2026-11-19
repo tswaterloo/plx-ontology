@@ -324,7 +324,9 @@ class CallsMixin:
                 arguments,
                 call_read=lambda wanted: self._generic_call(ontology_tools_search.READ, wanted),
                 call_comms=lambda wanted: self._generic_call(ontology_tools_search.COMMS_SEARCH,
-                                                             wanted))
+                                                             wanted),
+                call_records=lambda wanted: self._generic_call(
+                    ontology_tools_search.RECORDS_SEARCH, wanted))
         if name == ontology_tools_search.OPEN_NAME:
             # plx.read itself, as this session's reader; Freightcom never shown
             return ontology_tools_search.open_one(

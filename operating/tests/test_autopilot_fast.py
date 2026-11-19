@@ -1077,6 +1077,127 @@ class FastFeedApprovals(unittest.TestCase):
         self.assertNotIn(af.CLOSURE, keys)                 # nothing of it projected
         self.assertGreater(moved["mission_control"][1], marks["mission_control"][1])
 
+    def question(self, qid: str, *, addressee: str = "vince", answered: bool = False,
+                 ago: timedelta = timedelta(minutes=5), text: str = "Which label run first?",
+                 n: int = 1) -> None:
+        """A question on TASK-2: the task's current row holding it, and its asked event."""
+        at = (self.now - ago).isoformat().replace("+00:00", "Z")
+        q = {"id": qid, "addressee": addressee, "text": text, "askedAt": at,
+             "options": [{"label": "Run A first"}, {"label": "Run B first"}],
+             "recommended": 0, "recommendationReason": "A is due sooner."}
+        if answered:
+            q["answer"] = {"answeredAt": at, "answeredBy": addressee, "option": 0}
+        self.task(assignee="vince", questions=[q])
+        self.save("task_events", f"TASK-2~{n}", {
+            "event_id": f"TASK-2~{n}", "task_id": "TASK-2", "kind": "question.asked",
+            "actor": tct.COS, "ts": at, "seq": n,
+            "payload": {"questionId": qid, "addressee": addressee, "runtime": "agent"}})
+
+    def test_an_open_question_reaches_its_addressee_on_the_fast_path(self) -> None:
+        """MC questions reached the autopilot only through follow: for Vince, median 31 h
+        after they were asked, 37 of 41 already answered. The fast feed now takes an open
+        question as it takes a requested gate: the same event follow types, prepared for
+        its addressee; an answered one, an old one or one naming a person the exclusion
+        does not clear is never taken."""
+        from operating import autopilot_work as aw
+        served = self.projected("served")
+        marks = self.marks()
+        self.question("q1")
+        keys, moved, counts = self.take(marks)
+        self.assertEqual(keys["mission_control"],
+                         [("mission_control", "ops/task_events/TASK-2~1")], counts)
+        self.assertIn(("mission_control", "ops/tasks/TASK-2"), keys[af.CLOSURE])
+        fast = self.projected("fast", keys)
+        fast.autopilot_mc = aw.MCQuestions(self.state)
+        ids = af.message_ids(fast.path, keys)
+        self.assertEqual(len(ids), 1)
+        whole = self.projected("whole")
+        whole.autopilot_mc = aw.MCQuestions(self.state)
+        registry = ap.load_registry()
+        got, _ = ap.discover(fast, ids, registry, mc_people(), base=whole, now=self.now)
+        want, _ = ap.discover(whole, ids, registry, mc_people(), now=self.now)
+        self.assertEqual([(e["event_type"], e["open"]) for e in got], [("question.asked", True)])
+        self.assertEqual([e["event_id"] for e in got], [e["event_id"] for e in want])
+        served.autopilot_mc = aw.MCQuestions(self.state)
+        with self.queue.conn:
+            self.queue.set_meta(af.MARKS, marks)           # the marks before it was asked
+        gate = lambda *a, **k: True   # noqa: E731 - every workflow passed (gate tested apart)
+        out = af.cycle(self.state, served, self.queue, mc_people(), registry, gate=gate,
+                       now=self.now, environ={})
+        self.assertEqual((out["status"], out["events_new"]), ("complete", 1), out)
+        items = self.queue.conn.execute("SELECT autopilot, owner FROM items").fetchall()
+        self.assertEqual([(i["autopilot"], i["owner"]) for i in items],
+                         [("mc_question", tct.U_VINCE)])
+        # answered already, asked before the horizon, or naming an uncleared person
+        marks = moved
+        for n, kw in enumerate(({"answered": True}, {"ago": timedelta(days=5)},
+                                {"addressee": "ex"}, {"text": f"ask {GATE_EXCLUDED}"},
+                                {"addressee": ""}), start=2):
+            with self.subTest(kw):
+                self.question(f"q{n}", n=n, **kw)
+                keys, marks, counts = self.take(marks)
+                self.assertEqual(keys["mission_control"], [], counts)
+
+    def test_a_question_is_prepared_for_whoever_usually_answers_its_addressee(self) -> None:
+        """Vince answered 54 of his 102 answers of a week to questions addressed to others.
+        A question goes to its addressee and to each person who gave at least 3 of the
+        answers (and a quarter) to that addressee's questions in the 4 weeks before it was
+        asked; an agent's answer never counts, nor does a later one (a replay never reads
+        ahead)."""
+        from operating import autopilot_work as aw
+        events = []
+        for i in range(4):
+            at = (self.now - timedelta(days=2, hours=i)).isoformat().replace("+00:00", "Z")
+            events.append((f"OLD~{i}a", {"event_id": f"OLD~{i}a", "task_id": "TASK-9",
+                                        "kind": "question.asked", "actor": tct.COS, "ts": at,
+                                        "payload": {"questionId": f"old{i}",
+                                                    "addressee": "cos"}}))
+            later = (self.now - timedelta(days=2, hours=i) + timedelta(minutes=9)
+                     ).isoformat().replace("+00:00", "Z")
+            payload = {"questionId": f"old{i}", "choice": 0}
+            if i == 3:
+                payload["runtime"] = "agent"          # an agent's answer: not a person's
+            events.append((f"OLD~{i}b", {"event_id": f"OLD~{i}b", "task_id": "TASK-9",
+                                        "kind": "question.answered",
+                                        "actor": "vince" if i < 3 else "cos", "ts": later,
+                                        "payload": payload}))
+        self.save("task_events", events[0][0], events[0][1], *events[1:])
+        reader = aw.MCQuestions(self.state)
+        self.assertEqual(reader.answerers("cos", self.now.isoformat()), ["vince"])
+        self.assertEqual(reader.answerers("cos", (self.now - timedelta(days=3)).isoformat()),
+                         [])                                   # before those answers
+        self.assertEqual(reader.answerers("vince", self.now.isoformat()), [])
+        served = self.projected("served")
+        served.autopilot_mc = reader
+        marks = self.marks()
+        with self.queue.conn:
+            self.queue.set_meta(af.MARKS, marks)
+        self.question("q1", addressee="cos", n=7)
+        out = af.cycle(self.state, served, self.queue, mc_people(), ap.load_registry(),
+                       gate=lambda *a, **k: True, now=self.now, environ={})
+        self.assertEqual(out["events_new"], 1, out)
+        items = self.queue.conn.execute("SELECT autopilot, owner FROM items").fetchall()
+        self.assertEqual(sorted(i["owner"] for i in items), sorted([tct.U_COS, tct.U_VINCE]))
+
+    def test_cardinality_every_open_question_is_taken_once(self) -> None:
+        for n in (1, 10, 60):
+            with self.subTest(n=n):
+                marks = self.marks()
+                at = (self.now - timedelta(minutes=5)).isoformat().replace("+00:00", "Z")
+                qs = [{"id": f"c{n}-{i}", "addressee": "vince", "text": "Which one?",
+                       "askedAt": at} for i in range(n)]
+                self.task(assignee="vince", questions=qs)
+                rows = [(f"TASK-2~c{n}-{i}", {"event_id": f"TASK-2~c{n}-{i}",
+                                              "task_id": "TASK-2", "kind": "question.asked",
+                                              "actor": tct.COS, "ts": at,
+                                              "payload": {"questionId": f"c{n}-{i}",
+                                                          "addressee": "vince"}})
+                        for i in range(n)]
+                self.save("task_events", rows[0][0], rows[0][1], *rows[1:])
+                keys, _moved, counts = self.take(marks)
+                self.assertEqual(sorted(p for _k, p in keys["mission_control"]),
+                                 sorted(f"ops/task_events/{r}" for r, _ in rows), counts)
+
     def test_an_approvals_latency_is_its_own_never_the_reply_alarms(self) -> None:
         end = datetime(2026, 11, 13, 12, tzinfo=timezone.utc)
         samples = [[end.isoformat(), "mission_control", "2026-11-13T11:00:00Z",

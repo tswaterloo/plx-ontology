@@ -203,6 +203,7 @@ export type EntryField = S["EntryField"];
 export type EntryOption = S["EntryOption"];
 export type EntryConfirm = S["EntryConfirm"];
 export type UploadPreview = S["UploadPreview"];
+export type PreparedWrite = S["PreparedWrite"];
 export type TeamView = S["TeamView"];
 export type Workload = S["Workload"];
 export type WorkloadTeam = S["WorkloadTeam"];

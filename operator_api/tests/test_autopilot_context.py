@@ -97,6 +97,29 @@ class ForDraft(unittest.TestCase):
         self.assertNotIn("palletised", json.dumps(work))
         self.assertEqual(WORK["draft"]["body"].count("Best regards"), 1)   # input untouched
 
+    def test_a_standing_preference_reaches_every_draft_and_shows_applied_when_followed(self):
+        """Owner 11-18: "never mention Y to Z" said once holds for every later draft. A
+        preference or instruction is given to the model with its id whatever the message
+        says; the ids the model says it followed are recorded as applied, only the
+        person's own rows read here; the model's list is never kept on the work."""
+        p = provider([row(5, "preference", "Never mention pricing to Kim."),
+                      row(6, "fact", "The plant closes for the holidays on the 24th.")])
+        lines = p.writing(OURS_OID, {"text": "Can you confirm the Croda order?"}, WORK)
+        self.assertEqual(lines, ["[pref 5] Never mention pricing to Kim."])
+        for followed, applied in (([5], [5]), ([5, 6, 99], [5]), ([], []), (["5"], [])):
+            with self.subTest(followed=followed):
+                work, used = p.for_draft(OURS_OID, "teams_reply",
+                                         {**WORK, "memory_followed": followed}, EVENT)
+                self.assertNotIn("memory_followed", work)
+                self.assertEqual(used["memory"] if used else [], applied)
+                if used:
+                    self.assertNotIn(5, used["related"]) if applied else \
+                        self.assertIn(5, used["related"])
+        # a person with no memory key: nothing read, the model's list still dropped
+        work, used = provider([row(5, "preference", "x")], key=None).for_draft(
+            OURS_OID, "teams_reply", {**WORK, "memory_followed": [5]}, EVENT)
+        self.assertEqual((used, "memory_followed" in work), (None, False))
+
     def test_memory_the_person_stated_changes_the_draft_and_only_that_is_used(self):
         filler = {**WORK, "draft": {**WORK["draft"], "body": (
             "Hi Pat,\n\nHope you are well.\n\nWe confirm PO-4512 for 10 cases. Let me know "
@@ -435,3 +458,97 @@ class EnvAllowlist(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class DraftLookups(unittest.TestCase):
+    """A draft looks facts up as its person (``Lookup``) only when everything that makes
+    that safe is there: the readers file names the person with exactly their four claims,
+    the session secret, the host and a model home outside every user's login. Anything
+    missing or malformed: no session (the draft is the one plain call)."""
+
+    OID = "11111111-1111-4111-8111-111111111111"
+
+    def setUp(self) -> None:
+        self.dir = Path(tempfile.mkdtemp())
+        self.addCleanup(__import__("shutil").rmtree, self.dir, True)
+        self.claims = {"uid": "u1", "email": "vince@plx.example",
+                       "entraTenantId": "t1", "entraObjectId": self.OID}
+        (self.dir / "host.json").write_text(json.dumps({"tenant": "plx"}))
+        (self.dir / "state").mkdir()
+
+    def env(self, readers) -> dict:
+        path = self.dir / "readers.json"
+        path.write_text(readers if isinstance(readers, str) else json.dumps(readers))
+        return {ac.READERS_ENV: str(path), "PLX_WORKBENCH_SESSION_SECRET": "s" * 40,
+                ac.HOST_CONFIG_ENV: str(self.dir / "host.json"),
+                ac.HOST_STATE_ENV: str(self.dir / "state"),
+                "PLX_AUTOPILOT_DRAFT_MODEL": "opus"}
+
+    def test_only_a_person_named_with_exactly_their_claims_gets_a_session(self) -> None:
+        good = {self.OID: self.claims}
+        self.assertEqual(ac.readers(self.env(good)[ac.READERS_ENV]),
+                         {self.OID: self.claims})
+        for bad in ({self.OID: {**self.claims, "entraObjectId": "someone-else"}},
+                    {self.OID: {**self.claims, "extra": "x"}},
+                    {self.OID: {**self.claims, "email": ""}},
+                    {self.OID: {k: v for k, v in self.claims.items() if k != "uid"}},
+                    [self.claims], "{not json"):
+            with self.subTest(bad=bad):
+                self.assertEqual(ac.readers(self.env(bad)[ac.READERS_ENV]), {})
+        self.assertEqual(ac.readers(self.dir / "missing.json"), {})
+
+    def test_no_session_without_secret_readers_host_or_a_safe_home(self) -> None:
+        env = self.env({self.OID: self.claims})
+        self.assertIsNotNone(ac.lookup_factory(env))
+        for gone in (ac.READERS_ENV, "PLX_WORKBENCH_SESSION_SECRET"):
+            with self.subTest(gone=gone):
+                self.assertIsNone(ac.lookup_factory({k: v for k, v in env.items()
+                                                     if k != gone}))
+        started = []
+        with mock.patch("operating.agent_session.ReaderHost",
+                        lambda *a, **k: started.append(a) or object()):
+            self.assertIsNone(ac.Lookup(env).run("someone-not-listed", "x"))
+            for change in ({ac.HOST_CONFIG_ENV: str(self.dir / "nope.json")},
+                           {ac.HOST_STATE_ENV: str(self.dir / "nope")},
+                           {"PLX_AUTOPILOT_DRAFT_MODEL": ""},
+                           {"PLX_CHAT_ASK_CLAUDE_HOME": str(Path.home() / ".claude-x")}):
+                with self.subTest(change=change):
+                    self.assertIsNone(ac.Lookup({**env, **change}).run(self.OID, "x"))
+        self.assertEqual(started, [])
+
+    def test_the_session_runs_as_the_person_on_the_autopilots_own_home(self) -> None:
+        from operating import agent_session
+        env = self.env({self.OID: self.claims})
+        seen = {}
+
+        class Host:
+            def __init__(self, state, config, claims, secret, **kw):
+                seen.update(claims=claims, agent=kw.get("agent"))
+
+            def close(self):
+                seen["closed"] = True
+
+        class Agent:
+            def __init__(self, **kw):
+                seen["spawn"] = kw["spawn"]
+
+            def run(self, prompt, host):
+                return type("Ran", (), {
+                    "final_text": '{"kind": "reply", "reply": "ok"}', "usage": {},
+                    "events": [{"type": "tool_call", "name": "plx.sql", "result": "row 1"},
+                               {"type": "tool_call", "name": "plx.sql", "is_error": True,
+                                "result": "refused"},
+                               {"type": "tool_call", "name": "plx.other", "result": "x"}]})()
+
+        with mock.patch.object(agent_session, "ReaderHost", Host), \
+                mock.patch.object(agent_session, "ClaudeCodeAgent", Agent):
+            got = ac.Lookup(env).run(self.OID.upper(), "draft this")
+        self.assertEqual(got, ('{"kind": "reply", "reply": "ok"}', ["row 1"]))
+        self.assertEqual((seen["claims"], seen["agent"], seen.get("closed")),
+                         (self.claims, "plx.agent.ask", True))
+        # the model process runs on the autopilot's home, never the user's login
+        ran = []
+        homed = ac._homed(lambda argv, cwd, env, timeout, **kw: ran.append(env), "/srv/h")
+        homed(["claude"], "/", {"HOME": "/home/x", "A": "1"}, 5)
+        self.assertEqual(ran, [{"HOME": "/srv/h", "A": "1",
+                                "CLAUDE_CONFIG_DIR": "/srv/h/.claude"}])

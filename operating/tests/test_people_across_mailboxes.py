@@ -318,6 +318,20 @@ class CompositeAudienceTests(unittest.TestCase):
                     self.assertEqual(pd.decode_audience(pd.audience_key(some, every), every),
                                      tuple(sorted(some)))
 
+    def test_a_policys_thousands_of_keys_decode_in_time(self):
+        """A staff reader's policy decodes every mail-any key it holds on each read (11-18:
+        walking every mailbox per key was 1.7 s of each of Cos's reads): 20,000 keys over
+        1,500 mailboxes decode exactly in well under a second (2 s walking every one)."""
+        import random
+        rnd = random.Random(7)
+        every = tuple(self.ids(1500))
+        chosen = [sorted(rnd.sample(every, rnd.randint(2, 6))) for _ in range(20000)]
+        keys = [pd.audience_key(c, every) for c in chosen]
+        started = time.monotonic()
+        got = [pd.decode_audience(k, every) for k in keys]
+        self.assertLess(time.monotonic() - started, 0.5)
+        self.assertEqual(got, [tuple(c) for c in chosen])
+
     def test_a_key_that_no_longer_decodes_opens_nothing(self):
         every = self.ids(10)
         key = pd.audience_key(every[2:5], every)

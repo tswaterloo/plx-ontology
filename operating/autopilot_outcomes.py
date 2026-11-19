@@ -12,6 +12,11 @@ decision on it (the app's decision journal, ``operator_api.autopilot_area``):
   ``IGNORED_AFTER`` and still open.
 - ``waiting``: open, not past due by ``IGNORED_AFTER`` (or snoozed to a time ahead).
 
+An accept the write path did not carry out (``refused_accept``: its outcome refused, failed,
+killed, excluded, unavailable, rate limited, not routine or not performed) is no decision:
+the person said yes and nothing went out, so the item is classed by its state as if they
+had not decided yet (never ``accepted``) and stays in their Prepared list.
+
 An unknown decision word or item state fails closed into ``ignored`` with the reason
 ``unknown`` (counted, never read as an accept). Every item lands in exactly one class, so
 the classes sum to the items; the shares are over the items decided (all but waiting).
@@ -64,6 +69,18 @@ def _draft_text(item: Mapping[str, Any]) -> Optional[str]:
     return text if isinstance(text, str) else None
 
 
+# an accept's outcome (``operator_api.autopilot_area.item_outcome``) that means the write
+# path did not carry it out
+REFUSED_OUTCOMES = frozenset({"refused", "failed", "killed", "excluded", "unavailable",
+                              "rate_limited", "not_routine", "not_performed"})
+
+
+def refused_accept(decision: Optional[Mapping[str, Any]]) -> bool:
+    """Whether ``decision`` is an accept the write path refused or failed (module doc)."""
+    return bool(decision) and decision.get("decision") == "accept" \
+        and decision.get("outcome") in REFUSED_OUTCOMES
+
+
 def _same(a: Optional[str], b: Optional[str]) -> bool:
     return " ".join((a or "").split()) == " ".join((b or "").split())
 
@@ -71,6 +88,8 @@ def _same(a: Optional[str], b: Optional[str]) -> bool:
 def classify(item: Mapping[str, Any], decision: Optional[Mapping[str, Any]],
              now: datetime) -> tuple[str, str]:
     """(class, reason) for one prepared item (module doc)."""
+    if refused_accept(decision):
+        decision = None
     if decision:
         word = decision.get("decision")
         text = decision.get("text")

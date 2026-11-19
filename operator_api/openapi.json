@@ -1230,6 +1230,14 @@
             "title": "Direct Answer",
             "type": "string"
           },
+          "documents": {
+            "description": "Files the answer made for you (plx.make_document): each kept for you only, downloaded from its link; sent or saved only through a prepared change you confirm.",
+            "items": {
+              "$ref": "#/components/schemas/AskDocument"
+            },
+            "title": "Documents",
+            "type": "array"
+          },
           "drafts": {
             "description": "Emails and actions the question asked to have drafted; each is done only from its preview with your explicit confirm.",
             "items": {
@@ -1305,6 +1313,14 @@
             ],
             "title": "Outcome",
             "type": "string"
+          },
+          "prepared": {
+            "description": "Changes the answer prepared (plx.prepare_write, plx.edit_document), by id: each is done only after the person confirms it (GET /api/prepared/{id}, then its confirm).",
+            "items": {
+              "type": "string"
+            },
+            "title": "Prepared",
+            "type": "array"
           },
           "profitability": {
             "anyOf": [
@@ -1781,6 +1797,41 @@
         "title": "AskAttachmentNote",
         "type": "object"
       },
+      "AskDocument": {
+        "additionalProperties": false,
+        "description": "A file the Ask made for you: its name, kind, size and download link.",
+        "properties": {
+          "download_url": {
+            "title": "Download Url",
+            "type": "string"
+          },
+          "kind": {
+            "enum": [
+              "docx",
+              "xlsx",
+              "pdf"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "size": {
+            "title": "Size",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "name",
+          "kind",
+          "size",
+          "download_url"
+        ],
+        "title": "AskDocument",
+        "type": "object"
+      },
       "AskDraft": {
         "additionalProperties": false,
         "description": "A draft the Ask wrote because the question asked for one: an email the person edits\nand sends from its preview with one explicit confirm (``/api/actions/preview`` and\n``/api/actions/confirm``, ``card_id`` = ``id``, the approve-to-send desk), or an\naction (a payment, a record change, an approval) shown in full, which the person\nfiles as a follow-up or assigns to a colleague for approval through the same desk.\nNothing is sent, paid or written by the Ask itself.",
@@ -2200,6 +2251,18 @@
         "additionalProperties": false,
         "description": "The autopilot area: today's prepared items you may see, per workflow its scores and\nstate, the switches (``owner``: you may change them), and your own opt-ins.",
         "properties": {
+          "checked_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "When the live feed last looked for new mail and chats (absent when it has not run on this server).",
+            "title": "Checked At"
+          },
           "drafts_switched_on": {
             "anyOf": [
               {
@@ -2913,8 +2976,13 @@
       },
       "AutopilotDraftChoice": {
         "additionalProperties": false,
-        "description": "Work the autopilot prepares for you only once you switch it on yourself: a draft or\na prepared action waiting in My work for your confirm. Nothing is sent or written by\nitself.",
+        "description": "Work the autopilot prepares for you: a draft or a prepared action waiting in My work\nfor your confirm. On when you switched it on yourself or the owner's Draft file turned\nit on for you; your own off or pause wins over the Draft file. Nothing is sent or\nwritten by itself.",
         "properties": {
+          "by_owner": {
+            "description": "On because the owner's Draft file turned it on for you, not your own switch.",
+            "title": "By Owner",
+            "type": "boolean"
+          },
           "choice": {
             "title": "Choice",
             "type": "string"
@@ -2924,9 +2992,26 @@
             "type": "string"
           },
           "on": {
-            "description": "You switched it on (and did not pause).",
+            "description": "Some or all of it is prepared for you now (not switched off or paused by you).",
             "title": "On",
             "type": "boolean"
+          },
+          "partly": {
+            "description": "On for only some of its workflows (the owner's Draft file turned on part of it).",
+            "title": "Partly",
+            "type": "boolean"
+          },
+          "since": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "When you switched it on yourself (absent when set by the owner).",
+            "title": "Since"
           }
         },
         "required": [
@@ -3023,6 +3108,11 @@
         "additionalProperties": false,
         "description": "Someone who switched one choice of prepared work on for themselves (shown to the\nowner and admins, who can see it but cannot switch it for them).",
         "properties": {
+          "by_owner": {
+            "description": "On through the owner's Draft file, not the person's own switch.",
+            "title": "By Owner",
+            "type": "boolean"
+          },
           "choice": {
             "title": "Choice",
             "type": "string"
@@ -3030,6 +3120,11 @@
           "label": {
             "title": "Label",
             "type": "string"
+          },
+          "partly": {
+            "description": "On for only some of the choice's workflows.",
+            "title": "Partly",
+            "type": "boolean"
           },
           "person": {
             "title": "Person",
@@ -3332,6 +3427,81 @@
         "title": "AutopilotItem",
         "type": "object"
       },
+      "AutopilotJob": {
+        "additionalProperties": false,
+        "description": "One system change an autopilot proposed from an event (``operating.autopilot_jobs``):\nnothing is prepared or written until you review it (``POST .../jobs/{index}/prepare``\nreads the record from its system and makes the change you confirm in two steps).",
+        "properties": {
+          "change": {
+            "additionalProperties": true,
+            "title": "Change",
+            "type": "object"
+          },
+          "index": {
+            "title": "Index",
+            "type": "integer"
+          },
+          "operation": {
+            "default": "",
+            "title": "Operation",
+            "type": "string"
+          },
+          "prepared_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Set once you reviewed it: the prepared change (``/api/prepared/{id}``).",
+            "title": "Prepared Id"
+          },
+          "reason": {
+            "default": "",
+            "description": "Why, in one line, as the model put it.",
+            "title": "Reason",
+            "type": "string"
+          },
+          "state": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The prepared change's state once reviewed (prepared, confirmed, dismissed, ...).",
+            "title": "State"
+          },
+          "system": {
+            "default": "",
+            "description": "bc, portal, mc, planner, calendar or sharepoint.",
+            "title": "System",
+            "type": "string"
+          },
+          "target": {
+            "additionalProperties": true,
+            "title": "Target",
+            "type": "object"
+          },
+          "tool": {
+            "enum": [
+              "plx.prepare_write",
+              "plx.edit_document"
+            ],
+            "title": "Tool",
+            "type": "string"
+          }
+        },
+        "required": [
+          "index",
+          "tool"
+        ],
+        "title": "AutopilotJob",
+        "type": "object"
+      },
       "AutopilotLineRequest": {
         "additionalProperties": false,
         "properties": {
@@ -3560,6 +3730,26 @@
         "title": "AutopilotOptInRequest",
         "type": "object"
       },
+      "AutopilotOption": {
+        "additionalProperties": false,
+        "description": "One choice on a \"your call\" card and the reply written for it.",
+        "properties": {
+          "label": {
+            "default": "",
+            "title": "Label",
+            "type": "string"
+          },
+          "reply": {
+            "title": "Reply",
+            "type": "string"
+          }
+        },
+        "required": [
+          "reply"
+        ],
+        "title": "AutopilotOption",
+        "type": "object"
+      },
       "AutopilotOutcomeCounts": {
         "additionalProperties": false,
         "description": "What became of prepared items (``operating.autopilot_outcomes``): each item in one\nclass, so the five counts sum to ``items``; shares (percent, one decimal, as text) are\nover ``decided`` (every class but waiting), null with none decided.",
@@ -3740,7 +3930,7 @@
       },
       "AutopilotPrepared": {
         "additionalProperties": false,
-        "description": "One thing prepared for you to answer: who wrote, what they wrote, and either the\nreply (to edit, confirm, copy or open in Outlook) or the question only you can answer.",
+        "description": "One thing prepared for you: who wrote, what they wrote, and either the reply (to\nedit, confirm, copy or open in Outlook), the question only you can answer, or the system\nchanges the event calls for (``job``: each reviewed and confirmed on its own).",
         "properties": {
           "ask": {
             "default": "",
@@ -3763,7 +3953,8 @@
           "channel": {
             "enum": [
               "mail",
-              "teams"
+              "teams",
+              "system"
             ],
             "title": "Channel",
             "type": "string"
@@ -3788,19 +3979,43 @@
             "title": "Item Id",
             "type": "string"
           },
+          "jobs": {
+            "items": {
+              "$ref": "#/components/schemas/AutopilotJob"
+            },
+            "title": "Jobs",
+            "type": "array"
+          },
           "kind": {
             "enum": [
               "reply",
-              "your_call"
+              "your_call",
+              "job"
             ],
             "title": "Kind",
             "type": "string"
+          },
+          "learned": {
+            "description": "On a draft you edited: what your edit changed, as the Workbench learns it for your next drafts (greeting, sign-off, length, a sentence you add or take out).",
+            "items": {
+              "type": "string"
+            },
+            "title": "Learned",
+            "type": "array"
           },
           "message": {
             "default": "",
             "description": "What they wrote, as far as the item keeps it.",
             "title": "Message",
             "type": "string"
+          },
+          "options": {
+            "description": "On a \"your call\" card: the replies written for each choice you could make; pick one to edit and confirm.",
+            "items": {
+              "$ref": "#/components/schemas/AutopilotOption"
+            },
+            "title": "Options",
+            "type": "array"
           },
           "sender": {
             "title": "Sender",
@@ -3811,12 +4026,29 @@
             "title": "Subject",
             "type": "string"
           },
+          "summary": {
+            "default": "",
+            "description": "On a job: what the event asks to be done.",
+            "title": "Summary",
+            "type": "string"
+          },
           "to": {
             "items": {
               "type": "string"
             },
             "title": "To",
             "type": "array"
+          },
+          "used_for_draft": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/AutopilotDraftUse"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Your preferences and memory the draft applied (and those read but not applied), and its template."
           }
         },
         "required": [
@@ -12868,6 +13100,14 @@
             "title": "At",
             "type": "string"
           },
+          "autopilot": {
+            "description": "What the Autopilot does because of it, in plain words (no draft for a sender or side, who your email drafts copy or never copy); empty when it states no such rule.",
+            "items": {
+              "type": "string"
+            },
+            "title": "Autopilot",
+            "type": "array"
+          },
           "confidence": {
             "title": "Confidence",
             "type": "number"
@@ -14931,6 +15171,464 @@
           "subject"
         ],
         "title": "PoTrail",
+        "type": "object"
+      },
+      "PreparedAttachment": {
+        "additionalProperties": false,
+        "description": "A file an email carries: its name and size, opened from\n``/api/instruct/files/{file_id}`` (a file your Ask made for you).",
+        "properties": {
+          "file_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "File Id"
+          },
+          "name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Name"
+          },
+          "size": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Size"
+          }
+        },
+        "title": "PreparedAttachment",
+        "type": "object"
+      },
+      "PreparedChange": {
+        "additionalProperties": false,
+        "properties": {
+          "after": {
+            "title": "After"
+          },
+          "before": {
+            "title": "Before"
+          },
+          "field": {
+            "title": "Field",
+            "type": "string"
+          }
+        },
+        "required": [
+          "field"
+        ],
+        "title": "PreparedChange",
+        "type": "object"
+      },
+      "PreparedConfirmRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "confirm": {
+            "title": "Confirm",
+            "type": "boolean"
+          },
+          "preview_hash": {
+            "maxLength": 64,
+            "minLength": 64,
+            "title": "Preview Hash",
+            "type": "string"
+          }
+        },
+        "required": [
+          "preview_hash",
+          "confirm"
+        ],
+        "title": "PreparedConfirmRequest",
+        "type": "object"
+      },
+      "PreparedMessage": {
+        "additionalProperties": false,
+        "description": "A mail or Teams message as it is sent: sender, recipients, subject, the full body\nand the files attached.",
+        "properties": {
+          "attachments": {
+            "items": {
+              "$ref": "#/components/schemas/PreparedAttachment"
+            },
+            "title": "Attachments",
+            "type": "array"
+          },
+          "body": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Body"
+          },
+          "cc": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Cc",
+            "type": "array"
+          },
+          "sender": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Sender"
+          },
+          "subject": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Subject"
+          },
+          "to": {
+            "items": {
+              "type": "string"
+            },
+            "title": "To",
+            "type": "array"
+          }
+        },
+        "title": "PreparedMessage",
+        "type": "object"
+      },
+      "PreparedOutcome": {
+        "additionalProperties": false,
+        "properties": {
+          "key": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Key"
+          },
+          "kind": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Kind"
+          },
+          "mode": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Mode"
+          },
+          "reasons": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reasons"
+          },
+          "status": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Status"
+          }
+        },
+        "title": "PreparedOutcome",
+        "type": "object"
+      },
+      "PreparedTarget": {
+        "additionalProperties": false,
+        "description": "One action exactly as the executor runs it: every field it builds the request\nfrom (``prepared_writes.shown_action``); ``record`` is the record's name as read from\nthe system (None: a new record or a message); ``company`` the BC company the request\ngoes to (``{\"id\", \"name\"}``: its id and BC's name for it; BC actions only).",
+        "properties": {
+          "company": {
+            "title": "Company"
+          },
+          "condition": {
+            "title": "Condition"
+          },
+          "decision": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Decision"
+          },
+          "fields": {
+            "title": "Fields"
+          },
+          "kind": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Kind"
+          },
+          "message": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/PreparedMessage"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "operation": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Operation"
+          },
+          "people": {
+            "items": {
+              "type": "string"
+            },
+            "title": "People",
+            "type": "array"
+          },
+          "record": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Record"
+          },
+          "system": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "System"
+          },
+          "target": {
+            "title": "Target"
+          }
+        },
+        "title": "PreparedTarget",
+        "type": "object"
+      },
+      "PreparedWrite": {
+        "additionalProperties": false,
+        "description": "A change Ask or an autopilot prepared in a business system for the person\n(``operating.prepared_writes``): nothing is written before their two-step confirm.\n``live``/``missing``/``acknowledge``/``preview_hash`` come with a preview only.",
+        "properties": {
+          "acknowledge": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Acknowledge",
+            "type": "array"
+          },
+          "actions": {
+            "items": {
+              "$ref": "#/components/schemas/PreparedTarget"
+            },
+            "title": "Actions",
+            "type": "array"
+          },
+          "citations": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Citations",
+            "type": "array"
+          },
+          "diff": {
+            "items": {
+              "$ref": "#/components/schemas/PreparedChange"
+            },
+            "title": "Diff",
+            "type": "array"
+          },
+          "expires": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Expires"
+          },
+          "live": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Live"
+          },
+          "missing": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Missing",
+            "type": "array"
+          },
+          "origin": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Origin"
+          },
+          "outcome": {
+            "items": {
+              "$ref": "#/components/schemas/PreparedOutcome"
+            },
+            "title": "Outcome",
+            "type": "array"
+          },
+          "prepared_id": {
+            "title": "Prepared Id",
+            "type": "string"
+          },
+          "preview_hash": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Preview Hash"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason"
+          },
+          "state": {
+            "enum": [
+              "prepared",
+              "confirmed",
+              "dismissed",
+              "undone",
+              "expired",
+              "not_run"
+            ],
+            "title": "State",
+            "type": "string"
+          },
+          "title": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Title"
+          },
+          "undo": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Undo",
+            "type": "array"
+          }
+        },
+        "required": [
+          "prepared_id",
+          "state"
+        ],
+        "title": "PreparedWrite",
+        "type": "object"
+      },
+      "PreparedWrites": {
+        "additionalProperties": false,
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/PreparedWrite"
+            },
+            "title": "Items",
+            "type": "array"
+          }
+        },
+        "title": "PreparedWrites",
         "type": "object"
       },
       "ProactiveSuggestion": {
@@ -17848,6 +18546,73 @@
           "chat_id"
         ],
         "title": "TeamsChat",
+        "type": "object"
+      },
+      "TeamsConnectStart": {
+        "additionalProperties": false,
+        "properties": {
+          "url": {
+            "description": "The Microsoft sign-in address to open.",
+            "title": "Url",
+            "type": "string"
+          }
+        },
+        "required": [
+          "url"
+        ],
+        "title": "TeamsConnectStart",
+        "type": "object"
+      },
+      "TeamsConnection": {
+        "additionalProperties": false,
+        "description": "Your own Teams sign-in (so a Teams reply you confirm posts as you): never the token.",
+        "properties": {
+          "connected": {
+            "title": "Connected",
+            "type": "boolean"
+          },
+          "connected_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Connected At"
+          },
+          "missing": {
+            "description": "What this server still lacks for a sign-in (empty: you can connect).",
+            "items": {
+              "type": "string"
+            },
+            "title": "Missing",
+            "type": "array"
+          },
+          "scopes": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Scopes",
+            "type": "array"
+          },
+          "used_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Used At"
+          }
+        },
+        "required": [
+          "connected"
+        ],
+        "title": "TeamsConnection",
         "type": "object"
       },
       "Template": {
@@ -22901,6 +23666,88 @@
         ]
       }
     },
+    "/api/autopilot/items/{item_id}/jobs/{index}/prepare": {
+      "post": {
+        "description": "Review one system change an autopilot proposed on an item of yours: it is\nprepared as you (the record read from its system, before and after); confirm it in\ntwo steps on /api/prepared/{id}. Nothing is written here.",
+        "operationId": "autopilot_job_prepare_api_autopilot_items__item_id__jobs__index__prepare_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "item_id",
+            "required": true,
+            "schema": {
+              "title": "Item Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "index",
+            "required": true,
+            "schema": {
+              "title": "Index",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PreparedWrite"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unprocessable Entity"
+          }
+        },
+        "summary": "Autopilot Job Prepare",
+        "tags": [
+          "actions"
+        ]
+      }
+    },
     "/api/autopilot/items/{item_id}/reply-from-line": {
       "post": {
         "description": "Write the reply to a \"your call\" card of your own from your one line: kept as your\nedit of its draft for you to change and confirm. Nothing is sent.",
@@ -23637,7 +24484,7 @@
     },
     "/api/biz/page": {
       "get": {
-        "description": "A customer's, chain's or supplier's account page, or a PO's or customer order's\npage (header, then lines): every number from the business tables, as you may see\nthem, in one read.",
+        "description": "A customer's, chain's or supplier's account page, or a PO's or customer order's\npage (header, then lines): every number from the business tables, as you may see\nthem, in one read. ``record``: a record id (object id) instead of ``h``: the page\nof the row it was read into.",
         "operationId": "biz_page_api_biz_page_get",
         "parameters": [
           {
@@ -23675,6 +24522,17 @@
               "default": "",
               "maxLength": 200,
               "title": "Chain",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "record",
+            "required": false,
+            "schema": {
+              "default": "",
+              "maxLength": 700,
+              "title": "Record",
               "type": "string"
             }
           }
@@ -26640,6 +27498,413 @@
         ]
       }
     },
+    "/api/prepared": {
+      "get": {
+        "description": "Your open prepared changes (Ask and your autopilots prepared them): nothing in\nthem is done before you confirm it.",
+        "operationId": "prepared_list_api_prepared_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PreparedWrites"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          }
+        },
+        "summary": "Prepared List",
+        "tags": [
+          "actions"
+        ]
+      }
+    },
+    "/api/prepared/{prepared_id}": {
+      "get": {
+        "description": "One prepared change of yours, before and after, with what confirming it does\nnow (written at once, or recorded only, and why) and the hash its confirm carries.\nAnother person's is not found.",
+        "operationId": "prepared_preview_api_prepared__prepared_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "prepared_id",
+            "required": true,
+            "schema": {
+              "title": "Prepared Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PreparedWrite"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Prepared Preview",
+        "tags": [
+          "actions"
+        ]
+      }
+    },
+    "/api/prepared/{prepared_id}/confirm": {
+      "post": {
+        "description": "Your second step: the preview's hash and confirm=true. Runs the change once,\nas you, under every write guard; a changed preview is refused (409).",
+        "operationId": "prepared_confirm_api_prepared__prepared_id__confirm_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "prepared_id",
+            "required": true,
+            "schema": {
+              "title": "Prepared Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PreparedConfirmRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PreparedWrite"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unprocessable Entity"
+          }
+        },
+        "summary": "Prepared Confirm",
+        "tags": [
+          "actions"
+        ]
+      }
+    },
+    "/api/prepared/{prepared_id}/dismiss": {
+      "post": {
+        "description": "Drop a prepared change of yours; nothing is written.",
+        "operationId": "prepared_dismiss_api_prepared__prepared_id__dismiss_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "prepared_id",
+            "required": true,
+            "schema": {
+              "title": "Prepared Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PreparedWrite"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Prepared Dismiss",
+        "tags": [
+          "actions"
+        ]
+      }
+    },
+    "/api/prepared/{prepared_id}/retry": {
+      "post": {
+        "description": "Prepare again a change of yours that was dismissed, expired, failed or only\nrecorded: a new prepared change, checked anew; nothing is written.",
+        "operationId": "prepared_retry_api_prepared__prepared_id__retry_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "prepared_id",
+            "required": true,
+            "schema": {
+              "title": "Prepared Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PreparedWrite"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Prepared Retry",
+        "tags": [
+          "actions"
+        ]
+      }
+    },
+    "/api/prepared/{prepared_id}/undo": {
+      "post": {
+        "description": "Undo a change of yours that was written, through the inverse recorded when it\nran (refused when the system has none or someone changed it since).",
+        "operationId": "prepared_undo_api_prepared__prepared_id__undo_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "prepared_id",
+            "required": true,
+            "schema": {
+              "title": "Prepared Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PreparedWrite"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Prepared Undo",
+        "tags": [
+          "actions"
+        ]
+      }
+    },
     "/api/record-pack/{object_type}/{object_id}": {
       "get": {
         "description": "The documents a customer or supplier usually asks for about this record (invoice,\npacking slip, BOL, COA, confirmation, ...), found in captured attachments,\nSharePoint and originals around it as you may read them, and a drafted reply.\nNothing is sent: the draft goes through ``/api/actions/*`` and your confirm.",
@@ -27075,6 +28340,150 @@
           }
         },
         "summary": "Team Person",
+        "tags": [
+          "actions"
+        ]
+      }
+    },
+    "/api/teams/connect": {
+      "post": {
+        "description": "Start your one-time Teams sign-in: open the address it answers.",
+        "operationId": "teams_connect_api_teams_connect_post",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TeamsConnectStart"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Forbidden"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Conflict"
+          }
+        },
+        "summary": "Teams Connect",
+        "tags": [
+          "actions"
+        ]
+      }
+    },
+    "/api/teams/connection": {
+      "delete": {
+        "description": "Forget your Teams sign-in: nothing is posted as you after this.",
+        "operationId": "teams_disconnect_api_teams_connection_delete",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TeamsConnection"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Forbidden"
+          }
+        },
+        "summary": "Teams Disconnect",
+        "tags": [
+          "actions"
+        ]
+      },
+      "get": {
+        "description": "Your own Teams sign-in: connected or not, the scopes, when (never the token).",
+        "operationId": "teams_connection_api_teams_connection_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TeamsConnection"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Forbidden"
+          }
+        },
+        "summary": "Teams Connection",
         "tags": [
           "actions"
         ]

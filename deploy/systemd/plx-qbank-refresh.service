@@ -1,0 +1,25 @@
+# PLX Ask question bank, nightly truth refresh: one run of `python3 -m evals.qbank.bank refresh`.
+# Re-reads every item's truth SQL (generated and mined) as role plx_eval in read-only
+# transactions with a 60 s statement cap, through at most 6 connections (the server's slots
+# are shared with the API); an item whose truth fails or no longer grades is marked stale (never
+# sampled) until a later night revives it; a lost server aborts the run and writes nothing.
+# Writes only QBANK_DIR (tune.jsonl, holdout/holdout.jsonl, mode 0600). Reads no business system.
+[Unit]
+Description=PLX Ask question bank truth refresh (one run)
+After=postgresql.service
+
+[Service]
+Type=oneshot
+User=@PLX_USER@
+Group=@PLX_GROUP@
+WorkingDirectory=@PLX_CURRENT@
+UnsetEnvironment=AZURE_CLIENT_SECRET BC_CLIENT_SECRET MICROSOFT_GRAPH_CLIENT_SECRET MC_MCP_API_KEY PLX_WORKBENCH_API_KEY AZURE_STORAGE_KEY AZURE_DOC_INTEL_KEY PLX_WORKBENCH_SESSION_SECRET
+Environment=PATH=/data/venv/bin:/usr/local/bin:/usr/bin:/bin
+Environment=PGAPPNAME=%N
+Environment=QBANK_DIR=/data/scratch/qbank
+Environment=QBANK_PG_CONNS=6
+ExecStart=/data/venv/bin/python3 -m evals.qbank.bank refresh --workers 12
+CPUWeight=20
+MemoryMax=4G
+TimeoutStartSec=2h
+UMask=0077

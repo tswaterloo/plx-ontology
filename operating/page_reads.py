@@ -72,6 +72,11 @@ _YEARS = ("sum({amount}) FILTER (WHERE {day} BETWEEN d.start AND d.day) AS this_
           "IS NULL) AS last_year_hidden")
 
 
+# a party's name as a key: case, punctuation and a trailing note (a parenthesis, "- EFT")
+# set aside: "EZ CHEMICALS (EFT)" and "EZ Chemicals" are one key
+_NAME_KEY = ("regexp_replace(lower(regexp_replace(regexp_replace({col}, '\\(.*$', ''), "
+             "'\\s*-\\s*eft\\y.*$', '', 'i')), '[^a-z0-9]+', '', 'g')")
+
 # an alert rule read only while its last finished run is recent (``alerts.STALE_MINUTES``)
 def _fresh() -> str:
     from operating.pg.alerts import STALE_MINUTES
@@ -255,6 +260,16 @@ QUERIES: dict[str, Query] = {
         "FROM purchase_orders WHERE status = 'open' AND supplier_handle = %(handle)s "
         "ORDER BY requested_date NULLS LAST, po_number, handle LIMIT %(limit)s",
         ("handle", "limit"), MAX_ROWS),
+    # other supplier accounts by the same name (a BC payment vendor "X (EFT)" beside the
+    # purchasing vendor "X" the POs name): listed beside the account, never merged into it
+    "supplier_same_name": Query(
+        "WITH me AS (SELECT " + _NAME_KEY.format(col="name") + " AS k FROM suppliers "
+        "WHERE handle = %(handle)s) SELECT s.name, s.supplier_code, s.handle, s.withheld, "
+        "(SELECT count(*) FROM purchase_orders p WHERE p.status = 'open' AND "
+        "p.supplier_handle = s.handle) AS open_pos FROM suppliers s, me "
+        "WHERE s.handle <> %(handle)s AND me.k <> '' AND "
+        + _NAME_KEY.format(col="s.name") + " = me.k ORDER BY s.name, s.handle LIMIT 10",
+        ("handle",), 10),
     "supplier_open_totals": Query(
         "SELECT total_currency AS currency, count(*) AS orders, sum(total) AS value, "
         "count(*) FILTER (WHERE total IS NULL) AS unvalued, "
@@ -279,11 +294,16 @@ QUERIES: dict[str, Query] = {
         "supplier_handle = %(handle)s AND order_date >= d.last_start GROUP BY 1 "
         "ORDER BY 1 NULLS LAST", ("handle", "as_of"), 64, with_day=True),
     # ---- the order pages: header, then its lines
+    # total_basis / lines_total read by name from the row (NULL from a table built before
+    # them, until the views' next rebuild: the page then shows the stated total only)
     "purchase_order": Query(
         "SELECT po_number, supplier, vendor_number, order_date, requested_date, "
         "promised_date, status, status_reason, verdict, verdict_reason, days_late, total, "
-        "total_currency, purchaser, line_count, supplier_handle, handle, withheld "
-        "FROM purchase_orders WHERE handle = %(handle)s", ("handle",)),
+        "total_currency, to_jsonb(p) ->> 'total_basis' AS total_basis, "
+        "(to_jsonb(p) ->> 'lines_total')::numeric AS lines_total, "
+        "to_jsonb(p) ->> 'lines_total_currency' AS lines_total_currency, purchaser, "
+        "line_count, supplier_handle, handle, withheld "
+        "FROM purchase_orders p WHERE handle = %(handle)s", ("handle",)),
     "purchase_order_lines": Query(
         "SELECT item_code, description, ordered_quantity, received_quantity, "
         "invoiced_quantity, uom, unit_price, unit_price_currency, line_total, "
@@ -414,6 +434,8 @@ class PageReads:
         import psycopg
         from operating.pg.pool import PoolTimeout
         try:
+            if isinstance(arguments, Mapping) and "resolve" in arguments:
+                return self._resolve(arguments)
             wanted = _wanted(arguments)
             dsn = self._dsn()
             seconds = _seconds()
@@ -448,6 +470,35 @@ class PageReads:
             return {"error": {"code": "busy", "message": "every page connection is in use"}}
         except psycopg.Error as exc:   # the store could not be reached or refused
             return {"error": {"code": "unavailable", "message": type(exc).__name__}}
+
+
+    def _resolve(self, arguments: Mapping[str, Any]) -> dict[str, Any]:
+        """``{"resolve": {"view": v, "object_id": id}}``: the handle of ``v``'s row read
+        from that record (``handle`` None when there is none). Read from the lineage the
+        build keeps, outside the door: the handle is for the page's own read through the
+        door next, which shows the row only when the reader may read it; never returned to
+        a reader (a page that finds no row says "not found" either way)."""
+        from operating.pg import business_views as bv
+        ask = arguments.get("resolve")
+        if set(arguments) != {"resolve"} or not isinstance(ask, Mapping) \
+                or set(ask) != {"view", "object_id"} or ask.get("view") not in RESOLVABLE \
+                or not isinstance(ask.get("object_id"), str) \
+                or not 0 < len(ask["object_id"]) <= 700:
+            raise PageReadError("invalid_request", "send {\"resolve\": {\"view\": one of "
+                                f"{sorted(RESOLVABLE)}, \"object_id\": ...}}}}")
+        with pool_for(self._dsn()).connection() as pg:
+            with pg.transaction():
+                pg.execute("SET TRANSACTION READ ONLY")
+                pg.execute(f"SET LOCAL statement_timeout = {int(PAGE_SECONDS * 1000)}")
+                got = pg.execute(
+                    f"SELECT handle FROM {bv.SCHEMA}.lineage WHERE view = %s AND "
+                    "object_ids @> ARRAY[%s]::text[] ORDER BY handle LIMIT 1",
+                    (ask["view"], ask["object_id"])).fetchone()
+        return {"handle": got[0] if got else None}
+
+
+# the record pages a record id can open (``PageReads._resolve``)
+RESOLVABLE = frozenset({"purchase_orders", "sales_orders", "customers", "suppliers"})
 
 
 def register(table: dict[str, dict[str, Any]], base: Any) -> PageReads:

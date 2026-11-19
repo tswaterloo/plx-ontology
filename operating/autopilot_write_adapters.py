@@ -18,11 +18,11 @@ answers ``None`` and ``undo_note`` says what a person does instead.
 
 **Transports.** Mail goes through the approved send path (``integrations.graph_send.
 ActionSender``, off unless ``PLX_ACTIONS_LIVE=1``, the sender is listed and the token holds
-``Mail.Send``). Planner, calendar, SharePoint and BC get their guarded write transport
+``Mail.Send``). Planner, calendar, SharePoint, BC and Portal get their guarded write transport
 (``integrations.write_transports``, through ``live_source_guard.write_action``'s exact
 shapes) only once the owner opened that system (``PLX_WRITES_LIVE_SYSTEMS``); the
 transport's ``missing()`` makes the adapter ``unavailable`` while anything else is lacking.
-MC, Teams, Portal and FileMaker have no transport (``structural``); ``needs`` names
+MC (but with ``live-mc``), Teams and FileMaker have no transport (``structural``); ``needs`` names
 exactly what is missing.
 
 ``perform`` returns ``{"status": "done" | "failed" | "unknown" | "not_performed", ...}``:
@@ -38,9 +38,12 @@ from __future__ import annotations
 
 from datetime import datetime
 from decimal import Decimal
+import hashlib
+import json
 import os
+from pathlib import Path
 import re
-from typing import Any, Callable, Mapping, Sequence
+from typing import Any, Callable, Mapping, Optional, Sequence
 from urllib.parse import quote
 
 Transport = Callable[[Mapping[str, Any], str], tuple[int, Mapping[str, Any]]]
@@ -52,6 +55,7 @@ _GATE_ID = re.compile(r"^[A-Za-z0-9_:.-]{1,120}$")
 _GUID = re.compile(r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$")
 _GRAPH_ID = re.compile(r"^[A-Za-z0-9_=!.:@-]{1,400}$")
 _SLUG = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
+_EMAILISH = re.compile(r"^[^@\s]{1,64}@[^@\s]{1,255}$")
 _DIGITS = re.compile(r"^\d{1,12}$")
 _NOT_DEFINITE = frozenset({408, 425, 429})
 _PLACEHOLDER = re.compile(r"\{response:([A-Za-z0-9@._/-]{1,80})\}")
@@ -170,7 +174,9 @@ def _prior(action: Mapping[str, Any], keys: Sequence[str], system: str) -> dict[
 def _only(payload: Mapping[str, Any], allowed: Sequence[str], system: str, op: str) -> None:
     extra = [k for k in payload if k not in allowed]
     if extra:
-        raise AdapterRefused([f"{system}: {op} cannot set {', '.join(sorted(extra)[:5])}"])
+        # the fields it does set, so the caller can name the system's own field
+        raise AdapterRefused([f"{system}: {op} cannot set {', '.join(sorted(extra)[:5])} "
+                              f"(it sets: {', '.join(allowed)})"])
 
 
 def _instant_text(value: Any) -> bool:
@@ -192,6 +198,10 @@ class Adapter:
     operations: Mapping[str, str] = {}
     needs: tuple[str, ...] = ()
     structural: str | None = None   # why no transport can exist here yet (None: it can)
+    # every key of ``target`` the request is built from: any other key would show on the
+    # card and be ignored by the write (a company or file named one way, written another),
+    # so ``_operation`` refuses it
+    TARGET_KEYS: frozenset[str] = frozenset()
 
     def __init__(self, transport: Transport | None = None, *,
                  environ: Mapping[str, str] | None = None) -> None:
@@ -209,6 +219,15 @@ class Adapter:
         operation = str(action.get("operation") or "")
         if operation not in self.operations:
             raise AdapterRefused([f"{self.system}: unknown operation {operation[:60]}"])
+        target = action.get("target")
+        if target is not None and not isinstance(target, Mapping):
+            raise AdapterRefused([f"{self.system}: the target must be an object"])
+        unused = sorted(str(k)[:40] for k in target or {} if k not in self.TARGET_KEYS)
+        if unused:
+            raise AdapterRefused([f"{self.system}: the target names {', '.join(unused[:5])}, "
+                                  "which this write does not use (only "
+                                  f"{', '.join(sorted(self.TARGET_KEYS)) or 'nothing'}): "
+                                  "the card would show what is not written"])
         return operation
 
     def request(self, action: Mapping[str, Any]) -> dict[str, Any]:
@@ -269,6 +288,7 @@ class MCApprovalAdapter(Adapter):
     system, kind = "mc", "mc_approval"
     documented = "POST https://mc.plxcustomer.io/api/approvals/decide"
     operations = {"approval_decide": "approve a routine gate; no undo (no revoke in MC)"}
+    TARGET_KEYS = frozenset({"task_id", "gate_id"})
     structural = ("MC denies approval.decide to services; the decide route takes only a "
                   "human admin/owner Entra session")
     needs = ("a delegated Entra session token of the owner (MC.Admin/MC.Owner) for the "
@@ -279,6 +299,12 @@ class MCApprovalAdapter(Adapter):
              "schema change gate_scope/proposal_action/proposal_risk applies in place)")
 
     def request(self, action: Mapping[str, Any]) -> dict[str, Any]:
+        self._operation(action)
+        # the one decision this route sends is an approval: a card saying anything else
+        # would show one decision and send another
+        if action.get("recommendation") != "approve":
+            raise AdapterRefused(["mc approval: only an approval is sent (the decision "
+                                  "must be approve)"])
         target, payload = action.get("target") or {}, action.get("payload") or {}
         problems = []
         if not _TASK_ID.fullmatch(str(target.get("task_id") or "")):
@@ -320,6 +346,7 @@ class MCTaskAdapter(Adapter):
     documented = "MC MCP POST /api/cursor/mcp tools/call mc_report_progress | mc_update_task"
     operations = {"task_note": "mc_report_progress notes; no undo (comments stay)",
                   "task_update": "mc_update_task labels/title/priority; undo: inverse patch"}
+    TARGET_KEYS = frozenset({"task_id", "acting_for"})
     structural = ("MC writes are not opened (live-mc); mc_update_task is a never-sent "
                   "tool in mc_tool_policy.json")
     needs = ("an MC service principal for the Workbench autopilot (e.g. sp_mcp_workbench) "
@@ -446,7 +473,8 @@ class BCAdapter(Adapter):
              "the owner's live-bc and live-bc-production files for Production (a "
              "sandbox, PLX_BC_SANDBOX_ENVIRONMENT, needs live-bc only)",
              "BC opened to approved writes (PLX_WRITES_LIVE_SYSTEMS=bc) and BC_TENANT_ID",
-             "the company id the autopilot writes to (PLX_AUTOPILOT_BC_COMPANY_ID)")
+             "the company ids the autopilot writes to (PLX_AUTOPILOT_BC_COMPANY_ID, the "
+             "default, plus PLX_AUTOPILOT_BC_COMPANY_IDS)")
     LINE_OPERATIONS: Mapping[str, Mapping[str, Any]] = {
         "sales_order_line_create": {
             "parent": "salesOrders", "lines": "salesOrderLines",
@@ -500,6 +528,10 @@ class BCAdapter(Adapter):
         "purchase_order_delete": {"set": "purchaseOrders", "done_field": "received"},
     }
     OPEN_STATUSES = frozenset({"Draft", "Open"})
+    # ``company_name`` is BC's own name for ``company_id`` (the desk resolves it from the
+    # probe-verified company list, ``prepared_writes.Desk``); a name alone is refused
+    TARGET_KEYS = frozenset({"company_id", "company_name", "record_id", "document_id",
+                             "line_id"})
 
     def _environment(self) -> str:
         """The autopilot's BC environment: ``PLX_AUTOPILOT_BC_ENVIRONMENT``, else the
@@ -526,11 +558,26 @@ class BCAdapter(Adapter):
             found = missing() if callable(missing) else []
         return "; ".join(str(m) for m in found) or None
 
-    def _company(self) -> str:
-        company = str(self.environ.get("PLX_AUTOPILOT_BC_COMPANY_ID") or "")
-        if not _GUID.fullmatch(company):
-            raise AdapterRefused(["bc: company id not configured (PLX_AUTOPILOT_BC_COMPANY_ID)"])
-        return company.lower()
+    def _company(self, action: Mapping[str, Any]) -> str:
+        """The company the action names (``target.company_id``), which must be one of the
+        configured ones (``readiness.bc_company_ids``), else the configured default."""
+        from operating import autopilot_write_readiness as readiness
+        companies = readiness.bc_company_ids(self.environ)
+        if not companies:
+            raise AdapterRefused(["bc: company id not configured "
+                                  f"({readiness.COMPANY_ENV}, {readiness.EXTRA_COMPANIES_ENV})"])
+        target = action.get("target") or {}
+        named = target.get("company_id")
+        if named is None and target.get("company_name") is not None:
+            # a name alone is never written to the default: the desk resolves it to the id
+            raise AdapterRefused(["bc: the company is named but not by its id "
+                                  "(target.company_id)"])
+        if named is None:
+            return companies[0]
+        if not isinstance(named, str) or named.strip().lower() not in companies:
+            raise AdapterRefused(["bc: target.company_id is not a company the autopilot "
+                                  "writes (one of the configured companies)"])
+        return named.strip().lower()
 
     def request(self, action: Mapping[str, Any]) -> dict[str, Any]:
         from operating import write_intents as wi
@@ -543,7 +590,7 @@ class BCAdapter(Adapter):
             return self._delete(action, operation)
         problems = wi._check_payload(operation, action.get("payload") or {})
         try:
-            company = self._company()
+            company = self._company(action)
         except AdapterRefused as error:
             problems += error.problems
         pre = action.get("precondition") or {}
@@ -592,7 +639,7 @@ class BCAdapter(Adapter):
             if "description" in payload and _text(payload["description"], 100) is None:
                 problems.append("bc: description must be 1..100 characters")
         try:
-            company = self._company()
+            company = self._company(action)
         except AdapterRefused as error:
             problems += error.problems
         if problems:
@@ -660,7 +707,7 @@ class BCAdapter(Adapter):
         except AdapterRefused as error:
             problems += error.problems
         try:
-            company = self._company()
+            company = self._company(action)
         except AdapterRefused as error:
             problems += error.problems
         if problems:
@@ -701,7 +748,7 @@ class BCAdapter(Adapter):
             problems.append(f"bc: precondition.{spec['done_field']} must be 0 (nothing "
                             f"{spec['done_field']}) as read")
         try:
-            company = self._company()
+            company = self._company(action)
         except AdapterRefused as error:
             problems += error.problems
         if problems:
@@ -765,57 +812,287 @@ class SageAdapter(Adapter):
 
 # ------------------------------------------------------------------ Portal
 
+# The Portal's own write routes a ``workbench_write`` key may call (TASK-5101,
+# ``portal/src/lib/auth/workbench-write-routes.ts``), pinned at this commit of
+# petralabx/plx-customer-portal staging; each body is the route handler's own (read there).
+PORTAL_PIN = "plx-customer-portal staging a8b4b92 (2026-11-18)"
+# routes asked of the Portal team (not yet on the key's list): written only once the owner
+# names them here after the Portal exposed them (comma separated route ids)
+PORTAL_ROUTES_ENV = "PLX_PORTAL_WRITE_ROUTES"
+_PORTAL_ID = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
+_PORTAL_DATE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+_CONTACT = {"name": ("string", 200), "email": ("email",), "phone": ("string", 50),
+            "phone2": ("string", 50), "position": ("string", 120), "isPrimary": ("boolean",),
+            "isActive": ("boolean",)}
+_LOCATION = {"locationType": ("enum", ("SHIPPING", "BILLING", "BOTH")),
+             "label": ("string", 120), "addressLine1": ("string", 200),
+             "addressLine2": ("string", 200), "city": ("string", 100),
+             "stateProvince": ("string", 100), "postalCode": ("string", 20),
+             "country": ("string", 60), "phone": ("string", 50), "isDefault": ("boolean",)}
+PORTAL_ROUTES: Mapping[str, Mapping[str, Any]] = {
+    # header fields of a sales order (never lines, prices, terms or the commercial block);
+    # a status move is CONFIRMED or CANCELLED only (the route's ALLOWED_STATUS), no undo
+    "sales-order.update": {
+        "method": "PATCH", "path": "/api/mrp/sales-orders/{id}", "target": ("id",),
+        "fields": {"poReference": ("string", 100), "notes": ("text", 4000),
+                   "requiredDate": ("date_or_null",), "warehouseId": ("id_or_null",),
+                   "releaseRequired": ("boolean",),
+                   "status": ("enum", ("CONFIRMED", "CANCELLED"))},
+        "one_way": ("status",),
+        "record": ("app_sales_order", "order_number", "Sales order",
+                   {"poReference": "po_reference", "notes": "notes",
+                    "requiredDate": "required_date", "warehouseId": "warehouse_id",
+                    "releaseRequired": "release_required", "status": "status"})},
+    # a PO's dates, shipping and notes (never its costs, terms or an approval: the route
+    # records the approver as the key's user)
+    "purchase-order.update": {
+        "method": "PATCH", "path": "/api/mrp/purchase-orders/{id}", "target": ("id",),
+        "fields": {"expectedDate": ("date",), "shippingMethod": ("string", 100),
+                   "trackingNumber": ("string", 100), "notes": ("text", 4000),
+                   "warehouseId": ("id_or_null",), "shippedAt": ("instant_or_null",)},
+        "record": ("app_purchase_order", "po_number", "Purchase order",
+                   {"expectedDate": "expected_date", "shippingMethod": "shipping_method",
+                    "trackingNumber": "tracking_number", "notes": "notes",
+                    "warehouseId": "warehouse_id", "shippedAt": "shipped_at"})},
+    # a ship release of an order's lines to a saved ship-to (an address typed by the model
+    # is never sent); cancelled only in the Portal (DELETE stays session-only)
+    "ship-release.create": {
+        "method": "POST", "path": "/api/mrp/orders/{order_id}/ship-releases",
+        "target": ("order_id",), "required": ("customerLocationId", "lines"),
+        "fields": {"customerLocationId": ("id",), "requestedShipDate": ("date",),
+                   "notes": ("text", 2000), "releaseImmediately": ("boolean",),
+                   "lines": ("lines", {"orderLineRef": ("id",), "productId": ("id",),
+                                       "qtyAuthorized": ("positive",),
+                                       "uom": ("string", 20), "notes": ("text", 500)},
+                             ("orderLineRef", "productId", "qtyAuthorized", "uom"))}},
+    # release a draft ship release (the route takes no body)
+    "ship-release.update": {
+        "method": "PATCH", "path": "/api/mrp/orders/{order_id}/ship-releases/{release_id}",
+        "target": ("order_id", "release_id"), "fields": {}},
+    "activity.note": {
+        "method": "POST", "path": "/api/activity/{record_type}/{record_id}/note",
+        "target": ("record_type", "record_id"), "required": ("content",),
+        "fields": {"content": ("text", 4000)}},
+    # asked of the Portal team 11-18 (MASTER "PORTAL ENDPOINT LIST"): the session routes'
+    # own bodies (customerContactSchema, customerLocationSchema)
+    "customer-contact.create": {
+        "asked": True, "method": "POST", "path": "/api/operations/customers/{customer_id}/contacts",
+        "target": ("customer_id",), "required": ("name",), "fields": _CONTACT},
+    "customer-contact.update": {
+        "asked": True, "method": "PUT",
+        "path": "/api/operations/customers/{customer_id}/contacts/{contact_id}",
+        "target": ("customer_id", "contact_id"), "fields": _CONTACT,
+        "record": ("app_customer_contact", "name", "Contact",
+                   {"name": "name", "email": "email", "phone": "phone", "phone2": "phone2",
+                    "position": "position", "isPrimary": "is_primary",
+                    "isActive": "is_active"})},
+    "customer-location.create": {
+        "asked": True, "method": "POST",
+        "path": "/api/operations/customers/{customer_id}/locations",
+        "target": ("customer_id",), "required": ("addressLine1", "city"), "fields": _LOCATION},
+    "customer-location.update": {
+        "asked": True, "method": "PUT",
+        "path": "/api/operations/customers/{customer_id}/locations/{location_id}",
+        "target": ("customer_id", "location_id"), "fields": _LOCATION,
+        "record": ("app_customer_location", "label", "Ship-to",
+                   {"locationType": "location_type", "label": "label",
+                    "addressLine1": "address_line1", "addressLine2": "address_line2",
+                    "city": "city", "stateProvince": "state_province",
+                    "postalCode": "postal_code", "country": "country", "phone": "phone",
+                    "isDefault": "is_default"})},
+}
+
+
+def portal_routes(environ: Mapping[str, str]) -> dict[str, Mapping[str, Any]]:
+    """The Portal routes a write may use now: the key's list as pinned (``PORTAL_PIN``),
+    plus each asked route in scope in ``PORTAL_ROUTES_ENV`` once the Portal
+    exposed it."""
+    named = {n.strip() for n in str(environ.get(PORTAL_ROUTES_ENV) or "").split(",")}
+    return {k: v for k, v in PORTAL_ROUTES.items() if not v.get("asked") or k in named}
+
+
 class PortalAdapter(Adapter):
-    """A Customer Portal app-route write. The reporting API (``PLX_WORKBENCH_API_KEY``) is
-    read-only; the Portal's own app routes do write behind a signed-in Portal session
-    (``requireRole("STAFF")``), and the action catalog declares one of them as a real
-    capability (``portal.sales_order.set_customer_po``):
-    ``PATCH /api/mrp/sales-orders/{id} {"poReference": ...}``, editable until the order's
-    first shipment or cancel (else 409 ``ORDER_NOT_EDITABLE``). It is written only when the
-    order holds no PO reference as read (``precondition.prior.poReference`` empty: never an
-    overwrite, the catalog's ``target_has_no_po``). Undo: PATCH it back to the value read
-    (empty), while the order is still editable."""
+    """A Customer Portal record written through the Portal's own staff routes that take a
+    ``workbench_write`` key (TASK-5101; ``PORTAL_ROUTES``, pinned ``PORTAL_PIN``): the
+    same handler, guards and audit a person's session gets, run as the key's bound user,
+    each write logged by the Portal as an ``API_KEY_WRITE`` naming the key. Each operation
+    is one route id; its body holds only the fields the handler reads, checked here (type,
+    length, enum) before anything is shown. An update's values as read come from the
+    Portal's read replica (``operating.prepared_read``) with the row's ``updated_at``,
+    sent as ``expectedUpdatedAt`` (asked of the Portal: today its routes do not check a
+    version, so a record changed between the read and the confirm is overwritten). Undo:
+    an update's fields are patched back to the values as read (not a status move); a
+    create, a release or a note has no undo through the key (DELETE stays the session's).
+    Sign-offs (approve, sign, release with a password) are never written: the Portal would
+    record the key's user, not the person who confirmed."""
 
     system, kind = "portal", "portal_write"
-    documented = "Customer Portal app API PATCH /api/mrp/sales-orders/{id} (STAFF session)"
-    operations = {"sales_order_set_customer_po":
-                  "set an empty customer PO reference; undo: PATCH back to empty"}
-    structural = ("the Portal key this repo holds is the read-only reporting API key; no "
-                  "Portal session or service identity for the app routes")
-    needs = ("a Portal service identity with the STAFF role scoped to PATCH "
-             "/api/mrp/sales-orders/{id}, distinct from any person and from the MC key, "
-             "its credential outside git (none exists upstream)",
-             "Portal UAT (staging.plxcustomer.io) to verify against",
-             "a reviewed Portal write transport (the action path's portal_http adapter)")
+    documented = (f"Portal staff routes with a workbench_write key ({PORTAL_PIN}): "
+                  "PATCH /api/mrp/sales-orders/{id} | PATCH /api/mrp/purchase-orders/{id} | "
+                  "POST /api/mrp/orders/{id}/ship-releases | PATCH .../ship-releases/{rid} "
+                  "| POST /api/activity/{type}/{id}/note")
+    operations = {k: v["method"] + " " + v["path"] for k, v in PORTAL_ROUTES.items()}
+    TARGET_KEYS = frozenset(k for v in PORTAL_ROUTES.values() for k in v["target"])
+    structural = ("Portal writes are not opened (PLX_WRITES_LIVE_SYSTEMS=portal), or the "
+                  "Portal's address and workbench_write key are not configured")
+    needs = ("the Portal's base URL (PORTAL_WRITE_URL, https; staging first) and a "
+             "workbench_write key bound to a Portal staff user (PORTAL_WRITE_KEY), outside git",
+             "Portal opened to approved writes (PLX_WRITES_LIVE_SYSTEMS=portal) and "
+             "PLX_APPROVED_WRITES=portal_write",
+             "the Portal read replica for an update's values as read "
+             "(integrations.portal_replica: the host's replica settings and tunnel)")
+
+    def _route(self, action: Mapping[str, Any]) -> tuple[str, Mapping[str, Any]]:
+        operation = self._operation(action)
+        route = portal_routes(self.environ).get(operation)
+        if route is None:
+            raise AdapterRefused([f"portal: {operation} is not open on the Portal yet (asked "
+                                  f"of the Portal team; {PORTAL_ROUTES_ENV})"])
+        target = action.get("target") or {}
+        if set(target) != set(route["target"]):
+            raise AdapterRefused([f"portal: {operation} names {', '.join(route['target'])} "
+                                  "in its target and nothing else"])
+        return operation, route
+
+    @staticmethod
+    def _value(field: str, spec: tuple, value: Any) -> Any:
+        kind = spec[0]
+        bad = AdapterRefused([f"portal: {field} is not a valid {kind.replace('_', ' ')}"])
+        if value is None:
+            if kind.endswith("_or_null"):
+                return None
+            raise bad
+        if kind in ("string", "text"):
+            text = _text(value, spec[1])
+            if text is None or kind == "string" and ("\n" in text or "\r" in text):
+                raise bad
+            return text
+        if kind == "email":
+            if not isinstance(value, str) or not _EMAILISH.fullmatch(value.strip()):
+                raise bad
+            return value.strip().lower()
+        if kind == "boolean":
+            if not isinstance(value, bool):
+                raise bad
+            return value
+        if kind in ("id", "id_or_null"):
+            if not isinstance(value, str) or not _PORTAL_ID.fullmatch(value):
+                raise bad
+            return value
+        if kind in ("date", "date_or_null"):
+            if not isinstance(value, str) or not _PORTAL_DATE.fullmatch(value):
+                raise bad
+            try:
+                datetime.strptime(value, "%Y-%m-%d")
+            except ValueError:
+                raise bad from None
+            return value
+        if kind == "instant_or_null":
+            if not _instant_text(value) or "T" not in value:
+                raise bad
+            return value
+        if kind == "enum":
+            if value not in spec[1]:
+                raise AdapterRefused([f"portal: {field} must be one of {', '.join(spec[1])}"])
+            return value
+        if kind == "positive":
+            # a quantity: exact decimal text or an integer, sent as JSON number text
+            if isinstance(value, bool) or not isinstance(value, (int, str, Decimal)):
+                raise bad
+            try:
+                number = Decimal(str(value))
+            except ArithmeticError:
+                raise bad from None
+            if not number.is_finite() or number <= 0 or abs(number.as_tuple().exponent) > 6:
+                raise bad
+            return number
+        raise bad
+
+    def _body(self, operation: str, route: Mapping[str, Any], payload: Any) -> dict[str, Any]:
+        if not isinstance(payload, Mapping):
+            raise AdapterRefused(["portal: payload must be an object"])
+        fields = route["fields"]
+        _only(payload, tuple(fields), "portal", operation)
+        lacking = [k for k in route.get("required", ()) if k not in payload]
+        if lacking:
+            raise AdapterRefused([f"portal: {operation} needs {', '.join(lacking)}"])
+        if fields and not payload:
+            raise AdapterRefused([f"portal: {operation} sets nothing"])
+        body: dict[str, Any] = {}
+        for key, value in payload.items():
+            spec = fields[key]
+            if spec[0] != "lines":
+                body[key] = self._value(key, spec, value)
+                continue
+            if not isinstance(value, list) or not 1 <= len(value) <= 100:
+                raise AdapterRefused([f"portal: {key} must be 1..100 lines"])
+            rows = []
+            for line in value:
+                if not isinstance(line, Mapping):
+                    raise AdapterRefused([f"portal: a line of {key} is not an object"])
+                _only(line, tuple(spec[1]), "portal", f"{operation} line")
+                if any(k not in line for k in spec[2]):
+                    raise AdapterRefused([f"portal: a line needs {', '.join(spec[2])}"])
+                rows.append({k: self._value(k, spec[1][k], v) for k, v in line.items()})
+            body[key] = rows
+        return body
 
     def request(self, action: Mapping[str, Any]) -> dict[str, Any]:
-        self._operation(action)
-        order = str((action.get("target") or {}).get("order_id") or "")
-        if not _SLUG.fullmatch(order):
-            raise AdapterRefused(["portal: target.order_id missing or malformed"])
+        operation, route = self._route(action)
+        target = action.get("target") or {}
+        ids = {}
+        for key in route["target"]:
+            value = target.get(key)
+            if not isinstance(value, str) or not _PORTAL_ID.fullmatch(value):
+                raise AdapterRefused([f"portal: target.{key} missing or malformed"])
+            ids[key] = value
+        body = self._body(operation, route, action.get("payload") or {})
+        if route.get("record") is not None:
+            # an update is shown and undone against the record as read (the replica)
+            pre = action.get("precondition") or {}
+            seen = pre.get("updated_at")
+            if not isinstance(seen, str) or not _instant_text(seen):
+                raise AdapterRefused(["portal: precondition.updated_at (the record as read) "
+                                      "is required"])
+            if not set(body) & set(route.get("one_way", ())):
+                _prior(action, list(body), "portal")
+            body["expectedUpdatedAt"] = seen
+        from operating import write_intents as wi
+        # ``body_json`` is the wire text: a quantity as an exact JSON number, never a float
+        return {"method": route["method"], "url": route["path"].format(**ids),
+                "headers": {"Content-Type": "application/json"},
+                "body": _plain_json(body), "body_json": wi._json(body)}
+
+    def people(self, action: Mapping[str, Any]) -> list[str]:
+        # every address a record carries reaches that person: cleared like a recipient
         payload = action.get("payload") or {}
-        _only(payload, ("poReference",), "portal", "sales_order_set_customer_po")
-        po = _text(payload.get("poReference"), 100)
-        if po is None:
-            raise AdapterRefused(["portal: poReference empty or longer than 100"])
-        prior = _prior(action, ["poReference"], "portal")["poReference"]
-        if prior not in (None, ""):
-            raise AdapterRefused(["portal: the order already holds a PO reference (never "
-                                  "overwritten)"])
-        return {"method": "PATCH", "url": f"/api/mrp/sales-orders/{order}",
-                "headers": {"Content-Type": "application/json"}, "body": {"poReference": po}}
+        return [v for v in payload.values() if isinstance(v, str) and _EMAILISH.fullmatch(v)] \
+            if isinstance(payload, Mapping) else ["(malformed)"]
 
     def undo_request(self, action: Mapping[str, Any], request: Mapping[str, Any]
                      ) -> dict[str, Any] | None:
-        prior = _prior(action, ["poReference"], "portal")["poReference"]
-        return {"method": "PATCH", "url": request["url"],
+        route = PORTAL_ROUTES.get(str(action.get("operation") or "")) or {}
+        sent = {k for k in request.get("body") or {} if k != "expectedUpdatedAt"}
+        if route.get("record") is None or not sent or sent & set(route.get("one_way", ())):
+            return None
+        from operating import write_intents as wi
+        prior = _prior(action, sorted(sent), "portal")
+        return {"method": request["method"], "url": request["url"],
                 "headers": {"Content-Type": "application/json"},
-                "body": {"poReference": prior}}
+                "body": _plain_json(prior), "body_json": wi._json(prior)}
 
     def undo_note(self) -> str:
-        return ("PATCH the PO reference back to empty while the order is editable (before "
-                "its first shipment or cancel); the route's acceptance of an empty value is "
-                "unverified.")
+        return ("A created record, a released ship release, a note or a status move is undone "
+                "in the Portal by a person (the key cannot delete).")
+
+
+def _plain_json(value: Any) -> Any:
+    """``value`` as JSON-ready data, a Decimal as its exact text (never a float)."""
+    if isinstance(value, Mapping):
+        return {k: _plain_json(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_plain_json(v) for v in value]
+    return format(value, "f") if isinstance(value, Decimal) else value
 
 
 # ------------------------------------------------------------------ FileMaker
@@ -838,6 +1115,7 @@ class FileMakerAdapter(Adapter):
                   "layouts/{layout}/records[/{recordId}])")
     operations = {"record_create": "new record; undo: DELETE the record",
                   "record_edit": "edit fields with modId; undo: PATCH back to prior values"}
+    TARGET_KEYS = frozenset({"database", "layout", "record_id"})
     structural = "no FileMaker Server host or Data API account in this repo"
     needs = ("the FileMaker Server host, database and a Data API account with the fmrest "
              "extended privilege on the target layouts (environment file, outside git); "
@@ -905,6 +1183,7 @@ class MailAdapter(Adapter):
     system, kind = "graph", "send_mail"
     documented = "Microsoft Graph v1.0 POST /users/{sender}/sendMail"
     operations = {"send_email": "send as the owner; no undo (mail cannot be recalled)"}
+    TARGET_KEYS = frozenset({"sender"})
     needs = ("the owner's OK to send as them (PLX_ACTIONS_SENDERS lists their mailbox)",
              "PLX_ACTIONS_LIVE=1 and the send app holding Mail.Send (graph_send probe)")
 
@@ -923,15 +1202,40 @@ class MailAdapter(Adapter):
 
     def request(self, action: Mapping[str, Any]) -> dict[str, Any]:
         from integrations.graph_send import request_for
+        self._operation(action)
         payload = action.get("payload") or {}
         sender = str((action.get("target") or {}).get("sender") or "")
         if "@" not in sender or not payload.get("to") or not payload.get("body"):
             raise AdapterRefused(["mail: sender, recipients or body missing"])
-        built = request_for("send_email", sender, payload)
+        # the request as shown: each attached file by its name, type and size
+        built = request_for("send_email", sender, {**payload, "attachments": [
+            {"name": a.get("name"), "content_type": a.get("content_type"),
+             "size": a.get("size")} for a in payload.get("attachments") or ()]})
         return {**built, "sender": sender, "payload": dict(payload)}
 
+    @staticmethod
+    def _files(payload: Mapping[str, Any]) -> Optional[dict[str, Any]]:
+        """``payload`` as the send takes it: each attachment's bytes (``content``); None
+        unless they are still exactly the file the person confirmed (its SHA-256)."""
+        import base64
+        files = []
+        for a in payload.get("attachments") or ():
+            try:
+                data = base64.b64decode(str(a.get("content_b64") or ""), validate=True)
+            except ValueError:
+                return None
+            if not data or hashlib.sha256(data).hexdigest() != a.get("sha256"):
+                return None
+            files.append({"name": a["name"], "content_type": a["content_type"],
+                          "content": data})
+        return {**payload, "attachments": files} if files else dict(payload)
+
     def perform(self, request: Mapping[str, Any], key: str) -> dict[str, Any]:
-        out = self._sender().dispatch("send_email", request["sender"], request["payload"])
+        payload = self._files(request["payload"])
+        if payload is None:   # nothing leaves: the file is not the one confirmed
+            return {"status": "failed", "http_status": None,
+                    "missing": ["an attachment is not the file you confirmed"]}
+        out = self._sender().dispatch("send_email", request["sender"], payload)
         status = {"sent": "done", "dry_run": "not_performed"}.get(out.get("status"),
                                                                   out.get("status"))
         return {"status": status if status in ("done", "failed", "unknown", "not_performed")
@@ -946,20 +1250,20 @@ class TeamsAdapter(Adapter):
     """Post the prepared Teams message as the owner: a chat message (``POST /chats/{id}/
     messages``) or a channel message (``POST /teams/{team}/channels/{channel}/messages``).
     Graph takes both only on a delegated token of the person (app-only posting exists only
-    for migration, ``Teamwork.Migrate.All``, never used). Undo: the sender soft-deletes
-    the message (``.../messages/{id}/softDelete``, delegated)."""
+    for migration, ``Teamwork.Migrate.All``, never used). No undo: like a sent mail, a
+    posted message is not recalled from the Workbench (``undo_note``)."""
 
     system, kind = "graph", "send_teams"
     documented = ("Microsoft Graph v1.0 POST /chats/{chat-id}/messages | POST /teams/{team-id}/"
                   "channels/{channel-id}/messages (delegated only)")
-    operations = {"chat_message": "post to a chat; undo: softDelete as the sender",
-                  "channel_message": "post to a channel; undo: softDelete as the sender"}
+    operations = {"chat_message": "post to a chat as the person; no undo (not recalled)",
+                  "channel_message": "post to a channel as the person; no undo (not recalled)"}
+    TARGET_KEYS = frozenset({"chat_id", "team_id", "channel_id", "user"})
     structural = ("Graph refuses app-only chat and channel posts; no delegated "
                   "ChatMessage.Send/ChannelMessage.Send token here")
     needs = ("a delegated token of the owner with ChatMessage.Send (chats) and "
-             "ChannelMessage.Send (channels), plus Chat.ReadWrite and ChannelMessage.ReadWrite "
-             "for the softDelete undo: OAuth consent on the AZURE_* app and a refresh token "
-             "held outside git",
+             "ChannelMessage.Send (channels): OAuth consent on the AZURE_* app and the "
+             "person's one-time Connect Teams (integrations.teams_delegated)",
              "a reviewed Graph write transport for these shapes (live_source_guard.send_action "
              "takes only the chat post today)")
     _CHANNEL = re.compile(r"^19:[A-Za-z0-9_.@-]{1,200}$")
@@ -977,26 +1281,20 @@ class TeamsAdapter(Adapter):
             chat = str(payload.get("chat_id") or "")
             if not _GRAPH_ID.fullmatch(chat):
                 raise AdapterRefused(["teams: chat missing or malformed"])
-            return request_for("teams_message", "me@unknown", {"chat_id": chat, "body": body})
+            # ``as``: whose own sign-in posts it (never sent: the transport's choice of token)
+            return {**request_for("teams_message", "me@unknown", {"chat_id": chat,
+                                                                  "body": body}),
+                    "as": str((action.get("target") or {}).get("user")).lower()}
         team, channel = str(payload.get("team_id") or ""), str(payload.get("channel_id") or "")
         if not _GUID.fullmatch(team) or not self._CHANNEL.fullmatch(channel):
             raise AdapterRefused(["teams: team or channel missing or malformed"])
         return {"method": "POST",
                 "url": f"{GRAPH}/teams/{team}/channels/{quote(channel, safe=':@')}/messages",
-                "body": {"body": {"contentType": "text", "content": body}}}
-
-    def undo_request(self, action: Mapping[str, Any], request: Mapping[str, Any]
-                     ) -> dict[str, Any] | None:
-        if "/teams/" in request["url"]:
-            return {"method": "POST", "url": f"{request['url']}/{{response:id}}/softDelete",
-                    "body": None}
-        user = quote(str((action.get("target") or {}).get("user")).lower(), safe="@+'")
-        chat = request["url"].rsplit("/chats/", 1)[1].rsplit("/messages", 1)[0]
-        return {"method": "POST", "url": f"{GRAPH}/users/{user}/chats/{chat}/messages/"
-                "{response:id}/softDelete", "body": None}
+                "body": {"body": {"contentType": "text", "content": body}},
+                "as": str((action.get("target") or {}).get("user")).lower()}
 
     def undo_note(self) -> str:
-        return "The sender soft-deletes the message (Teams shows it was deleted)."
+        return "A posted Teams message cannot be recalled from here."
 
 
 # ------------------------------------------------------------------ Planner, calendar
@@ -1017,6 +1315,8 @@ class PlannerAdapter(Adapter):
              "verified 11-04) used for Planner writes: Vince's OK covers it",
              "Planner opened to approved writes (PLX_WRITES_LIVE_SYSTEMS=planner)")
     UPDATE_FIELDS = ("title", "dueDateTime", "percentComplete", "bucketId")
+    # the plan of a new task is its payload's planId (the one posted), never a target key
+    TARGET_KEYS = frozenset({"task_id"})
 
     def _check(self, payload: Mapping[str, Any]) -> None:
         if "title" in payload and _text(payload["title"], 255) is None:
@@ -1102,6 +1402,7 @@ class CalendarAdapter(Adapter):
              "owners' mailboxes",
              "the calendar opened to approved writes (PLX_WRITES_LIVE_SYSTEMS=calendar)")
     FIELDS = ("subject", "body", "start", "end", "location", "attendees")
+    TARGET_KEYS = frozenset({"user", "event_id"})
 
     def _graph(self, payload: Mapping[str, Any]) -> dict[str, Any]:
         out: dict[str, Any] = {}
@@ -1200,13 +1501,17 @@ class SharePointAdapter(Adapter):
                   ".../items/{id}/fields | PUT /drives/{drive}/items/{parent}:/{name}:/content")
     operations = {"list_item_create": "new list item; undo: DELETE the item",
                   "list_item_update": "edit list columns with etag; undo: PATCH back",
-                  "file_upload": "new file, never a replace; undo: DELETE with eTag"}
+                  "file_upload": "new file, never a replace; undo: DELETE with eTag",
+                  "file_replace": "a document's new content with If-Match its eTag as read; "
+                                  "undo: PUT the prior bytes back with the eTag answered"}
     structural = ("SharePoint is not opened to approved writes (PLX_WRITES_LIVE_SYSTEMS), "
                   "and no app holds a SharePoint write grant")
     needs = ("Sites.Selected with the write role granted per target site (or "
              "Sites.ReadWrite.All) on the AZURE_* app, admin-consented: Vince's OK",
              "SharePoint opened to approved writes (PLX_WRITES_LIVE_SYSTEMS=sharepoint)")
     MAX_BYTES = 4 * 1024 * 1024
+    # a file's name is the record as read (the card's ``record``), never a target key
+    TARGET_KEYS = frozenset({"site_id", "list_id", "item_id", "drive_id", "parent_id"})
     _COLUMN = re.compile(r"^[A-Za-z][A-Za-z0-9_]{0,63}$")
     _SYSTEM_COLUMNS = frozenset(c.lower() for c in (
         "Author", "Editor", "Created", "Modified", "ContentType", "ContentTypeId",
@@ -1270,6 +1575,8 @@ class SharePointAdapter(Adapter):
         payload = action.get("payload") or {}
         if operation == "file_upload":
             return self._upload(action, payload)
+        if operation == "file_replace":
+            return self._replace(action, payload)
         base = self._list_base(action)
         fields = self._columns(payload)
         if operation == "list_item_create":
@@ -1318,8 +1625,55 @@ class SharePointAdapter(Adapter):
                 "headers": {"Content-Type": kind}, "body_b64": raw,
                 "body_sha256": hashlib.sha256(data).hexdigest(), "body_bytes": len(data)}
 
+    def _bytes(self, raw: Any, what: str) -> bytes:
+        import base64
+        import binascii
+        try:
+            data = base64.b64decode(raw, validate=True) if isinstance(raw, str) else None
+        except (binascii.Error, ValueError):
+            data = None
+        if not data or len(data) > self.MAX_BYTES:
+            raise AdapterRefused([f"sharepoint: {what} missing, not base64 or over 4 MiB"])
+        return data
+
+    def _replace(self, action: Mapping[str, Any], payload: Mapping[str, Any]) -> dict[str, Any]:
+        """A document's whole new content (``doc_edit`` made it from the bytes as read):
+        ``PUT /drives/{drive}/items/{item}/content`` with ``If-Match`` the eTag as read,
+        so a file someone changed since is refused (412), never overwritten. The prior
+        bytes (``precondition.prior.content_b64``) are required: they are the undo."""
+        import hashlib
+        _only(payload, ("content_b64", "content_type"), "sharepoint", "file_replace")
+        target = action.get("target") or {}
+        drive, item = str(target.get("drive_id") or ""), str(target.get("item_id") or "")
+        if not _GRAPH_ID.fullmatch(drive) or not _GRAPH_ID.fullmatch(item):
+            raise AdapterRefused(["sharepoint: drive_id or item_id missing or malformed"])
+        etag = (action.get("precondition") or {}).get("etag")
+        if not isinstance(etag, str) or not etag or len(etag) > 300 or "\n" in etag \
+                or "\r" in etag:
+            raise AdapterRefused(["sharepoint: precondition.etag (the document as read) is "
+                                  "required"])
+        data = self._bytes(payload.get("content_b64"), "content")
+        self._bytes(_prior(action, ["content_b64"], "sharepoint")["content_b64"],
+                    "the prior content")
+        kind = payload.get("content_type") or "application/octet-stream"
+        if not isinstance(kind, str) or not re.fullmatch(r"[a-z]+/[A-Za-z0-9.+-]{1,100}", kind):
+            raise AdapterRefused(["sharepoint: content_type malformed"])
+        return {"method": "PUT",
+                "url": f"{GRAPH}/drives/{quote(drive, safe='!-_')}/items/"
+                       f"{quote(item, safe='!-_')}/content",
+                "headers": {"Content-Type": kind, "If-Match": etag},
+                "body_b64": payload["content_b64"],
+                "body_sha256": hashlib.sha256(data).hexdigest(), "body_bytes": len(data)}
+
     def undo_request(self, action: Mapping[str, Any], request: Mapping[str, Any]
                      ) -> dict[str, Any] | None:
+        if request["method"] == "PUT" and request["url"].endswith("/content") \
+                and ":/" not in request["url"].split("/items/", 1)[1]:
+            prior = _prior(action, ["content_b64"], "sharepoint")["content_b64"]
+            return {"method": "PUT", "url": request["url"],
+                    "headers": {"Content-Type": request["headers"]["Content-Type"],
+                                "If-Match": "{response:eTag}"},
+                    "body_b64": prior}
         if request["method"] == "PUT":
             drive = request["url"].split("/drives/", 1)[1].split("/", 1)[0]
             return {"method": "DELETE", "url": f"{GRAPH}/drives/{drive}/items/{{response:id}}",
@@ -1332,8 +1686,9 @@ class SharePointAdapter(Adapter):
                 "body": self._columns(_prior(action, list(request["body"]), "sharepoint"))}
 
     def undo_note(self) -> str:
-        return ("Delete the created item or uploaded file (refused once someone changed the "
-                "file), or patch the changed columns back.")
+        return ("Delete the created item or uploaded file, put a replaced document's prior "
+                "content back (each refused once someone changed it since), or patch the "
+                "changed columns back.")
 
 
 ADAPTER_TYPES = (MCApprovalAdapter, MCTaskAdapter, BCAdapter, SageAdapter, PortalAdapter,
@@ -1341,17 +1696,25 @@ ADAPTER_TYPES = (MCApprovalAdapter, MCTaskAdapter, BCAdapter, SageAdapter, Porta
                  SharePointAdapter)
 
 
-def default_adapters(environ: Mapping[str, str] | None = None) -> dict[str, Adapter]:
+def default_adapters(environ: Mapping[str, str] | None = None,
+                     state: "Path | None" = None) -> dict[str, Adapter]:
     """The adapters product code uses. A system the owner opened to approved writes
-    (``live_source_guard.WRITES_FLAG``: Planner, calendar, SharePoint, BC) gets its guarded
-    write transport (``integrations.write_transports``); every other one but mail has none."""
+    (``live_source_guard.WRITES_FLAG``: Planner, calendar, SharePoint, BC, Portal) gets its guarded
+    write transport (``integrations.write_transports``); Teams, once ``teams`` is opened
+    there and the write ``state`` is known, posts as each person on their own sign-in
+    (``integrations.teams_delegated``); every other one but mail has none."""
     from integrations import write_transports as wt
+    from integrations.live_source_guard import WRITES_FLAG
     env = dict(os.environ if environ is None else environ)
+    opened = {s.strip().lower() for s in str(env.get(WRITES_FLAG) or "").split(",")}
     out: dict[str, Adapter] = {}
     for cls in ADAPTER_TYPES:
         transport = wt.for_system(cls.system, env) if cls.system in (
-            "planner", "calendar", "sharepoint", "bc") else None
+            "planner", "calendar", "sharepoint", "bc", "portal") else None
         if cls is MCTaskAdapter and env.get("PLX_AUTOPILOT_MC_LIVE") == "1":
             transport = wt.MCTaskTransport(env)
+        if cls is TeamsAdapter and state is not None and "teams" in opened:
+            from integrations import teams_delegated as td
+            transport = td.Transport(env, td.Store(Path(state)))
         out[cls.kind] = cls(environ=env) if cls is MailAdapter else cls(transport, environ=env)
     return out

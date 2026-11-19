@@ -21,6 +21,7 @@ from operating.pg import business_views as bv
 from operating.pg import sql_views
 from operating.tests import test_business_views as tbv
 from operating.tests import test_ontology_tools_table as tab
+from operator_api import page_sql as ps
 
 FULL, OPS, NOBODY = tab.FULL, tab.OPS, tab.NOBODY
 MORE = 60              # more late POs beside the fixture's
@@ -344,10 +345,15 @@ class PageDoor(unittest.TestCase):
             def __init__(self):
                 self._lock, self._recent = threading.Lock(), {}
                 self.access_worker, self.reads = Worker(), None
+                self.warmed = []
+
+            def warm(self, reader, **kw):
+                self.warmed.append(reader.key)
+                return False
 
             def freshness(self, *a, **k):
                 return m.Freshness()
-        return Screens(), SimpleNamespace(key="r", display_name="Pat Reader")
+        return Screens(), SimpleNamespace(key="r", display_name="Pat Reader", session=None)
 
     def test_home_and_late_list_numbers_are_the_truth_for_each_reader(self):
         from operator_api.serving import LATE_LIST_LIMIT
@@ -365,9 +371,12 @@ class PageDoor(unittest.TestCase):
                     self.assertEqual((na.status, na.late_total), ("read", total))
                     self.assertEqual([p.label for p in na.late_pos],
                                      [f"PO {n}" for n in self.late_list(actor, LATE_LIST_LIMIT)])
+                    # each opens its PO page through the door (not the old record page)
                     self.assertTrue(all(p.object_id.startswith("PurchaseOrder:")
-                                        and p.open_url.startswith("/object/PurchaseOrder/")
-                                        for p in na.late_pos))
+                                        and p.open_url == ps.account_url(
+                                            "purchase_order", p.sources[0].handle)
+                                        for p in na.late_pos), [p.open_url
+                                                                for p in na.late_pos])
                     self.assertLess(ms, 2000)
                     seen, offset = [], 0
                     while True:
@@ -381,6 +390,59 @@ class PageDoor(unittest.TestCase):
                     self.assertEqual(len(set(seen)), total)
             one = screens.late_list(reader, offset=0, limit=25).items[0]
             self.assertTrue(one.amount is None or one.amount.currency)
+
+    def test_a_record_id_opens_its_rows_page_only_for_a_reader_who_may_read_it(self):
+        """A link naming a record (the old record page's id) opens the page of the door's
+        row it was read into; a reader who may not read the row, an id no row was read
+        from and a kind the door has no page for all say not found (the handle found for
+        the record never reaches the reader)."""
+        from operator_api import backend_serving
+        marked = self.truth("SELECT p.handle, l.object_ids FROM {biz}.purchase_orders p "
+                            "JOIN {biz}.lineage l ON l.view = 'purchase_orders' AND "
+                            "l.handle = p.handle WHERE p.po_number = %s", ("PO-L00",))
+        plain = self.truth("SELECT p.handle, l.object_ids FROM {biz}.purchase_orders p "
+                           "JOIN {biz}.lineage l ON l.view = 'purchase_orders' AND "
+                           "l.handle = p.handle WHERE p.po_number = %s", ("PO-L01",))
+        (mh, mids), (h, ids) = marked[0], plain[0]
+        screens, reader = self.screens(FULL)
+        for oid in ids:
+            self.assertEqual(ps.resolve(screens, reader, "purchase_order", oid), h)
+        page = ps.order(screens, reader, "purchase_order", ps.resolve(
+            screens, reader, "purchase_order", ids[0]))
+        self.assertEqual(page.title, "PO-L01")
+        with mock.patch.dict("os.environ", {"PLX_PAGES_DOOR": "1"}):
+            got = backend_serving.ServingMixin.biz_page(screens, reader, "purchase_order",
+                                                        record=ids[0])
+            self.assertEqual(got.title, page.title)
+            ops_screens, ops_reader = self.screens(OPS)
+            from operator_api import errors
+            with self.assertRaises(errors.UserFacing) as no:
+                backend_serving.ServingMixin.biz_page(ops_screens, ops_reader,
+                                                      "purchase_order", record=mids[0])
+            self.assertEqual(no.exception.status, 404)
+            self.assertNotIn(mh, str(no.exception))
+            for kind, oid in (("purchase_order", "PurchaseOrder:none:{}"),
+                              ("sales_order", ids[0]), ("chain", ids[0])):
+                with self.subTest(kind=kind, oid=oid), self.assertRaises(errors.UserFacing):
+                    backend_serving.ServingMixin.biz_page(screens, reader, kind, record=oid)
+        # one page kind at a time: the kinds named are on, every other says pages_off and
+        # its links stay on the record's own page; the search box and Home need them all
+        with mock.patch.dict("os.environ", {"PLX_PAGES_DOOR": "customer,chain,sales_order"}):
+            self.assertEqual((ps.on("customer"), ps.on("sales_order"), ps.on("purchase_order"),
+                              ps.on("bogus"), ps.on()), (True, True, False, False, False))
+            with self.assertRaises(errors.UserFacing) as off:
+                backend_serving.ServingMixin.biz_page(screens, reader, "purchase_order",
+                                                      record=ids[0])
+            self.assertEqual(off.exception.code, "pages_off")
+            self.assertEqual(ps.record_url("purchase_orders", h, "PurchaseOrder", ids[0]),
+                             ps.object_url("PurchaseOrder", ids[0]))
+            self.assertEqual(ps.record_url("sales_orders", "api://so/1"),
+                             ps.account_url("sales_order", "api://so/1"))
+        for bad in ({"resolve": {"view": "lineage", "object_id": "x"}},
+                    {"resolve": {"view": "purchase_orders", "object_id": ""}},
+                    {"resolve": {"view": "purchase_orders", "object_id": "x"}, "reads": []}):
+            self.assertEqual(pr.PageReads(self.base()).call(bad, FULL)["error"]["code"],
+                             "invalid_request")
 
     def test_a_failed_read_says_unavailable_never_none(self):
         from operator_api import errors
@@ -424,6 +486,8 @@ class PageDoor(unittest.TestCase):
                         screens, reader = self.screens(actor)
                         na = screens.home(reader).needs_attention
                         self.assertEqual((na.status, na.late_total), ("read", len(handles)))
+                        # Home still reads the reader's other screens ahead
+                        self.assertEqual(screens.warmed, ["r"])
                         self.assertEqual([r.kind for r in na.at_risk],
                                          ["quality_hold"] if sees_one else [])
                         b = screens.briefing(reader)
@@ -719,7 +783,9 @@ class PageDoor(unittest.TestCase):
                                      .get("customer_order_late"), 1)
                     self.assertEqual(screens.briefing_items(
                         reader, "customer_order_late").total, 1)
-                    # another reader's rule switches nothing on for this one
+                    # another reader's rule switches nothing on for this one (a fresh
+                    # server: the reader's scope is kept for a screen's burst of reads)
+                    screens, reader = self.screens(FULL)
                     other = SimpleNamespace(path=path, reader="someone-else")
                     with mock.patch("operator_api.watch.view_context", return_value=other):
                         self.assertNotIn("customer_order_late",
@@ -733,3 +799,125 @@ class PageDoor(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ReaderScopeBurst(unittest.TestCase):
+    """11-18 walk: one Home visit asked the reader's scope (visit, routing, rule types) 7
+    times on the access workers (at-risk, briefing, each group's next page). It is read
+    once per reader for SCOPE_SECONDS; never shared between readers, sign-in modes or
+    backends; a visit marked seen reads it again; a scope that could not be read is not
+    kept."""
+
+    def test_one_read_per_reader_burst_and_none_shared(self):
+        jobs = []
+
+        class Worker:
+            served: set = set()
+
+            def run(self, reader, job, timeout, priority=0):
+                jobs.append(reader.key)
+                if reader.key == "broken":
+                    raise TimeoutError("busy")
+                return ps.ReaderScope("2026-11-18", {"routed": reader.key}, [])
+
+        def who(key, mode="dev"):
+            return SimpleNamespace(key=key, mode=mode,
+                                   session=SimpleNamespace(principals=(key,)))
+        one, other = SimpleNamespace(access_worker=Worker()), SimpleNamespace(
+            access_worker=Worker())
+        for _ in range(7):
+            self.assertEqual(ps.reader_scope(one, who("a")).routing, {"routed": "a"})
+        self.assertEqual(jobs, ["a"])
+        self.assertEqual(ps.reader_scope(one, who("b")).routing, {"routed": "b"})
+        ps.reader_scope(one, who("a", mode="entra"))
+        ps.reader_scope(other, who("a"))
+        self.assertEqual(jobs, ["a", "b", "a", "a"])
+        ps.forget_scope(one, who("a"))       # their visit marked seen
+        ps.reader_scope(one, who("a"))
+        self.assertEqual(jobs[-1:], ["a"])
+        self.assertEqual(len(jobs), 5)
+        with mock.patch.object(ps, "SCOPE_SECONDS", 0):
+            time.sleep(0.01)
+            ps.reader_scope(one, who("b"))
+        self.assertEqual(len(jobs), 6)
+        for _ in range(2):   # unreadable: refused each time, never kept
+            with self.assertRaises(ps.PageDoorUnavailable):
+                ps.reader_scope(one, who("broken"))
+        self.assertEqual(jobs[-2:], ["broken", "broken"])
+
+    def test_a_watch_rule_added_is_read_on_the_next_screen_not_after_the_burst(self):
+        import tempfile
+        from pathlib import Path
+        with tempfile.TemporaryDirectory() as tmp:
+            rules = Path(tmp) / "watch.sqlite"
+            rules.write_text("one rule")
+            jobs = []
+
+            class Worker:
+                def run(self, reader, job, timeout, priority=0):
+                    jobs.append(1)
+                    return ps.ReaderScope(None, None, [str(len(jobs))],
+                                          (rules, ps._file_stamp(rules)))
+            backend = SimpleNamespace(access_worker=Worker())
+            reader = SimpleNamespace(key="r", mode="dev",
+                                     session=SimpleNamespace(principals=("r",)))
+            self.assertEqual(ps.reader_scope(backend, reader).enabled, ("1",))
+            self.assertEqual(ps.reader_scope(backend, reader).enabled, ("1",))
+            Path(str(rules) + "-wal").write_text("a rule added")   # a SQLite write
+            self.assertEqual(ps.reader_scope(backend, reader).enabled, ("2",))
+            rules.write_text("two rules, checkpointed")
+            self.assertEqual(ps.reader_scope(backend, reader).enabled, ("3",))
+            self.assertEqual(ps.reader_scope(backend, reader).enabled, ("3",))
+
+
+class ColdReaderBudget(unittest.TestCase):
+    """A reader's first door read on a worker also decides their workspace and policy:
+    it waits up to PAGE_COLD_TIMEOUT (11-18 walk: the late list's first read ran past 5 s
+    and said "could not be read"); once the worker holds their workspace, PAGE_TIMEOUT."""
+
+    def test_only_a_reader_served_on_every_access_worker_gets_the_short_budget(self):
+        # a workspace made but its first job still deciding (in ``cache``, not ``served``)
+        # is cold too: 11-18 walk, the sign-in's policy job held it and the late list's
+        # first read ran out at 5 s behind it; with several access workers on one queue
+        # the read goes to whichever is free, so it is warm only once warm on each
+        from operator_api.serving import Worker
+        first = Worker(lambda session: None)
+        second = Worker(lambda session: None, first.jobs)
+        first.cache = {"p:a,p:b": object(), "p:c": object()}
+        first.served = {"p:a,p:b"}
+        warm = SimpleNamespace(session=SimpleNamespace(principals=("p:b", "p:a")))
+        cold = SimpleNamespace(session=SimpleNamespace(principals=("p:c",)))
+        self.assertEqual(ps._timeout(first, warm), ps.PAGE_COLD_TIMEOUT)   # not on second
+        second.served = {"p:a,p:b", "p:c"}
+        self.assertEqual(ps._timeout(first, warm), ps.PAGE_TIMEOUT)
+        self.assertEqual(ps._timeout(second, warm), ps.PAGE_TIMEOUT)
+        self.assertEqual(ps._timeout(second, cold), ps.PAGE_COLD_TIMEOUT)
+        self.assertGreater(ps.PAGE_COLD_TIMEOUT, ps.PAGE_TIMEOUT)
+        self.assertEqual(ps._timeout(SimpleNamespace(), cold), ps.PAGE_TIMEOUT)   # unknown
+        self.assertEqual(ps._timeout(first, None), ps.PAGE_TIMEOUT)
+        lone = Worker(lambda session: None)   # a queue of its own: its own served only
+        lone.served = {"p:c"}
+        self.assertEqual(ps._timeout(lone, cold), ps.PAGE_TIMEOUT)
+
+    def test_the_watchlist_on_the_access_worker_gets_the_same_cold_budget(self):
+        """11-18 staff walk: Home's Watching read (/api/watch) 503'd at 5 s while the
+        reader's first job on the access worker was still deciding their policy."""
+        from operator_api import watch
+        asked = []
+
+        class Worker:
+            stopped = threading.Event()
+
+            def warm_for(self, reader):
+                return tuple(reader.session.principals) == ("p:a",)
+
+            def run(self, reader, job, timeout, priority=0):
+                asked.append(timeout)
+                return "ok"
+
+        backend = SimpleNamespace(access_worker=Worker())
+        for principals in (("p:a",), ("p:c",)):
+            reader = SimpleNamespace(session=SimpleNamespace(principals=principals))
+            self.assertEqual(watch.WatchMixin._watch(backend, reader, lambda c: c, fast=True),
+                             "ok")
+        self.assertEqual(asked, [watch.WATCH_SECONDS, ps.PAGE_COLD_TIMEOUT])

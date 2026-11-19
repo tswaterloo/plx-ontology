@@ -32,9 +32,9 @@ CONDITIONS = ("intents_any", "intents_none", "side_in", "status_in", "assigned",
               "quality_in", "tested", "ended", "organizer_copy", "external_or_linked",
               "mailbox_role", "mailbox_role_none", "engaged", "correspondent", "engaged_or_asks",
               "answers_sender", "closing", "addressed_other", "quiet_sender", "object_type_in",
-              "to_me", "after_own_post", "cc_min")
+              "to_me", "after_own_post", "cc_min", "usual_answerer", "any_of")
 DONE_RULES = ("owner_replied", "approval_decided", "task_closed", "batch_released",
-              "owner_mailed_attendees", "question_answered")
+              "owner_mailed_attendees", "question_answered", "person_decided")
 MAX_RECORDS = 12          # business records one handler reads around its event
 MAX_LINES = 50            # order lines one availability check reads
 # a handler that failed or ran out of time on an event: the event is deferred and tried
@@ -116,6 +116,13 @@ def matches(when: Mapping[str, Any], event: Mapping[str, Any]) -> bool:
     """Whether an event meets an autopilot's conditions (each a general field test)."""
     intents = set(event.get("intents") or ())
     for key, want in when.items():
+        if key == "any_of":
+            # a list of condition sets, one of which must hold (each tested as a whole
+            # ``when``); an empty or unreadable list: no
+            if not isinstance(want, list) or not any(
+                    isinstance(sub, Mapping) and sub and matches(sub, event) for sub in want):
+                return False
+            continue
         if key == "intents_any" and not intents & set(want):
             return False
         if key == "intents_none" and intents & set(want):
@@ -161,6 +168,18 @@ def matches(when: Mapping[str, Any], event: Mapping[str, Any]) -> bool:
             last, posts = (list(event.get("own_posts") or ()) + [None, 0])[:2]
             if not isinstance(last, (int, float)) or isinstance(last, bool) or \
                     last > want[0] or not isinstance(posts, int) or posts < want[1]:
+                return False
+            continue
+        if key == "usual_answerer":
+            # [n, share]: in this conversation, the owner was the first member to write
+            # after at least ``share`` of the sender's messages of the last
+            # ``OWN_POSTS_DAYS`` (``n`` or more of them known) before this one (an event
+            # read without it: no). Measured on group chats 10-12..11-10, a question no one
+            # @mentioned: the usual first answerer wrote within 24 h after 26 of 31, any
+            # other member after 52 of 125
+            n, mine = (list(event.get("answerer") or ()) + [0, 0])[:2]
+            if not (isinstance(want, list) and len(want) == 2) or n < int(want[0]) or \
+                    mine < float(want[1]) * n:
                 return False
             continue
         if key == "cc_min":
@@ -369,6 +388,25 @@ class Queue:
         last = _instant(row[0]) if row and row[0] else None
         return (round((start - last).total_seconds() / 60, 1) if last else None,
                 int(row[1] or 0) if row else 0)
+
+    def usual_answerer(self, owner: str, sender: str, conversation: str | None, at: str
+                       ) -> tuple[int, int]:
+        """(the sender's messages in this conversation in the ``OWN_POSTS_DAYS`` before
+        ``at`` that another member wrote after, before ``at``; how many of them ``owner``
+        was that first member for): the members' own sent rows only, never later
+        evidence."""
+        start = _instant(at)
+        if start is None or not conversation or not sender:
+            return 0, 0
+        thread, end = _digest("thread", conversation), _iso(start)
+        rows = self.conn.execute(
+            "SELECT (SELECT n.owner FROM sent n WHERE n.thread = s.thread AND n.at > s.at "
+            "AND n.at < ? AND n.owner != s.owner ORDER BY n.at LIMIT 1) FROM (SELECT DISTINCT "
+            "owner, thread, at FROM sent WHERE owner = ? AND thread = ? AND at >= ? AND "
+            "at < ?) s", (end, sender, thread, _iso(start - timedelta(days=OWN_POSTS_DAYS)),
+                         end)).fetchall()
+        firsts = [r[0] for r in rows if r[0]]
+        return len(firsts), sum(1 for r in firsts if r == owner)
 
     def writers(self, since: str) -> set[tuple[str, str]]:
         """(owner, thread digest) of every conversation an owner wrote in since ``since``:
@@ -594,15 +632,28 @@ class Queue:
         return not any(work.get(k) for k in ("your_call", "write", "action", "card",
                                               "actions", "order"))
 
+    # what an item can carry for its person to read even with nothing to send: the records
+    # or lines it found, a question with its options, the evidence and recommendation of
+    # an approval, a note or facts. Such an item informs; it is never set aside as empty.
+    INFO_SLOTS = ("records", "links", "lines", "question", "options", "evidence",
+                  "recommendation", "note", "facts", "context")
+
+    @classmethod
+    def informs(cls, item: Mapping[str, Any]) -> bool:
+        work = (item.get("body") or {}).get("prepared") or {}
+        return isinstance(work, Mapping) and any(work.get(k) for k in cls.INFO_SLOTS)
+
     def supersede_draftless(self, now: str, apply: bool = False,
                             autopilots: Iterable[str] | None = None) -> dict[str, Any]:
         """Set the open draft-less items aside as state ``superseded`` (a state, never a
-        delete: ``unsupersede`` puts them back open). Counts only, per autopilot; nothing
-        changes unless ``apply``."""
+        delete: ``unsupersede`` puts them back open): only a reply notice with nothing to
+        send and nothing to read (``informs``), of the ``autopilots`` given (the caller's
+        reply autopilots). Counts only, per autopilot; nothing changes unless ``apply``."""
         only = set(autopilots) if autopilots is not None else None
         ids, per = [], {}
         for item in self.items():
-            if self.draftless(item) and (only is None or item["autopilot"] in only):
+            if self.draftless(item) and not self.informs(item) \
+                    and (only is None or item["autopilot"] in only):
                 ids.append(item["item_id"])
                 per[item["autopilot"]] = per.get(item["autopilot"], 0) + 1
         if apply and ids:

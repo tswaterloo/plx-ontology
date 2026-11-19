@@ -85,7 +85,7 @@ class SearchTest(unittest.TestCase):
         self.assertEqual(got["egress_withheld"], 2)
         self.assertEqual(got["unchecked"], 2)
         self.assertNotIn("original://b", [w["citation"] for w in reads])   # never read
-        self.assertTrue(all(w["max_chars"] == s.CHECK_MAX_CHARS for w in reads))
+        self.assertTrue(all(w["max_chars"] == s.CHECK_PAGE_CHARS for w in reads))
         # out of time: the rest are left out unread
         from operating import call_limits
         from unittest import mock
@@ -93,6 +93,61 @@ class SearchTest(unittest.TestCase):
             got = s.run(lambda a: docs, {"query": "invoice"}, read)
         self.assertEqual(got["documents"], [])
         self.assertEqual(got["unchecked"], 4)
+
+    def test_full_texts_are_read_as_the_hosts_plx_read_takes_them(self):
+        # Live 11-18: the check asked plx.read for 200,000 chars in one read; the host
+        # refuses past its contract's maximum (invalid_input), so every hit was left out
+        # unchecked and no search showed a document. Here the read refuses exactly as the
+        # host does and pages as it does (text_window.next_offset).
+        import json
+        from pathlib import Path
+        from ontology.json_contract import validate
+        contract = json.loads((Path(s.__file__).with_name("ontology_tool_contracts.json"))
+                              .read_text(encoding="utf-8"))
+        schema = contract["tools"][s.READ]["input"]
+        clean = "pallet shortage on line 2. " * 4000              # ~108k chars, 6 windows
+        split = "." * (7000 - 4) + "Freightcom rates" + "y" * 100   # "Frei" | "ghtcom": an edge
+        huge = "z " * s.CHECK_MAX_CHARS + "Freightcom"   # past the bound
+        texts = {"original://clean": clean, "original://split": split,
+                 "original://short": "PO 1 short note", "original://huge": huge}
+        reads = []
+
+        def read(wanted):
+            reads.append(wanted)
+            problems = validate(wanted, schema, root=contract)
+            if problems:
+                return {"error": {"code": "invalid_input", "message": "; ".join(problems)}}
+            text = texts[wanted["citation"]]
+            start = wanted.get("text_offset", 0)
+            end = min(len(text), start + min(wanted.get("max_chars", 4000), 7000))  # < asked
+            return {"status": "resolved", "content": {"untrusted_text": text[start:end]},
+                    "text_window": {"offset": start, "chars": end - start,
+                                    "total_chars": len(text),
+                                    "next_offset": end if end < len(text) else None}}
+        docs = {"documents": [{"citation": c, "title": "t", "snippet": "s"} for c in texts],
+                "searched": {"sources": ["original"]}, "gaps": [], "completeness": {}}
+        got = s.run(lambda a: docs, {"query": "pallet"}, read)
+        self.assertEqual([h["citation"] for h in got["documents"]],
+                         ["original://clean", "original://short", "original://huge"])
+        self.assertEqual(got["egress_withheld"], 1)
+        self.assertNotIn("unchecked", got)
+        self.assertTrue(all(validate(w, schema, root=contract) == [] for w in reads))
+        clean_reads = [w.get("text_offset", 0) for w in reads
+                       if w["citation"] == "original://clean"]
+        self.assertEqual(clean_reads, list(range(0, len(clean), 7000)))   # every window once
+        self.assertLess(max(w.get("text_offset", 0) for w in reads
+                            if w["citation"] == "original://huge"), s.CHECK_MAX_CHARS)
+        # a later window refused or failing: not known, never shown
+        for broken in ({"error": {"code": "not_readable"}}, None, RuntimeError("down")):
+            def flaky(wanted, broken=broken):
+                if wanted.get("text_offset"):
+                    if isinstance(broken, Exception):
+                        raise broken
+                    return broken
+                return read(wanted)
+            got = s.run(lambda a: {**docs, "documents": docs["documents"][:1]},
+                        {"query": "pallet"}, flaky)
+            self.assertEqual((got["documents"], got["unchecked"]), ([], 1), broken)
 
     def test_unknown_arguments_fail_closed(self):
         got = s.run(lambda a: self.fail("no search"), {"query": "x", "object_id": "y"})
@@ -182,6 +237,63 @@ class RoutingTest(unittest.TestCase):
         got = s.run(docs, {"query": "pallets"}, call_read=lambda a: None, call_comms=comms)
         self.assertEqual([d["citation"] for d in got["documents"]], ["email:v1"])
         self.assertEqual(got["unchecked"], 1)   # an unread file text is never shown
+
+    def test_records_leg_with_query_words_only_its_cursor_alone_and_skips_as_a_gap(self):
+        asked = []
+
+        def records(answer):
+            def call(arguments):
+                asked.append(arguments)
+                return answer
+            return call
+        rec = {"documents": [{"citation": "api://c/1", "kind": "record", "date": "2026-10-01",
+                              "title": {"untrusted_text": "Acme Ltd"}},
+                             {"citation": "api://c/2", "kind": "record", "date": "2026-10-04",
+                              "title": {"untrusted_text": "Freightcom Inc"}}],
+               "searched": {"sources": ["records"]}, "gaps": [],
+               "completeness": {"complete": True, "truncated": False, "returned": 2}}
+        seen, comms, docs = self.calls()
+        got = s.run(docs, {"query": "acme"}, call_comms=comms, call_records=records(rec))
+        self.assertEqual([d["citation"] for d in got["documents"]],
+                         ["sharepoint://s/a.pdf", "email:v1", "api://c/1"])
+        self.assertEqual(got["egress_withheld"], 1)          # the record naming Freightcom
+        self.assertEqual(asked[-1], {"query": "acme", "limit": 20})   # never a source list
+        self.assertEqual(seen["docs"][0]["sources"], ["sharepoint", "original"])
+        for args in ({"participant": "a@b.example"},
+                     {"query": "acme", "sources": ["graph_mail"]},
+                     {"query": "acme", "cursor": "c1:2026-10-02T00:00:00Z|email:v1"},
+                     {"query": "acme", "cursor": "opaque-docs-cursor"}):
+            asked.clear()
+            s.run(docs, args, call_comms=comms, call_records=records(rec))
+            self.assertEqual(asked, [], args)
+        seen, comms, docs = self.calls()
+        got = s.run(docs, {"query": "acme", "cursor": "r1:20"}, call_comms=comms,
+                    call_records=records(rec))
+        self.assertEqual((seen["comms"], seen["docs"]), ([], []))
+        self.assertEqual(asked[-1]["cursor"], "r1:20")
+        self.assertEqual(s.run(docs, {"participant": "a@b.example", "sources": ["records"]},
+                               call_records=records(rec))["error"]["code"], "invalid_input")
+        def boom(arguments):
+            raise RuntimeError("pool gone")
+        # any failure of the records leg (a full plx.sql pool, a failed or refused
+        # statement, an unknown code, a broken answer, a raise) is a gap: the mail and
+        # file hits stand and no record is shown
+        for code, leg in [(c, records({"error": {"code": c, "message": "m"}})) for c in (
+                "not_served", "not_ready", "too_broad", "timeout", "busy", "query_failed",
+                "integrity", "not_readable", "something_new")] + [
+                ("query_failed", records("junk")), ("query_failed", boom),
+                ("query_failed", records({"error": "flat"}))]:
+            seen, comms, docs = self.calls()
+            got = s.run(docs, {"query": "acme"}, call_comms=comms, call_records=leg)
+            self.assertNotIn("error", got, code)
+            self.assertEqual([d["citation"] for d in got["documents"]],
+                             ["sharepoint://s/a.pdf", "email:v1"], code)
+            self.assertEqual(got["gaps"][0]["reason"], code)
+            self.assertEqual(got["gaps"][0]["subject"], "records")
+            self.assertFalse(got["completeness"]["complete"])
+        got = s.run(docs, {"query": "acme"}, call_comms=comms, call_records=records(
+            {"error": {"code": "invalid_input", "message": "m"}}))
+        self.assertEqual(got["error"]["code"], "invalid_input")   # the query's own error
 
     def test_open_routes_comms_then_read_and_a_withheld_item_never_falls_back(self):
         reads = []

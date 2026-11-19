@@ -22,9 +22,10 @@ import logging
 import os
 import re
 import secrets
+import threading
 import time
 from typing import Any, Callable, Iterator, Literal, Mapping, Optional
-from urllib.parse import urlsplit
+from urllib.parse import quote, urlsplit
 
 from fastapi import Body, Depends, FastAPI, Path as PathParam, Query, Request, Response
 from fastapi.exceptions import RequestValidationError
@@ -47,8 +48,12 @@ latency_log = logging.getLogger("operator_api.latency")
 
 # The only routes the Ask canary's service session is served (session_identity.SERVICE_CANARY)
 CANARY_ROUTES = frozenset({("GET", "/api/me"), ("POST", "/api/ask")})
+# /api/teams/callback: Microsoft's cross-site redirect carries no session; the signed,
+# single-use state it returns binds the sign-in to the person who started it
+# (``integrations.teams_delegated.finish``)
 PUBLIC_ROUTES = frozenset({("GET", "/api/auth/config"), ("POST", "/api/auth/dev-login"),
-                           ("GET", "/api/health"), ("GET", "/api/ready")})
+                           ("GET", "/api/health"), ("GET", "/api/ready"),
+                           ("GET", "/api/teams/callback")})
 # the loopback addresses a deploy's probe of /api/ready comes from (never through Caddy,
 # which answers /api/ready itself and adds X-Forwarded-For to everything it proxies)
 LOOPBACK = frozenset({"127.0.0.1", "::1"})
@@ -226,8 +231,35 @@ ROUTE_THREADS = 256
 # not found, as an unseen record is (no oracle), never a 500 incident (11-13: a Sage AR id
 # with padded spaces in /api/object raised one).
 BAD_OBJECT_IDS = frozenset({"object_id_invalid", "object_id_required"})
+# A reader's people and conversations (Memory, Home's side panel) worked out from one read
+# of their mail are served again for this long (``_people_of``).
+PEOPLE_SECONDS = 600
+
 READ_TIMEOUT = UserFacing("timeout", "That took too long to read. Try again in a moment; "
                           "if it keeps happening, tell the Workbench team.", 504)
+
+
+# Postgres at its connection limit (11-18 3:46-4:12 PM ET "sorry, too many clients
+# already", SQLSTATE 53300, also when the store's reconnect was refused for it): the
+# Workbench is busy, try again (503), never "the server failed" (500). Any other connection
+# failure (wrong password, server down, a pool that got none: its cause unknown) stays an
+# incident, so a misconfiguration is logged, never hidden as busy.
+# Matched on the error's words too, as libpq gives no SQLSTATE before a session.
+_DB_REFUSED = ("too many clients", "remaining connection slots are reserved")
+
+
+def _db_refused(error: BaseException) -> bool:
+    """``error`` or what it was raised from is Postgres refusing a connection at its
+    connection limit."""
+    seen = 0
+    while error is not None and seen < 8:
+        if getattr(error, "sqlstate", None) == "53300" \
+                or type(error).__name__ == "TooManyConnections" \
+                or any(w in str(error) for w in _DB_REFUSED):
+            return True
+        error = error.__cause__ or error.__context__  # type: ignore[assignment]
+        seen += 1
+    return False
 
 
 def _known(error: BaseException) -> Optional[JSONResponse]:
@@ -238,6 +270,10 @@ def _known(error: BaseException) -> Optional[JSONResponse]:
     waited past the role's ``lock_timeout`` behind a schema change) timed out (504), never
     "the server failed"."""
     import sqlite3
+    if _db_refused(error):
+        return JSONResponse({"error": {"code": BUSY.code, "message": BUSY.message}},
+                            status_code=BUSY.status, headers={"Cache-Control": "no-store",
+                                                              "Retry-After": "5"})
     if isinstance(error, RecordNotFound):   # a record not one the reader may read
         return problem("not_found", 404)
     if isinstance(error, ValueError) and str(error) in BAD_OBJECT_IDS:
@@ -348,6 +384,9 @@ def create_app(backend: Any, auth: Any, *, allowed_origins: frozenset[str] = fro
                   default_response_class=JSONResponse)
     app.state.backend, app.state.auth = backend, auth
     app.add_middleware(BodyLimit, limit=BODY_MAX, limits={"/api/ask": m.ASK_BODY_MAX})
+    # a read whose connection closes cancels its work (``request_cancel``)
+    from .request_cancel import CancelOnDisconnect
+    app.add_middleware(CancelOnDisconnect)
     # Operator freshness targets (operating.ops_health): the page latency window this
     # process measures, and the checks over the served state dir (none for a fixture).
     from operating.ops_health import CachedHealth, LatencyWindow
@@ -723,6 +762,11 @@ def create_app(backend: Any, auth: Any, *, allowed_origins: frozenset[str] = fro
                 # (a reply to a question the answer asked back continues that answer)
                 route = "ask" if body.clarified is not None else route_of(
                     body.question, mode=body.mode, continuing=body.instruction is not None)
+                does = getattr(backend, "ask_does", None)
+                if route != "ask" and callable(does) and does(who, body):
+                    # the simple Ask does it: it reads every record and holds the write,
+                    # memory, template and document tools (``assistant_tools.ask_does``)
+                    route = "ask"
                 events = (my_work_answer(who, body) if route == "ask"
                           and body.clarified is None
                           and wl.asks_about_my_work(body.question)
@@ -825,11 +869,13 @@ def create_app(backend: Any, auth: Any, *, allowed_origins: frozenset[str] = fro
     def biz_page(kind: Literal["customer", "chain", "supplier", "purchase_order",
                                "sales_order"],
                  h: str = Query("", max_length=600), chain: str = Query("", max_length=200),
+                 record: str = Query("", max_length=700),
                  who: Reader = Depends(reader)) -> m.BizPage:
         """A customer's, chain's or supplier's account page, or a PO's or customer order's
         page (header, then lines): every number from the business tables, as you may see
-        them, in one read."""
-        return backend.biz_page(who, kind, handle=h, chain=chain)
+        them, in one read. ``record``: a record id (object id) instead of ``h``: the page
+        of the row it was read into."""
+        return backend.biz_page(who, kind, handle=h, chain=chain, record=record)
 
     @app.get("/api/home", response_model=m.Home, tags=["home"],
              responses={401: {"model": m.ErrorResponse}})
@@ -990,6 +1036,91 @@ def create_app(backend: Any, auth: Any, *, allowed_origins: frozenset[str] = fro
         edit of its draft for you to change and confirm. Nothing is sent."""
         return backend.autopilot_reply_from_line(who, item_id, body)
 
+    _pw_errors = {401: {"model": m.ErrorResponse}, 404: {"model": m.ErrorResponse},
+                  409: {"model": m.ErrorResponse}}
+
+    @app.get("/api/teams/connection", response_model=m.TeamsConnection, tags=["actions"],
+             responses={401: {"model": m.ErrorResponse}, 403: {"model": m.ErrorResponse}})
+    def teams_connection(who: Reader = Depends(reader)) -> m.TeamsConnection:
+        """Your own Teams sign-in: connected or not, the scopes, when (never the token)."""
+        return backend.teams_connection(who)
+
+    @app.post("/api/teams/connect", response_model=m.TeamsConnectStart, tags=["actions"],
+              responses={**_pw_errors, 403: {"model": m.ErrorResponse}})
+    def teams_connect(who: Reader = Depends(reader)) -> m.TeamsConnectStart:
+        """Start your one-time Teams sign-in: open the address it answers."""
+        return backend.teams_connect(who)
+
+    @app.get("/api/teams/callback", include_in_schema=False)
+    def teams_callback(code: Optional[str] = Query(None, max_length=4096),
+                       state: Optional[str] = Query(None, max_length=256),
+                       error: Optional[str] = Query(None, max_length=200)) -> Response:
+        """Microsoft's redirect back after a sign-in. No session reaches it (a cross-site
+        redirect); the signed one-time state completes it only for the person who started
+        it, and only with their own Microsoft account."""
+        target = backend.teams_callback(code, state, error)
+        return Response(status_code=303, headers={"Location": target,
+                                                  "Cache-Control": "no-store"})
+
+    @app.delete("/api/teams/connection", response_model=m.TeamsConnection, tags=["actions"],
+                responses={401: {"model": m.ErrorResponse}, 403: {"model": m.ErrorResponse}})
+    def teams_disconnect(who: Reader = Depends(reader)) -> m.TeamsConnection:
+        """Forget your Teams sign-in: nothing is posted as you after this."""
+        return backend.teams_disconnect(who)
+
+    @app.post("/api/autopilot/items/{item_id}/jobs/{index}/prepare",
+              response_model=m.PreparedWrite, tags=["actions"],
+              responses={**_pw_errors, 422: {"model": m.ErrorResponse}})
+    def autopilot_job_prepare(item_id: str, index: int,
+                              who: Reader = Depends(reader)) -> m.PreparedWrite:
+        """Review one system change an autopilot proposed on an item of yours: it is
+        prepared as you (the record read from its system, before and after); confirm it in
+        two steps on /api/prepared/{id}. Nothing is written here."""
+        return backend.autopilot_job_prepare(who, item_id, index)
+
+    @app.get("/api/prepared", response_model=m.PreparedWrites, tags=["actions"],
+             responses={401: {"model": m.ErrorResponse}})
+    def prepared_list(who: Reader = Depends(reader)) -> m.PreparedWrites:
+        """Your open prepared changes (Ask and your autopilots prepared them): nothing in
+        them is done before you confirm it."""
+        return backend.prepared_list(who)
+
+    @app.get("/api/prepared/{prepared_id}", response_model=m.PreparedWrite,
+             tags=["actions"], responses=_pw_errors)
+    def prepared_preview(prepared_id: str, who: Reader = Depends(reader)) -> m.PreparedWrite:
+        """One prepared change of yours, before and after, with what confirming it does
+        now (written at once, or recorded only, and why) and the hash its confirm carries.
+        Another person's is not found."""
+        return backend.prepared_preview(who, prepared_id)
+
+    @app.post("/api/prepared/{prepared_id}/confirm", response_model=m.PreparedWrite,
+              tags=["actions"], responses={**_pw_errors, 422: {"model": m.ErrorResponse}})
+    def prepared_confirm(prepared_id: str, body: m.PreparedConfirmRequest,
+                         who: Reader = Depends(reader)) -> m.PreparedWrite:
+        """Your second step: the preview's hash and confirm=true. Runs the change once,
+        as you, under every write guard; a changed preview is refused (409)."""
+        return backend.prepared_confirm(who, prepared_id, body)
+
+    @app.post("/api/prepared/{prepared_id}/dismiss", response_model=m.PreparedWrite,
+              tags=["actions"], responses=_pw_errors)
+    def prepared_dismiss(prepared_id: str, who: Reader = Depends(reader)) -> m.PreparedWrite:
+        """Drop a prepared change of yours; nothing is written."""
+        return backend.prepared_dismiss(who, prepared_id)
+
+    @app.post("/api/prepared/{prepared_id}/undo", response_model=m.PreparedWrite,
+              tags=["actions"], responses=_pw_errors)
+    def prepared_undo(prepared_id: str, who: Reader = Depends(reader)) -> m.PreparedWrite:
+        """Undo a change of yours that was written, through the inverse recorded when it
+        ran (refused when the system has none or someone changed it since)."""
+        return backend.prepared_undo(who, prepared_id)
+
+    @app.post("/api/prepared/{prepared_id}/retry", response_model=m.PreparedWrite,
+              tags=["actions"], responses=_pw_errors)
+    def prepared_retry(prepared_id: str, who: Reader = Depends(reader)) -> m.PreparedWrite:
+        """Prepare again a change of yours that was dismissed, expired, failed or only
+        recorded: a new prepared change, checked anew; nothing is written."""
+        return backend.prepared_retry(who, prepared_id)
+
     @app.get("/api/instruct/uploads/{upload_id}", response_model=m.UploadPreview,
              tags=["actions"], responses={401: {"model": m.ErrorResponse},
                                           404: {"model": m.ErrorResponse}})
@@ -1012,10 +1143,13 @@ def create_app(backend: Any, auth: Any, *, allowed_origins: frozenset[str] = fro
     def instruct_file(file_id: str, who: Reader = Depends(reader)) -> Response:
         """A document an instruction made for you."""
         from operating.instruct_files import MEDIA
-        data, kind = backend.instruct_file(who, file_id)
+        data, kind, name = backend.instruct_file(who, file_id)
+        # saved under the document's own name (an ASCII stand-in for older clients)
+        plain = re.sub(r'[^A-Za-z0-9 ._()-]', "_", name).strip() or f"{file_id}.{kind}"
         return Response(data, media_type=MEDIA.get(kind, "application/octet-stream"),
                         headers={"Cache-Control": "no-store",
-                                 "Content-Disposition": f'attachment; filename="{file_id}.{kind}"'})
+                                 "Content-Disposition": f'attachment; filename="{plain}"; '
+                                 f"filename*=UTF-8''{quote(name or plain, safe='')}"})
 
     @app.post("/api/doc-fill", response_model=m.InstructFill, tags=["actions"],
               responses={401: {"model": m.ErrorResponse}, 404: {"model": m.ErrorResponse},
@@ -1857,6 +1991,28 @@ def create_app(backend: Any, auth: Any, *, allowed_origins: frozenset[str] = fro
                 out = m.MemoryItems(items=[], available=False)
         return JSONResponse(out.model_dump(mode="json"), headers={"Cache-Control": "no-store"})
 
+    people_kept: dict[str, tuple[Any, float, Any]] = {}
+    people_lock = threading.Lock()
+
+    def _people_of(mail: tuple, oid: str) -> Any:
+        """``my_people.people_and_threads`` of the reader's mail read, worked out once per
+        read of their mail (the same kept read: ``HISTORY``) for PEOPLE_SECONDS: 10-12 s a
+        request for a staff mailbox on the 11-18 walk, on every Home."""
+        from operating import my_people
+        now = time.monotonic()
+        with people_lock:
+            hit = people_kept.get(oid)
+        if hit is not None and hit[0] is mail and now - hit[1] <= PEOPLE_SECONDS:
+            return hit[2]
+        found = my_people.people_and_threads(mail[0], oid, mail[1],
+                                             now=datetime.now(timezone.utc),
+                                             finance=mem.finance_text)
+        with people_lock:
+            people_kept[oid] = (mail, now, found)
+            if len(people_kept) > 256:
+                people_kept.pop(next(iter(people_kept)))
+        return found
+
     @app.get("/api/memory/people", response_model=m.MemoryPeople, tags=["work-log"],
              responses={401: {"model": m.ErrorResponse}})
     def memory_people(who: Reader = Depends(reader)) -> Response:
@@ -1876,9 +2032,7 @@ def create_app(backend: Any, auth: Any, *, allowed_origins: frozenset[str] = fro
                     return JSONResponse(m.MemoryPeople(available=False, reading=True)
                                         .model_dump(mode="json"),
                                         headers={"Cache-Control": "no-store"})
-                found = None if mail is None else my_people.people_and_threads(
-                    mail[0], oid, mail[1], now=datetime.now(timezone.utc),
-                    finance=mem.finance_text)
+                found = None if mail is None else _people_of(mail, oid)
                 if found is not None:
                     out = m.MemoryPeople(
                         available=True, threads=[m.MemoryThread(**t) for t in found["threads"]],
@@ -1891,9 +2045,12 @@ def create_app(backend: Any, auth: Any, *, allowed_origins: frozenset[str] = fro
         return JSONResponse(out.model_dump(mode="json"), headers={"Cache-Control": "no-store"})
 
     def _memory_item(row: Mapping[str, Any]) -> m.MemoryItem:
+        from .assistant_tools import autopilot_effect
         due = mem.due_of(row["text"], row["at"]) if row["kind"] == "commitment" else None
-        return m.MemoryItem(due=due, **{k: row[k] for k in m.MemoryItem.model_fields
-                                        if k != "due"})
+        rules = autopilot_effect(row["text"]) if row["kind"] in ("instruction",
+                                                                 "preference") else []
+        return m.MemoryItem(due=due, autopilot=rules, **{
+            k: row[k] for k in m.MemoryItem.model_fields if k not in ("due", "autopilot")})
 
     def _memory_saved(who: Reader, body: m.MemorySave, replaces: Optional[int]) -> Response:
         store = getattr(backend, "memory", None)

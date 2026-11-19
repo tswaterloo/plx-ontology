@@ -23,6 +23,8 @@ from . import ask_progress, models as m, presentation, proposals
 from .actions import ActionsMixin
 from .autopilot_api import AutopilotMixin
 from .autopilot_area import AutopilotAreaMixin
+from .prepared_area import PreparedWritesMixin
+from .assistant_tools import AssistantToolsMixin
 from .autopilot_studio import AutopilotStudioMixin
 from .doc_fill_api import DocFillMixin
 from .entry_create_api import EntryCreateMixin
@@ -587,7 +589,7 @@ _UNJUDGED = [("SalesOrder:demo:51007", "Sales order 51007"),
 
 class MockBackend(TemplatesMixin, ActionsMixin, WriteIntentsMixin, AutopilotMixin, AutopilotAreaMixin,
                   AutopilotStudioMixin, InstructMixin, DocFillMixin, DocStyleMixin,
-                  EntryCreateMixin, MockWatchMixin,
+                  PreparedWritesMixin, AssistantToolsMixin, EntryCreateMixin, MockWatchMixin,
                   AskDraftsMixin):
     data_label = LABEL
 
@@ -743,8 +745,8 @@ class MockBackend(TemplatesMixin, ActionsMixin, WriteIntentsMixin, AutopilotMixi
                 self._kept.pop(next(iter(self._kept)))
         yield "answer", answer
 
-    def biz_page(self, reader: Reader, kind: str, handle: str = "", chain: str = ""
-                 ) -> m.BizPage:
+    def biz_page(self, reader: Reader, kind: str, handle: str = "", chain: str = "",
+                 record: str = "") -> m.BizPage:
         raise UserFacing("pages_off", "These record pages aren't switched on on this "
                                 "server yet.", 404)
 

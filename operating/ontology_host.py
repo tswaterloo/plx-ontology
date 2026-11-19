@@ -748,7 +748,8 @@ def _staff_policy(runtime: Any, actor: Any, principals: frozenset[str],
     mail, chats, OneDrive and calendar, decided once from ``units`` (the precomputed
     ``search.audience_units``) with no live audience call per unit. The people exclusion
     denies every unit naming an excluded person (not usable: business families only).
-    Markings stay the host's (``marking_grants``); brain namespaces their document's. None
+    Markings stay the host's (``marking_grants``), plus ``STAFF_MARKINGS`` every staff
+    reader holds; brain namespaces their document's. None
     for anyone else (a full reader is decided before; a non-employee or an unresolved
     employee is decided as before)."""
     from .employee_permissions import full_read_marking_grants
@@ -781,14 +782,25 @@ def _staff_policy(runtime: Any, actor: Any, principals: frozenset[str],
         listed = [k for k in keys if k.startswith(family + ":")]
         if listed:
             held[family] = tuple(listed)
-    return ReadPolicy(actor.tenant, grants,
-                      full_read_marking_grants(marking_grants, entitlement), held,
-                      staff=True)
+    markings = full_read_marking_grants(marking_grants, entitlement)
+    for marking in STAFF_MARKINGS:   # held by every staff reader (decision 2026-11-17)
+        markings[marking] = markings.get(marking, frozenset()) | {
+            entitlement.principal.principal}
+    return ReadPolicy(actor.tenant, grants, markings, held, staff=True)
+
+
+# The markings every staff reader holds (with the purchase-order prices and l5 finance carries, stay with the
+# roles that hold them; "no QC-document restriction"). Before, a staff reader held none of
+# them unless a host marking grant named a principal no employee policy grants, so every
+# QC-marked record or business view row (4,341 of 11,662 purchase orders, a receipt's QC
+# link folded into the order: PO100045) was hidden from staff, 2026-11-18.
+STAFF_MARKINGS = ("quality_controlled",)
 
 
 # Every audience family a store serves (``ontology_tools_policy._AUDIENCE_SOURCE``).
 _FULL_READ_FAMILIES = ("api", "bc", "mail", "mail-any", "sharepoint", "sharepoint-list",
-                       "original", "workbench", "mc", "brain", "teams", "meetings")
+                       "original", "workbench", "mc", "brain", "teams", "meetings",
+                       "org")
 
 
 # A granted principal: ``<kind>:<name>``, both parts non-empty, no whitespace.

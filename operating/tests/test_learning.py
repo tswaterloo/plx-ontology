@@ -443,6 +443,69 @@ class Signals(unittest.TestCase):
         self.assertNotIn("Order SO-1 shipped", json.dumps(got[0].data))  # features only
 
 
+class TeamsAndEdits(unittest.TestCase):
+    """Owner 11-18: every edit, in the app, in Outlook or in Teams, teaches the drafts. A
+    Teams item is paired with the person's own next message in the chat (it was mail only:
+    the live ledger held 0 reply signals from 54 Teams items); an edited draft says what it
+    taught in a lesson's words; lessons reach the model drafter for the message's side."""
+
+    def test_a_teams_item_pairs_with_the_persons_next_chat_message(self):
+        base = {"owner": ANA, "autopilot": "teams_reply", "state": "done",
+                "done_reason": "owner_replied", "due_at": "2026-10-10T00:00:00Z",
+                "created_at": "2026-10-09T00:00:00Z"}
+        items = [{**base, "item_id": "t1", "event_id": "e1",
+                  "body": {"prepared": {"teams_draft": {"body": "Hi Sam,\n\nYes, it shipped."}},
+                           "happened": {}}},
+                 {**base, "item_id": "t2", "event_id": "e2",
+                  "body": {"prepared": {}, "happened": {}}}]
+        events = {e: {"channel": "teams", "side": "internal", "sender": "u-sam",
+                      "conversation_id": "teams:chat:c1"} for e in ("e1", "e2")}
+        asked = []
+        got = ls.item_signals(items, events, now=NOW, reply_of=lambda i, e: (
+            asked.append(i["item_id"]) or ("TeamsChatMessage:9", "2026-10-09T12:00:00Z",
+                                           "Yes, SO-4417 went out on the 12th")))
+        self.assertEqual([(s.kind, s.ref) for s in got],
+                         [("draft_sent", "item:t1"), ("replied", "item:t2")])
+        self.assertEqual(asked, ["t1", "t2"])
+        self.assertEqual(got[0].data["greeting"], "none")
+        self.assertNotIn("SO-4417", json.dumps([s.data for s in got]))   # features only
+
+    def test_an_edit_says_what_it_taught(self):
+        draft = ("Hi Kim,\n\nThanks for your message. The order shipped today and should "
+                 "arrive soon. Hope you are well.\n\nBest regards,\nVince")
+        sent = ("Kim,\n\nThe order shipped today and should arrive soon. Let me know if "
+                "anything is missing.\n\nV")
+        got = L.describe_edit(draft, sent)
+        self.assertIn("Starts replies with just the person's name", got)
+        self.assertIn('Takes out: "hope you are well."', got)
+        self.assertTrue(any(x.startswith("Adds: ") for x in got), got)
+        for same in ((draft, draft), ("", sent), (draft, ""),
+                     (draft, "Kim,\n\nYour invoice of $4,200 is overdue.\n\nV")):
+            self.assertEqual(L.describe_edit(*same), [], same[1][:30])
+
+    def test_learned_style_reaches_the_model_for_the_messages_side_and_sender(self):
+        def lesson(key, text, conf=0.9, kind="style"):
+            return L.Lesson(lesson_id=key, scope="person", who=ANA, kind=kind, key=key,
+                            value="v", confidence=conf, weight=1, total=1, seen=5,
+                            first_at="2026-10-01T00:00:00Z", last_at="2026-10-02T00:00:00Z",
+                            evidence=[], text=text)
+        sender = "kim@c.example"
+        lessons = L.Lessons([
+            lesson("greeting", "Starts replies without a greeting"),
+            lesson("side:internal:signoff", "Ends replies to colleagues with no sign-off"),
+            lesson("side:customer:signoff", "Ends replies to customers with \"Thanks\""),
+            lesson(f"sender:{L.sender_key(sender)}:length", "Keeps replies to this person short"),
+            lesson("length", "Keeps replies to about 8 words", conf=0.4),
+            lesson("decision:x", "Usually leaves prepared items", kind="decision")])
+        got = ap.learned_style(lessons, ANA, {"side": "internal", "sender": sender})
+        self.assertEqual(sorted(got), sorted([
+            "Learned from their replies: Starts replies without a greeting",
+            "Learned from their replies: Ends replies to colleagues with no sign-off",
+            "Learned from their replies: Keeps replies to this person short"]))
+        self.assertEqual(ap.learned_style(None, ANA, {}), [])
+        self.assertEqual(ap.learned_style(lessons, "someone-else", {"side": "internal"}), [])
+
+
 class AutopilotUsesLessons(Fixture):
     """The live queue's shape (``<state>/autopilot/autopilot.sqlite``): a replay's queue
     never takes lessons."""
@@ -531,6 +594,32 @@ class AutopilotUsesLessons(Fixture):
         self.assertEqual(out["skipped"]["customer_po:learned_left"], 1)
         self.assertEqual(self.queue().items(), [])
 
+    def test_the_owner_steers_the_feed_in_their_own_words(self):
+        """No draft for the
+        sender they named; who they said to copy is on the Cc of that side's drafts, never
+        the owner nor an excluded person; a rule forgotten applies no more."""
+        from operating.tests.test_proactive_threads import APPROVER, BOSS, OURS, OUTSIDE
+        rules = self.dir / "learning"
+        first = self._po()
+        second = self.message(2, "Please find attached our PO PO-4512 for 10 cases.",
+                              subject="New PO PO-4512")
+        L.set_stated(rules, OURS_OID, 1, f"Stop drafting replies to {OUTSIDE}")
+        with mock.patch.dict(os.environ, {L.DIR_ENV: str(rules)}):
+            out = self.cycle([first])
+        self.assertEqual((out["prepared"], out["skipped"]["customer_po:stated_left"]), ({}, 1))
+        self.assertEqual(self.queue().items(), [])
+        L.set_stated(rules, OURS_OID, 1, None)
+        L.set_stated(rules, OURS_OID, 2, f"Always cc {APPROVER}, {BOSS} and {OURS} on "
+                                         "customer emails")
+        L.set_stated(rules, OURS_OID, 3, "Always cc ops@else.example on supplier emails")
+        with mock.patch.dict(os.environ, {L.DIR_ENV: str(rules)}):
+            self.cycle([second])
+        (item,) = self.queue().items()
+        draft = item["body"]["prepared"]["draft"]
+        self.assertEqual([c["address"] for c in draft.get("cc") or ()], [APPROVER])
+        self.assertEqual(draft["recipients"]["why"][APPROVER], "stated_cc")
+        self.assertEqual(draft["recipients"]["withheld"], 1)          # the excluded one
+
     def test_a_failing_lesson_never_stops_the_cycle(self):
         msg = self._po()
         styled = self._ledger([sent(i, OURS_OID) for i in range(4)])
@@ -611,6 +700,41 @@ class Stated(unittest.TestCase):
                         "Sign off with Thanks, ana@x.com", 'Never say "Call Bob at 555"',
                         "Always give quantities in cases", "", None):
             self.assertEqual(L.stated_rules(nothing), [], nothing)
+
+    def test_autopilot_rules_read_from_their_words(self):
+        rules = lambda t: [(r["key"], r["value"]) for r in L.stated_rules(t)]  # noqa: E731
+        self.assertEqual(rules("Autopilot: stop drafting replies to Hello@Roboflow.com."),
+                         [("skip:all:hello@roboflow.com", "skip")])
+        self.assertEqual(rules("Ignore mail from @news.example.com"),
+                         [("skip:all:news.example.com", "skip")])
+        self.assertEqual(rules("Don't draft anything for vendors"),
+                         [("skip:supplier:*", "skip")])
+        self.assertEqual(rules("From now on, always cc ana@petra.example and bo@petra.example "
+                               "on supplier follow-ups"),
+                         [("cc:supplier:ana@petra.example", "cc"),
+                          ("cc:supplier:bo@petra.example", "cc")])
+        self.assertEqual(rules("Ignore emails from suppliers"), [("skip:supplier:*", "skip")])
+        self.assertEqual(rules("Never cc bob@acme.example"),
+                         [("never:bob@acme.example", "never")])
+        # a rule for some messages only, or a name with no address: the drafter reads the
+        # words, the feed applies no rule; a style rule stays a style rule
+        for nothing in ("Stop drafting replies to hello@x.example about webinars",
+                        "Always cc ana@petra.example when the PO is late",
+                        "Stop drafting replies to Roboflow", "Don't make drafts too long",
+                        "Ignore typos from suppliers", "Don't answer suppliers on weekends"):
+            self.assertEqual(rules(nothing), [], nothing)
+        self.assertEqual(rules('Never write "hope this finds you well"')[0][1], "yes")
+        # applied: an address or a whole domain, a Teams sender by the addresses it has
+        lessons = self.dir / "skip"
+        L.set_stated(lessons, "p1", 1, "Stop drafting replies to news.example.com")
+        got = L.Lessons.load(lessons, {}, self.Guard())
+        for sender, extra, skipped in (("a@mail.news.example.com", (), True),
+                                       ("a@news.example.org", (), False),
+                                       ("1111-oid", ("bo@news.example.com",), True),
+                                       ("1111-oid", (), False)):
+            self.assertEqual(got.stated_skip("p1", {"sender": sender, "side": "supplier",
+                                                    "sender_addresses": extra}) is not None,
+                             skipped, sender)
 
     def test_a_rule_stated_for_one_side_applies_to_that_side_only(self):
         said = L.stated_rules("To customers, sign off with Best regards")

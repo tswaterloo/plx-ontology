@@ -23,6 +23,9 @@ PG_ONLY_UNITS = (
     "plx-search-follow", "plx-search-generation", "plx-rag-backfill", "plx-truth-check",
     "plx-alerts",
 )
+# The interpreter running the test is the release's Python (lib.sh defaults PLX_VENV to the
+# served host's /data/venv, which a test runner elsewhere, a Spark, does not have).
+VENV = str(Path(sys.executable).parents[1])
 PERSONAL = re.compile(r"/home/[a-z_][a-z0-9_-]*|/Users/\w+|\btanush\b", re.IGNORECASE)
 
 
@@ -218,17 +221,29 @@ class DeployFilesTest(unittest.TestCase):
             self.assertNotIn("USER_UNITS=", install.replace("MOVED_USER_UNITS=", ""))
             activity = Path(tmp, "s", "plx-system-activity.service").read_text()
             self.assertIn("--weeks 13", activity)
-            # the alert rules run once after every successful business views refresh (no
-            # timer of their own), bounded, and the installer installs the unit
+            # the alert rules run after every successful business views refresh and on their
+            # own timer, never ordered behind a refresh (11-18: an 80-min rebuild held the
+            # start and every alert went stale), bounded, and the installer installs and
+            # enables both
             views = Path(tmp, "s", "plx-business-views.service").read_text()
             self.assertRegex(views, r"(?m)^OnSuccess=plx-alerts\.service$")
+            # owner 11-18: a build runs at full speed (no nice, CPU or IO caps), bounded by
+            # memory and its disk floor only
+            for name in ("plx-business-views", "plx-business-comms-recheck"):
+                unit = Path(tmp, "s", f"{name}.service").read_text()
+                self.assertNotRegex(unit, r"(?m)^(Nice|CPUWeight|IOWeight|IOSchedulingClass)=",
+                                    name)
+                self.assertRegex(unit, r"(?m)^MemoryMax=", name)
+            self.assertRegex(views, r"(?m)^Environment=PLX_BIZ_READ_WORKERS=8$")
             alerts = Path(tmp, "s", "plx-alerts.service").read_text()
             self.assertIn("-m operating.pg.alerts run", alerts)
             self.assertRegex(alerts, r"(?m)^Type=oneshot$")
             self.assertRegex(alerts, r"(?m)^MemoryMax=")
             self.assertRegex(alerts, r"(?m)^TimeoutStartSec=")
-            self.assertFalse(Path(tmp, "s", "plx-alerts.timer").exists())
-            self.assertIn("plx-alerts", install.split('\nSYS_AFTER="', 1)[1].split('"', 1)[0]
+            self.assertNotRegex(alerts, r"(?m)^After=.*plx-business-views")
+            self.assertRegex(Path(tmp, "s", "plx-alerts.timer").read_text(),
+                             r"(?m)^OnCalendar=")
+            self.assertIn("plx-alerts", install.split('\nSYS_UNITS="', 1)[1].split('"', 1)[0]
                           .split())
 
     def test_only_units_that_read_a_business_system_keep_its_credentials(self) -> None:
@@ -241,6 +256,8 @@ class DeployFilesTest(unittest.TestCase):
             "plx-ai-watcher": "runs the live host, whose resolver reads the sources",
             "plx-truth-check": "re-reads source records against the served values",
             "plx-expiry": "reads the credential files to report their expiry dates",
+            "plx-write-readiness": "reads the apps' permission claims and BC's company list "
+                                   "to record where a write could run",
             "plx-mail-exclusion-purge": "re-reads captured mail through the GET-only Graph "
                                         "client to find what the exclusion refuses",
         }
@@ -248,6 +265,7 @@ class DeployFilesTest(unittest.TestCase):
                    "MC_MCP_API_KEY"}
         keeps_one = {   # unit -> the one credential it calls a business system with
             "plx-graph-subscriptions": "AZURE_CLIENT_SECRET",   # token + Graph /subscriptions
+            "plx-org-capture": "MICROSOFT_GRAPH_CLIENT_SECRET",   # GET-only directory read
         }
         checked = []
         for path in sorted([*(DEPLOY / "systemd").glob("*.service"),
@@ -296,6 +314,15 @@ class DeployFilesTest(unittest.TestCase):
             runtime = {} if os.environ.get("XDG_RUNTIME_DIR") or not Path(
                 f"/run/user/{os.getuid()}").is_dir() else {
                 "XDG_RUNTIME_DIR": f"/run/user/{os.getuid()}"}
+            # A host whose systemd-analyze reports something on a known-good unit (a Spark: a
+            # root-only unit file of its own in /etc/systemd/system) cannot judge ours there
+            probe = Path(tmp, "plx-probe.service")
+            probe.write_text("[Unit]\nDescription=probe\n[Service]\nType=oneshot\nExecStart=/bin/true\n")
+            noise = subprocess.run(["systemd-analyze", "verify", str(probe)], capture_output=True,
+                                   text=True, env={**os.environ, **runtime, "HOME": tmp})
+            if noise.returncode == 0 and (noise.stdout + noise.stderr).strip():
+                self.skipTest("this host's systemd-analyze reports on a known-good unit: "
+                              + (noise.stdout + noise.stderr).strip()[:300])
             run = subprocess.run(["bash", str(DEPLOY / "ops" / "install_keep_fresh.sh"),
                                   "--dry-run"], capture_output=True, text=True,
                                  env={**os.environ, **runtime, "PLX_DEPLOY_ENV": str(env),
@@ -582,7 +609,7 @@ class ReleaseTest(unittest.TestCase):
             Path(tmp, "state").mkdir()
             env = {**os.environ, "PLX_DEPLOY_ENV": "/nonexistent", "PLX_REPO": str(repo),
                    "PLX_RELEASES": f"{tmp}/rel", "PLX_STATE": f"{tmp}/state",
-                   "PLX_RELEASE_OWNER": ""}
+                   "PLX_RELEASE_OWNER": "", "PLX_VENV": VENV}
             tool = str(DEPLOY / "release" / "plx-release")
 
             def run(*args: str) -> str:
@@ -622,7 +649,7 @@ class ReleaseTest(unittest.TestCase):
             Path(tmp, "state").mkdir()
             env = {**os.environ, "PLX_DEPLOY_ENV": "/nonexistent", "PLX_REPO": str(repo),
                    "PLX_RELEASES": f"{tmp}/rel", "PLX_STATE": f"{tmp}/state",
-                   "PLX_RELEASE_OWNER": "", "PLX_VENV": str(Path(sys.executable).parents[1])}
+                   "PLX_RELEASE_OWNER": "", "PLX_VENV": VENV}
             tool = str(DEPLOY / "release" / "plx-release")
             built = subprocess.run([tool, "build", "HEAD", "--no-app"], env=env, text=True,
                                    capture_output=True, check=True).stdout.strip().splitlines()[-1]
@@ -664,7 +691,7 @@ class ReleaseTest(unittest.TestCase):
             Path(tmp, "state").mkdir()
             env = {**os.environ, "PLX_DEPLOY_ENV": "/nonexistent", "PLX_REPO": str(repo),
                    "PLX_RELEASES": f"{tmp}/rel", "PLX_STATE": f"{tmp}/state",
-                   "PLX_RELEASE_OWNER": "", "PLX_NODE": str(node.parent)}
+                   "PLX_RELEASE_OWNER": "", "PLX_NODE": str(node.parent), "PLX_VENV": VENV}
             tool = str(DEPLOY / "release" / "plx-release")
 
             def run(*args: str) -> str:
@@ -711,7 +738,7 @@ class ReleaseTest(unittest.TestCase):
             rel = Path(tmp, "rel")
             env = {**os.environ, "PLX_DEPLOY_ENV": "/nonexistent", "PLX_REPO": str(repo),
                    "PLX_RELEASES": str(rel), "PLX_STATE": f"{tmp}/state",
-                   "PLX_RELEASE_OWNER": getpass.getuser()}
+                   "PLX_RELEASE_OWNER": getpass.getuser(), "PLX_VENV": VENV}
             tool = str(DEPLOY / "release" / "plx-release")
 
             def run(*args: str) -> subprocess.CompletedProcess:
@@ -759,7 +786,7 @@ class ReleaseTest(unittest.TestCase):
             Path(state, "projection").mkdir(parents=True)
             env = {**os.environ, "PLX_DEPLOY_ENV": "/nonexistent", "PLX_REPO": str(repo),
                    "PLX_RELEASES": f"{tmp}/rel", "PLX_STATE": str(state),
-                   "PLX_RELEASE_OWNER": ""}
+                   "PLX_RELEASE_OWNER": "", "PLX_VENV": VENV}
             tool = str(DEPLOY / "release" / "plx-release")
 
             def run(*args: str) -> subprocess.CompletedProcess:

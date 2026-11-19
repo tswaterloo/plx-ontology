@@ -784,6 +784,12 @@ def _question_event(st: Any, oid: str, event: dict[str, Any], seen: datetime | N
     task = next((o for t, o in _linked(st, oid, ("MCTaskEvent.event_of",))), None)
     event["event_type"] = "question.asked"
     event["addressee"] = q["addressee"]
+    # who usually answers this addressee's questions (MC handles), as of when it was asked:
+    # the item is prepared for them too (Vince answered 54 of his 102 answers of a week
+    # to questions addressed to others)
+    answerers = getattr(reader, "answerers", None)
+    event["answerers"] = answerers(q["addressee"], q["asked_at"] or str(
+        event.get("at") or "")) if callable(answerers) else []
     event["addressee_domains"] = sorted(reader.home_domains())
     event["open"] = not closed or (seen is not None and min(closed) > seen)
     event["status"] = "open" if event["open"] else "closed"

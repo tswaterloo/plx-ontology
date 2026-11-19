@@ -17,6 +17,7 @@ Evidence label: injected-transport (no network, made-up ids and addresses)."""
 from __future__ import annotations
 
 import json
+import os
 from unittest import mock
 
 from integrations.people_exclusion import PeopleExclusion
@@ -26,6 +27,18 @@ from operating.pg import business_comms as bc
 from operating.pg import business_views as bv
 from operating.pg import people_excluded, sql_views
 from operating.tests import test_table_teams_parity as ttp
+
+# the disk guard's floor (PLX_BIZ_MIN_FREE_GB) is the served host's: a test host's free
+# space is not what these tests are about (the guard's own test sets the floor back)
+_NO_FLOOR = mock.patch.dict(os.environ, {"PLX_BIZ_MIN_FREE_GB": "0"})
+
+
+def setUpModule():
+    _NO_FLOOR.start()
+
+
+def tearDownModule():
+    _NO_FLOOR.stop()
 
 READERS = ttp.READERS
 
@@ -222,6 +235,79 @@ class TeamsThroughTheDoor(ttp.TableTeamsParity):
                 with self.subTest(actor=sorted(actor.principals), refreshed=refreshed):
                     self.assertEqual(self.gated(actor), set())
                     self.assertEqual(self.handles(actor), set())
+
+    def door(self, base, actor):
+        """The handles ``plx.sql`` returns ``actor`` from ``teams_messages`` over ``base``."""
+        tool = ts.SqlTool(base)
+        with mock.patch.object(ts, "_people_tag", return_value=self.tag):
+            out = tool.call("plx.sql", {"sql": "SELECT handle FROM teams_messages"}, actor)
+        self.assertNotIn("error", out, out)
+        return {_cell(r["cells"][0]) for r in out["rows"]}
+
+    def test_the_served_hosts_gate_hands_the_runtime_to_the_door(self):
+        """11-18 live: the served host wraps the runtime's gate (``_GatesMixin._item_gate``)
+        and the wrapper carried no runtime, so plx.sql showed every reader, the owner
+        too, 0 Teams messages of 253,460. Through the wrapper the door shows exactly what
+        it shows through the runtime's own gate."""
+        from types import SimpleNamespace
+        from operating.case_tools_host_gates import _GatesMixin
+        from operating.ontology_tools_results import item_gate_from_case_runtime
+        inner = item_gate_from_case_runtime(self.runtime)
+        host = SimpleNamespace(runtime=self.runtime, mail_capture_dir=None,
+                               sharepoint_capture_dir=None)
+        wrapped = _GatesMixin._item_gate(host, inner)
+        self.assertIs(wrapped.runtime, self.runtime)
+        base = self.tool().base
+        for actor in READERS:
+            with self.subTest(actor=sorted(actor.principals)):
+                want = self.handles(actor)
+                base.item_gate = wrapped
+                self.assertEqual(self.door(base, actor), want)
+        self.assertTrue(self.handles(tct.COS_ONLY))
+        # a wrapped gate with no runtime under it still shows nothing (fail closed)
+        base.item_gate = _GatesMixin._item_gate(host, None)
+        self.assertEqual(self.door(base, tct.COS_ONLY), set())
+
+    def test_a_staff_employee_reads_the_chats_they_are_in_whatever_the_live_audience(self):
+        """11-18 live: a staff employee's gated actor holds only ``employee:<oid>``; the
+        host's live audience grants Teams to staff principals no employee policy grants
+        any more (11-17 model), so every staff reader read 0 Teams messages. An employee's
+        chat window is their own membership (or full-read grant): the member reads the
+        same messages as the gate's member reader; one in no chat and a refused employee
+        read none."""
+        from ontology.types import Actor
+        from operating.employee_permissions import EmployeeEntitlement, EmployeePrincipal
+        tenant = tct.ENV["MICROSOFT_GRAPH_TENANT_ID"]
+        stranger = "0000aaaa-0000-0000-0000-000000000099"
+        ents = {}
+
+        def employee(oid, address, refused=False):
+            actor = Actor("plx", frozenset({"employee:" + oid}), "restricted")
+            ents[actor] = EmployeeEntitlement(
+                principal=EmployeePrincipal(tenant, oid), actor=None if refused else actor,
+                denied_reason="denied" if refused else None,
+                source_identities=frozenset({oid, address}))
+            return actor
+        vince = employee(tct.U_VINCE, tct.VINCE)
+        nobody = employee(stranger, "nobody@petrasoap.com")
+        refused = employee(tct.U_COS, tct.COS, refused=True)
+        base = self.tool().base
+        everyone = set().union(*(a.principals for a in (*READERS, *ents)))
+        base.policy = ttp.ot.ReadPolicy(tenant="plx", audiences={"teams:*": everyone,
+                                                                 "api:*": everyone})
+        chat = next(iter(bc.teams_windows(self.runtime, tct.VINCE_ONLY)))
+        for actor in ents:
+            self.assertFalse(self.runtime.live.audience.allows(actor, chat))
+        with mock.patch.object(self.runtime.employee_gate, "entitlement",
+                               side_effect=lambda actor: ents.get(actor)):
+            self.assertEqual(bc.teams_windows(self.runtime, vince),
+                             bc.teams_windows(self.runtime, tct.VINCE_ONLY))
+            want = self.handles(tct.VINCE_ONLY)
+            self.assertTrue(want)
+            self.assertEqual(self.door(base, vince), want)
+            for actor in (nobody, refused):
+                self.assertEqual(bc.teams_windows(self.runtime, actor), {})
+                self.assertEqual(self.door(base, actor), set())
 
     # the plx.table cases of the base class are not this view's
     test_cardinality_1_10_60_by_day_bucket = None

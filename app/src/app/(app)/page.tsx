@@ -44,6 +44,9 @@ function didntLoad(thing: string, err: unknown): string {
 }
 
 /** The list's groups, most urgent first; a kind the app doesn't know sorts before "no due date". */
+/** Alerts of one kind Home lists before "Show N more": it stays a short list of what needs
+ * you (a kind with dozens open would bury the rest); every one is in Alerts. */
+export const HOME_ROWS = 3;
 const ORDER = ["po_late", "negative_margin", "customer_order_at_risk", "po_due", "eta_slipped", "vendor_no_reply", "vendor_terms_unapplied", "quantity_mismatch", "lot_on_hold", "lot_near_expiry", "quote_accepted_no_order"];
 const SHORT_GROUP: Record<string, string> = { po_late: "Late", po_undated: "No date", po_due: "Due soon" };
 /** My work's chips: what the reader does about an item. */
@@ -216,10 +219,10 @@ function Today() {
   // every late order the server counts, which can be more than Today reads (the rest are on Late orders)
   const [lateAll, setLateAll] = useState<number | null>(null);
   const [suggestions, setSuggestions] = useState<ProactiveSuggestion[]>([]);
-  const [suggestionsRead, setSuggestionsRead] = useState(false);
   const supplier = params.get("supplier");
   const [states, setStates] = useState<Record<string, ActionResult>>({});
   const [pages, setPages] = useState<Record<string, { items: BriefingItem[]; more: boolean; total: number }>>({});
+  const [opened, setOpened] = useState<Record<string, boolean>>({});
   const [filter, setFilter] = useState<string>(params.get("view") === "reply" ? "reply" : "all");
   // the Reply chip's list: your own mail and chats waiting on your answer (inbox triage)
   const [replies, setReplies] = useState<ReplyTriage | null>(null);
@@ -265,15 +268,17 @@ function Today() {
       .then((b) => {
         setBriefing(b);
         // each group's next page (the briefing carries only its top items), read only when
-        // Home can show some of it: Home lists only the kinds sent home, so with every
-        // home item already among the top ones no page is read (each page is cut from the
-        // briefing the server kept, so the visit is marked seen only after them)
+        // Home can show some of it: Home lists only the kinds sent home, and of each kind
+        // only HOME_ROWS before "Show more", so a kind whose top items already fill those
+        // rows needs no page (each page is cut from the briefing the server kept, so the
+        // visit is marked seen only after them)
         const top = b.items ?? [];
         const homeOnly = typeof b.home_count === "number";
         const needed = b.status === "read" && (!homeOnly || (b.home_count ?? 0) > top.filter((i) => i.home).length);
+        const shown = (type: string) => top.filter((i) => i.event_type === type && (!homeOnly || i.home)).length;
         const reads = needed
           ? (b.groups ?? [])
-              .filter((g) => g.event_type !== "po_late" && g.count > (g.in_top ?? 0))
+              .filter((g) => g.event_type !== "po_late" && g.count > (g.in_top ?? 0) && shown(g.event_type) < HOME_ROWS)
               .map((g) =>
                 getBriefingItems(g.event_type, 0, "all", c.signal)
                   .then((p) => setPages((cur) => ({ ...cur, [g.event_type]: { items: p.items ?? [], more: !!p.more, total: p.total ?? 0 } })))
@@ -297,7 +302,9 @@ function Today() {
       },
       () => !c.signal.aborted && setLate([]),
     );
-    getSuggestions(c.signal).then((s) => setSuggestions(s.status === "read" ? (s.items ?? []) : []), () => undefined).finally(() => !c.signal.aborted && setSuggestionsRead(true));
+    // the suggestion cards only add to rows already listed ("ETA confirmed?", a draft): the
+    // list never waits for them (their first read can take a minute on a cold server)
+    getSuggestions(c.signal).then((s) => !c.signal.aborted && setSuggestions(s.status === "read" ? (s.items ?? []) : []), () => undefined);
     getActionStates(c.signal).then((r) => setStates(r.cards ?? {}), () => undefined);
     return () => c.abort();
   }, []);
@@ -338,7 +345,10 @@ function Today() {
   const bySupplier = supplier
     ? groups.map((g) => ({ ...g, rows: g.rows.filter((r) => r.counterpart === supplier) })).filter((g) => g.rows.length).map((g) => ({ ...g, count: g.rows.length, more: false }))
     : groups;
-  const visible = filter === "all" ? bySupplier : bySupplier.filter((g) => verbOf(g) === filter);
+  const capped = bySupplier.map((g) =>
+    g.type === "po_late" || opened[g.type] || g.rows.length <= HOME_ROWS ? { ...g, folded: 0 } : { ...g, rows: g.rows.slice(0, HOME_ROWS), folded: g.rows.length - HOME_ROWS },
+  );
+  const visible = filter === "all" ? capped : capped.filter((g) => verbOf(g) === filter);
   const flat = useMemo(() => visible.flatMap((g) => g.rows), [visible]);
   const selectedKey = picked ?? (desktop ? flat[0]?.key ?? null : null);
   const selected = flat.find((r) => r.key === selectedKey) ?? groups.flatMap((g) => g.rows).find((r) => r.key === selectedKey) ?? null;
@@ -490,7 +500,7 @@ function Today() {
       )}
 
       {!supplier && <HomeAsk className="px-5 pt-3" />}      <StaleNote since={home?.stale_since ?? briefing?.stale_since} className="px-5 py-1.5" />
-      <div ref={listRef} className="min-h-0 flex-1 overflow-y-auto pb-4" data-testid="needs-you" {...((!briefing && !briefingError && !error) || !suggestionsRead ? { "data-pending": "" } : {})}>
+      <div ref={listRef} className="min-h-0 flex-1 overflow-y-auto pb-4" data-testid="needs-you" {...(!briefing && !briefingError && !error ? { "data-pending": "" } : {})}>
         <SignedInFirstWeek />
         <NeedsMe />
         <YourCommitments />
@@ -546,7 +556,20 @@ function Today() {
                   Showing the first {late.length} of {lateAll} late orders; all of them are on Late orders
                 </Link>
               )}
-              {g.more && pages[g.type]?.more !== false && (
+              {g.folded > 0 && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setOpened((x) => ({ ...x, [g.type]: true }));
+                    if (!pages[g.type] && (briefing?.groups ?? []).some((b) => b.event_type === g.type && b.count > (b.in_top ?? 0))) more(g.type);
+                  }}
+                  className="mx-5 mt-1 mb-2 text-[12px] font-medium text-muted hover:text-fg cursor-pointer"
+                  data-testid="home-folded"
+                >
+                  Show {g.folded} more
+                </button>
+              )}
+              {g.folded === 0 && g.more && pages[g.type]?.more !== false && (
                 <button type="button" onClick={() => more(g.type)} className="mx-5 mt-1 mb-2 text-[12px] font-medium text-muted hover:text-fg cursor-pointer">
                   Show more ({g.count - g.rows.length})
                 </button>

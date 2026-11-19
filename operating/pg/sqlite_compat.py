@@ -57,6 +57,8 @@ import threading
 import time
 from typing import Any, Callable, Iterator, Mapping
 
+from operating import call_limits
+
 MAX_ROUNDS = 24
 # A streamed read (``PgCompatConnection.stream``) takes this many rows a round trip, on one
 # of at most this many connections of its own (none free: the read is run whole).
@@ -745,6 +747,16 @@ def _operand_end(tokens: list[tuple[str, str]], start: int) -> int:
     return start
 
 
+def _cancel(conn: Any) -> None:
+    """Cancel the statement running on ``conn`` (a psycopg connection), from another
+    thread: the statement raises ``QueryCanceled`` ("interrupted") in its own."""
+    safe = getattr(conn, "cancel_safe", None)
+    if safe is not None:
+        safe(timeout=5.0)
+    else:
+        conn.cancel()
+
+
 def _value(value: Any) -> Any:
     if isinstance(value, bool):
         return int(value)
@@ -1289,7 +1301,12 @@ class PgCompatConnection:
                 conn = self.live()
                 status = conn.pgconn.transaction_status
                 try:
-                    return self._execute(sql, parameters)
+                    # the request this read serves gone: the statement is cancelled on
+                    # the server (``call_limits.on_cancel``), raising "interrupted"
+                    with call_limits.on_cancel(
+                            lambda conn=conn: _cancel(conn),
+                            lambda made, conn=conn: self._settle_cancel(conn, made)):
+                        return self._execute(sql, parameters)
                 except sqlite3.OperationalError as exc:
                     cause = exc.__cause__
                     if not isinstance(cause, (psycopg.OperationalError,
@@ -1302,6 +1319,48 @@ class PgCompatConnection:
                     if not again:
                         raise
                     retried = True
+
+    def _settle_cancel(self, conn: Any, made: bool) -> None:
+        """After a cancel was made for this connection's statement (``on_cancel``), still
+        holding it: a cancel that reached the server after the statement ended is
+        absorbed here by one trivial statement (inside a transaction under a savepoint,
+        so the transaction stands), never by the next job's statement. A cancel not
+        confirmed in time (``made`` False): the connection is replaced, never reused."""
+        import psycopg
+        if not made or conn is not self._conn:
+            if conn is self._conn:
+                try:
+                    self._reconnect("a cancel was not confirmed")
+                except Exception:  # noqa: BLE001 - the next statement reconnects
+                    pass
+            return
+        status = conn.pgconn.transaction_status
+        try:
+            if status == psycopg.pq.TransactionStatus.IDLE:
+                try:
+                    conn.execute("SELECT 1")
+                except psycopg.errors.QueryCanceled:
+                    pass   # the late cancel, spent here
+            elif status == psycopg.pq.TransactionStatus.INTRANS:
+                conn.execute("SAVEPOINT plx_cancel_settle")
+                try:
+                    conn.execute("SELECT 1")
+                except psycopg.errors.QueryCanceled:
+                    conn.execute("ROLLBACK TO SAVEPOINT plx_cancel_settle")
+                conn.execute("RELEASE SAVEPOINT plx_cancel_settle")
+            elif status == psycopg.pq.TransactionStatus.INERROR:
+                # a failed transaction refuses every statement but its rollback: the one
+                # refused here spends a late cancel too, and the transaction stays failed
+                # for its owner's ROLLBACK, as it was
+                try:
+                    conn.execute("SELECT 1")
+                except (psycopg.errors.QueryCanceled, psycopg.errors.InFailedSqlTransaction):
+                    pass
+        except Exception:  # noqa: BLE001 - unusable now: replaced, never handed on
+            try:
+                self._reconnect("a cancelled statement's connection could not be settled")
+            except Exception:  # noqa: BLE001 - the next statement reconnects
+                pass
 
     def _execute(self, sql: str, parameters: Any) -> Cursor:
         import psycopg

@@ -2,7 +2,7 @@
 
 Every 15 minutes (``deploy/systemd/plx-write-readiness.timer``) ``probe`` reads, per
 system, what a live write needs and records it in the control directory
-(``autopilot_write.control_dir``: ``write-readiness.json``, owner-only). Nothing here
+(``autopilot_write.control_dir``: ``write-readiness.json``, owner and group read). Nothing here
 writes to a business system: Graph and BC are read with the app's token (the token's
 permission claims are read from the token itself; BC's company list is one GET through
 the GET-only client), MC by its configuration. When a scope or credential appears (an
@@ -55,16 +55,25 @@ ENV_FILES_DEFAULT = "/etc/plx/vince-*.env"
 # PLX_WRITES_*/PLX_AUTOPILOT_WRITES*/PLX_APPROVED_WRITES/kill/live switches stay a person's)
 ENV_FILE_KEYS = re.compile(r"^(?:AZURE_[A-Z0-9_]{1,60}|BC_[A-Z0-9_]{1,60}|MC_[A-Z0-9_]{1,60}"
                            r"|GRAPH_[A-Z0-9_]{1,60}|PLX_ACTIONS_GRAPH_CREDENTIALS"
-                           r"|PLX_BC_SANDBOX_ENVIRONMENT|PLX_AUTOPILOT_BC_COMPANY_ID"
+                           r"|PLX_BC_SANDBOX_ENVIRONMENT|PLX_AUTOPILOT_BC_COMPANY_IDS?"
                            r"|PLX_AUTOPILOT_BC_ENVIRONMENT)$")
 MAX_AGE = timedelta(minutes=45)        # a record older than three probes counts as none
 GRAPH_NEEDS = {"calendar": "Calendars.ReadWrite", "planner": "Tasks.ReadWrite.All",
                "sharepoint": "Sites.Selected (or Sites.ReadWrite.All)"}
 BC_ROLE = "API.ReadWrite.All"
-# Ricardo 11-13: test and write in these BC companies only; a company whose name holds a
-# denied fragment is never written, whatever else is configured
-BC_COMPANIES_ALLOWED = ("PLX", "Petra Soap")
-BC_COMPANY_DENIED = ("phsi",)
+# Vince 11-18: writes are on for ALL companies, PLX Consol
+# (PHSI Group) included; Ricardo's 11-13 "PLX and Petra Soap only" no longer holds. Which
+# companies are written is the host's configuration (COMPANY_ENV, EXTRA_COMPANIES_ENV),
+# each verified by the probe in the write environment; every write still needs a named
+# person's confirm. BC names them by book: manufacturing = "My Company", distribution =
+# "PLX Distribution", consol = "PLX Consol".
+BC_COMPANIES_ALLOWED: tuple[str, ...] = ()     # () : any company BC names
+BC_COMPANY_DENIED: tuple[str, ...] = ()
+# the autopilot's BC companies: COMPANY_ENV is the default (the create desk's too), the
+# EXTRA_ENV list (comma or space separated) adds companies an action may name; every one
+# must be verified by the probe before BC opens at all
+COMPANY_ENV = "PLX_AUTOPILOT_BC_COMPANY_ID"
+EXTRA_COMPANIES_ENV = "PLX_AUTOPILOT_BC_COMPANY_IDS"
 SYSTEMS = ("bc", "calendar", "planner", "sharepoint", "mc")
 _GUID = re.compile(r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$")
 
@@ -145,11 +154,25 @@ def bc_environment(env: Mapping[str, str]) -> str:
                or env.get("BC_ENVIRONMENT") or "Production").strip()
 
 
+def bc_company_ids(env: Mapping[str, str]) -> list[str]:
+    """The configured BC company ids, lower-case, the default first, each once. Any entry
+    that is not a GUID makes the whole setting unusable (``[]``): nothing is guessed."""
+    first = str(env.get(COMPANY_ENV) or "").strip().lower()
+    extra = str(env.get(EXTRA_COMPANIES_ENV) or "").replace(",", " ").lower().split()
+    ids = list(dict.fromkeys([first, *extra] if first else []))
+    if not ids or extra and not first or not all(_GUID.fullmatch(i) for i in ids):
+        return []
+    return ids
+
+
 def company_allowed(name: Any) -> bool:
+    """A company BC names (any, since 11-18), not a denied one, among the allowed when a
+    list is set."""
     text = str(name or "").strip()
     if not text or any(d in text.lower() for d in BC_COMPANY_DENIED):
         return False
-    return text.lower() in {c.lower() for c in BC_COMPANIES_ALLOWED}
+    return not BC_COMPANIES_ALLOWED or \
+        text.lower() in {c.lower() for c in BC_COMPANIES_ALLOWED}
 
 
 def _status(missing: Sequence[str], scope_missing: bool, live: bool) -> str:
@@ -178,14 +201,15 @@ def _probe_graph(system: str, env: Mapping[str, str], token: Callable[[], str] |
 def _probe_bc(env: Mapping[str, str], token: Callable[[], str] | None,
               get: Callable[[str, str], Any] | None) -> tuple[list[str], bool, dict[str, Any]]:
     info: dict[str, Any] = {"environment": bc_environment(env)}
-    company = str(env.get("PLX_AUTOPILOT_BC_COMPANY_ID") or "").strip().lower()
+    companies = bc_company_ids(env)
     tenant = str(env.get("BC_TENANT_ID") or "").strip().lower()
     missing: list[str] = []
     if not _GUID.fullmatch(tenant):
         missing.append("BC tenant id not configured (BC_TENANT_ID)")
-    if not _GUID.fullmatch(company):
-        missing.append("BC company id not configured (PLX_AUTOPILOT_BC_COMPANY_ID: the "
-                       "PLX or Petra Soap company of the write environment)")
+    if not companies:
+        missing.append(f"BC company id not configured ({COMPANY_ENV}, plus "
+                       f"{EXTRA_COMPANIES_ENV} for more: GUIDs of the companies "
+                       "of the write environment)")
     if missing:
         return missing, False, info
     try:
@@ -207,17 +231,23 @@ def _probe_bc(env: Mapping[str, str], token: Callable[[], str] | None,
                 if status in (401, 403) else "BC company list unreadable")
         return [*scope_missing, what], True, info
     rows = found.get("value") if isinstance(found, Mapping) else None
-    name = next((r.get("name") for r in rows or () if isinstance(r, Mapping)
-                 and str(r.get("id") or "").lower() == company), None)
-    info["company_name"] = str(name)[:80] if name else None
-    if name is None:
-        return [*scope_missing, "the configured BC company id is not in this environment"], \
-            False, info
-    if not company_allowed(name):
-        return [*scope_missing, "the configured BC company is not one the autopilot may "
-                "write (PLX or Petra Soap only, never PHSI Group)"], False, info
+    names = {str(r.get("id") or "").lower(): r.get("name") for r in rows or ()
+             if isinstance(r, Mapping)}
+    shown = {str(r.get("id") or "").lower(): r.get("displayName") for r in rows or ()
+             if isinstance(r, Mapping)}
+    info["companies"] = [{"id": c, "name": str(names[c])[:80] if names.get(c) else None,
+                          "display_name": str(shown[c])[:80] if shown.get(c) else None}
+                         for c in companies]
+    info["company_name"] = info["companies"][0]["name"]
+    problems: list[str] = []
+    if any(not names.get(c) for c in companies):
+        problems.append("a configured BC company id is not in this environment")
+    if any(names.get(c) and not company_allowed(names[c]) for c in companies):
+        problems.append("a configured BC company is not one the autopilot may write")
+    if problems:
+        return [*scope_missing, *problems], False, info
     info["company_verified"] = True
-    info["company_id"], info["tenant_id"] = company, tenant
+    info["company_id"], info["company_ids"], info["tenant_id"] = companies[0], companies, tenant
     return scope_missing, bool(scope_missing), info
 
 
@@ -269,7 +299,7 @@ def probe(state: Path, environ: Mapping[str, str] | None = None, *,
 
 def record(state: Path, found: Mapping[str, Any], environ: Mapping[str, str] | None = None
            ) -> Path:
-    """Write ``found`` atomically (owner-only) into the control directory."""
+    """Write ``found`` atomically (owner read-write, group read) into the control directory."""
     from operating import autopilot_write as aw
     folder = aw.control_dir(Path(state), os.environ if environ is None else environ)
     folder.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -277,7 +307,9 @@ def record(state: Path, found: Mapping[str, Any], environ: Mapping[str, str] | N
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as fh:
             json.dump(found, fh, indent=1, sort_keys=True)
-        os.chmod(tmp, 0o600)
+        # the owner and the control directory's group (the API's user reads it to open
+        # BC): statuses, permission and company names only, never a credential
+        os.chmod(tmp, 0o640)
         os.replace(tmp, folder / READINESS_FILE)
     finally:
         if os.path.exists(tmp):
@@ -302,19 +334,38 @@ def read(state: Path, environ: Mapping[str, str], now: datetime | None = None
     return found
 
 
+def verified_companies(state: Path, environ: Mapping[str, str], now: datetime | None = None
+                       ) -> dict[str, dict[str, Any]] | None:
+    """The configured BC companies as a recent probe found them in the very tenant and
+    environment configured here (id -> ``{"name", "display_name"}`` as BC names them, the
+    default first), or None when no such probe is on record: a company named by its name
+    is matched only against this, never guessed."""
+    found = read(state, environ, now)
+    bc = ((found or {}).get("systems") or {}).get("bc") or {}
+    companies = bc_company_ids(environ)
+    tenant = str(environ.get("BC_TENANT_ID") or "").strip().lower()
+    if not (bc.get("company_verified") is True and companies
+            and bc.get("company_ids") == companies and bc.get("company_id") == companies[0]
+            and tenant and bc.get("tenant_id") == tenant
+            and bc.get("environment") == bc_environment(environ)):
+        return None
+    rows = {str(c.get("id") or "").lower(): c for c in bc.get("companies") or ()
+            if isinstance(c, Mapping)}
+    if set(rows) != set(companies) or not all(
+            rows[c].get("name") and company_allowed(rows[c]["name"]) for c in companies):
+        return None
+    return {c: {"name": str(rows[c]["name"]),
+                "display_name": str(rows[c].get("display_name") or "") or None}
+            for c in companies}
+
+
 def bc_verified(state: Path, environ: Mapping[str, str], now: datetime | None = None) -> bool:
     """A recent probe found the BC app holding ``BC_ROLE`` and the configured company
     (same id, same environment) to be one the autopilot may write."""
     found = read(state, environ, now)
     bc = ((found or {}).get("systems") or {}).get("bc") or {}
-    company = str(environ.get("PLX_AUTOPILOT_BC_COMPANY_ID") or "").strip().lower()
-    tenant = str(environ.get("BC_TENANT_ID") or "").strip().lower()
     return (bc.get("status") in ("ready-live", "ready-dry-run")
-            and bc.get("company_verified") is True
-            and bool(company) and bc.get("company_id") == company
-            and bool(tenant) and bc.get("tenant_id") == tenant
-            and bc.get("environment") == bc_environment(environ)
-            and company_allowed(bc.get("company_name")))
+            and verified_companies(state, environ, now) is not None)
 
 
 def main(argv: Sequence[str] | None = None) -> int:

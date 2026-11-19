@@ -318,6 +318,33 @@ def edit_features(draft: str, sent: str) -> dict[str, Any]:
             "dropped": sorted(set(dropped))[:6], "kept": sorted(set(kept))[:6]}
 
 
+def describe_edit(draft: str, sent: str) -> list[str]:
+    """What a person's edit of a draft changed, in the words a lesson is shown in
+    (``_text_of``: greeting, sign-off, length, a generic sentence added or taken out; never
+    a sentence with a figure, an address or a name): what the Workbench learns from it
+    (``draft_sent``, distilled with every other edit of theirs). [] when nothing of that
+    kind changed, or either text is empty or touches pay or finance."""
+    if not str(draft or "").strip() or not str(sent or "").strip() \
+            or finance_text(draft) or finance_text(sent):
+        return []
+    feats = edit_features(draft, sent)
+    out: list[str] = []
+    was_greet, _n = greeting_of(reply_core(draft))
+    if feats["greeting"] != was_greet:
+        out.append(_text_of("style", "greeting", feats["greeting"]))
+    was_close, _l = signoff_of(reply_core(draft))
+    if feats["signoff"] != was_close:
+        out.append(_text_of("style", "signoff", feats["signoff"],
+                            feats.get("signoff_text") or ""))
+    before = len(" ".join(body_sentences(draft)).split())
+    if before and feats["words"] and abs(feats["words"] - before) >= max(8, before * 0.3):
+        out.append(_text_of("style", "length", str(int(round(feats["words"], -1)) or
+                                                   feats["words"])))
+    out += [_text_of("style", "add:x", "", t) for t in feats["added"][:2]]
+    out += [_text_of("style", "drop:x", "", t) for t in feats["dropped"][:2]]
+    return [x.replace("Usually adds:", "Adds:", 1) for x in out if x][:5]
+
+
 def correction_of(text: Any) -> Optional[str]:
     """The value of an explicit correction ("no, it's X", "actually it is X"), else None."""
     found = _CORRECTION.match(str(text or ""))
@@ -849,13 +876,114 @@ _SIDE_WORD = {"customer": "customer", "client": "customer", "supplier": "supplie
 _GREET_FORM = {"hi": "hi_name", "hello": "hello_name", "hey": "hey_name", "dear": "dear_name",
                "good morning": "good_morning_name"}
 
+# Autopilot rules a person states: which messages get no draft ("stop drafting replies to
+# hello@x.com", "don't draft anything for suppliers", "ignore mail from x.com"), who their
+# email drafts copy ("always cc ana@petra.com on supplier emails") and who they never copy
+# ("never cc bob@x.com"). A target is an address, a domain or a side (customers, suppliers,
+# colleagues); a name alone is none (the Ask keeps the rule with the address it resolved).
+# Kept as ``decision`` lessons the autopilot obeys (``Lessons.stated_skip``,
+# ``Lessons.recipients``, ``Lessons.stated_cc``).
+_RULE_ADDRESS = r"[A-Za-z0-9._%+'-]{1,64}@[A-Za-z0-9-]{1,63}(?:\.[A-Za-z0-9-]{1,63})+"
+_RULE_TARGET = re.compile(r"(?<![\w.@'%+-])(?:" + _RULE_ADDRESS
+                          + r"|@?(?:[A-Za-z0-9-]{1,63}\.)+[A-Za-z]{2,24})(?![\w@-])")
+_STATED_NO_DRAFT = re.compile(
+    r"\b(?:(?:stop|don'?t|do not|never|no(?:\s+more)?|quit|skip)(?:\s+ever)?\s+"
+    r"(?:(?:auto-?)?(?:draft|prepar|writ|suggest|mak)\w*\s+)?(?:(?:any|a|the)\s+)?"
+    r"(?:(?:e-?mail|mail|teams|chat)\s+)?(?:repl(?:y|ies|ying)|drafts?|answers?|responses?"
+    r"|items?|anything)"
+    # "ignore"/"mute" only of messages as a whole ("ignore mail from x.com", "mute
+    # x@y.com"), never of something in them ("ignore typos from suppliers")
+    r"|(?:ignore|mute)(?:\s+(?:all|any|every))?(?:\s+(?:e-?mails?|mail|messages?|"
+    r"everything|anything))?(?=\s+(?:from\s+|by\s+)?(?:@|[\w.%+'-]+@|"
+    r"(?:[A-Za-z0-9-]+\.)+[A-Za-z]{2,}\b)|\s+(?:e-?mails?|mail|messages?|everything|"
+    r"anything)\b))\b", re.I)
+_STATED_COPY = re.compile(
+    r"\b(?:(?P<neg>never|don'?t|do not|stop|no longer|quit)(?:\s+ever)?\s+)?"
+    r"(?:(?:always|also)\s+)?(?:cc(?:'?d|'?ing|s)?|bcc|cop(?:y|ying|ies)|loop(?:ing)?\s+in"
+    r"|includ(?:e|ing)|add(?:ing)?)\s+(?:in\s+)?(?P<who>" + _RULE_ADDRESS
+    + r"(?:\s*(?:,|and|&|or)\s*" + _RULE_ADDRESS + r")*)", re.I)
+_RULE_SIDE = re.compile(r"\b(customers?|clients?|suppliers?|vendors?|colleagues?|co-?workers?"
+                        r"|internal|team|staff)\b", re.I)
+# a rule for some messages only ("... about pricing", "unless it is urgent"): no rule the
+# autopilot can apply by sender or side; the drafter reads the person's words instead
+_RULE_ONLY_SOME = re.compile(
+    r"\b(?:about|regarding|concerning|re|unless|except|when|if|while|during|until|before|"
+    r"after|weekends?|evenings?|nights?|holidays?|vacation|today|tonight|tomorrow|this week)\b",
+    re.I)
+RULE_PREFIXES = ("skip:", "cc:", "never:")
+
+
+def _rule_side(text: str) -> str:
+    found = _RULE_SIDE.search(text)
+    if not found:
+        return "all"
+    word = found.group(1).lower()
+    return _SIDE_WORD.get(word.rstrip("s")) or _SIDE_WORD.get(word) or "all"
+
+
+def _rule_target(found: str) -> str:
+    target = found.lower().rstrip(".")
+    return target if "@" in target[1:] else target.lstrip("@")
+
+
+def autopilot_rules(text: Any) -> list[dict[str, str]]:
+    """The Autopilot rules one sentence states (``_STATED_NO_DRAFT``, ``_STATED_COPY``):
+    ``skip:<side>:<target>`` (no draft for a message from the target, ``*`` every one of
+    that side), ``cc:<side>:<address>`` (copy them on that side's email drafts, ``all``:
+    every one) and ``never:<address>`` (never copied); [] for a sentence stating none,
+    naming no address, domain or side, or narrowing it to some messages (``_RULE_ONLY_SOME``)."""
+    text = " ".join(str(text or "").split())
+    out: dict[str, dict[str, str]] = {}
+    for found in _STATED_COPY.finditer(text):
+        rest = text[found.end():]
+        if _RULE_ONLY_SOME.search(rest):
+            continue
+        side = _rule_side(rest[:120])
+        for address in re.findall(_RULE_ADDRESS, found.group("who")):
+            address = address.lower()
+            if found.group("neg"):
+                out[f"never:{address}"] = {"key": f"never:{address}", "value": "never",
+                                           "text": f"Autopilot never copies {address}"}
+            else:
+                key = f"cc:{side}:{address}"
+                out[key] = {"key": key, "value": "cc", "text": (
+                    f"Autopilot copies {address} on every email draft" if side == "all" else
+                    f"Autopilot copies {address} on email drafts to {AUDIENCES[side]}")}
+    said = _STATED_NO_DRAFT.search(text)
+    if said and not any(r["value"] == "never" for r in out.values()) \
+            and not _RULE_ONLY_SOME.search(text[said.end():]):
+        rest = text[said.end():]
+        targets = [_rule_target(t) for t in _RULE_TARGET.findall(rest)]
+        side = _rule_side(rest)
+        for target in targets or (["*"] if side != "all" else []):
+            key = f"skip:{side}:{target}"
+            out[key] = {"key": key, "value": "skip", "text": (
+                f"Autopilot drafts nothing for {AUDIENCES[side]}" if target == "*" else
+                f"Autopilot drafts nothing for messages from {target}"
+                + (f" ({AUDIENCES[side]})" if side != "all" else ""))}
+    return list(out.values())
+
+
+def rule_matches(target: str, address: Any) -> bool:
+    """Whether a stated rule's target (an address, or a domain and its subdomains) is the
+    message's ``address``."""
+    address = str(address or "").strip().lower()
+    if "@" not in address or not target:
+        return False
+    if "@" in target:
+        return address == target
+    domain = address.rsplit("@", 1)[1]
+    return domain == target or domain.endswith("." + target)
+
 
 def stated_rules(text: Any) -> list[dict[str, str]]:
     """The drafting rules a person stated in their own words ("sign off with Thanks, Ana",
     "start my emails with Hi <name>", "no greeting", "never write \"hope this finds you
     well\""), as style lessons ({key, value, text}) the drafter applies over anything
-    learned. Nothing for pay or finance, a sign-off that is no closing words, or a
-    sentence that names someone or carries a figure (``template``)."""
+    learned, and the Autopilot rules a sentence states (``autopilot_rules``: no draft for a
+    sender or side, who is copied or never copied) instead of a style rule. Nothing for pay
+    or finance, a sign-off that is no closing words, or a sentence that names someone or
+    carries a figure (``template``)."""
     text = " ".join(str(text or "").split())
     if not text or finance_text(text):
         return []
@@ -866,6 +994,9 @@ def stated_rules(text: Any) -> list[dict[str, str]]:
             for rule in stated_rules(sentence):
                 merged[rule["key"]] = rule
         return list(merged.values())
+    ruled = autopilot_rules(text)
+    if ruled:
+        return ruled
     side_said = _STATED_SIDE.search(text)
     if side_said and side_said.start() > 0 and text[side_said.end():].strip(" .!"):
         side_said = None   # mid-sentence ("..., and write to the team ..."): not a side
@@ -970,7 +1101,8 @@ def _stated_lessons(directory: Optional[Path]) -> list[Lesson]:
                 key = str(rule["key"])
                 out[(person, key)] = Lesson(
                     lesson_id="st_" + digest("stated", person, key), scope="person",
-                    who=person, kind="style", key=key, value=str(rule.get("value") or ""),
+                    who=person, kind="decision" if key.startswith(RULE_PREFIXES) else "style",
+                    key=key, value=str(rule.get("value") or ""),
                     confidence=1.0, weight=1.0, total=1.0, seen=1, first_at="", last_at="",
                     evidence=[{"at": "", "ref": f"memory:{item}"}],
                     text=str(rule.get("text") or ""))
@@ -1289,10 +1421,49 @@ class Lessons:
 
     # -- items --
 
+    def _stated(self, person: str, value: str) -> list[Lesson]:
+        """The person's own stated Autopilot rules of one ``value`` (skip, cc, never)."""
+        return [l for l in self.by.get(("person", person), {}).values()
+                if l.kind == "decision" and l.lesson_id.startswith("st_")
+                and l.key.startswith(RULE_PREFIXES) and l.value == value]
+
+    def stated_skip(self, person: str, event: Mapping[str, Any]) -> Optional[Lesson]:
+        """The rule of ``person``'s that says no draft for this message: its sender (or
+        one of ``sender_addresses``, a Teams sender's addresses) is the rule's address or
+        in its domain, or the rule covers the message's whole side."""
+        side = str(event.get("side") or "")
+        senders = [event.get("sender"), *(event.get("sender_addresses") or ())]
+        for l in self._stated(person, "skip"):
+            _kind, scope, target = l.key.split(":", 2)
+            if scope != "all" and scope != side:
+                continue
+            if target == "*" or any(rule_matches(target, a) for a in senders):
+                return l
+        return None
+
+    def recipients(self, person: str) -> dict[str, str]:
+        """The addresses ``person`` said are never copied (address -> ``never``), the
+        recipient lessons ``assist.resolve_reply`` honours."""
+        return {l.key.split(":", 1)[1]: "never" for l in self._stated(person, "never")}
+
+    def stated_cc(self, person: str, side: Any) -> list[str]:
+        """The addresses ``person`` said to copy on their email drafts to ``side`` (or on
+        every one), oldest rule first."""
+        out = []
+        for l in self._stated(person, "cc"):
+            _kind, scope, address = l.key.split(":", 2)
+            if (scope == "all" or scope == str(side or "")) and address not in out:
+                out.append(address)
+        return out
+
     def skip_reason(self, person: str, roles: Iterable[str], autopilot: str,
                     event: Mapping[str, Any]) -> Optional[str]:
-        """Why an item is not prepared for ``person``: they leave items of this kind (or
-        from this sender) — confidence ``SKIP_AT`` on ``SKIP_MIN`` evidence; else None."""
+        """Why an item is not prepared for ``person``: they said so (``stated_skip``:
+        ``stated_left:<lesson>``), or they leave items of this kind (or from this sender) —
+        confidence ``SKIP_AT`` on ``SKIP_MIN`` evidence; else None."""
+        said = self.stated_skip(person, event)
+        if said is not None:
+            return f"stated_left:{said.lesson_id}"
         roles = tuple(roles)
         sender = sender_key(event.get("sender"))
         keys = []
@@ -1551,6 +1722,11 @@ def main(argv: Sequence[str] | None = None) -> int:
                              indent=1))
             return 0
         from . import learning_signals as ls
+        if not args.store and (args.state_dir / "projection" / "CURRENT").is_file():
+            # the served generation's store, as the autopilot reads it
+            current = json.loads((args.state_dir / "projection" / "CURRENT").read_text())
+            args.store = str(args.state_dir / "projection" / "generations"
+                             / str(current["generation"]) / "store.sqlite")
         try:
             new, sources = ls.collect(args.state_dir, store=args.store, source=args.source,
                                       now=now)

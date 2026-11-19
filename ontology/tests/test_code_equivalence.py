@@ -241,6 +241,45 @@ def _walk(node):
                                if isinstance(v, ast.AST))
 
 
+class TransportOutTest(unittest.TestCase):
+    """The guarded transport, its grammar and write shapes are not derivation code
+    (``code_equivalence._TRANSPORT_OUT``): a new read or write path moves no key."""
+
+    GONE = ("integrations.live_source_guard", "integrations.live_source_grammar",
+            "integrations.plx_hub_guard", "integrations.people_exclusion", "integrations.http")
+
+    def test_the_derivation_reaches_no_transport_and_keeps_the_served_files(self):
+        reached = project.derivation_modules(ROOT)
+        self.assertEqual([m for m in self.GONE if m in reached], [])
+        files = project.derivation_files(ROOT)
+        undone = ce.earlier_files("derivation", files)
+        held = dict(undone)
+        for path, (then, now) in ce._TRANSPORT_OUT.items():
+            self.assertEqual(held.get(path), then, path)
+        # the restored list is in the derivation's own order: modules by path, then data
+        data = [f for f in undone if f[0] in project._DERIVATION_DATA]
+        modules = [f for f in undone if f[0] not in project._DERIVATION_DATA]
+        self.assertEqual(undone[-len(data):], data)
+        self.assertEqual(modules, sorted(modules, key=lambda f: Path(f[0]).parts))
+
+    def test_the_group_holds_only_while_project_is_its_version_and_the_six_are_out(self):
+        files = project.derivation_files(ROOT)
+        moved = [(n, "0" * 64 if n == "ontology/project.py" else s) for n, s in files]
+        self.assertEqual([n for n, _ in ce.earlier_files("derivation", moved)
+                          if n in ce._TRANSPORT_OUT and ce._TRANSPORT_OUT[n][1] == ce.ABSENT],
+                         [])
+        # a transport file reached again (an import added back): nothing of the group undone
+        back = files + [("integrations/http.py", "1" * 64)]
+        self.assertEqual(dict(ce.earlier_files("derivation", back))["ontology/project.py"],
+                         dict(files)["ontology/project.py"])
+
+    def test_the_document_code_is_pinned_only_by_its_exact_value(self):
+        (now, then), = ce.VALUES["document_code"].items()
+        self.assertEqual(ce.earlier_value("document_code", now), then)
+        self.assertEqual(ce.earlier_value("document_code", "f" * 64), "f" * 64)
+        self.assertEqual(ce.earlier_value("mention_memo", now), now)
+
+
 class CallGraph:
     def __init__(self, sources: dict[str, bytes]):
         self.sources = sources

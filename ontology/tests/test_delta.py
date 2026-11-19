@@ -347,6 +347,10 @@ class CycleReadsTests(DeltaCase):
         # and the closure read
         self.assertEqual(reads["portal_api"]["state"], "complete")
         self.assertTrue(before <= reads["portal_api"]["read_from"] <= began[0], reads)
+        # the Portal capture's own last refresh from the Portal, read before the scan:
+        # how far into the Portal's data that read can reach (review 201871e7b7)
+        refreshed = reads["portal_api"]["refreshed_at"]
+        self.assertTrue(refreshed and refreshed <= reads["portal_api"]["read_from"], reads)
         stamp = Path(report["store"]).name[len("delta-"):-len(".sqlite")]
         self.assertLess(reads["portal_api"]["read_from"].replace("-", "").replace(":", "")
                         .replace(".", "")[:21], stamp)
@@ -354,7 +358,7 @@ class CycleReadsTests(DeltaCase):
         self.assertTrue(report["mail_skipped"])
         self.assertEqual({k: v for k, v in reads["graph_mail"].items() if k != "read_from"},
                          {"state": "skipped", "left": 0,
-                          "reason": "people_exclusion_unavailable"})
+                          "reason": "people_exclusion_unavailable", "refreshed_at": None})
         # no capture store here: nothing said of a source no scan read
         self.assertEqual(set(reads), {"portal_api", "graph_mail"})
 

@@ -1,4 +1,4 @@
-# PLX Workbench business views refresh at low priority: one run of
+# PLX Workbench business views refresh: one run of
 # `python3 -m operating.pg.business_views refresh`. Rebuilds the curated views in schema biz
 # (customers, balances, invoices, orders, purchasing, products, stock: one row per real
 # thing, read by plx.business) only when the served store moved since they were built (the
@@ -27,14 +27,20 @@ UnsetEnvironment=AZURE_CLIENT_SECRET BC_CLIENT_SECRET MICROSOFT_GRAPH_CLIENT_SEC
 Environment=PATH=/data/venv/bin:/usr/local/bin:/usr/bin:/bin
 Environment=PGAPPNAME=%N
 Environment=PLX_ONTOLOGY_PG=only
+# a full comms build's readers: each spills ~0.9 GB of Postgres temp at once (16 readers ~14 GB
+# would put the build under its disk floor and roll it back); 8 read ~8x one connection
+Environment=PLX_BIZ_READ_WORKERS=8
+# the stale business views built side by side in 4 processes (operating/pg/
+# business_views_parallel.py): one after the other a run took 29 min
+Environment=PLX_BIZ_VIEW_WORKERS=4
 ExecCondition=/bin/sh -c '/data/venv/bin/python3 -c "import ontology.window_lock" 2>/dev/null || exit 0; exec /data/venv/bin/python3 -m ontology.window_lock check delta'
 ExecStart=/data/venv/bin/python3 -m operating.pg.business_views refresh
-Nice=19
-CPUWeight=20
-IOWeight=20
-IOSchedulingClass=idle
-MemoryHigh=5G
-MemoryMax=6G
+# Full speed (No nice, CPU or IO caps on a build; every core reads the rows,
+# PLX_BIZ_READ_WORKERS): bounded by memory here and the build's disk floor
+# (PLX_BIZ_MIN_FREE_GB) only.
+# 4 view processes (~2 GB each at their peak) beside this one
+MemoryHigh=10G
+MemoryMax=12G
 # The first build (or one after biz is reset) makes the communications tables whole in one
 # transaction each (emails: ~3.3M rows, over an hour on a loaded box), so the limit is 3 h; each
 # business view commits on its own and a stopped run loses only the view in progress (SIGTERM

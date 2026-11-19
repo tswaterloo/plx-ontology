@@ -142,15 +142,16 @@ class ScreensMixin:
 
     def home(self, reader: Reader) -> m.Home:
         from . import page_sql
-        if page_sql.alerts_on():
-            return self._home_alerts(reader)
-        if page_sql.on():
-            return self._home_door(reader)
         # read ahead for the reader on every Home visit, also when a kept page answers it
-        # (a snapshot runs no read, so the call inside ``_home`` is not made then)
+        # (a snapshot runs no read, so the call inside ``_home`` is not made then), and on
+        # the door's and the SQL alerts' Home too (their other screens and Ask as well)
         self.warm(reader)
         from . import simple_ask
         simple_ask.ready(self, reader)   # the person's next question starts on a ready session
+        if page_sql.alerts_on():
+            return self._home_alerts(reader)
+        if page_sql.on("purchase_order"):
+            return self._home_door(reader)
         return self._home_served(reader)
 
     def _home_door(self, reader: Reader) -> m.Home:
@@ -181,8 +182,8 @@ class ScreensMixin:
             recent = list(self._recent.get(reader.key, []))
         from .errors import UserFacing
         try:
-            total, late, as_of = page_sql.alert_late_pos(self, reader, limit=LATE_LIST_LIMIT)
-            risk, stale = page_sql.alert_at_risk(self, reader, limit=LATE_LIST_LIMIT)
+            total, late, as_of, risk, stale = page_sql.alert_home(self, reader,
+                                                                  limit=LATE_LIST_LIMIT)
             # a home type whose check is not current: left out, said (refreshing, since)
             attention = m.NeedsAttention(status="read", late_pos=late, at_risk=risk,
                                          late_total=total, as_of=as_of,
@@ -245,7 +246,7 @@ class ScreensMixin:
 
     def late_list(self, reader: Reader, *, offset: int = 0, limit: int = 25) -> m.LateList:
         from . import page_sql
-        if page_sql.alerts_on() or page_sql.on():
+        if page_sql.alerts_on() or page_sql.on("purchase_order"):
             # the read door (``page_sql``): count and page in one transaction (the po_late
             # alerts under PLX_ALERTS_SQL); a failed read is an error, never an empty list
             pos = page_sql.alert_late_pos if page_sql.alerts_on() else page_sql.late_pos
@@ -309,9 +310,13 @@ class ScreensMixin:
             from operating import briefing as bf
             return page_sql.alert_briefing(self, reader, since_visit=since_visit,
                                            top=bf.TOP_ITEMS)
+        from .page_core import ENRICH_PRIORITY
+        # the old engine's briefing is a long read (90-110 s cold, 11-18): it runs on all
+        # but one read worker, after the short page reads queued (``serving._LongSlots``)
         return self._serving(reader, ("briefing", since_visit), lambda: self.reads.run(
             reader, lambda view: self._briefing_cached(
-                view, reader, since_visit=since_visit), timeout=READ_TIMEOUT_SECONDS),
+                view, reader, since_visit=since_visit), timeout=READ_TIMEOUT_SECONDS,
+            priority=ENRICH_PRIORITY, long=True),
             reading=lambda: m.Briefing(
                 status="unavailable", count=0, new_since_visit=0, since_visit=since_visit,
                 other_teams=0, rank_basis="", routing_basis="", complete=False,
@@ -345,8 +350,10 @@ class ScreensMixin:
         cited values only (never sent), confidence and what is missing. Purchase order
         trails are read as the reader within ``SUGGESTION_TRAIL_SECONDS``; a card whose
         trail did not fit says so (low confidence), never guesses."""
+        from .page_core import ENRICH_PRIORITY
         return self._serving(reader, ("suggestions",), lambda: self.reads.run(
-            reader, self._suggestions_cached, timeout=READ_TIMEOUT_SECONDS),
+            reader, self._suggestions_cached, timeout=READ_TIMEOUT_SECONDS,
+            priority=ENRICH_PRIORITY, long=True),
             reading=lambda: m.Suggestions(status="unavailable", total=0, note="",
                                           reading=True))
 
@@ -359,11 +366,18 @@ class ScreensMixin:
 
     def briefing_seen(self, reader: Reader) -> m.BriefingSeen:
         try:
-            # a write a reader waits on: ahead of every queued page read
-            at = self.reads.run(reader, lambda view: view.briefing_seen(),
-                                timeout=READ_TIMEOUT_SECONDS, priority=-1)
+            # a write a reader waits on: ahead of every queued read, on the access workers
+            # (short jobs only) when they serve: on the read workers it waited behind
+            # 2-minute reads (11-18 staff walk: 17 s)
+            worker = getattr(self, "access_worker", None)
+            if worker is None or worker.stopped.is_set():
+                worker = self.reads
+            at = worker.run(reader, lambda view: view.briefing_seen(),
+                            timeout=READ_TIMEOUT_SECONDS, priority=-1)
         except (FileNotFoundError, ValueError):
             return m.BriefingSeen(ok=False)
+        from . import page_sql
+        page_sql.forget_scope(self, reader)   # "new since your visit" counts from this one
         self.warm_briefing(reader)   # the next visit's briefing is ready
         return m.BriefingSeen(ok=True, at=at)
 

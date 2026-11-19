@@ -7,6 +7,7 @@ import type { Answer } from "@/lib/types";
 import { Disclosure } from "./answer-parts";
 import { AskDrafts } from "./ask-drafts";
 import { Feedback } from "./feedback";
+import { PreparedChanges } from "./prepared-change";
 import { ProposalCards } from "./proposal-cards";
 import { RichText } from "./rich-text";
 
@@ -110,6 +111,19 @@ export function SimpleAnswer({ answer, streamed, busy, status }: { answer?: Answ
       )}
       {answer && (answer.drafts ?? []).length > 0 && <AskDrafts drafts={answer.drafts ?? []} record={null} />}
       {answer && (answer.proposals ?? []).length > 0 && <ProposalCards proposals={answer.proposals} />}
+      {answer && (answer.documents ?? []).length > 0 && (
+        <ul className="space-y-1 text-[13px]" data-testid="simple-documents">
+          {(answer.documents ?? []).map((d) => (
+            <li key={d.download_url}>
+              <a className="font-medium text-accent hover:underline" href={d.download_url} download={d.name}>
+                {d.name}
+              </a>
+              <span className="text-muted"> {Math.max(1, Math.round(d.size / 1024))} KB</span>
+            </li>
+          ))}
+        </ul>
+      )}
+      {answer && (answer.prepared ?? []).length > 0 && <PreparedChanges ids={answer.prepared ?? []} />}
       {answer && (
         <footer className="flex items-center gap-1">
           <Feedback answerId={answer.answer_id} />

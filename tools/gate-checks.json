@@ -19,7 +19,8 @@
       "tests.test_split_mro"
     ], "timeout_seconds": 600, "measured_seconds": 221.1},
     {"name": "evals-tests-1", "paths": ["tools/gate-checks.json"], "command": "python3 -m unittest", "modules": [
-      "evals.tests.test_baseline"
+      "evals.tests.test_baseline",
+      "evals.qbank.tests.test_qbank"
     ], "timeout_seconds": 600, "measured_seconds": 34.3},
     {"name": "evals-tests-2", "paths": ["tools/gate-checks.json"], "command": "python3 -m unittest", "modules": [
       "tests.test_eval_dev_baseline"
@@ -202,6 +203,7 @@
       "operating.tests.test_ai_watcher",
       "operating.tests.test_proactive_suggestions",
       "operating.tests.test_card_actions",
+      "operating.tests.test_prepared_writes",
       "operating.tests.test_po_status",
       "operating.tests.test_po_systems_disagree",
       "operating.tests.test_impact_chain",

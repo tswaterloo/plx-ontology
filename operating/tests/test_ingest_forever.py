@@ -1472,11 +1472,13 @@ class LiveCycleRepairTest(unittest.TestCase):
         spec = forever.SOURCES["meetings"]
         env = {"AZURE_TENANT_ID": "t", "AZURE_CLIENT_ID": "c", "AZURE_CLIENT_SECRET": "s",
                "PLX_MEETINGS_GRAPH_CREDENTIALS": "AZURE", "BC_CLIENT_SECRET": "b",
-               "MC_MCP_API_KEY": "m", "PATH": "p"}
+               "PLX_MEETINGS_TRANSCRIPTS_GRANTED": "1", "MC_MCP_API_KEY": "m", "PATH": "p"}
         child = forever.child_env(env, spec, self.state)
+        # the transcript grant reaches the child (it was dropped: 0 lookups ever)
         self.assertEqual(set(child) - {"PLX_WORKBENCH_STATE_DIR", "PLX_INGEST_DRAIN"},
                          {"AZURE_TENANT_ID", "AZURE_CLIENT_ID", "AZURE_CLIENT_SECRET",
-                          "PLX_MEETINGS_GRAPH_CREDENTIALS", "PATH"})
+                          "PLX_MEETINGS_GRAPH_CREDENTIALS", "PLX_MEETINGS_TRANSCRIPTS_GRANTED",
+                          "PATH"})
         summary = forever.summarize_meetings({"runs": [{
             "counts": {"mailboxes_excluded": 1, "events_withheld": 4, "tasks_withheld": 2},
             "mailboxes": [{"status": "complete", "reasons": [], "resumed_from": "cursor"}],

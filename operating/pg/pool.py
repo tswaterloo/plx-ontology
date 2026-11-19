@@ -15,6 +15,7 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 import logging
+import os
 import select
 import threading
 import time
@@ -37,6 +38,122 @@ DEFAULT_IDLE_IN_TRANSACTION_MS = 15 * 60 * 1000
 ALIVE_ROUNDS = 4
 
 log = logging.getLogger(__name__)
+
+# A pooled connection idle this long is closed (``PLX_PG_IDLE_KEEP_SECONDS``; 0 or less:
+# kept for ever, as before). Every Ask session is a host process with its own pools, and
+# the API keeps up to ~20 of them warm or spare; each kept the connections of its last
+# question (6-8) for as long as it lived, so idle hosts filled max_connections and the
+# live API was refused connections (11-18, 3:46-4:12 PM ET). A new connection on the
+# local socket costs milliseconds; an idle one costs a server slot.
+IDLE_KEEP_ENV = "PLX_PG_IDLE_KEEP_SECONDS"
+IDLE_KEEP_SECONDS = 60.0
+# And at most this many idle per pool (``PLX_PG_IDLE_KEPT_MAX``; one returned past it is
+# closed): ~20 hosts x 3 pools, so idle hosts hold a bounded handful (cap 1-2 per host).
+IDLE_KEPT_MAX_ENV = "PLX_PG_IDLE_KEPT_MAX"
+IDLE_KEPT_MAX = 2
+REAP_EVERY_SECONDS = 10.0
+_REAP_LOCK = threading.Lock()
+_REAPERS: list[Any] = []          # weak references to each pool's ``reap(now)``
+_REAP_THREAD: list[threading.Thread] = []
+
+
+def idle_keep_seconds(environ: Any = None) -> float | None:
+    """Seconds a pooled connection may stay idle (``IDLE_KEEP_ENV``); None: for ever."""
+    import os
+    raw = str((os.environ if environ is None else environ).get(IDLE_KEEP_ENV, "")).strip()
+    if not raw:
+        return IDLE_KEEP_SECONDS
+    try:
+        value = float(raw)
+    except ValueError:
+        return IDLE_KEEP_SECONDS
+    return None if value <= 0 else value
+
+
+def idle_kept_max(environ: Any = None) -> int:
+    """How many idle connections one pool keeps (``IDLE_KEPT_MAX_ENV``, at least 0)."""
+    import os
+    raw = str((os.environ if environ is None else environ).get(IDLE_KEPT_MAX_ENV, "")).strip()
+    try:
+        return max(0, int(raw)) if raw else IDLE_KEPT_MAX
+    except ValueError:
+        return IDLE_KEPT_MAX
+
+
+def expired(idle: list[tuple[Any, float]], now: float) -> tuple[list[tuple[Any, float]],
+                                                                  list[Any]]:
+    """``idle`` (connection, idle since) split into those kept and those past
+    ``idle_keep_seconds`` at ``now`` (to close)."""
+    keep = idle_keep_seconds()
+    if keep is None:
+        return idle, []
+    kept = [(conn, since) for conn, since in idle if now - since <= keep]
+    return kept, [conn for conn, since in idle if now - since > keep]
+
+
+def close_quietly(conns: list[Any]) -> None:
+    for conn in conns:
+        try:
+            conn.close()
+        except Exception:  # noqa: BLE001 - a connection already gone closes as it can
+            pass
+
+
+def reap_idle(reap: Callable[[float], None]) -> None:
+    """Have ``reap(now)`` (a pool's: close its connections idle too long) called every
+    ``REAP_EVERY_SECONDS`` by this process's one daemon thread, for as long as its owner
+    lives (a bound method is held weakly). Started on the first registration."""
+    import weakref
+    ref: Any = weakref.WeakMethod(reap) if hasattr(reap, "__self__") else (lambda: reap)
+    with _REAP_LOCK:
+        _REAPERS.append(ref)
+        if _REAP_THREAD and _REAP_THREAD[0].is_alive():
+            return
+        thread = threading.Thread(target=_reap_loop, name="plx-pg-idle-reaper", daemon=True)
+        _REAP_THREAD[:] = [thread]
+        thread.start()
+
+
+def reap_now(now: float | None = None) -> None:
+    """One round of every registered pool's reap (the thread's; tests call it)."""
+    now = time.monotonic() if now is None else now
+    with _REAP_LOCK:
+        live = [(ref, ref()) for ref in _REAPERS]
+        _REAPERS[:] = [ref for ref, fn in live if fn is not None]
+    for _ref, fn in live:
+        if fn is None:
+            continue
+        try:
+            fn(now)
+        except Exception:  # noqa: BLE001 - one pool's failure never stops the others
+            log.warning("postgres pool: idle reap failed", exc_info=True)
+
+
+def _reap_loop() -> None:
+    while True:
+        time.sleep(REAP_EVERY_SECONDS)
+        reap_now()
+
+
+def _forget_inherited() -> None:
+    """A forked child reaps none of its parent's pools: closing an inherited connection
+    sends the server a Terminate on the PARENT's session (its socket is shared), and the
+    parent's own thread is gone in the child, so the child's first pool would start a
+    reaper over every inherited registration."""
+    global _REAP_LOCK
+    _REAP_LOCK = threading.Lock()
+    _REAPERS.clear()
+    _REAP_THREAD.clear()
+
+
+if hasattr(os, "register_at_fork"):
+    os.register_at_fork(after_in_child=_forget_inherited)
+
+
+def app_name(default: str) -> str:
+    """A connection's ``application_name``: the process's ``PGAPPNAME`` (a unit's own name),
+    else ``default`` (the kind of pool), so the connection alarm can name who holds them."""
+    return (os.environ.get("PGAPPNAME") or default)[:63]
 
 
 def alive(conn: Any) -> bool:
@@ -94,7 +211,8 @@ def search_defaults(conn: psycopg.Connection, *, ef_search: int = DEFAULT_EF_SEA
 
 
 def connect(dsn: str | None = None, **kwargs: Any) -> psycopg.Connection:
-    return psycopg.connect(dsn or config.dsn(), application_name="plx-workbench", **kwargs)
+    return psycopg.connect(dsn or config.dsn(), application_name=app_name("plx-workbench"),
+                           **kwargs)
 
 
 class PoolTimeout(RuntimeError):
@@ -124,10 +242,11 @@ class Pool:
         self.max_size = max_size
         self.timeout = timeout
         self._configure = configure if configure is not None else self._default_configure
-        self._idle: list[psycopg.Connection] = []
+        self._idle: list[tuple[psycopg.Connection, float]] = []   # (connection, idle since)
         self._open = 0
         self._closed = False
         self._cond = threading.Condition()
+        reap_idle(self._reap)
 
     @staticmethod
     def _default_configure(conn: psycopg.Connection) -> None:
@@ -165,7 +284,7 @@ class Pool:
                 if self._closed:
                     raise RuntimeError("pool_closed")
                 while self._idle:
-                    conn = self._idle.pop()
+                    conn, _since = self._idle.pop()
                     if alive(conn):
                         return conn
                     self._open -= 1
@@ -185,8 +304,9 @@ class Pool:
 
     def _release(self, conn: psycopg.Connection | None, *, keep: bool) -> None:
         with self._cond:
-            if keep and conn is not None and not self._closed:
-                self._idle.append(conn)
+            if keep and conn is not None and not self._closed \
+                    and len(self._idle) < idle_kept_max():
+                self._idle.append((conn, time.monotonic()))
             else:
                 self._open -= 1
                 if conn is not None:
@@ -234,11 +354,20 @@ class Pool:
             return False
         return not conn.closed and not conn.broken
 
+    def _reap(self, now: float) -> None:
+        """Close the connections idle past ``idle_keep_seconds`` (their slots free)."""
+        with self._cond:
+            self._idle, gone = expired(self._idle, now)
+            self._open -= len(gone)
+            if gone:
+                self._cond.notify_all()
+        close_quietly(gone)
+
     def close(self) -> None:
         with self._cond:
             self._closed = True
             idle, self._idle = self._idle, []
             self._open -= len(idle)
             self._cond.notify_all()
-        for conn in idle:
+        for conn, _since in idle:
             conn.close()

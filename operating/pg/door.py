@@ -375,9 +375,14 @@ def exclude(write: Any, schema: str, *, only: str | None = None, record: bool = 
                 f"{named}) {view_only}", params).fetchall():
             cells.setdefault((view, col), []).append(handle)
         for view in sorted(views | {v for v, _ in cells}):
-            if view not in bv.VIEWS or not is_v2(write, schema, view):
+            if not is_v2(write, schema, view):
                 continue
-            known = {c.name for c in bv.VIEWS[view].cols}
+            # a curated view's columns; another v2 table's (the generic ``records`` and
+            # ``record_links``, ``operating.pg.generic_records``) as the table has them
+            known = ({c.name for c in bv.VIEWS[view].cols} if view in bv.VIEWS else
+                     {r[0] for r in write.execute(
+                         "SELECT column_name FROM information_schema.columns WHERE "
+                         "table_schema = %s AND table_name = %s", (schema, view))})
             for (cv, col), handles in sorted(cells.items()):
                 if cv != view:
                     continue
@@ -499,11 +504,13 @@ def _in(expr: str, held: str, listed: str) -> str:
     return f"({expr} <@ {_held(held)} OR ({_held(held)} IS NULL AND {expr} = ANY({_ids(listed)})))"
 
 
-def view_ddl(write: Any, v: bv.View, src: str, dst: str, *, ai_only: bool = True) -> str:
+def view_ddl(write: Any, v: bv.View, src: str, dst: str, *, ai_only: bool = True,
+             also: Sequence[str] = ()) -> str:
     """The guarded v2 view; records the columns it masks in ``door_views``. ``ai_only``
     (the AI's views, ``plx.sql``'s): only ``ai_ok`` rows (no Freightcom). A person's pages
     (``ai_only=False``, ``sql_views.page_schema``) keep them; every other part of the door is
-    the same."""
+    the same. ``also``: conditions over ``t`` every row must meet as well (a table's own
+    rule, ``generic_views.UNDECIDED``)."""
     ensure(write, src)
     known = {c.name for c in v.cols}
     masked = masked_columns(write, src, v.name)
@@ -531,7 +538,7 @@ def view_ddl(write: Any, v: bv.View, src: str, dst: str, *, ai_only: bool = True
             f"{_in('t.access_class', DHELD, 'plx.dclasses')} AND "
             "NULLIF(current_setting('plx.d_hidden', true), '') IS NOT NULL AND t.handle IS NOT "
             "NULL AND NOT (t.handle IN (SELECT unnest(NULLIF(current_setting('plx.d_hidden', "
-            "true), '')::text[])))))")
+            "true), '')::text[])))))" + "".join(f" AND ({c})" for c in also))
 
 
 # ---------------------------------------------------------------------- the reader's side

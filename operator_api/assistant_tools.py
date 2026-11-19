@@ -1,0 +1,319 @@
+"""The Ask's assistant tools: what the person asks the assistant to keep, their templates
+and the documents it makes for them. Each is bound to one reader (``agent_session.
+LocalTool``) beside the write tools (``simple_ask.write_tools``):
+
+* ``plx.remember``: the person's own memory (``operator_api.memory``): keep, correct,
+  forget or list items, Autopilot rules included (``operating.learning.autopilot_rules``:
+  no draft for a sender, domain or side; who their email drafts copy or never copy). Each
+  save answers what was kept and what the Autopilot will now do, so the answer says
+  exactly that. Every memory check applies (``Memory.write``: viewing as someone and the
+  Ask canary keep nothing, the people exclusion fails closed, pay and finance are never
+  kept); a forget or a correction reaches only the person's own items.
+* ``plx.template``: the person's templates (``operator_api.templates``): list and read the
+  ones they may use, save their own (from a description, or from a document they read: its
+  ``source`` handle kept with it) and delete their own. A placeholder names a record field
+  (``{{po_number}}``); an unknown one is refused with the fields there are.
+* ``plx.make_document``: a Word, Excel or PDF file of what the model wrote, made as the
+  instruction engine makes its documents (``InstructMixin._prepare_document``: cleaned of
+  excluded people and secret-looking text) and kept for this reader only: its download
+  link, and its ``file_id`` for an email attachment or a SharePoint upload prepared
+  through ``plx.prepare_write`` (``operating.prepared_writes``), which the person confirms.
+
+Nothing here sends or writes outside the person's own memory, templates and files.
+Evidence: isolated-fixture (``operator_api/tests/test_assistant_tools.py``).
+"""
+from __future__ import annotations
+
+from typing import Any, Mapping, Sequence
+
+from operating import learning
+
+
+REMEMBER = "plx.remember"
+TEMPLATE = "plx.template"
+DOCUMENT = "plx.make_document"
+NAMES = (REMEMBER, TEMPLATE, DOCUMENT)
+MOST_LISTED = 40
+
+REMEMBER_SPEC = {
+    "name": REMEMBER,
+    "description": (
+        "The person's own memory, which shapes every answer and every draft the Autopilot "
+        "prepares for them. action save: keep text as kind instruction | preference | "
+        "commitment | fact, in the person's own words; replaces: the id of an item it "
+        "corrects. An Autopilot rule needs the exact address or domain, so look it up "
+        "(their mail) when they name a person or company: 'Stop drafting replies to "
+        "<address or domain>', 'Don't draft anything for suppliers', 'Always cc <address> "
+        "on supplier emails', 'Never cc <address>'. action forget: id. action list: their "
+        "items with ids. A line starting always / never / from now on / remember may "
+        "already be kept for them: list before saving it again. When their words could mean "
+        "no drafts at all for someone or only something narrower (a topic, a time), ask "
+        "which before saving. The result says what was kept and what the Autopilot will now "
+        "do, or why nothing was kept: tell the person exactly that, never more."),
+    "inputSchema": {
+        "type": "object", "additionalProperties": False, "required": ["action"],
+        "properties": {
+            "action": {"type": "string", "enum": ["save", "forget", "list"]},
+            "kind": {"type": "string",
+                     "enum": ["instruction", "preference", "commitment", "fact"]},
+            "text": {"type": "string"}, "id": {"type": "integer"},
+            "replaces": {"type": "integer"}}},
+    "annotations": {"readOnlyHint": False, "destructiveHint": False},
+}
+
+TEMPLATE_SPEC = {
+    "name": TEMPLATE,
+    "description": (
+        "The person's document templates. action list: the templates they may use "
+        "(id, name, type). action get: one template's body by id. action save: keep a new "
+        "template (name, doc_type, body) from what they described, or from a document they "
+        "named (read it first; source: its handle): write the body with {{field}} "
+        "placeholders where a record's details go (po_number, supplier_name, "
+        "customer_name, required_date, ...; an unknown field is refused with the list). "
+        "Templates never hold amounts or prices. id with save: change one of theirs. "
+        "action delete: id. To make a document from a template, get it, fill each "
+        "placeholder from the records you read, then plx.make_document. doc_type: quote | "
+        "order_confirmation | supplier_email | customer_email | po_note | form | phrasing "
+        "| price_list | proposal | spec_sheet | coa | letter | other."),
+    "inputSchema": {
+        "type": "object", "additionalProperties": False, "required": ["action"],
+        "properties": {
+            "action": {"type": "string", "enum": ["list", "get", "save", "delete"]},
+            "id": {"type": "integer"}, "name": {"type": "string"},
+            "doc_type": {"type": "string"}, "body": {"type": "string"},
+            "source": {"type": "string"}}},
+    "annotations": {"readOnlyHint": False, "destructiveHint": False},
+}
+
+DOCUMENT_SPEC = {
+    "name": DOCUMENT,
+    "description": (
+        "Make a file the person can download: kind docx (Word: content is the text, one "
+        "paragraph per line), xlsx (Excel: one row per line, cells split by |) or pdf. "
+        "name: the file name. It answers file_id and download_url: to email it, call "
+        "plx.prepare_write (system mail, operation send_email) with change.attachments: "
+        "[file_id]; to save it to SharePoint, operation file_upload with change.file_id "
+        "and change.name. Nothing is sent or saved anywhere by this tool."),
+    "inputSchema": {
+        "type": "object", "additionalProperties": False,
+        "required": ["name", "kind", "content"],
+        "properties": {"name": {"type": "string"},
+                       "kind": {"type": "string", "enum": ["docx", "xlsx", "pdf"]},
+                       "content": {"type": "string"}}},
+    "annotations": {"readOnlyHint": False, "destructiveHint": False},
+}
+
+
+def _words(text: Any) -> str:
+    return " ".join(str(text or "").split())
+
+
+def autopilot_effect(text: Any) -> list[str]:
+    """What the Autopilot does because of one memory item, in plain words (its stated
+    rules, ``learning.autopilot_rules`` per sentence); [] when it states none."""
+    return [r["text"] for r in learning.stated_rules(text)
+            if str(r.get("key", "")).startswith(learning.RULE_PREFIXES)]
+
+
+# "0": a line asking for something done goes to the instruction engine, as before
+DO_ENV = "PLX_ASK_SIMPLE_DO"
+# where the instruction engine's own flows start: an email, file, meeting or autopilot item
+# the person has open (a reply in its thread, a meeting's follow-up, the item's work)
+ENGINE_CONTEXTS = ("email", "source", "meeting", "autopilot")
+# a reply or forward goes in the thread of the person's own message (the engine's desk)
+ENGINE_VERBS = ("reply", "respond", "forward", "answer")
+
+
+class AssistantToolsMixin:
+    """Mixed into the backends: needs ``memory`` (``operator_api.memory.Memory`` or None),
+    ``template_store`` (``TemplatesMixin``) and ``_prepare_document`` / ``_instruct_guard``
+    (``InstructMixin``)."""
+
+    def ask_does(self, reader: Any, request: Any) -> bool:
+        """Whether a line asking for something done (or one the router cannot tell, a
+        question or a job) goes to the simple Ask, which reads every record and has these
+        tools and the write tools, rather than the instruction engine: when the simple
+        Ask serves this reader (``simple_ask.enabled``, the agent path) and the line is
+        none of the engine's own flows: a continued instruction, an email, file, meeting
+        or autopilot item open (``ENGINE_CONTEXTS``), attached files, a reply or a forward
+        (sent in the thread of the person's own message, ``ENGINE_VERBS``), a record to
+        create from another, or a recurring job. "Use my <name> template for <record>" is
+        the Ask's: it reads the template (``plx.template``) and fills it from every record."""
+        import os
+        from operating import instruct as ins
+        from operating.entry_assist import create_kind
+        from . import simple_ask
+        agent = getattr(self, "agent_ask", None)
+        if os.environ.get(DO_ENV, "1") == "0" or not simple_ask.enabled() or agent is None \
+                or not agent.serves(reader.session):
+            return False
+        context = getattr(request, "context", None)
+        text = " ".join(str(request.question or "").split())
+        return not (request.instruction is not None or request.source or request.attachments
+                    or getattr(context, "kind", None) in ENGINE_CONTEXTS
+                    or (ins.verb(text) or "").startswith(ENGINE_VERBS)
+                    or create_kind(text) or ins.recurring(text))
+
+    def assistant_tools(self, reader: Any) -> list[Any]:
+        """The reader's assistant tools (``plx.remember``, ``plx.template``,
+        ``plx.make_document``) for the Ask; none that cannot be made, and none for a session
+        that is not the person's own (viewing as someone, the Ask canary): it keeps nothing
+        and makes nothing in their name."""
+        from operating.agent_session import LocalTool
+        session = getattr(reader, "session", None)
+        if getattr(session, "view_as", False) or getattr(session, "canary", False):
+            return []
+        out = [LocalTool(spec=REMEMBER_SPEC, call=lambda a: self._remember_call(reader, a))]
+        if callable(getattr(self, "template_store", None)):
+            out.append(LocalTool(spec=TEMPLATE_SPEC,
+                                 call=lambda a: self._template_call(reader, a)))
+        if callable(getattr(self, "_prepare_document", None)):
+            out.append(LocalTool(spec=DOCUMENT_SPEC,
+                                 call=lambda a: self._document_call(reader, a)))
+        return out
+
+    # -- plx.remember -------------------------------------------------------------------
+
+    def _remember_call(self, reader: Any, args: Mapping[str, Any]) -> Any:
+        from . import memory as mem
+        store = getattr(self, "memory", None)
+        if store is None:
+            return {"not_kept": "Memory is not set up on this server."}
+        action = args.get("action")
+        if action == "list":
+            items = store.items(reader, limit=MOST_LISTED)
+            return {"items": [{"id": i["id"], "kind": i["kind"], "text": i["text"],
+                               **({"autopilot": autopilot_effect(i["text"])}
+                                  if autopilot_effect(i["text"]) else {})}
+                              for i in items]}
+        if action == "forget":
+            if type(args.get("id")) is not int or not store.forget(reader, args["id"]):
+                return {"not_kept": mem.WRITE_REFUSED["not_found"]}
+            return {"forgotten": args["id"], "note": "Gone from their memory: answers and "
+                    "Autopilot drafts no longer follow it."}
+        if action != "save":
+            return {"not_kept": "action is save, forget or list."}
+        kind = args.get("kind") or "instruction"
+        replaces = args.get("replaces") if type(args.get("replaces")) is int else None
+        new, why = store.write(reader, kind=kind, text=_words(args.get("text")),
+                               replaces=replaces)
+        if new is None:
+            return {"not_kept": mem.WRITE_REFUSED.get(why or "", "It was not kept.")}
+        text = _words(args.get("text"))
+        effect = autopilot_effect(text)
+        whole_side = any(r.startswith("Autopilot drafts nothing for ")
+                         and " from " not in r for r in effect)
+        if whole_side:
+            effect = effect + ["(no draft at all for anyone on that side: if they meant "
+                               "something narrower, correct it with replaces)"]
+        return {"kept": new, "kind": kind, "text": text,
+                "autopilot": effect or None,
+                "note": ("Kept: it applies to their answers from now on, and the Autopilot "
+                         "does exactly what 'autopilot' lists.") if effect else
+                ("Kept: it applies to their answers and drafts from now on. It names no "
+                 "address, domain or side, so the Autopilot cannot apply it as a rule by "
+                 "itself (its drafts read it as guidance).")
+                if kind in ("instruction", "preference") else "Kept."}
+
+    # -- plx.template -------------------------------------------------------------------
+
+    def _template_call(self, reader: Any, args: Mapping[str, Any]) -> Any:
+        from operating import doc_fill as df
+        from . import templates as tp
+        store = self.template_store()  # type: ignore[attr-defined]
+        if store is None:
+            return {"refused": tp.REFUSED["unavailable"]}
+        member, shareable = self.template_roles(reader)  # type: ignore[attr-defined]
+        action = args.get("action")
+        try:
+            if action == "list":
+                rows = store.list(reader, roles=member)
+                if rows is None:
+                    return {"refused": tp.REFUSED["people_exclusion_unavailable"]}
+                return {"templates": [{"id": r["id"], "name": r["name"],
+                                       "doc_type": r["doc_type"], "mine": r["mine"]}
+                                      for r in rows[:MOST_LISTED]]}
+            if action == "get":
+                row = store.get(reader, int(args.get("id") or 0), roles=member)
+                if row is None:
+                    return {"refused": tp.REFUSED["not_found"]}
+                return {"id": row["id"], "name": row["name"], "doc_type": row["doc_type"],
+                        "body": row["body"],
+                        "placeholders": [p["name"] for p in row["placeholders"]]}
+            if action == "delete":
+                if not store.delete(reader, int(args.get("id") or 0)):
+                    return {"refused": tp.REFUSED["not_found"]}
+                return {"deleted": int(args["id"])}
+            if action != "save":
+                return {"refused": "action is list, get, save or delete."}
+            terms = df.load_terms()
+            mine = args.get("id") if type(args.get("id")) is int else None
+            kept = store.get(reader, mine, roles=member) if mine else None
+            if mine and (kept is None or not kept.get("mine")):
+                return {"refused": tp.REFUSED["not_found"]}
+            row = store.save(reader, name=_words(args.get("name")),
+                             doc_type=str(args.get("doc_type") or "other"),
+                             body=str(args.get("body") or "").strip(),
+                             source_ref=args.get("source") or (kept or {}).get("source_ref")
+                             or None, shared_with=(kept or {}).get("shared_with") or (),
+                             template_id=mine, shareable=shareable, terms=terms)
+        except tp.TemplateRefused as refused:
+            out: dict[str, Any] = {"refused": refused.message}
+            if refused.code == "placeholder_unknown":
+                out["fields"] = [f["name"] for f in tp.known_fields(df.load_terms())]
+            return out
+        except df.FillRefused:
+            return {"refused": "Templates are paused: the list of record fields could not "
+                    "be read."}
+        return {"saved": row["id"], "name": row["name"], "doc_type": row["doc_type"],
+                "placeholders": [p["name"] for p in row["placeholders"]],
+                "note": "Saved in their Templates page; they can use it from there or ask "
+                        "you to fill it for a record."}
+
+    # -- plx.make_document --------------------------------------------------------------
+
+    def _document_call(self, reader: Any, args: Mapping[str, Any]) -> Any:
+        from .errors import UserFacing
+        guard = self._instruct_guard()  # type: ignore[attr-defined]
+        if guard is None:
+            return {"refused": "This is paused: the list of people whose data stays out is "
+                    "not loaded."}
+        kind = args.get("kind") if args.get("kind") in ("docx", "xlsx", "pdf") else "docx"
+        from integrations.image_ocr_gpu import touches_freightcom
+        if touches_freightcom(str(args.get("content") or ""), str(args.get("name") or "")):
+            # the carrier whose data never reaches the AI or an action: no file of it
+            return {"refused": "That carrier is never written about through the Workbench."}
+        try:
+            doc = self._prepare_document(  # type: ignore[attr-defined]
+                reader, {"kind": kind, "content": str(args.get("content") or ""),
+                         "name": _words(args.get("name")) or "Document"}, [], guard)
+        except UserFacing as refused:
+            return {"refused": refused.message}
+        file_id = doc.download_url.rsplit("/", 1)[-1]
+        return {"file_id": file_id, "name": doc.name, "kind": doc.kind, "size": doc.size,
+                "download_url": doc.download_url,
+                "note": "Made and kept for them only. The app shows the file and its "
+                        "download link under your answer: say what it holds, never its file "
+                        "name or link."}
+
+
+def documents(events: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
+    """The files the session made (``plx.make_document`` results, in order, each once):
+    name, kind, size and download link, for the answer to show."""
+    from .simple_ask import _parsed
+    out: list[dict[str, Any]] = []
+    for event in events:
+        name = str(event.get("name") or "").split("__")[-1].replace(".", "_")
+        if event.get("type") != "tool_call" or event.get("is_error") \
+                or name != DOCUMENT.replace(".", "_"):
+            continue
+        result = _parsed(event.get("result"))
+        url = result.get("download_url") if isinstance(result, Mapping) else None
+        if not isinstance(url, str) or not url.startswith("/api/instruct/files/f_") \
+                or any(d["download_url"] == url for d in out):
+            continue
+        out.append({"name": str(result.get("name") or "Document")[:200],
+                    "kind": result.get("kind") if result.get("kind") in ("docx", "xlsx",
+                                                                         "pdf") else "docx",
+                    "size": int(result.get("size") or 0), "download_url": url})
+    return out

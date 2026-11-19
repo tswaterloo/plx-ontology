@@ -341,6 +341,39 @@ class HardcodedCaseGateTests(unittest.TestCase):
         self.assertIn("operating/general.py:1 identifier PO5447='PO5447'", out.getvalue())
         self.assertTrue(out.getvalue().rstrip().endswith("no-hardcoded-cases: FAIL"))
 
+    def test_generated_sql_and_dictionary_name_no_case(self):
+        """The SQL the door runs (curated and generic guarded views) and the data
+        dictionary the model reads are generated: none may carry a customer-, question-
+        or phrase-specific string (the denylist plus every identifier the eval items
+        and real-case files name)."""
+        import json
+        from operating import ontology_tools_sql as ts
+        from operating.pg import generic_records as gr
+        from operating.pg import generic_views as gv
+        deny = gate.load_denylist(ROOT)
+        derived = gate.eval_identifiers(gate.tree_eval_documents(ROOT))
+        texts = {"record_types": gv.record_types_ddl(), "system": gv.system_sql("b"),
+                 "records": gr.RECORDS_DDL, "record_links": gr.LINKS_DDL,
+                 "removed": gr.removed_sql("o", "now"), "types": gr.types_sql(
+                     {"skip_types": gr.covered_types(), "skip_mirrors": True}),
+                 "dictionary": json.dumps(ts._dictionary()), "rules": ts.RULES}
+
+        class Catalog:   # the served catalog as catalog_lines reads it
+            def execute(self, sql, *args):
+                rows = {"to_regclass": [("biz.record_types",)],
+                        "max(built_at)": [("x",)],
+                        "FROM": [("T", "t", ["s"], ["name"], ["date"], ["records"])]}
+                key = next(k for k in rows if k in sql)
+                return type("C", (), {"fetchone": lambda _s: rows[key][0],
+                                      "fetchall": lambda _s: rows[key]})()
+        ts._CATALOG.clear()
+        texts["catalog"] = "\n".join(ts.catalog_lines(Catalog()))
+        self.assertIn("- s: T (t", texts["catalog"])
+        for name, text in texts.items():
+            self.assertEqual(gate._matches(text, deny), [], name)
+            hits = sorted(case for case, pattern in derived if pattern.search(text))
+            self.assertEqual(hits, [], name)
+
     def test_real_repo_passes_today(self):
         code, lines = gate.evaluate(ROOT, cache_dir=verdict_cache_dir())
         self.assertEqual(code, 0, "\n".join(lines))
