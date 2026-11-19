@@ -41,8 +41,11 @@ Restart=always
 RestartSteps=6
 RestartMaxDelaySec=2min
 RestartSec=3
-# SIGTERM: the requests under way end (60 s at most), then the workers (20 s) (ARCH-T6)
-TimeoutStopSec=100
+# SIGTERM: the requests under way end (180 s at most), then the workers (20 s) (ARCH-T6)
+TimeoutStopSec=210
+# SIGTERM to the API alone: its Ask helpers (claude) and worker processes keep serving the
+# answers under way until it exits; what is left then gets SIGKILL
+KillMode=mixed
 
 # Hardening: read-only everywhere except the API's own state directory.
 StateDirectory=plx-workbench

@@ -66,7 +66,7 @@ def served_backend(be, m):
     return backend
 
 
-class CanarySessionTest(Fixture):
+class ServedFixture(Fixture):
     def canary_ticket(self, **kw):
         return self.ticket(jti=si.service_jti(si.SERVICE_CANARY), **kw)
 
@@ -85,6 +85,8 @@ class CanarySessionTest(Fixture):
         ok = client.post("/api/auth/dev-login", json={"ticket": ticket}, headers=PROXIED)
         self.assertEqual(ok.status_code, 200, ok.text)
 
+
+class CanarySessionTest(ServedFixture):
     def test_only_the_host_minted_ticket_id_makes_a_canary_session(self):
         canary = si.employee_session(self.resolver(), channel=si.CHANNEL_CONSOLE,
                                      ticket=self.canary_ticket(), secret=SECRET)
@@ -213,6 +215,104 @@ class CanarySessionTest(Fixture):
             self.assertEqual([e["source_id"] for e in events], [person.session_ref])
 
 
+class MeasureSessionTest(ServedFixture):
+    """The page measure's service session (``session_identity.SERVICE_MEASURE``): the
+    screens' GET reads as the reader its claims name, and nothing else; nobody's own."""
+
+    def measure_ticket(self, **kw):
+        kw.setdefault("ttl_seconds", 30 * 60)
+        return self.ticket(jti=si.service_jti(si.SERVICE_MEASURE), **kw)
+
+    def test_a_measure_ticket_lives_an_hour_at_most(self):
+        self.assertTrue(self.measure_ticket(ttl_seconds=60 * 60))
+        with self.assertRaises(ValueError):
+            self.measure_ticket(ttl_seconds=60 * 60 + 1)
+        # one signed longer by the secret's holder is refused at the check all the same
+        claims = si.verify_session_ticket(self.measure_ticket(), SECRET)
+        claims["exp"] = claims["iat"] + 2 * 60 * 60
+        from operating.tests.test_session_identity import _resign
+        with self.assertRaises(si.SessionIdentityRefused):
+            si.employee_session(self.resolver(), channel=si.CHANNEL_CONSOLE,
+                                ticket=_resign(claims), secret=SECRET)
+        # a person's own ticket keeps its working day
+        self.assertTrue(self.ticket(ttl_seconds=8 * 60 * 60))
+
+    def test_the_measure_is_served_the_screens_reads_and_nothing_else(self):
+        client, app = self.client()
+        self.sign_in(client, self.measure_ticket())
+        for path in ("/api/me", "/api/home", "/api/sidebar", "/api/briefing"):
+            self.assertEqual(client.get(path).status_code, 200, path)
+        refused = [("POST", "/api/ask", {"question": "Where is TASK-1 at?"}),
+                   ("POST", "/api/briefing/seen", {}),
+                   ("POST", "/api/memory", {"kind": "fact", "text": "x"}),
+                   ("GET", "/api/work-log", None), ("GET", "/api/memory", None),
+                   ("GET", "/api/memory/people", None), ("GET", "/api/ask/chats", None),
+                   ("GET", "/api/time-saved", None), ("GET", "/api/view-as/people", None),
+                   ("GET", "/api/source", None), ("GET", "/api/teams/connection", None),
+                   ("GET", "/api/entries/e1", None),
+                   ("GET", "/api/object/%2e%2e/%2e%2e/work-log", None),
+                   ("POST", "/api/actions/confirm", {}), ("POST", "/api/watch/follow", {})]
+        for method, path, body in refused:
+            got = client.request(method, path, json=body, headers=PROXIED)
+            self.assertEqual(got.status_code, 403, (method, path, got.text))
+            self.assertEqual(got.json()["error"]["code"], "canary_route_refused",
+                             (method, path))
+        # a path no route takes is never served either (no route: not found)
+        for path in ("/api/home/%2e%2e/work-log", "/api/unknown"):
+            self.assertEqual(client.get(path).status_code, 404, path)
+        # never a view-as, even on a route it is served
+        viewing = client.get("/api/home", headers={**PROXIED, "X-PLX-View-As": OID_A})
+        self.assertEqual(viewing.status_code, 403)
+        # the Ask canary is not widened by it: still its one question only
+        canary = TestClient(app, base_url="http://testserver")
+        self.sign_in(canary, self.canary_ticket())
+        for path in ("/api/home", "/api/sidebar", "/api/insights"):
+            got = canary.get(path)
+            self.assertEqual((got.status_code, got.json()["error"]["code"]),
+                             (403, "canary_route_refused"), path)
+
+    def test_the_measure_session_is_nobodys_own(self):
+        session = si.employee_session(self.resolver(), channel=si.CHANNEL_CONSOLE,
+                                      ticket=self.measure_ticket(), secret=SECRET)
+        self.assertEqual((session.measure, session.canary, session.service),
+                         (True, True, si.SERVICE_MEASURE))
+        with self.assertRaises(si.SessionIdentityRefused) as caught:
+            session.intent_identity(session.actor)
+        self.assertEqual(caught.exception.reason, "canary_session_writes_nothing")
+        canary = si.employee_session(self.resolver(), channel=si.CHANNEL_CONSOLE,
+                                     ticket=self.canary_ticket(), secret=SECRET)
+        self.assertFalse(canary.measure)
+
+
+class ServiceSessionKnownReaderTest(Fixture):
+    """A service session (the Ask canary every 20 minutes, the page measure) never takes
+    the place of the reader's own known session: live, the canary's /api/me replaced the
+    owner's entry (its ticket reference, its opened pages emptied) on every run."""
+
+    def test_a_service_session_leaves_the_readers_own_entry_and_pages(self):
+        import shutil
+        from operator_api import backend as be
+        from operator_api.auth import Reader
+        tmp = Path(tempfile.mkdtemp(prefix="app-known-svc-"))
+        self.addCleanup(shutil.rmtree, tmp, True)
+        backend = be.WorkspaceBackend(lambda s: None, data_label="test", data_dir=tmp)
+        own = si.employee_session(self.resolver(), channel=si.CHANNEL_CONSOLE,
+                                  ticket=self.ticket(), secret=SECRET)
+        reader = Reader(own, "dev", "Ana", EMAIL_A)
+        backend._pages_seen[reader.key] = [("purchase_order", "PO1")]
+        backend.remember_reader(reader)
+        before = backend.known_readers()
+        self.assertEqual(before[OID_A]["ref"], own.session_ref)
+        for service in (si.SERVICE_CANARY, si.SERVICE_MEASURE):
+            session = si.employee_session(self.resolver(), channel=si.CHANNEL_CONSOLE,
+                                          ticket=self.ticket(jti=si.service_jti(service),
+                                                             ttl_seconds=30 * 60),
+                                          secret=SECRET)
+            backend.remember_reader(Reader(session, "dev", "Ana", EMAIL_A))
+        self.assertEqual(backend.known_readers(), before)
+        self.assertEqual(before[OID_A]["pages"], [["purchase_order", "PO1"]])
+
+
 class ConsoleTicketServiceTest(Fixture):
     def test_the_mint_marks_a_service_ticket_and_its_audit_row_says_so(self):
         from operator_api.workspace import console_ticket as ct
@@ -222,7 +322,7 @@ class ConsoleTicketServiceTest(Fixture):
                "PLX_EVAL_READER": '{"uid": "cmuser1", "email": "%s", "entraTenantId": "%s", '
                '"entraObjectId": "%s"}' % (EMAIL_A, TID, OID_A)}
         rows = []
-        for service in (si.SERVICE_CANARY, None):
+        for service in (si.SERVICE_CANARY, si.SERVICE_MEASURE, None):
             args = argparse.Namespace(state_dir=state, reader_env="PLX_EVAL_READER",
                                       ttl_minutes=60, port=8765, service=service,
                                       out=self.dir / f"link-{service}")
@@ -235,7 +335,18 @@ class ConsoleTicketServiceTest(Fixture):
             session = si.employee_session(self.resolver(), channel=si.CHANNEL_CONSOLE,
                                           ticket=ticket, secret=SECRET)
             self.assertEqual(session.service, service)
-        self.assertEqual([r["service"] for r in rows], [si.SERVICE_CANARY, None])
+        self.assertEqual([r["service"] for r in rows],
+                         [si.SERVICE_CANARY, si.SERVICE_MEASURE, None])
+        long_measure = argparse.Namespace(state_dir=state, reader_env="PLX_EVAL_READER",
+                                          ttl_minutes=61, port=8765, service=si.SERVICE_MEASURE,
+                                          out=self.dir / "link-long")
+        with mock.patch.object(ct, "_live_state", return_value=state), \
+                mock.patch.object(ct, "_resolver", return_value=self.resolver()), \
+                mock.patch.object(ct, "append_audit", side_effect=lambda *a, **k: rows.append(k)):
+            with self.assertRaises(ct.TicketRefused):
+                ct.mint(long_measure, env)
+        self.assertFalse((self.dir / "link-long").exists())
+        self.assertEqual(len(rows), 3)
 
 
 class MintLinkCanaryTest(unittest.TestCase):
@@ -247,6 +358,11 @@ class MintLinkCanaryTest(unittest.TestCase):
         self.assertIn("SERVICE=(--service ops_canary)", branch)
         # the one write goes to the name the mode fixed; the owner's name is only a default
         self.assertIn('out="$home/.config/plx/$OUT_NAME"', text)
+        measure = text.split('elif [ "${1:-}" = "--measure" ]; then', 1)[1].split("elif", 1)[0]
+        self.assertIn("OUT_NAME=page-measure-access-link", measure)
+        self.assertIn("SERVICE=(--service ops_measure)", measure)
+        self.assertIn("DEFAULT_TTL=30; MAX_TTL=60", measure)
+        self.assertIn('[ "$TTL" -le "$MAX_TTL" ]', text)
         code = [line for line in text.splitlines() if not line.lstrip().startswith("#")]
         self.assertEqual([line.strip() for line in code if "workbench-access-link" in line],
                          ["OUT_NAME=workbench-access-link"])

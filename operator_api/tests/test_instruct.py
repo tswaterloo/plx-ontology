@@ -1015,7 +1015,8 @@ class AssistInDrafting(Desk):
         draft = out.json()["drafts"][0]
         self.assertEqual((draft["to"], draft["in_reply_to"]), ("pat.lee@maple.example", None))
         self.assertNotIn("OR1000120001", self.looked)
-        self.assertNotIn("<<R1 record", model.prompts[0])
+        self.assertNotIn("OR1000120001", model.prompts[0])
+        self.assertIn("<<R1 record: PO 90412>>", model.prompts[0])   # the mail names it
         # a line naming nobody proposes nobody
         _prompt, draft = self.drafted("reply to this")
         self.assertIsNone(draft["to"])
@@ -1068,6 +1069,18 @@ class AssistInDrafting(Desk):
         self.assertNotIn("OR1000120001", self.looked)
         self.assertNotIn("PO 90412", prompt)
         self.assertTrue(any("not read" in n and "OR1000120001" in n for n in draft["missing"]))
+
+    def test_reply_to_this_reads_the_records_the_email_itself_names(self):
+        # "reply to this" names no record; the email names PO 90412: it is read as the
+        # reader and its facts reach the prompt (a phone number or a year is never looked up)
+        model = self.backend.instruct_call = Model(
+            "Drafted.\n[[DRAFT email]]\nSubject: RE: PO 90412\nHi Pat,\nYes.\nAna\n[[END]]")
+        out = self.instruct(self.ana, "reply to this", {"kind": "email", "handle": MAIL})
+        self.assertEqual(out.status_code, 200, out.text)
+        self.assertIn("Line 10000: 12,000 bars due 2026-11-04", model.prompts[0])
+        from operator_api.instruct_api import email_named
+        self.assertEqual(email_named("Call 905-555-1234 in 2026 about lot #88812, SO-10233"),
+                         ["88812", "10233"])
 
     def test_a_record_the_line_names_that_nothing_holds_is_said_never_dropped(self):
         _prompt, draft = self.drafted("email Ben about PO 77777 ship date for 2026")

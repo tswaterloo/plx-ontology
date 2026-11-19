@@ -14,6 +14,7 @@ from pathlib import Path
 import re
 import sqlite3
 import threading
+import time
 from typing import Any, Callable, Iterable, Mapping, Sequence
 
 from ontology import store as ostore
@@ -631,7 +632,10 @@ def _attach_postgres(conn: sqlite3.Connection) -> None:
     runs over it), so it is made once per (inbox file as it stands, Postgres change stamp)
     and attached read only from memory this process shares (``_st_copy``): before, every
     inbox open copied 129k objects (3-7 s, 11-17), and Home alone opens the inbox about ten
-    times, so the page reads queued behind each other for up to a minute. With no stamp to
+    times, so the page reads queued behind each other for up to a minute. The copy is also
+    kept on disk beside the inbox under the same key (``_st_disk``), so an API started
+    again (every deploy) over the same inbox and data attaches it at once instead of
+    copying again while its first reader's pages wait (5-15 s under load). With no stamp to
     key it by (an in-memory inbox, Postgres not saying) it is copied for this open alone."""
     from operating.pg import ontology_reader
     problem = ontology_reader.whole()
@@ -643,9 +647,9 @@ def _attach_postgres(conn: sqlite3.Connection) -> None:
     shared = conn.execute("PRAGMA query_only").fetchone()[0] == 1
     key = _st_copy_key(conn) if shared else None
     if key is not None:
-        name = _st_copy(conn, key)
+        uri = _st_copy(conn, key)
         try:
-            conn.execute("ATTACH DATABASE ? AS st", (f"file:{name}?mode=memory&cache=shared",))
+            conn.execute("ATTACH DATABASE ? AS st", (uri,))
             if conn.execute("SELECT count(*) FROM st.sqlite_master WHERE name = "
                             "'store_meta'").fetchone()[0] == 1:
                 return
@@ -674,19 +678,125 @@ def _st_copy_key(conn: sqlite3.Connection) -> tuple[Any, ...] | None:
     return (inbox, stamps, stamp)
 
 
-# per (inbox, store data): the shared in-memory ``st`` copies, each held open by one
-# connection of its own (a shared-cache memory database lives while one connection holds
-# it); the oldest is closed past ``_ST_KEPT``
+# per (inbox, store data): the shared ``st`` copies (the URI an open attaches), each held
+# by one connection of its own when it is in memory (a shared-cache memory database lives
+# while one connection holds it; None for a copy kept on disk); the oldest is let go past
+# ``_ST_KEPT``
 _ST_KEPT = 2
-_st_kept: OrderedDict[tuple[Any, ...], tuple[str, sqlite3.Connection]] = OrderedDict()
+_st_kept: OrderedDict[tuple[Any, ...], tuple[str, sqlite3.Connection | None]] = OrderedDict()
 _st_lock = threading.Lock()
 _st_building: dict[tuple[Any, ...], threading.Lock] = {}
 _st_serial = [0]
+# the copies kept on disk beside one inbox (the newest by time stay)
+_ST_DISK_KEPT = 3
+_ST_TMP_STALE_S = 3600
+
+
+def _st_disk(key: tuple[Any, ...]) -> str:
+    """Where the copy for ``key`` is kept on disk: beside the inbox, named by a digest of
+    the whole key (the inbox file as it stood and Postgres's change stamp), so a copy is
+    only ever found again under the very inputs it was read from."""
+    digest = hashlib.sha256(repr(key).encode("utf-8")).hexdigest()[:32]
+    return f"{key[0]}.st-{digest}.sqlite"
+
+
+def _st_disk_uri(path: str) -> str:
+    # written once and renamed into place, never changed after: nothing to lock
+    return f"file:{path}?mode=ro&immutable=1"
+
+
+def _st_disk_found(path: str) -> bool:
+    """Whether the copy at ``path`` is whole: a file renamed into place only once written
+    (``_st_keep_on_disk``), holding its ``store_meta``."""
+    if not os.path.isfile(path):
+        return False
+    try:
+        with closing(sqlite3.connect(_st_disk_uri(path), uri=True)) as probe:
+            return probe.execute("SELECT count(*) FROM sqlite_master WHERE name = "
+                                 "'store_meta'").fetchone()[0] == 1
+    except sqlite3.Error:
+        return False
+
+
+def _st_keep_on_disk(uri: str, key: tuple[Any, ...]) -> None:
+    """The memory copy at ``uri`` written to its file (``_st_disk``) for the next process,
+    then the older copies beside the inbox let go. Read through a connection of its own
+    (the copy lives while it holds it, whatever this process lets go meanwhile); a failure
+    (a full or read-only disk) only means the next process copies again."""
+    path = _st_disk(key)
+    tmp = f"{path}.{os.getpid()}.{threading.get_ident()}.tmp"
+    try:
+        with closing(sqlite3.connect(uri, uri=True, isolation_level=None)) as copy:
+            if copy.execute("SELECT count(*) FROM sqlite_master WHERE name = "
+                            "'store_meta'").fetchone()[0] != 1:
+                return   # let go meanwhile: an empty database, nothing to keep
+            copy.execute("VACUUM main INTO ?", (tmp,))
+        os.replace(tmp, path)
+    except (sqlite3.Error, OSError):
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        return
+    _st_disk_trim(str(key[0]), keep=path)
+
+
+def _st_disk_trim(inbox: str, keep: str) -> None:
+    folder, base = os.path.split(inbox)
+    try:
+        names = [n for n in os.listdir(folder or ".")
+                 if n.startswith(base + ".st-") and n.endswith(".sqlite")]
+        found = sorted((os.path.getmtime(os.path.join(folder, n)), n) for n in names)
+    except OSError:
+        return
+    for _at, n in found[:-_ST_DISK_KEPT]:
+        path = os.path.join(folder, n)
+        if path == keep:
+            continue
+        try:
+            os.unlink(path)   # an open that attached it keeps reading it until it closes
+        except OSError:
+            pass   # another user's copy in a shared folder: theirs to let go
+    # a write cut short (the process killed mid-VACUUM) leaves its ~100 MB .tmp: let go of
+    # one whose writer is gone or that is older than any write takes
+    try:
+        tmps = [n for n in os.listdir(folder or ".")
+                if n.startswith(base + ".st-") and n.endswith(".tmp")]
+    except OSError:
+        return
+    for n in tmps:
+        path = os.path.join(folder, n)
+        if _st_tmp_alive(n, path):
+            continue
+        try:
+            os.unlink(path)
+        except OSError:
+            pass
+
+
+def _st_tmp_alive(name: str, path: str) -> bool:
+    """Whether the .tmp ``name`` (``<copy>.<pid>.<thread>.tmp``) may still be being written."""
+    try:
+        if time.time() - os.path.getmtime(path) > _ST_TMP_STALE_S:
+            return False
+        pid = int(name.rsplit(".", 3)[1])
+    except (OSError, ValueError, IndexError):
+        return True
+    if pid == os.getpid():
+        return True
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except OSError:
+        return True   # another user's live process
+    return True
 
 
 def _st_copy(conn: sqlite3.Connection, key: tuple[Any, ...]) -> str:
-    """The name of the shared copy for ``key``, made once (the opens that ask meanwhile
-    wait for it rather than copying beside it)."""
+    """The URI of the shared copy for ``key``: kept in this process, else kept on disk by
+    an earlier process, else made once (the opens that ask meanwhile wait for it rather
+    than copying beside it) and written to disk for the next process."""
     with _st_lock:
         held = _st_kept.get(key)
         if held is not None:
@@ -698,6 +808,12 @@ def _st_copy(conn: sqlite3.Connection, key: tuple[Any, ...]) -> str:
             held = _st_kept.get(key)
             if held is not None:
                 return held[0]
+        path = _st_disk(key)
+        if _st_disk_found(path):
+            _st_publish(key, _st_disk_uri(path), None)
+            _st_disk_trim(str(key[0]), keep=path)   # once per process: an earlier crash's .tmp
+            return _st_disk_uri(path)
+        with _st_lock:
             _st_serial[0] += 1
             name = f"plx-inbox-st-{os.getpid()}-{_st_serial[0]}"
         holder = sqlite3.connect(f"file:{name}?mode=memory&cache=shared", uri=True,
@@ -711,13 +827,22 @@ def _st_copy(conn: sqlite3.Connection, key: tuple[Any, ...]) -> str:
             with _st_lock:
                 _st_building.pop(key, None)
             raise
-        with _st_lock:
-            _st_kept[key] = (name, holder)
-            _st_building.pop(key, None)
-            while len(_st_kept) > _ST_KEPT:
-                _gone, (_n, old) = _st_kept.popitem(last=False)
+        uri = f"file:{name}?mode=memory&cache=shared"
+        _st_publish(key, uri, holder)
+    # after the copy is shared (the opens waiting on it go on): the open that made it
+    # writes it for the next process (~0.6 s for 204k objects, 97 MB)
+    _st_keep_on_disk(uri, key)
+    return uri
+
+
+def _st_publish(key: tuple[Any, ...], uri: str, holder: sqlite3.Connection | None) -> None:
+    with _st_lock:
+        _st_kept[key] = (uri, holder)
+        _st_building.pop(key, None)
+        while len(_st_kept) > _ST_KEPT:
+            _gone, (_n, old) = _st_kept.popitem(last=False)
+            if old is not None:
                 old.close()   # the opens attached to it keep it until they close
-        return name
 
 
 def _main_file(conn: sqlite3.Connection) -> str:

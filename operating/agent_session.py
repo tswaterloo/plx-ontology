@@ -2406,16 +2406,19 @@ class ClaudeCodeAgent:
             argv += ["--max-turns", str(self.max_turns)]
         return argv + self.extra_args
 
-    def run(self, prompt: str, host: Host) -> AgentRun:
+    def run(self, prompt: str, host: Host,
+            images: Sequence[Mapping[str, str]] = ()) -> AgentRun:
         """One session with its plx tools attached, or ``ToolsUnattached``: a session
         whose host ended before it answered is started again with a fresh host, at most
         ``ATTACH_ATTEMPTS`` times; one whose host is still starting after
-        ``HOST_READY_SECONDS`` is not (a fresh host would start from nothing)."""
+        ``HOST_READY_SECONDS`` is not (a fresh host would start from nothing).
+        ``images``: the person's attached images (``image_blocks``), shown to the model
+        with the task (its input then goes in on stdin, as stream-json)."""
         from operating import model_ledger
         for attempt in range(1, ATTACH_ATTEMPTS + 1):
             started = time.monotonic()
             try:
-                ran = self._run_attached(prompt, host)
+                ran = self._run_attached(prompt, host, images)
             except ToolsUnattached as gone:
                 model_ledger.record("agent_session", prompt=prompt, ok=False,
                                     reason=f"tools_unattached:{gone.code}",
@@ -2438,11 +2441,13 @@ class ClaudeCodeAgent:
             return ran
         raise ToolsUnattached(HOST_NOT_READY)   # not reached: ATTACH_ATTEMPTS >= 1
 
-    def _run_attached(self, prompt: str, host: Host) -> AgentRun:
+    def _run_attached(self, prompt: str, host: Host,
+                      images: Sequence[Mapping[str, str]] = ()) -> AgentRun:
         turns = self._attached(host)
         next(turns)
         try:
-            return turns.send((prompt, None, getattr(self, "cancel_event", None)))
+            return turns.send((prompt, None, getattr(self, "cancel_event", None),
+                               tuple(images)))
         finally:
             turns.close()
 
@@ -2650,6 +2655,17 @@ class ClaudeCodeAgent:
                                     helper.set_deadline(moved)
                                 return task
                             options["feed"] = feed
+                        images = shown[0] if shown else ()
+                        if images and not warm:
+                            # the person's images go in with the task, on stdin: one
+                            # user message, the images before its text (as a warm turn)
+                            if not getattr(self.spawn, "feeds", False):
+                                raise ValueError("a session that cannot be fed an image")
+                            if "feed" not in options:
+                                argv = [argv[0], "-p", *argv[3:], "--input-format",
+                                        "stream-json"]
+                            options["feed"] = _shown_with(images, options.get("feed"),
+                                                          prompt)
                         if warm or (getattr(self.spawn, "stops", False) and (
                                 ends is not None or attach is not None
                                 or cancel is not None)):
@@ -2668,7 +2684,6 @@ class ClaudeCodeAgent:
                             text = prompt
                             if "feed" in options:
                                 text = json.loads(options["feed"]())["message"]["content"]
-                            images = shown[0] if shown else ()
                             code, stdout = process.turn(
                                 text, self.timeout, on_line=on_line, stop=options["stop"],
                                 **({"images": images} if images else {}))
@@ -3012,6 +3027,20 @@ def _shift_clock(budget: "deep.Budget | None", waited: float, calls_end: float |
         tmp = calls_file.with_suffix(".tmp")
         tmp.write_text(f"{moved:.3f}", encoding="utf-8")
         os.replace(tmp, calls_file)
+
+
+def _shown_with(images: Sequence[Mapping[str, str]], feed: Callable[[], str] | None,
+                prompt: str) -> Callable[[], str]:
+    """A one-run session's input with the person's ``images`` (``image_blocks``, checked
+    now: a refused image never starts a session) before its task: ``feed``'s task (the
+    task with the host's first reads, ``_fed``) or else ``prompt``."""
+    blocks = image_blocks(images)
+
+    def fed() -> str:
+        text = json.loads(feed())["message"]["content"] if feed is not None else prompt
+        return json.dumps({"type": "user", "message": {"role": "user", "content": [
+            *blocks, {"type": "text", "text": text}]}}) + "\n"
+    return fed
 
 
 def _fed(prompt: str, gate: "HostGate") -> str:

@@ -417,7 +417,10 @@ class WarmMixin:
         oid = getattr(getattr(session, "employee", None), "object_id", None)
         ref, exp = getattr(session, "session_ref", None), getattr(session, "expires_at", None)
         if not isinstance(oid, str) or not isinstance(ref, str) or not isinstance(exp, int) \
-                or getattr(session, "warm_ahead", False) or getattr(session, "view_as", False):
+                or getattr(session, "warm_ahead", False) or getattr(session, "view_as", False) \
+                or getattr(session, "canary", False):
+            # a service session (the Ask canary, the page measure) is nobody's: it must not
+            # take the place of the reader's own session (its pages and ticket reference)
             return
         with self._known_locked():
             known = self.known_readers()

@@ -7,8 +7,9 @@ environment), checks out the sha, then execs ``bwrap`` with:
 * ``/data/plx-state``: the Spark's state copy (deploy/spark/spark_state_sync.py) for
   ``state=copy``, an empty folder for ``state=none``;
 * each shipped path at its own absolute path (~/plx-run/files/<path>);
-* ``/run/postgresql``: the reverse tunnel's socket (~/plx-ai/run), so ``postgresql:///plx``
-  reaches the box's Postgres. The box end maps every login to ``plx_eval`` (read-only);
+* ``/run/postgresql``: ~/plx-ai/run, whose socket is spark_pg_balance.py (spread over the
+  box's reverse tunnels), so ``postgresql:///plx`` reaches the box's Postgres. The box end
+  maps every login to ``plx_eval`` (read-only);
 * ``/usr/local/bin/claude``: the same Claude Code version as the box, for this CPU;
   ``/var/lib/plx-workbench`` and ``/var/lib/plx-autopilot/claude-home``: their Spark copies,
   holding only the access token the box syncs (deploy/spark/spark_cred_sync.sh);

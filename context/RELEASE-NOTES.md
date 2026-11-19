@@ -36,6 +36,18 @@ Changed:
 - Ask's mail, Teams and file search answers common words in seconds instead of timing out, and keeps the hits that fit when a result is too large
 - A search result too large to send with no hits is returned as it is, and Teams and file searches are tested to give the same pages however far the walk reads
 
+## Update 2026-11-19
+Changed:
+- A catalogue of named business measures the Ask can use and compare across periods, and team views of shape and reply time
+- Decisions found in mail and Teams are far more accurate, and a view shows how each team makes decisions
+- A long change list becomes one to-do with the count and the newest three records
+- The health check no longer pushes out a reader's own pages, so pages are read ahead after a restart
+- the briefing seen mark is instant for a first-time reader
+- a read-only measuring session can time the screens
+- Teams search for a word common in mail reads Teams' own text past the walk (11.0 s to 2.0 s warm), same rows
+- Ask prompt carries the metrics catalogue (measures + company-wide reports) and the why-method
+- Spark to box Postgres path: many compressed tunnels plus a least-busy relay with spare connections (connect 5 s to 24 ms)
+
 ## v0.22 (2026-11-19)
 Changed:
 - Autopilot drafts by default with question cards, looks things up as the person, learns from edits and applies saved preferences; chat drafts read the chat and the person's own replies as style.

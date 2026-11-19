@@ -1,0 +1,322 @@
+"""Real drafts for the open-replies list ("needs my reply"), made in the background.
+
+The list (``inbox_triage.triage``, ``/api/replies``) carried one fixed holding sentence on
+every line: no line ever got a model draft, since the shared drafter
+(``autopilot_drafter``: the person's memory and learned style, the counterpart's open
+orders and invoices, the records the message names, record lookups as the person when
+every reader is ours) ran only on autopilot events. Here that same drafter runs over each
+person's open reply lines, the way ``autopilot.dry_drafts`` writes a draft for a grade
+(same events, owners, screens, handler, material, style and writer; nothing is written to
+any queue, nothing is sent), and the result is kept by message id (``Kept``) beside the
+other state stores:
+
+* ``python3 -m operator_api.autopilot_context assist-drafts --state-dir <state>`` (a
+  timer: ``deploy/systemd/plx-reply-drafts.*``) picks the open ``reply_owed`` and
+  ``needs_my_reply`` lines no draft is kept for (``wanted``), heaviest first, at most
+  ``PER_PERSON`` per person and ``PER_RUN`` a run, and drafts them ``PARALLEL`` at once,
+  each worker on its own store. A line is marked ``drafting`` before its call, so the page
+  says so; ``ready`` (a reply, or a ``your_call`` question with its options' replies) or
+  ``none`` (why: a screen, nothing worth sending) after. A ``drafting`` mark older than
+  ``STALE_MINUTES`` (a run that died) is drafted again; a ``none`` is tried again after
+  ``RETRY_HOURS``.
+* ``/api/replies`` never waits on any of it: ``attach`` puts the kept draft on its line
+  (the reply card's body then is the model's) or the state (``drafting``, ``queued``),
+  and the holding sentence stays until a draft is ready.
+
+Drafts only: nothing here sends, confirms or writes to a business system.
+Evidence: isolated-fixture (``operating/tests/test_reply_drafts.py``); live-unverified.
+"""
+from __future__ import annotations
+
+import json
+import os
+import sqlite3
+import threading
+from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+from typing import Any, Callable, Iterable, Mapping, Optional, Sequence
+
+DIR = "reply-drafts"
+FILE = "reply-drafts.sqlite"
+PARALLEL_ENV = "PLX_REPLY_DRAFTS_PARALLEL"
+PARALLEL = 3          # drafts at once (each a model process and a reader host)
+PER_PERSON_ENV = "PLX_REPLY_DRAFTS_PER_PERSON"
+PER_PERSON = 6        # lines one person gets drafted a run (the rest wait for the next)
+PER_RUN_ENV = "PLX_REPLY_DRAFTS_PER_RUN"
+PER_RUN = 24
+STALE_MINUTES = 30
+RETRY_HOURS = 12
+FORCE = "reply_prep"  # the drafting autopilot for a line no live rule matched
+KINDS = ("reply_owed", "needs_my_reply")   # ``inbox_triage.TRIAGE_KINDS``
+STATES = ("drafting", "ready", "none")
+
+SCHEMA = """CREATE TABLE IF NOT EXISTS drafts (
+  owner TEXT NOT NULL, object_id TEXT NOT NULL, state TEXT NOT NULL,
+  kind TEXT NOT NULL DEFAULT '', body TEXT NOT NULL DEFAULT '',
+  ask TEXT NOT NULL DEFAULT '', options TEXT NOT NULL DEFAULT '[]',
+  why TEXT NOT NULL DEFAULT '', at TEXT NOT NULL, seconds REAL,
+  PRIMARY KEY (owner, object_id))"""
+
+
+def _now() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def path_of(state_dir: Path | str) -> Path:
+    return Path(state_dir) / DIR / FILE
+
+
+def bare(owner: Any) -> str:
+    """A person's id without the tenant prefix, lower-cased (gaps and readers differ)."""
+    return str(owner or "").rsplit(":", 1)[-1].strip().lower()
+
+
+class Kept:
+    """The kept drafts, one row per (person, message record). Writers: the job only;
+    the API opens it read-only (``rows``)."""
+
+    def __init__(self, path: Path | str) -> None:
+        self.path = Path(path)
+        self._lock = threading.Lock()
+
+    def _open(self) -> sqlite3.Connection:
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        conn = sqlite3.connect(self.path, timeout=30, check_same_thread=False)
+        conn.execute(SCHEMA)
+        return conn
+
+    def mark(self, owner: str, object_id: str, state: str, **fields: Any) -> None:
+        if state not in STATES:
+            raise ValueError(state)
+        row = {"kind": str(fields.get("kind") or ""), "body": str(fields.get("body") or ""),
+               "ask": str(fields.get("ask") or ""),
+               "options": json.dumps(list(fields.get("options") or ()), ensure_ascii=False),
+               "why": str(fields.get("why") or ""), "seconds": fields.get("seconds")}
+        with self._lock:
+            conn = self._open()
+            try:
+                conn.execute(
+                    "INSERT OR REPLACE INTO drafts (owner, object_id, state, kind, body, ask,"
+                    " options, why, at, seconds) VALUES (?,?,?,?,?,?,?,?,?,?)",
+                    (bare(owner), object_id, state, row["kind"], row["body"], row["ask"],
+                     row["options"], row["why"], _now().isoformat(), row["seconds"]))
+                conn.commit()
+            finally:
+                conn.close()
+
+    def rows(self, owners: Iterable[str], ids: Iterable[str] | None = None
+             ) -> dict[str, dict[str, Any]]:
+        """{object id: kept row} for ``owners`` (read-only; nothing kept: {})."""
+        owners = sorted({bare(o) for o in owners if o})
+        if not owners or not self.path.exists():
+            return {}
+        try:
+            conn = sqlite3.connect(f"file:{self.path}?mode=ro", uri=True, timeout=5)
+        except sqlite3.Error:
+            return {}
+        try:
+            got = conn.execute(
+                "SELECT owner, object_id, state, kind, body, ask, options, why, at FROM drafts"
+                f" WHERE owner IN ({','.join('?' * len(owners))})", owners).fetchall()
+        except sqlite3.Error:
+            return {}
+        finally:
+            conn.close()
+        want = set(ids) if ids is not None else None
+        out: dict[str, dict[str, Any]] = {}
+        for owner, oid, state, kind, body, ask, options, why, at in got:
+            if want is not None and oid not in want:
+                continue
+            try:
+                opts = json.loads(options)
+            except ValueError:
+                opts = []
+            out[oid] = {"owner": owner, "state": state, "kind": kind, "body": body,
+                        "ask": ask, "options": opts if isinstance(opts, list) else [],
+                        "why": why, "at": at}
+        return out
+
+
+def due(row: Optional[Mapping[str, Any]], now: datetime) -> bool:
+    """Whether a line with this kept row is drafted (again): never drafted, a ``drafting``
+    mark a dead run left, a ``none`` old enough to try again. A ``ready`` draft stays."""
+    if not row:
+        return True
+    try:
+        at = datetime.fromisoformat(str(row.get("at")))
+    except ValueError:
+        return True
+    if row.get("state") == "drafting":
+        return now - at > timedelta(minutes=STALE_MINUTES)
+    if row.get("state") == "none":
+        return now - at > timedelta(hours=RETRY_HOURS)
+    return False
+
+
+def open_lines(inbox: Path | str) -> list[tuple[str, str, int]]:
+    """(owner, message record id, priority) of every open reply line, heaviest first (the
+    run's gap inbox, read only)."""
+    path = Path(inbox)
+    if not path.exists():
+        return []
+    conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+    try:
+        got = conn.execute(
+            "SELECT object_id, follow_up, priority FROM gaps WHERE state = 'open' AND kind IN"
+            f" ({','.join('?' * len(KINDS))}) ORDER BY priority DESC, first_seen", KINDS
+        ).fetchall()
+    finally:
+        conn.close()
+    out, seen = [], set()
+    for oid, follow_up, priority in got:
+        try:
+            fu = json.loads(follow_up)
+        except ValueError:
+            continue
+        owner = bare(fu.get("owner") if isinstance(fu, Mapping) else "")
+        if owner and (owner, oid) not in seen:
+            seen.add((owner, oid))
+            out.append((owner, oid, int(priority or 0)))
+    return out
+
+
+def wanted(lines: Sequence[tuple[str, str, int]], kept: Kept, *,
+           people: Optional[Iterable[str]] = None, per_person: int = PER_PERSON,
+           per_run: int = PER_RUN, now: Optional[datetime] = None) -> list[tuple[str, str]]:
+    """The (owner, record id) pairs this run drafts: lines with no draft kept (``due``),
+    only ``people`` when given, at most ``per_person`` per person and ``per_run`` in all,
+    in the list's order (heaviest first)."""
+    now = now or _now()
+    only = {bare(p) for p in people} if people is not None else None
+    owners = sorted({o for o, _i, _p in lines if only is None or o in only})
+    kept_rows: dict[str, dict[str, dict[str, Any]]] = {}
+    for owner in owners:
+        kept_rows[owner] = kept.rows([owner])
+    counts: dict[str, int] = {}
+    out: list[tuple[str, str]] = []
+    for owner, oid, _p in lines:
+        if owner not in kept_rows or len(out) >= per_run:
+            continue
+        if counts.get(owner, 0) >= per_person or not due(kept_rows[owner].get(oid), now):
+            continue
+        counts[owner] = counts.get(owner, 0) + 1
+        out.append((owner, oid))
+    return out
+
+
+def result_of(rows: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
+    """What ``dry_drafts`` gave for one line, as the kept fields: the first row with a
+    reply or a question, else ``none`` with the first reason."""
+    for row in rows:
+        if row.get("kind") == "your_call" and row.get("ask"):
+            return {"state": "ready", "kind": "your_call", "body": "",
+                    "ask": str(row["ask"]), "options": list(row.get("options") or ())}
+        if row.get("draft"):
+            return {"state": "ready", "kind": "reply", "body": str(row["draft"])}
+    why = next((str(r.get("why")) for r in rows if r.get("why")), "no_draft")
+    return {"state": "none", "why": why}
+
+
+def run(pairs: Sequence[tuple[str, str]], kept: Kept,
+        draft: Callable[[str, str], Sequence[Mapping[str, Any]]], *,
+        parallel: int = PARALLEL) -> dict[str, int]:
+    """Drafts ``pairs`` with ``draft(owner, record id)`` (``dry_drafts`` for one line),
+    ``parallel`` at once; every pair is marked ``drafting`` first, its outcome kept after.
+    A call that raises is kept as ``none`` (``draft_failed``), tried again later."""
+    import time
+    for owner, oid in pairs:
+        kept.mark(owner, oid, "drafting")
+    counts = {"ready": 0, "none": 0}
+
+    def one(pair: tuple[str, str]) -> None:
+        owner, oid = pair
+        start = time.monotonic()
+        try:
+            got = result_of(draft(owner, oid))
+        except Exception as exc:  # noqa: BLE001 - one line's failure never stops the rest
+            got = {"state": "none", "why": f"draft_failed:{type(exc).__name__}"}
+        state = got.pop("state")
+        kept.mark(owner, oid, state, seconds=round(time.monotonic() - start, 1), **got)
+        counts[state] += 1
+
+    with ThreadPoolExecutor(max(1, parallel), thread_name_prefix="reply-draft") as pool:
+        list(pool.map(one, pairs))
+    return counts
+
+
+def attach(lines: Sequence[dict[str, Any]], kept: Mapping[str, Mapping[str, Any]]) -> None:
+    """Each line gets its kept draft (in place): ``draft_state`` ``ready`` with the model's
+    body on the line's draft (a ``your_call`` question: ``your_call`` with its options, the
+    holding body kept until the person picks), ``drafting`` while a run writes it, else
+    ``queued`` (the holding sentence until a run gets to it)."""
+    for line in lines:
+        row = kept.get(str(line.get("object_id") or ""))
+        state = str((row or {}).get("state") or "")
+        if state == "ready" and row:
+            line["draft_state"] = "ready"
+            line["drafted_by"] = "model"
+            if row.get("kind") == "your_call":
+                line["your_call"] = {"ask": row.get("ask") or "",
+                                     "options": [o for o in row.get("options") or ()
+                                                 if isinstance(o, Mapping)]}
+            elif row.get("body"):
+                draft = dict(line.get("draft") or {})
+                draft["body"] = str(row["body"])
+                draft.pop("copy_check", None)
+                line["draft"] = draft
+        elif state == "drafting":
+            line["draft_state"] = "drafting"
+        else:
+            line["draft_state"] = "queued"
+
+
+def kept_for(state_dir: Any, owners: Iterable[str], lines: Sequence[Mapping[str, Any]]
+             ) -> dict[str, dict[str, Any]]:
+    """The kept rows for ``lines`` (the API side; no state dir or no store: {})."""
+    if not state_dir:
+        return {}
+    ids = [str(x.get("object_id")) for x in lines if x.get("object_id")]
+    return Kept(path_of(state_dir)).rows(owners, ids) if ids else {}
+
+
+def _int_env(name: str, default: int) -> int:
+    try:
+        return max(1, int(os.environ.get(name) or default))
+    except ValueError:
+        return default
+
+
+def cli(a: Any, registry: Mapping[str, Any]) -> int:
+    """``assist-drafts``: draft this run's ``wanted`` lines (``--owner``: only those people)
+    with the autopilot's dry drafter, each worker on its own store; prints the counts."""
+    from . import autopilot as apm
+    from . import proactive_engine as pe
+    if not a.state_dir:
+        print(json.dumps({"error": "assist-drafts needs --state-dir"}))
+        return 2
+    state = Path(a.state_dir)
+    kept = Kept(path_of(state))
+    inbox = state / "projection" / "ontology.sqlite.gap-inbox.sqlite"
+    pairs = wanted(open_lines(inbox), kept, people=a.owner or None,
+                   per_person=_int_env(PER_PERSON_ENV, PER_PERSON),
+                   per_run=_int_env(PER_RUN_ENV, PER_RUN))
+    local = threading.local()
+    stores: list[Any] = []
+    people = pe._people(Path(a.store))
+
+    def draft(owner: str, oid: str) -> Sequence[Mapping[str, Any]]:
+        if getattr(local, "st", None) is None:
+            local.st = apm._with_captures(apm._store(a.store), a)
+            stores.append(local.st)
+        return apm.dry_drafts(local.st, registry, people, [oid], Path(a.queue),
+                              owners={owner}, force=a.force or FORCE)
+
+    try:
+        counts = run(pairs, kept, draft, parallel=_int_env(PARALLEL_ENV, PARALLEL))
+    finally:
+        for st in stores:
+            st.close()
+    print(json.dumps({"schema": "plx-reply-drafts/v1", "wanted": len(pairs), **counts},
+                     sort_keys=True))
+    return 0

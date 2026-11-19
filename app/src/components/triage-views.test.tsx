@@ -10,8 +10,8 @@ const draft = { channel: "email" as const, to: [{ address: "buyer@synth.example"
 describe("my replies and label changes", () => {
   it("lists the reader's lines with drafts and marks a new inquiry", () => {
     const triage: ReplyTriage = { as_of: "2026-11-05", total: 2, sent: 0, writes: 0, lines: [
-      { id: "pe-1", kind: "reply_owed", channel: "mail", days: 3, chases: 2, subject: "Order 1", draft, rank: [1, 0, 2, 3], new_inquiry: false },
-      { id: "pe-2", kind: "reply_owed", channel: "mail", days: 1, chases: 0, subject: "Bottles", draft, rank: [0, 0, 0, 1], new_inquiry: true },
+      { id: "pe-1", kind: "reply_owed", channel: "mail", days: 3, chases: 2, subject: "Order 1", draft, draft_state: "ready", rank: [1, 0, 2, 3], new_inquiry: false },
+      { id: "pe-2", kind: "reply_owed", channel: "mail", days: 1, chases: 0, subject: "Bottles", draft, draft_state: "ready", rank: [0, 0, 0, 1], new_inquiry: true },
     ] };
     render(<ReplyList triage={triage} />);
     expect(screen.getAllByTestId("reply-line")).toHaveLength(2);

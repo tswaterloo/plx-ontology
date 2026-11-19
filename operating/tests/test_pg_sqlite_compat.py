@@ -744,6 +744,41 @@ class CompatTests(unittest.TestCase):
                 self.assertEqual(pg.execute("SELECT count(DISTINCT digest) FROM sq_keys")
                                  .fetchone()[0], {1: 1, 10: 11, 60: 71}[count])
 
+    def test_an_idle_reader_lets_its_login_go_and_reads_again_on_its_next_statement(self):
+        """A reader unused past the pools' idle keep holds no login (the reaper closes it),
+        never while a transaction is open on it; its next statement opens a new one, named
+        and with its session rebuilt."""
+        import os
+        import time
+        from unittest import mock
+        from operating.pg import pool as pg_pool
+        from operating.pg.sqlite_compat import PgCompatConnection
+        env = {k: v for k, v in os.environ.items() if k != "PGAPPNAME"}
+        env["PLX_PG_IDLE_KEEP_SECONDS"] = "60"
+        with mock.patch.dict(os.environ, env, clear=True):
+            pg = PgCompatConnection(self.dsn)
+            self.addCleanup(pg.close)
+
+            def login():
+                return pg.execute("SELECT pg_backend_pid(), current_setting('application_name'),"
+                                  " current_setting('search_path')").fetchone()
+            first = login()
+            self.assertEqual(first[1:], ("plx-reader", "ontology, public"))
+            pg._reap(time.monotonic() + 30)            # not idle long enough
+            self.assertFalse(pg._conn.closed)
+            pg._pg.execute("BEGIN")
+            pg._reap(time.monotonic() + 3600)          # a transaction is open on it
+            self.assertFalse(pg._conn.closed)
+            pg._pg.execute("COMMIT")
+            pg_pool.reap_now(time.monotonic() + 3600)  # registered with the reaper
+            self.assertTrue(pg._conn.closed)
+            with pg_testdb._admin() as admin:
+                self.assertEqual(admin.execute("SELECT count(*) FROM pg_stat_activity WHERE "
+                                               "pid = %s", (first[0],)).fetchone()[0], 0)
+            again = login()
+            self.assertNotEqual(again[0], first[0])
+            self.assertEqual(again[1:], first[1:])
+
     def test_a_long_in_list_kept_on_the_session_reads_the_same_rows(self):
         """An owner's audience list (thousands of keys) is read from the session's
         principal-key set by its digest, never planned member by member: ``IN`` and ``NOT

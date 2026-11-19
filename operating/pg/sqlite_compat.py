@@ -46,10 +46,12 @@ from __future__ import annotations
 
 from decimal import Decimal
 from contextlib import contextmanager
+import contextlib
 import functools
 import hashlib
 import json
 import logging
+import os
 import re
 import select
 import sqlite3
@@ -58,6 +60,7 @@ import time
 from typing import Any, Callable, Iterator, Mapping
 
 from operating import call_limits
+from operating.pg import reader_settings
 
 MAX_ROUNDS = 24
 # A streamed read (``PgCompatConnection.stream``) takes this many rows a round trip, on one
@@ -1008,6 +1011,10 @@ class PgCompatConnection:
     # packed value layouts: one Postgres cell per field) asks this to take its own form.
     postgres = True
 
+    stateless = False   # gate state in session settings, not temporary tables (_session)
+    shared_sets = False   # a stateless reader reads ontology.reader_key_sets (_bound_lists)
+    _recovery = False
+
     def __init__(self, dsn: str, *, statement_timeout_ms: int = STATEMENT_TIMEOUT_MS,
                  temp_limit: str | None = None, search_path: str = "ontology, public",
                  link_guard: bool = False) -> None:
@@ -1046,13 +1053,20 @@ class PgCompatConnection:
         # queries run here only then, else they raise (``translate``).
         self.words: tuple[str, ...] = ()
         self.row_factory: Any = sqlite3.Row
-        # idle connections streamed reads run on, and how many are open (``stream``)
-        self._streams: list[Any] = []
+        # idle connections streamed reads run on (each with when it went idle), and how
+        # many are open (``stream``)
+        self._streams: list[tuple[Any, float]] = []
         self._streams_open = 0
         self._streams_lock = threading.Lock()
         # the stream connections reading now (``interrupt`` cancels their statements too)
         self._streams_busy: set[Any] = set()
         self._conn = self._open()
+        # the held connection's last use, and whether ``_reap`` closed it while idle (the
+        # next statement opens it again, ``live``)
+        self._used = time.monotonic()
+        self._released = False
+        from operating.pg.pool import reap_idle
+        reap_idle(self._reap)
         from operating.ontology_tools_traverse import GATED_SCHEMES
         self._gated = tuple(sorted(GATED_SCHEMES))
 
@@ -1065,13 +1079,21 @@ class PgCompatConnection:
         # SQLite (``? IS NULL`` with None, a text compared with a number)
         from operating.pg.pool import when_free
         conn = when_free(lambda: psycopg.connect(
-            self.dsn, autocommit=True, cursor_factory=psycopg.ClientCursor, **kwargs))
+            self.dsn, autocommit=True, cursor_factory=psycopg.ClientCursor,
+            **self._named(), **kwargs))
         try:
             self._session(conn)
         except BaseException:
             conn.close()
             raise
         return conn
+
+    def _named(self) -> dict[str, str]:
+        """The ``application_name`` of this reader's logins (``pool.app_name``), unless its
+        DSN names one: the connection alarm and ``pg_stat_activity`` can tell who holds them."""
+        from operating.pg.pool import app_name
+        return {} if "application_name" in self.dsn else {
+            "application_name": app_name("plx-reader")}
 
     def _session(self, conn: Any) -> None:
         import psycopg
@@ -1102,28 +1124,47 @@ class PgCompatConnection:
             # JSON lists read as arrays once migration 0011 made their functions
             cur.execute("SELECT to_regproc('ontology.sq_json_array_int') IS NOT NULL")
             self.arrays = bool(cur.fetchone()[0])
+            # a session that cannot make temporary tables (a hot standby, or asked so by
+            # ``PLX_PG_READER_STATELESS``) holds its gate state in session settings
+            # (``stateless``, migration 0049) and binds every list as an array
+            cur.execute("SELECT pg_is_in_recovery(), "
+                        "to_regproc('ontology.sq_call_s') IS NOT NULL")
+            recovery, settings = cur.fetchone()
+            self.stateless = bool(settings) and (
+                bool(recovery) or os.environ.get("PLX_PG_READER_STATELESS", "") in ("1", "on"))
+            self._recovery = bool(recovery)
+            if self.stateless:
+                cur.execute("SELECT to_regproc('ontology.sq_item_gate') IS NOT NULL")
+                self.item_audiences = bool(cur.fetchone()[0])
+                # the shared principal-key sets (migration 0050), where this login reads them
+                cur.execute(reader_settings.SHARED_SETS_READABLE)
+                self.shared_sets = bool(cur.fetchone()[0])
+                self._sq_answered: dict[str, set[str]] = {}
+                self._sq_gates: dict[str, list[str]] = {}
             # the session's own temporary tables: made read-write even where the login
             # starts every transaction read-only (the eval role plx_eval,
             # deploy/pg/plx_eval_role.sql); its grants still allow no shared write
-            with conn.transaction():
-                cur.execute("SET TRANSACTION READ WRITE")
-                cur.execute("CREATE TEMP TABLE IF NOT EXISTS sq_calls (fn text, arg text, "
-                            "result boolean, PRIMARY KEY (fn, arg))")
-                cur.execute("CREATE TEMP TABLE IF NOT EXISTS sq_pending (fn text, arg text, "
-                            "PRIMARY KEY (fn, arg))")
-                # the principal-key sets this session holds (``_bound_lists``): a new session
-                # holds none
-                cur.execute("CREATE TEMP TABLE IF NOT EXISTS sq_keys (digest text NOT NULL, "
-                            "key text NOT NULL, PRIMARY KEY (digest, key))")
-                cur.execute("TRUNCATE sq_keys")
-                # the recorded item audiences (migration 0027): a gate carrying its reader's keys
-                # (``create_function``) is answered from them where a decision is recorded
-                cur.execute("SELECT to_regproc('ontology.sq_item_gate') IS NOT NULL")
-                self.item_audiences = bool(cur.fetchone()[0])
-                if self.item_audiences:
-                    cur.execute("CREATE TEMP TABLE IF NOT EXISTS sq_gates (fn text PRIMARY KEY, "
-                                "keys text[] NOT NULL, rosters text[] NOT NULL)")
-                    cur.execute("TRUNCATE sq_gates")
+            with (contextlib.nullcontext() if self.stateless else conn.transaction()):
+                if not self.stateless:
+                    cur.execute("SET TRANSACTION READ WRITE")
+                    cur.execute("CREATE TEMP TABLE IF NOT EXISTS sq_calls (fn text, arg text, "
+                                "result boolean, PRIMARY KEY (fn, arg))")
+                    cur.execute("CREATE TEMP TABLE IF NOT EXISTS sq_pending (fn text, arg text, "
+                                "PRIMARY KEY (fn, arg))")
+                    # the principal-key sets this session holds (``_bound_lists``): a new session
+                    # holds none
+                    cur.execute("CREATE TEMP TABLE IF NOT EXISTS sq_keys (digest text NOT NULL, "
+                                "key text NOT NULL, PRIMARY KEY (digest, key))")
+                    cur.execute("TRUNCATE sq_keys")
+                    # the recorded item audiences (migration 0027): a gate carrying its
+                    # reader's keys (``create_function``) is answered from them where a
+                    # decision is recorded
+                    cur.execute("SELECT to_regproc('ontology.sq_item_gate') IS NOT NULL")
+                    self.item_audiences = bool(cur.fetchone()[0])
+                    if self.item_audiences:
+                        cur.execute("CREATE TEMP TABLE IF NOT EXISTS sq_gates (fn text "
+                                    "PRIMARY KEY, keys text[] NOT NULL, rosters text[] NOT NULL)")
+                        cur.execute("TRUNCATE sq_gates")
             recorded = getattr(self, "_recorded", None) or {}
             for name, keys in list(recorded.items()):
                 # a new session holds the gates registered before (their rosters re-read)
@@ -1177,6 +1218,15 @@ class PgCompatConnection:
         with self._lock:
             if self._closed:
                 raise sqlite3.ProgrammingError("Cannot operate on a closed database.")
+            self._used = time.monotonic()
+            if self._released:
+                try:
+                    self._conn = self._open(connect_timeout=RECONNECT_TIMEOUT_S)
+                except Exception as exc:  # noqa: BLE001 - raised as the store's error
+                    raise sqlite3.OperationalError(
+                        f"postgres: reconnect failed: {type(exc).__name__}") from exc
+                self._released = False
+                return self._conn
             conn = self._conn
             # read before the probe: a lost connection's status is unknown afterwards
             status = conn.pgconn.transaction_status if not conn.closed else None
@@ -1266,6 +1316,40 @@ class PgCompatConnection:
     def _lost(self) -> bool:
         from operating.pg.pool import alive
         return not alive(self._conn)
+
+    def _reap(self, now: float) -> None:
+        """Close what this connection holds idle past ``pool.idle_keep_seconds`` (called
+        by the pools' reaper thread, ``pool.reap_idle``): its idle stream connections,
+        and the held connection when no statement runs on it, no transaction is open and
+        it went unused that long. The next statement opens it again (``live``) with its
+        session rebuilt (``_session``), so a reader whose caller waits minutes between
+        reads (an Ask session's model thinking between tool calls) holds no login."""
+        import psycopg
+        from operating.pg.pool import idle_keep_seconds
+
+        keep = idle_keep_seconds()
+        if keep is None or self._closed:
+            return
+        with self._streams_lock:
+            stale = [conn for conn, since in self._streams if now - since >= keep]
+            self._streams = [(c, since) for c, since in self._streams if now - since < keep]
+            self._streams_open -= len(stale)
+        for conn in stale:
+            try:
+                conn.close()
+            except Exception:  # noqa: BLE001 - already gone
+                pass
+        if not self._lock.acquire(blocking=False):
+            return   # a statement runs on it
+        try:
+            conn = self._conn
+            if (self._closed or self._released or conn.closed or now - self._used < keep
+                    or conn.pgconn.transaction_status != psycopg.pq.TransactionStatus.IDLE):
+                return
+            self._released = True
+            conn.close()
+        finally:
+            self._lock.release()
 
     def _reconnect(self, why: str, *, retry: bool = False) -> None:
         """Replace the held connection (bounded by ``RECONNECT_TIMEOUT_S``); one log line
@@ -1374,6 +1458,9 @@ class PgCompatConnection:
         if self.words and "MATCH" in sql.upper():
             params = self._word_queries(sql, params)
         gated = "ontology.sq_call(" in text or "ontology.sq_item_gate(" in text
+        if gated and self.stateless:   # the same gates over session settings (0049)
+            text = text.replace("ontology.sq_call(", "ontology.sq_call_s(").replace(
+                "ontology.sq_item_gate(", "ontology.sq_item_gate_s(")
         # a word query read from its GIN index first (``translate``): the planner's
         # estimates of the joins after it are far off (a page of a common document
         # word: 120 s in its order, 0.7 s in the written one)
@@ -1536,7 +1623,7 @@ class PgCompatConnection:
 
         with self._streams_lock:
             while self._streams:
-                conn = self._streams.pop()
+                conn, _since = self._streams.pop()
                 if alive(conn):
                     return conn
                 self._streams_open -= 1
@@ -1545,7 +1632,7 @@ class PgCompatConnection:
                 return None
             self._streams_open += 1
         try:
-            conn = psycopg.connect(self.dsn, autocommit=True)
+            conn = psycopg.connect(self.dsn, autocommit=True, **self._named())
             with conn.cursor() as cur:
                 cur.execute(f"SET search_path = {self._search_path}")
                 cur.execute("SET TimeZone = 'UTC'")
@@ -1575,7 +1662,7 @@ class PgCompatConnection:
             keep = False
         with self._streams_lock:
             if keep and not self._closed:
-                self._streams.append(conn)
+                self._streams.append((conn, time.monotonic()))
                 return
             self._streams_open -= 1
         try:
@@ -1603,11 +1690,17 @@ class PgCompatConnection:
             if key in recorded:
                 del recorded[key]
                 with self._pg.cursor() as cur:
-                    cur.execute("DELETE FROM sq_gates WHERE fn = %s", (key,))
+                    if self.stateless:
+                        reader_settings.put(cur, dict.fromkeys(self._sq_gates.pop(key, ()), ""))
+                    else:
+                        cur.execute("DELETE FROM sq_gates WHERE fn = %s", (key,))
             if func is None:
                 self._functions.pop(key, None)
                 with self._pg.cursor() as cur:
-                    cur.execute("DELETE FROM sq_calls WHERE fn = %s", (key,))
+                    if self.stateless:
+                        reader_settings.put(cur, dict.fromkeys(self._sq_answered.pop(key, ()), ""))
+                    else:
+                        cur.execute("DELETE FROM sq_calls WHERE fn = %s", (key,))
                 return
             if narg != 1:
                 raise sqlite3.NotSupportedError("only one-argument functions are compiled")
@@ -1621,8 +1714,7 @@ class PgCompatConnection:
     def _recorded_names(self) -> tuple[str, ...]:
         return tuple(sorted(getattr(self, "_recorded", None) or ()))
 
-    @staticmethod
-    def _register_recorded(cur: Any, name: str, keys: tuple[str, ...]) -> bool:
+    def _register_recorded(self, cur: Any, name: str, keys: tuple[str, ...]) -> bool:
         """Hold gate ``name``'s reader keys and the rosters recorded for them in the
         session's ``sq_gates`` (``ontology.sq_item_gate``); False (and nothing held) when
         no roster holds them: the gate is then called as ``sq_call``, as before. A full
@@ -1630,6 +1722,9 @@ class PgCompatConnection:
         with no roster: ``sq_item_gate`` decides its mail, Teams and meetings handles from
         the people exclusion's set while that set is of this very list, else as before."""
         if len(keys) == 1 and keys[0].startswith("full:"):
+            if self.stateless:
+                reader_settings.hold_gate(cur, self._sq_gates, name, keys, ())
+                return True
             cur.execute("INSERT INTO sq_gates (fn, keys, rosters) VALUES (%s, %s::text[], "
                         "ARRAY['full']::text[]) ON CONFLICT (fn) DO UPDATE SET "
                         "keys = excluded.keys, rosters = excluded.rosters",
@@ -1641,6 +1736,9 @@ class PgCompatConnection:
         rosters = list(cur.fetchone()[0] or [])
         if not rosters:
             return False
+        if self.stateless:
+            reader_settings.hold_gate(cur, self._sq_gates, name, keys, rosters)
+            return True
         cur.execute("INSERT INTO sq_gates (fn, keys, rosters) VALUES (%s, %s::text[], "
                     "%s::text[]) ON CONFLICT (fn) DO UPDATE SET keys = excluded.keys, "
                     "rosters = excluded.rosters", (name, list(keys), rosters))
@@ -1677,7 +1775,7 @@ class PgCompatConnection:
         with self._streams_lock:
             idle, self._streams = self._streams, []
             self._streams_open -= len(idle)
-        for conn in idle:
+        for conn, _since in idle:
             conn.close()
 
     def __enter__(self) -> "PgCompatConnection":
@@ -1757,6 +1855,10 @@ class PgCompatConnection:
           is written once (outside any transaction, so it is committed at once and no
           rollback removes it; a new session starts with none, ``_session``); inside a
           caller's transaction, or holding a NULL member, the list is bound as an array;
+        - on a stateless reader (no temporary tables: a hot standby), a long ``= ANY`` list
+          of plain strings read from the shared set of the same SHA-256 (migration 0050,
+          ``reader_settings.shared_sets``) where one of its size is held, else an array
+          (and the set asked for, so a later statement reads it);
         - any other list of plain strings (integers): one ``%s::text[]`` (``bigint[]``)
           parameter of its members, read in Python (``_members``);
         - a list of any other shape keeps the function, which reads it as ``json_each``.
@@ -1788,7 +1890,7 @@ class PgCompatConnection:
         idle = self._conn.pgconn.transaction_status == psycopg.pq.TransactionStatus.IDLE
         new = {raw for _, _, _, raw, _, long in found if long and raw not in self._kept}
         fresh = {}
-        if idle and new:
+        if idle and new and not self.stateless:   # no key set without temporary tables
             for raw in new:
                 members = _members(raw, numeric=False)
                 if members is not None and None not in members:
@@ -1805,9 +1907,23 @@ class PgCompatConnection:
             self._kept.clear()
             self._kept_keys = 0
         self._keep(fresh)
+        shared: dict[str, str] = {}
+        if self.stateless and self.shared_sets:
+            wanted: dict[str, int] = {}
+            for m, _, _, raw, _, long in found:
+                if long and m.group(1) == "= ANY" and raw not in wanted:
+                    members = _members(raw, numeric=False)
+                    if members is not None and None not in members:
+                        wanted[raw] = len(set(members))
+            if wanted:
+                shared = reader_settings.shared_sets(self._conn, wanted, idle=idle,
+                                                     primary=not self._recovery)
         out, last = [], 0
         for m, name, index, raw, numeric, long in found:
-            digest = self._kept.get(raw) if long else None
+            if long and raw in shared and m.group(1) == "= ANY":
+                digest, table = shared[raw], "ontology.reader_key_sets"
+            else:
+                digest, table = (self._kept.get(raw) if long else None), "pg_temp.sq_keys"
             if digest is not None:
                 if name is None:
                     values[index] = digest
@@ -1817,7 +1933,7 @@ class PgCompatConnection:
                     bound = f"%({name}__kept)s"
                 out.append(text[last:m.start()])
                 out.append(f"{'IN' if m.group(1) == '= ANY' else 'NOT IN'} (SELECT kept.key "
-                           f"FROM pg_temp.sq_keys kept WHERE kept.digest = {bound})")
+                           f"FROM {table} kept WHERE kept.digest = {bound})")
                 last = m.end()
                 continue
             members = _members(raw, numeric=numeric)
@@ -1868,6 +1984,8 @@ class PgCompatConnection:
 
     def _answer(self) -> int:
         """Answer the queued function calls in Python; how many were queued."""
+        if self.stateless:
+            return reader_settings.answer(self._conn, self._functions, self._sq_answered)
         with self._conn.cursor() as cur:
             cur.execute("DELETE FROM sq_pending RETURNING fn, arg")
             pending = cur.fetchall()

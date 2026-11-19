@@ -1,5 +1,6 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { ApiError } from "@/lib/errors";
 import type { AutopilotAuditRow, MemoryItem, Template, WorkLogEvent } from "@/lib/types";
 import { forgetRelatedReads, itemDocTypes, itemRecords, Related } from "./related";
 
@@ -119,6 +120,14 @@ describe("Related panel", () => {
     render(<Related records={[PO]} />);
     expect(await screen.findByTestId("related-failed")).toHaveTextContent("Couldn't read your memory just now.");
     expect(screen.getAllByTestId("related-log-row").length).toBeGreaterThan(0);
+  });
+
+  it("the page measure's session, refused the reader's own memory and log, shows no failure", async () => {
+    api.getMemory.mockRejectedValue(new ApiError(403, "canary_route_refused"));
+    api.getWorkLog.mockRejectedValue(new ApiError(403, "canary_route_refused"));
+    render(<Related records={[PO]} />);
+    await waitFor(() => expect(screen.queryByText(/Reading your memory/)).toBeNull());
+    expect(screen.queryByTestId("related-failed")).toBeNull();
   });
 
   it("memory that can't be read (people list not loaded) is a failure, never an empty memory", async () => {

@@ -1761,6 +1761,7 @@ def _dry_drafts(st: Any, registry: Mapping[str, Any], people: Any, ids: Sequence
                                  addresses_of=addresses_of, roles=roles, decided=None)
             got = [o for o in (got or ()) if people.identity_clear(o) and o not in done
                    and (owners is None or o in owners
+                        or o.rsplit(":", 1)[-1].lower() in owners
                         or bool(set(addresses_of.get(o, ())) & owners))]
             if why or not got:
                 continue
@@ -1926,7 +1927,8 @@ def _utcnow() -> datetime:
 
 def main(argv: Sequence[str] | None = None) -> int:
     p = argparse.ArgumentParser(prog="python3 -m operating.autopilot")
-    p.add_argument("command", choices=("follow", "fast", "replay", "drafts-dry", "supersede", "unsupersede"))
+    p.add_argument("command", choices=("follow", "fast", "replay", "drafts-dry", "assist-drafts",
+                                          "supersede", "unsupersede"))
     p.add_argument("--state-dir", default=None,
                    help="the served generation's store and <state>/autopilot/ queue")
     p.add_argument("--store", default=None)
@@ -1977,6 +1979,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     registry = load_registry(a.registry)
     if a.command == "drafts-dry":
         return _drafts_dry(a, registry)
+    if a.command == "assist-drafts":
+        # the open-replies list's drafts, kept by message (``reply_drafts``)
+        from . import reply_drafts
+        return reply_drafts.cli(a, registry)
     if a.command == "fast":
         from . import autopilot_fast
         if a.serve:

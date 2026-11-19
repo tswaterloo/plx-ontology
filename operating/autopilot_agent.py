@@ -226,7 +226,7 @@ class Assistant(aj.Jobber):
         """The jobber's ``run`` (pool, keys, screens); a time-driven look event
         (``autopilot_agent_io.LOOK_EVENT``: the day's start, the hour) is the look's own
         task, never a message to answer."""
-        from .autopilot_agent_io import LOOK_EVENT, look_changes, on_changes
+        from .autopilot_agent_io import LOOK_EVENT, changes_total, look_changes, on_changes
         self._people = people
         if event.get("event_type") != LOOK_EVENT:
             return super().run(event, owner, event_text, person, people, key=key,
@@ -237,6 +237,9 @@ class Assistant(aj.Jobber):
             # nothing computed as changed for them: no session (a look left to find its own
             # work raised standing backlog, never the person's next step)
             return None, "nothing_changed"
+        counted = self._long(owner, people, changes, changes_total(fields, changes))
+        if counted is not None:
+            return counted
         event_text = look_text(str(fields.get("look") or "hourly look"),
                                person or "the person", changes)
         got, why = super().run(event, owner, event_text, person, people, key=key,
@@ -264,6 +267,23 @@ class Assistant(aj.Jobber):
             return got, "", looked
         got, why = self.checker.check(got, what, looked, person, look, when=when)
         return got, why, looked
+
+    def _long(self, owner: str, people: Any, changes: Sequence[Mapping[str, str]],
+              total: int) -> Optional[tuple[Optional[Decision], str]]:
+        """A look whose list is longer than ``LIST_LONG``: one item with the count and the
+        newest few, no session (None: a shorter list, the session decides). Only for a
+        cleared person, and through the same screens as a session's item."""
+        from .autopilot_agent_io import long_list
+        todo = long_list(changes, total)
+        if todo is None:
+            return None
+        try:
+            if not people.identity_clear(owner):
+                return None, "not_cleared"
+        except Exception:  # noqa: BLE001 - undecidable: never made
+            return None, "not_cleared"
+        got = Decision(summary=f"{total} records changed since the last look", todos=[todo])
+        return self._finish(got, "", [], people, None, "")
 
     def _screened(self, got: Decision, looked: Sequence[str]) -> bool:
         """Whether the screens ``_finish`` applies would drop this decision (the check then
@@ -308,7 +328,7 @@ class Assistant(aj.Jobber):
         exclusion (never read for an excluded or unknown person)."""
         from datetime import datetime, timezone
         from . import chat_ask_model as cm
-        from .autopilot_agent_io import look_changes, on_changes
+        from .autopilot_agent_io import look_changes, look_total, on_changes
         try:
             if not people.identity_clear(owner):
                 return None, "not_cleared"
@@ -317,6 +337,9 @@ class Assistant(aj.Jobber):
         listed = look_changes(changes)
         if not listed:
             return None, "nothing_changed"
+        counted = self._long(owner, people, listed, look_total(changes))
+        if counted is not None:
+            return counted
         if not cm.credential_path_safe(self.binary, self.home):
             return None, "job_model_unsafe"
         now = as_of or datetime.now(timezone.utc).isoformat()

@@ -763,14 +763,14 @@ class WorkspaceBackend(WarmMixin, AskMixin, ServingMixin, ScreensMixin,
         from . import simple_ask
         files = self._attached(request, reader) if simple_ask.enabled() else None
         if simple_ask.enabled() and self.agent_ask is not None \
-                and self.agent_ask.serves(reader.session) and simple_ask.takes(files, request):
+                and self.agent_ask.serves(reader.session):
             # the simple Ask: the model with plx.sql and plx.search, its figures bound to
             # what they returned (``operator_api.simple_ask``), with the page, record or
             # email asked on, a reply to a question asked back and the person's attached
             # files; a line asking for something done never reaches it (the app routes it
-            # to the instruction engine first), an attached image is shown to its kept
-            # session (a deeper look with an image goes on to the path below, which reads
-            # images), and that path is the rollback (PLX_ASK_SIMPLE unset or 0)
+            # to the instruction engine first), an attached image is shown to the model
+            # with the task (a kept session's turn or one run); the path below is the
+            # rollback (PLX_ASK_SIMPLE unset or 0)
             answer = yield from simple_ask.ask(self, reader, request, conversation, ms,
                                                files=files)
             yield from simple_ask.finish(self, reader, request, answer, conversation, ms,
@@ -1985,6 +1985,10 @@ class WorkspaceBackend(WarmMixin, AskMixin, ServingMixin, ScreensMixin,
 
     def _remember_read(self, key: tuple, reader: Reader, read: Callable[[], Any],
                        inputs_of: Optional[Callable[[], Any]] = None) -> None:
+        if getattr(reader.session, "canary", False):
+            # a service session (the canary, the page measure) is nobody's: the reader's
+            # own session stays the one their screens are read again for
+            return
         with self._lock:
             reads = self._snap_reads()
             reads.pop(key, None)
@@ -2746,6 +2750,8 @@ class WorkspaceBackend(WarmMixin, AskMixin, ServingMixin, ScreensMixin,
             # nothing of the record in it (not even whether it exists or opens for the
             # reader): neither remembered as opened nor journalled until it is read
             return page
+        if getattr(reader.session, "canary", False):   # a service session opened nothing
+            return self._labelled(reader, page, "/api/object")
         with self._lock:   # what the reader's next warm-up reads ahead
             seen = self._pages_seen.setdefault(reader.key, [])
             entry = (page.type, page.object_id)

@@ -70,6 +70,24 @@ MAX_LOOKUPS = 3
 MAX_LOG = 8
 _ADDRESS = re.compile(r"[A-Za-z0-9._%+'-]{1,64}@[A-Za-z0-9-]{1,63}(?:\.[A-Za-z0-9-]{1,63})+")
 _RECORDISH = re.compile(r"\b[A-Za-z]{0,6}[-#]?\d{3,}[A-Za-z0-9-]*\b")
+EMAIL_LOOKUPS = 3
+_EMAIL_NAMED = re.compile(
+    r"(?i)\b(?:p\.?o\.?|s\.?o\.?|orders?|lots?|invoices?|inv|batch(?:es)?|releases?|"
+    r"quotes?|shipments?|bol)\s*(?:no\.?|number|#)?\s*[#:.-]?\s*(\d{3,}[A-Za-z0-9-]*)\b"
+    r"|\b([A-Za-z]{1,6}-?#?\d{3,}[A-Za-z0-9-]*)\b")
+
+
+def email_named(text: str) -> list[str]:
+    """The record numbers an email names: after a record word ("PO 4521", "lot #88812",
+    "order no. 10233") or lettered ("SO-10233", "PO4521"), first seen first."""
+    out: list[str] = []
+    for word, lettered in _EMAIL_NAMED.findall(text or ""):
+        token = (word or lettered).strip("#")
+        if token and token not in out:
+            out.append(token)
+    return out
+
+
 _SYSTEMS = ("BC", "Portal", "Sage", "FileMaker", "Email", "Teams", "File", "MC")
 _DETAIL = re.compile(r"^\s*([A-Za-z][A-Za-z /-]{0,30}):\s*(.+?)\s*$")
 _READ_KIND = {"email": "email", "autopilot item": "email", "record": "record",
@@ -290,10 +308,16 @@ class InstructMixin(ia.InstructAssistMixin):
                     reply = self._reply_to(reader, mat)
                 except UserFacing:
                     pass   # the item's own words only
-        # records the instruction or an attached file names, on an exact match only
+        # records the instruction or an attached file names, on an exact match only; then
+        # the ones the email itself names (its orders, POs, lots: "reply to this" answers
+        # about them), by a record word or a lettered number only (a phone, a year: no)
         words = " ".join([text] + [a.text[:4000] for a in attached if a.text])
         tokens = list(dict.fromkeys(_RECORDISH.findall(words)))
-        unread = self._look_up(reader, tokens[:MAX_LOOKUPS], mats, cited, records, key, guard)
+        mailed = [t for t in email_named(" ".join(x.text[:4000] for x in mats
+                                                  if x.key.startswith("E")))
+                  if t not in tokens][:EMAIL_LOOKUPS]
+        looked = tokens[:MAX_LOOKUPS] + mailed
+        unread = self._look_up(reader, looked, mats, cited, records, key, guard)
         unread += ["+" + t for t in tokens[MAX_LOOKUPS:]]     # never looked up: said too
         for number, a in enumerate(attached, 1):
             if a.text:

@@ -38,7 +38,9 @@ from typing import Any
 HOLD_DIR = "/run/plx-api"     # hold-<name> here: open that port or socket only once warm
 HOLD_MAX_AGE_SECONDS = 900    # an older hold file is a deploy's leftover: not obeyed
 HOLD_MAX_SECONDS = 600        # held longer (the deploy gives up at 660 s): open it anyway
-GRACE_SECONDS = 60            # SIGTERM: the longest the requests under way may still run
+GRACE_SECONDS = 180           # SIGTERM: the longest the requests under way may still run
+# (an Ask answer streams on its request for up to minutes: p90 ~70 s; 60 s cut the long ones
+# at every deploy, while the other API already took the new requests)
 HOLD_POLL_SECONDS = 0.5
 HOLD_SAY_SECONDS = 60         # while held, a line this often
 

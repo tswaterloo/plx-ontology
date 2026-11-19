@@ -174,6 +174,10 @@ export function afterPageReads(most = 2500): Promise<void> {
 async function call(path: string, init: RequestInit & { json?: unknown } = {}): Promise<Response> {
   const { json, ...rest } = init;
   const method = (rest.method ?? "GET").toUpperCase();
+  if (method !== "GET") {
+    autopilotLast = null;
+    writesSent += 1;
+  }
   const as = viewAsHeader(path, method);
   const limited = readSignal(method, rest.signal);
   let res: Response;
@@ -659,8 +663,23 @@ export async function prepareMyWorkWrite(itemId: string): Promise<WriteIntentVie
 
 /** The autopilot area: prepared items you may see, per workflow scores, state and switches. */
 export function getAutopilot(signal?: AbortSignal): Promise<AutopilotArea> {
-  return getJson<AutopilotArea>("/api/autopilot", signal);
+  const key = readKey("/api/autopilot");
+  const last = autopilotLast;
+  if (last && last.key === key && Date.now() - last.at < AUTOPILOT_REUSE_MS) return Promise.resolve(last.area);
+  const before = writesSent;
+  const read = getJson<AutopilotArea>("/api/autopilot", signal);
+  // an answer read across a write is not kept
+  read.then((area) => void (writesSent === before && (autopilotLast = { key, at: Date.now(), area })), () => undefined);
+  return read;
 }
+
+// Home asks for the autopilot area twice within a second or two (the needs-me panel, then the
+// prepared list once your work is in; each 1-2 s on a busy server): a second ask this soon
+// gets the first answer. Any write (and a sign-out) drops it, so a decision is never stale.
+const AUTOPILOT_REUSE_MS = 10_000;
+let autopilotLast: { key: string; at: number; area: AutopilotArea } | null = null;
+let writesSent = 0;
+onSessionReset(() => (autopilotLast = null));
 
 /** One thing prepared for you: who wrote, what they wrote, and the reply or the question. */
 export type PreparedItem = {

@@ -23,7 +23,8 @@ vi.mock("@/lib/api", async (orig) => ({
 import { readdirSync } from "node:fs";
 import { ApiError } from "@/lib/errors";
 import { join } from "node:path";
-import { AccessBanner, AdminAlarm, DataAsOf, DevBanner, navFor, OpsAlarmBanner, pageSources, personNotice, SidebarNav, TOOLBAR_PAGES } from "./shell";
+import { PLACES } from "@/components/ui/glyphs";
+import { AccessBanner, AdminAlarm, DataAsOf, DevBanner, NAV_SECTIONS, navFor, OpsAlarmBanner, pageSources, personNotice, SidebarNav, TOOLBAR_PAGES } from "./shell";
 
 const me = (over: Record<string, unknown>) => ({
   status: "signed-in",
@@ -312,5 +313,11 @@ describe("phone title bar", () => {
     expect(routes.filter((r) => !TOOLBAR_PAGES.includes(r))).toEqual([]);
     // and the list names no page that does not exist (it once held "/so")
     expect(TOOLBAR_PAGES.filter((p) => !routes.includes(p))).toEqual([]);
+  });
+});
+
+describe("sidebar icons", () => {
+  it("every sidebar place has its icon", () => {
+    for (const s of NAV_SECTIONS) expect(PLACES[s.place], s.label).toBeTruthy();
   });
 });

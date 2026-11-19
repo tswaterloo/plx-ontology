@@ -142,7 +142,16 @@ PROOF_VIEW_AS = "owner_view_as"
 # ``POST /api/ask`` only, nothing of the reader's work log or memory is read or written for
 # it, and ``intent_identity`` refuses it (no intent, action or write can carry it).
 SERVICE_CANARY = "ops_canary"
-SERVICE_JTI_PREFIX = {SERVICE_CANARY: "opscanary_"}
+# The live page measure's service session (``console_ticket mint --service ops_measure``,
+# ``plx-mint-link --measure``): told apart and nobody's own exactly as the canary is (no
+# work log, memory, known reader or opened-page list; ``intent_identity`` refuses it), but
+# served the app's page reads (GET only, ``operator_api.app.MEASURE_ROUTES``) so a screen's
+# live timings can be read as the reader the claims name without that reader's own link.
+SERVICE_MEASURE = "ops_measure"
+SERVICE_JTI_PREFIX = {SERVICE_CANARY: "opscanary_", SERVICE_MEASURE: "opsmeasure_"}
+# A page-measure ticket lives an hour at most (a round of page reads, not a working day):
+# minted longer it is refused at mint and at every check.
+SERVICE_TTL_SECONDS = {SERVICE_MEASURE: 60 * 60}
 _EXPIRING = (PROOF_TICKET, PROOF_ENTRA, PROOF_EVAL, PROOF_WARM, PROOF_VIEW_AS)
 
 _CLAIMS = frozenset({"v", "aud", "uid", "email", "entraTenantId", "entraObjectId",
@@ -216,6 +225,8 @@ def mint_session_ticket(*, uid: str, email: str, tenant_id: str, object_id: str,
     jti = secrets.token_urlsafe(16) if jti is None else jti
     if not isinstance(jti, str) or not _JTI.match(jti):
         raise ValueError("session_ticket_jti_invalid")
+    if ttl_seconds > SERVICE_TTL_SECONDS.get(_service_of(jti), SESSION_TICKET_TTL_SECONDS):
+        raise ValueError("session_ticket_ttl_invalid")
     iat = int(time.time()) if now is None else int(now)
     claims = {"v": 1, "jti": jti, "aud": SESSION_TICKET_AUDIENCE, "uid": uid, "email": email,
               "entraTenantId": tenant_id, "entraObjectId": object_id, "author": author,
@@ -264,7 +275,8 @@ def verify_session_ticket(ticket: Any, secret: Any, *, now: int | None = None) -
         raise SessionIdentityRefused("session_ticket_audience_mismatch")
     if claims["author"] not in (AUTHOR_HUMAN, AUTHOR_AGENT):
         raise malformed
-    if not 0 < claims["exp"] - claims["iat"] <= SESSION_TICKET_TTL_SECONDS:
+    if not 0 < claims["exp"] - claims["iat"] <= SERVICE_TTL_SECONDS.get(
+            _service_of(claims["jti"]), SESSION_TICKET_TTL_SECONDS):
         raise malformed
     current = int(time.time()) if now is None else int(now)
     if current >= claims["exp"]:
@@ -498,7 +510,13 @@ class SessionIdentity:
 
     @property
     def canary(self) -> bool:
-        return self.service == SERVICE_CANARY
+        """A service session (the Ask canary, the page measure): nobody's own session,
+        nothing kept or written for it; which routes it is served is ``service``'s."""
+        return self.service is not None
+
+    @property
+    def measure(self) -> bool:
+        return self.service == SERVICE_MEASURE
 
     def expired(self, now: int | None = None) -> bool:
         if self.expires_at is None:
@@ -815,7 +833,7 @@ def bind_state_dir(state_dir: str | Path, *, fixture: bool, dev: bool = False) -
 
 __all__ = ["DEFAULT_CLIENT", "INTENT_IDENTITY_SCHEMA", "STATE_LABEL_FILE", "AUTHOR_AGENT", "AUTHOR_HUMAN", "CHANNEL_AUTHOR", "CHANNEL_CONSOLE", "CHANNEL_MCP",
            "PROOF_CONFIGURED", "PROOF_ENTRA", "PROOF_EVAL", "PROOF_FIXTURE", "PROOF_TICKET",
-           "PROOF_VIEW_AS", "PROOF_WARM", "SERVICE_CANARY", "service_jti", "view_as_session", "warm_session", "SESSION_TICKET_AUDIENCE",
+           "PROOF_VIEW_AS", "PROOF_WARM", "SERVICE_CANARY", "SERVICE_MEASURE", "service_jti", "view_as_session", "warm_session", "SESSION_TICKET_AUDIENCE",
            "SESSION_TICKET_SECRET_ENV", "SESSION_TICKET_TTL_SECONDS", "SessionIdentity",
            "SessionIdentityRefused", "REPLAY_GUARD_FILE", "TicketReplayGuard", "bind_state_dir", "check_runtime", "employee_session", "fixture_session",
            "intent_identity", "mint_session_ticket", "replay_guard_for", "session_secret",

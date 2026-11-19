@@ -39,6 +39,9 @@ class Backend(be.WorkspaceBackend):
     owner = False
     inbox_status = "read"
 
+    def _is_owner(self, reader):    # the owner-code test (feedback.owner_open): ME, when on
+        return self.owner and f"employee:{ME}" in (reader.session.principals or ())
+
     def _brief_run(self, reader, job, **_kw):
         view = SimpleNamespace(
             gap_inbox=lambda **kw: {"status": self.inbox_status, "gaps": [GAP]},
@@ -86,6 +89,18 @@ class Routes(unittest.TestCase):
         self.assertEqual(line["card_id"], "reply:pe-1")
         self.assertEqual(line["draft"]["to"], [{"address": "buyer@synth.example"}])
 
+    def test_a_kept_background_draft_replaces_the_holding_body_and_says_its_state(self):
+        from operating import reply_drafts as rd
+        self.assertEqual(self.client().get("/api/replies").json()["lines"][0]["draft_state"],
+                         "queued")
+        self.backend.state_dir = self.dir
+        rd.Kept(rd.path_of(self.dir)).mark(ME, "Email:synth-1", "ready", kind="reply",
+                                           body="Order 1 ships Friday.")
+        (line,) = self.client().get("/api/replies").json()["lines"]
+        self.assertEqual((line["draft_state"], line["drafted_by"], line["draft"]["body"]),
+                         ("ready", "model", "Order 1 ships Friday."))
+        self.assertFalse(line["draft"]["sent"])
+
     def test_an_alert_list_not_read_yet_is_said_so_never_as_no_access(self):
         # UX walk 11-13: Team's approvals said "couldn't find that, or you don't have
         # access" while the alert run had not run on the server
@@ -121,9 +136,10 @@ class Routes(unittest.TestCase):
         self.assertEqual(made.status_code, 200, made.text)
         self.assertEqual(client.post("/api/workload/grants",
                                      json={"teams": {"x": "sales"}}).status_code, 422)
-        # the manager sees the team's people and their own; the team of two shows no total
+        # the manager sees the team's people and their own, never the owner (learned when
+        # the owner signed in); the team of two shows no total
         body = self.client(C).get("/api/workload").json()
-        self.assertEqual(sorted(p["person"] for p in body["people"]), sorted([ME, B, C]))
+        self.assertEqual(sorted(p["person"] for p in body["people"]), sorted([B, C]))
         sales = {t["team"]: t for t in body["teams"]}["SALES"]
         self.assertEqual((sales["awaiting_reply"], sales["suppressed"]), (None, True))
 

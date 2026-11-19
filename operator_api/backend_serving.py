@@ -290,6 +290,26 @@ class ServingMixin:
             for one in ([key] if screens is None else [(key, s) for s in screens]):
                 writes[one] = writes.get(one, 0) + 1
 
+    def reread_after_write(self, reader: Any, screens: Optional[Iterable[str]]) -> int:
+        """After a write that changed only ``screens`` of the reader's (Home's seen mark:
+        the briefing and Home), read those of their screens served lately again now, off
+        the request, so their next visit is served a kept page rather than paying the read
+        (measured on live data: briefing 1.25 s, Home 0.6 s on the visit after each mark).
+        A write of every screen (``screens`` None) reads nothing ahead. How many started."""
+        key = getattr(reader, "key", None)
+        if key is None or screens is None:
+            return 0
+        names = frozenset(screens)
+        with self._lock:
+            again = [(k, v) for k, v in self._snap_reads().items()
+                     if k[0] == key and k[2] and k[2][0] in names]
+        started = 0
+        for k, (remembered, read, *_) in again:
+            if self._may_read_ahead(remembered):
+                self._refresh_later(remembered, k, read)
+                started += 1
+        return started
+
     def _snap_inputs(self) -> dict:
         return self.__dict__.setdefault("_good_inputs", {})
 

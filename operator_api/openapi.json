@@ -11386,6 +11386,12 @@
         "additionalProperties": false,
         "description": "A run of one of your saved insights that came to you: how many rows it found (open\nthe insight to read them, live, as you).",
         "properties": {
+          "ask": {
+            "default": "",
+            "description": "A monitor's question to ask about it (why it moved), '' when it has none.",
+            "title": "Ask",
+            "type": "string"
+          },
           "insight_id": {
             "title": "Insight Id",
             "type": "string"
@@ -18241,6 +18247,29 @@
           "draft": {
             "$ref": "#/components/schemas/ApprovalNudge"
           },
+          "draft_state": {
+            "default": "queued",
+            "description": "The model's draft: ``ready`` (on ``draft``, or a question in ``your_call``), ``drafting`` (being written), ``queued`` (the holding reply until it is written).",
+            "enum": [
+              "ready",
+              "drafting",
+              "queued"
+            ],
+            "title": "Draft State",
+            "type": "string"
+          },
+          "drafted_by": {
+            "anyOf": [
+              {
+                "const": "model",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Drafted By"
+          },
           "id": {
             "title": "Id",
             "type": "string"
@@ -18319,6 +18348,17 @@
               }
             ],
             "title": "Summary"
+          },
+          "your_call": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ReplyQuestion"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "A question only you can answer, with each answer's reply."
           }
         },
         "required": [
@@ -18329,6 +18369,28 @@
           "draft"
         ],
         "title": "ReplyLine",
+        "type": "object"
+      },
+      "ReplyQuestion": {
+        "additionalProperties": false,
+        "properties": {
+          "ask": {
+            "title": "Ask",
+            "type": "string"
+          },
+          "options": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "title": "Options",
+            "type": "array"
+          }
+        },
+        "required": [
+          "ask"
+        ],
+        "title": "ReplyQuestion",
         "type": "object"
       },
       "ReplyTriage": {

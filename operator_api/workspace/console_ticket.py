@@ -201,6 +201,8 @@ def mint(args: argparse.Namespace, environ: Mapping[str, str]) -> dict[str, Any]
             replay_guard=session_identity.replay_guard_for(state_dir))
     except SessionIdentityRefused as error:
         raise TicketRefused(error.reason) from None
+    except ValueError as error:      # e.g. a lifetime past what the ticket's service may hold
+        raise TicketRefused(str(error)) from None
     out = args.out.resolve()
     try:
         descriptor = os.open(out, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
@@ -416,9 +418,10 @@ def main(argv: Sequence[str] | None = None, *,
                          help="variable holding the employee's JSON identity claims")
     minting.add_argument("--service", choices=sorted(session_identity.SERVICE_JTI_PREFIX),
                          default=None,
-                         help="a service session (the Ask canary: ops_canary), never a "
-                              "person's own: served /api/me and /api/ask only, writes and "
-                              "remembers nothing")
+                         help="a service session, never a person's own, writing and "
+                              "remembering nothing: the Ask canary (ops_canary: served "
+                              "/api/me and /api/ask only) or the page measure (ops_measure: "
+                              "the screens' GET reads only)")
     minting.add_argument("--ttl-minutes", type=_ttl, default=480)
     minting.add_argument("--port", type=_port, default=8765,
                          help="the console's loopback port, for the URL")

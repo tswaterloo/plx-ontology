@@ -424,9 +424,14 @@ class SqlTool:
 
     def _call(self, args: dict[str, Any], actor: Any) -> dict[str, Any]:
         unknown = sorted(set(args) - set(INPUT_SCHEMA["properties"]))
-        if unknown or ("sql" in args) == ("describe" in args):
-            raise ToolError("invalid_request", "send {\"sql\": \"SELECT ...\"} or "
-                            "{\"describe\": true | \"<view>\"}")
+        modes = [k for k in ("sql", "describe", "measure") if k in args]
+        loose = [k for k in ("by", "days", "compare") if k in args]
+        if unknown or len(modes) != 1 or (loose and modes != ["measure"]):
+            raise ToolError("invalid_request", "send {\"sql\": \"SELECT ...\"}, "
+                            "{\"describe\": true | \"<view>\"} or {\"measure\": true | "
+                            "\"<id>\"} (by, days and compare go with measure only)")
+        if "measure" in args:
+            return self._measure(args, actor)
         if "describe" in args:
             if _ceiling() is not None:
                 return self._described_only(args["describe"])
@@ -440,6 +445,32 @@ class SqlTool:
             # a replay of a past moment (``read_ceiling``): the views read as then
             sql = read_ceiling.bounded_sql(sql, moment, guarded)
         return self._query(conn, scope, sql, actor)
+
+    def _measure(self, args: dict[str, Any], actor: Any) -> dict[str, Any]:
+        """``{"measure": ...}`` (``operating.measures``): true lists the catalogue's
+        definitions (no data read); an id runs that entry's own statement exactly as a
+        ``{"sql": ...}`` call would (same check, ceiling and door) and returns its
+        definition beside the rows."""
+        from operating import measures
+
+        if args["measure"] is True:
+            return measures.listing(full=self._full(actor))
+        made, entry = measures.statement(args["measure"], args.get("by"), args.get("days"),
+                                         args.get("compare", False))
+        if entry.get("scope") == "full" and not self._full(actor):
+            # Insights lists such a report only for the readers who see everyone
+            raise ToolError("not_readable", f"{entry['id']} is for readers who see everyone")
+        conn, scope = self._reader(actor)
+        moment = _ceiling()
+        guarded = sql_views.guarded_schema()
+        sql = check(made, schemas=self._schema_names(conn),
+                    allowed_schema="" if moment is not None else guarded)
+        if moment is not None:
+            sql = read_ceiling.bounded_sql(sql, moment, guarded)
+        out = self._query(conn, scope, sql, actor)
+        if "error" not in out:
+            out["measure"] = entry
+        return out
 
     # ------------------------------------------------------------------ reader
 

@@ -115,6 +115,7 @@ MEM_FLOOR_MB=${PLX_API_MEM_FLOOR_MB:-1024}       # a standby is stopped below th
 PG_MARGIN=${PLX_API_PG_MARGIN:-8}                # sessions left to everyone else
 API_ROLE=${PLX_API_PG_ROLE:-plx_api}
 MEMINFO=${PLX_MEMINFO:-/proc/meminfo}
+PROC=${PLX_PROC:-/proc}                          # prune skips releases a process runs in
 CGROUP_ROOT=${PLX_CGROUP_ROOT:-/sys/fs/cgroup}
 
 die() { echo "plx-release: $*" >&2; exit 1; }
@@ -655,6 +656,49 @@ cold_restart_api() {  # the API restarted in place, then /api/health (the pre-AR
   echo "$code"
 }
 
+# A deploy restarts a unit only when what it runs changed (each deploy restarted plx-app and
+# switched the API warm: ~45 restarts in 8 h, every one a cold start or a cut stream for
+# someone). runs_release <unit>: the release its main process runs from (its cwd), else empty.
+runs_release() {
+  local pid cwd; pid=$(systemctl show "$1" -p MainPID --value 2>/dev/null || true)
+  [ -n "$pid" ] && [ "$pid" != 0 ] || return 0
+  cwd=$(sudo -n readlink -e "/proc/$pid/cwd" 2>/dev/null || readlink -e "/proc/$pid/cwd" 2>/dev/null || true)
+  local root; root=$(readlink -f "$PLX_RELEASES")   # plx-app runs from <release>/app
+  case $cwd in "$root"/?*) cwd=${cwd#"$root"/}; echo "${cwd%%/*}" ;; esac
+  return 0
+}
+release_field() {  # release_field <id> <sha|overlays|app_tree>: from its RELEASE.json, else empty
+  "$PLX_VENV/bin/python3" - "$PLX_RELEASES/$1/RELEASE.json" "$2" <<'PY' 2>/dev/null || true
+import json, sys
+r = json.load(open(sys.argv[1]))
+v = (r.get("profile") or {}).get("app_tree") if sys.argv[2] == "app_tree" else r.get(sys.argv[2])
+print(json.dumps(v) if isinstance(v, list) else (v or ""))
+PY
+}
+# Paths the API process never reads: the Next app, docs, tests, the host's deploy tooling (units,
+# Caddy, backups and this script are installed or run on their own). Anything else counts.
+API_IGNORED='^(app/|docs/|desktop/|devloop/|deploy/(ops|release|spark|systemd|backup)/|deploy/Caddyfile$)|(^|/)tests/|^[^/]*\.md$'
+# unit_unchanged <plx-app|plx-api>: 0 (prints the release it runs) when that release and current
+# hold the same app tree (plx-app) or differ only in API_IGNORED paths (plx-api); 1 when unknown
+unit_unchanged() {
+  local ran cur a b; ran=$(runs_release "$1"); cur=$(current_id)
+  [ -n "$ran" ] && [ -d "$PLX_RELEASES/$ran" ] || return 1
+  [ "$ran" = "$cur" ] && { echo "$ran"; return 0; }
+  if [ "$1" = plx-app ]; then
+    a=$(release_field "$ran" app_tree); b=$(release_field "$cur" app_tree)
+    [ -n "$a" ] && [ "$a" = "$b" ] && { echo "$ran"; return 0; }
+    return 1
+  fi
+  [ "$(release_field "$ran" overlays)" = "[]" ] && [ "$(release_field "$cur" overlays)" = "[]" ] || return 1
+  a=$(release_field "$ran" sha); b=$(release_field "$cur" sha)
+  [ -n "$a" ] && [ -n "$b" ] || return 1
+  local changed; changed=$(git -C "$PLX_REPO" diff --name-only "$a" "$b" 2>/dev/null) || return 1
+  # no pipe into grep -q: with pipefail its early exit could read as "nothing relevant"
+  local relevant; relevant=$(printf '%s\n' "$changed" | grep -vE "$API_IGNORED" | grep -v '^$' || true)
+  [ -z "$relevant" ] || return 1
+  echo "$ran"
+}
+
 restart() {
   local units="" u cold=0 ingest=0 with=""
   for u in "$@"; do
@@ -684,7 +728,20 @@ restart() {
     case " $ALWAYS_UP " in *" $u "*) up="$up $u"; continue ;; esac
     if [ "$(systemctl show "$u" -p Type --value 2>/dev/null)" = oneshot ]; then one="$one $u"; else svc="$svc $u"; fi
   done
-  local api=""
+  local api="" kept_app=""
+  # plx-app serving the same app tree keeps serving (a restart drops the pages under way)
+  if [ "$cold" = 0 ] && case " $up " in *" plx-app "*) true ;; *) false ;; esac \
+      && systemctl is-active -q plx-app && kept_app=$(unit_unchanged plx-app); then
+    up=$(printf '%s' "$up" | sed 's/ plx-app\b//'); units=$(printf '%s' "$units" | sed 's/ plx-app\b//')
+    echo "$(plx_now) plx-app kept: the release it runs ($kept_app) has the same app" >&2
+  fi
+  if [ "$api_was_active" = yes ] && [ "$cold" = 0 ] && [ "${PLX_RELEASE_API_KEPT:-0}" != 1 ] \
+      && systemctl is-active -q "$API_UNIT"; then
+    # never on a rollback's own restart: an API that did not serve is restarted then
+    if [ "${PLX_RELEASE_NO_ROLLBACK:-0}" != 1 ]; then
+      local ran; ran=$(unit_unchanged plx-api) && api="kept: no API change since $ran"
+    fi
+  fi
   if [ "$api_was_active" = no ] && [ "${PLX_RELEASE_API_KEPT:-0}" != 1 ]; then
     up="$API_UNIT$up"; api="started"   # nothing it serves is cut off
   fi
@@ -812,7 +869,7 @@ SQL
 }
 
 # the settings that decide what the API may read, write and run: equal for both units
-PARITY="User Group SupplementaryGroups DynamicUser WorkingDirectory RootDirectory Environment
+PARITY="KillMode User Group SupplementaryGroups DynamicUser WorkingDirectory RootDirectory Environment
 EnvironmentFiles UnsetEnvironment PassEnvironment ExecStart ProtectSystem ProtectHome
 ReadWritePaths ReadOnlyPaths InaccessiblePaths BindPaths BindReadOnlyPaths TemporaryFileSystem
 StateDirectory StateDirectoryMode CapabilityBoundingSet AmbientCapabilities SystemCallFilter
@@ -1009,9 +1066,10 @@ prune() {
   [ "${1:-}" = "--keep" ] && keep=$2
   local cur prev busy d n=0
   cur=$(current_id); prev=$(basename "$(readlink "$PLX_RELEASES/previous" 2>/dev/null || echo none)")
-  busy=$(for p in /proc/[0-9]*; do readlink "$p/cwd" 2>/dev/null; done | sort -u)
+  busy=$(for p in "$PROC"/[0-9]*; do readlink "$p/cwd" 2>/dev/null || true; done | sort -u)
   for d in $(ls -1td "$PLX_RELEASES"/*/ 2>/dev/null); do
     d=${d%/}; local id; id=$(basename "$d")
+    [ -L "$d" ] && continue   # current/previous: links, never releases (rm -rf would drop the link)
     [ -f "$d/RELEASE.json" ] || continue
     n=$((n + 1))
     if [ "$id" = "$cur" ] || [ "$id" = "$prev" ] || [ $n -le "$keep" ] || grep -qx "$d.*" <<<"$busy"; then continue; fi

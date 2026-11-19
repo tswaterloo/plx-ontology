@@ -323,6 +323,62 @@ class HealthRouteTest(unittest.TestCase):
             self.assertEqual(body["status"], "ok")
             self.assertIn("delta_last_cycle", body["ops"]["breaches"])
 
+    def test_a_poll_past_the_ttl_is_answered_at_once_while_one_refresh_runs(self) -> None:
+        import threading
+        now = [0.0]
+        calls: list[int] = []
+        release = threading.Event()
+
+        def slow_collect(*_a, **_k):
+            calls.append(1)
+            if len(calls) > 1:
+                release.wait(5)
+            return {"n": len(calls)}
+
+        window = ops_health.LatencyWindow()
+        cached = ops_health.CachedHealth(Path("/nonexistent"), window, ttl=30, max_age=180,
+                                         environ={}, clock=lambda: now[0])
+        with mock.patch.object(ops_health, "collect", side_effect=slow_collect):
+            self.assertEqual(cached.get(), {"n": 1})          # the first poll waits
+            now[0] = 60                                       # stale: kept answer, at once
+            self.assertEqual([cached.get() for _ in range(5)], [{"n": 1}] * 5)
+            self.assertEqual(len(calls), 2)                   # one refresh, not five
+            release.set()
+            for _ in range(100):
+                if cached.get() == {"n": 2}:
+                    break
+                threading.Event().wait(0.02)
+            self.assertEqual(cached.get(), {"n": 2})
+            now[0] = 60 + 181                                 # past max_age: never served
+            self.assertEqual(cached.get(), {"n": 3})
+            self.assertEqual(len(calls), 3)
+
+    def test_a_failed_refresh_keeps_the_report_until_max_age_then_raises(self) -> None:
+        now = [0.0]
+        outcomes = [{"ok": 1}, OSError("pg down"), OSError("pg down")]
+
+        def collect(*_a, **_k):
+            out = outcomes.pop(0)
+            if isinstance(out, Exception):
+                raise out
+            return out
+
+        cached = ops_health.CachedHealth(Path("/nonexistent"), ops_health.LatencyWindow(),
+                                         ttl=30, max_age=180, environ={},
+                                         clock=lambda: now[0])
+        with mock.patch.object(ops_health, "collect", side_effect=collect), \
+                self.assertLogs(ops_health.__name__, "WARNING"):
+            cached.get()
+            now[0] = 100
+            self.assertEqual(cached.get(), {"ok": 1})
+            for _ in range(100):                              # the refresh has failed
+                if not cached._refreshing:
+                    break
+                __import__("time").sleep(0.02)
+            now[0] = 200                                      # too old: the poll raises
+            with self.assertRaises(OSError):
+                cached.get()
+
 
 
 class StaleCaptureAlarmTest(unittest.TestCase):

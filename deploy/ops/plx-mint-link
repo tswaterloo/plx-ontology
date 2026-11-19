@@ -14,6 +14,13 @@
 #                                                    work log, no memory), written to the
 #                                                    caller's ~/.config/plx/ask-canary-access-link
 #                                                    and never to the owner's link file
+#   sudo plx-mint-link --measure [TTL_MINUTES]       the live page measure's service session
+#                                                    (30 minutes unless given, 60 at most):
+#                                                    the owner reader's claims, ticket marked
+#                                                    ops_measure (served the screens' GET
+#                                                    reads only, writes and remembers
+#                                                    nothing), written to the caller's
+#                                                    ~/.config/plx/page-measure-access-link
 #
 # Reads only root's files, never the caller's environment or env files: the secret from
 # /etc/plx/live-session.env (root 0600), reader claims from /etc/plx/mint-readers.env (root
@@ -36,10 +43,16 @@ CALLER=${SUDO_USER:-}
 VAR=PLX_EVAL_READER
 OUT_NAME=workbench-access-link
 SERVICE=()
+DEFAULT_TTL=120; MAX_TTL=480
 if [ "${1:-}" = "--canary" ]; then
   # names fixed here, never the caller's: the canary cannot pick a reader or a path
   OUT_NAME=ask-canary-access-link
   SERVICE=(--service ops_canary)
+  shift
+elif [ "${1:-}" = "--measure" ]; then
+  OUT_NAME=page-measure-access-link
+  SERVICE=(--service ops_measure)
+  DEFAULT_TTL=30; MAX_TTL=60
   shift
 elif [ "${1:-}" = "--person" ]; then
   VAR=${2:?--person needs the reader variable}
@@ -51,8 +64,8 @@ elif [ "${1:-}" = "--person" ]; then
   [ "$again" = "$VAR" ] || die "not confirmed"
 fi
 [[ $VAR =~ ^[A-Z][A-Z0-9_]*$ ]] || die "reader variable must be an env name"
-TTL=${1:-120}
-[[ $TTL =~ ^[0-9]+$ ]] && [ "$TTL" -ge 1 ] && [ "$TTL" -le 480 ] || die "TTL is 1..480 minutes"
+TTL=${1:-$DEFAULT_TTL}
+[[ $TTL =~ ^[0-9]+$ ]] && [ "$TTL" -ge 1 ] && [ "$TTL" -le "$MAX_TTL" ] || die "TTL is 1..$MAX_TTL minutes"
 
 for f in "$ETC/live-session.env" "$ETC/mint-readers.env"; do
   [ -f "$f" ] || die "$f missing"

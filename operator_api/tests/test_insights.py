@@ -148,9 +148,13 @@ class Mixin(unittest.TestCase):
         full = [s.id for s in ins.builtin() if s.scope == "full"]
         self.assertTrue(full)
         self.assertFalse({i.id for i in listed.items} & set(full))
-        with self.assertRaises(UserFacing) as e:
-            b.insight_result(reader("ana"), full[0])
-        self.assertEqual(e.exception.status, 404)
+        for iid in full:   # withheld by name, like a findings tile; nothing read
+            with self.subTest(iid=iid):
+                with self.assertRaises(UserFacing) as e:
+                    b.insight_result(reader("ana"), iid)
+                self.assertEqual((e.exception.code, e.exception.status),
+                                 ("insight_withheld", 403))
+        self.assertEqual(b.reads.sql, [])
         got = b.insight_result(reader("ana"), "team_output")
         self.assertEqual(got.rows, [["Me", "3", "1"]])
         self.assertEqual(got.drawn.labels, ["Me"])
@@ -957,3 +961,171 @@ class FastCopies(unittest.TestCase):
                              "WHERE said_at >= now() - interval '30 days' GROUP BY 1")
         self.assertFalse(f.eligible(mine))
 
+
+
+class MeasureWatch(unittest.TestCase):
+    """A monitor over one catalogue measure, built without reading any business record."""
+
+    def test_a_dated_measure_is_watched_for_unusual_by_default_with_its_why(self):
+        from operating.ontology_tools_sql import check
+        for name in ("mail_received", "Mail received from outside", "units_sold"):
+            spec = ins.measure_watch(name, days=30 if name == "units_sold" else None)
+            self.assertEqual((spec.notify, spec.watch),
+                             ("crosses", {"column": "unusual", "op": "above", "value": 2.0}))
+            self.assertTrue(spec.question.startswith("Why is"), spec.question)
+            self.assertIn("periods_before >= 4", spec.sql)
+            check(spec.sql)
+        self.assertIn("last 30 days", ins.measure_watch("units_sold", days=30).question)
+
+    def test_a_move_in_percent_watches_the_size_of_the_move_either_way(self):
+        from operating.ontology_tools_sql import check
+        spec = ins.measure_watch("units_sold", days=30, move_pct=25)
+        self.assertEqual(spec.watch, {"column": "move_pct", "op": "above", "value": 25.0})
+        self.assertIn("abs(100.0 * m.change / nullif(m.previous, 0))", spec.sql)
+        check(spec.sql)
+        self.assertEqual(ins.measure_watch("units_sold", move_pct=None, days=None).watch["column"],
+                         "unusual")
+
+    def test_a_snapshot_measure_is_watched_only_against_a_number(self):
+        from operating.ontology_tools_sql import check
+        spec = ins.measure_watch("late_orders", above=50)
+        self.assertEqual(spec.watch, {"column": "value", "op": "above", "value": 50.0})
+        self.assertIn("above 50", spec.question)
+        check(spec.sql)
+        self.assertEqual(ins.measure_watch("late_orders", below=3).watch["op"], "below")
+        for kw in ({}, {"move_pct": 20}, {"days": 7}):
+            with self.assertRaises(ins.Refused, msg=kw) as e:
+                ins.measure_watch("late_orders", **kw)
+            self.assertEqual(e.exception.code, "insight_watch")
+
+    def test_a_name_period_or_line_the_measure_does_not_hold_is_refused(self):
+        for args in [("no_such_measure",), (None,), ("units_sold", 0), ("units_sold", 4000),
+                     ("units_sold", True)]:
+            with self.assertRaises(ins.Refused, msg=args):
+                ins.measure_watch(*args)
+        for kw in ({"above": 1, "below": 2}, {"above": 1, "move_pct": 5}, {"above": 1, "days": 7},
+                   {"above": float("nan")}, {"above": "50"}, {"move_pct": 0},
+                   {"move_pct": True}, {"move_pct": 2000}):
+            with self.assertRaises(ins.Refused, msg=kw):
+                ins.measure_watch("units_sold", **kw)
+
+
+@unittest.skipUnless(psycopg, "psycopg not installed")
+class UnusualStatement(unittest.TestCase):
+    """``unusual_sql`` over a small table: rolling 7-day periods, judged per part."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.db, cls.dsn = pg_testdb.create_db()
+
+    @classmethod
+    def tearDownClass(cls):
+        pg_testdb.drop_db(cls.db)
+
+    def rows(self, counts):
+        """``counts``: {part: [rows in the latest period, the one before, ...]} (None: no
+        record in that period)."""
+        with psycopg.connect(self.dsn) as conn:
+            conn.execute("DROP TABLE IF EXISTS t")
+            conn.execute("CREATE TABLE t (at timestamptz, part text)")
+            for part, per in counts.items():
+                for ago, n in enumerate(per):
+                    for _ in range(n or 0):
+                        conn.execute("INSERT INTO t VALUES (now() - make_interval(days => "
+                                     "%s), %s)", (1 + 7 * ago, part))
+            entry = {"per": "part", "date": "at", "where": "", "view": "t",
+                     "value": "count(*)"}
+            cur = conn.execute(ins.unusual_sql(entry, 7) + " ORDER BY part")
+            cols = [d.name for d in cur.description]
+            return {r[0]: dict(zip(cols, r)) for r in cur.fetchall()}
+
+    def test_the_latest_period_is_judged_against_the_spread_of_the_earlier_ones(self):
+        got = self.rows({"a": [10, 5, 6, 5, 4, 6], "b": [5, 5, 6, 5, 4, 6]})
+        a, b = got["a"], got["b"]
+        self.assertEqual((a["current"], a["periods_before"], float(a["usual"])), (10, 5, 5.2))
+        self.assertEqual(float(a["lowest"]), 4)
+        self.assertEqual(float(a["highest"]), 6)
+        self.assertGreater(float(a["unusual"]), 2.0)                # 4.8 / 0.84
+        self.assertLess(float(b["unusual"]), 2.0)
+
+    def test_a_part_with_short_coverage_or_no_spread_is_not_judged(self):
+        got = self.rows({"new": [9, 1, 2, None, 3, None, None, None],   # 3 earlier periods
+                         "flat": [9, 2, 2, 2, 2, 2],                     # no spread
+                         "gap": [None, 2, 3, 2, 4, 3]})                  # nothing this period
+        self.assertIsNone(got["new"]["unusual"])
+        self.assertEqual(got["new"]["periods_before"], 3)
+        self.assertIsNone(got["flat"]["unusual"])
+        self.assertIsNotNone(got["gap"]["unusual"])                 # 0 this period: judged
+
+
+@unittest.skipUnless(psycopg, "psycopg not installed")
+class WatchTool(unittest.TestCase):
+    """plx.watch_measure: the Ask's tool that saves a monitor as the person, for them."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.db, cls.dsn = pg_testdb.create_db()
+        from operating.pg import migrate
+        with psycopg.connect(cls.dsn) as conn:
+            migrate.migrate(conn, values={"embed_model": "m", "embed_dim": 3})
+        cls.memory = mem.Memory.for_dsn(cls.dsn, sync=True)
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.memory.pool.close()
+        pg_testdb.drop_db(cls.db)
+
+    def setUp(self):
+        from operator_api.assistant_tools import AssistantToolsMixin
+        with psycopg.connect(self.dsn) as conn:
+            conn.execute("DELETE FROM insights.run")
+            conn.execute("DELETE FROM insights.insight")
+        self.memory.guard = lambda: Guard()
+        self.memory.names = lambda: frozenset({"quinn harrow", "quinn", "harrow"})
+        self.b = type("TB", (AssistantToolsMixin, Backend), {})(
+            sql_out([["A", 1, ME]]), everyone=True, memory=self.memory)
+
+    def tools(self, who):
+        return {t.spec["name"]: t for t in self.b.assistant_tools(who)}
+
+    def saved(self):
+        with psycopg.connect(self.dsn) as conn:
+            return conn.execute("SELECT owner, title, question, sql, schedule, notify, watch "
+                                "FROM insights.insight ORDER BY id").fetchall()
+
+    def test_offered_only_in_the_person_s_own_session(self):
+        self.assertIn("plx.watch_measure", self.tools(reader("ana")))
+        viewing, canary = reader("ana"), reader("ana")
+        viewing.session.view_as = True
+        canary.session.canary = True
+        self.assertEqual(self.b.assistant_tools(viewing), [])
+        self.assertEqual(self.b.assistant_tools(canary), [])
+
+    def test_it_saves_a_scheduled_monitor_as_the_person_and_reads_no_figure(self):
+        ana, ben = reader("ana"), reader("ben")
+        out = self.tools(ana)["plx.watch_measure"].call({"measure": "mail_received", "days": 30})
+        self.assertNotIn("not_kept", out)
+        self.assertEqual(out["runs"], "every morning")
+        spec = ins.measure_watch("mail_received", days=30)
+        (owner, title, question, sql, schedule, notify, watch), = self.saved()
+        self.assertEqual((owner, title, question, sql), (ana.key, spec.title, spec.question,
+                                                         spec.sql))
+        self.assertEqual((schedule, notify, watch), ("daily", "crosses", spec.watch))
+        self.assertTrue(out["open"].endswith(f"insight-s{self.b.insight_store().list(ana.key)[0].id[1:]}"))
+        self.assertEqual(self.b.reads.sql, [])          # nothing read: no business figure kept
+        with psycopg.connect(self.dsn) as conn:
+            self.assertEqual(conn.execute("SELECT count(*) FROM insights.run").fetchone()[0], 0)
+        self.assertEqual(self.b.insight_store().list(ben.key), [])
+
+    def test_a_refusal_says_why_and_keeps_nothing(self):
+        tool = self.tools(reader("ana"))["plx.watch_measure"]
+        for args in ({"measure": "late_orders"}, {"measure": "nope"},
+                     {"measure": "units_sold", "schedule": "minutely"},
+                     {"measure": "units_sold", "above": 1, "below": 2}):
+            self.assertIn("not_kept", tool.call(args), args)
+        self.assertEqual(self.saved(), [])
+        viewing = reader("ana")
+        viewing.session.view_as = True
+        late = self.b._watch_call(viewing, {"measure": "units_sold"})
+        self.assertIn("not_kept", late)               # a view-as call that got through anyway
+        self.assertEqual(self.saved(), [])

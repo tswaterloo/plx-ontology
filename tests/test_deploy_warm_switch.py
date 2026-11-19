@@ -113,6 +113,7 @@ def show(unit, props, value):
     loaded = "not-found" if (standby and cfg.get("no_template")) else "loaded"
     p = "--port " + port(unit) if unit == "plx-api" else "--unix-socket " + port(unit)
     out = {"LoadState": loaded, "MemoryCurrent": str(cfg.get("api_bytes", 1 << 30)),
+           "MainPID": pidfile(unit).read_text() if alive(unit) else "0",
            "DropInPaths": " ".join(cfg["dropins"]) if not standby else "",
            "ExecStart": "{ path=/usr/bin/python3 ; argv[]=/usr/bin/python3 -m operator_api serve "
                         f"--bind 127.0.0.1 {p} $PLX_API_ARGS ; ignore_errors=no ; pid=1 }}",
@@ -383,6 +384,48 @@ class WarmSwitchThroughCaddy(unittest.TestCase):
         links = sorted(p.name for p in (host.tmp / "units" / "plx-api@.service.d").iterdir())
         self.assertEqual(links, ["a.conf", "zzzz-slot.conf"])   # not the plx-.service.d one
 
+    def _releases_from_commits(self, host, changed: str) -> None:
+        """old and new built from two commits of a repo whose second commit changes ``changed``."""
+        repo = host.tmp / "repo"
+        git = ["git", "-C", str(repo), "-c", "user.email=t@t", "-c", "user.name=t"]
+        subprocess.run(["git", "init", "-q", str(repo)], check=True)
+        (repo / Path(changed).parent).mkdir(parents=True, exist_ok=True)
+        shas = []
+        for text in ("one\n", "two\n"):
+            (repo / changed).write_text(text)
+            subprocess.run([*git, "add", "-A"], check=True)
+            subprocess.run([*git, "commit", "-qm", text], check=True)
+            shas.append(subprocess.run([*git, "rev-parse", "HEAD"], check=True, text=True,
+                                       capture_output=True).stdout.strip())
+        rel = Path(host.cfg["current"]).parent
+        for rid, sha in zip(("old", "new"), shas):
+            (rel / rid / "RELEASE.json").write_text(json.dumps({"id": rid, "sha": sha,
+                                                                "overlays": []}))
+        host.env["PLX_REPO"] = str(repo)
+
+    def test_a_release_that_changes_nothing_the_api_reads_keeps_it_serving(self):
+        host = Host(self, caddy=True)
+        self._releases_from_commits(host, "docs/notes.md")
+        host.switch_to_new()
+        got = host.restart()
+        self.assertEqual(got.returncode, 0, got.stderr + got.stdout)
+        self.assertIn("kept: no API change since old", got.stdout)
+        starts = [c for c in host.calls() if c.startswith("start")]
+        self.assertEqual(starts, ["start plx-api old"])          # no standby, no restart
+        self.assertEqual(host.serving("plx-api")["code"], "code-old")   # the same process
+        self.assertIsNone(host.serving("standby"))
+
+    def test_a_release_that_changes_the_api_code_switches_warm(self):
+        host = Host(self, caddy=True)
+        self._releases_from_commits(host, "operating/x.py")
+        host.switch_to_new()
+        got = host.restart()
+        self.assertEqual(got.returncode, 0, got.stderr + got.stdout)
+        self.assertIn("warm switch", got.stdout)
+        starts = [c for c in host.calls() if c.startswith("start")]
+        self.assertEqual(starts, ["start plx-api old", "start plx-api@standby new",
+                                  "start plx-api new"])
+
     def test_a_standby_that_never_gets_warm_leaves_the_old_api_serving(self):
         host = Host(self, caddy=True)
         (Path(host.cfg["current"]).parent / "new" / "NOT_READY").write_text("")
@@ -587,8 +630,9 @@ class CaddyfileRouting(unittest.TestCase):
         self.assertIn("--unix-socket /run/plx-api-%i/api.sock", unit)
         self.assertNotRegex(unit, r"(?m)^ExecStart=.*--port")
         self.assertIn("RuntimeDirectory=plx-api-%i\nRuntimeDirectoryMode=0711", unit)
-        for text in (unit, rest, stop):   # the drain (60 s) and the joins (20 s) fit
-            self.assertIn("TimeoutStopSec=100", text)
+        for text in (unit, rest, stop):   # the drain (180 s) and the joins (20 s) fit
+            self.assertIn("TimeoutStopSec=210", text)
+            self.assertIn("KillMode=mixed", text)   # the Ask helpers outlive the SIGTERM
         self.assertNotRegex(unit, r"(?m)^\[Install\]")
         # every setting plx-release compares (PARITY) is the same in both units' own files:
         # 11-14..11-18 the template said Restart=on-failure, plx-api Restart=always, and every
@@ -608,6 +652,29 @@ class CaddyfileRouting(unittest.TestCase):
         self.assertIn("STANDBY=${PLX_API_STANDBY:-standby}", tool)
         self.assertIn("/run/plx-api-$STANDBY/api.sock", tool)
         self.assertIn("unix//run/plx-api-standby/api.sock", (DEPLOY / "Caddyfile").read_text())
+
+
+class ApiRestartPaths(unittest.TestCase):
+    """plx-release keeps the API only when a release changes nothing it runs: every path the API
+    process imports or reads restarts it, and a path nobody listed restarts it too."""
+
+    RESTART = ["operator_api/app.py", "operator_api/auth.py", "operating/proactive_engine_inbox.py",
+               "ontology/model.py", "pyproject.toml", "requirements.txt", "app.py", "newpkg/x.py",
+               "config/policy.yaml", "deploy/env.example", "deploy/Caddyfile.d/x",
+               "operator_api/README.md", "deploy/systemd2/x", "apps/web/x.ts"]
+    KEEP = ["app/src/lib/api.ts", "docs/TECHNICAL.md", "README.md", "desktop/main.js",
+            "devloop/x.md", "deploy/ops/watch.sh", "deploy/release/plx-release",
+            "deploy/spark/run.sh", "deploy/systemd/plx-api.service", "deploy/backup/b.sh",
+            "deploy/Caddyfile", "tests/test_x.py", "operating/tests/test_y.py"]
+
+    def test_each_path_restarts_or_keeps_the_api_as_listed(self):
+        m = re.search(r"^API_IGNORED='([^']+)'$", TOOL.read_text(), re.M)
+        self.assertIsNotNone(m)
+        paths = self.RESTART + self.KEEP
+        # the same grep -vE the script runs: what it prints is what restarts the API
+        got = subprocess.run(["grep", "-vE", m.group(1)], input="\n".join(paths) + "\n",
+                             text=True, capture_output=True).stdout.split()
+        self.assertEqual(got, self.RESTART)
 
 
 if __name__ == "__main__":

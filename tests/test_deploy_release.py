@@ -886,6 +886,30 @@ class ReleaseTest(unittest.TestCase):
             self.assertIn("no PLX_PG_DSN", no_dsn.stderr)
 
 
+    def test_prune_keeps_current_previous_newest_and_busy_and_survives_a_vanished_process(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            rel = Path(tmp, "rel")
+            ids = [f"r{i}" for i in range(6)]  # r0 oldest
+            for i, rid in enumerate(ids):
+                Path(rel, rid).mkdir(parents=True)
+                Path(rel, rid, "RELEASE.json").write_text("{}")
+                os.utime(Path(rel, rid), (1_000_000 + i, 1_000_000 + i))
+            os.symlink("r1", rel / "current")
+            os.symlink("r0", rel / "previous")
+            proc = Path(tmp, "proc")
+            Path(proc, "10").mkdir(parents=True)
+            os.symlink(str(rel / "r2" / "app"), proc / "10" / "cwd")  # a process runs in r2
+            Path(proc, "99").mkdir()  # exited mid-scan: its cwd can no longer be read
+            env = {**os.environ, "PLX_DEPLOY_ENV": "/nonexistent", "PLX_RELEASES": str(rel),
+                   "PLX_STATE": f"{tmp}/state", "PLX_RELEASE_OWNER": "", "PLX_PROC": str(proc)}
+            out = subprocess.run([str(DEPLOY / "release" / "plx-release"), "prune", "--keep", "2"],
+                                 env=env, text=True, capture_output=True)
+            self.assertEqual(out.returncode, 0, out.stderr)
+            self.assertEqual(sorted(p.name for p in rel.iterdir() if not p.is_symlink()
+                                    and p.name.startswith("r")), ["r0", "r1", "r2", "r4", "r5"])
+            self.assertEqual(out.stdout.split(), ["pruned", "r3"])
+
+
 class ReleaseRestart(unittest.TestCase):
     """plx-release restart (Fable 11-14 #2/#3): the API and the app are always started, the
     API must answer /api/health and one authenticated read, and a release that does not

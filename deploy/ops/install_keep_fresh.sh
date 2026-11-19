@@ -51,7 +51,7 @@ dry=0; [ "${1:-}" = "--dry-run" ] && dry=1
 render=$here/../render.py
 tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT
 MOVED_USER_UNITS="plx-sheet-readings plx-system-activity plx-team-activity plx-work-graph"
-SYS_UNITS="plx-sheet-readings plx-system-activity plx-team-activity plx-work-graph plx-proactive-whole plx-backup plx-restore-test plx-ops-health plx-ops-memory plx-expiry plx-autopilot-follow plx-autopilot-fast plx-labour plx-doc-style plx-learning plx-write-readiness plx-spark-health plx-ask-canary plx-exclusion-leak plx-bare-mentions plx-own-issued plx-people-excluded plx-answer-bank plx-business-views plx-alerts plx-comms-findings plx-business-comms-recheck plx-source-coverage plx-qbank-refresh"
+SYS_UNITS="plx-sheet-readings plx-system-activity plx-team-activity plx-work-graph plx-proactive-whole plx-backup plx-restore-test plx-ops-health plx-ops-memory plx-expiry plx-autopilot-follow plx-autopilot-fast plx-reply-drafts plx-labour plx-doc-style plx-learning plx-write-readiness plx-spark-health plx-ask-canary plx-exclusion-leak plx-bare-mentions plx-own-issued plx-people-excluded plx-answer-bank plx-business-views plx-alerts plx-comms-findings plx-business-comms-recheck plx-source-coverage plx-qbank-refresh"
 SYS_PATHS="plx-autopilot-follow plx-autopilot-fast"   # also started by a .path unit
 SYS_DAEMONS="plx-autopilot-fast-serve"                 # a service that runs continuously
 SYS_AFTER=""                                           # started only by another unit (OnSuccess=)
@@ -73,7 +73,7 @@ verify_unit() {  # verify_unit [--user] service timer
 for u in $SYS_UNITS; do verify_unit "$tmp/sys/$u.service" "$tmp/sys/$u.timer"; done
 for u in $SYS_PATHS; do verify_unit "$tmp/sys/$u.service" "$tmp/sys/$u.path"; done
 for u in $SYS_DAEMONS $SYS_AFTER; do verify_unit "$tmp/sys/$u.service"; done
-for f in "$tmp"/sys/plx-{sheet-readings,system-activity,team-activity,work-graph,proactive-whole,backup,restore-test,ops-health,ops-memory,expiry,autopilot-follow,autopilot-fast,autopilot-fast-serve,labour,write-readiness,spark-health}.*; do
+for f in "$tmp"/sys/plx-{sheet-readings,system-activity,team-activity,work-graph,proactive-whole,backup,restore-test,ops-health,ops-memory,expiry,autopilot-follow,autopilot-fast,autopilot-fast-serve,reply-drafts,labour,write-readiness,spark-health}.*; do
   # <unit>.d/ drop-in folders (deploy/systemd/host) are installed by deploy/ops/host/install.py,
   # not here; the unit file itself must carry MemoryMax and Nice
   [ -d "$f" ] && continue

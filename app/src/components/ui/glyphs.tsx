@@ -1,4 +1,4 @@
-import { Activity, BookMarked, BookOpen, Bot, BellRing, Briefcase, Calculator, ClipboardCheck, Database, FileText, FlaskConical, Gauge, ListChecks, Mail, Package, CalendarClock, Clock3, History, Inbox, MessageCircle, MessageSquareText, Users, type LucideIcon } from "lucide-react";
+import { Activity, ChartColumn, BookMarked, BookOpen, Bot, BellRing, Briefcase, Calculator, ClipboardCheck, Database, FileText, FlaskConical, Gauge, ListChecks, Mail, Package, CalendarClock, Clock3, History, Inbox, MessageCircle, MessageSquareText, Users, type LucideIcon } from "lucide-react";
 import { cn } from "@/lib/cn";
 
 /** No date on record: the ring left open, dashed. */
@@ -29,6 +29,7 @@ export const PLACES: Record<string, { icon: LucideIcon; hue: string }> = {
   "/late": { icon: Clock3, hue: "text-[var(--place-late)]" },
   "/watching": { icon: BellRing, hue: "text-[var(--place-watching)]" },
   "/ask": { icon: MessageCircle, hue: "text-[var(--place-ask)]" },
+  "/insights": { icon: ChartColumn, hue: "text-[var(--place-ask)]" },
   "/autopilot": { icon: Bot, hue: "text-[var(--place-autopilot)]" },
   "/meetings": { icon: CalendarClock, hue: "text-[var(--place-meetings)]" },
   "/team": { icon: Users, hue: "text-[var(--place-team)]" },

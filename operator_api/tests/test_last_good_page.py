@@ -1025,6 +1025,34 @@ class NeverServedCold(LastGoodPage.__base__):
             self.assertTrue(self.backend.briefing_seen(who).ok)
             self.assertEqual(ran, [expect])
 
+    def test_the_seen_mark_is_written_without_a_view_when_the_store_is_named(self):
+        """A reader's first visit made a view on the check worker only to write one row
+        (7-9 s under load, ahead of their access checks): with the store named the row is
+        written at once, under the reader key the view's own write uses; an inbox the
+        engine never wrote is still refused."""
+        import tempfile
+        from operating import proactive_engine as pe
+        from operating import proactive_engine_inbox as pei
+        from operating.session_identity import Actor
+        tmp = Path(tempfile.mkdtemp(prefix="seen-direct-"))
+        self.addCleanup(__import__("shutil").rmtree, tmp, True)
+        store = tmp / "ontology.sqlite"
+        self.backend.store_path = store
+        self.backend.warm_briefing = lambda who: True
+        ran = []
+        self.backend.check_worker = SimpleNamespace(
+            run=lambda *a, **k: ran.append("check"),
+            stopped=SimpleNamespace(is_set=lambda: False))
+        actor = Actor("t1", frozenset({"grp-a", "employee:x"}), "internal")
+        who = SimpleNamespace(key="employee:x,grp-a", mode="dev",
+                              session=SimpleNamespace(actor=actor, principals=actor.principals))
+        self.assertFalse(self.backend.briefing_seen(who).ok)   # no inbox yet: refused
+        pei._open_inbox(pe.inbox_path(store)).close()
+        seen = self.backend.briefing_seen(who)
+        self.assertTrue(seen.ok)
+        self.assertEqual(ran, [])
+        self.assertEqual(pei.last_visit(pe.inbox_path(store), pe.reader_key(actor)), seen.at)
+
     def test_a_new_layer_opens_each_known_readers_scope_on_the_access_worker(self):
         """After a delta layer (any inputs change) the access worker opens each known,
         unrevoked reader's request scope once, behind every access check, and decides
@@ -1474,6 +1502,43 @@ class PlainWordsAndBusinessDay(unittest.TestCase):
         self.assertEqual(aged["as_of"], "2026-11-07")
         self.assertEqual(aged["items"][0]["facts"]["days"], 4)
 
+
+
+class ReadAgainAfterSeen(unittest.TestCase):
+    """Home's seen mark makes the briefing and Home not current: the visit after it paid
+    their whole read (briefing 1.25 s, Home 0.6 s on live data). The screens it changed are
+    read again at once for the reader's own session; a service session is never the one
+    remembered for them."""
+
+    def test_only_the_changed_screens_of_that_reader_are_read_again(self):
+        backend = be.WorkspaceBackend.__new__(be.WorkspaceBackend)
+        backend._lock = threading.RLock()
+        own, other = reader("grp-a"), reader("grp-b")
+        own.session.live = other.session.live = True
+        gone = reader("grp-c")
+        gone.session.live = False
+        names = (("briefing", False), ("briefing_items", "po_late", 0, 6, False), ("home",),
+                 ("suggestions",), ("my_work",))
+        for who in (own, other, gone):
+            for name in names:
+                backend._remember_read((who.key, "dev", name), who, lambda: None)
+        backend._may_read_ahead = lambda who: who.session.live
+        started = []
+        backend._refresh_later = lambda who, key, read: started.append(key)
+        screens = frozenset({"briefing", "briefing_items", "home"})
+        self.assertEqual(backend.reread_after_write(own, screens), 3)
+        self.assertEqual(sorted(k[2][0] for k in started), ["briefing", "briefing_items", "home"])
+        self.assertEqual({k[0] for k in started}, {"grp-a"})
+        started.clear()
+        self.assertEqual(backend.reread_after_write(gone, screens), 0)   # expired: none
+        self.assertEqual(backend.reread_after_write(own, None), 0)       # every screen: none
+        self.assertEqual(started, [])
+        # a service session (the Ask canary, the page measure) is never remembered: the
+        # reader's own session stays the one their screens are read again for
+        service = reader("grp-a")
+        service.session.canary = True
+        backend._remember_read(("grp-a", "dev", ("home",)), service, lambda: None)
+        self.assertIs(backend._snap_reads()[("grp-a", "dev", ("home",))][0], own)
 
 if __name__ == "__main__":
     unittest.main()

@@ -303,15 +303,16 @@ def news(connect: Callable[[], Any], owner: str, now: Optional[dt.datetime] = No
     with connect() as pg:
         rows = pg.execute(
             "SELECT r.id, r.insight_id, i.title, r.ran_at, r.row_count, r.new_rows, i.notify, "
-            "r.reason, r.over_rows, i.watch FROM insights.run r JOIN insights.insight i ON "
+            "r.reason, r.over_rows, i.watch, i.question FROM insights.run r JOIN insights.insight i ON "
             "i.id = r.insight_id "
             "WHERE i.owner = %s AND i.deleted_at IS NULL AND r.fired AND r.seen_at IS NULL "
             "AND r.ran_at >= %s ORDER BY r.ran_at DESC, r.id DESC LIMIT %s",
             (owner, now - dt.timedelta(days=NEWS_DAYS), MOST_NEWS)).fetchall()
     return [m.InsightNews(run_id=f"r{rid}", insight_id=f"s{iid}", title=title,
                           ran_at=ran.isoformat(timespec="seconds"), row_count=n, new_rows=new,
-                          said=said(notify, n, new, reason, over, watch))
-            for rid, iid, title, ran, n, new, notify, reason, over, watch in rows]
+                          said=said(notify, n, new, reason, over, watch),
+                          ask=(question or "")[:500] if notify == "crosses" else "")
+            for rid, iid, title, ran, n, new, notify, reason, over, watch, question in rows]
 
 
 def said(notify: str, rows: int, new: int, reason: str = "", over: Optional[int] = None,

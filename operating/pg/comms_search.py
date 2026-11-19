@@ -138,6 +138,13 @@ COMMON_CHUNKS = 50000
 # but often enough to fill the page there ("purchase order" in Teams: 5 in its newest
 # 4,000 messages; the word index's whole match, every document's chunks, took 18 s)
 STAGES, DEEPER = 2, 16
+# the tables whose text is short (about one text chunk a row: Teams, 215,475 chunks for
+# 253,554 messages) read a common word's rows past the walk from their own rows, each row
+# checked by its own text (live, all of Teams: 1.6 s), never from the word index's whole
+# match, which is mostly mail's and the files' chunks ("purchase order" for Teams: 575,000
+# chunks read, 27 s). A rare word (``walk_rows`` 1) still reads the word index (0.2 s).
+# Either gives the same rows.
+OWN_TEXT_VIEWS = frozenset({"teams_messages"})
 
 
 def walk_rows(pg: Any, q: str | None) -> int:
@@ -237,6 +244,15 @@ def search_sql(views: Sequence[str], *, guarded: str, biz: str, query: bool,
         tiers = [] if cursor and cursor_tier == 0 else [
             (1, conds + ([after] if cursor else []), f"{own_header} IS NOT NULL",
              f"{header}", [])]
+        # the text rows' match past the walk: the word index's (``match``), or, for a
+        # common word in a table of short texts (``OWN_TEXT_VIEWS``), the table's own rows
+        # each checked by its text (``own``)
+        own = (f"SELECT b.handle FROM {biz}.{view} b WHERE (SELECT 1 FROM "
+               "ontology.text_fields fd JOIN ontology.text_chunks c ON c.field_id = "
+               "fd.field_id JOIN ontology.chunk_words w ON w.chunk_id = c.chunk_id WHERE "
+               "fd.version_handle = b.handle AND fd.object_id = b.object_ids[1] AND "
+               f"w.words @@ %(q)s::tsquery AND fd.markings = '[]'{checked} LIMIT 1) IS NOT "
+               f"NULL{window}") if view in OWN_TEXT_VIEWS else None
         tiers.append((0, conds + ([after] if dated else []),
                       f"{own_header} IS NULL AND {own_text} IS NOT NULL",
                       f"SELECT b.handle {text}{window}", [f"{own_header} IS NULL"]))
@@ -247,6 +263,7 @@ def search_sql(views: Sequence[str], *, guarded: str, biz: str, query: bool,
         # view (a unit list the planner cannot size) that read and sorted every row the
         # reader holds, 2.5 million mails for a full reader, 10 s per walk
         for tier, scope, check, match, keep in tiers:
+            mine = own if tier == 0 else None
             fscope = dates + ([after, f"e.{when} <= %(c_at)s"] if after in scope else [])
             founds, top = [], None
             for stage in range(STAGES):
@@ -272,8 +289,16 @@ def search_sql(views: Sequence[str], *, guarded: str, biz: str, query: bool,
                                                  f"{found}))"]))
                 founds.append(found)
                 top = floor
-            parts.append(_fallback(part, tier, scope, top, founds, when=when, match=match,
-                                   keep=keep, kk=kk))
+            if mine is None:
+                parts.append(_fallback(part, tier, scope, top, founds, when=when,
+                                       match=match, keep=keep, kk=kk))
+                continue
+            # one or the other, by the word's walk (a one-time filter: the other's match
+            # is never read)
+            parts.append(_fallback(part, tier, ["%(walk)s <= 1", *scope], top, founds,
+                                   when=when, match=match, keep=keep, kk=kk))
+            parts.append(_fallback(part, tier, ["%(walk)s > 1", *scope], top, founds,
+                                   when=when, match=mine, keep=keep, kk=kk))
     if not parts:
         return ""
     best = ("ORDER BY (w.words @@ %(q)s::tsquery) DESC, fd.field_id, c.start" if query

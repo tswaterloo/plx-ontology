@@ -1,0 +1,12 @@
+[Unit]
+Description=PLX Spark: the runs' Postgres socket, spread over the box's reverse tunnels (spare connections kept open)
+
+[Service]
+ExecStart=/usr/bin/python3 %h/plx-ai/pg/spark_pg_balance.py --listen %h/plx-ai/run/.s.PGSQL.5432 --tunnels %h/plx-ai/pgtun 16
+Restart=always
+RestartSec=3
+LimitNOFILE=16384
+MemoryMax=512M
+
+[Install]
+WantedBy=default.target

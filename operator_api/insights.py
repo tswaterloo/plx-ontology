@@ -242,9 +242,12 @@ class Store:
                 raise Refused("insight_too_many")
             (rid,) = conn.execute(
                 "INSERT INTO insights.insight (owner, title, question, sql, chart, schedule, "
-                "notify, position) VALUES (%s, %s, %s, %s, %s, %s, %s, %s) RETURNING id",
+                "notify, watch, position) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s) "
+                "RETURNING id",
                 (reader.key, spec.title, spec.question, spec.sql, json.dumps(dict(spec.chart)),
-                 spec.schedule, spec.notify, n)).fetchone()
+                 spec.schedule, spec.notify, json.dumps(watch_of(spec.watch)
+                                                        if spec.notify == "crosses" else {}),
+                 n)).fetchone()
             conn.commit()
         return Spec(**{**spec.__dict__, "id": f"s{rid}", "saved": True})
 
@@ -431,6 +434,104 @@ def watch_of(raw: Any) -> dict[str, Any]:
     return {"column": column, "op": op, "value": float(value)}
 
 
+MOVE_COLUMN = "move_pct"     # a measure monitor's watched column (``measure_watch``)
+WATCH_DAYS = 7               # a measure monitor's default period: this week against the last
+WATCH_PCT = 20.0             # the line of a "moves by" monitor when none is named
+UNUSUAL_COLUMN = "unusual"   # a "tell me when it is unusual" monitor's watched column
+UNUSUAL_LINE = 2.0           # how many spreads from its usual level counts as unusual
+UNUSUAL_PERIODS = 12         # the earlier periods its usual level is read from
+UNUSUAL_LEAST = 4            # fewer earlier periods with any record: nothing is judged
+
+
+def measure_watch(name: str, days: Any = None, move_pct: Any = None, above: Any = None,
+                  below: Any = None) -> Spec:
+    """A monitor over one catalogue measure (``operating.measures``), as an unsaved insight
+    to save and schedule: either "tell me when it moves" (a dated measure: its last ``days``
+    against the ``days`` before, watched on ``move_pct``, the size of the move either way in
+    percent of the earlier period, past ``move_pct``) or "tell me when it goes above / below
+    a number" (any measure, its ``value``). Its ``question`` is the why question the alert
+    offers to ask, so the reason is read live, as the person, when it fires. Refuses
+    (``Refused("insight_watch")``) a name, period or line the measure does not hold."""
+    import math
+    from operating import measures as ms
+    from operating.ontology_tools_sql import ToolError
+    entry = next((e for k, e in ms.measures().items()
+                  if isinstance(name, str) and name.strip().lower() in (k, e["name"].lower())),
+                 None)
+    if entry is None:
+        raise Refused("insight_watch", "name a measure of the catalogue")
+    number = lambda v: (v is not None and not isinstance(v, bool)   # noqa: E731
+                        and isinstance(v, (int, float)) and math.isfinite(float(v)))
+    lines = [(op, v) for op, v in (("above", above), ("below", below)) if v is not None]
+    if len(lines) > 1 or (lines and (move_pct is not None or days is not None)) \
+            or any(not number(v) for _, v in lines) \
+            or (move_pct is not None and not (number(move_pct) and 0 < move_pct <= 1000)):
+        raise Refused("insight_watch", "a move in percent, or one number above or below")
+    label = entry["name"]
+    try:
+        if not lines and move_pct is None:
+            if not entry["date"]:
+                raise Refused("insight_watch", f"{label} is a snapshot as it stands now: "
+                              "watch it above or below a number")
+            n = WATCH_DAYS if days is None else ms._days(days, WATCH_DAYS)
+            sql = unusual_sql(entry, n)
+            title = f"{label}: unusual against the last {UNUSUAL_PERIODS} periods of {n} days"
+            question = (f"Why is {label.lower()} unusual in the last {n} days against the "
+                        "periods before? Break it down and say what drove it.")
+            watch = {"column": UNUSUAL_COLUMN, "op": "above", "value": UNUSUAL_LINE}
+        elif lines:
+            sql, _ = ms.statement(entry["id"])
+            op, value = lines[0]
+            title = f"{label} {op} {float(value):g}"
+            question = (f"Why is {label.lower()} {op} {float(value):g} now? Break it down "
+                        "and say what changed.")
+            watch = {"column": "value", "op": op, "value": float(value)}
+        else:
+            n = WATCH_DAYS if days is None else days
+            inner, _ = ms.statement(entry["id"], None, n, True)
+            # no change (a period with rows but no readable value) or nothing before: no
+            # move (NULL), never "up from 0"
+            sql = (f"SELECT m.*, round(abs(100.0 * m.change / nullif(m.previous, 0)), 1) "
+                   f"AS {MOVE_COLUMN} FROM ({inner}) m")
+            pct = WATCH_PCT if move_pct is None else float(move_pct)
+            title = f"{label}: moves {pct:g}% or more, last {n} days against the {n} before"
+            question = (f"Why did {label.lower()} change in the last {n} days against the "
+                        f"{n} days before? Break it down and say what drove it.")
+            watch = {"column": MOVE_COLUMN, "op": "above", "value": pct}
+    except ToolError as exc:
+        raise Refused("insight_watch", str(exc)) from None
+    return Spec(id="", title=title[:200], about=entry["definition"], sql=sql,
+                question=question, notify="crosses", watch=watch)
+
+
+def unusual_sql(entry: Mapping[str, Any], days: int) -> str:
+    """One dated catalogue measure over rolling periods of ``days`` ending now (0 = the
+    latest, 1 the one before, up to ``UNUSUAL_PERIODS`` back), per its ``per`` column:
+    the latest period's value (``current``), the earlier ones' mean (``usual``), spread
+    (sample standard deviation), lowest and highest, how many had any record, and
+    ``unusual``: how many spreads the latest is from the usual level. A period with no record
+    is not one of them (a source captured only lately is judged on what it holds); fewer
+    than ``UNUSUAL_LEAST`` earlier periods, or no spread, judges nothing (NULL)."""
+    per, date, n = entry["per"], entry["date"], int(days)
+    keys = f"{per}, " if per else ""
+    where = f"({entry['where']}) AND " if entry["where"] else ""
+    group = f" GROUP BY {per}" if per else ""
+    return (
+        f"WITH b AS (SELECT {keys}floor(extract(epoch FROM now() - {date}) / {n * 86400})"
+        f"::int AS ago, {entry['value']} AS value FROM {entry['view']} WHERE {where}{date} "
+        f"> now() - interval '{n * (UNUSUAL_PERIODS + 1)} days' AND {date} <= now() "
+        f"GROUP BY {keys}ago), s AS (SELECT {keys}"
+        "max(value) FILTER (WHERE ago = 0) AS current, "
+        "round(avg(value) FILTER (WHERE ago > 0), 2) AS usual, "
+        "round(stddev_samp(value) FILTER (WHERE ago > 0), 2) AS spread, "
+        "min(value) FILTER (WHERE ago > 0) AS lowest, "
+        "max(value) FILTER (WHERE ago > 0) AS highest, "
+        f"count(*) FILTER (WHERE ago > 0) AS periods_before FROM b{group}) "
+        "SELECT s.*, CASE WHEN periods_before >= "
+        f"{UNUSUAL_LEAST} THEN round(abs(coalesce(current, 0) - usual) / nullif(spread, 0), 1) "
+        f"END AS {UNUSUAL_COLUMN} FROM s")
+
+
 def info(spec: Spec) -> m.InsightInfo:
     return m.InsightInfo(id=spec.id, title=spec.title, about=spec.about, group=spec.group,
                          saved=spec.saved, question=spec.question or None,
@@ -528,8 +629,10 @@ class InsightsMixin:
         for spec in self._builtin_for(reader, everyone):
             if spec.id == iid:
                 return spec
-        if any(s.id == iid and (everyone or s.scope != "full") for s in builtin()):
-            raise Refused("insight_withheld")   # a findings tile: not for this reader
+        if any(s.id == iid for s in builtin()):
+            # a built-in not for this reader (a full-scope or findings tile): withheld by
+            # name, never listed, nothing read
+            raise Refused("insight_withheld")
         store = self.insight_store() if SAVED_ID.match(iid or "") \
             and not _viewing_as(reader) else None
         spec = store.get(reader.key, iid) if store is not None else None

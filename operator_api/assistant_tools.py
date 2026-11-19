@@ -34,7 +34,8 @@ TEMPLATE = "plx.template"
 DOCUMENT = "plx.make_document"
 # a prepared document edit keeps its edited copy for the reader (``prepared_area``)
 EDITED = "plx.edit_document"
-NAMES = (REMEMBER, TEMPLATE, DOCUMENT)
+WATCH = "plx.watch_measure"
+NAMES = (REMEMBER, TEMPLATE, DOCUMENT, WATCH)
 # the kinds of file plx.make_document makes (``operating.instruct_files.KINDS``)
 KINDS = ("docx", "xlsx", "pdf", "pptx", "csv")
 MOST_LISTED = 40
@@ -138,6 +139,37 @@ ENGINE_CONTEXTS = ("email", "source", "meeting", "autopilot")
 ENGINE_VERBS = ("reply", "respond", "forward", "answer")
 
 
+# when a monitor runs (``insights_runs``: business time zone)
+RUNS = {"hourly": "every hour", "daily": "every morning", "weekly": "Monday mornings"}
+WATCH_SPEC = {
+    "name": WATCH,
+    "description": (
+        "Watch a measure of the catalogue for the person (plx.sql's measures: use its id or "
+        "name) and tell them on their Home when it moves. It runs by itself as them, on "
+        "their own access, at the schedule given (default daily), and the alert offers the "
+        "why question so the reason is read when it fires. Default: tell them when the "
+        "latest days (default 7) are unusual, 2 spreads or more from the usual level of the "
+        "12 periods before. move_pct: when it moves by that percent or more against the "
+        "same days just before instead. above / below: a number the measure's value "
+        "crosses (the only way for a snapshot measure like open or late orders; read its "
+        "value first to propose a line). Use it when they ask to watch, monitor, track or "
+        "be alerted on a number; never for a record (a customer, an order). The result "
+        "says what was set up and where to see it, or why nothing was kept: tell them "
+        "exactly that."),
+    "inputSchema": {
+        "type": "object", "additionalProperties": False, "required": ["measure"],
+        "properties": {
+            "measure": {"type": "string"},
+            "days": {"type": "integer", "minimum": 1, "maximum": 365},
+            "move_pct": {"type": "number", "exclusiveMinimum": 0, "maximum": 1000},
+            "above": {"type": "number"},
+            "below": {"type": "number"},
+            "schedule": {"type": "string", "enum": ["hourly", "daily", "weekly"]},
+        },
+    },
+}
+
+
 class AssistantToolsMixin:
     """Mixed into the backends: needs ``memory`` (``operator_api.memory.Memory`` or None),
     ``template_store`` (``TemplatesMixin``) and ``_prepare_document`` / ``_instruct_guard``
@@ -184,7 +216,37 @@ class AssistantToolsMixin:
         if callable(getattr(self, "_prepare_document", None)):
             out.append(LocalTool(spec=DOCUMENT_SPEC,
                                  call=lambda a: self._document_call(reader, a)))
+        if callable(getattr(self, "insight_store", None)):
+            out.append(LocalTool(spec=WATCH_SPEC, call=lambda a: self._watch_call(reader, a)))
         return out
+
+    # -- plx.watch_measure --------------------------------------------------------------
+
+    def _watch_call(self, reader: Any, args: Mapping[str, Any]) -> Any:
+        """Save and schedule a monitor over one measure for ``reader`` (``insights.
+        measure_watch``): their own saved insight, run as them, its alert on their Home."""
+        from . import insights as ins
+        from .errors import UserFacing
+        store = self.insight_store()  # type: ignore[attr-defined]
+        if store is None:
+            return {"not_kept": "Saved insights are not set up on this server."}
+        schedule = args.get("schedule") or "daily"
+        if schedule not in ("hourly", "daily", "weekly"):
+            return {"not_kept": "schedule is hourly, daily or weekly"}
+        try:
+            spec = ins.measure_watch(args.get("measure"), args.get("days"),
+                                     args.get("move_pct"), args.get("above"),
+                                     args.get("below"))
+            saved = store.save(reader, spec)
+            got = store.set_schedule(reader, saved.id, schedule, "crosses", spec.watch)
+        except UserFacing as why:
+            return {"not_kept": why.message}
+        if got is None:
+            return {"not_kept": "The monitor could not be scheduled."}
+        return {"watching": got.title, "runs": RUNS[schedule],
+                "tells_them": "on their Home when it crosses the line, with the why "
+                              f"question to ask: {got.question}",
+                "definition": spec.about, "open": f"/insights#insight-{got.id}"}
 
     # -- plx.remember -------------------------------------------------------------------
 

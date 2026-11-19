@@ -81,6 +81,52 @@ class KindsTest(unittest.TestCase):
         self.assertEqual(drawn({"type": "bar", "x": "week", "split": "dept", "y": ["n"]},
                                ("week", "dept", "n"), LONG + [LONG[0]]), [])
 
+    def test_a_repeated_label_draws_the_column_that_tells_the_rows_apart(self):
+        cols = ["customer_code", "month", "orders", "currency"]
+        rows = [["R1", "2026-04", 19, "USD"], ["R2", "2026-04", 1, "USD"],
+                ["R1", "2026-05", 11, "USD"]]
+        out = ch.build({"kind": "bar", "x": "month", "y": ["orders"]}, cols, rows)
+        self.assertEqual(out["spec"]["split"], "customer_code")
+        self.assertEqual(out["labels"], ["2026-04", "2026-05"])
+        self.assertEqual({s["name"]: s["values"] for s in out["series"]},
+                         {"R1": [19.0, 11.0], "R2": [1.0, None]})
+        for spec in ({"kind": "pie", "x": "month", "y": ["orders"]},
+                     {"kind": "bar", "x": "month", "y": ["orders", "currency"]}):
+            with self.assertRaisesRegex(ch.NotDrawn, "Two rows are for month 2026-04"):
+                ch.build(spec, cols, rows)
+        self.assertIsNone(ch.build({"kind": "bar", "x": "month", "y": ["orders"]},
+                                   cols, rows[::2])["spec"]["split"])
+        self.assertEqual(ch.build({"kind": "table", "x": "month", "y": ["orders"]},
+                                  cols, rows)["labels"], ["2026-04", "2026-04", "2026-05"])
+
+    def test_small_multiples_keep_the_split_in_each_panel(self):
+        cols = ["week", "supplier", "spend", "currency"]
+        rows = [["W1", "A", 10, "CAD"], ["W1", "B", 5, "CAD"], ["W2", "A", 7, "CAD"],
+                ["W1", "C", 3, "USD"]]
+        for spec in ({"kind": "bar", "x": "week", "y": ["spend"], "split": "supplier",
+                      "facet": "currency"},
+                     {"kind": "bar", "x": "week", "y": ["spend"], "facet": "currency"}):
+            with self.subTest(spec=spec):
+                out = ch.build(spec, cols, rows)
+                cad, usd = out["panels"]
+                self.assertEqual(cad["labels"], ["W1", "W2"])
+                self.assertEqual({s["name"]: s["values"] for s in cad["series"]},
+                                 {"A": [10.0, 7.0], "B": [5.0, None]})
+                self.assertEqual((usd["labels"], [s["name"] for s in usd["series"]]),
+                                 (["W1"], ["spend"] if "split" not in spec else ["C"]))
+
+    def test_the_split_is_a_column_whose_values_tell_the_repeated_rows_apart(self):
+        # region is the same on both April rows: it cannot be the split; customer can
+        cols = ["month", "region", "orders", "customer"]
+        rows = [["2026-04", "East", 19, "R1"], ["2026-04", "East", 1, "R2"],
+                ["2026-05", "West", 11, "R1"]]
+        out = ch.build({"kind": "bar", "x": "month", "y": ["orders"]}, cols, rows)
+        self.assertEqual(out["spec"]["split"], "customer")
+        # no column tells the two April rows apart: nothing is drawn
+        same = [["2026-04", "East", 19, "R1"], ["2026-04", "East", 1, "R1"]]
+        with self.assertRaisesRegex(ch.NotDrawn, "Two rows are for month 2026-04"):
+            ch.build({"kind": "bar", "x": "month", "y": ["orders"]}, cols, same)
+
     def test_heatmap_rows_are_the_split_values(self):
         (c,) = drawn({"type": "heatmap", "x": "week", "split": "dept", "y": ["n"]},
                      ("week", "dept", "n"), LONG)

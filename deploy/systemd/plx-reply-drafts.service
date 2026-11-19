@@ -1,0 +1,71 @@
+# The autopilot's live event feed (`python3 -m operating.autopilot follow`, run through operator_api.autopilot_context): one cycle types
+# the records changed since the last one (the store's event index over a window, the feed
+# the replay gate scores, plus small delta layers once Postgres applied them), stores each
+# event once and prepares the work of the workflows that passed their replay gate
+# (autopilot-gate.json beside the queue) or are in Draft (operating/autopilot_draft.json),
+# into <state>/autopilot/autopilot.sqlite, which My work reads.
+#
+# Prepares only. Nothing here sends, writes to a business system or approves: a draft goes
+# out only through the app's card desk after its owner's confirm, and a write intent only
+# through operating.autopilot_write (not run by this unit), dry run until the item's person
+# turned the workflow on for themselves and the master switch PLX_AUTOPILOT_WRITES is on. Off at once: PLX_AUTOPILOT_OFF=1 in
+# proactive.env, or a file named autopilot.off beside the queue.
+#
+# (operating.jobq.events, Postgres plx_jobq): an approval or a customer's message before
+# routine updates, one thread's events in order. Postgres unreachable: the cycle is
+# "blocked" and its events wait (never handled unordered). PLX_ONTOLOGY_PG=1: reads the
+# Postgres ontology, current to the last applied delta layer, as plx-proactive-inc does.
+# Started by plx-autopilot-follow.path (a delta publish) and .timer (5 min after the last
+# cycle ended, and every 10 min on the clock), also while a delta cycle runs. The people exclusion comes from proactive.env (fails closed without it).
+[Unit]
+Description=PLX Workbench open-replies drafts (drafts only, kept by message; nothing sent)
+# Not ordered after plx-delta.service: with the delta running back to back (a catch-up),
+# a start job ordered after it waited for good (no cycle for hours during a catch-up). A
+# cycle reads safely while a delta applies: each layer is applied in one transaction under
+# the delta's advisory lock, the change feed commits in seq order under that lock, and the
+# feed only takes in layers Postgres already applied (operating.autopilot.follow_ids).
+After=postgresql.service
+
+[Service]
+Type=oneshot
+User=@PLX_USER@
+Group=@PLX_GROUP@
+WorkingDirectory=@PLX_CURRENT@
+EnvironmentFile=-@PLX_HOME@/.config/plx/proactive.env
+# the chat ask reader (operating.chat_ask_model): claude -p on the user's own login
+Environment=PATH=/data/venv/bin:/usr/local/bin:/usr/bin:/bin
+Environment=PLX_CHAT_ASK_MODEL=haiku
+# reply drafts for the people who switched them on (operating/autopilot_drafter.py)
+Environment=PLX_AUTOPILOT_DRAFT_MODEL=opus
+# Reply drafts look facts up with the Simple Ask's tools as the person they are drafted for
+# (operator_api.autopilot_context.Lookup): the session secret the reader host's ticket is
+# signed with, and the readers file (autopilot-readers.json, mode 600: each opted-in
+# person's id -> their four identity claims). Either absent: no lookup, the plain draft.
+# Only replies whose every reader is the company's own look anything up.
+EnvironmentFile=-@PLX_HOME@/.config/plx/workbench-session.env
+Environment=PLX_AUTOPILOT_READERS_FILE=@PLX_HOME@/.config/plx/autopilot-readers.json
+Environment=PLX_AUTOPILOT_HOST_CONFIG=@PLX_HOME@/.config/plx/workbench-host-vince/host.json
+Environment=PLX_AUTOPILOT_HOST_STATE=/data/plx-state
+# up to 4 drafts at once (PLX_AUTOPILOT_DRAFT_PARALLEL), each a model process and a host
+# names its Postgres sessions after the unit (ARCH T2: pg_stat_activity, slow-query log)
+Environment=PGAPPNAME=%N
+Environment=PLX_ONTOLOGY_PG=only
+# Each draft takes the person's memory and matching template (operator_api.autopilot_context):
+# the served Postgres, and from plx.env only the allowlisted names (autopilot_context.
+# ENV_ALLOWED: the Graph read app for the excluded people's names, the exclusion); no other
+# name of plx.env reaches this process, and a name this unit or proactive.env set wins.
+Environment=PLX_AUTOPILOT_ENV_FILE=@PLX_HOME@/.config/plx/plx.env
+Environment=PLX_AUTOPILOT_MEMORY_DSN=postgresql:///plx
+ExecStart=/data/venv/bin/python3 -m operator_api.autopilot_context assist-drafts --state-dir /data/plx-state
+# Measured 2026-11-13 on Postgres (loaded box), peak 0.27 GB: a cycle after the store changed
+# reads the 72 h window again, 7-9 min (its handling stops at the 240 s budget, the rest
+# waits); a cycle over an unchanged store handles what waits, 2 min.
+Nice=10
+CPUWeight=20
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7
+MemoryHigh=4G
+MemoryMax=6G
+MemorySwapMax=512M
+TimeoutStartSec=30min
+UMask=0077

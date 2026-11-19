@@ -122,12 +122,14 @@ class Runs(unittest.TestCase):
         return ir.Runner(backend, self.memory.pool.connection, b"k" * 32,
                          clock=lambda: self.now[0])
 
-    def insight(self, owner=f"employee:{ANA}", schedule="hourly", notify="new_rows", watch="{}"):
+    def insight(self, owner=f"employee:{ANA}", schedule="hourly", notify="new_rows", watch="{}",
+                question=""):
         with psycopg.connect(self.dsn) as conn:
             (iid,) = conn.execute(
-                "INSERT INTO insights.insight (owner, title, sql, schedule, notify, watch) VALUES "
-                "(%s, 'Late POs', 'SELECT po, days_late FROM purchase_orders', %s, %s, %s) "
-                "RETURNING id", (owner, schedule, notify, watch)).fetchone()
+                "INSERT INTO insights.insight (owner, title, sql, schedule, notify, watch, "
+                "question) VALUES (%s, 'Late POs', 'SELECT po, days_late FROM purchase_orders', "
+                "%s, %s, %s, %s) RETURNING id",
+                (owner, schedule, notify, watch, question)).fetchone()
         return iid
 
     def runs(self, iid):
@@ -250,8 +252,8 @@ class Runs(unittest.TestCase):
         listed = [i for i in b.insight_store().list(ana.key) if i.id == f"s{iid}"]
         self.assertEqual(listed[0].last_run, "Last ran Nov 19, 7:02 AM ET: 4 rows, 1 new.")
 
-    def watched(self, line):
-        return self.insight(notify="crosses", watch=json.dumps(line))
+    def watched(self, line, question=""):
+        return self.insight(notify="crosses", watch=json.dumps(line), question=question)
 
     def tick_at(self, minutes):
         self.now[0] = self.now[0] + dt.timedelta(minutes=minutes)
@@ -274,6 +276,17 @@ class Runs(unittest.TestCase):
         news = ir.news(self.memory.pool.connection, f"employee:{ANA}", self.now[0])
         self.assertEqual([n.said for n in news][:1],
                          ["1 row now above 100 in days late (2 rows in all)."])
+
+    def test_only_a_monitor_s_news_offers_its_why_question(self):
+        why = "Why are late POs above 100 now? Break it down and say what changed."
+        crossing = self.watched({"column": "days_late", "op": "above", "value": 100}, why)
+        listing = self.insight(question="late POs by buyer")
+        self.tick_at(61)                                # sets what was there for the listing
+        self.rows = [["PO100109", "126"], ["PO100200", "3"]]
+        self.tick_at(61)
+        news = {n.insight_id: n.ask for n in
+                ir.news(self.memory.pool.connection, f"employee:{ANA}", self.now[0])}
+        self.assertEqual(news, {f"s{crossing}": why, f"s{listing}": ""})
 
     def test_below_counts_every_row_past_the_line(self):
         iid = self.watched({"column": "days_late", "op": "below", "value": 50})

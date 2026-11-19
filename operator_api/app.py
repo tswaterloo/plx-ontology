@@ -51,6 +51,33 @@ latency_log = logging.getLogger("operator_api.latency")
 
 # The only routes the Ask canary's service session is served (session_identity.SERVICE_CANARY)
 CANARY_ROUTES = frozenset({("GET", "/api/me"), ("POST", "/api/ask")})
+# The page measure's service session (session_identity.SERVICE_MEASURE): the screens' reads,
+# GET only (a path exactly one of MEASURE_ROUTES or under one of MEASURE_PREFIXES); never a
+# write, an Ask, a file or original, the reader's work log, memory or chats, a Teams
+# connection or the view-as list
+MEASURE_ROUTES = frozenset({
+    "/api/me", "/api/home", "/api/sidebar", "/api/briefing", "/api/briefing/items",
+    "/api/briefing/pages", "/api/briefing/unjudged", "/api/suggestions", "/api/insights",
+    "/api/insight-news", "/api/alert-kinds", "/api/late", "/api/labour", "/api/my-work",
+    "/api/biz/page", "/api/brief/meetings", "/api/brief/weekly", "/api/team", "/api/workload",
+    "/api/workload/grants", "/api/approvals", "/api/replies", "/api/autopilot",
+    "/api/autopilot/catalog", "/api/autopilot/schedules", "/api/autopilot/drafts",
+    "/api/trust", "/api/ops/status", "/api/watch", "/api/actions/state", "/api/prepared",
+    "/api/writes", "/api/meetings/action-items", "/api/templates", "/api/templates/learned"})
+MEASURE_PREFIXES = ("/api/object/", "/api/object-section/", "/api/object-impact/",
+                    "/api/explore/", "/api/history/", "/api/brief/", "/api/insights/",
+                    "/api/team/", "/api/as-of/", "/api/label-changes/", "/api/label-revisions/",
+                    "/api/autopilot/workflows/", "/api/meetings/follow-up/", "/api/alerts/")
+
+
+def service_route(session: Any, method: str, path: str) -> bool:
+    """Whether a service session (the Ask canary, the page measure) is served this route."""
+    if getattr(session, "measure", False):
+        return method == "GET" and ".." not in path and (
+            path in MEASURE_ROUTES or path.startswith(MEASURE_PREFIXES))
+    return (method, path) in CANARY_ROUTES
+
+
 # /api/teams/callback: Microsoft's cross-site redirect carries no session; the signed,
 # single-use state it returns binds the sign-in to the person who started it
 # (``integrations.teams_delegated.finish``)
@@ -63,7 +90,7 @@ LOOPBACK = frozenset({"127.0.0.1", "::1"})
 
 MESSAGES = {
     "sign_in_required": "Please sign in with your PLX Microsoft account.",
-    "canary_route_refused": "This service session asks its one question only.",
+    "canary_route_refused": "This service session is served its own routes only.",
     "no_workbench_access": "Your account is signed in but has no Workbench access yet. "
                            "Ask your manager or IT to grant it.",
     "insufficient_scope": "Your sign-in does not include Workbench access. Sign out and "
@@ -211,9 +238,11 @@ def origin_allowed(origin: str, headers: Any, allowed_origins: frozenset[str]) -
 READ_POSTS = frozenset({"/api/ask"})
 # Writes that change only some of the reader's screens (the first part of a screen's name,
 # ``WorkspaceBackend._serving``); every other write leaves none of them current. Home marks
-# the briefing seen on each visit: My work, Autopilot and the rest stay current.
+# the briefing seen on each visit: its "new since your visit" marks and counts move; My work,
+# Autopilot, the suggestion cards (made from the open alerts, never from the visit) and the
+# rest stay current.
 WRITE_SCREENS: dict[str, frozenset[str]] = {
-    "/api/briefing/seen": frozenset({"briefing", "briefing_items", "home", "suggestions"})}
+    "/api/briefing/seen": frozenset({"briefing", "briefing_items", "home"})}
 # Renaming, pinning or deleting an Ask conversation changes none of the reader's screens.
 CHAT_WRITES = "/api/ask/chats/"
 # Who besides the owner reads the reliability alarms: the Team view's readers (object ids or
@@ -549,6 +578,9 @@ def create_app(backend: Any, auth: Any, *, allowed_origins: frozenset[str] = fro
         wrote = getattr(request.state, "plx_wrote", None)
         if wrote is not None:
             backend.reader_wrote(*wrote)
+            again = getattr(backend, "reread_after_write", None)
+            if again is not None and wrote[1] is not None and response.status_code < 400:
+                again(*wrote)   # the screens it changed, read for the next visit
         route = request.scope.get("route")
         ms = round((time.perf_counter() - started) * 1000, 1)
         path = getattr(route, "path", "unmatched")
@@ -570,10 +602,11 @@ def create_app(backend: Any, auth: Any, *, allowed_origins: frozenset[str] = fro
         if getattr(who.session, "view_as", False):   # only ever made below, per request
             raise AuthRequired("sign_in_required")
         if getattr(who.session, "canary", False) and (
-                (request.method, request.url.path) not in CANARY_ROUTES
+                not service_route(who.session, request.method, request.url.path)
                 or request.headers.get(va.HEADER) is not None):
-            # the Ask canary's service session (operating.ask_canary): its one question,
-            # nothing of the reader's own screens, log or memory, never a view-as
+            # a service session: the Ask canary (operating.ask_canary) its one question,
+            # the page measure the screens' reads; never the reader's log or memory, a
+            # write or a view-as
             raise AuthRequired("canary_route_refused", 403)
         asked = request.headers.get(va.HEADER)
         if asked is not None:

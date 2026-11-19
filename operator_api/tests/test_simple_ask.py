@@ -405,6 +405,24 @@ class SessionTest(unittest.TestCase):
         self.assertIsNone(sql.served_views(("customers", "emails"), pg))
         sql._SERVED.clear()
 
+    def test_the_prompt_names_every_measure_and_only_reports_every_reader_may_run(self):
+        """The one prompt every reader gets lists the agreed measures and the company-wide
+        reports every reader may run; a report for full readers only is never named in it
+        (plx.sql {"measure": true} lists it to a full reader)."""
+        import re
+        from operating import measures
+        system = sa.system_prompt()
+        named = set(re.findall(r"^- ([a-z_]+) \(", system, re.M))
+        self.assertTrue(set(measures.measures()) <= named)
+        everyone = {r for r, e in measures.reports().items() if e.get("scope") == "everyone"}
+        full_only = set(measures.reports()) - everyone
+        self.assertTrue(full_only, "no full-reader report to keep out")
+        self.assertTrue(everyone <= named)
+        self.assertFalse(full_only & named, full_only & named)
+        self.assertNotIn("readers who see everyone", system)
+        self.assertTrue(full_only <= {line.split(" ")[1] for line in measures.lines(full=True)})
+        self.assertIn('plx.sql {"measure": "<id>"}', system)
+
     def test_the_prompt_offers_record_search_only_where_plx_search_serves_it(self):
         """The method's plx.search line follows plx.search's contract: the records leg
         (``records`` among its sources) is offered only where the search serves it, and the
@@ -562,19 +580,26 @@ class SessionTest(unittest.TestCase):
         # a figure the person's file states is theirs; one nobody returned is still marked
         self.assertEqual(ran.text, "The quote totals 1,234.50 CAD; October was 703,058.44 CAD; "
                                    "77 (unverified) boxes.")
-        # text the simple path takes; an image too when its kept session shows it (warm
-        # sessions on, not the deeper look: that one run's task is text, so the app's
-        # attachment path reads the image)
-        batch = SimpleNamespace(read=[quote], files=[quote])
-        self.assertTrue(sa.takes(None))
-        self.assertTrue(sa.takes(batch))
+        # an image goes to the model with the one run's task too (warm sessions off, the
+        # deeper look): the task says it is shown, and the run is given it
         image = Attached(name="p.png", kind="image", size=4, digest="d4", image="aGk=",
                          media_type="image/png")
-        with_image = SimpleNamespace(read=[quote, image])
-        self.assertTrue(sa.takes(with_image, SimpleNamespace(deep=False)))
-        self.assertFalse(sa.takes(with_image, SimpleNamespace(deep=True)))
-        with mock.patch.dict("os.environ", {sa.WARM_ENV: "0"}):
-            self.assertFalse(sa.takes(with_image))
+
+        class Shown:
+            def run(self, prompt, host, images=()):
+                seen["shown"] = (prompt, list(images))
+                return AgentRun(events=[OCT], final_text="A label.",
+                                usage={"subtype": "success"})
+        for deep in (False, True):
+            seen.pop("shown", None)
+            with mock.patch.dict("os.environ", {sa.WARM_ENV: "0"}):
+                sa.run(SimpleNamespace(_host_for=lambda s: SimpleNamespace(),
+                                       _agent_for=lambda on: Shown()),
+                       object(), "What is it?", files=[image], deep=deep)
+            prompt, images = seen["shown"]
+            self.assertEqual(images, [{"media_type": "image/png", "data": "aGk="}])
+            self.assertNotIn("not read here", prompt)
+            self.assertIn('"p.png"', prompt)
         # a run that is not a kept session's turn names the image as not read here
         self.assertIn('"p.png"; it was not read here', sa.task("What is it?", files=[image]))
 
@@ -651,6 +676,7 @@ class WarmTest(unittest.TestCase):
         # how a ready session starts (``start_digest``: ticket, host config, model, views)
         self.start = {}
         self.fail_open = False
+        self.answers = []   # the session's next replies, when a test names them
 
         test = self
 
@@ -666,6 +692,8 @@ class WarmTest(unittest.TestCase):
                 if self.fail_next == "timeout":
                     self.alive = False
                     return AgentRun(events=[], final_text="", usage={"subtype": "timeout"})
+                if test.answers:
+                    return test.answers.pop(0)
                 return AgentRun(events=[OCT], final_text="It was 703,058.44 CAD.",
                                 usage={"subtype": "success"})
 
@@ -702,6 +730,35 @@ class WarmTest(unittest.TestCase):
             out += [SimpleNamespace(role="user", text=q),
                     SimpleNamespace(role="assistant", text=a)]
         return out
+
+    def test_a_chart_the_app_does_not_draw_is_told_to_the_session_which_redoes_it(self):
+        """A chart block the app refuses (here: two currencies on one axis) is not dropped
+        unseen: the same session is told which chart and why, and the block it writes
+        back is drawn; its reply's other words never reach the answer. Every chart drawn:
+        no extra turn."""
+        rid = "sql://0123456789abcdef0123"
+        mixed = ('```chart\n{"type": "bar", "title": "Totals", "result": "%s", "x": "n", '
+                 '"y": ["total"]}\n```' % rid)
+        fixed = ('```chart\n{"type": "bar", "title": "Totals", "result": "%s", '
+                 '"x": "currency", "y": ["total"]}\n```' % rid)
+        self.answers = [
+            AgentRun(events=[OCT], final_text="It was 703,058.44 CAD.\n\n" + mixed,
+                     usage={"subtype": "success"}),
+            AgentRun(events=[], final_text="Here it is by currency.\n\n" + fixed,
+                     usage={"subtype": "success"})]
+        ran = self.ask("ann", "October sales as a chart?")
+        session = self.opened[-1]
+        self.assertEqual(len(session.prompts), 2)
+        self.assertIn('"Totals": The rows are in more than one currency', session.prompts[1])
+        self.assertEqual([c["spec"]["x"] for c in ran.charts], ["currency"])
+        self.assertNotIn("by currency", ran.text)
+        self.assertEqual(ran.usage["chart_redo"], 1)
+        # drawn the first time: one turn only
+        self.answers = [AgentRun(events=[OCT], final_text="It was 703,058.44 CAD.\n\n"
+                                 + fixed, usage={"subtype": "success"})]
+        ran = self.ask("ann", "And as a chart again?", conversation="c2")
+        self.assertEqual(len(self.opened[-1].prompts), 1)
+        self.assertEqual(len(ran.charts), 1)
 
     def test_an_attached_image_is_shown_to_the_kept_session_with_its_turn(self):
         """The person's attached image goes to the session's turn as an image (the task

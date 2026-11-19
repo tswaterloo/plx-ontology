@@ -26,7 +26,9 @@ ALTER ROLE plx_eval CONNECTION LIMIT 80;
 ALTER ROLE plx_eval SET default_transaction_read_only = on;
 ALTER ROLE plx_eval SET statement_timeout = '300s';
 ALTER ROLE plx_eval SET lock_timeout = '30s';
-ALTER ROLE plx_eval SET idle_in_transaction_session_timeout = '15min';
+-- a transaction left open between statements (a read stream not drained) gives its
+-- login back after as long as one statement may run
+ALTER ROLE plx_eval SET idle_in_transaction_session_timeout = '5min';
 
 DO $$
 BEGIN

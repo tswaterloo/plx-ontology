@@ -7261,6 +7261,12 @@ export type components = {
          *     the insight to read them, live, as you).
          */
         InsightNews: {
+            /**
+             * Ask
+             * @description A monitor's question to ask about it (why it moved), '' when it has none.
+             * @default
+             */
+            ask: string;
             /** Insight Id */
             insight_id: string;
             /** New Rows */
@@ -9980,6 +9986,15 @@ export type components = {
             /** Days */
             days: number;
             draft: components["schemas"]["ApprovalNudge"];
+            /**
+             * Draft State
+             * @description The model's draft: ``ready`` (on ``draft``, or a question in ``your_call``), ``drafting`` (being written), ``queued`` (the holding reply until it is written).
+             * @default queued
+             * @enum {string}
+             */
+            draft_state: "ready" | "drafting" | "queued";
+            /** Drafted By */
+            drafted_by?: "model" | null;
             /** Id */
             id: string;
             /** Kind */
@@ -10006,6 +10021,17 @@ export type components = {
             subject?: string | null;
             /** Summary */
             summary?: string | null;
+            /** @description A question only you can answer, with each answer's reply. */
+            your_call?: components["schemas"]["ReplyQuestion"] | null;
+        };
+        /** ReplyQuestion */
+        ReplyQuestion: {
+            /** Ask */
+            ask: string;
+            /** Options */
+            options?: {
+                [key: string]: unknown;
+            }[];
         };
         /**
          * ReplyTriage

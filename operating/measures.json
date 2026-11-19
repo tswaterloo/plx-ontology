@@ -1,0 +1,376 @@
+{
+ "about": "The named business measures plx.sql {measure: ...} answers from (operating/measures.py). Each is one aggregate over one business view: value (an aggregate over the view's own columns), per (the column its value is split by: a money measure's currency or a quantity's unit; values in different currencies or units are never added), date (the column a period is read on; none: a snapshot as it stands now), where (the rows it counts), dimensions (the view's columns it may be broken down by), owner (the team that owns the definition). Every statement is made from these fields only and runs as the reader through the business views' door.",
+ "measures": [
+  {
+   "id": "revenue",
+   "name": "Revenue invoiced",
+   "owner": "Finance",
+   "unit": "money",
+   "definition": "Net line revenue on posted sales invoices (item and miscellaneous lines, before tax), by invoice date.",
+   "view": "sales_invoice_lines",
+   "value": "sum(revenue)",
+   "per": "revenue_currency",
+   "date": "invoice_date",
+   "where": "",
+   "dimensions": [
+    "customer",
+    "customer_chain",
+    "item_code",
+    "item_name",
+    "line_type"
+   ],
+   "days": 30
+  },
+  {
+   "id": "gross_margin",
+   "name": "Gross margin",
+   "owner": "Finance",
+   "unit": "money",
+   "definition": "Line revenue less line cost on posted sales invoices, by invoice date. Lines without a cost are not counted.",
+   "view": "sales_invoice_lines",
+   "value": "sum(margin)",
+   "per": "margin_currency",
+   "date": "invoice_date",
+   "where": "margin IS NOT NULL",
+   "dimensions": [
+    "customer",
+    "customer_chain",
+    "item_code",
+    "item_name"
+   ],
+   "days": 30
+  },
+  {
+   "id": "units_sold",
+   "name": "Units sold",
+   "owner": "Sales",
+   "unit": "quantity",
+   "definition": "Quantity on item lines of posted sales invoices, by invoice date, per unit of measure.",
+   "view": "sales_invoice_lines",
+   "value": "sum(quantity)",
+   "per": "quantity_unit",
+   "date": "invoice_date",
+   "where": "line_type = 'item'",
+   "dimensions": [
+    "customer",
+    "customer_chain",
+    "item_code",
+    "item_name"
+   ],
+   "days": 30
+  },
+  {
+   "id": "invoices_issued",
+   "name": "Sales invoices issued",
+   "owner": "Finance",
+   "unit": "count",
+   "definition": "Distinct sales invoices by invoice date.",
+   "view": "sales_invoices",
+   "value": "count(DISTINCT invoice_number)",
+   "per": "",
+   "date": "invoice_date",
+   "where": "",
+   "dimensions": [
+    "customer",
+    "customer_chain",
+    "status"
+   ],
+   "days": 30
+  },
+  {
+   "id": "orders_booked",
+   "name": "Sales orders booked",
+   "owner": "Sales",
+   "unit": "count",
+   "definition": "Distinct sales orders by order date, every status (a quote is an order type).",
+   "view": "sales_orders",
+   "value": "count(DISTINCT order_number)",
+   "per": "",
+   "date": "order_date",
+   "where": "",
+   "dimensions": [
+    "customer",
+    "customer_chain",
+    "salesperson",
+    "order_type",
+    "status"
+   ],
+   "days": 30
+  },
+  {
+   "id": "order_value_booked",
+   "name": "Sales order value booked",
+   "owner": "Sales",
+   "unit": "money",
+   "definition": "Value of sales orders (not quotes) by order date.",
+   "view": "sales_orders",
+   "value": "sum(value)",
+   "per": "value_currency",
+   "date": "order_date",
+   "where": "order_type IS DISTINCT FROM 'quote'",
+   "dimensions": [
+    "customer",
+    "customer_chain",
+    "salesperson",
+    "status"
+   ],
+   "days": 30
+  },
+  {
+   "id": "open_orders",
+   "name": "Open sales orders",
+   "owner": "Customer Service",
+   "unit": "count",
+   "definition": "Sales orders open now (not shipped and invoiced in full, not quotes).",
+   "view": "sales_orders",
+   "value": "count(DISTINCT order_number)",
+   "per": "",
+   "date": "",
+   "where": "status = 'open' AND order_type IS DISTINCT FROM 'quote'",
+   "dimensions": [
+    "customer",
+    "customer_chain",
+    "salesperson",
+    "order_type"
+   ]
+  },
+  {
+   "id": "late_orders",
+   "name": "Late sales orders",
+   "owner": "Customer Service",
+   "unit": "count",
+   "definition": "Open sales orders past their required date now.",
+   "view": "sales_orders",
+   "value": "count(DISTINCT order_number)",
+   "per": "",
+   "date": "",
+   "where": "status = 'open' AND days_late > 0",
+   "dimensions": [
+    "customer",
+    "customer_chain",
+    "salesperson",
+    "order_type"
+   ]
+  },
+  {
+   "id": "receivables_open",
+   "name": "Receivables open",
+   "owner": "Finance",
+   "unit": "money",
+   "definition": "Amount customers owe now on open ledger documents (invoices less payments and credits applied).",
+   "view": "customer_balances",
+   "value": "sum(amount_due)",
+   "per": "amount_due_currency",
+   "date": "",
+   "where": "",
+   "dimensions": [
+    "customer",
+    "customer_chain",
+    "aging_bucket",
+    "document_type"
+   ]
+  },
+  {
+   "id": "receivables_overdue",
+   "name": "Receivables overdue",
+   "owner": "Finance",
+   "unit": "money",
+   "definition": "Amount customers owe now on documents past their due date.",
+   "view": "customer_balances",
+   "value": "sum(amount_due)",
+   "per": "amount_due_currency",
+   "date": "",
+   "where": "days_overdue > 0",
+   "dimensions": [
+    "customer",
+    "customer_chain",
+    "aging_bucket",
+    "document_type"
+   ]
+  },
+  {
+   "id": "payables_open",
+   "name": "Payables open",
+   "owner": "Finance",
+   "unit": "money",
+   "definition": "Amount PLX owes suppliers now on open ledger documents.",
+   "view": "supplier_balances",
+   "value": "sum(amount_due)",
+   "per": "amount_due_currency",
+   "date": "",
+   "where": "",
+   "dimensions": [
+    "supplier",
+    "aging_bucket",
+    "document_type"
+   ]
+  },
+  {
+   "id": "purchases_ordered",
+   "name": "Purchase order value",
+   "owner": "Purchasing",
+   "unit": "money",
+   "definition": "Total of purchase orders by order date, drafts left out.",
+   "view": "purchase_orders",
+   "value": "sum(total)",
+   "per": "total_currency",
+   "date": "order_date",
+   "where": "status IS DISTINCT FROM 'draft'",
+   "dimensions": [
+    "supplier",
+    "purchaser",
+    "status",
+    "verdict"
+   ],
+   "days": 30
+  },
+  {
+   "id": "purchase_orders_placed",
+   "name": "Purchase orders placed",
+   "owner": "Purchasing",
+   "unit": "count",
+   "definition": "Distinct purchase orders by order date, drafts left out.",
+   "view": "purchase_orders",
+   "value": "count(DISTINCT po_number)",
+   "per": "",
+   "date": "order_date",
+   "where": "status IS DISTINCT FROM 'draft'",
+   "dimensions": [
+    "supplier",
+    "purchaser",
+    "status",
+    "verdict"
+   ],
+   "days": 30
+  },
+  {
+   "id": "batches_produced",
+   "name": "Batches produced",
+   "owner": "Production",
+   "unit": "count",
+   "definition": "Production batches realized (made), by the date they were realized.",
+   "view": "batches",
+   "value": "count(DISTINCT batch_code)",
+   "per": "",
+   "date": "realized_date",
+   "where": "status = 'Realized'",
+   "dimensions": [
+    "product",
+    "item_code",
+    "production_line",
+    "quality_status"
+   ],
+   "days": 30
+  },
+  {
+   "id": "batches_on_hold",
+   "name": "Batches on quality hold",
+   "owner": "QA/QC",
+   "unit": "count",
+   "definition": "Batches not cancelled whose quality status is On-Hold now.",
+   "view": "batches",
+   "value": "count(DISTINCT batch_code)",
+   "per": "",
+   "date": "",
+   "where": "quality_status = 'On-Hold' AND status IS DISTINCT FROM 'Cancelled'",
+   "dimensions": [
+    "product",
+    "item_code",
+    "production_line",
+    "status"
+   ]
+  },
+  {
+   "id": "stock_on_hand",
+   "name": "Stock on hand",
+   "owner": "Warehouse",
+   "unit": "quantity",
+   "definition": "Quantity on hand now per item, per unit of measure.",
+   "view": "stock",
+   "value": "sum(on_hand)",
+   "per": "on_hand_unit",
+   "date": "",
+   "where": "",
+   "dimensions": [
+    "name",
+    "item_code",
+    "item_type",
+    "category"
+   ]
+  },
+  {
+   "id": "mail_received",
+   "name": "Mail received from outside",
+   "owner": "Customer Service",
+   "unit": "count",
+   "definition": "Distinct non-bulk emails from a domain no PLX staff address uses, addressed (to or cc) to a PLX mailbox, by received date (a message is counted once, however many mailboxes hold it).",
+   "view": "emails",
+   "value": "count(DISTINCT message_id)",
+   "per": "",
+   "date": "received_at",
+   "where": "NOT is_bulk AND owner_role IN ('to', 'cc') AND sender_domain NOT IN (SELECT split_part(email, '@', 2) FROM staff WHERE email IS NOT NULL)",
+   "dimensions": [
+    "sender_domain",
+    "owner_role"
+   ],
+   "days": 30
+  },
+  {
+   "id": "complaints_count",
+   "name": "Complaints said in mail and Teams",
+   "owner": "Customer Service",
+   "unit": "count",
+   "definition": "Complaints a model found in mail and Teams messages (comms_findings, each checked against a quote of its message), by the time it was said.",
+   "view": "comms_findings",
+   "value": "count(*)",
+   "per": "",
+   "date": "said_at",
+   "where": "kind = 'complaint'",
+   "dimensions": [
+    "topic",
+    "from_side",
+    "sender",
+    "source"
+   ],
+   "days": 30
+  },
+  {
+   "id": "requests_count",
+   "name": "Requests said in mail and Teams",
+   "owner": "Customer Service",
+   "unit": "count",
+   "definition": "Requests a model found in mail and Teams messages (comms_findings), by the time they were said.",
+   "view": "comms_findings",
+   "value": "count(*)",
+   "per": "",
+   "date": "said_at",
+   "where": "kind = 'request'",
+   "dimensions": [
+    "topic",
+    "from_side",
+    "sender",
+    "source"
+   ],
+   "days": 30
+  },
+  {
+   "id": "decisions_count",
+   "name": "Decisions said in mail and Teams",
+   "owner": "Operations",
+   "unit": "count",
+   "definition": "Decisions a model found in mail and Teams messages (comms_findings), by the time they were said.",
+   "view": "comms_findings",
+   "value": "count(*)",
+   "per": "",
+   "date": "said_at",
+   "where": "kind = 'decision'",
+   "dimensions": [
+    "topic",
+    "from_side",
+    "sender",
+    "source"
+   ],
+   "days": 30
+  }
+ ]
+}

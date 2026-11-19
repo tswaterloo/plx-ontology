@@ -17,6 +17,7 @@ import { fillTemplate, getAutopilotAudit, getMemory, getTemplates, getWorkLog } 
 import { auditWhat } from "@/lib/autopilot";
 import type { DraftUseData } from "@/components/autopilot/draft-use";
 import { cn } from "@/lib/cn";
+import { ApiError } from "@/lib/errors";
 import { formatDateTime, plural } from "@/lib/format";
 import type { AutopilotAuditRow, MemoryItem, Template, TemplateDocType, TemplateFilled, WorkLogEvent } from "@/lib/types";
 
@@ -122,7 +123,9 @@ export function forgetRelatedReads() {
 function settle<T>(p: Promise<T[]>, set: (r: Read<T>) => void, signal: AbortSignal) {
   p.then(
     (rows) => !signal.aborted && set({ rows, failed: false }),
-    () => !signal.aborted && set({ rows: [], failed: true }),
+    // a service session (the page measure) is never served the reader's own memory, log or
+    // runs: nothing to show rather than a read that failed
+    (err) => !signal.aborted && set({ rows: [], failed: !(err instanceof ApiError && err.code === "canary_route_refused") }),
   );
 }
 

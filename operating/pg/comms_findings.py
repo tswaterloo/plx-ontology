@@ -300,10 +300,18 @@ def screened(text: str, subject: str) -> str:
 PROMPT = """You read workplace emails and chat messages of a manufacturer and list the \
 business items each one records. For each message, list only items it clearly states:
 
-- decision: something a person decided, agreed, approved or confirmed (a date or price \
-confirmed, an approach chosen, a request approved or refused);
+- decision: a choice or agreement the message makes or reports: a request approved or \
+refused; a price, date, quantity or term accepted or agreed, even in a short reply \
+("works for me", "go ahead", "okay, let me include that", "we will deliver Friday the \
+20th"); a supplier, product, substitute or approach chosen; a \
+choice to wait, hold or stop. Not a decision: a quote or offer not yet accepted; a report \
+of what happened or its status (shipped, received, released, ready, delayed, processed); \
+a factual confirmation; a suggestion, an estimate or anything only "likely" or still \
+open; a promise to reply, update, check or look into something; an instruction or ask \
+with no choice in it (that is a request);
 - request: a customer, supplier or colleague asking for something to be done, sent, \
-quoted, changed or answered;
+quoted, changed or answered (a direct business question someone must answer counts, even \
+in a short chat line);
 - complaint: a problem with an order, product, delivery, document, price or service \
 reported by a customer, supplier or colleague (a delay, a defect, a wrong or short \
 shipment, a price objection, an error). Our own staff saying work is still in progress \

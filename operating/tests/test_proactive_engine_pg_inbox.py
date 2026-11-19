@@ -6,9 +6,11 @@ Evidence label: isolated-fixture.
 from __future__ import annotations
 
 import json
+import os
 import re
 import sqlite3
 import sys
+import time
 import unittest
 from datetime import datetime, timezone
 from pathlib import Path
@@ -57,7 +59,8 @@ class PostgresInboxCopyTest(Engine):
         super().setUp()
         from operating import proactive_engine_inbox as pi
         from operating.pg import ontology_reader
-        self.addCleanup(lambda: [held[1].close() for held in pi._st_kept.values()])
+        self.addCleanup(lambda: [held[1].close() for held in pi._st_kept.values()
+                                 if held[1] is not None])
         self.addCleanup(pi._st_kept.clear)
         self.stamp = ["sha256:gen@1"]
         self.pg = _FakePostgres(self.store)
@@ -112,6 +115,78 @@ class PostgresInboxCopyTest(Engine):
                         at=datetime(2026, 10, 19, 9, tzinfo=timezone.utc))
         self.pg_read()
         self.assertEqual(self.pg.opened, opened + 2)
+
+    def test_a_write_cut_short_leaves_no_tmp_once_a_process_starts_again(self):
+        """A process killed mid-write leaves its .tmp beside the inbox: the next process lets go
+        of it (writer gone, or older than any write); a write under way is left alone."""
+        import glob
+        import subprocess
+        from operating import proactive_engine_inbox as pi
+        world, ids = seeded()
+        self.run_engine(world, ids["coverage"])
+        self.pg_read()
+        copy = glob.glob(str(self.inbox) + ".st-*.sqlite")[0]
+        gone = subprocess.run([sys.executable, "-c", "import os; print(os.getpid())"],
+                              capture_output=True, text=True, check=True).stdout.strip()
+        dead, old, live = (f"{copy}.{gone}.1.tmp", f"{copy}.{os.getpid()}.2.tmp",
+                           f"{copy}.{os.getpid()}.3.tmp")
+        for path in (dead, old, live):
+            with open(path, "wb") as f:
+                f.write(b"x" * 1024)
+        os.utime(old, (time.time() - pi._ST_TMP_STALE_S - 60,) * 2)
+        pi._st_kept.clear()   # a new process: attaches the copy on disk
+        self.pg_read()
+        self.assertEqual(glob.glob(str(self.inbox) + ".st-*.tmp"), [live])
+
+    def test_a_process_started_again_attaches_the_copy_kept_on_disk(self):
+        """A deploy starts the API again: the copy made under the same (inbox, Postgres
+        change stamp) is attached from its file, not copied again; a moved stamp or a
+        written inbox makes a new one, and only the newest few stay beside the inbox."""
+        import glob
+        from operating import proactive_engine_inbox as pi
+        world, ids = seeded()
+        self.run_engine(world, ids["coverage"])
+        expected = sorted(g["id"] for g in self.read(held=ALL_MARKINGS - {"finance"})["gaps"])
+        self.pg_read()
+        opened = self.pg.opened
+        kept = glob.glob(str(self.inbox) + ".st-*.sqlite")
+        self.assertEqual(len(kept), 1)
+        self.assertFalse(glob.glob(str(self.inbox) + ".st-*.tmp"))
+
+        pi._st_kept.clear()   # a new process: nothing in memory
+        got = sorted(g["id"] for g in self.pg_read(held=ALL_MARKINGS - {"finance"})["gaps"])
+        self.assertEqual(got, expected)
+        self.assertEqual(self.pg.opened, opened)   # attached from disk: no copy made
+        self.assertIn("immutable=1", next(iter(pi._st_kept.values()))[0])
+
+        # the data moved: never the old file; a new copy, and its own file
+        subject = ids["unconfirmed"]
+        conn = sqlite3.connect(self.store)
+        conn.execute("UPDATE object_versions SET markings = '[\"finance\"]' "
+                     "WHERE object_id = ?", (subject,))
+        conn.commit()
+        conn.close()
+        self.stamp[0] = "sha256:gen@2"
+        pi._st_kept.clear()
+        shown = {g["object_id"] for g in
+                 self.pg_read(held=ALL_MARKINGS - {"finance"})["gaps"]}
+        self.assertNotIn(subject, shown)
+        self.assertEqual(self.pg.opened, opened + 1)
+        self.assertEqual(len(glob.glob(str(self.inbox) + ".st-*.sqlite")), 2)
+
+        # a file cut short (not a whole copy) is never attached: copied again
+        for path in glob.glob(str(self.inbox) + ".st-*.sqlite"):
+            with open(path, "r+b") as fh:
+                fh.truncate(100)
+        pi._st_kept.clear()
+        self.assertNotIn(subject, {g["object_id"] for g in
+                                   self.pg_read(held=ALL_MARKINGS - {"finance"})["gaps"]})
+        self.assertEqual(self.pg.opened, opened + 2)
+
+        for n in range(3, 3 + pi._ST_DISK_KEPT + 1):   # older copies let go
+            self.stamp[0] = f"sha256:gen@{n}"
+            self.pg_read()
+        self.assertEqual(len(glob.glob(str(self.inbox) + ".st-*.sqlite")), pi._ST_DISK_KEPT)
 
     def test_a_write_or_an_unstamped_open_never_shares_the_copy(self):
         world, ids = seeded()

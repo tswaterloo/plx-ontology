@@ -579,7 +579,13 @@ class BriefsMixin:
         raw = self._brief_run(reader, lambda view: replies_of(view), priority=ENRICH_PRIORITY)
         if raw is None:
             raise alerts_not_read()
-        for line in raw["lines"]:
+        # the model's drafts the background job kept for these lines (``reply_drafts``):
+        # read, never waited on; the holding sentence stays until one is ready
+        from operating import reply_drafts as rd
+        lines = raw["lines"]
+        rd.attach(lines, rd.kept_for(getattr(self, "state_dir", None), self._my_oids(reader),
+                                     lines))
+        for line in lines:
             card = reply_card(line)
             if card is not None:
                 line["card_id"] = card["id"]

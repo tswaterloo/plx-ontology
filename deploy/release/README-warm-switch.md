@@ -29,7 +29,7 @@ At rest only plx-api.service listens, on 8780. A restart:
 4. restarts plx-api.service held the same way (`/run/plx-api/hold-8780`). SIGTERM makes the
    API close 8780, end the requests under way (at most 60 s; an Ask still streaming then is
    cut) and exit, so Caddy sends the next request to the standby; the new plx-api opens 8780
-   once warm and Caddy sends to it again. Both units have TimeoutStopSec=100 (60 s drain +
+   once warm and Caddy sends to it again. Both units have TimeoutStopSec=210 and KillMode=mixed (180 s drain +
    20 s worker joins);
 5. waits 3 s (Caddy's 2 s pass-over) and stops plx-api@standby the same graceful way.
 

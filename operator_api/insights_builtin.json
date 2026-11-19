@@ -106,6 +106,39 @@
    "fast": true
   },
   {
+   "id": "org_teams",
+   "group": "Org",
+   "title": "Team shape: people, managers and span per department",
+   "about": "Per department in the directory: people, managers (people with direct reports), the largest and average span of control, and people with no manager on record (an empty department is shown as (none)). The org chart is only as complete as the directory's manager links: a team where most people have no manager on record is not mapped there.",
+   "sql": "SELECT coalesce(nullif(department, ''), '(none)') AS department, count(*) AS people,\n       count(*) FILTER (WHERE reports_count > 0) AS managers, max(reports_count) AS largest_span,\n       round(avg(reports_count) FILTER (WHERE reports_count > 0), 1) AS average_span,\n       count(*) FILTER (WHERE manager_email IS NULL) AS no_manager_on_record\nFROM staff GROUP BY 1 ORDER BY people DESC, 1",
+   "chart": {
+    "kind": "bar",
+    "x": "department",
+    "y": [
+     "people",
+     "no_manager_on_record"
+    ]
+   },
+   "fast": true,
+   "scope": "full"
+  },
+  {
+   "id": "team_responsiveness",
+   "group": "Team",
+   "title": "Reply time and reply rate per department, last 28 days",
+   "about": "Per department: mail addressed (To) to its people in their own mailboxes from someone else, not bulk, received 1 to 28 days ago; how many they answered in the same thread and the median hours to the answer. Many To messages need no answer (notices, thanks), so the rate is a comparison between teams, not a target. People with no department are shown as (none).",
+   "sql": "SELECT coalesce(nullif(s.department, ''), '(none)') AS department, count(DISTINCT s.person_id) AS people,\n       count(*) AS messages_to_them, count(e.owner_replied_at) AS replied,\n       round(100.0 * count(e.owner_replied_at) / count(*)) AS replied_pct,\n       round((percentile_cont(0.5) WITHIN GROUP (ORDER BY extract(epoch FROM e.owner_replied_at - e.received_at) / 3600))::numeric, 1) AS median_reply_hours\nFROM emails e JOIN staff s ON s.person_id = e.mailbox\nWHERE e.received_at >= now() - interval '28 days' AND e.received_at < now() - interval '1 day'\n  AND e.owner_role = 'to' AND NOT e.is_bulk AND e.sender <> s.email\nGROUP BY 1 ORDER BY median_reply_hours NULLS LAST",
+   "chart": {
+    "kind": "bar",
+    "x": "department",
+    "y": [
+     "median_reply_hours"
+    ]
+   },
+   "fast": true,
+   "scope": "full"
+  },
+  {
    "id": "team_mail_weekly",
    "group": "Team",
    "title": "Mail sent by our people per week",
@@ -235,6 +268,41 @@
    },
    "sql": "SELECT coalesce(nullif(f.who, ''), f.sender) || ': ' || f.summary AS decision, round((extract(epoch FROM now() - f.said_at) / 86400)::numeric, 1) AS days_ago, f.topic, f.source, f.handle FROM comms_findings f WHERE f.kind = 'decision' AND f.said_at >= now() - interval '14 days' ORDER BY f.said_at DESC LIMIT 100",
    "fast": true
+  },
+  {
+   "id": "who_decides",
+   "group": "Decisions",
+   "title": "Who decides, asks and complains, by department, last 30 days",
+   "about": "Decisions, requests and complaints found in the mail and Teams messages of the last 30 days, counted by the department of the person who wrote the message (from the directory: their work address for mail, their account for Teams). Messages from outside PLX are counted as (outside); a PLX sender the directory has no department for as (no department). Each finding is a model's one-line reading of one message.",
+   "sql": "SELECT CASE WHEN s.person_id IS NULL THEN '(outside)' ELSE coalesce(nullif(s.department, ''), '(no department)') END AS department,\n       count(*) FILTER (WHERE f.kind = 'decision') AS decisions, count(*) FILTER (WHERE f.kind = 'request') AS requests,\n       count(*) FILTER (WHERE f.kind = 'complaint') AS complaints, count(DISTINCT s.person_id) AS people\nFROM comms_findings f\nLEFT JOIN staff s ON (f.source = 'email' AND s.email = f.sender)\n                  OR (f.source = 'teams' AND left(f.sender, 1) = '{' AND s.person_id = (f.sender::jsonb) ->> 'id')\nWHERE f.said_at >= now() - interval '30 days'\nGROUP BY 1 ORDER BY decisions DESC, requests DESC",
+   "chart": {
+    "kind": "bar",
+    "x": "department",
+    "y": [
+     "decisions",
+     "requests",
+     "complaints"
+    ]
+   },
+   "fast": true,
+   "scope": "full"
+  },
+  {
+   "id": "how_decisions_are_made",
+   "group": "Decisions",
+   "title": "How each team decides, last 30 days",
+   "about": "Per department of the person who stated a decision in mail or Teams (from the directory; outside senders left out), last 30 days: decisions, how many people stated them, the share stated by the one who stated most, the share stated by a manager on record (someone with reports), how many followed an earlier request in the same thread or chat, the median hours from that request to the decision, how many of those requests came from another team or outside, and how many were taken to the asker's own manager (only where the directory names the asker's manager), with the latest example. Each finding is a model's one-line reading of one message; a team with few managers on record shows fewer of them.",
+   "sql": "WITH f AS (\n  SELECT f.kind, f.summary, f.said_at, f.thread, f.source, s.person_id, s.email, s.manager_email, s.reports_count,\n         CASE WHEN s.person_id IS NULL THEN '(outside)' ELSE coalesce(nullif(s.department, ''), '(no department)') END AS department,\n         coalesce(nullif(f.who, ''), s.name, f.sender) AS by_whom\n  FROM comms_findings f\n  LEFT JOIN staff s ON (f.source = 'email' AND s.email = f.sender)\n                    OR (f.source = 'teams' AND left(f.sender, 1) = '{' AND s.person_id = (f.sender::jsonb) ->> 'id')\n  WHERE f.said_at >= now() - interval '30 days' AND f.kind IN ('decision', 'request') AND f.thread IS NOT NULL),\nd AS (SELECT * FROM f WHERE kind = 'decision' AND department <> '(outside)'),\ndr AS (SELECT d.*, q.said_at AS asked_at, q.department AS asked_department, q.manager_email AS asker_manager\n       FROM d LEFT JOIN LATERAL (SELECT r.said_at, r.department, r.manager_email FROM f r\n                                 WHERE r.kind = 'request' AND r.thread = d.thread AND r.source = d.source\n                                   AND r.said_at < d.said_at ORDER BY r.said_at LIMIT 1) q ON true),\ntop AS (SELECT department, max(n) AS top_n FROM (SELECT department, person_id, count(*) AS n FROM d GROUP BY 1, 2) x GROUP BY 1)\nSELECT dr.department, count(*) AS decisions, count(DISTINCT dr.person_id) AS deciders,\n       round(100.0 * max(top.top_n) / count(*)) AS top_decider_pct,\n       round(100.0 * count(*) FILTER (WHERE dr.reports_count > 0) / count(*)) AS by_a_manager_pct,\n       count(dr.asked_at) AS after_a_request,\n       round((percentile_cont(0.5) WITHIN GROUP (ORDER BY extract(epoch FROM dr.said_at - dr.asked_at) / 3600))::numeric, 1) AS median_hours_to_decide,\n       count(*) FILTER (WHERE dr.asked_at IS NOT NULL AND dr.asked_department <> dr.department) AS asked_by_another_team,\n       count(*) FILTER (WHERE dr.asker_manager IS NOT NULL AND dr.asker_manager = dr.email) AS taken_to_their_manager,\n       (array_agg(dr.by_whom || ': ' || dr.summary ORDER BY dr.said_at DESC))[1] AS latest_example\nFROM dr JOIN top USING (department)\nGROUP BY dr.department ORDER BY decisions DESC",
+   "chart": {
+    "kind": "table",
+    "x": "department",
+    "y": [
+     "decisions",
+     "median_hours_to_decide"
+    ]
+   },
+   "fast": true,
+   "scope": "full"
   },
   {
    "id": "feedback_topics",

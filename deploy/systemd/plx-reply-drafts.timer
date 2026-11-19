@@ -1,0 +1,11 @@
+[Unit]
+Description=PLX open-replies drafts 3 minutes after the last run ended
+
+[Timer]
+OnBootSec=15min
+OnUnitInactiveSec=3min
+AccuracySec=30s
+OnCalendar=*:0/15
+
+[Install]
+WantedBy=timers.target

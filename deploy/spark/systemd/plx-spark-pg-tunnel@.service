@@ -1,15 +1,14 @@
 [Unit]
-Description=PLX Spark runs: Postgres path to Spark %i (reverse ssh, a socket only the Spark login can open)
+Description=PLX Spark runs: Postgres tunnel %i (<spark>:<n>; reverse ssh, a socket only the Spark login can open)
 Requires=plx-spark-pg-relay.socket
 After=plx-spark-pg-relay.socket network-online.target
 
 [Service]
 User=@PLX_USER@
 Group=@PLX_GROUP@
-# The Spark end is a unix socket under ~/plx-ai/run (0700 folder, socket 0600: sshd's
-# StreamLocalBindMask): no TCP port, no other Spark user. The box end is the relay above.
-ExecStartPre=/usr/bin/ssh -F /data/plx-state/ts-petra/ssh_config -o BatchMode=yes -o ConnectTimeout=20 %i "mkdir -p -m 700 plx-ai/run && rm -f plx-ai/run/.s.PGSQL.5432"
-ExecStart=/usr/bin/ssh -F /data/plx-state/ts-petra/ssh_config -N -o BatchMode=yes -o ExitOnForwardFailure=yes -o ServerAliveInterval=20 -o ServerAliveCountMax=3 -R @PLX_HOME@/plx-ai/run/.s.PGSQL.5432:/run/plx-spark-pg/.s.PGSQL.5432 %i
+# Several instances per Spark (s7d3d:1 .. s7d3d:16): each is its own TCP stream through the
+# user-space Tailscale; spark_pg_balance.py on the Spark spreads connections over them.
+ExecStart=/data/plx-releases/current/deploy/spark/spark_pg_tunnel.sh %i
 Restart=always
 RestartSec=15
 MemoryMax=128M

@@ -30,6 +30,19 @@ describe("answer charts", () => {
     expect(screen.getByText(/As of/)).toBeTruthy();
   });
 
+  it("many people along the bottom: names slanted, read whole, the first inside the chart", () => {
+    const labels = Array.from({ length: 30 }, (_, i) => `Vanessa Bandiera-Long ${i}`.slice(0, 20 + (i % 3)));
+    const svg = drawn({ ...bars, title: "Work per person", x: "person", labels, series: [{ name: "sent", values: labels.map((_, i) => 30 - i) }] });
+    const names = Array.from(svg.querySelectorAll("text[transform]"));
+    expect(names.length).toBeGreaterThanOrEqual(10);
+    for (const t of names) expect(t.textContent).not.toContain("…");
+    const first = names[0];
+    const x = Number(first.getAttribute("x"));
+    expect(x - (first.textContent ?? "").length * 6.2 * Math.SQRT1_2).toBeGreaterThanOrEqual(-6);
+    const [, , , h] = (svg.getAttribute("viewBox") ?? "").split(" ").map(Number);
+    expect(h).toBeGreaterThan(300);   // the names take room below the plot
+  });
+
   it("hover shows the exact values at that label", () => {
     const svg = drawn({ ...bars, currency: "CAD", series: [...bars.series, { name: "n_orders", values: [120, 98] }] });
     fireEvent.mouseMove(svg.querySelectorAll("[data-hover]")[1]);

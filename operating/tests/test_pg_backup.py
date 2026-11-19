@@ -370,6 +370,31 @@ class GuardAndAgeTest(unittest.TestCase):
                 self.assertEqual((out["error"], out["min_free_bytes"]),
                                  ("disk_guard", 2 * size + 10_000_000_000))
 
+    def test_a_killed_run_s_restore_database_is_dropped_by_the_next_run(self) -> None:
+        """A throwaway restore whose run is gone (no process, or its id now another
+        program's) is dropped before the next run's disk guard; a running one is kept."""
+        import psycopg
+        from psycopg import sql
+        holder = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)",
+                                   "plx_backup"])
+        self.addCleanup(holder.wait)
+        self.addCleanup(holder.kill)
+        names = [f"plx_restore_test_{pid}" for pid in (9999999, 1, holder.pid)]
+
+        def _drop(name: str) -> None:
+            with psycopg.connect(pg_testdb.ADMIN_DSN, autocommit=True) as admin:
+                admin.execute(sql.SQL("DROP DATABASE IF EXISTS {} WITH (FORCE)")
+                              .format(sql.Identifier(name)))
+        with psycopg.connect(pg_testdb.ADMIN_DSN, autocommit=True) as admin:
+            for name in names:
+                admin.execute(sql.SQL("CREATE DATABASE {}").format(sql.Identifier(name)))
+                self.addCleanup(lambda n=name: _drop(n))
+            dropped = plx_backup.drop_stale_restores(admin)
+            left = {r[0] for r in admin.execute(
+                "SELECT datname FROM pg_database WHERE datname = ANY(%s)", (names,))}
+        self.assertEqual(set(dropped) & set(names), set(names[:2]))
+        self.assertEqual(left, {names[2]})
+
     def test_the_restore_guard_needs_the_dump_plus_40_gb_and_skips_with_a_problem(self) -> None:
         from unittest import mock
         dump = self.tmp / "daily" / f"plx-{self.stamp}.dump"
@@ -381,14 +406,21 @@ class GuardAndAgeTest(unittest.TestCase):
                 out = plx_backup.restore_disk_guard(dump)
             self.assertEqual(out is not None, refused, free)
         # a too-full disk: the throwaway database is never created, and the run is a failure
+        # (the only statement is the look for a killed run's leftover, which frees space)
         manifest = self.tmp / "daily" / f"manifest-{self.stamp}.json"
         manifest.write_text(json.dumps({"files": {dump.name: {"sha256": plx_backup._sha256(dump)}},
                                         "state_files": {}, "table_counts": {}}))
+        statements: list[str] = []
+        admin = mock.MagicMock()
+        admin.__enter__.return_value = admin
+        admin.execute.side_effect = lambda q, *a: (statements.append(str(q)),
+                                                   mock.Mock(fetchall=lambda: []))[1]
         with mock.patch.object(plx_backup.shutil, "disk_usage",
                                return_value=mock.Mock(free=13_000_000_000)), \
-                mock.patch.object(plx_backup.psycopg, "connect",
-                                  side_effect=AssertionError("no database touched")):
+                mock.patch.object(plx_backup.psycopg, "connect", return_value=admin):
             code, out = plx_backup.restore_test(now=plx_backup._stamp_time(self.stamp))
+        self.assertEqual(len(statements), 1, statements)
+        self.assertIn("SELECT datname FROM pg_database", statements[0])
         self.assertEqual(code, 1)
         self.assertTrue(any(p.startswith("restore_skipped:disk_guard") for p in out["problems"]), out)
 

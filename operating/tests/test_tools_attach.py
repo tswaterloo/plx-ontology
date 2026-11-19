@@ -361,6 +361,25 @@ class WarmSessionTests(unittest.TestCase):
             refused.close()
         self.assertEqual(len([e for e in self.entries() if "turn" in e]), 2)
 
+    def test_a_one_run_session_is_shown_the_attached_image_with_its_task(self):
+        """Not a kept session (warm sessions off, the deeper look): the one run's task
+        goes in on stdin as one user message, the image blocks before its text."""
+        import base64
+        png = base64.b64encode(b"\x89PNG\r\n\x1a\nlabel").decode("ascii")
+        ran = self.agent().run("What product is on this label?", _Host(self.work, "answer"),
+                               images=[{"media_type": "image/png", "data": png}])
+        self.assertEqual(ran.final_text, "answer 1")
+        (start,) = [e for e in self.entries() if "start" in e]
+        self.assertIn("stream-json", start["argv"][start["argv"].index("--input-format") + 1])
+        self.assertNotIn("What product is on this label?", start["argv"])
+        (turn,) = [e for e in self.entries() if "turn" in e]
+        self.assertEqual((turn["kinds"], turn["images"], turn["text"]),
+                         (["image", "text"], [["image/png", png]],
+                          "What product is on this label?"))
+        with self.assertRaises(ValueError):
+            self.agent().run("Read it", _Host(self.work, "answer"),
+                             images=[{"media_type": "text/html", "data": png}])
+
     def test_a_prestarted_session_is_up_before_its_question_and_its_clock_starts_then(self):
         host = _Host(self.work, "answer")
         session = self.agent().open_session(host, prestart=True)

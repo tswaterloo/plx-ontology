@@ -218,12 +218,16 @@ def build(spec: Any, columns: Sequence[Any], rows: Sequence[Sequence[Any]], *,
                            "as_of": _text(as_of), "sql": sql, "spec": dict(spec),
                            "rows": len(rows), "partial": bool(truncated),
                            "currency": currency}
+    moved = None if spec.get("facet") else _repeat_split(spec, columns, rows, cell)
+    if moved:
+        spec = dict(spec, split=moved)
+        out["spec"] = dict(spec)
     if kind == "scatter":
         _scatter(out, spec, rows, cell)
     elif kind == "histogram":
         _histogram(out, spec, rows, cell)
     elif spec.get("facet"):
-        _panels(out, spec, rows, cell)
+        _panels(out, spec, rows, cell, columns)
     elif spec.get("split"):
         _pivot(out, spec, rows, cell)
     else:
@@ -328,6 +332,34 @@ def _currency(spec: Mapping[str, Any], columns: Sequence[str],
     return found
 
 
+def _repeat_split(spec: Mapping[str, Any], columns: Sequence[str], rows: list,
+                  cell: Any) -> Optional[str]:
+    """The column a chart without a split draws as its split when its label column repeats
+    (a statement grouped by one more column than the chart names): the first other column
+    that tells the repeated rows apart, for one value column on a bar, line, area or
+    heatmap. None when the labels do not repeat; ``NotDrawn`` when no column tells them
+    apart or the kind draws one value per label: two values under one label are never
+    shown as if they were two labels."""
+    x = spec.get("x")
+    if not x or spec.get("split") or spec["kind"] in ("scatter", "histogram", "table"):
+        return None
+    labels = [_text(cell(r, x)) for r in rows]
+    seen: set = set()
+    twice = next((v for v in labels if v in seen or seen.add(v)), None)
+    if twice is None:
+        return None
+    if spec["kind"] in ("bar", "line", "area", "heatmap") and len(spec["y"]) == 1 \
+            and not spec.get("y2"):
+        for col in columns:
+            if col in (x, spec["y"][0]):
+                continue
+            pairs = {(v, _text(cell(r, col))) for v, r in zip(labels, rows)}
+            if len(pairs) == len(rows):
+                return col
+    raise NotDrawn(f"Two rows are for {x} {twice}: total them in the statement, or name "
+                   "the column that tells them apart as the split.")
+
+
 def _wide(out: dict[str, Any], spec: Mapping[str, Any], rows: list, cell: Any) -> None:
     """Labels from x (or none), one series per value column, the first rows only."""
     kind = spec["kind"]
@@ -383,14 +415,26 @@ def _pivot(out: dict[str, Any], spec: Mapping[str, Any], rows: list, cell: Any) 
                        and (_text(cell(r, split)) or "(none)") in keep)
 
 
-def _panels(out: dict[str, Any], spec: Mapping[str, Any], rows: list, cell: Any) -> None:
+def _panels(out: dict[str, Any], spec: Mapping[str, Any], rows: list, cell: Any,
+            columns: Sequence[str] = ()) -> None:
     """Small multiples: one panel per facet value (first seen first), each the rows of
-    that value, its labels from x and one series per value column, on one shared scale."""
+    that value, its labels from x and one series per value column, on one shared scale;
+    with a split (named, or the column that tells a panel's repeated labels apart,
+    ``_repeat_split``) one series per split value, as one chart's (``_pivot``)."""
     groups: dict[str, list] = {}
     for r in rows:
         groups.setdefault(_text(cell(r, spec["facet"])) or "(none)", []).append(r)
     panels, shown = [], 0
     for name, members in list(groups.items())[:MAX_PANELS]:
+        alone = dict(spec, facet=None)
+        split = alone.get("split") or _repeat_split(alone, columns, members, cell)
+        if split:
+            drawn: dict[str, Any] = {}
+            _pivot(drawn, dict(alone, split=split), members, cell)
+            shown += len(members)
+            panels.append({"title": name, "labels": drawn["labels"],
+                           "series": drawn["series"]})
+            continue
         part = members[:MAX_CHART_POINTS]
         shown += len(part)
         panels.append({"title": name, "labels": [_text(cell(r, spec["x"])) or "" for r in part],
@@ -550,7 +594,29 @@ def blocks(text: str, events: Sequence[Mapping[str, Any]]) -> tuple[str, list[di
     got (``events``); the chart is drawn from that result's cells and keeps that call's
     statement (``sql``: pinned, it reads again as whoever opens it). A block naming no
     such result or column, or not a spec, draws nothing (it is only removed): no number
-    reaches a chart that a query did not return."""
+    reaches a chart that a query did not return (``refused`` says why)."""
+    out = [chart for chart, _why in _each(text, events) if chart is not None]
+    return _CHART_BLOCK.sub("", text).strip(), out
+
+
+def refused(text: str, events: Sequence[Mapping[str, Any]]) -> list[tuple[str, str]]:
+    """(title, why) of each chart block in ``text`` that ``blocks`` draws nothing for: the
+    session that wrote it is told, so it can write one the rows can carry."""
+    out = []
+    for raw, why in ((r, w) for r, w in _each(text, events, raw=True) if w is not None):
+        title = str(raw.get("title") or "") if isinstance(raw, Mapping) else ""
+        out.append((title or "untitled", why))
+    return out
+
+
+def chart_blocks(text: str) -> list[str]:
+    """The fenced chart blocks of ``text``, as written."""
+    return [m.group(0).strip() for m in _CHART_BLOCK.finditer(text)]
+
+
+def _each(text: str, events: Sequence[Mapping[str, Any]], raw: bool = False) -> list:
+    """Per chart block of ``text`` (the first ``MAX_CHARTS`` specs): (the chart drawn, or
+    None; why not, or None); ``raw``: (the block's object, why not) instead."""
     results: dict[str, tuple[Mapping[str, Any], Optional[str]]] = {}
     for event in events:
         if event.get("is_error") or event.get("name") != "plx.sql":
@@ -561,24 +627,34 @@ def blocks(text: str, events: Sequence[Mapping[str, Any]]) -> tuple[str, list[di
             args = event.get("arguments")
             sql = args.get("sql") if isinstance(args, Mapping) else None
             results[got["result"]] = (got, sql if isinstance(sql, str) else None)
-    out: list[dict[str, Any]] = []
+    out: list = []
     for block in _CHART_BLOCK.findall(text):
         try:
-            raw = json.loads(block)
+            spec_raw = json.loads(block)
         except ValueError:
-            continue
-        if not isinstance(raw, Mapping) or len(out) >= MAX_CHARTS:
-            continue
-        got, sql = results.get(str(raw.get("result") or "").split("#", 1)[0], (None, None))
-        spec = parse(raw)
-        if got is None or spec is None:
-            continue
-        rows = [r.get("cells", []) for r in got.get("rows") or () if isinstance(r, Mapping)]
-        chart = draw(spec, got["columns"], rows, title=str(raw.get("title") or ""),
-                     as_of=got.get("as_of"), sql=sql, truncated=bool(got.get("truncated")))
-        if chart is not None:
-            out.append(chart)
-    return _CHART_BLOCK.sub("", text).strip(), out
+            spec_raw, why = None, "The block is not one JSON object."
+        else:
+            why = None if isinstance(spec_raw, Mapping) else "A chart is described by an object."
+        if why is None and sum(1 for drawn, *_ in out if drawn is not None) >= MAX_CHARTS:
+            why = f"An answer carries up to {MAX_CHARTS} charts."
+        chart = None
+        if why is None:
+            got, sql = results.get(str(spec_raw.get("result") or "").split("#", 1)[0],
+                                   (None, None))
+            try:
+                spec = _parse(spec_raw)
+                if got is None:
+                    raise NotDrawn("Its result is not a plx.sql result id this session got "
+                                   "(\"result\": \"sql://...\").")
+                rows = [r.get("cells", []) for r in got.get("rows") or ()
+                        if isinstance(r, Mapping)]
+                chart = build(spec, got["columns"], rows, title=str(spec_raw.get("title") or ""),
+                              as_of=got.get("as_of"), sql=sql,
+                              truncated=bool(got.get("truncated")))
+            except NotDrawn as refused_why:
+                why = str(refused_why)
+        out.append((chart, why, spec_raw))
+    return [(r, w) if raw else (c, w) for c, w, r in out]
 
 
 # the line the Ask's prompt carries about charts (simple_ask)

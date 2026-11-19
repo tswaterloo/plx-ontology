@@ -414,11 +414,20 @@ def look_events(owners: Sequence[str], now: datetime,
     return [{"event_id": _digest("look", o, at), "event_type": LOOK_EVENT,
              "object_id": f"Look:{o}:{at}", "object_type": "Look", "at": at,
              "owner_hint": o, "text": "",
-             "fields": {"look": kind, "changes": look_changes(changes(o, at)) if changes else []}}
+             "fields": _look_fields(kind, changes(o, at) if changes else [])}
             for o in sorted(set(owners))]
 
 
+def _look_fields(kind: str, rows: Any) -> dict[str, Any]:
+    return {"look": kind, "changes": look_changes(rows), "changes_total": look_total(rows)}
+
+
 LOOK_CHANGES = 20   # what one look's list carries (the newest first, as computed)
+# A list longer than this is one item: its count and the newest few (``LIST_SHOWN``), no
+# session. Measured on the dev replays (sets D-G) before this: of 27 looks whose list ran
+# past 8 records, 22 prepared something and none was the person's right next step.
+LIST_LONG = 8
+LIST_SHOWN = 3
 
 
 def previous_look(at: datetime) -> datetime:
@@ -437,16 +446,44 @@ def previous_look(at: datetime) -> datetime:
                             hour.tzinfo).astimezone(timezone.utc)
 
 
-def look_changes(rows: Any) -> list[dict[str, str]]:
-    """The computed change list as a look carries it: rows with a non-empty ``record`` (the
-    key an item must name) and ``line`` (what changed, for the model), at most
-    ``LOOK_CHANGES``; anything else is dropped (an unreadable list is empty: no look)."""
+def _listed(rows: Any) -> list[dict[str, str]]:
     out: list[dict[str, str]] = []
     for r in rows if isinstance(rows, (list, tuple)) else ():
         if isinstance(r, Mapping) and isinstance(r.get("record"), str) and r["record"].strip() \
                 and isinstance(r.get("line"), str) and r["line"].strip():
             out.append({"record": r["record"].strip(), "line": r["line"].strip()})
-    return out[:LOOK_CHANGES]
+    return out
+
+
+def look_changes(rows: Any) -> list[dict[str, str]]:
+    """The computed change list as a look carries it: rows with a non-empty ``record`` (the
+    key an item must name) and ``line`` (what changed, for the model), at most
+    ``LOOK_CHANGES``; anything else is dropped (an unreadable list is empty: no look)."""
+    return _listed(rows)[:LOOK_CHANGES]
+
+
+def look_total(rows: Any) -> int:
+    """How many usable rows the computed list held before ``look_changes`` cut it."""
+    return len(_listed(rows))
+
+
+def changes_total(fields: Mapping[str, Any], changes: Sequence[Any]) -> int:
+    """A look event's list size: its ``changes_total`` when a whole number at least the rows
+    carried, else the rows carried (an odd or missing total never shrinks the list)."""
+    got = fields.get("changes_total")
+    n = len(changes)
+    return got if isinstance(got, int) and not isinstance(got, bool) and got > n else n
+
+
+def long_list(changes: Sequence[Mapping[str, str]], total: int) -> Optional[dict[str, str]]:
+    """The one to-do a look makes of a list longer than ``LIST_LONG``: the count and the
+    newest ``LIST_SHOWN`` rows (the list is newest first); None for a shorter list."""
+    if total <= LIST_LONG or not changes:
+        return None
+    shown = list(changes[:LIST_SHOWN])
+    what = (f"{total} records moved to a step of yours since the last look; the newest "
+            f"{len(shown)}: " + "; ".join(f"[{c['record']}] {c['line']}" for c in shown) + ".")
+    return {"system": "", "record": shown[0]["record"], "what": what}
 
 
 def on_changes(got: Any, changes: Sequence[Mapping[str, str]]) -> Any:

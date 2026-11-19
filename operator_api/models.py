@@ -2823,6 +2823,11 @@ class ApprovalsQueue(_Model):
     reading: bool = _reading()
 
 
+class ReplyQuestion(_Model):
+    ask: str
+    options: list[dict[str, Any]] = Field(default_factory=list)
+
+
 class ReplyLine(_Model):
     id: str
     kind: str
@@ -2840,6 +2845,13 @@ class ReplyLine(_Model):
     object_id: Optional[str] = None
     citations: list[str] = Field(default_factory=list)
     draft: ApprovalNudge
+    draft_state: Literal["ready", "drafting", "queued"] = Field(
+        "queued", description="The model's draft: ``ready`` (on ``draft``, or a question in "
+        "``your_call``), ``drafting`` (being written), ``queued`` (the holding reply until "
+        "it is written).")
+    drafted_by: Optional[Literal["model"]] = None
+    your_call: Optional[ReplyQuestion] = Field(
+        None, description="A question only you can answer, with each answer's reply.")
     card_id: Optional[str] = Field(None, description="The reply's card for ``/api/actions/*``.")
     offers: list[CardActionOffer] = Field(default_factory=list)
 
@@ -4867,6 +4879,8 @@ class InsightNews(_Model):
     row_count: int
     new_rows: int
     said: str = Field(description="One plain line: what it found.")
+    ask: str = Field("", description="A monitor's question to ask about it (why it moved), "
+                                     "'' when it has none.")
 
 
 class InsightNewsList(_Model):

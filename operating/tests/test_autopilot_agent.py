@@ -16,6 +16,7 @@ from unittest import mock
 
 from operating import autopilot as ap
 from operating import autopilot_agent as ag
+from operating import autopilot_agent_io as io
 from operating import autopilot_check as ck
 from operating import autopilot_jobs as aj
 from operating import autopilot_write as aw
@@ -696,6 +697,56 @@ class Looks(ta.Fixture):
         self.assertEqual([t["record"] for t in body["todos"]], ["IN-0"])
         self.assertIn("at most two things", session.runs[0][1])
         self.assertIn("Nothing on any other record", session.runs[0][1])
+
+    def test_a_long_change_list_is_one_counted_item_with_the_newest_few_and_no_session(self):
+        # dev replays D-G: 27 looks with more than 8 listed records, none right
+        rows = [{"record": f"IN-{i}", "line": f"Order IN-{i}: shipped, AR invoice not "
+                 f"entered yet", "stage": "ar_invoice"} for i in range(39)]
+        for n, sessions in ((8, 1), (9, 0), (10, 0), (39, 0), (60, 0)):
+            with self.subTest(rows=n):
+                self.setUp()
+                session = Session(calls=[("plx.prepare_write", PO_DATE)],
+                                  answer=final(summary="ship", todos=[
+                                      {"system": "sage", "record": "IN-0", "what": "Invoice"}]))
+                listed = (rows * 2)[:n] if n > 39 else rows[:n]
+                out, items = self.cycle(session, changes=listed)
+                self.assertEqual((len(items), len(session.runs)), (1, sessions), out)
+                body = json.loads(items[0]["body"])["prepared"]
+                if sessions:
+                    continue
+                self.assertEqual(body.get("jobs") or [], [])     # never a change to make
+                self.assertEqual(len(body["todos"]), 1)
+                what = body["todos"][0]["what"]
+                # the whole count, past the 20 rows a look carries
+                self.assertTrue(what.startswith(f"{n} records moved"), what)
+                self.assertEqual(re.findall(r"\[(IN-\d+)\]", what), ["IN-0", "IN-1", "IN-2"])
+                self.assertIn("; the newest 3: ", what)
+                self.assertNotIn("more", what)
+                self.assertEqual(body["todos"][0]["record"], "IN-0")
+
+    def test_a_long_list_for_a_person_not_cleared_or_a_screened_line_makes_nothing(self):
+        session = Session()
+        many = [{"record": f"IN-{i}", "line": f"shipment {i} shipped"} for i in range(12)]
+        a = assistant(session)
+        self.assertEqual(a.look("me", "Ana", People(barred={"me"}), changes=many),
+                         (None, "not_cleared"))
+        # a row whose line carries pay or HR matter: the screens a session's item passes
+        pay = [{"record": "PR-1", "line": "Paystub attached, gross pay, deductions, net pay"}, *many]
+        got, why = a.look("me", "Ana", People(), changes=pay)
+        self.assertIsNone(got)
+        self.assertEqual(why, "pay_or_hr")
+        self.assertEqual(session.runs, [])
+        event = {"event_type": io.LOOK_EVENT, "fields": {"look": "day start", "changes": many}}
+        # an odd or smaller total never shrinks the count below the rows carried
+        for total in (None, True, "40", 3, -1, 12.5):
+            with self.subTest(total=total):
+                got, why = a.run({**event, "fields": {**event["fields"], "changes_total": total}},
+                                 "me", "", "Ana", People())
+                self.assertTrue(got.todos[0]["what"].startswith("12 records moved"))
+        got, _why = a.run({**event, "fields": {**event["fields"], "changes_total": 40}},
+                          "me", "", "Ana", People())
+        self.assertTrue(got.todos[0]["what"].startswith("40 records moved"))
+        self.assertEqual(session.runs, [])
 
     def test_a_look_runs_no_session_without_a_computed_change_list(self):
         # no change list (the live cycle until one is computed): no session, no item

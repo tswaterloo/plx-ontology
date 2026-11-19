@@ -519,6 +519,15 @@ class ScreensMixin:
 
     def briefing_seen(self, reader: Reader) -> m.BriefingSeen:
         try:
+            at = self._seen_direct(reader)
+        except (FileNotFoundError, ValueError):
+            return m.BriefingSeen(ok=False)
+        if at is not None:
+            from . import page_sql
+            page_sql.forget_scope(self, reader)   # "new since your visit" counts from this one
+            self.warm_briefing(reader)   # the next visit's briefing is ready
+            return m.BriefingSeen(ok=True, at=at)
+        try:
             # a write a reader waits on: on the check worker (short jobs only: the door's
             # reads on the access workers held it 1 s on Home), else the access workers,
             # else the read workers, where it waited behind 2-minute reads
@@ -538,6 +547,20 @@ class ScreensMixin:
         page_sql.forget_scope(self, reader)   # "new since your visit" counts from this one
         self.warm_briefing(reader)   # the next visit's briefing is ready
         return m.BriefingSeen(ok=True, at=at)
+
+    def _seen_direct(self, reader: Reader) -> Optional[str]:
+        """The reader's "seen" mark written straight to the served store's inbox (one row
+        under the reader's own key: ``ObjectWorkspace.briefing_seen`` writes the same row
+        through a view), so it never waits for a view to be made for a reader's first visit
+        (7-9 s on a loaded check worker, ahead of that reader's access checks); None when
+        this API names no store (the view's path then)."""
+        path = getattr(self, "store_path", None)
+        if path is None:
+            return None
+        from operating import proactive_engine as pe
+        from operating import proactive_engine_inbox
+        return proactive_engine_inbox.record_visit(pe.inbox_path(Path(path)),
+                                                   pe.reader_key(reader.session.actor))
 
     def watcher_item_state(self, reader: Reader, item_id: str,
                            request: m.WatcherItemStateRequest) -> m.WatcherItemState:

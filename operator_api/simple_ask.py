@@ -95,6 +95,8 @@ METHOD = """Working habits:
 - Aggregate in SQL; group amounts by currency and never add or convert across currencies; state every amount with its currency code and the as-of date of what you read. A source's own total or summary row (no party on it, a blank currency) may add currencies together: sum the parties' own rows per currency instead.
 - A question word with more than one fair reading (regular, active, open, partly received): pick the plain business one, say in one line which you used, and keep to it.
 - A broad question (what is going on with a customer or supplier, a summary across systems): in your first turn send every independent read at once (its open orders, POs, invoices or balance, and its mail and Teams within a date window: the last 2-4 weeks unless the question says otherwise; never a mail or Teams search with no date), then open only the few messages that matter. Lead with what needs action (late, stuck, disputed), then the rest by system.
+- A named business figure (revenue, margin, orders, receivables, late orders, batches, stock, complaints...): use its measure (plx.sql {"measure": "<id>"}, by/days as needed) before writing your own SQL, and state the measure's name and one-line definition with the figure; write your own SQL only when no measure fits, and say so.
+- Why did X change / why is X low: measure this period and the one before (measure with "compare": true, or your own SQL); break the change down by each dimension that could carry it ("by": "<dimension>", "compare": true) and name the 2-3 parts carrying most of it with their change and share (when the net change is near zero, compare the parts' own changes, not shares); for those parts, read the rows behind them (count vs size vs rate: fewer orders, smaller orders, or a lower margin rate) and the reasons said in that period (comms_findings for the customer, item or supplier, then mail and Teams); a compare row with covered false means the source only starts on its data_from, after the earlier period began: that period was not captured, not zero, so give the current figure with data_from and say no comparison is possible (never "up from 0"); call something a cause only when its timing fits and the rows or messages show how it moved the number, else say it goes with the change; show 2-3 example rows or messages.
 - Verify a total that is the answer a second way (sum of the groups, count of the rows); a key figure the answer turns on (an amount owed, a count, a late date) is checked by a second, independent read before you state it.
 {search}
 {chart_line}
@@ -177,6 +179,13 @@ def system_prompt() -> str:
                   "date fields; 'in <view>': that view holds its records, not records)); "
                   "plx.sql {\"describe\": \"<Type>\"} for a type's fields:"]
         lines += types
+    # the agreed measures (``operating.measures``): only what every reader may run, as
+    # this prompt is every reader's; plx.sql {"measure": true} lists the reader's own
+    from operating import measures
+    lines += ["", "Named business measures (plx.sql {\"measure\": \"<id>\"}; agreed "
+              "definitions, use them first; plx.sql {\"measure\": true} lists each "
+              "definition and any more this reader may run):"]
+    lines += measures.lines()
     rules = sql.RULES if generic else sql.RULES_BASE + sql.RULES_TAIL
     method = METHOD.replace("{search}", search_line()).replace("{chart_line}", _CHART_LINE)
     lines += ["", "Query rules: " + rules, "", method,
@@ -556,6 +565,32 @@ def cited(events: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
 # query returned (none is the model's).
 from .charts import MAX_CHART_POINTS, MAX_CHARTS, PROMPT_LINE as _CHART_LINE  # noqa: E402,F401
 from .charts import blocks as charts  # noqa: E402
+from .charts import chart_blocks, refused as refused_charts  # noqa: E402
+
+
+def chart_redo(ran: Any) -> Optional[str]:
+    """The message that tells a session the charts its answer asked for that the app does
+    not draw, and why (``charts.refused``: whatever the reason), so it writes them again
+    the way the rows allow; None when every chart is drawn."""
+    refusals = refused_charts(str(ran.final_text or ""), ran.events)
+    if not refusals:
+        return None
+    return ("The app did not draw " + ("this chart" if len(refusals) == 1 else
+            "these charts") + " of your answer:\n" + "\n".join(
+                f"- {json.dumps(title)}: {why}" for title, why in refusals)
+            + "\nReply with only the corrected ```chart block(s), from the results you "
+            "already have (run plx.sql again only if none can carry it), or with nothing "
+            "if no chart fits. Your answer's text stays as it is.")
+
+
+def redone(first: Any, again: Any) -> Any:
+    """``first`` with the chart blocks of the session's reply to ``chart_redo``
+    (``again``): its text and nothing else is added; the calls of both are its calls."""
+    from dataclasses import replace
+    blocks = chart_blocks(str(again.final_text or ""))
+    usage = {**first.usage, "chart_redo": len(blocks)}
+    return replace(first, events=[*first.events, *again.events], usage=usage,
+                   final_text="\n\n".join([str(first.final_text or "").rstrip(), *blocks]))
 
 
 # ---------------------------------------------------------------------------- the session
@@ -699,14 +734,18 @@ def run(asker: Any, session: Any, question: str, history: Sequence[Any] = (),
 
     if host is None:
         ran = WARM.turn(asker, session, conversation, question, history, on_line, cancel,
-                        memory, files=files, context=context, tools=tools)
+                        memory, files=files, context=context, tools=tools, redo=chart_redo)
     else:
         try:
             agent = agent_for(asker, on_line, tools, deep=deep)
             if cancel is not None:
                 agent.cancel_event = cancel
+            # the person's images are shown with the task, as a kept session's turn
+            shown = shown_images(files)
             ran = agent.run(task(question, history, files=files, context=context,
-                                 memory=_memory_text(memory), deep=deep), host)
+                                 memory=_memory_text(memory), deep=deep,
+                                 images=bool(shown)), host,
+                            **({"images": shown} if shown else {}))
         finally:
             close = getattr(host, "close", None)
             if close is not None:
@@ -728,6 +767,7 @@ def run(asker: Any, session: Any, question: str, history: Sequence[Any] = (),
                                          "cache_creation_input_tokens")},
         "unverified": len(unverified), "failure": failure,
         "session_start": ran.usage.get("session_start"),
+        "chart_redo": ran.usage.get("chart_redo"),
         "spare_miss": ran.usage.get("spare_miss")}))
     return SimpleRun(text=text, agent_text=agent_text, unverified=unverified,
                      events=list(ran.events), seconds=seconds, stopped=stopped,
@@ -1247,10 +1287,13 @@ class WarmSessions:
              history: Sequence[Any], on_line: Callable[[str], None],
              cancel: Optional[threading.Event], memory: Memory = "", *,
              files: Sequence[Any] = (), context: Sequence[str] = (),
-             tools: Sequence[Any] = ()) -> Any:
+             tools: Sequence[Any] = (),
+             redo: Optional[Callable[[Any], Optional[str]]] = None) -> Any:
         """The turn's ``AgentRun``: on the conversation's kept session when it may
         continue, else on a new one (told the conversation so far and the person's memory,
-        ``memory``: its text or a callable that reads it, read only when it is told)."""
+        ``memory``: its text or a callable that reads it, read only when it is told).
+        ``redo``: a message the session's answer calls for (``chart_redo``), sent to the
+        same session as one more turn (its reply joined by ``redone``)."""
         reader = _reader_key(asker, session)
         key = (reader, str(conversation))
         digest = scope_digest(asker, session)
@@ -1301,6 +1344,11 @@ class WarmSessions:
             shown = shown_images(files)
             ran = kept.session.turn(prompt, on_line, cancel, **(
                 {"images": shown} if shown else {}))
+            again = redo(ran) if redo is not None and kept.session.alive \
+                and ran.usage.get("subtype") != "timeout" \
+                and not (cancel is not None and cancel.is_set()) else None
+            if again:
+                ran = redone(ran, kept.session.turn(again, lambda line: None, cancel))
         except BaseException:
             kept.close()
             raise
@@ -1453,17 +1501,6 @@ def shown_images(files: Sequence[Any]) -> list[dict[str, str]]:
     them): each read image (``ask_attachments``) not withheld."""
     return [{"media_type": str(f.media_type), "data": str(f.image)} for f in files or ()
             if getattr(f, "image", None) and not getattr(f, "unread", None)]
-
-
-def takes(files: Any, request: Any = None) -> bool:
-    """Whether the simple path answers a request with these attachments (``_attached``):
-    none, text it puts in the task, or images a kept session's turn shows the model
-    (``shown_images``). A request whose session would not be a kept one (warm sessions
-    off, or the deeper look: one run whose task is text) goes to the app's attachment path
-    with its images."""
-    if files is None or not any(getattr(f, "image", None) for f in files.read):
-        return True
-    return warm_enabled() and not bool(getattr(request, "deep", False))
 
 
 def ask(backend: Any, reader: Any, request: Any, conversation: str,

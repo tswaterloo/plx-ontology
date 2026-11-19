@@ -52,7 +52,9 @@ pg_hba.conf:    local  all  plx_eval    peer map=plxeval
                 local  all  plx_test    peer map=plxtest
                 local  all  plx_loader  peer map=plxloader
 ```
-`plx-sparkpg` is the Spark runs' relay (`deploy/spark/systemd/plx-spark-pg-relay.*`, a
+`plx-sparkpg` is the Spark runs' relay (`deploy/spark/systemd/plx-spark-pg-relay.*`, reached
+by the 16 tunnels per Spark `plx-spark-pg-tunnel@<spark>:<n>` and spread over them on the Spark
+by `deploy/spark/spark_pg_balance.py`, installed with `deploy/spark/spark_pg_install.sh`; a
 system user with no login): the Sparks reach the served cluster only through it, and its one
 mapping is `plx_eval`, so a Spark run is a full reader that can only read (owner-level evals);
 it is refused every other role (`plx_api`, `plx_loader`, `postgres`: no map, and the generic

@@ -80,6 +80,7 @@ import os
 from pathlib import Path
 import sqlite3
 import sys
+import logging
 import threading
 import time
 from typing import Any, Callable, Iterable, Mapping, Optional
@@ -1213,25 +1214,59 @@ class LatencyWindow:
 
 
 class CachedHealth:
-    """``collect`` at most once per ``ttl`` seconds (the health route is polled)."""
+    """``collect`` at most once per ``ttl`` seconds (the health route is polled), off the
+    request: a poll past ``ttl`` is answered the kept report while one fresh ``collect``
+    runs on its own thread (live it took 0.1-1.1 s inside the busy API, on every
+    once-a-minute poll). Only the first poll, or one past ``max_age`` (the refresh failed
+    or stalled), waits for ``collect`` itself, so no answer is ever older than that."""
 
     def __init__(self, state_dir: Any, window: LatencyWindow, *, ttl: float = 30,
+                 max_age: float = 180,
                  environ: Mapping[str, str] = os.environ,
                  clock: Callable[[], float] = time.monotonic) -> None:
         self.state_dir, self.window, self.ttl, self.clock = state_dir, window, ttl, clock
+        self.max_age = max(max_age, ttl)
         self.environ = environ
         self._at: Optional[float] = None
         self._value: Optional[dict[str, Any]] = None
-        self._lock = threading.Lock()
+        self._lock = threading.Lock()            # one collect at a time
+        self._refreshing = False
+        self._flag = threading.Lock()            # guards _refreshing
+
+    def _collect(self) -> dict[str, Any]:
+        return collect(self.state_dir, environ=self.environ,
+                       pg_dsn=self.environ.get("PLX_OPS_PG_DSN")
+                       or self.environ.get("PLX_PG_DSN"),
+                       api_p95_ms=self.window.p95())
+
+    def _refresh(self) -> None:
+        try:
+            with self._lock:
+                value = self._collect()
+                self._value, self._at = value, self.clock()
+        except Exception as error:  # noqa: BLE001 - the next poll tries again
+            logging.getLogger(__name__).warning("ops health refresh failed: %s",
+                                                type(error).__name__)
+        finally:
+            with self._flag:
+                self._refreshing = False
 
     def get(self) -> dict[str, Any]:
-        with self._lock:
-            if self._value is None or self._at is None or self.clock() - self._at > self.ttl:
-                self._value = collect(self.state_dir, environ=self.environ,
-                                      pg_dsn=self.environ.get("PLX_OPS_PG_DSN")
-                                      or self.environ.get("PLX_PG_DSN"),
-                                      api_p95_ms=self.window.p95())
-                self._at = self.clock()
+        value, at = self._value, self._at
+        age = None if value is None or at is None else self.clock() - at
+        if age is not None and age <= self.ttl:
+            return value
+        if age is not None and age <= self.max_age:
+            with self._flag:
+                start, self._refreshing = not self._refreshing, True
+            if start:
+                threading.Thread(target=self._refresh, name="ops-health-refresh",
+                                 daemon=True).start()
+            return value
+        with self._lock:     # none kept, or too old to answer with: this poll waits
+            if self._value is None or self._at is None \
+                    or self.clock() - self._at > self.max_age:
+                self._value, self._at = self._collect(), self.clock()
             return self._value
 
 

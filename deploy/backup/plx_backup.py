@@ -721,6 +721,30 @@ def _check_root_secrets(daily: Path, stamp: str, manifest: dict[str, Any]) -> li
             if have.get(str(path).lstrip("/"), 0) <= 0]
 
 
+RESTORE_DB_PREFIX = "plx_restore_test_"
+
+
+def drop_stale_restores(admin: Any, proc: Path = Path("/proc")) -> list[str]:
+    """Drop every throwaway restore database whose run is gone (named by its process id;
+    a run killed outright, SIGKILL or a lost machine, never reached its DROP and left the
+    whole restored copy, ~40 GB, on the disk): the databases dropped."""
+    dropped = []
+    for (name,) in admin.execute("SELECT datname FROM pg_database WHERE datname LIKE %s",
+                                 (RESTORE_DB_PREFIX + "%",)).fetchall():
+        pid = name[len(RESTORE_DB_PREFIX):]
+        if not pid.isdigit() or int(pid) == os.getpid():
+            continue
+        try:
+            running = b"plx_backup" in (proc / pid / "cmdline").read_bytes()
+        except OSError:
+            running = False
+        if not running:
+            admin.execute(sql.SQL("DROP DATABASE IF EXISTS {} WITH (FORCE)")
+                          .format(sql.Identifier(name)))
+            dropped.append(name)
+    return dropped
+
+
 def restore_test(now: dt.datetime | None = None) -> tuple[int, dict[str, Any]]:
     """Restore the newest complete daily set: its dump into a throwaway database (every
     table the manifest names exists, with the counted row count where its data was dumped),
@@ -750,14 +774,17 @@ def restore_test(now: dt.datetime | None = None) -> tuple[int, dict[str, Any]]:
     # restores, but it is not whole
     problems += [str(p) for p in manifest.get("state_problems") or ()]
     restored: dict[str, int | None] = {}
+    base = _env("PLX_RESTORE_ADMIN_DSN", "postgresql:///postgres")
+    if dump.name in manifest["files"] and dump.is_file():
+        with psycopg.connect(base, autocommit=True) as admin:
+            drop_stale_restores(admin)   # before the disk guard: a leftover holds its space
     skipped = restore_disk_guard(dump) if dump.is_file() else None
     if skipped:
         # an alarm, not a pass: the throwaway restore is skipped, never run into a full disk
         problems.append("restore_skipped:disk_guard:"
                         f"free={skipped['free_bytes'] // 10**9}GB<{skipped['min_free_bytes'] // 10**9}GB")
     elif dump.name in manifest["files"] and dump.is_file():
-        db = f"plx_restore_test_{os.getpid()}"
-        base = _env("PLX_RESTORE_ADMIN_DSN", "postgresql:///postgres")
+        db = f"{RESTORE_DB_PREFIX}{os.getpid()}"
         with psycopg.connect(base, autocommit=True) as admin:
             admin.execute(sql.SQL("CREATE DATABASE {}").format(sql.Identifier(db)))
             try:

@@ -18,6 +18,8 @@ type Tip = { x: number; y: number; title: string; rows: { colour?: string; name:
 const FONT = "Inter, 'Segoe UI', Helvetica, Arial, sans-serif";
 const W = 640;
 const H = 300;
+// the longest slanted x label shown whole (a person's full name)
+const TILT_CHARS = 22;
 
 export function useChartTheme(): Theme {
   const { resolvedTheme } = useTheme();
@@ -78,7 +80,7 @@ function Svg({ chart, width = W, height = H, children }: { chart: AskChart; widt
 
 type Plot = { chart: AskChart; labels: string[]; series: Series[]; theme: Theme; width?: number; height?: number; range?: [number, number]; compact?: boolean; onTip: ReturnType<typeof useTip> };
 
-function Cartesian({ chart, labels, series, theme, width = W, height = H, range, compact, onTip }: Plot) {
+function Cartesian({ chart, labels, series, theme, width = W, height: given = H, range, compact, onTip }: Plot) {
   const ink = INK[theme];
   const spec = chart.spec ?? undefined;
   const kind = chart.kind;
@@ -94,10 +96,16 @@ function Cartesian({ chart, labels, series, theme, width = W, height = H, range,
   const [lo, hi] = [axis[0], axis[axis.length - 1]];
   const longest = Math.max(0, ...names.map((l) => l.length));
   const rotate = !horizontal && (n > 8 || longest * n * 6.2 > width - 80);
-  const padL = horizontal ? Math.min(150, 12 + Math.min(longest, 24) * 6.2) : compact ? 34 : 52;
-  const padB = horizontal ? 22 : rotate ? (compact ? 34 : 64) : 24;
+  // a slanted label reads whole up to TILT_CHARS (a person's full name); the bottom margin is
+  // what the longest one needs, and the left one keeps the first label inside the chart
+  const tilt = compact ? 12 : TILT_CHARS;
+  const slant = Math.min(longest, tilt) * 6.2 * Math.SQRT1_2;
+  const padL = horizontal ? Math.min(150, 12 + Math.min(longest, 24) * 6.2) : Math.max(compact ? 34 : 52, rotate ? Math.min((names[0] ?? "").length, tilt) * 6.2 * Math.SQRT1_2 - 4 : 0);
+  const padB = horizontal ? 22 : rotate ? Math.round(Math.min(slant, 120) + 20) : 24;
   const padR = right.length ? 46 : 12;
   const pw = width - padL - padR;
+  // the slanted names take their room below the plot, not out of it
+  const height = given + (rotate && !compact ? Math.max(0, padB - 64) : 0);
   const ph = height - padB - 8;
   const along = horizontal ? ph : pw;
   const across = horizontal ? pw : ph;
@@ -105,7 +113,8 @@ function Cartesian({ chart, labels, series, theme, width = W, height = H, range,
   const pos = (v: number) => ((v - lo) / (hi - lo || 1)) * across;
   const at = (v: number) => 8 + ph - pos(v);
   const zero = pos(Math.min(Math.max(0, lo), hi));
-  const every = Math.max(1, Math.ceil(n / (horizontal ? 24 : compact ? 6 : 16)));
+  // slanted labels need ~18 px apart along the axis to stay clear of each other
+  const every = Math.max(1, rotate && !compact ? Math.ceil(18 / band) : Math.ceil(n / (horizontal ? 24 : compact ? 6 : 16)));
   const rAxis = right.length ? ticks(...extent(right), compact ? 3 : 5) : null;
   const rpos = (v: number) => (rAxis ? ((v - rAxis[0]) / (rAxis[rAxis.length - 1] - rAxis[0] || 1)) * ph : 0);
 
@@ -211,9 +220,10 @@ function Cartesian({ chart, labels, series, theme, width = W, height = H, range,
           fontSize={compact ? 10 : 11}
           fill={ink.muted}
           textAnchor={rotate ? "end" : "middle"}
-          transform={rotate ? `rotate(-35 ${padL + band * (i + 0.5)} ${8 + ph + 15})` : undefined}
+          transform={rotate ? `rotate(-45 ${padL + band * (i + 0.5)} ${8 + ph + 15})` : undefined}
         >
-          {clip(l, compact ? 10 : 18)}
+          {clip(l, rotate ? tilt : compact ? 10 : 18)}
+          {l.length > (rotate ? tilt : compact ? 10 : 18) && <title>{l}</title>}
         </text>
       )))}
       {names.map((l, i) => (
