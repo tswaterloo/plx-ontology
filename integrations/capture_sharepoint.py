@@ -793,6 +793,34 @@ class SharePointCaptureStore:
                     + " WHERE drive_id=? AND root_path=?",
                     (*[fields[n] for n in names], drive_id, root_path))
 
+    def retire_unplanned_roots(self, planned: Iterable[tuple[str, str]]) -> int:
+        """Roots a whole estate plan (``planned``: every (drive id, root) of a run whose
+        targets all resolved and whose discovery was complete) no longer names and that
+        hold no current file: nothing of them is served, no run walks them again, so their
+        last walk no longer holds the capture's freshness back
+        (``ontology.project.SharePointCaptures.describe``). Their root, position and walk
+        rows are dropped; a plan that names one again starts it as a new root. A root
+        that still holds a current file is kept as it is: its files are served as last
+        captured, and its age stays in the freshness. The number retired."""
+        keep = {(str(d), str(r)) for d, r in planned}
+        gone = [(row["drive_id"], row["root_path"]) for row in self.db.execute(
+            "SELECT drive_id, root_path FROM roots").fetchall()
+            if (row["drive_id"], row["root_path"]) not in keep and self.db.execute(
+                "SELECT 1 FROM items WHERE drive_id=? AND root_path=? AND superseded_at "
+                "IS NULL LIMIT 1", (row["drive_id"], row["root_path"])).fetchone() is None]
+        if not gone:
+            return 0
+        held = {row[0] for row in self.db.execute(
+            "SELECT name FROM sqlite_master WHERE type='table'")}
+        tables = [t for t in ("roots", "root_cursors", "root_permissions", "root_walks",
+                              "walk_positions", "walked_folders") if t in held]
+        with self.db:
+            for root in gone:
+                for table in tables:
+                    self.db.execute(f"DELETE FROM {table} WHERE drive_id=? AND "
+                                    "root_path=?", root)
+        return len(gone)
+
     # ---------------------------------------------------------------- incremental state
 
     def position(self, drive_id: str, root_path: str) -> dict[str, Any] | None:
@@ -3592,6 +3620,13 @@ class SharePointCapture:
         # The (drive id, root) this run planned: kept on the capture, never in the run's
         # result (which callers print), for the CLI's cross-run progress.
         self.planned = [(p[2], p[3]) for p in plans]
+        # A whole estate plan (discovery complete, every target resolved) is every root
+        # there is: an empty root it no longer names is retired before any walk, so a run
+        # the time budget or a drain ends still settles it. A named-target scope (no
+        # discovery) never judges the roots it does not name.
+        if discovery is not None and discovery["complete"] \
+                and not any("status" in entry for entry in targets):
+            self.store.retire_unplanned_roots(self.planned)
         # The items a caller names first (module docstring, Named items first): before
         # any root, without touching a root's state.
         named = self._named_pass(plans)

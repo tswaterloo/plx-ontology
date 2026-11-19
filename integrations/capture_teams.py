@@ -366,6 +366,9 @@ SWEEP_GAP = "gap:reply_sweep_root"
 # The chat the last census stopped after when ``max_chats`` or the time budget cut it:
 # the next census starts past it (round to the start), so every chat is reached.
 CENSUS_CHAT_CURSOR = "teams_census_chats"
+# The reason of a stored chat's closing run once a whole census listing no longer names it
+# (``retire_unlisted``).
+NOT_LISTED = "not_listed"
 TIME_BUDGET = "cap:time_budget"
 # Graph throttled the application tenant-wide (``TENANT_THROTTLE_STREAK`` reads in a row
 # throttled past the client's bounded Retry-After retries): the run starts no further
@@ -496,6 +499,46 @@ def _channel_path(parts: Sequence[str]) -> tuple[str, ...]:
             and _valid("teams_message_id", message)):
         raise ValueError("teams_channel_path_invalid")
     return team, channel, message
+
+
+def retire_unlisted(store: CaptureStore, kind_name: str, listed: Iterable[str]) -> int:
+    """Units of ``kind_name`` that a whole listing of the source (``listed``: every unit it
+    named) no longer names: no run reads them again, so their last run must not hold the
+    capture's freshness back (``TeamsCaptures.describe``: the stalest latest run). Each
+    one's latest run is closed ``partial`` with reason :data:`NOT_LISTED` (an unfinished
+    one, e.g. a run a stopped process left open, is closed; a finished one gets an empty
+    closed run after it); a unit already retired has that run's time moved to now (this
+    listing confirmed it again: the capture's last word on the unit). Records and
+    memberships stay as captured, nothing is marked missing; a listing that names the unit
+    again starts a new run. When listings stop, the retired units age like every other.
+    Written here, not in the store, so no derivation code changes. The number newly
+    retired."""
+    names = set(listed)
+    now = store.now()
+    retired = 0
+    with store._write():
+        for run in store._db.execute(
+                "SELECT r.* FROM runs r JOIN (SELECT unit, MAX(run_id) AS run_id FROM runs "
+                "WHERE kind = ? GROUP BY unit) l ON l.run_id = r.run_id",
+                (kind_name,)).fetchall():
+            if run["unit"] in names:
+                continue
+            if run["state"] == "partial" and run["reason"] == NOT_LISTED:
+                store._db.execute("UPDATE runs SET updated_at = ? WHERE run_id = ?",
+                                  (now, run["run_id"]))
+                continue
+            if run["state"] == "in_progress":
+                store._db.execute(
+                    "UPDATE runs SET state = 'partial', finished_at = ?, updated_at = ?, "
+                    "reason = ?, cursor = NULL WHERE run_id = ?",
+                    (now, now, NOT_LISTED, run["run_id"]))
+            else:
+                store._db.execute(
+                    "INSERT INTO runs (kind, unit, state, resources, started_at, finished_at, "
+                    "updated_at, reason) VALUES (?, ?, 'partial', ?, ?, ?, ?, ?)",
+                    (kind_name, run["unit"], run["resources"], now, now, now, NOT_LISTED))
+            retired += 1
+    return retired
 
 
 def _chat_path(parts: Sequence[str]) -> tuple[str, ...]:
@@ -2446,7 +2489,7 @@ class TeamsCapture:
         reasons: set[str] = set()
         refused = {kind: dict.fromkeys(REFUSALS, 0) for kind in ("teams", "channels", "chats")}
         n = dict.fromkeys(("teams", "teams_unlisted", "channels", "chats", "chats_unlisted",
-                           "chats_carried", "accounts", "accounts_excluded",
+                           "chats_retired", "chats_carried", "accounts", "accounts_excluded",
                            "chat_listings_capped", "chat_previews", "chat_preview_fallbacks"), 0)
         now = self.store.now()
         carried = {c["chat_id"]: c for c in (previous or {}).get("chats") or []
@@ -2613,6 +2656,9 @@ class TeamsCapture:
             baseline["value"] = self._member_joined(scope, enumerated, attempt, reasons,
                                                     out_of_time)
 
+        # the reasons before the chat accounts are listed: a new one but a member outside
+        # the allowlist (not the capture's) or an invalid id (names no stored chat) is a gap
+        listing_from = set(reasons)
         accounts = [address for address, _joined, with_chats in self._members(scope, reasons)
                     if with_chats]
 
@@ -2622,25 +2668,38 @@ class TeamsCapture:
             """One chat account's chats (ids and types; a thread: GETs and the guard)."""
             if out_of_time():
                 return (late,)
+            answered = []   # the lookup answered (None: outside the allowlist, no gap)
+
+            def member() -> str | None:
+                found = self._member(address, scope, reasons)
+                answered.append(True)
+                return found
             try:
-                user = attempt("teams.member", "graph.user",
-                               lambda: self._member(address, scope, reasons))
+                user = attempt("teams.member", "graph.user", member)
             except PeopleExcluded:
                 return ("excluded",)   # none of their chats is listed
-            listed = (attempt("teams.chats", "graph.user_chats", lambda: self._chat_listing(
-                user, reasons, fallbacks)) if user is not None else None) or ([], False)
-            return ("ok", *listed)
+            got = (attempt("teams.chats", "graph.user_chats", lambda: self._chat_listing(
+                user, reasons, fallbacks)) if user is not None else None)
+            # read whole: listed to the end, or out of scope; a failed read is a gap
+            return ("ok", *(got or ([], False)),
+                    got is not None and not got[1] or user is None and bool(answered))
 
         types: dict[str, str] = {}
+        # Whether every chat account's listing was read to its end (none late, failed or
+        # cut, the directory listing of the accounts whole): only then is a stored chat it
+        # does not name no longer listed (``retire_unlisted`` below).
+        whole = bool(config["max_chats"]) and bool(accounts)
         for read in self._ordered(read_account, accounts if config["max_chats"] else []):
             if read[0] == late:
                 reasons.add(TIME_BUDGET)
+                whole = False
                 break
             n["accounts"] += 1
             if read[0] == "excluded":
                 n["accounts_excluded"] += 1
                 continue
             n["chat_listings_capped"] += read[2]
+            whole = whole and read[3]
             for item in read[1]:
                 chat = item.get("id") if isinstance(item, Mapping) else None
                 if _valid("teams_thread", chat):
@@ -2649,6 +2708,11 @@ class TeamsCapture:
                 else:
                     reasons.add("provenance_dropped")
         n["chats"] = len(types)
+        if whole and not reasons - listing_from - {"outside_allowlist", "provenance_dropped"}:
+            # A stored chat no chat account lists any more (deleted, or every member
+            # left): no run reads it again, its last run leaves the freshness.
+            n["chats_retired"] = retire_unlisted(
+                self.store, CHAT_KIND.name, {Conversation("chat", chat).unit for chat in types})
         n["chat_preview_fallbacks"] = len(fallbacks)
         # The chats listed with a last message preview (the content run schedules on them).
         n["chat_previews"] = sum(Conversation("chat", c).unit in self.previews for c in types)

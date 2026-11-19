@@ -1126,6 +1126,67 @@ class FastPollTests(unittest.TestCase):
         self.assertLessEqual(called, mc_sources.CAPTURE_TOOLS)
         self.assertEqual(out["tools_called"], sorted(called))
 
+    def test_a_question_on_a_task_created_mid_sweep_is_read_within_one_interval(self):
+        """Live 2026-11-18: questions asked on tasks created after the cycle's listing
+        reached the store only with the next cycle (up to 53 min). The first fresh listing
+        that shows a new task reads it, under its bucket's project as the cycle would; a
+        new task whose project it cannot decide (its bucket's project is not valid) waits."""
+        for paged in (False, True):
+            with self.subTest(paged=paged):
+                self.setUp()
+                if paged:
+                    McSourcesTests.over_bound(self)
+                self.fill(200)
+                self.fake.buckets += [{"id": "BKT-HR", "name": "People", "owner": OPERATOR,
+                                       "health": "track", "project": "PRJ-HR"},
+                                      {"id": "BKT-ODD", "name": "Odd", "project": "hr; staff"}]
+                spec = CaptureSpec("ops", max_task_reads=50_000, page_size=5,
+                                   fast_poll_seconds=60)
+                store = self.store()
+                self.run_cycle(store, spec)
+                tool, made = self.fake.tool, {}
+
+                def tool_with_new_tasks(name, args, start=self.now[0]):
+                    if self.now[0] >= start + 30 and not made:
+                        made["at"] = self.now[0]
+                        for task_id, bucket in (("TASK-900", "BKT-HR"),
+                                                ("TASK-901", "BKT-ODD")):
+                            self.fake.tasks[task_id] = {
+                                "id": task_id, "title": "t", "stage": "progress",
+                                "bucket": bucket, "approvalGates": [],
+                                "questions": [{"id": "q_900", "status": "open", "text": "?"}]}
+                            self.fake.events[task_id] = [self.fake.event(
+                                task_id, "9", "question.asked", "x")]
+                    if name == "mc_get_task" and args.get("id") == "TASK-900":
+                        made.setdefault("read", self.now[0])
+                    return tool(name, args)
+                self.fake.tool = tool_with_new_tasks
+                out, units = self.run_cycle(store, spec)
+                fresh = [p for p in out["fast_polls"] if p["listing"] == "fresh"]
+                self.assertEqual(fresh[0]["new_tasks"], 1)
+                reads = self.got()
+                self.assertIn("TASK-900", reads)
+                self.assertNotIn("TASK-901", reads)
+                events = {path[2]: capture for path, capture in store.current_versions(
+                    KIND, unit_of("ops", "task_events"))}
+                self.assertIn("TASK-900~9", events)
+                self.assertNotIn("TASK-901~9", events)
+                # read within one interval of its creation (each MC read is 1 s here; a
+                # listing is one read, or a page and bucket reads when paged)
+                self.assertLessEqual(made["read"] - made["at"], 60 + 10)
+                # captured under its bucket's project, as the cycle's listing decides it
+                row = store._db.execute(
+                    "SELECT payload FROM versions WHERE path LIKE ? AND superseded_at IS NULL",
+                    ("%/task_events/TASK-900~9",)).fetchone()
+                self.assertEqual(json.loads(row[0])["meta"]["project"], "PRJ-HR")
+                self.assertEqual(units["approvals"]["state"], "complete")
+                # a full context over the bound is asked once a cycle, never every poll
+                full = [b for _m, _u, b in self.fake.calls
+                        if json.loads(b)["params"]["name"] == "mc_get_context"
+                        and json.loads(b)["params"]["arguments"].get("depth") == "full"
+                        and "taskIds" not in json.loads(b)["params"]["arguments"]]
+                self.assertEqual(len(full), 1 if paged else 1 + len(fresh))
+
     def test_a_decision_since_the_last_read_is_read_and_a_first_poll_reads_open_only(self):
         self.fill(30)
         self.fake.tasks["TASK-105"]["approvalGates"] = [{"id": "apg_5", "status": "pending"}]

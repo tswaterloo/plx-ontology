@@ -85,7 +85,8 @@
   ],
   "max_task_reads": 50000,
   "operator_email_default": "cos@petrasoap.com",
-  "budget_seconds": 900
+  "budget_seconds": 900,
+  "fast_poll_seconds": 90
  },
  "brain": {
   "namespaces": "knowledge_namespaces.ingest.json"

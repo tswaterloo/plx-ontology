@@ -200,8 +200,10 @@ requested or decided or a question asked or answered); then resumes the sweep, a
 else ``mc_search_tasks`` pages) and repeats. No other tool and nothing written to MC. The fast
 reads are saved into the sweep's own open runs at the sweep's own cursor, so the sweep's
 completeness (and what a complete run marks missing) is unchanged; one capture process
-writes the store, as before. A task the cycle's listing did not show waits for the next
-cycle (its project is read from that listing). A first fast poll in a store without
+writes the store, as before. A task created since the cycle's listing is read by the
+first fresh listing that shows it, under the project that listing's buckets give it, as
+the cycle's would (a question asked on a new task reached the store a cycle later, up to
+53 min, 2026-11-18); one whose project it cannot decide waits for the next cycle. A first fast poll in a store without
 ``FAST_STATE`` reads the open tasks only (the rest are the sweep's, as before). At most
 ``FAST_MAX_TASKS`` tasks a poll, open ones first (``capped`` counts the rest).
 """
@@ -563,6 +565,29 @@ class _TaskRead:
     orphans_unparented: bool
 
 
+def _bucket_projects(read: Any) -> dict[str, str | None]:
+    """A listing's bucket id -> project (None: a bucket whose project is not valid)."""
+    out: dict[str, str | None] = {}
+    for bucket in read.buckets:
+        bucket_id = _text_id(bucket.get("id")) if isinstance(bucket, dict) else None
+        if bucket_id:
+            out[bucket_id] = _bucket_project(bucket)
+    return out
+
+
+def _task_project(task: Any, buckets: Mapping[str, str | None],
+                  orphans_unparented: bool) -> str | None:
+    """The project a listing row's task is captured under: its bucket's; a task without a
+    bucket row is ``UNPARENTED`` when the listing says MC treats it so (its
+    ``canAccessTask``); None otherwise (dropped, never guessed)."""
+    bucket = task.get("bucket") if isinstance(task, dict) else None
+    if isinstance(bucket, str) and bucket in buckets:
+        return buckets[bucket]
+    if (bucket is None or isinstance(bucket, str)) and orphans_unparented:
+        return UNPARENTED
+    return None
+
+
 def _watched(task: Mapping[str, Any]) -> tuple[str, bool]:
     """A listing row's (digest of the whole row, any approval gate or question open). The
     whole row: a task-search row may not carry the gates, and MC patches the task row
@@ -750,6 +775,7 @@ class McSourcesCapture:
         """Read every configured collection once; per-unit summaries (counts only)."""
         collections: list[str] = []
         self._listing, self.fast_polls = {}, []
+        self._context_whole = True   # the cycle's full context read was within the bound
         failure = self._pin_view(spec) if self.mc is not None else None
         if failure is not None:  # no read without its view: the units fail, reported
             collections = ["tasks", "buckets", "projects"] + (
@@ -861,15 +887,12 @@ class McSourcesCapture:
         run = self._begin(spec, "tasks")["run_id"]
         try:
             read = self._context_read()
+            self._context_whole = read is not None
             read = self._with_retired(spec, read) if read else self._search_read()
         except (UpstreamError, SourceUnavailable, ReadOnlyGuardError) as error:
             self._failed(run, error)
             return None
-        bucket_projects: dict[str, str | None] = {}
-        for bucket in read.buckets:
-            bucket_id = _text_id(bucket.get("id")) if isinstance(bucket, dict) else None
-            if bucket_id:
-                bucket_projects[bucket_id] = _bucket_project(bucket)
+        bucket_projects = _bucket_projects(read)
         records, projects, seen, moved = [], {}, 0, read.moved
         drops = dict.fromkeys(DROP_REASONS, 0)
         task_ids: set[str] = set()
@@ -883,12 +906,7 @@ class McSourcesCapture:
                 task_ids.add(task_id)
             seen += 1
             bucket = task.get("bucket") if isinstance(task, dict) else None
-            if isinstance(bucket, str) and bucket in bucket_projects:
-                project = bucket_projects[bucket]
-            elif (bucket is None or isinstance(bucket, str)) and read.orphans_unparented:
-                project = UNPARENTED  # no bucket row: MC's canAccessTask treats it so
-            else:
-                project = None
+            project = _task_project(task, bucket_projects, read.orphans_unparented)
             if not isinstance(task_id, str) or _TASK_ID.fullmatch(task_id) is None:
                 drops["other"] += 1
                 continue
@@ -923,6 +941,7 @@ class McSourcesCapture:
 
     def _task_details(self, spec: CaptureSpec, projects: Mapping[str, str]) -> None:
         task_ids = sorted(projects)
+        projects = dict(projects)   # a fast poll adds the tasks created since the listing
         gates_run = self._begin(spec, "approvals")
         events_run = self._begin(spec, "task_events")
         self._rekey_moved(projects, gates_run, events_run)
@@ -968,25 +987,37 @@ class McSourcesCapture:
         def fast_poll(listing: str) -> bool:
             """One fast poll (module docstring); False when an MC read failed (recorded)."""
             started = self._clock()
+            added = 0
             if listing == "fresh":
                 try:   # the cycle's own listing reads: the full context, else task search
-                    read = self._context_read() or self._search_read()
+                    # (a context over the bound this cycle is not asked again each poll)
+                    read = (self._context_whole and self._context_read()) \
+                        or self._search_read()
                 except (UpstreamError, SourceUnavailable, ReadOnlyGuardError):
                     read = None
                 if read is None:   # not read: the sweep goes on, the next poll retries
                     self.fast_polls.append({"listing": "unread", "due": 0, "open": 0,
                                             "read": 0, "capped": 0, "seconds": 0.0})
                     return True
+                buckets = _bucket_projects(read)
                 for task in read.tasks:
                     task_id = task.get("id") if isinstance(task, dict) else None
-                    if task_id in projects:
-                        self._listing[task_id] = _watched(task)
+                    if task_id not in projects:
+                        # created since the cycle's listing: its project as that listing
+                        # decides it (its bucket's; none: it waits for the next cycle)
+                        project = _task_project(task, buckets, read.orphans_unparented)
+                        if project is None or not isinstance(task_id, str) \
+                                or _TASK_ID.fullmatch(task_id) is None:
+                            continue
+                        projects[task_id] = project
+                        added += 1
+                    self._listing[task_id] = _watched(task)
             due = sorted((not is_open, t) for t, (digest, is_open) in self._listing.items()
                          if is_open or watched.get(t) != digest)
             chosen = [t for _closed, t in due[:FAST_MAX_TASKS]]
             report = {"listing": listing, "due": len(due),
                       "open": sum(1 for closed, _t in due if not closed),
-                      "read": 0, "capped": len(due) - len(chosen)}
+                      "read": 0, "capped": len(due) - len(chosen), "new_tasks": added}
             self.fast_polls.append(report)
             for start in range(0, len(chosen), spec.page_size):
                 if self.deadline is not None and self._clock() >= self.deadline:

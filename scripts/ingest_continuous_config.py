@@ -29,9 +29,13 @@ import sys
 # message reaches the autopilot's fast feed about 4 min after it is sent at the median,
 # against 57 min at 30 min plus the build hold), its member lists re-read each run; the
 # rest follow their upstream's pace, except the Portal: 20 minutes after its last run
-# (a run is ~25 min), so it makes progress within its 1 h freshness target (owner 11-13).
+# (a run is ~25 min), so it makes progress within its 1 h freshness target (owner 11-13),
+# and Mission Control: 2 minutes after its last run, its fast poll (``fast_poll_seconds``)
+# re-listing every 90 s of a run, so a question or approval asked in MC reaches the
+# Autopilot within minutes (a run reads one request at a time: no more MC load at once,
+# only less idle time between runs).
 CADENCE = {"mail": 60, "sharepoint": 60, "teams": 120, "bc": 1800, "portal": 1200,
-           "mc": 3600, "sharepoint_lists": 3600, "meetings": 1800}
+           "mc": 120, "sharepoint_lists": 3600, "meetings": 1800}
 
 
 def continuous(document: dict, base: Path) -> dict:

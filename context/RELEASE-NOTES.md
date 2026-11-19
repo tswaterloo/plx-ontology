@@ -7,6 +7,12 @@ break the last one.
 Template:
 
 ```
+## Update 2026-11-18
+Changed:
+- Captures stop counting folders, libraries and chats their source no longer lists, so freshness shows true ages
+- Mission Control questions are picked up on the fast poll
+- deploys keep the newest 8 releases
+
 ## v0.22 (2026-11-19)
 Changed:
 - Autopilot drafts by default with question cards, looks things up as the person, learns from edits and applies saved preferences; chat drafts read the chat and the person's own replies as style.

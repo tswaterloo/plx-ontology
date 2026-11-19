@@ -1054,6 +1054,40 @@ class MailCaptureStore:
         return self.db.execute("SELECT 1 FROM meta WHERE key=?",
                                (_PARTIAL_LISTING + mailbox_id,)).fetchone() is None
 
+    def retire_unlisted_folders(self, mailbox_id: str, listed: Iterable[str]) -> int:
+        """The folders of a mailbox that a whole folder listing (``listed``, its folder ids)
+        no longer names are gone from the mailbox: Graph's ids are immutable (a renamed or
+        moved folder keeps its id), so one missing from a listing of every folder was
+        deleted. Each one's messages still current in it are superseded with
+        ``FOLDER_NOT_LISTED`` (history kept; a message moved out first was observed in its
+        new folder and is not touched), and its folder and coverage rows are dropped: no
+        run reads it again, so its last run no longer holds the capture's freshness back
+        (``ontology.project.MailCaptures.describe``) and a listing that names it again
+        starts it as a new folder (its messages reappear). Rows without a folder id (a
+        mailbox or folder never opened) are not the listing's to judge. The number of
+        folders retired."""
+        # exact ids: Graph's are base64, two folders' ids may differ only in case
+        names = {str(f) for f in listed}
+        gone = [row for row in self.db.execute(
+            "SELECT folder_key, folder_id FROM folders WHERE mailbox_id=? AND folder_id IS "
+            "NOT NULL", (mailbox_id,)).fetchall() if row["folder_id"] not in names]
+        if not gone:
+            return 0
+        now = self.now()
+        with self.db:
+            for row in gone:
+                for (message_id,) in self.db.execute(
+                        "SELECT DISTINCT message_id FROM messages WHERE mailbox_id=? AND "
+                        "folder_id=? AND superseded_at IS NULL",
+                        (mailbox_id, row["folder_id"])).fetchall():
+                    self._supersede_current(mailbox_id, message_id, now, FOLDER_NOT_LISTED)
+                self.db.execute("DELETE FROM folders WHERE mailbox_id=? AND folder_key=?",
+                                (mailbox_id, row["folder_key"]))
+                if self._has_coverage_table():
+                    self.db.execute("DELETE FROM folder_coverage WHERE mailbox_id=? AND "
+                                    "folder_id=?", (mailbox_id, row["folder_id"]))
+        return len(gone)
+
     def folder_holds_current(self, mailbox_id: str, folder_id: str) -> bool:
         return self.db.execute("SELECT 1 FROM messages WHERE mailbox_id=? AND folder_id=? "
                                "AND superseded_at IS NULL LIMIT 1",
@@ -3596,6 +3630,9 @@ RELIST_FOLDER_PAGES = 50
 RELIST_AGAIN_SECONDS = 7 * 86400
 # meta key of a mailbox whose stored folder listing is partial: listed again every run
 _PARTIAL_LISTING = "folder_listing_partial:"
+# A current message whose folder a whole folder listing no longer names (the folder was
+# deleted): its removal reason (``MailCaptureStore.retire_unlisted_folders``).
+FOLDER_NOT_LISTED = "folder_not_listed"
 # How often a run re-measures its OCR backlog (``MailCapture._check_backlog``).
 BACKLOG_CHECK_SECONDS = 30.0
 # The OCR backlog a run queues at its start (``_OcrQueue``), newest versions first.
@@ -6512,6 +6549,12 @@ class MailCapture:
                     self.store.save_folder_listing(
                         mailbox_id, [{"id": f["folder_id"], "total": f["total"]}
                                      for f in stored], complete=whole)
+                if whole and stored:
+                    # A folder the whole listing no longer names was deleted: retired
+                    # (its current messages removed), never read again. A listing of
+                    # no folder at all retires nothing (fail closed).
+                    self.store.retire_unlisted_folders(
+                        mailbox_id, [f["folder_id"] for f in stored])
             except MailboxAbsent:
                 raise   # no Exchange Online mailbox: the run records it, nothing to read
             except NotVisible:

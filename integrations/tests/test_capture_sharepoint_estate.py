@@ -737,6 +737,51 @@ class EstateDiscoveryTests(EstateCase):
         self.assertEqual(cs.registry_site_outcomes(run, ["Archive"])["reasons"],
                          {"Archive": "library_listing_failed"})
 
+    def test_an_empty_root_a_whole_plan_no_longer_names_leaves_the_freshness(self):
+        """Live: one empty library walked last on 2026-11-06 (no longer listed) held served
+        SharePoint freshness 12 days old. A whole estate plan retires an empty root it no
+        longer names; a plan with a discovery gap, or a root still holding a file, keeps
+        it (its files are served as last captured, their age stays in the freshness)."""
+        from ontology.delta import capture_refreshed
+        from ontology.project import SharePointCaptures
+        from ontology.store import instant
+        gone = ("b!gone-Drive_09", "/")
+        old = "2026-09-20T00:00:00.000000Z"
+        self.store.save_root(*gone, status="complete", last_run_at=old,
+                             last_complete_at=old, rounds_complete=5)
+
+        def refreshed():
+            return capture_refreshed("sharepoint", lambda: SharePointCaptures(self.state),
+                                     None)
+        # The fixture estate has a discovery gap (Legacy answers 403): nothing retired.
+        run = self.capture().run(estate_scope())
+        self.assertFalse(run["discovery"]["complete"])
+        self.assertIsNotNone(self.store.root_state(*gone))
+        self.assertEqual(refreshed(), instant(old))
+        whole = dict(sites=(Q_SITE, ts.SITE_ID, PERSONAL_SITE), libraries={
+            Q_SITE: [(ts.DRIVE, "Documents")], ts.SITE_ID: [(ts.SITE_DRIVE, "Documents")],
+            PERSONAL_SITE: [(PERSONAL_DRIVE, "Documents")]})
+        self.drive = estate_drive(**whole)
+        run = self.capture().run(estate_scope())
+        self.assertTrue(run["discovery"]["complete"], run["discovery"]["gaps"])
+        self.assertIsNone(self.store.root_state(*gone))
+        self.assertEqual(refreshed(), min(instant(r["last_run_at"]) for r in
+                                          self.store.db.execute("SELECT last_run_at FROM roots")))
+        self.assertGreater(refreshed(), instant(old))
+        # The personal library is no longer listed, its root holds files: kept as it is.
+        files = self.store.db.execute("SELECT COUNT(*) FROM items WHERE drive_id=? AND "
+                                      "superseded_at IS NULL", (PERSONAL_DRIVE,)).fetchone()[0]
+        self.assertGreater(files, 0)
+        self.drive = estate_drive(**{**whole, "sites": (Q_SITE, ts.SITE_ID)})
+        run = self.capture().run(estate_scope())
+        self.assertTrue(run["discovery"]["complete"], run["discovery"]["gaps"])
+        self.assertIsNotNone(self.store.root_state(PERSONAL_DRIVE, "/"))
+        # A named-target scope (no discovery) never retires the roots it does not name.
+        self.store.save_root(*gone, status="complete", last_run_at=old)
+        self.capture().run(CaptureScope([{"id": "quality", "drive_id": ts.DRIVE,
+                                          "folders": ["/"]}]))
+        self.assertIsNotNone(self.store.root_state(*gone))
+
     def test_a_library_wide_root_takes_over_a_folder_root_captured_before(self):
         self.capture().run(CaptureScope([{"id": "quality", "drive_id": ts.DRIVE,
                                           "folders": [ts.QUALITY_FOLDER]}]))

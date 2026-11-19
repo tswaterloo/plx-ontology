@@ -1857,6 +1857,58 @@ class ChatsReconcileTests(CaptureCase):
     captured, hosted in another tenant, otherwise settled unreadable, pending or never
     read (2026-11-08: census 4,260, captured 3,739; the rest were other-tenant chats)."""
 
+    def test_a_chat_no_listing_names_any_more_leaves_the_freshness_and_keeps_its_records(self):
+        """Live: one chat whose run a stopped process left open on 2026-11-10, never listed
+        again, held served Teams freshness 8 days old. A census whose chat listings were
+        all read whole retires the stored chats none of them names (once); a cut or
+        failed listing retires nothing. The retired chat's membership and records stay;
+        a run that reads it again puts it back in the freshness."""
+        self.capture.run(scope())
+        old = "2026-09-01T00:00:00.000000Z"
+        live = Conversation("chat", CHAT).unit
+        gone = [Conversation("chat", f"19:gone_{i:03d}@thread.v2").unit for i in range(10)]
+        for n, unit in enumerate(gone):
+            run = self.store.begin_run("teams_chat", unit, [unit])
+            self.store.set_unit_acl(run["run_id"], self.store.unit_acl("teams_chat", live))
+            if n % 2:   # half finished, half left open by a stopped process
+                self.store.finish_run(run["run_id"], "partial", reason="time_budget")
+        with sqlite3.connect(self.store.path) as db:
+            db.execute("UPDATE runs SET updated_at = ? WHERE unit IN (%s)"
+                       % ",".join("?" * len(gone)), (old, *gone))
+
+        def freshness():
+            with TeamsCaptures(self.store.path) as captured:
+                return captured.describe()["relations"]["chatMessages"]["last_refresh_at"]
+
+        def runs():
+            return self.store._db.execute("SELECT COUNT(*) FROM runs").fetchone()[0]
+        self.assertEqual(freshness(), old)
+        self.graph.forbidden.append(rf"/users/{U_COS}/chats$")   # a failed listing
+        census, _private = self.capture.census(scope(), [])
+        self.assertEqual(census["chats_retired"], 0)
+        self.assertEqual(freshness(), old)
+        self.graph.forbidden.remove(rf"/users/{U_COS}/chats$")
+        before = runs()
+        census, _private = self.capture.census(scope(), [])
+        self.assertEqual(census["chats_retired"], len(gone))
+        self.assertEqual(runs(), before + len(gone) // 2)   # the open runs were closed
+        self.assertGreater(freshness(), old)
+        self.assertEqual(freshness(), self.store.run("teams_chat", live)["updated_at"])
+        for unit in gone:
+            self.assertIsNotNone(self.store.unit_acl("teams_chat", unit))
+            self.assertEqual(self.store.run("teams_chat", unit)["reason"],
+                             capture_teams.NOT_LISTED)
+        census, _private = self.capture.census(scope(), [])   # once
+        self.assertEqual((census["chats_retired"], runs()), (0, before + len(gone) // 2))
+        self.assertNotEqual(self.store.run("teams_chat", live)["reason"],
+                            capture_teams.NOT_LISTED)
+        # Read again (listed again): a new run, back in the freshness (cut, it holds it back).
+        back = self.store.begin_run("teams_chat", gone[0], [gone[0]])
+        self.store.pause_run(back["run_id"], reason="time_budget")
+        with sqlite3.connect(self.store.path) as db:
+            db.execute("UPDATE runs SET updated_at = ? WHERE run_id = ?", (old, back["run_id"]))
+        self.assertEqual(freshness(), old)
+
     def test_every_listed_chat_is_accounted_for_at_cardinality(self):
         self.capture.run(scope())   # the fixture's one chat, captured
         for n in (1, 10, 60):

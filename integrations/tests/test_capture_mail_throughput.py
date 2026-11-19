@@ -324,6 +324,67 @@ class EveryFolderAndHistoryTests(ThroughputCase):
         self.assertTrue(self.store.folder_listing_whole(BOX_A))
         self.assertEqual(self.stored(BOX_A), [("IN-1", "AAMkFOLDER-A=")])
 
+    def test_a_folder_deleted_at_the_source_is_retired_and_leaves_the_freshness(self):
+        """A folder a whole listing no longer names was deleted: its current messages are
+        removed (a message moved out first stays current where it went), it is never read
+        again and its last run no longer holds the capture's freshness back (live: two
+        deleted folders of one mailbox held served mail freshness 5 days old). A listing
+        that is not whole, or names no folder at all, retires nothing."""
+        from datetime import timedelta
+        from ontology.delta import capture_refreshed
+        from ontology.project import MailCaptures
+        from ontology.store import instant
+        self.graph.put(BOX_A, "IN-1", "CK-1")
+        self.graph.put(BOX_A, "CU-1", "CK-1", folder=CUSTOM)
+        self.graph.put(BOX_A, "CU-MOVED", "CK-1", folder=CUSTOM)
+        self.graph.put(BOX_A, "CH-1", "CK-1", folder=CHILD)
+        self.assertTrue(self.capture().run(every_folder_scope())["complete"])
+        stale = instant(self.store.folder_state(BOX_A, CUSTOM)["last_run_at"])
+
+        def box_b():
+            return sorted(r[0] for r in self.store.db.execute(
+                "SELECT folder_key FROM folders WHERE mailbox_id=?", (BOX_B,)))
+
+        def refreshed():
+            return capture_refreshed("graph_mail", lambda: MailCaptures(self.state), None)
+        self.assertEqual(refreshed(), min(
+            instant(r["last_run_at"]) for r in self.store.db.execute(
+                "SELECT last_run_at FROM folders")))
+        # One message moved to the inbox, then the custom folder (and its child) deleted.
+        self.graph.put(BOX_A, "CU-MOVED", "CK-2")
+        for mid in ("CU-1", "CH-1"):
+            del self.graph.messages[BOX_A][mid]
+        self.graph.tree = {None: ["inbox", EMPTY]}
+        real = GraphMailReader.list_folders
+        for listing in (lambda found: dict(found, complete=False),     # cut: not whole
+                        lambda found: dict(found, folders=[])):         # names nothing
+            with self.subTest(listing=listing), mock.patch.object(
+                    GraphMailReader, "list_folders",
+                    lambda reader, actor, box, _l=listing, **kw: _l(real(reader, actor, box,
+                                                                         **kw))):
+                self.clock.now += timedelta(seconds=capture_mail.FOLDER_RELIST_SECONDS + 60)
+                self.capture(throttle_waits=()).run(every_folder_scope())
+                self.assertIsNotNone(self.store.folder_state(BOX_A, CUSTOM))
+                self.assertIn(("CU-1", CUSTOM), self.stored(BOX_A))
+        held_b = box_b()
+        self.assertTrue(held_b)
+        self.clock.now += timedelta(seconds=capture_mail.FOLDER_RELIST_SECONDS + 60)
+        run = self.capture().run(every_folder_scope())
+        self.assertTrue(run["complete"], run["incomplete_reasons"])
+        self.assertIsNone(self.store.folder_state(BOX_A, CUSTOM))
+        self.assertIsNone(self.store.folder_state(BOX_A, CHILD))
+        self.assertEqual(sorted(self.stored(BOX_A)), [("CU-MOVED", "AAMkFOLDER-A="),
+                                                      ("IN-1", "AAMkFOLDER-A=")])
+        self.assertEqual(sorted(r[0] for r in self.store.db.execute(
+            "SELECT message_id FROM messages WHERE removed_reason=?",
+            (capture_mail.FOLDER_NOT_LISTED,))), ["CH-1", "CU-1"])
+        # The other mailbox (its folders still listed) is untouched.
+        self.assertEqual(box_b(), held_b)
+        self.assertGreater(refreshed(), stale)
+        self.assertEqual(refreshed(), min(
+            instant(r["last_run_at"]) for r in self.store.db.execute(
+                "SELECT last_run_at FROM folders")))
+
     def test_a_user_without_an_exchange_mailbox_reads_as_no_mailbox_never_a_gap(self):
         """Graph 404 ``MailboxNotEnabledForRESTAPI``: no mail exists, so the run is not
         held incomplete by it, and every reader of the store says ``no_mailbox``."""
